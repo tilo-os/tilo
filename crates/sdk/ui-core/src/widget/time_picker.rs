@@ -17,6 +17,7 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -483,6 +484,8 @@ impl Widget for TimePicker {
                 width: Dimension::length(total_w),
                 height: Dimension::length(PICKER_HEIGHT),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -509,7 +512,7 @@ impl Widget for TimePicker {
     ) {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.sm);
-        let text_size = theme.tokens.typography.scale.lg;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
 
         let mut cells: Vec<(Rect, u8)> = vec![
             (self.hour_rect, self.hours),
@@ -535,9 +538,15 @@ impl Widget for TimePicker {
                 1 => TimeCell::Minutes,
                 _ => TimeCell::Seconds,
             };
-            if self.is_focused && self.focused_cell == Some(cell_kind) {
-                scene.stroke(&Stroke::new(2.0), transform, colors.border_focus, None, &bg);
-            }
+            // Each value cell is a Control: a rest edge derived from its
+            // surface (HIG §9.5); the focused cell keeps `border_focus`.
+            let outline = crate::surface::edge_outline(value_rect, radius);
+            let (width, color) = if self.is_focused && self.focused_cell == Some(cell_kind) {
+                (2.0, colors.border_focus)
+            } else {
+                (1.0, crate::surface::edge_on(colors.surfaces.raised))
+            };
+            scene.stroke(&Stroke::new(width), transform, color, None, &outline);
 
             let label = format!("{value:02}");
             let (w, h) = text_renderer.measure(&label, text_size, None);

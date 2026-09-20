@@ -30,7 +30,6 @@ clap.workspace = true
 dirs.workspace = true
 hex.workspace = true
 blake3.workspace = true
-libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

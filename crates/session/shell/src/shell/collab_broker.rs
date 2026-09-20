@@ -19,7 +19,7 @@ use collab_types::{
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use ui::collaboration::CollabEvent;
 
-use crate::shell::collab_broker_capnp::CapnpBrokerState;
+use crate::shell::collab_broker_capnp::{CapnpBrokerState, LocalSessionLifecycle};
 pub use crate::shell::collab_core::{
     AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
 };
@@ -345,9 +345,17 @@ impl FanoutState {
             .unwrap_or_default()
     }
 
-    /// Mint the next typed connection id.
+    /// Mint the next typed connection id, reserving zero for the broker root
+    /// and `u64::MAX` for the current-connection sentinel. The counter itself
+    /// remains the number of accepted connections, including before the first.
     pub(crate) fn next_peer_id(&self) -> u64 {
-        self.peer_id_counter.fetch_add(1, Ordering::Relaxed)
+        let previous = self
+            .peer_id_counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                count.checked_add(1).filter(|next| *next < u64::MAX)
+            })
+            .expect("application peer id space exhausted");
+        previous + 1
     }
 
     /// How many typed connections this broker has ever accepted. Read as a
@@ -397,6 +405,7 @@ impl FanoutState {
 
 /// Owns the typed broker and optional peer-network drain.
 pub struct BrokerHandle {
+    local_session: LocalSessionLifecycle,
     capnp_socket_path: PathBuf,
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
@@ -593,7 +602,10 @@ impl AppActionBroker {
         self.state.dispatch_workspace_task(room, task_id)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "confirmation forwarding binds peer, resource, action, argument, actor and confirmation evidence to one invocation"
+    )]
     /// Prepare a one-use confirmation token for the exact invocation inputs.
     ///
     /// # Errors
@@ -612,7 +624,10 @@ impl AppActionBroker {
             .prepare_confirmation(peer_id, resource, action, argument, actor, phrase)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "confirmed invocation forwarding binds the token to its peer, resource, action, argument and actor"
+    )]
     /// Start a published action using a previously prepared confirmation token.
     ///
     /// # Errors
@@ -639,6 +654,10 @@ impl AppActionBroker {
 }
 
 impl BrokerHandle {
+    pub(crate) fn local_session_lifecycle(&self) -> LocalSessionLifecycle {
+        self.local_session.clone()
+    }
+
     /// Apply a typed, handle-only MLS membership transaction at the trusted
     /// workspace lifecycle boundary. Apps cannot call this interface.
     ///
@@ -808,6 +827,7 @@ impl BrokerHandle {
 
 impl Drop for BrokerHandle {
     fn drop(&mut self) {
+        self.local_session.close();
         self.drain_quit.store(true, Ordering::Relaxed);
         self.capnp_quit.store(true, Ordering::Relaxed);
         let _ = std::fs::remove_file(&self.capnp_socket_path);
@@ -1253,7 +1273,7 @@ fn spawn_inner(
 
     // Typed RPC interface, attached to the shared fanout state.
     let capnp_quit = Arc::new(AtomicBool::new(false));
-    let capnp_thread = crate::shell::collab_broker_capnp::spawn(
+    let (capnp_thread, capnp_state) = crate::shell::collab_broker_capnp::spawn(
         capnp_socket_path.clone(),
         &table,
         Arc::clone(&channels),
@@ -1265,6 +1285,7 @@ fn spawn_inner(
     )?;
 
     Ok(BrokerHandle {
+        local_session: capnp_state.local_session_lifecycle(),
         capnp_socket_path,
         drain_thread,
         drain_quit,
@@ -1365,6 +1386,28 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allocated_application_peers_skip_reserved_ids_and_preserve_connection_counts() {
+        let table = FanoutState::new();
+        assert_eq!(table.connections_seen(), 0);
+        assert_eq!(table.next_peer_id(), 1);
+        assert_eq!(table.connections_seen(), 1);
+        assert_eq!(table.next_peer_id(), 2);
+        assert_eq!(table.connections_seen(), 2);
+    }
+
+    #[test]
+    fn exhausted_application_peer_ids_do_not_wrap_or_issue_the_current_connection_sentinel() {
+        let table = FanoutState::new();
+        table.peer_id_counter.store(u64::MAX - 2, Ordering::Relaxed);
+        assert_eq!(table.next_peer_id(), u64::MAX - 1);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| table.next_peer_id()))
+                .is_err()
+        );
+        assert_eq!(table.connections_seen(), u64::MAX - 1);
+    }
 
     /// A digest-shaped peer id, as presence frames carry it.
     const PEER: &str = "peer@5537458103208628978";

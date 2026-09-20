@@ -34,8 +34,14 @@ use crate::accounts::{
     AccountConfig, AccountDirectory, AccountKind, AccountView, NEXTCLOUD_TYPE, WEBDAV_TYPE,
 };
 use crate::widgets::{
-    El, caption, card, card_with_action, hgap, rows, setting_row, status_pill, value_row,
+    El, caption, card, card_with_action, rows, setting_row, status_pill, value_row,
 };
+
+/// Height (logical px) of the per-account maintenance buttons. The shared
+/// `Button` default — the same height as the card's trailing "Add account"
+/// button and every dropdown in Settings — so one card never mixes two
+/// control heights.
+const ACTION_BUTTON_H: f32 = 40.0;
 
 /// Key the "Add" button on the Email card writes to open the form.
 pub const ADD_MAIL_KEY: &str = "settings.accounts.add.mail";
@@ -486,7 +492,14 @@ impl AccountsPane {
                  your first account.",
             ));
         }
-        panel.push(card("Accounts on this device", rows(intro)));
+        let mut introduction = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(8.0);
+        for line in intro {
+            introduction = introduction.push(line);
+        }
+        panel.push(Box::new(introduction));
 
         if let Some(kind) = self.form_kind {
             panel.push(self.account_form(kind));
@@ -515,7 +528,6 @@ impl AccountsPane {
                                 "Remove from this device",
                                 Some(REMOVE_CONFIRM_KEY),
                             )))
-                            .push(hgap(8.0))
                             .push(Box::new(Button::new(
                                 "settings.accounts.remove.cancel",
                                 "Cancel",
@@ -672,9 +684,8 @@ impl AccountsPane {
                         },
                         false,
                     )
-                    .fit_content(34.0),
+                    .fit_content(ACTION_BUTTON_H),
                 ))
-                .push(hgap(8.0))
                 .push(Box::new(
                     account_action_button(
                         &format!("settings.accounts.reauth.{}", view.id),
@@ -688,7 +699,7 @@ impl AccountsPane {
                         },
                         false,
                     )
-                    .fit_content(34.0),
+                    .fit_content(ACTION_BUTTON_H),
                 ))
                 .push(Box::new(Spacer::new()));
             let secondary_actions = Row::new()
@@ -709,7 +720,7 @@ impl AccountsPane {
                         },
                         false,
                     )
-                    .fit_content(34.0),
+                    .fit_content(ACTION_BUTTON_H),
                 ))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
@@ -726,7 +737,7 @@ impl AccountsPane {
                         true,
                     )
                     .danger()
-                    .fit_content(34.0),
+                    .fit_content(ACTION_BUTTON_H),
                 ));
             column = column
                 .push(Box::new(primary_actions))
@@ -883,7 +894,6 @@ impl AccountsPane {
                     crate::actions::AccountOperation::SubmitReauthentication,
                     false,
                 )))
-                .push(hgap(8.0))
                 .push(Box::new(account_action_button(
                     "settings.accounts.reauth.cancel",
                     "Cancel",
@@ -921,7 +931,10 @@ impl AccountsPane {
     /// checked and, only after that check succeeds, committed. Existing
     /// envelopes are cloned so fields contributed by another app or a newer
     /// provider survive an edit.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Account preparation validates the account kind, existing or assigned ID, display name, identity, login, server, and credential together."
+    )]
     #[allow(
         clippy::too_many_lines,
         reason = "one canonical conversion validates the complete set of account kinds and credential fields"
@@ -1046,7 +1059,10 @@ impl AccountsPane {
 
     /// Commit a draft after its protocol probe succeeds. The draft is rebuilt
     /// over the latest canonical envelope to preserve concurrent/newer fields.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Account persistence passes the full validated draft, including existing or assigned ID and credential, into canonical preparation."
+    )]
     fn save_account_with_id(
         kind: AccountKind,
         existing_id: Option<&str>,
@@ -1108,7 +1124,6 @@ impl AccountsPane {
         finish_or_recover("account save")
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[cfg(test)]
     fn save_account(
         kind: AccountKind,
@@ -2030,6 +2045,70 @@ mod tests {
         assert!(
             AccountsPane::save_account(AccountKind::Mail, None, "Nobody", "  ", "", "", "")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn vault_save_failure_preserves_existing_account_metadata() {
+        // Isolate custody selection from an actual session Secret Service, and
+        // isolate ConfigGuard's environment from other tests in this process.
+        const CHILD: &str = "TILO_SETTINGS_VAULT_FAILURE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "panes::accounts::tests::vault_save_failure_preserves_existing_account_metadata", "--nocapture"])
+                .env(CHILD, "1")
+                .env("PATH", "")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("vault_save_failure_metadata");
+        let root = accounts::config_root().unwrap();
+        let old_id = accounts::AccountId::from("existing@example.test");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(accounts::Account::new(old_id.clone(), "email"));
+        store.save().unwrap();
+        let store_path = accounts::store_path_in(&root);
+        let metadata_before = std::fs::read(&store_path).unwrap();
+        let mut vault = accounts::SecretVault::open_in(&root);
+        vault.put(&old_id, &accounts::Secret::password("old-password"));
+        vault.try_save().unwrap();
+        assert_eq!(
+            accounts::SecretVault::open().custody(),
+            accounts::SecretCustody::LocalFile
+        );
+        let dir = accounts::vault_dir_in(&root);
+        let ciphertext_before = std::fs::read(dir.join("vault.enc")).unwrap();
+        let malformed_key = [7u8; 31];
+        std::fs::write(dir.join("vault.key"), malformed_key).unwrap();
+
+        let error = AccountsPane::save_account(
+            AccountKind::Mail,
+            None,
+            "New account",
+            "new@example.test",
+            "new@example.test",
+            "",
+            "new-password",
+        )
+        .unwrap_err();
+        assert!(
+            error.starts_with("could not save credential:"),
+            "must reach vault save, not fail account intent: {error}"
+        );
+        assert_eq!(std::fs::read(dir.join("vault.key")).unwrap(), malformed_key);
+        assert_eq!(
+            std::fs::read(dir.join("vault.enc")).unwrap(),
+            ciphertext_before
+        );
+        assert_eq!(std::fs::read(&store_path).unwrap(), metadata_before);
+        let saved = accounts::AccountStore::load();
+        assert_eq!(saved.all().len(), 1);
+        assert!(saved.get(&old_id).is_some());
+        assert!(
+            saved
+                .get(&accounts::AccountId::from("new@example.test"))
+                .is_none()
         );
     }
 

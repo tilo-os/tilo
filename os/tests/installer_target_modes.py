@@ -32,15 +32,21 @@ class InstallerTargetModeTests(unittest.TestCase):
             (bundle / 'tilo-target.efi').write_bytes(b'signed target bytes')
             (bundle / 'predictions/generation-42.json').write_text('prediction')
             (bundle / 'predictions/generation-42.json.uki.sig').write_text('signature')
-            # Replace only the external command-line parser with a fixture;
-            # execute production copy/promotion/path logic on ordinary files.
+            # This legacy test proves path/mode promotion only. The dedicated
+            # boot-digest suite exercises the real source CLI on PE fixtures.
             body = body.replace('/usr/libexec/tilo-uki-cmdline', 'fixture_cmdline')
             body = body.replace('/usr/libexec/tilo-verified-boot-install-preflight', 'fixture_preflight')
             script = '''set -euo pipefail
 LOCAL_IMG=fixture
 die() { echo "$*" >&2; exit 1; }
 fixture_preflight() { return 0; }
-fixture_cmdline() { printf 'root=tilo-auto tilo.mode=normal composefs=%s\\n' "$FIXTURE_DIGEST"; }
+fixture_cmdline() {
+  case "$1" in
+    show) printf 'root=tilo-auto tilo.mode=normal composefs=%s\\n' "$FIXTURE_DIGEST" ;;
+    boot-digest) printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+    *) return 64 ;;
+  esac
+}
 podman() {
   while [ "$1" != -v ]; do shift; done
   destination="${2%:/target-esp}"

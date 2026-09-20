@@ -141,6 +141,20 @@ mod component_adapter {
             self.component.take_close_reports()
         }
 
+        fn install_control_custody(
+            &mut self,
+            parent: &crate::ControlDomain,
+            attachment: crate::control_custody::CustodyAttachment,
+        ) {
+            let binding = self.component.callback_binding();
+            if let Some(domain) = binding.control_domain.upgrade() {
+                let _ = domain.attach_to(parent);
+                if let Some(root) = self.component.root.as_deref_mut() {
+                    root.install_control_custody(&domain, attachment);
+                }
+            }
+        }
+
         fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
             self.component.close();
             self.component.take_close_reports()
@@ -499,6 +513,18 @@ mod component_adapter {
                 .root
                 .as_deref_mut()
                 .map_or_else(Vec::new, |root| vec![root as &mut dyn Widget])
+        }
+        fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+            let binding = self.component.callback_binding();
+            let _entry = binding
+                .enter()
+                .map_err(|error| format!("Component is unavailable: {error:?}"))?;
+            let root = self
+                .component
+                .root
+                .as_deref()
+                .ok_or("Component root is unavailable")?;
+            root.history_restore_readiness(scope)
         }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             let binding = self.component.callback_binding();
@@ -1187,7 +1213,7 @@ mod component_adapter {
             // Consumed under the canonical record admission.
             None
         }
-        fn set_undo_status(&mut self, _: &crate::undo::UndoStatus) {
+        fn set_undo_status(&mut self, _: &mut dyn FnMut() -> crate::undo::UndoStatus) {
             // Individual bound nodes receive their own record/instance status.
         }
         fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {

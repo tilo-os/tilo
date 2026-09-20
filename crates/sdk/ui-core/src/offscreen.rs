@@ -1111,6 +1111,33 @@ impl OffscreenRenderer {
         reason = "the width/height assert is a caller-bug panic, not a recoverable failure — every real failure mode already has its own OffscreenError variant"
     )]
     pub fn try_new(width: u32, height: u32) -> Result<Self, OffscreenError> {
+        Self::try_new_with_preprocessing(
+            width,
+            height,
+            std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+        )
+    }
+
+    /// Exact pixel oracles can use stable CPU segment ordering while keeping
+    /// Vello's fine rasterization on the GPU. Avoid process-global env mutation.
+    #[cfg(test)]
+    pub(crate) fn try_new_for_pixel_test(
+        width: u32,
+        height: u32,
+        use_cpu: bool,
+    ) -> Result<Self, OffscreenError> {
+        Self::try_new_with_preprocessing(width, height, use_cpu)
+    }
+
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "zero dimensions are a caller bug"
+    )]
+    fn try_new_with_preprocessing(
+        width: u32,
+        height: u32,
+        use_cpu: bool,
+    ) -> Result<Self, OffscreenError> {
         assert!(width > 0 && height > 0, "width and height must be > 0");
 
         let context = shared_render_context();
@@ -1151,7 +1178,7 @@ impl OffscreenRenderer {
         let renderer = Renderer::new(
             device,
             RendererOptions {
-                use_cpu: std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+                use_cpu,
                 // Only `Area` is ever asked for; `all()` would also build
                 // the msaa8/msaa16 pipelines nothing selects.
                 antialiasing_support: AaSupport::area_only(),

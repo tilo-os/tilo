@@ -64,29 +64,32 @@ extern crate runtime_dylib;
 ///
 /// Returns an error if launching the app or running a `--shots` capture fails.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.video-player", live_root)
-            .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
-            .shot_handler(render_shot)
-            .allowed_live_options(&["--open"])
-            .max_positionals(1)
-            .scenarios(&[
-                "empty",
-                "loading",
-                "error",
-                "native-error",
-                "playing",
-                "paused",
-                "settings",
-                "metadata",
-                "library",
-                "library-focus",
-                "recent",
-                "shared",
-                "fullscreen",
-            ]),
-    )?;
+    ui::launch::run(&launch_spec(live_root))?;
     Ok(())
+}
+
+fn launch_spec(root: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>) -> LaunchSpec {
+    LaunchSpec::new_with_args("dev.tilo.video-player", root)
+        .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
+        .shot_handler(render_shot)
+        .allowed_live_options(&["--open"])
+        .max_positionals(1)
+        .scenarios(&[
+            "empty",
+            "loading",
+            "error",
+            "native-error",
+            "playing",
+            "paused",
+            "settings",
+            "metadata",
+            "library",
+            "library-focus",
+            "recent",
+            "shared",
+            "fullscreen",
+        ])
+        .history(&video_player::framework_history::HISTORY)
 }
 
 fn requested_path(args: &LaunchArgs) -> Option<PathBuf> {
@@ -156,7 +159,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
             "The video decoder did not produce a frame for the requested file".into(),
         ));
     }
-    render_shot_to_png(Box::new(app), viewport, args.text_scale, out)
+    render_shot_to_png(Box::new(app), viewport, ui::launch::shot_theme(args), out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -178,18 +181,9 @@ fn shot_theme(kind: Option<&str>, text_scale: Option<f32>, reduce_motion: bool) 
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
-    text_scale: Option<f32>,
+    theme: Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let reduce_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| {
-            let value = value.trim();
-            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-        });
-    let shot_theme_name = std::env::var("TILO_SHOTS_THEME").ok();
-    let theme = shot_theme(shot_theme_name.as_deref(), text_scale, reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -215,22 +209,20 @@ fn render_shot_to_png(
         },
         &[child],
     )?;
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -266,5 +258,47 @@ mod shot_tests {
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(theme.text_scale);
         assert!((renderer.text_scale() - 2.0).abs() < f32::EPSILON);
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "signature is fixed by the production argument-aware LaunchSpec"
+    )]
+    fn inert_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        Ok(Box::new(video_player::PlayerApp::history_test_root()))
+    }
+
+    fn memory_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+        (
+            ui::State::new(),
+            ui::persist::Autosave::disabled("controlled Video Player launch"),
+        )
+    }
+
+    #[test]
+    fn production_argument_aware_launch_spec_installs_the_root_history_definition() {
+        let spec = launch_spec(inert_root).open_app_global_state(memory_state);
+        spec.validate_history_declaration().unwrap();
+        let app = spec.build_controlled_app_for_test().unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(std::ptr::eq(
+            installed.unwrap(),
+            std::ptr::addr_of!(video_player::framework_history::HISTORY)
+        ));
+        assert!(std::ptr::eq(
+            root.unwrap(),
+            std::ptr::addr_of!(video_player::framework_history::HISTORY)
+        ));
+        assert!(
+            app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("History"))
+        );
     }
 }

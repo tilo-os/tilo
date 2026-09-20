@@ -24,7 +24,7 @@ use tilo_actions::{
     ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
 
-use crate::doc::{BackupsDoc, PolicyField};
+use crate::doc::{BackupsDoc, PolicyField, StoredRetention};
 use crate::model::RetentionPolicy;
 use crate::model::{Catalog, Snapshot};
 
@@ -135,7 +135,9 @@ impl tilo_actions::Action for BackupsAction {
                 // Change-guard: read the current value and skip the write when it
                 // already matches, so a redundant / reordered replay leaves the
                 // document (its heads) untouched and can't wedge a peer.
-                if BackupsDoc::retention(doc, &ROOT, *field) != target {
+                if BackupsDoc::stored_retention(doc, &ROOT, *field)
+                    != StoredRetention::Int(i64::from(target))
+                {
                     BackupsDoc::set_retention(doc, &ROOT, *field, target);
                 }
             }
@@ -581,6 +583,7 @@ mod tests {
     use super::*;
     use crate::app::BackupsApp;
     use crate::model::Catalog;
+    use automerge::ReadDoc;
     use tilo_actions::{ActionInput, Availability, LocalTransport};
     use ui::widget::Widget;
 
@@ -604,12 +607,19 @@ mod tests {
         }
     }
 
-    /// `sync` seeds the default retention policy, so this is ready for actions
-    /// to read.
-    fn seeded() -> (BackupsApp, AutoCommit) {
-        let mut app = BackupsApp::new();
+    fn authored() -> (BackupsApp, AutoCommit) {
+        let mut app = BackupsApp::history_test_root();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
+        let defaults = RetentionPolicy::default();
+        for (field, count) in [
+            (PolicyField::Hourly, defaults.hourly),
+            (PolicyField::Daily, defaults.daily),
+            (PolicyField::Weekly, defaults.weekly),
+            (PolicyField::Monthly, defaults.monthly),
+        ] {
+            BackupsDoc::set_retention(&mut doc, &ROOT, field, count);
+        }
         (app, doc)
     }
 
@@ -624,7 +634,7 @@ mod tests {
     /// Drives the real resource hook and the real palette, not a mock tree.
     #[test]
     fn ctrl_k_publishes_the_retention_tree() {
-        let (app, doc) = seeded();
+        let (app, doc) = authored();
         let resources = Widget::resources(&app, &doc);
         assert_eq!(
             resources.len(),
@@ -708,7 +718,7 @@ mod tests {
 
     #[test]
     fn bounded_fields_omit_the_impossible_move() {
-        let (_app, mut doc) = seeded();
+        let (_app, mut doc) = authored();
         BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Weekly, 0);
         BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Monthly, 999);
         let resources =
@@ -864,8 +874,8 @@ mod tests {
     /// Same head hashes on replay, not merely the same values.
     #[test]
     fn action_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
+        let (_app, authored_doc) = authored();
+        let mut a = authored_doc;
         a.commit();
         let bytes = a.save();
         let mut b = AutoCommit::load(&bytes).unwrap();
@@ -901,7 +911,8 @@ mod tests {
 
     #[test]
     fn redundant_action_is_a_no_op() {
-        let (_app, mut doc) = seeded();
+        let (_app, mut doc) = authored();
+        BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Hourly, 24);
         doc.commit();
         let before = doc.get_heads();
         let cur = BackupsDoc::retention(&doc, &ROOT, PolicyField::Hourly);
@@ -916,8 +927,32 @@ mod tests {
     }
 
     #[test]
+    fn explicit_default_set_creates_only_the_selected_absent_root() {
+        let mut doc = AutoCommit::new();
+        let action = set_retention_action(PolicyField::Daily, 7);
+
+        action.apply(&mut doc).unwrap();
+
+        assert_eq!(
+            doc.get(&ROOT, PolicyField::Daily.key())
+                .unwrap()
+                .unwrap()
+                .0
+                .to_i64(),
+            Some(7)
+        );
+        for field in [
+            PolicyField::Hourly,
+            PolicyField::Weekly,
+            PolicyField::Monthly,
+        ] {
+            assert!(doc.get(&ROOT, field.key()).unwrap().is_none());
+        }
+    }
+
+    #[test]
     fn palette_specs_match_builders() {
-        let (app, doc) = seeded();
+        let (app, doc) = authored();
         let resources = Widget::resources(&app, &doc);
         let root = &resources[0];
         let daily = field_resource(root, PolicyField::Daily);
@@ -953,7 +988,7 @@ mod tests {
     /// handlers funnel through.
     #[test]
     fn bump_button_dispatches_the_palette_action() {
-        let (mut app, mut doc) = seeded();
+        let (mut app, mut doc) = authored();
 
         // The palette spec for Daily's increment, captured before we mutate.
         let (cur, spec_encoded) = {

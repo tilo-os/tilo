@@ -3,8 +3,8 @@
 //! Shows:
 //! - A live QR encoding the pairing-channel JSON payload.
 //! - The same payload's 6-digit short code (derived from the nonce).
-//! - A "Waiting for the other device…" spinner / status label.
-//! - A cancel button.
+//! - A "Waiting for the other device…" status label.
+//! - A cancel action.
 //!
 //! When the new device sends its DKG round-2 reply the host's
 //! background polling task picks it up, completes the DKG, and the
@@ -23,8 +23,7 @@ use rand_core::{OsRng, RngCore};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
@@ -32,13 +31,23 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::sheet::{
+    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, line_height, paint_cell,
+    paint_qr, paint_text, paragraph_height, resolve, with_layout_renderer,
+};
 use crate::widget::identity_flow::{
     IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
     format_pairing_code,
 };
 #[cfg(test)]
 use crate::widget::identity_flow::{compute_pairing_mac, derive_pairing_mac_key};
+use crate::widget::modal_frame::ModalAction;
 use crate::widget::qr::QrWidget;
+
+const TITLE: &str = "Pair another device";
+const QR_PLACEHOLDER: &str = "The QR code appears once pairing begins";
+const CODE_UNSET: &str = "------";
+const CANCEL_LABEL: &str = "Cancel";
 
 /// Returned by `host_complete_dkg` — the new key material the host
 /// adopts after the pairer finishes. Pre-built so the test can
@@ -50,6 +59,15 @@ pub struct HostDkgOutcome {
     /// Host's newly rotated threshold identity. The caller must persist this
     /// through the device secret provider before reporting success.
     pub identity: Option<threshold_identity::ThresholdIdentity>,
+}
+
+/// Every rect the screen paints and hit-tests, from one pass over the rows.
+#[derive(Clone, Debug, Default)]
+struct Plan {
+    qr: Rect,
+    code: Rect,
+    status: Rect,
+    bottom: f64,
 }
 
 /// State + rendering for hosting a device-pairing handshake — the QR + short
@@ -67,6 +85,11 @@ pub struct AddDeviceHostScreen {
     /// Final-line status, surfaced beneath the QR.
     status: String,
     completed_identity: Option<threshold_identity::ThresholdIdentity>,
+    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
+    /// without waiting for a paint.
+    layout_theme: Option<Theme>,
+    scroll: BodyScroll,
+    body_height: f64,
     /// Keep the DKG outcome until the mailbox acknowledges its final reply.
     pending_completion: Option<(HostDkgOutcome, EnrolmentRound2, [u8; 64])>,
 }
@@ -108,6 +131,9 @@ impl AddDeviceHostScreen {
             session: None,
             status: "Begin pairing to see a QR code.".to_string(),
             completed_identity: None,
+            layout_theme: None,
+            scroll: BodyScroll::default(),
+            body_height: 0.0,
             pending_completion: None,
         }
     }
@@ -334,7 +360,10 @@ impl AddDeviceHostScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "screen event handling preserves the Widget event contract, including CRDT, focus and layout parameters"
+    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -369,134 +398,95 @@ impl AddDeviceHostScreen {
                 }
                 ScreenOutcome::Stay
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.scroll.wheel(delta) {
+                    *handled = true;
+                }
+                ScreenOutcome::Stay
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if self.scroll.key(logical_key, self.body_height) {
+                    *handled = true;
+                }
+                ScreenOutcome::Stay
+            }
             _ => ScreenOutcome::Stay,
         }
     }
 
-    /// Draws the QR code once a handshake is active, or a placeholder
-    /// panel + label before `begin` has been called.
-    fn draw_qr(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(qr) = self.qr.as_mut() else {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.base,
-                None,
-                &self.qr_rect,
-            );
-            text_renderer.draw_text(
-                scene,
-                "(QR will appear after begin)",
-                12.0,
-                theme.tokens.colors.text_dim,
-                at(
-                    transform,
-                    self.qr_rect.x0 + 12.0,
-                    self.qr_rect.center().y - 6.0,
-                ),
-                None,
-            );
-            return;
+    fn actions(&self) -> [ModalAction<'static>; 1] {
+        [ModalAction::secondary(CANCEL_LABEL).hovered(self.cancel_hovered)]
+    }
+
+    /// One geometry pass for both `apply_layout` and `draw`.
+    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
+        let actions = self.actions();
+        let spec = SheetSpec {
+            title: TITLE,
+            max_width: FORM_SHEET_WIDTH,
+            actions: &actions,
         };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            Color::from_rgb8(255, 255, 255),
-            None,
-            &self.qr_rect,
+        let mut scroll = self.scroll;
+        let resolved = resolve(
+            self.rect,
+            &spec,
+            &mut scroll,
+            text_renderer,
+            theme,
+            |rows, _control_h, tr, theme| {
+                let plan = self.plan(rows, tr, theme);
+                let bottom = plan.bottom;
+                (plan, bottom)
+            },
         );
-        let total = modules_to_f64(qr.total_modules());
-        let module = self.qr_rect.width() / total;
-        let quiet_modules = qr.quiet_modules();
-        let quiet = modules_to_f64(quiet_modules) * module;
-        // The quiet zone runs around all four sides, so it is subtracted twice.
-        let visible = qr
-            .total_modules()
-            .saturating_sub(quiet_modules.saturating_mul(2));
-        for y in 0..visible {
-            for x in 0..visible {
-                if !qr.module(x, y) {
-                    continue;
-                }
-                let px = self.qr_rect.x0 + quiet + modules_to_f64(x) * module;
-                let py = self.qr_rect.y0 + quiet + modules_to_f64(y) * module;
-                let cell = Rect::new(px, py, px + module, py + module);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    Color::from_rgb8(0, 0, 0),
-                    None,
-                    &cell,
-                );
-            }
+        self.scroll = scroll;
+        let body = resolved.sheet.body();
+        self.body_height = body.height();
+        self.qr_rect = BodyScroll::visible(body, resolved.plan.qr);
+        self.cancel_rect = resolved.sheet.action(0);
+        resolved
+    }
+
+    fn code_text(&self) -> String {
+        self.pairing_code_display()
+            .map_or_else(|| CODE_UNSET.to_string(), |code| format!("Code {code}"))
+    }
+
+    /// Walk the body rows once: a square QR as wide as the body allows,
+    /// the code large under it, the status under that — all centred on
+    /// the QR, which is what the other device's owner is looking at.
+    fn plan(&self, mut rows: Rows, text_renderer: &mut TextRenderer, theme: &Theme) -> Plan {
+        let sp = &theme.tokens.spacing;
+        let width = rows.width();
+        let side = width.min(f64::from(sp.s16) * 4.0);
+        let qr_row = rows.row(side);
+        let x0 = qr_row.x0 + (qr_row.width() - side) / 2.0;
+        let qr = Rect::new(x0, qr_row.y0, x0 + side, qr_row.y1);
+        rows.gap(sp.s4);
+        let code = rows.row(line_height(text_renderer, theme, Role::Code));
+        rows.gap(sp.s2);
+        let status = rows.row(paragraph_height(
+            text_renderer,
+            theme,
+            Role::Caption,
+            &self.status,
+            width,
+        ));
+        Plan {
+            qr,
+            code,
+            status,
+            bottom: rows.bottom(),
         }
     }
-
-    /// Draws the cancel button, hover-tinted per `self.cancel_hovered`.
-    fn draw_cancel_button(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let cancel_bg = if self.cancel_hovered {
-            theme.bg_hover
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cancel_bg,
-            None,
-            &RoundedRect::from_rect(self.cancel_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.cancel_rect, 8.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Cancel",
-            13.0,
-            theme.tokens.colors.text_primary,
-            at(
-                transform,
-                self.cancel_rect.x0 + 16.0,
-                self.cancel_rect.y0 + (self.cancel_rect.height() - 13.0) / 2.0,
-            ),
-            None,
-        );
-    }
-}
-
-/// Composes `transform` with a translation to `(x, y)` for one draw call.
-/// `Affine::translate` composition is floating-point matrix math, not
-/// integer arithmetic — it cannot overflow or panic.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
-)]
-fn at(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
-/// Widens a QR module index/count to `f64` for pixel-space arithmetic.
-/// Clamped to `u32::MAX` — a QR code never has anywhere near four billion
-/// modules — so unlike a raw `as` cast this can never silently lose
-/// precision.
-fn modules_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 impl Widget for AddDeviceHostScreen {
@@ -505,13 +495,16 @@ impl Widget for AddDeviceHostScreen {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = Some(theme.clone());
+        // The screen owns the viewport, so the sheet centres on the window
+        // rather than inside a fixed box at the origin.
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(720.0),
-                height: Dimension::length(640.0),
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
             ..Default::default()
         });
@@ -527,20 +520,11 @@ impl Widget for AddDeviceHostScreen {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        let card_w = 520.0;
-        let card_h = 540.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        let qr_size = 280.0;
-        let qr_x = card_x + (card_w - qr_size) / 2.0;
-        let qr_y = card_y + 100.0;
-        self.qr_rect = Rect::new(qr_x, qr_y, qr_x + qr_size, qr_y + qr_size);
-        self.cancel_rect = Rect::new(
-            card_x + 32.0,
-            card_y + card_h - 32.0 - 44.0,
-            card_x + 32.0 + 140.0,
-            card_y + card_h - 32.0,
-        );
+        if let Some(theme) = self.layout_theme.clone() {
+            with_layout_renderer(&theme, |tr| {
+                self.resolve(&theme, tr);
+            });
+        }
     }
 
     fn draw(
@@ -551,58 +535,58 @@ impl Widget for AddDeviceHostScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let backdrop = Color::from_rgba8(0, 0, 0, 180);
-        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
-        let card_w = 520.0;
-        let card_h = 540.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
-        let pad = 32.0;
-        let radius = 12.0;
-        scene.fill(
-            Fill::NonZero,
+        let resolved = self.resolve(theme, text_renderer);
+        let actions = self.actions();
+        let spec = SheetSpec {
+            title: TITLE,
+            max_width: FORM_SHEET_WIDTH,
+            actions: &actions,
+        };
+        let sheet = &resolved.sheet;
+        let plan = &resolved.plan;
+
+        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+        sheet.clip_body(scene, transform);
+        if let Some(qr) = &self.qr {
+            paint_qr(scene, transform, text_renderer, theme, qr, plan.qr)
+        } else {
+            paint_cell(scene, transform, theme, plan.qr, false);
+            paint_text(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                plan.qr,
+                QR_PLACEHOLDER,
+                Role::Caption,
+                Align::Center,
+                true,
+            );
+        }
+        paint_text(
+            scene,
             transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, radius),
+            text_renderer,
+            theme,
+            plan.code,
+            &self.code_text(),
+            Role::Code,
+            Align::Center,
+            false,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
+        paint_text(
+            scene,
             transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Pair another device",
-            22.0,
-            theme.tokens.colors.text_primary,
-            at(transform, card.x0 + pad, card.y0 + pad),
-            None,
-        );
-        self.draw_qr(scene, transform, text_renderer, theme);
-        let code_label = self
-            .pairing_code_display()
-            .unwrap_or_else(|| "------".to_string());
-        text_renderer.draw_text(
-            scene,
-            &format!("Code: {code_label}"),
-            18.0,
-            theme.tokens.colors.text_primary,
-            at(transform, card.x0 + pad, self.qr_rect.y1 + 16.0),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
+            text_renderer,
+            theme,
+            plan.status,
             &self.status,
-            13.0,
-            theme.tokens.colors.text_dim,
-            at(transform, card.x0 + pad, self.qr_rect.y1 + 48.0),
-            None,
+            Role::Caption,
+            Align::Center,
+            true,
         );
-        self.draw_cancel_button(scene, transform, text_renderer, theme);
+        scene.pop_layer();
+        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
     }
 
     fn handle_event(
@@ -803,5 +787,23 @@ mod tests {
         let s = AddDeviceHostScreen::new();
         assert!(s.pairing_code_display().is_none());
         assert!(s.payload_json().is_none());
+    }
+
+    /// The QR is square and centred; the code and status stack under it on
+    /// the spacing scale.
+    #[test]
+    fn plan_centres_a_square_qr_with_code_and_status_beneath() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let body = Rect::new(100.0, 200.0, 620.0, 200.0);
+        let (s, _) = fixture_host();
+        let plan = s.plan(Rows::new(body), &mut tr, &theme);
+        let sp = &theme.tokens.spacing;
+        assert!((plan.qr.width() - plan.qr.height()).abs() < 1e-9);
+        assert!((plan.qr.center().x - body.center().x).abs() < 1e-9);
+        assert!(plan.qr.width() <= body.width());
+        assert!((plan.code.y0 - plan.qr.y1 - f64::from(sp.s4)).abs() < 1e-9);
+        assert!((plan.status.y0 - plan.code.y1 - f64::from(sp.s2)).abs() < 1e-9);
+        assert!((plan.bottom - plan.status.y1).abs() < 1e-9);
     }
 }

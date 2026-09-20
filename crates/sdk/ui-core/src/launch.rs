@@ -157,6 +157,8 @@ impl LaunchArgs {
 
 /// Configuration for an app using the standard lifecycle.
 pub struct LaunchSpec {
+    history_definition: Option<&'static crate::history_mode::HistoryDefinition>,
+    history_app_global_storage: bool,
     definition: Option<&'static crate::application::ApplicationDefinition>,
     component_host: Option<ComponentHostPreparer>,
     legacy_setup_override: bool,
@@ -173,6 +175,7 @@ pub struct LaunchSpec {
     live_handler: Option<LiveHandler>,
     command_handler: Option<CommandHandler>,
     headless_enabled: bool,
+    runtime_attachment: fn(&LaunchArgs) -> bool,
     open_state: OpenState,
     open_state_with_args: Option<OpenStateWithArgs>,
     allowed_flags: &'static [&'static str],
@@ -184,6 +187,122 @@ pub struct LaunchSpec {
 }
 
 impl LaunchSpec {
+    /// Managed runners require an explicit History policy, including external
+    /// reasons. Canonical components retain their actual record custody.
+    #[must_use]
+    pub fn history(mut self, definition: &'static crate::history_mode::HistoryDefinition) -> Self {
+        self.history_definition = Some(definition);
+        self
+    }
+    /// Check the explicit declaration without constructing a widget or opening storage.
+    /// Production runners will call this gate once all installed adapters are migrated.
+    /// Detached test construction does not require a declaration.
+    ///
+    /// # Errors
+    /// Reports a missing declaration or one belonging to a different app.
+    pub fn validate_history_declaration(
+        &self,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        let history = self
+            .history_definition
+            .ok_or(crate::history_mode::HistoryRegistrationError::Missing)?;
+        if history.app_id != self.app_id {
+            return Err(crate::history_mode::HistoryRegistrationError::ForeignSource);
+        }
+        Ok(())
+    }
+
+    /// Exercise the native builder with deterministic in-process services.
+    /// The spec's real root, state opener, configure hook, and History
+    /// installation path are retained; only native window/runtime discovery is
+    /// omitted. Downstream app tests enable this with the `test-support`
+    /// feature and provide an in-memory state opener on the spec.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn build_controlled_app_for_test(&self) -> Result<App, LaunchError> {
+        let args = parse_args_extended(
+            &["controlled-launch".to_string()],
+            self.allowed_flags,
+            self.allowed_options,
+            self.allowed_live_flags,
+            self.allowed_live_options,
+            self.max_positionals,
+        )?;
+        validate_spec_args(&args, self)?;
+        build_native_app_with_constructor(
+            self,
+            &args,
+            App::from_scoped_parts_with_controlled_custody,
+        )
+    }
+
+    /// Build an application around a root already prepared under `wake_scope`.
+    ///
+    /// # Errors
+    /// Returns launch, storage, root registration, or History installation failures.
+    pub fn build_prepared_root(
+        &self,
+        args: &LaunchArgs,
+        wake_scope: crate::WakeScope,
+        root: Box<dyn Widget>,
+    ) -> Result<App, LaunchError> {
+        validate_spec_args(args, self)?;
+        build_prepared_root_with_constructor(
+            self,
+            args,
+            wake_scope,
+            root,
+            App::from_scoped_parts_with_custody,
+        )
+    }
+
+    /// Controlled counterpart to [`Self::build_prepared_root`].
+    ///
+    /// # Errors
+    /// Returns launch, storage, root registration, or History installation failures.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn build_controlled_prepared_root_for_test(
+        &self,
+        args: &LaunchArgs,
+        wake_scope: crate::WakeScope,
+        root: Box<dyn Widget>,
+    ) -> Result<App, LaunchError> {
+        validate_spec_args(args, self)?;
+        build_prepared_root_with_constructor(
+            self,
+            args,
+            wake_scope,
+            root,
+            App::from_scoped_parts_with_controlled_custody,
+        )
+    }
+
+    /// Explicit provenance for a custom app-global preferences/state opener.
+    /// User-file documents use a real owned-record adapter instead.
+    #[must_use]
+    pub fn open_app_global_state(mut self, open: OpenState) -> Self {
+        self = self.open_state(open);
+        self.history_app_global_storage = true;
+        self
+    }
+
+    /// Explicit app-global state provenance for an argument-aware opener.
+    /// User-file documents require an owned-record adapter instead.
+    #[must_use]
+    pub fn open_app_global_state_with_args(mut self, open: OpenStateWithArgs) -> Self {
+        self = self.open_state_with_args(open);
+        self.history_app_global_storage = true;
+        self
+    }
+
+    /// Select automatic runtime attachment for native launches. The default is
+    /// enabled. Disabling bootstrap does not revoke inherited service handles;
+    /// privacy-sensitive apps must also construct a local-only application.
+    #[must_use]
+    pub fn runtime_attachment(mut self, policy: fn(&LaunchArgs) -> bool) -> Self {
+        self.runtime_attachment = policy;
+        self
+    }
+
     /// Adapt one common application definition. A runner must install an explicit host.
     pub fn from_definition(definition: &'static crate::application::ApplicationDefinition) -> Self {
         let mut spec = Self::new_with_args(definition.app_id, |_| {
@@ -217,11 +336,19 @@ impl LaunchSpec {
         let definition = self
             .definition
             .ok_or(LaunchError::IncompatibleComponentSetup)?;
-        definition.instantiate(context, target, restore)
+        let mut component = definition.instantiate(context, target, restore)?;
+        if let Some(history) = self.history_definition
+            && let Err(error) = component.register_document_history(history)
+        {
+            return Err(component.setup_error(LaunchError::Operation(error.to_string())));
+        }
+        Ok(component)
     }
 
     pub fn new(app_id: &'static str, live_root: RootFactory) -> Self {
         Self {
+            history_definition: None,
+            history_app_global_storage: true,
             definition: None,
             component_host: None,
             legacy_setup_override: false,
@@ -236,6 +363,7 @@ impl LaunchSpec {
             live_handler: None,
             command_handler: None,
             headless_enabled: true,
+            runtime_attachment: |_| true,
             open_state: crate::persist::open,
             open_state_with_args: None,
             allowed_flags: &[],
@@ -251,6 +379,8 @@ impl LaunchSpec {
     /// depends on validated arguments.
     pub fn new_with_args(app_id: &'static str, live_root: ArgsRootFactory) -> Self {
         Self {
+            history_definition: None,
+            history_app_global_storage: true,
             definition: None,
             component_host: None,
             legacy_setup_override: false,
@@ -265,6 +395,7 @@ impl LaunchSpec {
             live_handler: None,
             command_handler: None,
             headless_enabled: true,
+            runtime_attachment: |_| true,
             open_state: crate::persist::open,
             open_state_with_args: None,
             allowed_flags: &[],
@@ -370,6 +501,7 @@ impl LaunchSpec {
     /// the live event loop.
     #[must_use]
     pub fn open_state(mut self, open: OpenState) -> Self {
+        self.history_app_global_storage = false;
         self.legacy_setup_override = true;
         self.open_state = open;
         self.open_state_with_args = None;
@@ -380,6 +512,7 @@ impl LaunchSpec {
     /// document must seed the persisted CRDT before the root's first sync.
     #[must_use]
     pub fn open_state_with_args(mut self, open: OpenStateWithArgs) -> Self {
+        self.history_app_global_storage = false;
         self.legacy_setup_override = true;
         self.open_state_with_args = Some(open);
         self
@@ -643,6 +776,10 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     run_with_args(spec, &args)
 }
 
+fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
+    run_with_args_with_attachment(spec, raw_args, runtime_portal::native::ensure_attached)
+}
+
 #[allow(
     clippy::exit,
     reason = "the --headless-drive path reports the harness's pass/fail \
@@ -654,7 +791,11 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     clippy::too_many_lines,
     reason = "one ordered dispatch preserves legacy and prepared mode delivery"
 )]
-fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
+fn run_with_args_with_attachment(
+    spec: &LaunchSpec,
+    raw_args: &[String],
+    attach: impl FnOnce(&str) -> std::io::Result<()>,
+) -> Result<(), LaunchError> {
     let _detached = crate::wake::WakeScope::enter_detached();
     let args = parse_args_extended(
         raw_args,
@@ -672,6 +813,16 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     });
 
     if spec.definition.is_some() {
+        if args.headless.is_none()
+            && args.shots.is_none()
+            && args.responsive_matrix.is_none()
+            && !args.native_audit
+            && (spec.runtime_attachment)(&args)
+        {
+            attach(spec.app_id).map_err(|error| {
+                LaunchError::Operation(format!("native runtime attachment failed: {error}"))
+            })?;
+        }
         #[cfg(windows)]
         let renderer = if args.shots.is_none()
             && args.responsive_matrix.is_none()
@@ -713,7 +864,14 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         return Ok(());
     }
 
-    if let Some(handler) = spec.command_handler
+    // An automatic host exec resumes the already-selected live branch. Command
+    // handlers may have side effects even when returning false; run them once.
+    let resumed_live = std::env::var_os("QOS_RUNTIME_RESUME_LIVE").as_deref()
+        == Some(std::ffi::OsStr::new(spec.app_id))
+        && runtime_portal::service_fd("collab").is_some()
+        && runtime_portal::service_fd("identity").is_some();
+    if !resumed_live
+        && let Some(handler) = spec.command_handler
         && handler(&args)?
     {
         return Ok(());
@@ -726,7 +884,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         }
         let root = spec.screenshot_root(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
-        let harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme(&args));
+        let harness = build_history_capture(spec, &args, root, viewport)?;
         harness.render_png(out);
         println!("{}: wrote shot to {}", spec.app_id, out.display());
         return Ok(());
@@ -749,12 +907,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
                 handler(&matrix_args)?;
             } else {
                 let root = spec.screenshot_root(&matrix_args)?;
-                let harness = FrameHarness::new_with_theme(
-                    State::new(),
-                    root,
-                    viewport,
-                    shot_theme(&matrix_args),
-                );
+                let harness = build_history_capture(spec, &matrix_args, root, viewport)?;
                 harness.render_png(&out);
             }
             println!(
@@ -780,8 +933,14 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         let _entry = prepared.scope.enter();
         // Install explicit record identity exactly as the native runner does,
         // but auditing is not a durability run or a request to flush a writer.
-        let (harness, _autosave) =
+        let history = legacy_history_registration(spec, &prepared.inputs)?;
+        let (mut harness, _autosave) =
             headless::build_audit_driver(prepared.inputs, viewport, shot_theme(&args));
+        if let Some(history) = history {
+            harness
+                .install_history(history)
+                .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        }
         let audit = harness.native_app_audit();
         let report = serde_json::to_string_pretty(&audit).map_err(|error| {
             LaunchError::Operation(format!("could not serialize native audit: {error}"))
@@ -796,6 +955,11 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         return Ok(());
     }
 
+    if (spec.runtime_attachment)(&args) {
+        attach(spec.app_id).map_err(|error| {
+            LaunchError::Operation(format!("native runtime attachment failed: {error}"))
+        })?;
+    }
     if let Some(handler) = spec.live_handler {
         return handler(&args);
     }
@@ -895,6 +1059,41 @@ fn dispatch_definition(
     Ok(DefinitionDispatch::Native(Box::new(app)))
 }
 
+fn build_history_capture(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    root: Box<dyn Widget>,
+    viewport: (u32, u32),
+) -> Result<FrameHarness, LaunchError> {
+    let registration = root
+        .history_registration()
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let mut harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme(args));
+    if let Some(registration) = registration {
+        if registration.definition.app_id != spec.app_id {
+            return Err(LaunchError::Operation(
+                "History source belongs to another application".into(),
+            ));
+        }
+        harness
+            .install_history(registration)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    } else if let Some(history) = spec.history_definition {
+        // Capture owns a fresh in-memory State, truthfully scoped to this
+        // harness lifetime. It never aliases a native runner's document.
+        let registration = crate::history_mode::HistoryRegistration::installed_app_state(
+            history,
+            None,
+            uuid::Uuid::new_v4(),
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        harness
+            .install_history(registration)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    }
+    Ok(harness)
+}
+
 struct PreparedLegacyLaunch {
     scope: crate::wake::WakeScope,
     inputs: LegacyLaunchInputs,
@@ -920,7 +1119,11 @@ fn prepare_legacy_launch(
             |open| open(spec.app_id, args),
         );
         let index = state.doc.clone();
-        let root = spec.live_root(args)?;
+        let root = if args.headless.is_some() && args.scenario.is_some() {
+            spec.screenshot_root(args)?
+        } else {
+            spec.live_root(args)?
+        };
         let mut inputs = LegacyLaunchInputs::new(state, root, autosave);
         inputs.records = LegacyRecordPolicy::AutomaticHeadless {
             records,
@@ -947,19 +1150,102 @@ fn dispatch_legacy_headless(
         tilo_startup_metrics::mark("headless-setup-failed");
     })?;
     let _entry = prepared.scope.enter();
-    Ok(headless::run_initialized(headless, prepared.inputs))
+    let history = legacy_history_registration(spec, &prepared.inputs)?;
+    Ok(headless::run_initialized_with_history(
+        headless,
+        prepared.inputs,
+        shot_theme(args),
+        history,
+    ))
+}
+
+fn legacy_history_registration(
+    spec: &LaunchSpec,
+    inputs: &LegacyLaunchInputs,
+) -> Result<Option<crate::history_mode::HistoryRegistration>, LaunchError> {
+    if let Some(registration) = inputs
+        .root
+        .history_registration()
+        .map_err(|error| LaunchError::Operation(error.to_string()))?
+    {
+        if registration.definition.app_id != spec.app_id {
+            return Err(LaunchError::Operation(
+                "History source belongs to another application".into(),
+            ));
+        }
+        return Ok(Some(registration));
+    }
+    let Some(history) = spec.history_definition else {
+        return Ok(None);
+    };
+    if !spec.history_app_global_storage || inputs.persistence != LegacyPersistencePolicy::Host {
+        return Err(LaunchError::Operation(
+            "History requires explicit storage provenance for a custom opener".into(),
+        ));
+    }
+    crate::history_mode::HistoryRegistration::installed_app_state(
+        history,
+        Some(&inputs.autosave),
+        uuid::Uuid::new_v4(),
+    )
+    .map(Some)
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 fn build_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, LaunchError> {
-    build_native_app_with_constructor(spec, args, App::from_scoped_parts)
+    build_native_app_with_constructor(spec, args, App::from_scoped_parts_with_custody)
 }
 
 fn build_native_app_with_constructor(
     spec: &LaunchSpec,
     args: &LaunchArgs,
-    construct: impl FnOnce(crate::wake::WakeScope, State, Box<dyn Widget>) -> App,
+    construct: impl FnOnce(crate::wake::WakeScope, State, Box<dyn Widget>, crate::ControlDomain) -> App,
 ) -> Result<App, LaunchError> {
     let prepared = prepare_legacy_launch(spec, args)?;
+    finalize_native_app_with_constructor(
+        spec,
+        args,
+        prepared.scope,
+        prepared.inputs,
+        crate::ControlDomain::outer(),
+        construct,
+    )
+}
+
+fn build_prepared_root_with_constructor(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    scope: crate::wake::WakeScope,
+    root: Box<dyn Widget>,
+    construct: impl FnOnce(crate::wake::WakeScope, State, Box<dyn Widget>, crate::ControlDomain) -> App,
+) -> Result<App, LaunchError> {
+    let _entry = scope.enter();
+    let (state, autosave) = spec.open_state_with_args.map_or_else(
+        || (spec.open_state)(spec.app_id),
+        |open| open(spec.app_id, args),
+    );
+    let inputs = LegacyLaunchInputs::new(state, root, autosave);
+    finalize_native_app_with_constructor(
+        spec,
+        args,
+        scope,
+        inputs,
+        crate::ControlDomain::outer(),
+        construct,
+    )
+}
+
+fn finalize_native_app_with_constructor(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    scope: crate::wake::WakeScope,
+    inputs: LegacyLaunchInputs,
+    domain: crate::ControlDomain,
+    construct: impl FnOnce(crate::wake::WakeScope, State, Box<dyn Widget>, crate::ControlDomain) -> App,
+) -> Result<App, LaunchError> {
+    inputs
+        .validate_persistence_ownership()
+        .map_err(LaunchError::Operation)?;
     let LegacyLaunchInputs {
         state,
         root,
@@ -967,20 +1253,45 @@ fn build_native_app_with_constructor(
         records,
         registry,
         persistence,
-    } = prepared.inputs;
-    let mut app = construct(prepared.scope, state, root)
+    } = inputs;
+    let root_history = root
+        .history_registration()
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let mut app = construct(scope, state, root, domain)
         .with_autosave(autosave)
         .with_legacy_persistence(persistence);
     if let LegacyRecordPolicy::Explicit { records, index } = records {
         app = app.with_records(records, index);
     }
     *app.action_registry_mut() = registry;
+    let installed_storage = app.history_storage_generation();
     if let Some(text_scale) = args.text_scale {
         app.set_text_scale(text_scale);
     }
     if let Some(configure) = spec.configure_app {
         let _configure_entry = app.enter_wake_scope();
         configure(&mut app);
+    }
+    if let Some(registration) = root_history {
+        if registration.definition.app_id != spec.app_id {
+            return Err(LaunchError::Operation(
+                "History source belongs to another application".into(),
+            ));
+        }
+        app.install_history(registration)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    } else if let Some(history) = spec.history_definition {
+        if history.app_id != spec.app_id
+            || !spec.history_app_global_storage
+            || app.history_storage_generation() != installed_storage
+        {
+            return Err(LaunchError::Operation(
+                "History requires the final installed document's explicit storage provenance"
+                    .into(),
+            ));
+        }
+        app.install_app_state_history(history)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
     }
     Ok(app)
 }
@@ -996,6 +1307,14 @@ fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchErro
 }
 
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
+    if spec
+        .history_definition
+        .is_some_and(|history| history.app_id != spec.app_id)
+    {
+        return Err(LaunchError::Operation(
+            "History belongs to a different installed application".into(),
+        ));
+    }
     if spec.legacy_preparer.is_some() && spec.live_handler.is_some() {
         return Err(LaunchError::Operation(
             "prepare_legacy_with_args and live_handler cannot be combined".into(),
@@ -1019,24 +1338,61 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     Ok(())
 }
 
-/// Resolve the shared screenshot theme, text scale and motion preference.
-/// Custom shot handlers should use this when constructing their own harness.
+/// Resolve the palette, text scale, and motion policy used by screenshot
+/// capture. An explicit `--text-scale` wins over the compatibility
+/// `QOS_SHOTS_TEXT_SCALE` environment variable.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = if let Some(scale) = args.text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
-    };
+    let theme = std::env::var("TILO_SHOTS_THEME")
+        .or_else(|_| std::env::var("QOS_SHOTS_THEME"))
+        .ok()
+        .and_then(|name| Theme::named(&name))
+        .unwrap_or_else(Theme::dark);
+    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
+        .or_else(|_| std::env::var("QOS_SHOTS_TEXT_SCALE"))
+        .ok();
+    let theme = theme.with_text_scale(shot_text_scale(
+        args.text_scale,
+        environment_scale.as_deref(),
+    ));
     // Screenshot review must use the same motion policy as a real app.  The
     // headless harness does not construct `ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.
     theme.with_reduce_motion(shot_motion_reduced())
+}
+
+/// The screenshot theme for capture frontends that have no [`LaunchArgs`]
+/// (the `ui-shots` examples): `QOS_SHOTS_THEME`, `QOS_SHOTS_TEXT_SCALE` and
+/// the motion preference through the same policy as [`shot_theme`]. An
+/// unknown theme name is an error rather than a silent fall back to dark, so
+/// a mis-typed light capture cannot masquerade as a dark one.
+pub fn shot_theme_from_env() -> Result<Theme, String> {
+    let theme =
+        match std::env::var("TILO_SHOTS_THEME").or_else(|_| std::env::var("QOS_SHOTS_THEME")) {
+            Ok(name) => {
+                Theme::named(&name).ok_or_else(|| format!("unknown QOS_SHOTS_THEME `{name}`"))?
+            }
+            Err(_) => Theme::dark(),
+        };
+    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
+        .or_else(|_| std::env::var("QOS_SHOTS_TEXT_SCALE"))
+        .ok();
+    Ok(theme
+        .with_text_scale(shot_text_scale(None, environment_scale.as_deref()))
+        .with_reduce_motion(shot_motion_reduced()))
+}
+
+/// Resolve screenshot text-scale precedence without reading process-global
+/// state. Custom capture frontends can pass their parsed CLI value and the
+/// compatibility environment value through the same policy as [`shot_theme`].
+#[must_use]
+pub fn shot_text_scale(cli: Option<f32>, environment: Option<&str>) -> f32 {
+    cli.or_else(|| {
+        environment
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .filter(|scale| scale.is_finite())
+    })
+    .unwrap_or(1.0)
 }
 
 /// Read the user motion preference for the headless screenshot path.
@@ -1045,10 +1401,17 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
 /// image should not claim reduced-motion support while a launched app animates
 /// (or vice versa).
 fn shot_motion_reduced() -> bool {
-    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| motion_env_value_enabled(&value))
+    [
+        "TILO_SHOTS_REDUCE_MOTION",
+        "TILO_A11Y_REDUCE_MOTION",
+        "TILO_REDUCE_MOTION",
+        "QOS_SHOTS_REDUCE_MOTION",
+        "QOS_A11Y_REDUCE_MOTION",
+        "QOS_REDUCE_MOTION",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var(key).ok())
+    .any(|value| motion_env_value_enabled(&value))
 }
 
 fn motion_env_value_enabled(value: &str) -> bool {
@@ -1181,7 +1544,9 @@ fn parse_args_extended(
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
         }
-        if parsed.scenario.is_some() {
+        // A headless drive may name a scenario: it dumps that fixture's
+        // geometry, the counterpart of `--shots --scenario`.
+        if parsed.scenario.is_some() && parsed.headless.is_none() {
             return Err(LaunchError::ShotsOnly("--scenario".to_owned()));
         }
         if let Some(extra) = parsed
@@ -1435,7 +1800,7 @@ mod tests {
         let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
             .max_positionals(1)
             .prepare_legacy_with_args(fixture_preparer);
-        let app = build_native_app_with_constructor(&spec, &args, |scope, state, root| {
+        let app = build_native_app_with_constructor(&spec, &args, |scope, state, root, domain| {
             assert_eq!(
                 state
                     .doc
@@ -1446,7 +1811,7 @@ mod tests {
                     .to_str(),
                 Some("native-file-content")
             );
-            App::from_scoped_parts_with_controlled_inputs(scope, state, root)
+            App::from_scoped_parts_with_controlled_custody(scope, state, root, domain)
         })
         .unwrap();
         drop(app);
@@ -1472,7 +1837,7 @@ mod tests {
             });
         let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
         assert!(
-            matches!(build_native_app_with_constructor(&spec, &args, |_, _, _| panic!("invalid ownership must fail before native construction")), Err(LaunchError::Operation(message)) if message.contains("cannot also use"))
+            matches!(build_native_app_with_constructor(&spec, &args, |_, _, _, _| panic!("invalid ownership must fail before native construction")), Err(LaunchError::Operation(message)) if message.contains("cannot also use"))
         );
         assert!(
             matches!(dispatch_legacy_headless(&spec, &args, &headless::Spec::default()), Err(LaunchError::Operation(message)) if message.contains("cannot also use"))
@@ -1534,6 +1899,10 @@ mod tests {
     thread_local! {
         static LAUNCH_WAKE_CAPTURES: std::cell::RefCell<Vec<crate::WakeHandle>> =
             const { std::cell::RefCell::new(Vec::new()) };
+        static PREPARED_COUNTS: std::cell::RefCell<(usize, usize)> =
+            const { std::cell::RefCell::new((0, 0)) };
+        static FOREIGN_OPENED_STATE: std::cell::RefCell<Option<(State, crate::persist::Autosave)>> =
+            const { std::cell::RefCell::new(None) };
     }
 
     fn capture_launch_wake() {
@@ -1555,6 +1924,190 @@ mod tests {
 
     fn scoped_configure(_: &mut App) {
         capture_launch_wake();
+    }
+
+    fn poisoned_prepared_root() -> Box<dyn Widget> {
+        PREPARED_COUNTS.with(|counts| counts.borrow_mut().0 += 1);
+        Box::new(crate::widget::Text::new("wrong root"))
+    }
+
+    fn prepared_open_state(_: &'static str) -> (State, crate::persist::Autosave) {
+        PREPARED_COUNTS.with(|counts| counts.borrow_mut().1 += 1);
+        capture_launch_wake();
+        (
+            State::new(),
+            crate::persist::Autosave::disabled("prepared launch test"),
+        )
+    }
+
+    fn foreign_opened_state(_: &'static str) -> (State, crate::persist::Autosave) {
+        FOREIGN_OPENED_STATE.with(|opened| {
+            opened
+                .borrow_mut()
+                .take()
+                .expect("foreign saver fixture is installed")
+        })
+    }
+
+    fn checked_preview(
+        _: crate::history_mode::checked_files::FilePreviewInput,
+    ) -> Result<Box<dyn crate::history_mode::HistoryPreview>, String> {
+        Err("preview is not used by launch ownership tests".into())
+    }
+
+    static CHECKED_HISTORY: crate::history_mode::HistoryDefinition =
+        crate::history_mode::HistoryDefinition {
+            app_id: "dev.qos.files-like",
+            scopes: &[crate::history_mode::HistoryScopeDefinition {
+                key: "file",
+                title: "File",
+                presentation: crate::history_mode::HistoryPresentation::CheckedFiles {
+                    create: checked_preview,
+                },
+                content_schema: None,
+            }],
+        };
+
+    enum RegistrationProbe {
+        Checked(crate::history_mode::checked_files::FileHistorySource),
+        Malformed,
+    }
+
+    struct RegistrationRoot {
+        inner: Box<dyn Widget>,
+        registration: RegistrationProbe,
+    }
+
+    impl RegistrationRoot {
+        fn checked(source: crate::history_mode::checked_files::FileHistorySource) -> Self {
+            Self {
+                inner: Box::new(crate::widget::Text::new("checked root")),
+                registration: RegistrationProbe::Checked(source),
+            }
+        }
+
+        fn malformed() -> Self {
+            Self {
+                inner: Box::new(crate::widget::Text::new("malformed root")),
+                registration: RegistrationProbe::Malformed,
+            }
+        }
+    }
+
+    impl Widget for RegistrationRoot {
+        fn name(&self) -> &str {
+            "Registration root"
+        }
+
+        fn history_registration(
+            &self,
+        ) -> Result<
+            Option<crate::history_mode::HistoryRegistration>,
+            crate::history_mode::HistoryRegistrationError,
+        > {
+            match &self.registration {
+                RegistrationProbe::Checked(source) => {
+                    crate::history_mode::HistoryRegistration::new(
+                        &CHECKED_HISTORY,
+                        vec![
+                            crate::history_mode::HistorySourceRegistration::CheckedFiles {
+                                scope: "file",
+                                source: source.clone(),
+                            },
+                        ],
+                    )
+                    .map(Some)
+                }
+                RegistrationProbe::Malformed => {
+                    Err(crate::history_mode::HistoryRegistrationError::ForeignSource)
+                }
+            }
+        }
+
+        fn document_history_definition(
+            &self,
+        ) -> Option<&'static crate::history_mode::HistoryDefinition> {
+            match &self.registration {
+                RegistrationProbe::Checked(_) => Some(&CHECKED_HISTORY),
+                RegistrationProbe::Malformed => None,
+            }
+        }
+
+        fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+            self.inner.sync(state, path);
+        }
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            theme: &crate::Theme,
+            nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            self.inner.build_layout(taffy, theme, nodes)
+        }
+
+        fn apply_layout(
+            &mut self,
+            taffy: &taffy::TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: vello::kurbo::Point,
+        ) {
+            self.inner.apply_layout(taffy, node, origin);
+        }
+
+        fn draw(
+            &mut self,
+            scene: &mut vello::Scene,
+            transform: vello::kurbo::Affine,
+            text: &mut crate::text_render::TextRenderer,
+            theme: &crate::Theme,
+            presence: &crate::presence::PresenceCtx,
+        ) {
+            self.inner.draw(scene, transform, text, theme, presence);
+        }
+
+        fn handle_event(
+            &mut self,
+            event: &winit::event::WindowEvent,
+            scale: f64,
+            modifiers: &winit::event::Modifiers,
+            state: &mut automerge::AutoCommit,
+            path: &automerge::ObjId,
+            handled: &mut bool,
+            focus: &mut Option<taffy::NodeId>,
+            node: taffy::NodeId,
+            taffy: &taffy::TaffyTree<()>,
+        ) {
+            self.inner.handle_event(
+                event, scale, modifiers, state, path, handled, focus, node, taffy,
+            );
+        }
+
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            self.inner.get_rect()
+        }
+    }
+
+    fn replace_final_root(app: &mut App) {
+        let replacement = App::from_scoped_parts_with_controlled_inputs(
+            crate::WakeScope::new(),
+            State::new(),
+            dummy_root(),
+        )
+        .with_autosave(crate::persist::Autosave::disabled("replacement"));
+        let _old = std::mem::replace(app, replacement);
+    }
+
+    fn replace_installed_storage(app: &mut App) {
+        let owned = std::mem::replace(
+            app,
+            App::from_scoped_parts_with_controlled_inputs(
+                crate::WakeScope::new(),
+                State::new(),
+                dummy_root(),
+            ),
+        );
+        *app = owned.with_autosave(crate::persist::Autosave::disabled("replacement"));
     }
 
     fn strings(values: &[&str]) -> Vec<String> {
@@ -1617,6 +2170,18 @@ mod tests {
                 parse_args(&args, &[], &[]),
                 Err(LaunchError::InvalidTextScale(_))
             ));
+        }
+    }
+
+    #[test]
+    fn screenshot_text_scale_prefers_cli_then_compatibility_environment() {
+        for (cli, environment, expected) in [
+            (Some(2.0), Some("1.25"), 2.0),
+            (None, Some("1.25"), 1.25),
+            (None, None, 1.0),
+            (None, Some("invalid"), 1.0),
+        ] {
+            assert_eq!(shot_text_scale(cli, environment), expected);
         }
     }
 
@@ -1743,6 +2308,473 @@ mod tests {
     }
 
     #[test]
+    fn history_declaration_gate_rejects_omission_for_standard_and_custom_specs() {
+        fn custom(_: &LaunchArgs) -> Result<(), LaunchError> {
+            panic!("validation cannot launch");
+        }
+        for spec in [
+            LaunchSpec::new("dev.qos.test", dummy_root),
+            LaunchSpec::new("dev.qos.test", dummy_root).live_handler(custom),
+            LaunchSpec::new_with_args("dev.qos.test", |_| panic!("validation cannot construct")),
+            LaunchSpec::from_definition(crate::application_test_support::runner_probe_definition()),
+        ] {
+            assert_eq!(
+                spec.validate_history_declaration(),
+                Err(crate::history_mode::HistoryRegistrationError::Missing)
+            );
+        }
+    }
+
+    #[test]
+    fn history_declaration_gate_accepts_matching_external_policy_and_refuses_foreign_identity() {
+        static HISTORY: crate::history_mode::HistoryDefinition =
+            crate::history_mode::HistoryDefinition {
+                app_id: "dev.qos.test",
+                scopes: &[crate::history_mode::HistoryScopeDefinition {
+                    key: "process",
+                    title: "Process",
+                    presentation: crate::history_mode::HistoryPresentation::External {
+                        reason: "The live process is not versioned.",
+                    },
+                    content_schema: None,
+                }],
+            };
+        assert!(
+            LaunchSpec::new(HISTORY.app_id, dummy_root)
+                .history(&HISTORY)
+                .validate_history_declaration()
+                .is_ok()
+        );
+        assert_eq!(
+            LaunchSpec::new("dev.qos.other", dummy_root)
+                .history(&HISTORY)
+                .validate_history_declaration(),
+            Err(crate::history_mode::HistoryRegistrationError::ForeignSource)
+        );
+    }
+
+    #[test]
+    fn managed_standard_native_launch_installs_history_without_detaching_wake_scope() {
+        static HISTORY: crate::history_mode::HistoryDefinition =
+            crate::history_mode::HistoryDefinition {
+                app_id: "dev.qos.wake-test",
+                scopes: &[crate::history_mode::HistoryScopeDefinition {
+                    key: "preferences",
+                    title: "Preferences",
+                    presentation: crate::history_mode::HistoryPresentation::Domain {
+                        create: crate::history_mode::test_preview,
+                    },
+                    content_schema: None,
+                }],
+            };
+        LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
+        let spec = LaunchSpec::new(HISTORY.app_id, scoped_root)
+            .open_app_global_state(scoped_open_state)
+            .configure_app(scoped_configure)
+            .history(&HISTORY);
+        let mut app = spec.build_controlled_app_for_test().unwrap();
+        assert!(
+            app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("History")),
+            "production constructor must consume managed History metadata"
+        );
+        let captures =
+            LAUNCH_WAKE_CAPTURES.with(|captures| std::mem::take(&mut *captures.borrow_mut()));
+        assert!(captures.iter().all(crate::WakeHandle::is_active));
+        drop(app);
+        assert!(captures.iter().all(|handle| !handle.is_active()));
+    }
+
+    #[test]
+    fn prepared_root_uses_the_supplied_scope_and_root_and_opens_once() {
+        static HISTORY: crate::history_mode::HistoryDefinition =
+            crate::history_mode::HistoryDefinition {
+                app_id: "dev.qos.prepared-test",
+                scopes: &[crate::history_mode::HistoryScopeDefinition {
+                    key: "process",
+                    title: "Process",
+                    presentation: crate::history_mode::HistoryPresentation::External {
+                        reason: "The process is not versioned.",
+                    },
+                    content_schema: None,
+                }],
+            };
+        LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
+        PREPARED_COUNTS.with(|counts| *counts.borrow_mut() = (0, 0));
+        let args = parse_args_extended(
+            &strings(&["app", "--text-scale", "1.5"]),
+            &[],
+            &[],
+            &[],
+            &[],
+            0,
+        )
+        .unwrap();
+        let spec = LaunchSpec::new(HISTORY.app_id, poisoned_prepared_root)
+            .open_app_global_state(prepared_open_state)
+            .configure_app(scoped_configure)
+            .history(&HISTORY);
+        let scope = crate::WakeScope::new();
+        let _entry = scope.enter();
+        let supplied_capture = crate::WakeHandle::new();
+        let mut app = spec
+            .build_controlled_prepared_root_for_test(
+                &args,
+                scope,
+                Box::new(crate::widget::Text::new("supplied root")),
+            )
+            .unwrap();
+
+        assert_eq!(PREPARED_COUNTS.with(|counts| *counts.borrow()), (0, 1));
+        assert_eq!(app.text_scale(), 1.5);
+        let initial_tree = app.build_a11y_tree_update(1.0);
+        let history_button = initial_tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("History"))
+            .map(|(id, _)| *id)
+            .expect("prepared app installs the shared History entry point");
+        app.dispatch_a11y_action(history_button, &crate::a11y::Action::Activate);
+        assert!(
+            app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("The process is not versioned."))
+        );
+        let captures =
+            LAUNCH_WAKE_CAPTURES.with(|captures| std::mem::take(&mut *captures.borrow_mut()));
+        assert_eq!(captures.len(), 2, "opener and configure run exactly once");
+        assert!(supplied_capture.is_active());
+        assert!(captures.iter().all(crate::WakeHandle::is_active));
+        drop(app);
+        assert!(!supplied_capture.is_active());
+        assert!(captures.iter().all(|handle| !handle.is_active()));
+    }
+
+    #[test]
+    fn prepared_root_owned_checked_files_precedes_custom_storage_and_is_revalidated() {
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let source = crate::history_mode::checked_files::FileHistorySource::default();
+        let spec = LaunchSpec::new(CHECKED_HISTORY.app_id, poisoned_prepared_root)
+            .open_state(prepared_open_state);
+        let scope = crate::WakeScope::new();
+        let _entry = scope.enter();
+        let app = spec
+            .build_controlled_prepared_root_for_test(
+                &args,
+                scope,
+                Box::new(RegistrationRoot::checked(source.clone())),
+            )
+            .unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(installed.is_some_and(|definition| std::ptr::eq(definition, &CHECKED_HISTORY)));
+        assert!(root.is_some_and(|definition| std::ptr::eq(definition, &CHECKED_HISTORY)));
+        drop(app);
+
+        let rejected = LaunchSpec::new(CHECKED_HISTORY.app_id, poisoned_prepared_root)
+            .open_state(prepared_open_state)
+            .configure_app(replace_final_root);
+        let scope = crate::WakeScope::new();
+        let _entry = scope.enter();
+        let result = rejected.build_controlled_prepared_root_for_test(
+            &args,
+            scope,
+            Box::new(RegistrationRoot::checked(source)),
+        );
+        match result {
+            Err(LaunchError::Operation(message)) => assert!(
+                message.contains("document owner"),
+                "unexpected root-witness error: {message}"
+            ),
+            Err(error) => panic!("unexpected launch error: {error}"),
+            Ok(_) => panic!("configure-time checked owner replacement must fail"),
+        }
+    }
+
+    #[test]
+    fn prepared_root_errors_are_not_masked_and_missing_registration_stays_optional() {
+        static HISTORY: crate::history_mode::HistoryDefinition =
+            crate::history_mode::HistoryDefinition {
+                app_id: "dev.qos.prepared-errors",
+                scopes: &[crate::history_mode::HistoryScopeDefinition {
+                    key: "process",
+                    title: "Process",
+                    presentation: crate::history_mode::HistoryPresentation::External {
+                        reason: "The process is not versioned.",
+                    },
+                    content_schema: None,
+                }],
+            };
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let malformed = LaunchSpec::new(HISTORY.app_id, poisoned_prepared_root)
+            .open_app_global_state(prepared_open_state)
+            .history(&HISTORY);
+        let scope = crate::WakeScope::new();
+        let _entry = scope.enter();
+        let result = malformed.build_controlled_prepared_root_for_test(
+            &args,
+            scope,
+            Box::new(RegistrationRoot::malformed()),
+        );
+        assert!(matches!(
+            result,
+            Err(LaunchError::Operation(message))
+                if message.contains("another application")
+        ));
+
+        for unprovenanced in [
+            LaunchSpec::new(HISTORY.app_id, poisoned_prepared_root)
+                .open_state(prepared_open_state)
+                .history(&HISTORY),
+            LaunchSpec::new(HISTORY.app_id, poisoned_prepared_root)
+                .open_app_global_state(prepared_open_state)
+                .configure_app(replace_installed_storage)
+                .history(&HISTORY),
+        ] {
+            let scope = crate::WakeScope::new();
+            let _entry = scope.enter();
+            let result = unprovenanced.build_controlled_prepared_root_for_test(
+                &args,
+                scope,
+                Box::new(crate::widget::Text::new("provenance probe")),
+            );
+            assert!(matches!(
+                result,
+                Err(LaunchError::Operation(message))
+                    if message.contains("storage provenance")
+            ));
+        }
+
+        let foreign = LaunchSpec::new("dev.qos.foreign", poisoned_prepared_root)
+            .open_app_global_state(prepared_open_state)
+            .history(&HISTORY);
+        let scope = crate::WakeScope::new();
+        let _entry = scope.enter();
+        let result = foreign.build_controlled_prepared_root_for_test(
+            &args,
+            scope,
+            Box::new(crate::widget::Text::new("foreign definition probe")),
+        );
+        assert!(matches!(
+            result,
+            Err(LaunchError::Operation(message))
+                if message.contains("different installed application")
+        ));
+
+        let temp = tempfile::tempdir().unwrap();
+        let store = app_state::DocStore::open_canonical_at("dev.qos.foreign", temp.path()).unwrap();
+        let saver = crate::persist::Autosave::spawn(store, std::time::Duration::from_secs(60));
+        FOREIGN_OPENED_STATE.with(|opened| {
+            *opened.borrow_mut() = Some((State::new(), saver));
+        });
+        let foreign_saver = LaunchSpec::new(HISTORY.app_id, poisoned_prepared_root)
+            .open_app_global_state(foreign_opened_state)
+            .history(&HISTORY);
+        let scope = crate::WakeScope::new();
+        let _entry = scope.enter();
+        let result = foreign_saver.build_controlled_prepared_root_for_test(
+            &args,
+            scope,
+            Box::new(crate::widget::Text::new("foreign saver probe")),
+        );
+        assert!(matches!(
+            result,
+            Err(LaunchError::Operation(message))
+                if message.contains("another application")
+        ));
+
+        let optional =
+            LaunchSpec::new(HISTORY.app_id, poisoned_prepared_root).open_state(prepared_open_state);
+        let scope = crate::WakeScope::new();
+        let _entry = scope.enter();
+        let app = optional
+            .build_controlled_prepared_root_for_test(
+                &args,
+                scope,
+                Box::new(crate::widget::Text::new("unmanaged rollout root")),
+            )
+            .unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(installed.is_none());
+        assert!(root.is_none());
+    }
+
+    #[test]
+    fn photos_argument_global_opener_reaches_managed_production_constructor() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        static HISTORY: crate::history_mode::HistoryDefinition =
+            crate::history_mode::HistoryDefinition {
+                app_id: "dev.qos.argument-test",
+                scopes: &[crate::history_mode::HistoryScopeDefinition {
+                    key: "photos",
+                    title: "Photos",
+                    presentation: crate::history_mode::HistoryPresentation::Domain {
+                        create: crate::history_mode::test_preview,
+                    },
+                    content_schema: None,
+                }],
+            };
+        fn open(_: &'static str, args: &LaunchArgs) -> (State, crate::persist::Autosave) {
+            let mut state = State::new();
+            state
+                .doc
+                .put(
+                    automerge::ROOT,
+                    "selected_argument",
+                    args.value("--open").unwrap_or("saved-state"),
+                )
+                .unwrap();
+            (
+                state,
+                crate::persist::Autosave::disabled("detached argument opener test"),
+            )
+        }
+        fn replace_storage(app: &mut App) {
+            let owned = std::mem::replace(
+                app,
+                App::from_scoped_parts_with_controlled_inputs(
+                    crate::WakeScope::new(),
+                    State::new(),
+                    dummy_root(),
+                ),
+            );
+            *app = owned.with_autosave(crate::persist::Autosave::disabled("replacement"));
+        }
+        for raw in [
+            strings(&["app"]),
+            strings(&["app", "--open", "selected.png"]),
+        ] {
+            let args = parse_args_extended(&raw, &[], &[], &[], &["--open"], 0).unwrap();
+            let spec = LaunchSpec::new(HISTORY.app_id, dummy_root)
+                .open_app_global_state_with_args(open)
+                .history(&HISTORY);
+            let mut app =
+                build_native_app_with_constructor(&spec, &args, |scope, state, root, domain| {
+                    assert_eq!(
+                        state
+                            .doc
+                            .get(automerge::ROOT, "selected_argument")
+                            .unwrap()
+                            .unwrap()
+                            .0
+                            .to_str(),
+                        Some(args.value("--open").unwrap_or("saved-state"))
+                    );
+                    App::from_scoped_parts_with_controlled_custody(scope, state, root, domain)
+                })
+                .unwrap();
+            assert!(
+                app.build_a11y_tree_update(1.)
+                    .nodes
+                    .iter()
+                    .any(|(_, n)| n.label() == Some("History"))
+            );
+            drop(app);
+            let (state, saver) = spec.open_state_with_args.unwrap()(HISTORY.app_id, &args);
+            let registration = crate::history_mode::HistoryRegistration::installed_app_state(
+                &HISTORY,
+                Some(&saver),
+                uuid::Uuid::new_v4(),
+            )
+            .unwrap();
+            let mut driver = crate::headless::Driver::from_managed_root(
+                state,
+                crate::history_mode::ManagedRoot::new(dummy_root(), registration),
+                (900, 650),
+            )
+            .unwrap();
+            driver.click_named("history-open").unwrap();
+            assert!(driver.targets().contains_key("activity_timeline"));
+            assert_eq!(
+                driver
+                    .state_mut()
+                    .doc
+                    .get(automerge::ROOT, "selected_argument")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str(),
+                Some(args.value("--open").unwrap_or("saved-state"))
+            );
+            for rejected in [
+                LaunchSpec::new(HISTORY.app_id, dummy_root)
+                    .open_state_with_args(open)
+                    .history(&HISTORY),
+                LaunchSpec::new(HISTORY.app_id, dummy_root)
+                    .open_app_global_state_with_args(open)
+                    .open_state_with_args(open)
+                    .history(&HISTORY),
+                LaunchSpec::new(HISTORY.app_id, dummy_root)
+                    .open_app_global_state_with_args(open)
+                    .open_state(scoped_open_state)
+                    .history(&HISTORY),
+                spec.configure_app(replace_storage),
+            ] {
+                assert!(
+                    matches!(build_native_app_with_constructor(&rejected,&args,App::from_scoped_parts_with_controlled_custody),Err(LaunchError::Operation(message)) if message.contains("storage provenance"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn managed_launch_refuses_undeclared_custom_storage_and_post_configuration_replacement() {
+        static HISTORY: crate::history_mode::HistoryDefinition =
+            crate::history_mode::HistoryDefinition {
+                app_id: "dev.qos.wake-test",
+                scopes: &[crate::history_mode::HistoryScopeDefinition {
+                    key: "preferences",
+                    title: "Preferences",
+                    presentation: crate::history_mode::HistoryPresentation::Domain {
+                        create: crate::history_mode::test_preview,
+                    },
+                    content_schema: None,
+                }],
+            };
+        fn replace_storage(app: &mut App) {
+            let owned = std::mem::replace(
+                app,
+                App::from_scoped_parts_with_controlled_inputs(
+                    crate::WakeScope::new(),
+                    State::new(),
+                    dummy_root(),
+                ),
+            );
+            *app = owned.with_autosave(crate::persist::Autosave::disabled("replacement"));
+        }
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        for spec in [
+            LaunchSpec::new(HISTORY.app_id, scoped_root)
+                .open_state(scoped_open_state)
+                .history(&HISTORY),
+            LaunchSpec::new(HISTORY.app_id, scoped_root)
+                .open_app_global_state(scoped_open_state)
+                .configure_app(replace_storage)
+                .history(&HISTORY),
+        ] {
+            let result = build_native_app_with_constructor(
+                &spec,
+                &args,
+                App::from_scoped_parts_with_controlled_custody,
+            );
+            assert!(
+                matches!(result, Err(LaunchError::Operation(message)) if message.contains("storage provenance"))
+            );
+        }
+        let spec = LaunchSpec::new(HISTORY.app_id, scoped_root).history(&HISTORY);
+        assert!(
+            spec.history_app_global_storage,
+            "the standard app-global opener is known by the runner"
+        );
+        let mut capture = build_history_capture(&spec, &args, scoped_root(), (900, 650)).unwrap();
+        assert!(capture.targets().contains_key("history-open"));
+        capture.click_named("history-open").unwrap();
+        assert!(capture.targets().contains_key("activity_timeline"));
+    }
+
+    #[test]
     fn standard_live_factory_and_configuration_capture_the_same_app_lifetime() {
         LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
         let spec = LaunchSpec::new("dev.tilo.wake-test", scoped_root)
@@ -1754,7 +2786,7 @@ mod tests {
         let app = build_native_app_with_constructor(
             &spec,
             &args,
-            App::from_scoped_parts_with_controlled_inputs,
+            App::from_scoped_parts_with_controlled_custody,
         )
         .unwrap();
         let captured =
@@ -1942,9 +2974,163 @@ mod tests {
     #[test]
     fn custom_live_pipeline_runs_after_standard_mode_dispatch() {
         CUSTOM_LIVE_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).live_handler(custom_live);
-        run_with_args(&spec, &strings(&["app"])).unwrap();
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).live_handler(custom_live);
+        run_with_args_with_attachment(&spec, &strings(&["app"]), |_| Ok(())).unwrap();
         assert!(CUSTOM_LIVE_RAN.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn native_runtime_attachment_precedes_default_custom_and_definition_construction() {
+        fn fail_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+            Err(LaunchError::Operation(
+                "root was constructed before attachment".into(),
+            ))
+        }
+        fn fail_prepare(
+            _: &crate::application::ApplicationDefinition,
+            _: &LaunchArgs,
+        ) -> Result<crate::application::PreparedComponentInputs, LaunchError> {
+            Err(LaunchError::Operation(
+                "definition was prepared before attachment".into(),
+            ))
+        }
+        let specs = [
+            LaunchSpec::new_with_args("dev.qos.test", fail_root),
+            LaunchSpec::new("dev.qos.test", dummy_root).live_handler(unexpected_live),
+            LaunchSpec::from_definition(crate::application_test_support::runner_probe_definition())
+                .component_host(fail_prepare),
+        ];
+        for spec in specs {
+            let result = run_with_args_with_attachment(&spec, &strings(&["app"]), |app_id| {
+                assert_eq!(app_id, spec.app_id);
+                Err(std::io::Error::other(
+                    "attachment stopped before construction",
+                ))
+            });
+            assert!(
+                matches!(result, Err(LaunchError::Operation(message)) if message.contains("attachment stopped before construction"))
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostics_and_handled_commands_never_attach_runtime() {
+        fn fail_prepare(
+            _: &crate::application::ApplicationDefinition,
+            _: &LaunchArgs,
+        ) -> Result<crate::application::PreparedComponentInputs, LaunchError> {
+            Err(LaunchError::Operation("detached preparation".into()))
+        }
+        let spec =
+            LaunchSpec::from_definition(crate::application_test_support::runner_probe_definition())
+                .component_host(fail_prepare);
+        for args in [
+            strings(&["app", "--shots", "/tmp/not-written.png"]),
+            strings(&["app", "--responsive-matrix", "/tmp/not-written"]),
+            strings(&["app", "--native-audit"]),
+            strings(&["app", "--headless-drive", "{}"]),
+        ] {
+            let result = run_with_args_with_attachment(&spec, &args, |_| {
+                panic!("diagnostic attached runtime")
+            });
+            assert!(
+                matches!(result, Err(LaunchError::Operation(message)) if message == "detached preparation")
+            );
+        }
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).command_handler(custom_command);
+        run_with_args_with_attachment(&spec, &strings(&["app"]), |_| {
+            panic!("handled command attached runtime")
+        })
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn automatic_reexec_skips_only_the_already_run_command_handler() {
+        use std::os::{
+            fd::AsRawFd,
+            unix::{net::UnixStream, process::CommandExt},
+        };
+        static COMMANDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn command(_: &LaunchArgs) -> Result<bool, LaunchError> {
+            COMMANDS.fetch_add(1, Ordering::SeqCst);
+            Ok(false)
+        }
+        fn live(_: &LaunchArgs) -> Result<(), LaunchError> {
+            Ok(())
+        }
+        if let Ok(mode) = std::env::var("QOS_LAUNCH_REEXEC_TEST") {
+            let spec = LaunchSpec::new("dev.qos.reexec-test", dummy_root)
+                .command_handler(command)
+                .live_handler(live);
+            if mode == "descendant" {
+                run_with_args_with_attachment(&spec, &strings(&["app"]), |_| Ok(())).unwrap();
+            } else if mode == "local" {
+                let spec = spec.runtime_attachment(|_| false);
+                run_with_args_with_attachment(&spec, &strings(&["app"]), |_| {
+                    panic!("local policy attached inherited runtime")
+                })
+                .unwrap();
+            } else {
+                run_with_args(&spec, &strings(&["app"])).unwrap();
+            }
+            assert_eq!(
+                COMMANDS.load(Ordering::SeqCst),
+                usize::from(mode != "resumed")
+            );
+            return;
+        }
+        for mode in ["initial", "resumed", "local", "descendant"] {
+            let (collab, _collab_peer) = UnixStream::pair().unwrap();
+            let (identity, _identity_peer) = UnixStream::pair().unwrap();
+            let fds = [collab.as_raw_fd(), identity.as_raw_fd()];
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "launch::tests::automatic_reexec_skips_only_the_already_run_command_handler",
+                    "--nocapture",
+                ])
+                .env("QOS_LAUNCH_REEXEC_TEST", mode)
+                .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
+                .env("QOS_SVC_IDENTITY_FD", fds[1].to_string())
+                .env_remove("QOS_RUNTIME_RESUME_LIVE");
+            if mode == "resumed" || mode == "descendant" {
+                child.env("QOS_RUNTIME_RESUME_LIVE", "dev.qos.reexec-test");
+            }
+            if mode == "descendant" {
+                child.env(
+                    "QOS_RUNTIME_CONNECTION_OWNER_PID",
+                    std::process::id().to_string(),
+                );
+            }
+            // SAFETY: only fcntl runs after fork; both sockets stay owned by
+            // this parent until the isolated assertion process exits.
+            unsafe {
+                child.pre_exec(move || {
+                    for fd in fds {
+                        if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+            assert!(child.status().unwrap().success());
+        }
+    }
+
+    #[test]
+    fn explicit_runtime_attachment_policy_skips_bootstrap_for_native_launch() {
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+            .runtime_attachment(|_| false)
+            .live_handler(unexpected_live);
+        let result = run_with_args_with_attachment(&spec, &strings(&["app"]), |_| {
+            Err(std::io::Error::other("unexpected attachment"))
+        });
+        assert!(
+            matches!(result, Err(LaunchError::Operation(message)) if message == "screenshot dispatch reached the live handler")
+        );
     }
 
     fn custom_open_state(app_id: &'static str) -> (State, crate::persist::Autosave) {

@@ -1,0 +1,23 @@
+{
+  "name": "Workspace overview rows keep their distance at 200% text",
+  "goal": "Read where you are, what leaves this workspace and where else to go, without lines stacking",
+  "viewport": [1280, 800],
+  "text_scale": 2,
+  "budget": {"clicks": 1, "keys": 0},
+  "steps": [
+    {"op": "input", "action": {"click_named": "semantic:topbar:overview"}},
+    {"op": "checkpoint", "name": "overview", "checks": [
+      {"kind": "visible", "target": "semantic:Home"},
+      {"kind": "visible", "target": "semantic:New workspace"},
+      {"kind": "visible", "target": "semantic:Workspace overview"},
+
+      {"kind": "target_size", "target": "semantic:Home", "min": [320, 118]},
+      {"kind": "target_size", "target": "semantic:New workspace", "min": [320, 44]},
+      {"kind": "no_overlap", "first": "semantic:Home", "second": "semantic:New workspace"},
+      {"kind": "gap", "first": "semantic:Home", "second": "semantic:New workspace", "axis": "y", "min": 96, "max": 400},
+      {"kind": "aligned", "first": "semantic:Home", "second": "semantic:New workspace", "axis": "x", "tolerance": 0.5},
+
+      {"kind": "no_overlap", "first": "semantic:Workspace overview", "second": "semantic:topbar:overview"}
+    ]}
+  ]
+}

@@ -171,7 +171,10 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     /// Not consumed by the divider — forward to whichever pane the cursor is
     /// over (positional events), or to both in turn until one claims
     /// `handled` (non-positional events; same convention `Row`/`Column` use).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Split panes forward the Widget event, scale, modifiers, CRDT path, handled/focus outputs, node, and layout to the appropriate child."
+    )]
     fn forward_to_children(
         &mut self,
         event: &WindowEvent,
@@ -401,10 +404,12 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         } else {
             self.divider_rect
         };
+        // The idle divider is a derived rule on the base surface (HIG
+        // §9.5); the accent marks a live drag.
         let color = if active {
             theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]
         } else {
-            theme.tokens.colors.border_standard
+            crate::surface::edge_on(theme.tokens.colors.surfaces.base)
         };
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -594,10 +599,12 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         } else {
             self.divider_rect
         };
+        // The idle divider is a derived rule on the base surface (HIG
+        // §9.5); the accent marks a live drag.
         let color = if active {
             theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]
         } else {
-            theme.tokens.colors.border_standard
+            crate::surface::edge_on(theme.tokens.colors.surfaces.base)
         };
         scene.fill(
             vello::peniko::Fill::NonZero,

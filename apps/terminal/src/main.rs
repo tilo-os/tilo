@@ -69,24 +69,33 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.terminal", live_root)
-            .live_handler(run_live)
-            .shot_handler(run_shot)
-            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
-            .allowed_options(&["--size"])
-            .scenarios(&[
-                "shell",
-                "shell-select",
-                "colors",
-                "tui",
-                "scrollback",
-                "find",
-                "empty",
-                "empty-menu",
-                "ended",
-            ]),
-    );
+    ui::launch::run_or_exit(&launch_spec());
+}
+
+fn launch_spec_with_root(
+    root: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>,
+) -> LaunchSpec {
+    LaunchSpec::new_with_args("dev.tilo.terminal", root)
+        .history(&terminal::framework_history::HISTORY)
+        .live_handler(run_live)
+        .shot_handler(run_shot)
+        .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+        .allowed_options(&["--size"])
+        .scenarios(&[
+            "shell",
+            "shell-select",
+            "colors",
+            "tui",
+            "scrollback",
+            "find",
+            "empty",
+            "empty-menu",
+            "ended",
+        ])
+}
+
+fn launch_spec() -> LaunchSpec {
+    launch_spec_with_root(live_root)
 }
 
 fn live_root(_args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
@@ -95,7 +104,22 @@ fn live_root(_args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-fn run_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
+fn build_prepared_terminal_app(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    wake_scope: ui::WakeScope,
+    root: Box<dyn Widget>,
+    build: impl FnOnce(
+        &LaunchSpec,
+        &LaunchArgs,
+        ui::WakeScope,
+        Box<dyn Widget>,
+    ) -> Result<ui::App, LaunchError>,
+) -> Result<ui::App, LaunchError> {
+    build(spec, args, wake_scope, root)
+}
+
+fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
     let widget = TerminalWidget::spawn_default()
@@ -104,9 +128,14 @@ fn run_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
     // polling at ~60 Hz: grab the handle before moving the widget into the App,
     // then store the loop's proxy once it exists.
     let waker = widget.waker_handle();
-    let (state, autosave) = ui::persist::open("dev.tilo.terminal");
-    let app =
-        ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
+    let spec = launch_spec();
+    let app = build_prepared_terminal_app(
+        &spec,
+        args,
+        wake_scope,
+        Box::new(widget),
+        LaunchSpec::build_prepared_root,
+    )?;
     app.run_with_setup(move |proxy| {
         if let Ok(mut g) = waker.lock() {
             *g = Some(proxy);
@@ -126,7 +155,12 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
         Some("ended") => {
             #[cfg(unix)]
-            let command = terminal::CommandBuilder::new("/bin/true");
+            let command = {
+                // Spawn the portable shell path: macOS has no /bin/true.
+                let mut command = terminal::CommandBuilder::new("/bin/sh");
+                command.args(["-c", "exit 0"]);
+                command
+            };
             #[cfg(windows)]
             let command = {
                 let mut command = terminal::CommandBuilder::new("cmd.exe");
@@ -146,8 +180,14 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .shots
         .as_deref()
         .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
-    render_shot_to_png(&mut widget, viewport, out, scenario)
-        .map_err(|error| LaunchError::Operation(error.to_string()))
+    render_shot_to_png(
+        &mut widget,
+        viewport,
+        ui::launch::shot_theme(args),
+        out,
+        scenario,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Run one offscreen frame against `widget` at `viewport` and write the
@@ -162,29 +202,15 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 fn render_shot_to_png(
     widget: &mut TerminalWidget,
     viewport: (u32, u32),
+    theme: Theme,
     out: &std::path::Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    theme.reduce_motion = matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    );
-    if let Some(scale) = std::env::var("TILO_SHOTS_TEXT_SCALE")
-        .ok()
-        .and_then(|raw| raw.parse::<f32>().ok())
-        .filter(|scale| scale.is_finite())
-    {
-        theme = theme.with_text_scale(scale);
-    }
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -206,22 +232,20 @@ fn render_shot_to_png(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget, &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -425,5 +449,138 @@ fn run_scenario(
         // this is deliberately distinct from a content-filled menu shot.
         "empty-menu" => widget.open_context_menu_at(Point::new(24.0, 24.0)),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+    use portable_pty::{MasterPty, PtySize};
+    use std::cell::RefCell;
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    thread_local! {
+        static CONTROLLED_ARGS: RefCell<Option<LaunchArgs>> = const { RefCell::new(None) };
+    }
+    static OPEN_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    fn capture_args(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        CONTROLLED_ARGS.with(|captured| *captured.borrow_mut() = Some(args.clone()));
+        Ok(Box::new(ui::widget::Text::new("argument capture")))
+    }
+
+    fn controlled_open(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+        OPEN_COUNT.fetch_add(1, Ordering::SeqCst);
+        (
+            ui::State::new(),
+            ui::persist::Autosave::disabled("Terminal controlled launch"),
+        )
+    }
+
+    fn forbidden_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+        Err(LaunchError::Operation(
+            "prepared Terminal construction invoked the spec root factory".into(),
+        ))
+    }
+
+    fn controlled_args() -> LaunchArgs {
+        CONTROLLED_ARGS.with(|captured| *captured.borrow_mut() = None);
+        let app = LaunchSpec::new_with_args("dev.tilo.terminal-args", capture_args)
+            .open_state(controlled_open)
+            .build_controlled_app_for_test()
+            .unwrap();
+        drop(app);
+        CONTROLLED_ARGS.with(|captured| {
+            captured
+                .borrow_mut()
+                .take()
+                .expect("controlled builder supplies parsed launch arguments")
+        })
+    }
+
+    struct MockMaster;
+    impl MasterPty for MockMaster {
+        fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+            Ok(PtySize::default())
+        }
+        fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+        fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+            Ok(Box::new(std::io::sink()))
+        }
+        fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+            Ok(Box::new(std::io::empty()))
+        }
+        fn process_group_leader(&self) -> Option<i32> {
+            None
+        }
+        fn as_raw_fd(&self) -> Option<i32> {
+            None
+        }
+        fn tty_name(&self) -> Option<std::path::PathBuf> {
+            None
+        }
+    }
+
+    struct ChanWriter(crossbeam_channel::Sender<Vec<u8>>);
+    impl Write for ChanWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.send(bytes.to_vec());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn actual_custom_helper_installs_canonical_history_on_the_supplied_terminal() {
+        OPEN_COUNT.store(0, Ordering::SeqCst);
+        let args = controlled_args();
+        OPEN_COUNT.store(0, Ordering::SeqCst);
+        let (write_tx, writes) = crossbeam_channel::unbounded();
+        let (output, output_rx) = crossbeam_channel::unbounded();
+        let widget = TerminalWidget::new(
+            Arc::new(Mutex::new(Box::new(ChanWriter(write_tx)))),
+            Arc::new(Mutex::new(Box::new(MockMaster))),
+            output_rx,
+        );
+        let waker = widget.waker_handle();
+        let wake_scope = ui::WakeScope::new();
+        let _entry = wake_scope.enter();
+        let spec = launch_spec_with_root(forbidden_root).open_app_global_state(controlled_open);
+        spec.validate_history_declaration().unwrap();
+        let app = build_prepared_terminal_app(
+            &spec,
+            &args,
+            wake_scope,
+            Box::new(widget),
+            |spec, args, wake_scope, root| {
+                spec.build_controlled_prepared_root_for_test(args, wake_scope, root)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(installed.is_some_and(|definition| {
+            std::ptr::eq(definition, &terminal::framework_history::HISTORY)
+        }));
+        assert!(root.is_some_and(|definition| {
+            std::ptr::eq(definition, &terminal::framework_history::HISTORY)
+        }));
+        assert_eq!(Arc::strong_count(&waker), 2);
+        assert!(writes.is_empty());
+        output.send(b"retained output\r\n".to_vec()).unwrap();
+        drop(app);
+        assert_eq!(Arc::strong_count(&waker), 1);
+        assert!(output.send(b"after drop".to_vec()).is_err());
+        assert!(matches!(
+            writes.try_recv(),
+            Err(crossbeam_channel::TryRecvError::Disconnected)
+        ));
     }
 }

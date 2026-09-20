@@ -61,6 +61,37 @@ impl Default for SourceEditor {
 }
 
 impl SourceEditor {
+    #[cfg(test)]
+    pub(crate) fn history_test_caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
+        self.code.caret_rect(theme, byte)
+    }
+
+    /// Unbound source presentation with no caret and persistent local scrolling.
+    pub(crate) fn snapshot(source: &str) -> Self {
+        let mut editor = Self::new();
+        editor.focused = false;
+        editor.code.inner_mut().set_preserve_unfocused_scroll(true);
+        editor.set_text(source);
+        editor
+    }
+
+    /// Prepare immutable source geometry using the widget's normal cached
+    /// measurement, including its renderer font/locale epoch invalidation.
+    pub(crate) fn prepare_snapshot_layout(&mut self, tr: &mut TextRenderer) {
+        Widget::measure(
+            &mut self.code,
+            taffy::Size {
+                width: Some(self.rect.width() as f32),
+                height: Some(self.rect.height() as f32),
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(self.rect.width() as f32),
+                height: taffy::AvailableSpace::Definite(self.rect.height() as f32),
+            },
+            tr,
+        );
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -133,6 +164,11 @@ impl SourceEditor {
     }
 
     // ----- scrolling -------------------------------------------------------
+
+    /// Effective bounded offset for immutable History view persistence.
+    pub(crate) fn snapshot_scroll_y(&self) -> f64 {
+        self.code.inner().scroll_y()
+    }
 
     /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
     /// only scrolls vertically.
@@ -321,7 +357,10 @@ impl SourceEditor {
     /// Draw a floating tooltip card near `at` carrying a diagnostic's message
     /// (and its first hint, dimmed). Sizing is measured from the text so the
     /// card hugs the content.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "diagnostic tooltip painting combines scene resources and theme with its anchor and diagnostic message/hint"
+    )]
     fn draw_tooltip(
         &self,
         scene: &mut Scene,
@@ -375,6 +414,13 @@ impl SourceEditor {
             c.surfaces.raised,
             None,
             &RoundedRect::from_rect(card, 7.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(card, 7.0),
         );
         scene.fill(
             Fill::NonZero,

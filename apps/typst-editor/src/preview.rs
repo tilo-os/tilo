@@ -135,6 +135,12 @@ impl Default for PreviewPane {
 }
 
 impl PreviewPane {
+    #[cfg(test)]
+    pub(crate) fn history_test_point(&self, page: usize, y: f64) -> Point {
+        let b = self.boxes[page];
+        self.viewport.content_to_screen() * Point::new(b.x_off, b.top + y)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -156,6 +162,29 @@ impl PreviewPane {
             }
         }
         self.recompute_current();
+    }
+
+    /// Frozen page navigation: all inputs are bounded local view coordinates.
+    pub(crate) fn set_snapshot_view(
+        &mut self,
+        page: usize,
+        zoom: f64,
+        scroll: (f64, f64),
+    ) -> (f64, f64) {
+        self.fit_width = false;
+        self.viewport
+            .set_zoom(self.viewport.fit_width_zoom() * zoom);
+        self.viewport.set_scroll(0., 0.);
+        self.scroll_to_page(page);
+        // History offsets are relative to this selected page's clamped anchor,
+        // not to the beginning of the whole compiled page stack.
+        let anchor_y = self.viewport.scroll_y();
+        self.viewport.pan_by(scroll.0, scroll.1);
+        self.recompute_current();
+        (
+            self.viewport.scroll_x(),
+            self.viewport.scroll_y() - anchor_y,
+        )
     }
 
     pub fn set_pages(&mut self, pages: &[PageImage]) {
@@ -823,7 +852,7 @@ impl PreviewPane {
             scene,
             text,
             font,
-            Color::from_rgba8(20, 18, 10, 255),
+            c.on_surface(c.semantic.warning).ink,
             transform * Affine::translate((x0 + pad_x, ty)),
             Some((w - pad_x * 2.0) as f32),
         );
@@ -859,11 +888,11 @@ impl PreviewPane {
             scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shadow);
             // Paper.
             image.paint_at(scene, transform, page_rect);
-            // Border.
+            // Border: derived against the pane the page floats on.
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                c.border_standard,
+                ui::surface::edge_on(c.neutral[1]),
                 None,
                 &page_rect,
             );
@@ -944,7 +973,7 @@ impl PreviewPane {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(c.surfaces.raised),
             None,
             &vello::kurbo::Line::new(
                 Point::new(strip.x1, strip.y0),
@@ -976,7 +1005,13 @@ impl PreviewPane {
                 );
             }
             image.paint_at(scene, transform, r);
-            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &r);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                ui::surface::edge_on(c.surfaces.raised),
+                None,
+                &r,
+            );
 
             let label = format!("{}", i + 1);
             tr.draw_text(

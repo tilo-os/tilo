@@ -22,6 +22,7 @@ name = "runtime_identity"
 path = "src/lib.rs"
 
 [dependencies]
+atomic-file = { path = "../../system/atomic-file" }
 runtime-portal = { path = "../runtime-portal" }
 serde.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
@@ -45,6 +46,7 @@ getrandom.workspace = true
 rand_core.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 tempfile.workspace = true
 # Reproduces malformed `secret_bytes` records written by an earlier identity
 # ceremony, so the loader rejects those records.

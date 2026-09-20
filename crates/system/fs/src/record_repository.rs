@@ -81,6 +81,8 @@ pub enum RecordTransactionCheckpoint {
 
 #[derive(Clone, Debug)]
 struct StoredRecord {
+    /// Transient fence derived exclusively from the existing durable journal.
+    pending_restore: Option<Uuid>,
     replica: RecordReplica,
     envelopes: Vec<RecordEnvelopeV1>,
 }
@@ -109,7 +111,388 @@ pub struct RecordRepository {
     records: Mutex<BTreeMap<RecordRepositoryKey, StoredRecord>>,
 }
 
+/// Keeps mutable namespace projection serialized against every repository writer.
+/// Acquire only after namespace (and history, if needed); never call public
+/// repository methods while retaining this lease.
+pub(crate) struct RecordProjectionLease<'a> {
+    _records: std::sync::MutexGuard<'a, BTreeMap<RecordRepositoryKey, StoredRecord>>,
+    pub snapshot: RecordSnapshot,
+}
+
+pub(crate) struct RepositoryLease<'a> {
+    root: &'a Path,
+    records: std::sync::MutexGuard<'a, BTreeMap<RecordRepositoryKey, StoredRecord>>,
+}
+
+pub(crate) struct PreparedRecordTransaction {
+    entry: RecordTransactionJournalEntry,
+    journal_missing: bool,
+    candidates: Vec<(RecordRepositoryKey, StoredRecord)>,
+}
+
+impl RepositoryLease<'_> {
+    pub fn frontier(
+        &self,
+        key: RecordRepositoryKey,
+    ) -> Result<Vec<RecordStreamCursor>, RecordRepositoryError> {
+        let record = self
+            .records
+            .get(&key)
+            .ok_or(RecordRepositoryError::RecordNotFound)?;
+        record_stream_cursors(key, record)
+    }
+
+    pub fn snapshot(
+        &self,
+        key: RecordRepositoryKey,
+    ) -> Result<RecordSnapshot, RecordRepositoryError> {
+        projected_snapshot(&self.records, key, None)
+    }
+
+    pub fn highest_sequence(&self, key: RecordRepositoryKey, actor: &FileActor) -> u64 {
+        self.records
+            .get(&key)
+            .and_then(|record| record.replica.highest_sequence_for(actor))
+            .unwrap_or(0)
+    }
+
+    pub fn prepare<A: RecordAuthorizer + ?Sized>(
+        &self,
+        journal: &RecordTransactionJournal,
+        entry: &RecordTransactionJournalEntry,
+        authorizer: &A,
+    ) -> Result<PreparedRecordTransaction, RecordRepositoryError> {
+        entry
+            .validate()
+            .map_err(RecordRepositoryError::TransactionJournal)?;
+        let transaction = &entry.transaction;
+        let id = transaction.manifest.transaction_id;
+        let workspace_id = transaction.manifest.workspace_id;
+        let journal_missing = if let Some(existing) = journal.get(id) {
+            if existing.transaction != entry.transaction
+                || existing.participant_batches != entry.participant_batches
+            {
+                return Err(RecordRepositoryError::TransactionManifestMismatch(id));
+            }
+            false
+        } else {
+            if entry.phase != RecordTransactionPhase::Prepared {
+                return Err(RecordRepositoryError::TransactionRecoveryIntentMissing);
+            }
+            journal
+                .validate_prepared(entry)
+                .map_err(RecordRepositoryError::TransactionJournal)?;
+            true
+        };
+
+        let records = &*self.records;
+        let missing_records = transaction
+            .manifest
+            .participants
+            .iter()
+            .filter(|participant| {
+                !records.contains_key(&RecordRepositoryKey {
+                    workspace_id,
+                    record_id: participant.record_id,
+                })
+            })
+            .count();
+        if records.len().saturating_add(missing_records) > MAX_REPOSITORY_RECORDS {
+            return Err(RecordRepositoryError::TooManyRecords);
+        }
+        let mut candidates = Vec::with_capacity(entry.participant_batches.len());
+        for (participant, batch) in transaction
+            .manifest
+            .participants
+            .iter()
+            .zip(&entry.participant_batches)
+        {
+            let key = RecordRepositoryKey {
+                workspace_id,
+                record_id: participant.record_id,
+            };
+            let current = records.get(&key);
+            if let Some(reserved) = current.and_then(|record| record.pending_restore) {
+                if reserved != id {
+                    return Err(RecordRepositoryError::RestoreRecoveryRequired(reserved));
+                }
+            }
+            let exact_suffix = current.is_some_and(|record| {
+                record
+                    .envelopes
+                    .windows(batch.envelopes.len())
+                    .any(|window| window == batch.envelopes)
+            });
+            let new_sibling = matches!(
+                participant.role,
+                collab_types::FileMutationParticipantRoleV1::KeepBothSibling
+            );
+            if new_sibling {
+                if current.is_some() && !exact_suffix {
+                    return Err(RecordRepositoryError::TransactionPreconditionFailed(
+                        participant.record_id,
+                    ));
+                }
+            } else if !(matches!(
+                transaction.manifest.operation,
+                collab_types::FileMutationOperationV1::RestoreContent { .. }
+            ) && !journal_missing)
+            {
+                let snapshot = projected_snapshot(records, key, Some(id))?;
+                if snapshot
+                    .content_revision
+                    .map(|revision| revision.version_id)
+                    != Some(participant.expected_version)
+                    && !snapshot
+                        .versions
+                        .iter()
+                        .any(|version| version.id == participant.expected_version)
+                {
+                    return Err(RecordRepositoryError::TransactionPreconditionFailed(
+                        participant.record_id,
+                    ));
+                }
+                validate_structural_precondition(
+                    &transaction.manifest,
+                    participant.record_id,
+                    &snapshot,
+                )?;
+            }
+
+            let mut candidate = current.cloned().unwrap_or_else(|| StoredRecord {
+                pending_restore: None,
+                replica: RecordReplica::new(key.record_id),
+                envelopes: Vec::new(),
+            });
+            if !exact_suffix {
+                if candidate
+                    .envelopes
+                    .len()
+                    .saturating_add(batch.envelopes.len())
+                    > MAX_RECORD_OPERATIONS
+                {
+                    return Err(RecordRepositoryError::TooManyOperations);
+                }
+                for envelope in &batch.envelopes {
+                    candidate.replica.merge(envelope, authorizer)?;
+                    candidate.envelopes.push(envelope.clone());
+                }
+            }
+            candidate.pending_restore = None;
+            candidates.push((key, candidate));
+        }
+
+        Ok(PreparedRecordTransaction {
+            entry: entry.clone(),
+            journal_missing,
+            candidates,
+        })
+    }
+
+    pub fn commit<F: FnMut(RecordTransactionCheckpoint) -> Result<(), std::io::Error>>(
+        &mut self,
+        journal: &mut RecordTransactionJournal,
+        prepared: PreparedRecordTransaction,
+        mut checkpoint: F,
+    ) -> Result<(), RecordRepositoryError> {
+        let PreparedRecordTransaction {
+            entry,
+            journal_missing,
+            candidates,
+        } = prepared;
+        let id = entry.transaction_id();
+        // No durable side effect occurs until every participant candidate and
+        // structural/version precondition above has succeeded.
+        let restore = matches!(
+            entry.transaction.manifest.operation,
+            collab_types::FileMutationOperationV1::RestoreContent { .. }
+        );
+        if restore {
+            // Fence before the first persistence attempt, including ambiguous
+            // fsync errors. R remains held through intent installation.
+            for (key, _) in &candidates {
+                if let Some(record) = self.records.get_mut(key) {
+                    record.pending_restore = Some(id);
+                }
+            }
+        }
+        if journal_missing {
+            journal
+                .insert_prepared(entry.clone())
+                .map_err(RecordRepositoryError::TransactionJournal)?;
+            checkpoint(RecordTransactionCheckpoint::PreparedJournalDurable)
+                .map_err(RecordRepositoryError::TransactionFailureInjected)?;
+        } else if restore {
+            journal
+                .ensure_checked_intent_durable(id)
+                .map_err(RecordRepositoryError::TransactionJournal)?;
+        }
+        for (index, (key, candidate)) in candidates.iter().enumerate() {
+            persist_record(self.root, *key, &candidate.envelopes)?;
+            checkpoint(RecordTransactionCheckpoint::ParticipantRecordDurable { index })
+                .map_err(RecordRepositoryError::TransactionFailureInjected)?;
+        }
+        for (key, candidate) in candidates {
+            self.records.insert(key, candidate);
+        }
+        if journal
+            .get(id)
+            .is_some_and(|value| value.phase == RecordTransactionPhase::Prepared)
+        {
+            journal
+                .advance(
+                    id,
+                    RecordTransactionPhase::ParticipantRecordsCommitted,
+                    None,
+                )
+                .map_err(RecordRepositoryError::TransactionJournal)?;
+            checkpoint(RecordTransactionCheckpoint::ParticipantPhaseDurable)
+                .map_err(RecordRepositoryError::TransactionFailureInjected)?;
+        }
+        Ok(())
+    }
+}
+
 impl RecordRepository {
+    pub(crate) fn lease(&self) -> Result<RepositoryLease<'_>, RecordRepositoryError> {
+        Ok(RepositoryLease {
+            root: &self.root,
+            records: self
+                .records
+                .lock()
+                .map_err(|_| RecordRepositoryError::StatePoisoned)?,
+        })
+    }
+
+    /// Seed admission fences before exposing a reopened repository to writers.
+    /// Caller retains J; this method only acquires R. No second durable owner.
+    pub fn restore_admission_fences(
+        &self,
+        journal: &RecordTransactionJournal,
+    ) -> Result<(), RecordRepositoryError> {
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        for entry in journal.entries().filter(|entry| {
+            entry.phase == RecordTransactionPhase::Prepared
+                && matches!(
+                    entry.transaction.manifest.operation,
+                    collab_types::FileMutationOperationV1::RestoreContent { .. }
+                )
+        }) {
+            for participant in &entry.transaction.manifest.participants {
+                let key = RecordRepositoryKey {
+                    workspace_id: entry.transaction.manifest.workspace_id,
+                    record_id: participant.record_id,
+                };
+                let record = records
+                    .get_mut(&key)
+                    .ok_or(RecordRepositoryError::RecordNotFound)?;
+                if record
+                    .pending_restore
+                    .is_some_and(|id| id != entry.transaction_id())
+                {
+                    return Err(RecordRepositoryError::TransactionManifestMismatch(
+                        entry.transaction_id(),
+                    ));
+                }
+                record.pending_restore = Some(entry.transaction_id());
+            }
+        }
+        Ok(())
+    }
+
+    /// Acknowledge repository participation already received or reopened from
+    /// disk. J must be held by the caller; this method acquires only R. It
+    /// admits no new signed operations and needs no local-author attribution.
+    ///
+    /// All exact batches and their committed transaction state are checked
+    /// before any persistence. Re-persisting the verified current records
+    /// establishes durability even after an ambiguous earlier write error and
+    /// retains any later accepted envelopes. A phase alone never clears a fence.
+    pub(crate) fn complete_admitted_restore_participation(
+        &self,
+        journal: &mut RecordTransactionJournal,
+        entry: &RecordTransactionJournalEntry,
+    ) -> Result<(), RecordRepositoryError> {
+        entry.validate()?;
+        let id = entry.transaction_id();
+        let admitted = journal
+            .get(id)
+            .ok_or(RecordRepositoryError::TransactionRecoveryIntentMissing)?;
+        if !matches!(
+            entry.transaction.manifest.operation,
+            collab_types::FileMutationOperationV1::RestoreContent { .. }
+        ) || admitted.transaction != entry.transaction
+            || admitted.participant_batches != entry.participant_batches
+        {
+            return Err(RecordRepositoryError::TransactionManifestMismatch(id));
+        }
+        let mut records = self
+            .records
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let mut keys = Vec::with_capacity(entry.participant_batches.len());
+        for batch in &entry.participant_batches {
+            let key = RecordRepositoryKey {
+                workspace_id: entry.transaction.manifest.workspace_id,
+                record_id: batch.record_id,
+            };
+            let record = records
+                .get(&key)
+                .ok_or(RecordRepositoryError::RecordNotFound)?;
+            if let Some(reserved) = record.pending_restore
+                && reserved != id
+            {
+                return Err(RecordRepositoryError::RestoreRecoveryRequired(reserved));
+            }
+            // Different actor streams may interleave in the accepted log.
+            // Match both exact signed envelopes, not their adjacency.
+            let exact_batch = batch
+                .envelopes
+                .iter()
+                .all(|envelope| record.envelopes.contains(envelope));
+            let committed =
+                record
+                    .replica
+                    .transaction_state(id)
+                    .is_some_and(|(transaction, committed)| {
+                        committed && transaction == &entry.transaction
+                    });
+            if !exact_batch || !committed {
+                return Err(RecordRepositoryError::TransactionPreconditionFailed(
+                    batch.record_id,
+                ));
+            }
+            keys.push(key);
+        }
+
+        journal.ensure_checked_intent_durable(id)?;
+        for key in &keys {
+            persist_record(&self.root, *key, &records[key].envelopes)?;
+        }
+        if journal
+            .get(id)
+            .is_some_and(|entry| entry.phase == RecordTransactionPhase::Prepared)
+        {
+            journal.advance(
+                id,
+                RecordTransactionPhase::ParticipantRecordsCommitted,
+                None,
+            )?;
+        }
+        for key in keys {
+            let record = records
+                .get_mut(&key)
+                .expect("validated under the same R lease");
+            if record.pending_restore == Some(id) {
+                record.pending_restore = None;
+            }
+        }
+        Ok(())
+    }
+
     /// Open and fully verify every persisted record. A missing root is an
     /// empty repository; malformed, duplicate, cross-key or oversized state
     /// fails closed rather than being silently discarded.
@@ -185,6 +568,9 @@ impl RecordRepository {
             .lock()
             .map_err(|_| RecordRepositoryError::StatePoisoned)?;
         let current = records.get(&key);
+        if let Some(id) = current.and_then(|record| record.pending_restore) {
+            return Err(RecordRepositoryError::RestoreRecoveryRequired(id));
+        }
         if current.is_none() && records.len() >= MAX_REPOSITORY_RECORDS {
             return Err(RecordRepositoryError::TooManyRecords);
         }
@@ -196,6 +582,7 @@ impl RecordRepository {
         }
 
         let mut candidate = current.cloned().unwrap_or_else(|| StoredRecord {
+            pending_restore: None,
             replica: RecordReplica::new(key.record_id),
             envelopes: Vec::new(),
         });
@@ -303,150 +690,15 @@ impl RecordRepository {
         journal: &mut RecordTransactionJournal,
         entry: &RecordTransactionJournalEntry,
         authorizer: &A,
-        mut checkpoint: F,
+        checkpoint: F,
     ) -> Result<(), RecordRepositoryError>
     where
         A: RecordAuthorizer + ?Sized,
         F: FnMut(RecordTransactionCheckpoint) -> Result<(), std::io::Error>,
     {
-        entry
-            .validate()
-            .map_err(RecordRepositoryError::TransactionJournal)?;
-        let transaction = &entry.transaction;
-        let id = transaction.manifest.transaction_id;
-        let workspace_id = transaction.manifest.workspace_id;
-        let journal_missing = if let Some(existing) = journal.get(id) {
-            if existing.transaction != entry.transaction
-                || existing.participant_batches != entry.participant_batches
-            {
-                return Err(RecordRepositoryError::TransactionManifestMismatch(id));
-            }
-            false
-        } else {
-            if entry.phase != RecordTransactionPhase::Prepared {
-                return Err(RecordRepositoryError::TransactionRecoveryIntentMissing);
-            }
-            true
-        };
-
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
-        let missing_records = transaction
-            .manifest
-            .participants
-            .iter()
-            .filter(|participant| {
-                !records.contains_key(&RecordRepositoryKey {
-                    workspace_id,
-                    record_id: participant.record_id,
-                })
-            })
-            .count();
-        if records.len().saturating_add(missing_records) > MAX_REPOSITORY_RECORDS {
-            return Err(RecordRepositoryError::TooManyRecords);
-        }
-        let mut candidates = Vec::with_capacity(entry.participant_batches.len());
-        for (participant, batch) in transaction
-            .manifest
-            .participants
-            .iter()
-            .zip(&entry.participant_batches)
-        {
-            let key = RecordRepositoryKey {
-                workspace_id,
-                record_id: participant.record_id,
-            };
-            let current = records.get(&key);
-            let exact_suffix =
-                current.is_some_and(|record| record.envelopes.ends_with(&batch.envelopes));
-            let new_sibling = matches!(
-                participant.role,
-                collab_types::FileMutationParticipantRoleV1::KeepBothSibling
-            );
-            if new_sibling {
-                if current.is_some() && !exact_suffix {
-                    return Err(RecordRepositoryError::TransactionPreconditionFailed(
-                        participant.record_id,
-                    ));
-                }
-            } else {
-                let snapshot = projected_snapshot(&records, key, Some(id))?;
-                if snapshot
-                    .content_revision
-                    .map(|revision| revision.version_id)
-                    != Some(participant.expected_version)
-                    && !snapshot
-                        .versions
-                        .iter()
-                        .any(|version| version.id == participant.expected_version)
-                {
-                    return Err(RecordRepositoryError::TransactionPreconditionFailed(
-                        participant.record_id,
-                    ));
-                }
-                validate_structural_precondition(
-                    &transaction.manifest,
-                    participant.record_id,
-                    &snapshot,
-                )?;
-            }
-
-            let mut candidate = current.cloned().unwrap_or_else(|| StoredRecord {
-                replica: RecordReplica::new(key.record_id),
-                envelopes: Vec::new(),
-            });
-            if !exact_suffix {
-                if candidate
-                    .envelopes
-                    .len()
-                    .saturating_add(batch.envelopes.len())
-                    > MAX_RECORD_OPERATIONS
-                {
-                    return Err(RecordRepositoryError::TooManyOperations);
-                }
-                for envelope in &batch.envelopes {
-                    candidate.replica.merge(envelope, authorizer)?;
-                    candidate.envelopes.push(envelope.clone());
-                }
-            }
-            candidates.push((key, candidate));
-        }
-
-        // No durable side effect occurs until every participant candidate and
-        // structural/version precondition above has succeeded.
-        if journal_missing {
-            journal
-                .insert_prepared(entry.clone())
-                .map_err(RecordRepositoryError::TransactionJournal)?;
-            checkpoint(RecordTransactionCheckpoint::PreparedJournalDurable)
-                .map_err(RecordRepositoryError::TransactionFailureInjected)?;
-        }
-        for (index, (key, candidate)) in candidates.iter().enumerate() {
-            persist_record(&self.root, *key, &candidate.envelopes)?;
-            checkpoint(RecordTransactionCheckpoint::ParticipantRecordDurable { index })
-                .map_err(RecordRepositoryError::TransactionFailureInjected)?;
-        }
-        for (key, candidate) in candidates {
-            records.insert(key, candidate);
-        }
-        drop(records);
-        if journal
-            .get(id)
-            .is_some_and(|value| value.phase == RecordTransactionPhase::Prepared)
-        {
-            journal
-                .advance(
-                    id,
-                    RecordTransactionPhase::ParticipantRecordsCommitted,
-                    None,
-                )
-                .map_err(RecordRepositoryError::TransactionJournal)?;
-            checkpoint(RecordTransactionCheckpoint::ParticipantPhaseDurable)
-                .map_err(RecordRepositoryError::TransactionFailureInjected)?;
-        }
-        Ok(())
+        let mut lease = self.lease()?;
+        let prepared = lease.prepare(journal, entry, authorizer)?;
+        lease.commit(journal, prepared, checkpoint)
     }
 
     /// Bounded per-record, per-actor inventory for workspace record-mesh
@@ -479,30 +731,7 @@ impl RecordRepository {
             .iter()
             .filter(|(key, _)| key.workspace_id == workspace_id)
         {
-            let mut streams = BTreeMap::<([u8; 32], [u8; 32]), Vec<&RecordEnvelopeV1>>::new();
-            for envelope in &record.envelopes {
-                streams
-                    .entry((
-                        *envelope.actor.person.as_bytes(),
-                        *envelope.actor.device.as_bytes(),
-                    ))
-                    .or_default()
-                    .push(envelope);
-            }
-            for envelopes in streams.values() {
-                let Some(first) = envelopes.first() else {
-                    continue;
-                };
-                let Some(last) = envelopes.last() else {
-                    continue;
-                };
-                let actor = first.actor;
-                let cursor = RecordStreamCursor {
-                    record_id: key.record_id,
-                    actor,
-                    contiguous_sequence: last.sequence,
-                    prefix_digest: envelope_prefix_digest(envelopes.iter().copied())?,
-                };
+            for cursor in record_stream_cursors(*key, record)? {
                 if after.is_none_or(|after| cursor.key() > after) {
                     cursors.push(cursor);
                     if cursors.len() == limit {
@@ -619,6 +848,21 @@ impl RecordRepository {
         let snapshot = projected_snapshot(&records, key, None)?;
         drop(records);
         Ok(snapshot)
+    }
+
+    pub(crate) fn projection_lease(
+        &self,
+        key: RecordRepositoryKey,
+    ) -> Result<RecordProjectionLease<'_>, RecordRepositoryError> {
+        let records = self
+            .records
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let snapshot = projected_snapshot(&records, key, None)?;
+        Ok(RecordProjectionLease {
+            _records: records,
+            snapshot,
+        })
     }
 
     /// Highest durably accepted sequence for one actor and record. `None`
@@ -851,7 +1095,8 @@ fn projected_snapshot(
     let record = records
         .get(&key)
         .ok_or(RecordRepositoryError::RecordNotFound)?;
-    let mut snapshot = record.replica.restored_snapshot();
+    let mut projection = record.replica.clone();
+    let mut snapshot = projection.restored_snapshot();
     let mut complete = record
         .replica
         .transactions()
@@ -926,8 +1171,14 @@ fn projected_snapshot(
             snapshot.versions.push(participant.proposed_version.clone());
             snapshot.versions.sort_by_key(|version| version.id.0);
         }
-        snapshot.binding = Some(participant.proposed_binding.clone());
-        snapshot.content_revision = participant.proposed_content_revision;
+        let commit_sequence = record.envelopes.iter().find_map(|envelope| {
+            matches!(envelope.operation, crate::record_replication::RecordOperationV1::CommitTransaction { transaction_id }
+                if transaction_id == transaction.manifest.transaction_id).then_some(envelope.sequence)
+        }).ok_or(RecordRepositoryError::TransactionProjectionMismatch(transaction.manifest.transaction_id))?;
+        projection.project_completed_participant(participant, commit_sequence);
+        let converged = projection.restored_snapshot();
+        snapshot.binding = converged.binding;
+        snapshot.content_revision = converged.content_revision;
         if matches!(
             participant.role,
             collab_types::FileMutationParticipantRoleV1::KeepBothSource
@@ -952,7 +1203,8 @@ fn projected_snapshot(
                     conflict_versions,
                     collab_types::ConflictStrategy::Merge,
                 ),
-                collab_types::FileMutationOperationV1::ReplacementRename { .. } => {
+                collab_types::FileMutationOperationV1::ReplacementRename { .. }
+                | collab_types::FileMutationOperationV1::RestoreContent { .. } => {
                     return Err(RecordRepositoryError::TransactionProjectionMismatch(
                         transaction.manifest.transaction_id,
                     ));
@@ -1012,6 +1264,31 @@ fn validate_structural_precondition(
                 record_id,
             ))?;
     let valid = match &manifest.operation {
+        collab_types::FileMutationOperationV1::RestoreContent {
+            request,
+            prior_revision,
+            selected_version,
+            ..
+        } => {
+            let proposed = manifest
+                .participants
+                .iter()
+                .find(|value| value.record_id == record_id);
+            record_id == request.review.record_id
+                && snapshot.versions.iter().any(|version| {
+                    version.id == prior_revision.version_id
+                        && version.content_hash == prior_revision.content_hash
+                        && version.metadata_hash == prior_revision.metadata_hash
+                })
+                && snapshot.versions.iter().any(|version| {
+                    version.id == *selected_version
+                        && proposed.is_some_and(|proposed| {
+                            version.content_hash == proposed.proposed_version.content_hash
+                        })
+                })
+                && !binding.tombstoned
+                && binding.kind == collab_types::FileNodeKind::File
+        }
         collab_types::FileMutationOperationV1::ReplacementRename {
             source_parent,
             source_name,
@@ -1088,6 +1365,39 @@ fn validate_structural_precondition(
         ));
     }
     Ok(())
+}
+
+fn record_stream_cursors(
+    key: RecordRepositoryKey,
+    record: &StoredRecord,
+) -> Result<Vec<RecordStreamCursor>, RecordRepositoryError> {
+    let mut streams = BTreeMap::<([u8; 32], [u8; 32]), Vec<&RecordEnvelopeV1>>::new();
+    for envelope in &record.envelopes {
+        streams
+            .entry((
+                *envelope.actor.person.as_bytes(),
+                *envelope.actor.device.as_bytes(),
+            ))
+            .or_default()
+            .push(envelope);
+    }
+    streams
+        .values()
+        .map(|envelopes| {
+            let first = envelopes
+                .first()
+                .ok_or(RecordRepositoryError::RecordNotFound)?;
+            let last = envelopes
+                .last()
+                .ok_or(RecordRepositoryError::RecordNotFound)?;
+            Ok(RecordStreamCursor {
+                record_id: key.record_id,
+                actor: first.actor,
+                contiguous_sequence: last.sequence,
+                prefix_digest: envelope_prefix_digest(envelopes.iter().copied())?,
+            })
+        })
+        .collect()
 }
 
 fn envelope_prefix_digest<'a>(
@@ -1239,6 +1549,7 @@ fn decode_stored_record(
         }
     }
     Ok(StoredRecord {
+        pending_restore: None,
         replica,
         envelopes: persisted.envelopes,
     })
@@ -1288,6 +1599,10 @@ fn is_atomic_temp(name: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum RecordRepositoryError {
+    #[error(
+        "checked restore {0} must finish admitted repository participation before another write; retry after recovery"
+    )]
+    RestoreRecoveryRequired(Uuid),
     #[error("record repository I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("record repository contains invalid JSON: {0}")]
@@ -1552,7 +1867,10 @@ mod tests {
         .unwrap()
     }
 
-    #[allow(clippy::too_many_lines)] // Builds a complete signed transaction fixture.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture builds and signs the source and sibling versions, bindings and conflict manifest for keep-both transactions"
+    )] // Builds a complete signed transaction fixture.
     fn keep_both_transaction(
         fixture: &Fixture,
     ) -> (
@@ -1793,7 +2111,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Atomic merge and restart scenario.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the codec matrix follows one signed merge through prepare, atomic publication and repository restart"
+    )] // Atomic merge and restart scenario.
     fn completed_single_record_merge_projects_atomically_and_survives_restart() {
         for codec in [
             ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
@@ -1964,7 +2285,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Both participant orders form one contract matrix.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "both participant arrival orders share the same keep-both fixture and assert no partial projection at each step"
+    )] // Both participant orders form one contract matrix.
     fn keep_both_remote_participant_orders_never_project_one_half() {
         for source_first in [true, false] {
             let fixture = Fixture::new();
@@ -2139,6 +2463,111 @@ mod tests {
     }
 
     #[test]
+    fn later_signed_edit_and_binding_survive_completed_transaction_projection_and_reopen() {
+        let fixture = Fixture::new();
+        let repository = RecordRepository::open(&fixture.root).unwrap();
+        let (transaction, parent, base, current, other, conflict) =
+            merge_transaction(&fixture, ConflictMergeCodecV1::QdocAutomergeV1);
+        let proposed = transaction.manifest.participants[0].clone();
+        let binding = FileBindingV1 {
+            schema_version: FILE_BINDING_VERSION,
+            record_id: fixture.key.record_id,
+            parent: Some(parent),
+            name: "source.txt".into(),
+            kind: FileNodeKind::File,
+            tombstoned: false,
+            actor: fixture.actor,
+            observed_at_ms: 1,
+        };
+        let current_revision = collab_types::ContentRevisionV1 {
+            schema_version: CONTENT_REVISION_VERSION,
+            record_id: fixture.key.record_id,
+            version_id: current.id,
+            content_hash: current.content_hash,
+            byte_len: 1,
+            metadata_hash: current.metadata_hash,
+        };
+        let operations = [
+            RecordOperationV1::SetBinding(binding.clone()),
+            RecordOperationV1::AppendVersion(base),
+            RecordOperationV1::AppendVersion(current),
+            RecordOperationV1::AppendVersion(other),
+            RecordOperationV1::SetContentRevision(current_revision),
+            RecordOperationV1::AppendConflict(conflict),
+            RecordOperationV1::PrepareTransaction(transaction.clone()),
+            RecordOperationV1::CommitTransaction {
+                transaction_id: transaction.manifest.transaction_id,
+            },
+        ];
+        for (index, operation) in operations.into_iter().enumerate() {
+            repository
+                .apply(
+                    fixture.key,
+                    &RecordEnvelopeV1::signed(
+                        fixture.key.record_id,
+                        fixture.actor,
+                        index as u64 + 1,
+                        operation,
+                        &fixture.device_key,
+                    )
+                    .unwrap(),
+                    &fixture.auth(true, true),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            repository
+                .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, true))
+                .unwrap()
+                .content_revision,
+            proposed.proposed_content_revision
+        );
+        let later = FileVersionV1 {
+            id: FileVersionId::new(),
+            parents: vec![proposed.proposed_version.id],
+            timestamp_ms: 5,
+            provenance: FileProvenance::Edit,
+            ..proposed.proposed_version
+        };
+        let later_revision = collab_types::ContentRevisionV1 {
+            version_id: later.id,
+            ..proposed.proposed_content_revision.unwrap()
+        };
+        let later_binding = FileBindingV1 {
+            name: "later.txt".into(),
+            observed_at_ms: 5,
+            ..binding
+        };
+        for (sequence, operation) in [
+            (9, RecordOperationV1::AppendVersion(later)),
+            (10, RecordOperationV1::SetContentRevision(later_revision)),
+            (11, RecordOperationV1::SetBinding(later_binding.clone())),
+        ] {
+            repository
+                .apply(
+                    fixture.key,
+                    &RecordEnvelopeV1::signed(
+                        fixture.key.record_id,
+                        fixture.actor,
+                        sequence,
+                        operation,
+                        &fixture.device_key,
+                    )
+                    .unwrap(),
+                    &fixture.auth(true, true),
+                )
+                .unwrap();
+        }
+        for repository in [&repository, &RecordRepository::open(&fixture.root).unwrap()] {
+            let snapshot = repository
+                .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, true))
+                .unwrap();
+            assert_eq!(snapshot.content_revision, Some(later_revision));
+            assert_eq!(snapshot.binding, Some(later_binding.clone()));
+        }
+    }
+
+    #[test]
     fn transaction_stays_incomplete_until_every_exact_commit_and_survives_restart() {
         let fixture = Fixture::new();
         let replaced = FileRecordId::new();
@@ -2239,7 +2668,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Crash-journal replay is checked phase by phase.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one crash-recovery scenario covers signed participant setup, partial durability, journal replay and final projections"
+    )] // Crash-journal replay is checked phase by phase.
     fn journaled_repository_commit_projects_neither_half_and_replays_exactly() {
         let fixture = Fixture::new();
         let replaced = FileRecordId::new();

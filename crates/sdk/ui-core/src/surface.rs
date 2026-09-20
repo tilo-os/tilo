@@ -21,7 +21,7 @@ use vello::peniko::{
 
 use crate::ColorCompat;
 use crate::theme::Theme;
-use crate::tokens::Shadow;
+use crate::tokens::{Colors, Shadow};
 
 /// Shared silhouette for lightweight desktop floats. The asymmetry is only
 /// one or two logical pixels along each edge: enough to feel soft and held,
@@ -455,18 +455,25 @@ pub fn elevation(scene: &mut Scene, transform: Affine, rect: Rect, token: &Shado
 
 /// The one contract for "is this small selectable chrome element active"
 /// — scope pills, filter chips, tab pills, toggle cards.
+///
+/// Quiet (HIG §9.5 "Chip quiet"): `surfaces.raised` under a rest edge
+/// derived from that fill by [`edge_on`], so the chip keeps a visible
+/// outline on a raised or overlay ground where the declared
+/// `border_standard` vanished. Selected: solid accent, no edge.
 pub fn chip_colors(theme: &Theme, selected: bool) -> (Color, Option<Color>) {
     let c = &theme.tokens.colors;
     if selected {
         (c.accent[5], None)
     } else {
-        (c.surfaces.raised, Some(c.border_standard))
+        (c.surfaces.raised, Some(edge_on(c.surfaces.raised)))
     }
 }
 
 /// Draw a pill / chip: a fully-rounded (or `radius`-rounded) filled rect
 /// with an optional 1px border. Pass `radius = None` for a fully-rounded
-/// capsule (`height/2`).
+/// capsule (`height/2`). The border is a crisp inset stroke on
+/// [`edge_outline`], like [`card`]: it covers the pill's outermost pixel
+/// row instead of straddling the edge as a half-covered, half-alpha smear.
 pub fn pill(
     scene: &mut Scene,
     transform: Affine,
@@ -482,13 +489,395 @@ pub fn pill(
     let shape = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, r);
     scene.fill(Fill::NonZero, transform, fill, None, &shape);
     if let Some(bc) = border {
-        scene.stroke(&Stroke::new(1.0), transform, bc, None, &shape);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            bc,
+            None,
+            &edge_outline(rect, r),
+        );
     }
+}
+
+/// Alphas [`edge_on`] tries, ascending, until the hairline visibly moves the
+/// surface it is drawn on (HIG §9.5). Step 0 is the control hairline
+/// (`chrome::shell::HAIRLINE_ALPHA`); the ladder only climbs on grounds so
+/// dark or so light that a 26-alpha wash lands within rounding distance of
+/// the surface — relative luminance compresses at the dark end, so pure
+/// black needs more alpha for the same visible step.
+pub const EDGE_ALPHA_STEPS: &[u8] = &[26, 40, 56, 72, 92];
+
+/// How far `edge` moves `surface` once painted on it, in relative-luminance
+/// units — the measurement HIG §9.5 asks every chrome border to pass. Uses
+/// the same compositor as `Colors::hairline_on` / `lift_target` /
+/// `window_edge`, so one rounding model decides "visible" everywhere.
+#[must_use]
+pub fn edge_delta(edge: Color, surface: Color) -> f64 {
+    use crate::a11y::relative_luminance;
+    let painted = crate::tokens::colors::composite(edge, surface);
+    (relative_luminance(painted) - relative_luminance(surface)).abs()
+}
+
+/// The derived 1 px rest edge of a control, card or row: a hairline
+/// measured against the surface it is painted on, never a declared
+/// `border_standard` (which is one fixed colour per theme and disappears on
+/// a raised dark surface). Walks [`EDGE_ALPHA_STEPS`] until the edge
+/// visibly registers (`tokens::colors::HAIRLINE_MIN_DELTA`).
+#[must_use]
+pub fn edge_on(surface: Color) -> Color {
+    let key = u32::from_be_bytes([surface.r(), surface.g(), surface.b(), surface.a()]);
+    if let Some(edge) = EDGE_MEMO.with(|memo| {
+        memo.borrow()
+            .entries
+            .iter()
+            .flatten()
+            .find(|(k, _)| *k == key)
+            .map(|(_, edge)| *edge)
+    }) {
+        return edge;
+    }
+    let edge = derive_edge_on(surface);
+    EDGE_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        let slot = memo.next;
+        memo.entries[slot] = Some((key, edge));
+        memo.next = (slot + 1) % EDGE_MEMO_SLOTS;
+    });
+    edge
+}
+
+/// The uncached ladder walk behind [`edge_on`].
+fn derive_edge_on(surface: Color) -> Color {
+    use crate::a11y::relative_luminance;
+    let ground = relative_luminance(surface);
+    let mut last = Color::TRANSPARENT;
+    for alpha in EDGE_ALPHA_STEPS {
+        last = Colors::hairline_on(surface, *alpha);
+        let painted = crate::tokens::colors::composite(last, surface);
+        if (relative_luminance(painted) - ground).abs() >= crate::tokens::colors::HAIRLINE_MIN_DELTA
+        {
+            return last;
+        }
+    }
+    last
+}
+
+/// A frame asks for the edge of the same three or four theme constants
+/// hundreds of times (every row, card and rule), and each derivation is a
+/// handful of `powf` calls per ladder step. `edge_on` is a pure function of
+/// its 8-bit input, so the last few answers are kept per thread.
+struct EdgeMemo {
+    entries: [Option<(u32, Color)>; EDGE_MEMO_SLOTS],
+    next: usize,
+}
+
+const EDGE_MEMO_SLOTS: usize = 8;
+
+thread_local! {
+    static EDGE_MEMO: std::cell::RefCell<EdgeMemo> = const {
+        std::cell::RefCell::new(EdgeMemo {
+            entries: [None; EDGE_MEMO_SLOTS],
+            next: 0,
+        })
+    };
+}
+
+/// [`edge_on`] at a fixed alpha, for callers that want the control hairline
+/// (`HAIRLINE_ALPHA`) or the panel edge (`PANEL_BORDER_ALPHA`) exactly.
+#[must_use]
+pub fn edge_on_with(surface: Color, alpha: u8) -> Color {
+    Colors::hairline_on(surface, alpha)
+}
+
+/// The outline a crisp 1 px edge is stroked on: half a pixel inside `rect`,
+/// so a 1 px stroke covers exactly the outermost pixel row of the surface
+/// and never bleeds onto the ground beside it.
+#[must_use]
+pub fn edge_outline(rect: Rect, radius: f64) -> RoundedRect {
+    RoundedRect::from_rect(rect.inset(-0.5), (radius - 0.5).max(0.0))
+}
+
+/// Whole logical pixels for an edged surface: a 1 px edge stroked on a
+/// fractional rect covers two device pixels at half coverage on each and
+/// stops registering. Layout may hand us fractions; the paint does not.
+fn snap(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x0.round(),
+        rect.y0.round(),
+        rect.x1.round(),
+        rect.y1.round(),
+    )
+}
+
+/// Fill a card / row / tile and give it its derived rest edge in one call —
+/// the one way an app or shell surface paints an edged surface. The edge
+/// derives from `fill` itself: a stroke that sits entirely on the surface
+/// needs no knowledge of what is behind it.
+pub fn card(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, fill: Color) {
+    let rect = snap(rect);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        fill,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        edge_on(fill),
+        None,
+        &edge_outline(rect, radius),
+    );
+}
+
+/// [`card`] for a translucent `fill` (an accent wash, a hover tint): the
+/// edge derives from what the eye sees — `fill` composited over `ground` —
+/// not from the wash's own RGB. A 16 % accent wash on a light panel is
+/// still a light surface and wants a dark hairline; judged by the accent
+/// alone it would get a white one and vanish.
+pub fn card_on(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    fill: Color,
+    ground: Color,
+) {
+    let rect = snap(rect);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let seen = crate::tokens::colors::composite(fill, ground);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        fill,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        edge_on(seen),
+        None,
+        &edge_outline(rect, radius),
+    );
+}
+
+/// A floating Panel-role surface (menu, popover, sheet, toast) in one call:
+/// the theme's [`crate::chrome::panel_ground`] fill with the
+/// [`crate::chrome::panel_border`] edge on a crisp inset outline — HIG §9.5's
+/// Panel row, so an app never spells the fill + stroke pair itself. Rows
+/// inside it use [`separator`] with an `s3` inset and
+/// [`crate::chrome::selection_tier_on`] against the panel ground.
+pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
+    let rect = snap(rect);
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        crate::chrome::panel_ground(theme),
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        crate::chrome::panel_border(theme),
+        None,
+        &edge_outline(rect, radius),
+    );
+}
+
+/// A 1 px separator between rows inside a surface: derived against
+/// `surface`, inset `inset` from both ends (HIG §9.5: `spacing.s3`, never
+/// full-bleed into a corner radius), centred on `y`.
+pub fn separator(
+    scene: &mut Scene,
+    transform: Affine,
+    x0: f64,
+    x1: f64,
+    y: f64,
+    inset: f64,
+    surface: Color,
+) {
+    let Some(rule) = separator_rect(x0, x1, y, inset) else {
+        return;
+    };
+    scene.fill(Fill::NonZero, transform, edge_on(surface), None, &rule);
+}
+
+/// The one device-pixel row a separator centred on `y` occupies: `y` is
+/// snapped so a caller passing a whole-pixel coordinate gets a crisp rule,
+/// not a two-row smear at half alpha (which would fall under
+/// `HAIRLINE_MIN_DELTA` even though the colour itself registers).
+#[must_use]
+pub fn separator_rect(x0: f64, x1: f64, y: f64, inset: f64) -> Option<Rect> {
+    let (a, b) = (x0 + inset, x1 - inset);
+    if b <= a {
+        return None;
+    }
+    let top = (y - 0.5).round();
+    Some(Rect::new(a, top, b, top + 1.0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edge_on_registers_on_every_preset_surface() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let s = &theme.tokens.colors.surfaces;
+            for (name, ground) in [
+                ("base", s.base),
+                ("raised", s.raised),
+                ("overlay", s.overlay),
+                ("panel_ground", crate::chrome::shell::panel_ground(&theme)),
+            ] {
+                let edge = edge_on(ground);
+                let moved = edge_delta(edge, ground);
+                assert!(
+                    moved >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{name} edge on {:?} moved only {moved:.4} ({edge:?})",
+                    theme.name
+                );
+            }
+        }
+        // The declared border is what vanished on the dark preset: derived
+        // must register there where declared does not.
+        let dark = Theme::dark();
+        let raised = dark.tokens.colors.surfaces.raised;
+        let declared = edge_delta(dark.tokens.colors.border_standard, raised);
+        let derived = edge_delta(edge_on(raised), raised);
+        assert!(
+            declared < crate::tokens::colors::HAIRLINE_MIN_DELTA,
+            "dark border_standard on raised was the invisible edge ({declared:.4}); if this \
+             changed, the ratchet's rationale needs revisiting"
+        );
+        assert!(
+            derived > declared,
+            "derived {derived:.4} vs declared {declared:.4}"
+        );
+    }
+
+    #[test]
+    fn edge_on_starts_at_the_control_hairline_where_that_already_registers() {
+        // A mid grey moves plenty at alpha 26: the ladder must not over-darken it.
+        let grey = Color::from_rgb8(0x80, 0x80, 0x80);
+        assert_eq!(
+            edge_on(grey),
+            Colors::hairline_on(grey, EDGE_ALPHA_STEPS[0])
+        );
+    }
+
+    #[test]
+    fn a_translucent_wash_takes_its_edge_from_the_composited_surface() {
+        // A 16 % accent wash over the light panel is still a light surface.
+        for theme in [Theme::light(), Theme::dark()] {
+            let ground = theme.tokens.colors.surfaces.raised;
+            let wash = theme.accent_primary.with_alpha(0.16);
+            let seen = crate::tokens::colors::composite(wash, ground);
+            let derived = edge_on(seen);
+            assert!(
+                edge_delta(derived, seen) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "card_on edge must register on the seen surface"
+            );
+            // Judged by the wash's own RGB the hairline can flip polarity and
+            // stop registering on the surface the eye sees.
+            let naive = edge_on(wash);
+            assert!(
+                edge_delta(derived, seen) >= edge_delta(naive, seen),
+                "composited derivation must never register worse than the naive one"
+            );
+        }
+    }
+
+    #[test]
+    fn a_separator_occupies_one_whole_pixel_row() {
+        // A whole-pixel centre and a half-pixel centre both land on one row.
+        let whole = separator_rect(10.0, 200.0, 100.0, 12.0).expect("rule");
+        assert_eq!((whole.x0, whole.x1), (22.0, 188.0));
+        assert_eq!((whole.y0, whole.y1), (100.0, 101.0));
+        let half = separator_rect(0.0, 50.0, 99.5, 0.0).expect("rule");
+        assert_eq!((half.y0, half.y1), (99.0, 100.0));
+        assert!(
+            separator_rect(0.0, 20.0, 5.0, 12.0).is_none(),
+            "insets that meet paint nothing"
+        );
+    }
+
+    #[test]
+    fn edge_on_memo_returns_the_derived_answer() {
+        // The memo must be transparent: the same surface asked twice (and
+        // many distinct surfaces cycling through the slots) always yields
+        // exactly what the ladder derives.
+        let theme = Theme::dark();
+        let surfaces = [
+            theme.tokens.colors.surfaces.base,
+            theme.tokens.colors.surfaces.raised,
+            theme.tokens.colors.surfaces.overlay,
+            theme.tokens.colors.lift(0.35),
+            theme.tokens.colors.lift(0.5),
+            Theme::light().tokens.colors.surfaces.base,
+            Theme::light().tokens.colors.surfaces.raised,
+            Theme::high_contrast().tokens.colors.surfaces.base,
+            Theme::high_contrast().tokens.colors.surfaces.raised,
+            Color::from_rgb8(120, 60, 200),
+            Color::from_rgb8(255, 255, 255),
+            Color::from_rgb8(0, 0, 0),
+        ];
+        for _ in 0..3 {
+            for surface in surfaces {
+                assert_eq!(edge_on(surface), derive_edge_on(surface));
+            }
+        }
+    }
+
+    #[test]
+    fn panel_edge_registers_on_the_panel_ground_in_every_preset() {
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high-contrast", Theme::high_contrast()),
+        ] {
+            let ground = crate::chrome::panel_ground(&theme);
+            let border = crate::chrome::panel_border(&theme);
+            assert!(
+                edge_delta(border, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "{name}: the panel border must register on the panel ground"
+            );
+        }
+        // Degenerate rects paint nothing rather than a stray hairline.
+        let mut scene = Scene::new();
+        panel(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(10.0, 10.0, 10.0, 40.0),
+            8.0,
+            &Theme::dark(),
+        );
+        assert!(
+            scene.encoding().is_empty(),
+            "an empty panel encodes no draw ops"
+        );
+    }
+
+    #[test]
+    fn card_edge_is_one_pixel_inside_rect() {
+        let rect = Rect::new(10.0, 20.0, 110.0, 60.0);
+        let outline = edge_outline(rect, 12.0);
+        assert_eq!(outline.rect(), Rect::new(10.5, 20.5, 109.5, 59.5));
+        assert!((outline.radii().top_left - 11.5).abs() < 1e-9);
+        // A radius under half a pixel does not go negative.
+        assert!(edge_outline(rect, 0.0).radii().top_left.abs() < 1e-9);
+    }
 
     #[test]
     fn chip_colors_selected_is_solid_accent_no_border() {
@@ -499,6 +888,29 @@ mod tests {
         let (fill_idle, border_idle) = chip_colors(&theme, false);
         assert_eq!(fill_idle, theme.tokens.colors.surfaces.raised);
         assert!(border_idle.is_some(), "idle chip has a border");
+    }
+
+    /// The quiet chip's edge is derived from its own fill, so it registers
+    /// on every preset — the declared `border_standard` it replaces measured
+    /// under the visibility floor on the dark preset's raised surface.
+    #[test]
+    fn chip_colors_quiet_edge_registers_on_every_preset() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let (fill, border) = chip_colors(&theme, false);
+            let edge = border.expect("quiet chip has an edge");
+            assert_eq!(
+                edge,
+                edge_on(fill),
+                "{}: edge derives from the fill",
+                theme.name
+            );
+            assert!(
+                edge_delta(edge, fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "{}: quiet chip edge moved only {:.4}",
+                theme.name,
+                edge_delta(edge, fill)
+            );
+        }
     }
 
     #[test]

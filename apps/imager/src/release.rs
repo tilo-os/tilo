@@ -1,8 +1,9 @@
 //! Trusted Tilo release catalog and verified medium download/cache.
 //!
 //! The catalog is embedded into each platform-signed Imager package at build
-//! time.  A release therefore cannot substitute its URL or digest without also
-//! replacing the signed host application.  Both the compressed transport and
+//! time. In a genuinely signed distribution, changing catalog bytes requires
+//! replacing that signed application. Local development embedding alone is not
+//! cryptographic release evidence.  Both the compressed transport and
 //! expanded disk image are SHA-256 checked before the image becomes selectable.
 
 use std::fs::{self, File, OpenOptions};
@@ -12,84 +13,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::model::{Source, TiloRelease};
 
-const BUNDLED_CATALOG: &str = include_str!("../release-catalog.json");
-
-#[derive(Debug, Deserialize)]
-struct Catalog {
-    schema: u32,
-    tag: String,
-    releases: Vec<CatalogRelease>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CatalogRelease {
-    name: String,
-    version: String,
-    channel: String,
-    arch: String,
-    #[serde(default)]
-    hardware_profile: Option<String>,
-    #[serde(default)]
-    provenance: Option<MediaProvenance>,
-    url: String,
-    archive_sha256: String,
-    archive_size: u64,
-    image_sha256: String,
-    image_size: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct MediaProvenance {
-    source_image_id: String,
-    input_qcow2_sha256: String,
-    hardware_profile_sha256: Option<String>,
-    target_update_ref: Option<String>,
-}
-
-impl MediaProvenance {
-    fn validate(&self) -> Result<(), String> {
-        let source_digest = self
-            .source_image_id
-            .strip_prefix("sha256:")
-            .ok_or_else(|| {
-                "The release catalog contains an invalid source image identity.".to_string()
-            })?;
-        validate_digest(source_digest)?;
-        validate_digest(&self.input_qcow2_sha256)?;
-        let profile_digest = self.hardware_profile_sha256.as_deref().ok_or_else(|| {
-            "The release catalog is missing a hardware profile digest.".to_string()
-        })?;
-        validate_digest(profile_digest)?;
-        let origin = self.target_update_ref.as_deref().ok_or_else(|| {
-            "The release catalog is missing a hardware update origin.".to_string()
-        })?;
-        let valid_origin =
-            if let Some(digest) = origin.strip_prefix("code.podesta.ai/qos/tilo@sha256:") {
-                validate_digest(digest).is_ok()
-            } else if let Some(tag) = origin.strip_prefix("code.podesta.ai/qos/tilo:") {
-                !tag.is_empty()
-                    && tag.len() <= 128
-                    && tag
-                        .bytes()
-                        .next()
-                        .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                    && tag.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
-                    })
-            } else {
-                false
-            };
-        if !valid_origin {
-            return Err("The release catalog contains an untrusted hardware update origin.".into());
-        }
-        Ok(())
-    }
-}
+pub use ui::install_artifacts::ReleaseSelection as InternalRelease;
+use ui::install_artifacts::bundled_catalog_json;
+use ui::install_artifacts::catalog_data::{Catalog, CatalogRelease, parse_catalog};
 
 /// A local, non-replicated update from the verified release fetch worker.
 #[derive(Clone, Debug)]
@@ -120,94 +50,15 @@ pub struct DownloadJob {
     pub control: DownloadControl,
 }
 
-/// Releases authenticated by the signature on this Imager build, filtered to
-/// media for the current host CPU architecture. Board compatibility still
-/// requires selecting the explicitly labeled target hardware profile.
-///
-/// # Errors
-///
-/// Returns an error when the embedded catalog is malformed or contains an
-/// unsupported schema, untrusted URL, invalid digest, or invalid size, or when
-/// the native host architecture cannot be detected.
-pub fn bundled_releases() -> Result<Vec<TiloRelease>, String> {
-    releases_for_host(BUNDLED_CATALOG, crate::host::architecture())
-}
-
-fn releases_for_host(
-    catalog_json: &str,
-    host_arch: Result<Option<&str>, String>,
-) -> Result<Vec<TiloRelease>, String> {
-    let host_arch = host_arch?;
-    let catalog: Catalog = serde_json::from_str(catalog_json)
-        .map_err(|error| format!("The bundled release catalog is invalid: {error}"))?;
-    if !matches!(catalog.schema, 1 | 2) {
-        return Err("The bundled release catalog uses an unsupported schema.".into());
-    }
-    if catalog.releases.is_empty() && catalog.tag == "unreleased" {
-        return Ok(Vec::new());
-    }
-    if !catalog.tag.starts_with("imager-v") {
-        return Err("The bundled release catalog has an invalid release tag.".into());
-    }
-    let mut identities = std::collections::HashSet::new();
-    for release in &catalog.releases {
-        let profile = match (catalog.schema, release.hardware_profile.as_deref()) {
-            (1, None | Some("generic")) => "generic",
-            (2, Some(profile)) => profile,
-            _ => {
-                return Err(
-                    "The release catalog has an invalid hardware profile for its schema.".into(),
-                );
-            }
-        };
-        if !matches!(release.arch.as_str(), "x86_64" | "aarch64")
-            || !valid_hardware_profile(profile)
-        {
-            return Err(
-                "The release catalog contains an unsupported architecture and hardware profile."
-                    .into(),
-            );
-        }
-        if !identities.insert((release.arch.as_str(), profile)) {
-            return Err(
-                "The release catalog contains duplicate architecture and hardware profiles.".into(),
-            );
-        }
-    }
-    for release in &catalog.releases {
-        if release
-            .hardware_profile
-            .as_deref()
-            .is_some_and(|profile| profile != "generic")
-        {
-            release
-                .provenance
-                .as_ref()
-                .ok_or_else(|| {
-                    "The release catalog is missing hardware media provenance.".to_string()
-                })?
-                .validate()?;
-        }
-    }
-    let Some(host_arch) = host_arch else {
-        return Ok(Vec::new());
-    };
+fn media_releases(catalog: Catalog, host_arch: &str) -> Vec<TiloRelease> {
     catalog
         .releases
         .into_iter()
-        .filter(|release| release.arch == host_arch)
-        .map(|release| {
-            validate_digest(&release.archive_sha256)?;
-            validate_digest(&release.image_sha256)?;
-            if release.archive_size == 0 || release.image_size == 0 {
-                return Err("The release catalog contains an invalid installer size.".into());
-            }
-            let url = reqwest::Url::parse(&release.url)
-                .map_err(|_| "The release catalog contains an invalid URL.".to_string())?;
-            if url.scheme() != "https" || url.host_str() != Some("code.podesta.ai") {
-                return Err("The release catalog contains an untrusted download origin.".into());
-            }
-            Ok(TiloRelease {
+        .filter_map(|entry| {
+            let CatalogRelease::Media(release) = entry else {
+                return None;
+            };
+            (release.arch == host_arch).then(|| TiloRelease {
                 name: release.name,
                 version: release.version,
                 size: release.image_size,
@@ -224,16 +75,27 @@ fn releases_for_host(
         .collect()
 }
 
-fn valid_hardware_profile(profile: &str) -> bool {
-    !profile.is_empty()
-        && profile.len() <= 64
-        && profile
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        && profile
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+/// Media selections only. Authentication depends on the signature of the build.
+/// # Errors
+/// Rejects invalid metadata in any entry, including foreign architectures.
+pub fn bundled_releases() -> Result<Vec<TiloRelease>, String> {
+    releases_for_host(bundled_catalog_json(), crate::host::architecture())
+}
+
+fn releases_for_host(
+    catalog_json: &str,
+    host_arch: Result<Option<&str>, String>,
+) -> Result<Vec<TiloRelease>, String> {
+    let catalog = parse_catalog(catalog_json)?;
+    Ok(host_arch?.map_or_else(Vec::new, |arch| media_releases(catalog, arch)))
+}
+
+/// Internal selections stay separate from the ordinary media downloader.
+/// No released entries exist until actual reviewed artifacts are published.
+/// # Errors
+/// Rejects any invalid embedded catalog entry before host filtering.
+pub fn bundled_internal_releases() -> Result<Vec<InternalRelease>, String> {
+    ui::install_artifacts::bundled_selections().map_err(|error| error.to_string())
 }
 
 fn validate_digest(digest: &str) -> Result<(), String> {
@@ -526,7 +388,7 @@ fn verified_image_observed(
     if image.is_file() {
         notify(DownloadEvent::Verifying);
         if sha256_controlled(&image, control)? == release.image_sha256 {
-            return Ok(source_for(release, &image));
+            return source_for(release, &image);
         }
         fs::remove_file(&image)
             .map_err(|error| format!("Could not replace an invalid cached installer: {error}"))?;
@@ -616,16 +478,17 @@ fn verified_image_observed(
     fs::rename(&image_part, &image)
         .map_err(|error| format!("Could not publish the verified installer cache: {error}"))?;
     let _ = fs::remove_file(&archive_part);
-    Ok(source_for(release, &image))
+    source_for(release, &image)
 }
 
-fn source_for(release: &TiloRelease, image: &Path) -> Source {
+fn source_for(release: &TiloRelease, image: &Path) -> Result<Source, String> {
+    let file = File::open(image)
+        .map_err(|error| format!("Could not open the verified installer: {error}"))?;
     let mut source = release.to_source();
     source.path = image.to_string_lossy().into_owned();
-    source.identity = fs::File::open(image)
-        .ok()
-        .and_then(|file| crate::model::SourceIdentity::from_file(&file));
-    source
+    source.identity = crate::model::SourceIdentity::from_file(&file)
+        .map_err(|error| format!("Could not identify the verified installer: {error}"))?;
+    Ok(source)
 }
 
 /// Download and verify without blocking the UI thread.
@@ -944,10 +807,16 @@ mod tests {
             image_sha256: "b".repeat(64),
         };
 
-        let source = source_for(&release, image.path());
+        let source = source_for(&release, image.path()).unwrap();
         let expected = "b".repeat(64);
         assert_eq!(source.expected_sha256.as_deref(), Some(expected.as_str()));
         assert!(source.identity.is_some());
+        assert_eq!(
+            source.identity,
+            crate::model::SourceIdentity::from_file(image.as_file()).unwrap()
+        );
+        let missing = image.path().with_extension("missing");
+        assert!(source_for(&release, &missing).is_err());
     }
 
     #[test]
@@ -1168,3 +1037,4 @@ mod tests {
         ));
     }
 }
+

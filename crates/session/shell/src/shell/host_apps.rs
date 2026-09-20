@@ -569,6 +569,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    #[cfg(target_os = "linux")]
     fn a_queued_host_launch_survives_the_xwayland_startup_window() {
         set_x11_starting();
         set_x11_session(None);
@@ -579,7 +580,7 @@ mod tests {
             placement: crate::compositor::tab_binding::Placement::NewGroup,
             portal_workspace_id: None,
         })
-        .expect("Linux host launch provider");
+        .expect("Linux accepts a queued host launch");
 
         assert!(!x11_ready());
         assert_eq!(

@@ -1,0 +1,153 @@
+{
+  "source_sha256": "b90caed8fade648f119c767bd310419be56a2b0014b16e6b2c68b50bc6c7e9cd",
+  "format": "mkntfs -F -Q -T; serial set through NTFS_BOOT_SECTOR",
+  "expected": {
+    "serial": "1122334455667788",
+    "root_record": 5,
+    "hello_content_hex": "436f6e6e6563746564204e54465320666978747572650a"
+  },
+  "images": {
+    "acl.img": {
+      "sha256": "ab07607f0f0e92244e5864e27357da2bc1b5e52d6e33d2d346f8ca441997432a",
+      "bytes": 67108864
+    },
+    "attrlist-cycle.img": {
+      "sha256": "92ad4abf2dfd50cd3e912b1a82de7082820a2b88191cea265c2b087a9fe5f837",
+      "bytes": 67108864
+    },
+    "badlog.img": {
+      "sha256": "20b313b66c812933024d359206b8a81eccc2df535eca2509677b8c5d23069cf9",
+      "bytes": 67108864
+    },
+    "bitlocker.img": {
+      "sha256": "8e8f7fc6638e1274a07d6a353e583809b0fe80d67cdfb044852cafee30f38c4c",
+      "bytes": 67108864
+    },
+    "clean.img": {
+      "sha256": "346aade3b314177d38b4d610754642e2c54ace7000bc6fcbd2b3b09475d8acd1",
+      "bytes": 67108864
+    },
+    "corrupt.img": {
+      "sha256": "b9aa1857fa4b528b17fb1d621a5f689586f61e5aba4ed744119e4d89c8c0cbb1",
+      "bytes": 67108864
+    },
+    "dirty.img": {
+      "sha256": "badf4b0a17cf85acb408b5df7852d96d0e1e011c662221078ed1074269b2be83",
+      "bytes": 67108864
+    },
+    "generation.img": {
+      "sha256": "502205200a0f6aaf52c0ca0cc865ff50556e1fed03d45e3de563771390d5ca99",
+      "bytes": 67108864
+    },
+    "hardlink.img": {
+      "sha256": "182c766faad358bd1d860cbad392340d6d350332aad1bd7e9ef73eb466068a6f",
+      "bytes": 67108864
+    },
+    "hiber-io.img": {
+      "sha256": "55a40acca3610664b1075df58c9283cfac8252a2b2e7ca25bb60b7a4e5539eb7",
+      "bytes": 67108864
+    },
+    "hiber.img": {
+      "sha256": "f2872397ff5926daab760a09b022849e132fbabea162e79378e764fd19e8373b",
+      "bytes": 67108864
+    },
+    "metadata.img": {
+      "sha256": "b01c78ed7ddd42cc808bbe766afd6ae4c49b725599ac6aa37c19cfb22d42d875",
+      "bytes": 67108864
+    },
+    "nonzero-hiber.img": {
+      "sha256": "a5b40199c1806f29bddded6513342a9e73af52ba1f3086613b7d44efa1396692",
+      "bytes": 67108864
+    },
+    "oversize.img": {
+      "sha256": "e28647d582be19fa6d24059f89de53aa181d34e8c2eebc27f6ac1398089bd12b",
+      "bytes": 67108864
+    },
+    "short-hiber.img": {
+      "sha256": "ac4a20cd7103843d3044c1553bc335018f01feddddf62fb026436a813d66c20c",
+      "bytes": 67108864
+    },
+    "truncated.img": {
+      "sha256": "e707d0a7e1b96abe4187f962888a9651d13af1cc7baeec96fcb3bd15f1744641",
+      "bytes": 300
+    },
+    "upcase.img": {
+      "sha256": "75cc2061555e1d2cffb4e93497838ffaa1496222af2d28964d24c21379b416e0",
+      "bytes": 67108864
+    },
+    "zero-hiber.img": {
+      "sha256": "4140a3d41e0c2be692131beec9056ef11224dd4353ae4e2bd8c0a6b6086937b6",
+      "bytes": 67108864
+    }
+  },
+  "fixture_builder_sha256": "7a051bc5b05e37f80bf840444f89e6f442dff7a8d1b44b1470f7b394bbde8a1b",
+  "expected_by_image": {
+    "clean.img": {
+      "status": 0,
+      "root_sequence": 5,
+      "hello_record": 64
+    },
+    "dirty.img": {
+      "status": 3
+    },
+    "badlog.img": {
+      "status": "nonzero refusal"
+    },
+    "zero-hiber.img": {
+      "status": 0
+    },
+    "hiber.img": {
+      "status": 4
+    },
+    "nonzero-hiber.img": {
+      "status": 4
+    },
+    "short-hiber.img": {
+      "status": 4
+    },
+    "hiber-io.img": {
+      "status": "nonzero refusal"
+    },
+    "bitlocker.img": {
+      "status": 2,
+      "synthetic_signature_only": true
+    },
+    "truncated.img": {
+      "status": "nonzero refusal"
+    },
+    "corrupt.img": {
+      "status": 1
+    },
+    "oversize.img": {
+      "status": 6
+    },
+    "generation.img": {
+      "status": 0,
+      "root_sequence": 42
+    },
+    "attrlist-cycle.img": {
+      "status": "nonzero refusal"
+    },
+    "metadata.img": {
+      "status": 0,
+      "root_named_data_utf16le": "640069007200",
+      "native_reparse_attribute": 192
+    },
+    "upcase.img": {
+      "status": 0,
+      "name_utf16le": "e4002e00740078007400",
+      "key_utf16le": "d6002e00540058005400"
+    },
+    "acl.img": {
+      "status": 0,
+      "hello_record": 64,
+      "native_security_id": 258,
+      "source": "$Secure:$SDS via $SII"
+    },
+    "hardlink.img": {
+      "status": 0,
+      "hello_links": 2,
+      "additional_name": "second"
+    }
+  }
+}

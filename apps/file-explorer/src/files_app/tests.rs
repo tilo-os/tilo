@@ -221,6 +221,26 @@ mod command_path_tests {
     use crate::model::Entry;
     use std::path::PathBuf;
 
+    #[test]
+    fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
+        let mut scroll = ui::widget::Scrollable::new_vertical();
+        scroll.set_viewport_size(200.0, 300.0);
+        scroll.set_content_size(200.0, 1200.0);
+        scroll.scroll_by(0.0, 20.0);
+        let deadline = scroll
+            .next_wake_deadline()
+            .expect("opaque hold schedules fade start");
+        let mut widget = FileExplorerWidget::new();
+        widget.nav.set_content(Box::new(scroll));
+        widget.next_metadata_refresh = deadline + std::time::Duration::from_secs(60);
+        assert_eq!(widget.next_wake_deadline(), Some(deadline));
+        widget.next_metadata_refresh = deadline - std::time::Duration::from_millis(1);
+        assert_eq!(
+            widget.next_wake_deadline(),
+            Some(widget.next_metadata_refresh)
+        );
+    }
+
     /// In-memory entry with a controllable name/mime (no fs touch).
     fn ent(name: &str, is_dir: bool, mime: &str) -> Entry {
         Entry {
@@ -2179,15 +2199,6 @@ mod command_path_tests {
         );
     }
 
-    fn assert_history_detail_panel(widget: &FileExplorerWidget) {
-        let panel = widget.collab_panel.as_ref().unwrap();
-        assert!(panel.title.contains("Version History"));
-        let history = panel.history.as_ref().expect("dedicated version timeline");
-        assert_eq!(history.versions.len(), 1);
-        assert_eq!(history.selected, 0);
-        assert_eq!(t(history.versions[0].provenance_key()), "Created");
-    }
-
     #[test]
     fn authority_sharing_and_history_open_real_detail_panels() {
         let mut entry = ent("shared.txt", false, "text/plain");
@@ -2283,13 +2294,14 @@ mod command_path_tests {
         assert!(panel.title.contains("Sharing"));
         assert!(panel.lines[0].contains("Anyone with the link"));
         w.apply_command(FileCommand::ShowHistory);
-        assert_history_detail_panel(&w);
+        assert!(w.collab_panel.is_none());
+        assert!(w.history_registration().unwrap().is_some());
         w.apply_command(FileCommand::CloseCollabPanel);
         assert!(w.collab_panel.is_none());
     }
 
     #[test]
-    fn history_sheet_selects_versions_compares_signed_identities_and_hands_off_activity_intent() {
+    fn history_activity_intent_preserves_selected_version_and_signed_identity() {
         let older = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
@@ -2314,52 +2326,6 @@ mod command_path_tests {
         w.selection.select_only(0);
         w.apply_command(FileCommand::ShowHistory);
         let selected = collab_types::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
-        w.apply_command(FileCommand::SelectHistoryVersion {
-            version_id: selected,
-        });
-        let history = w.collab_panel.as_ref().unwrap().history.as_ref().unwrap();
-        assert_eq!(history.selected_version().unwrap().id, older);
-        assert!(!history.selected_is_current());
-        let semantics = Widget::accessibility(&w).expect("history dialog semantics");
-        let version_list = semantics
-            .children
-            .iter()
-            .find(|node| node.role == ui::a11y::Role::List)
-            .expect("version timeline is exposed as a list");
-        assert!(version_list.children.iter().all(|version| {
-            version.state.focusable
-                && version
-                    .action_target
-                    .as_deref()
-                    .is_some_and(|target| target.starts_with("files-history-version:"))
-        }));
-        assert!(
-            semantics
-                .children
-                .iter()
-                .filter(|node| {
-                    node.role == ui::a11y::Role::Button && node.action_target.is_some()
-                })
-                .count()
-                >= 3
-        );
-        let mut doc = automerge::AutoCommit::new();
-        assert!(Widget::perform_semantic_action(
-            &mut w,
-            "files-history-compare",
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert!(
-            w.collab_panel
-                .as_ref()
-                .unwrap()
-                .history
-                .as_ref()
-                .unwrap()
-                .compare
-        );
         w.apply_command(FileCommand::ShowInWorkspaceActivity {
             record_id: record.into(),
             version_id: selected,
@@ -2896,11 +2862,11 @@ mod command_path_tests {
         let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(43));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
+            history: None,
             title: "Review merge".into(),
             summary: "Checking".into(),
             lines: Vec::new(),
             action: None,
-            history: None,
         });
         *widget
             .merge_preflight_result
@@ -2957,11 +2923,11 @@ mod command_path_tests {
         let version_id = collab_types::FileVersionId(uuid::Uuid::from_u128(52));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
+            history: None,
             title: "Delete permanently?".into(),
             summary: "This cannot be undone".into(),
             lines: Vec::new(),
             action: Some(CollabPanelAction::EmptyTrash),
-            history: None,
         });
         widget.merge_preflight_pending = Some((current_conflict, version_id));
         *widget
@@ -3123,6 +3089,8 @@ mod responsive_body_tests {
     use std::collections::HashMap;
     use taffy::prelude::*;
     use ui::theme::Theme;
+
+    include!("../native_proof_tests.rs");
 
     struct H {
         w: FileExplorerWidget,
@@ -4054,11 +4022,11 @@ mod accessibility_tests {
     fn collaboration_sheet_is_a_focused_modal_semantic_subtree() {
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
+            history: None,
             title: "Sharing — report.pdf".into(),
             summary: "Shared with 2 people".into(),
             lines: vec!["Alice can view".into(), "Bob can edit".into()],
             action: None,
-            history: None,
         });
 
         let dialog = Widget::accessibility(&widget).expect("open sheet has semantics");
@@ -4088,11 +4056,11 @@ mod accessibility_tests {
         std::fs::write(&file, b"only local copy").unwrap();
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
+            history: None,
             title: t("files-destructive-eviction-title"),
             summary: t_args("files-destructive-eviction-summary", &[arg("count", 1_i64)]),
             lines: vec![t("files-destructive-eviction-loss")],
             action: Some(CollabPanelAction::DestructiveEviction(vec![file.clone()])),
-            history: None,
         });
 
         let dialog = Widget::accessibility(&widget).expect("warning dialog has semantics");

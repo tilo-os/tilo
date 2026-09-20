@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 
+use crate::shell::collab_broker_capnp::LocalSessionLifecycle;
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
 
@@ -427,7 +428,11 @@ fn app_owned_transfer_region(
 
 // Coordinates have already been clamped to the u32-sized pixel buffer. The
 // float-to-integer conversion intentionally rounds outward to retain edges.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Crop endpoints are floor/ceil rounded and clamped to nonnegative u32 frame dimensions before conversion."
+)]
 fn frozen_transfer_frame(
     surface_id: u64,
     source: Rect,
@@ -494,14 +499,20 @@ fn frozen_floating_return_frame(
     })
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Kurbo rect/vector addition translates app-local f64 geometry into desktop coordinates without integer arithmetic."
+)]
 fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The protocol pump keeps authenticated connection events, surface handoffs, and disconnect cleanup in their processing order."
+)]
 fn pump_floating_surface_service(
     service: &FloatingSurfaceService,
     state: &mut State,
@@ -813,7 +824,10 @@ fn pump_floating_surface_service(
     changed
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Kurbo rect/vector arithmetic applies an f64 translation to keep a reachable surface patch within desktop bounds."
+)]
 fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
     let mut offset = vello::kurbo::Vec2::ZERO;
     let reachable = 64.0;
@@ -830,7 +844,10 @@ fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
     rect + offset
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Kurbo point/rect arithmetic applies the same f64 clamp offset to window and content geometry."
+)]
 fn clamp_external_floating_geometry(
     window_rect: Rect,
     content_rect: Rect,
@@ -879,7 +896,10 @@ fn floating_desktop_bounds(outputs: &[Output], fallback_size: (u32, u32)) -> Rec
 /// from becoming stranded in a hole inside the desktop's bounding box. A
 /// reachable 64×64 patch on any real output is enough; otherwise the nearest
 /// output receives the same clamp used at the outside desktop edge.
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Kurbo point subtraction computes f64 distances to choose the nearest reachable output before clamping a surface."
+)]
 fn clamp_external_floating_geometry_to_outputs(
     window_rect: Rect,
     content_rect: Rect,
@@ -914,7 +934,10 @@ fn clamp_external_floating_geometry_to_outputs(
     clamp_external_floating_geometry(window_rect, content_rect, target)
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Kurbo point/rect arithmetic moves each transfer source by the same f64 offset as its rehomed surface."
+)]
 fn rehome_native_floating_surfaces(
     state: &mut State,
     outputs: &[Output],
@@ -1187,6 +1210,34 @@ fn bind_osk_socket() -> Result<(ListeningSocketSource, PathBuf), String> {
 struct TestControlConn {
     reader: BufReader<UnixStream>,
     closed: bool,
+    pending_invocation: Option<PendingTestControlInvocation>,
+    output: Vec<u8>,
+    output_offset: usize,
+}
+
+struct PendingTestControlInvocation {
+    ticket: crate::shell::search::PendingInvocation,
+    action: serde_json::Value,
+}
+
+enum PendingTestControlPoll {
+    Waiting(PendingTestControlInvocation),
+    Ready(test_control::Response),
+}
+
+impl PendingTestControlInvocation {
+    fn poll(self) -> PendingTestControlPoll {
+        match (self.ticket)() {
+            Ok(None) => PendingTestControlPoll::Waiting(self),
+            Ok(Some(receipt)) => {
+                PendingTestControlPoll::Ready(invocation_response(self.action, receipt))
+            }
+            Err(error) => PendingTestControlPoll::Ready(test_control::Response::Err {
+                code: error.code().to_string(),
+                message: error.to_string(),
+            }),
+        }
+    }
 }
 
 impl TestControlConn {
@@ -1198,7 +1249,32 @@ impl TestControlConn {
         Some(Self {
             reader: BufReader::new(stream),
             closed: false,
+            pending_invocation: None,
+            output: Vec::new(),
+            output_offset: 0,
         })
+    }
+
+    fn peer_disconnected(&mut self) -> bool {
+        let mut descriptor = libc::pollfd {
+            fd: self.reader.get_ref().as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: `descriptor` is one initialized `pollfd` and remains live
+        // for this zero-timeout observation. `POLLHUP` distinguishes a peer
+        // that closed the connection from read-side EOF caused only by its
+        // `shutdown(Write)`; the latter must still receive our response.
+        let ready = unsafe { libc::poll(&raw mut descriptor, 1, 0) };
+        if ready == 0 {
+            return false;
+        }
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            eprintln!("nirios compositor: test_control connection check: {error}");
+            return true;
+        }
+        descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
     }
 }
 
@@ -1530,6 +1606,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "provider": a.resource.provider,
                     "id": a.resource.id,
                     "kind": a.kind.label(),
+                    "operation_kind": a.operation_kind,
                     "title": a.title,
                     "subtitle": a.subtitle,
                     "score": a.score,
@@ -1569,11 +1646,13 @@ impl ControlState for FrameBuilderControlState<'_> {
             test_control::ActionRefusal::unknown("control state has no live document")
         })?;
         let chrome_handle = self.fb.chrome_handle();
+        let resource = ResourceRef::new(provider, id);
         let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
-            self.fb.host().action_catalog("", chrome, doc, root, gate)
+            self.fb
+                .host()
+                .action_catalog_for_resource(&resource, chrome, doc, root, gate)
         })
         .map_err(test_control::ActionRefusal::unknown)?;
-        let resource = ResourceRef::new(provider, id);
         let selected = catalog.select(&resource).ok_or_else(|| {
             test_control::ActionRefusal::unknown(format!(
                 "no visible action addressed by ({provider}, {id}) in the current catalogue"
@@ -2077,15 +2156,16 @@ fn execute_invoke_action(
     args: &serde_json::Map<String, serde_json::Value>,
     fb: &FrameBuilder,
     ctx: &mut TestControlCtx,
-) -> Result<crate::shell::search::ActionReceipt, InvokeFailure> {
+) -> Result<crate::shell::search::InvocationDisposition, InvokeFailure> {
     // Re-resolve rather than carry a handle from dispatch: the document is
     // mutable between planning and execution, so we run the current action or nothing.
     let chrome_handle = fb.chrome_handle();
     // Built through the same gate the dispatcher resolved against — without
     // it, a revoked capability wouldn't stop a caller who got past it once.
+    let resource = ResourceRef::new(provider, id);
     let catalog = match with_action_gate(&chrome_handle, |chrome, gate| {
         fb.host()
-            .exact_action_catalog(provider, id, chrome, &ctx.doc, &ctx.root_obj, gate)
+            .action_catalog_for_resource(&resource, chrome, &ctx.doc, &ctx.root_obj, gate)
     }) {
         Ok(catalog) => catalog,
         Err(why) => {
@@ -2098,11 +2178,11 @@ fn execute_invoke_action(
     };
     // The `Ref` above is dropped with the block, so the provider's callback
     // is free to borrow the chrome cell mutably — which most of them do.
-    if let Some(selected) = catalog.select(&ResourceRef::new(provider, id)) {
+    if let Some(selected) = catalog.select(&resource) {
         // Re-bound against *this* resolution's parameters — the catalogue was just
         // rebuilt and may have landed on a different action under the same address.
         let bound = selected
-            .invoke_json(&mut ctx.doc, &ctx.root_obj, &chrome_handle, args)
+            .invoke_json_disposition(&mut ctx.doc, &ctx.root_obj, &chrome_handle, args)
             .map_err(|e| InvokeFailure {
                 code: e.code().to_string(),
                 message: e.to_string(),
@@ -2145,7 +2225,7 @@ fn execute_planned_action(
     fb: &mut FrameBuilder,
     ctx: &mut TestControlCtx,
     state: Option<&mut State>,
-) -> Option<Result<crate::shell::search::ActionReceipt, InvokeFailure>> {
+) -> Option<Result<crate::shell::search::InvocationDisposition, InvokeFailure>> {
     let mut state = state;
     match action {
         PlannedAction::CursorMoved { x, y } => {
@@ -2477,6 +2557,93 @@ fn write_snapshot_png(
 /// Cap on the per-line size: `read_line` buffers the whole line regardless
 /// of size, so an unbounded no-newline stream could OOM the compositor. 64
 /// KiB is well above any legitimate command and below meaningful memory pressure.
+fn invocation_response(
+    action: serde_json::Value,
+    receipt: crate::shell::search::ActionReceipt,
+) -> test_control::Response {
+    test_control::Response::Answer(serde_json::json!({
+        "action": action,
+        "receipt": receipt,
+    }))
+}
+
+fn queue_test_control_response(
+    conn: &mut TestControlConn,
+    response: &test_control::Response,
+) -> PendingConnectionProgress {
+    debug_assert!(
+        conn.output.is_empty(),
+        "a connection must finish its prior response before queueing another"
+    );
+    let mut out = serialise_response(response);
+    out.push('\n');
+    conn.output = out.into_bytes();
+    conn.output_offset = 0;
+    flush_test_control_output(conn)
+}
+
+fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionProgress {
+    while conn.output_offset < conn.output.len() {
+        match conn
+            .reader
+            .get_mut()
+            .write(&conn.output[conn.output_offset..])
+        {
+            Ok(0) => {
+                eprintln!("nirios compositor: test_control write: disconnected");
+                conn.closed = true;
+                return PendingConnectionProgress::Closed;
+            }
+            Ok(written) => conn.output_offset += written,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                return PendingConnectionProgress::OutputPending;
+            }
+            Err(error) => {
+                eprintln!("nirios compositor: test_control write: {error}");
+                conn.closed = true;
+                return PendingConnectionProgress::Closed;
+            }
+        }
+    }
+    if !conn.output.is_empty() {
+        conn.output.clear();
+        conn.output_offset = 0;
+        PendingConnectionProgress::WroteResponse
+    } else {
+        PendingConnectionProgress::Idle
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingConnectionProgress {
+    Idle,
+    Waiting,
+    OutputPending,
+    WroteResponse,
+    Closed,
+}
+
+fn pump_pending_test_control_conn(conn: &mut TestControlConn) -> PendingConnectionProgress {
+    match flush_test_control_output(conn) {
+        PendingConnectionProgress::Idle => {}
+        progress => return progress,
+    }
+    let Some(pending) = conn.pending_invocation.take() else {
+        return PendingConnectionProgress::Idle;
+    };
+    if conn.peer_disconnected() {
+        conn.closed = true;
+        return PendingConnectionProgress::Closed;
+    }
+    match pending.poll() {
+        PendingTestControlPoll::Waiting(pending) => {
+            conn.pending_invocation = Some(pending);
+            PendingConnectionProgress::Waiting
+        }
+        PendingTestControlPoll::Ready(response) => queue_test_control_response(conn, &response),
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "Connection pumping preserves request order, response framing, and frame-state mutation in one transaction to make test-control behavior deterministic."
@@ -2493,6 +2660,14 @@ fn pump_test_control_conn(
     // next frame must reflect; starts the input-latency measurement instrumentation uses.
     let mut injected_input = false;
     loop {
+        match pump_pending_test_control_conn(conn) {
+            PendingConnectionProgress::Waiting
+            | PendingConnectionProgress::OutputPending
+            | PendingConnectionProgress::Closed => {
+                return injected_input;
+            }
+            PendingConnectionProgress::Idle | PendingConnectionProgress::WroteResponse => {}
+        }
         let mut line = String::new();
         match read_bounded_line(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES) {
             Ok(None) => {
@@ -2562,6 +2737,7 @@ fn pump_test_control_conn(
                 // Actions execute before the reply is written; first failure wins, the rest still run.
                 let mut failed: Option<InvokeFailure> = None;
                 let mut receipt: Option<crate::shell::search::ActionReceipt> = None;
+                let mut pending: Option<crate::shell::search::PendingInvocation> = None;
                 for action in &actions {
                     if session.is_locked() {
                         // While locked the socket is captured by the lock surface like live input
@@ -2571,7 +2747,12 @@ fn pump_test_control_conn(
                         execute_planned_action(action, frame_builder, ctx, Some(state))
                     {
                         match outcome {
-                            Ok(admitted) => receipt = Some(admitted),
+                            Ok(crate::shell::search::InvocationDisposition::Accepted(admitted)) => {
+                                receipt = Some(admitted);
+                            }
+                            Ok(crate::shell::search::InvocationDisposition::Pending(ticket)) => {
+                                pending = Some(ticket);
+                            }
                             Err(failure) => {
                                 failed.get_or_insert(failure);
                             }
@@ -2585,31 +2766,36 @@ fn pump_test_control_conn(
                     frame_builder.relayout();
                     frame_builder.reconcile_native_focus(&mut ctx.focus);
                 }
+                let action_response = match &resp {
+                    test_control::Response::Answer(action) => action.clone(),
+                    _ => serde_json::Value::Null,
+                };
+                if let Some(ticket) = pending {
+                    if failed.is_none() {
+                        conn.pending_invocation = Some(PendingTestControlInvocation {
+                            ticket,
+                            action: action_response,
+                        });
+                        return injected_input;
+                    }
+                }
                 let resp = match failed {
                     Some(failure) => test_control::Response::Err {
                         code: failure.code,
                         message: failure.message,
                     },
                     None => match receipt {
-                        Some(receipt) => {
-                            let action = match resp {
-                                test_control::Response::Answer(action) => action,
-                                _ => serde_json::Value::Null,
-                            };
-                            test_control::Response::Answer(serde_json::json!({
-                                "action": action,
-                                "receipt": receipt,
-                            }))
-                        }
+                        Some(receipt) => invocation_response(action_response, receipt),
                         None => resp,
                     },
                 };
-                let mut out = serialise_response(&resp);
-                out.push('\n');
-                if let Err(e) = conn.reader.get_mut().write_all(out.as_bytes()) {
-                    eprintln!("tilo compositor: test_control write: {e}");
-                    conn.closed = true;
-                    return injected_input;
+                match queue_test_control_response(conn, &resp) {
+                    PendingConnectionProgress::Closed
+                    | PendingConnectionProgress::OutputPending => return injected_input,
+                    PendingConnectionProgress::WroteResponse => {}
+                    PendingConnectionProgress::Idle | PendingConnectionProgress::Waiting => {
+                        unreachable!("a queued response must write, wait, or close")
+                    }
                 }
             }
             Err(ReadLineError::TooLarge) => {
@@ -2639,7 +2825,15 @@ fn apply_session_transition(
     transition: SessionTransition,
     backend: &mut dyn Backend,
     pipe: Option<&present::PresentPipe>,
+    local_session: Option<&LocalSessionLifecycle>,
 ) {
+    if let Some(local_session) = local_session {
+        match transition {
+            SessionTransition::Locked => local_session.set_locked(true),
+            SessionTransition::Unlocked => local_session.set_locked(false),
+            SessionTransition::Blanked | SessionTransition::Woke | SessionTransition::Suspend => {}
+        }
+    }
     match transition {
         SessionTransition::Blanked => {
             backend.set_dpms(false);
@@ -2656,6 +2850,32 @@ fn apply_session_transition(
         // Lock/Unlock are reflected via `SessionManager::is_locked`; Suspend is
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
+    }
+}
+
+fn publish_native_session_state(
+    local_session: Option<&LocalSessionLifecycle>,
+    session: &SessionManager,
+    onboarding_active: bool,
+) {
+    if let Some(local_session) = local_session {
+        local_session.publish_native_state(session.is_locked(), onboarding_active);
+    }
+}
+
+fn install_native_session_lifecycle(
+    broker: &crate::shell::collab_broker::BrokerHandle,
+    session: &SessionManager,
+    onboarding_active: bool,
+) -> LocalSessionLifecycle {
+    let local_session = broker.local_session_lifecycle();
+    publish_native_session_state(Some(&local_session), session, onboarding_active);
+    local_session
+}
+
+fn close_native_session_authority(local_session: Option<&LocalSessionLifecycle>) {
+    if let Some(local_session) = local_session {
+        local_session.close();
     }
 }
 
@@ -4123,9 +4343,15 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 }
 
 struct PortalBackend {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Retaining the runtime keeps portal worker tasks alive for the lifetime of the compositor backend."
+    )]
     runtime: tokio::runtime::Runtime,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Retaining the server handle keeps its D-Bus connection, bus name, and object server alive."
+    )]
     server: crate::portal::ServerHandle,
     remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
@@ -4846,6 +5072,9 @@ pub fn run() {
     if let Some(broker) = collab_broker.as_ref() {
         attach_collab_broker_bridges(&mut frame_builder, broker);
     }
+    let mut local_session_lifecycle = collab_broker
+        .as_ref()
+        .map(crate::shell::collab_broker::BrokerHandle::local_session_lifecycle);
     let mut realtime_fabric_bridge = collab_broker
         .as_ref()
         .and_then(crate::shell::collab_broker::BrokerHandle::realtime_fabric_bridge);
@@ -4908,6 +5137,36 @@ pub fn run() {
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`tilo-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
+    let mut desktop_continuation = if crate::compositor::parse_install_mode_from_args()
+        == crate::compositor::InstallMode::HostDesktop
+    {
+        // Readiness has no identity/key authority. The live trusted onboarding
+        // state below gates both its response and the ordinary host-app launch.
+        let runtime = crate::shell::launcher::runtime_dir();
+        // SAFETY: getuid has no arguments or memory contract.
+        let uid = unsafe { libc::getuid() };
+        let pending = dirs::data_local_dir().is_some_and(|data| {
+            crate::shell::desktop_continuation::pending_review(
+                &data.join("qos-imager/migrations/desktop-continuation.json"),
+                uid,
+            )
+        });
+        match crate::shell::desktop_continuation::SessionContinuation::bind(
+            &runtime,
+            &socket_name,
+            uid,
+            pending,
+        ) {
+            Ok(service) => Some(service),
+            Err(error) => {
+                tracing::warn!(%error, "Desktop folder continuation readiness unavailable");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
     ) {
@@ -5104,6 +5363,12 @@ pub fn run() {
             .with_suspend(power_policy.idle_suspend)
     };
     let mut session = SessionManager::new(idle_config, Instant::now());
+    let mut previous_onboarding_active = frame_builder.host().onboarding_active();
+    publish_native_session_state(
+        local_session_lifecycle.as_ref(),
+        &session,
+        previous_onboarding_active,
+    );
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
     // test password (`TILO_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
     let mut lock = LockController::new(
@@ -5344,6 +5609,7 @@ pub fn run() {
         // then stops Tilo's graphical targets and clears the shared user-manager
         // environment before GDM admits the next desktop.
         if os_actions::take_logout_request() {
+            close_native_session_authority(local_session_lifecycle.as_ref());
             close_requested = true;
             continue;
         }
@@ -5501,7 +5767,12 @@ pub fn run() {
                     metrics.note_input(Instant::now());
                     // Any input is activity — reset the idle timer and wake the display if it was blanked.
                     for t in session.note_activity(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
+                        );
                     }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
@@ -5545,6 +5816,7 @@ pub fn run() {
                                         t,
                                         backend.as_mut(),
                                         present_pipe.as_ref(),
+                                        local_session_lifecycle.as_ref(),
                                     );
                                 }
                             }
@@ -5567,7 +5839,12 @@ pub fn run() {
                     } else if is_lock_chord(wev, test_control_ctx.modifiers) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
+                            );
                         }
                     } else if let Some(mk) = crate::shell::media_keys::classify(wev) {
                         // Hardware media/brightness keys belong to the machine, not whichever
@@ -5679,7 +5956,12 @@ pub fn run() {
                     // never also delivered to a client, so no double-handling to guard against.
                     if !session.is_locked() && client_input_allowed(&frame_builder) {
                         for t in session.note_activity(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
+                            );
                         }
                         apply_shell_gesture(&mut frame_builder, action);
                         session_changed = true;
@@ -5889,7 +6171,12 @@ pub fn run() {
         });
         if shell_lock_requested {
             for t in session.request_lock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
+                );
             }
             session_changed = true;
         }
@@ -5912,7 +6199,12 @@ pub fn run() {
                     power_bridge.request_suspend();
                 }
             } else {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
+                );
             }
             // Any session transition (blank/lock/suspend) changes what should be on screen — force a repaint.
             session_changed = true;
@@ -5925,7 +6217,12 @@ pub fn run() {
             match sig {
                 tilo_power_mgmt::PowerSignal::Lock => {
                     for t in session.request_lock(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
+                        );
                     }
                 }
                 tilo_power_mgmt::PowerSignal::PreparingForSleep => {
@@ -5934,7 +6231,12 @@ pub fn run() {
                     // while the async suspend request was in flight.
                     sleep_lock_was_locked |= session.is_locked();
                     for t in session.prepare_for_sleep(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
+                        );
                     }
                     sleep_lock_frame_pending = true;
                     sleep_lock_frame_serial = None;
@@ -5952,7 +6254,12 @@ pub fn run() {
                     // user lock when CanSuspend is refused.
                     if should_unlock_after_suspend_failure(was_prepared, sleep_lock_was_locked) {
                         for t in session.request_unlock(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                            apply_session_transition(
+                                t,
+                                backend.as_mut(),
+                                present_pipe.as_ref(),
+                                local_session_lifecycle.as_ref(),
+                            );
                         }
                     }
                     sleep_lock_was_locked = false;
@@ -5961,7 +6268,12 @@ pub fn run() {
                 tilo_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
                     for t in session.resume_from_sleep(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        apply_session_transition(
+                            t,
+                            backend.as_mut(),
+                            present_pipe.as_ref(),
+                            local_session_lifecycle.as_ref(),
+                        );
                     }
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
                     // returns with no mode/framebuffer/cursor plane; without this, lid close/open is an unrecoverable black screen.
@@ -6026,7 +6338,12 @@ pub fn run() {
         if state.session_lock.take_lock_requested() {
             session_changed = true;
             for t in session.request_lock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                apply_session_transition(
+                    t,
+                    backend.as_mut(),
+                    present_pipe.as_ref(),
+                    local_session_lifecycle.as_ref(),
+                );
             }
         }
         // Async unlock: pick up an in-flight credential verify's result from the
@@ -6038,7 +6355,12 @@ pub fn run() {
             session_changed = true;
             if outcome == UnlockOutcome::Unlocked {
                 for t in session.request_unlock(Instant::now()) {
-                    apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                    apply_session_transition(
+                        t,
+                        backend.as_mut(),
+                        present_pipe.as_ref(),
+                        local_session_lifecycle.as_ref(),
+                    );
                 }
             }
         }
@@ -6553,10 +6875,14 @@ pub fn run() {
         };
         let mut apps_changed =
             frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
-        if take_deferred_peer_sync_activation(
-            &mut deferred_peer_sync,
-            frame_builder.host().onboarding_active(),
-        ) {
+        let onboarding_active = frame_builder.host().onboarding_active();
+        if onboarding_active != previous_onboarding_active {
+            if let Some(local_session) = local_session_lifecycle.as_ref() {
+                local_session.set_onboarding_active(onboarding_active);
+            }
+            previous_onboarding_active = onboarding_active;
+        }
+        if take_deferred_peer_sync_activation(&mut deferred_peer_sync, onboarding_active) {
             // `pump_apps` just observed the trusted onboarding completion.
             // Apps were withheld until this edge, so their first service
             // descriptor always sees the live transport-backed broker.
@@ -6566,6 +6892,11 @@ pub fn run() {
             collab_broker =
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
             if let Some(broker) = collab_broker.as_ref() {
+                local_session_lifecycle = Some(install_native_session_lifecycle(
+                    broker,
+                    &session,
+                    onboarding_active,
+                ));
                 attach_collab_broker_bridges(&mut frame_builder, broker);
                 realtime_fabric_bridge = broker.realtime_fabric_bridge();
                 if let (Some(runtime), Some(bridge)) = (
@@ -6596,6 +6927,15 @@ pub fn run() {
                 }
             }
             apps_changed = true;
+        }
+        if desktop_continuation
+            .as_mut()
+            .is_some_and(|continuation| continuation.pump(onboarding_active))
+            && let Err(error) = crate::shell::host_apps::queue_launch(
+                crate::shell::desktop_continuation::launch_request(),
+            )
+        {
+            tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to qOS");
         }
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
@@ -7362,6 +7702,10 @@ mod tests {
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+    use crate::shell::collab_broker_capnp::{
+        native_consent_fixture_root, run_isolated_native_consent_test,
+        wait_for_local_session_worker_teardown,
+    };
 
     #[test]
     fn consumed_shell_input_is_a_redraw_edge() {
@@ -7904,6 +8248,594 @@ mod tests {
             Some(PathBuf::from("/tmp/ctl.sock")),
         );
         assert_eq!(test_control_path(true, None), None);
+    }
+
+    fn socket_response(reader: &mut BufReader<UnixStream>) -> test_control::Response {
+        use std::io::BufRead as _;
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read response frame");
+        assert!(
+            line.ends_with('\n'),
+            "every response remains newline framed"
+        );
+        serde_json::from_str(line.trim_end()).expect("valid response JSON")
+    }
+
+    fn assert_socket_pending(reader: &mut BufReader<UnixStream>) {
+        use std::io::BufRead as _;
+        match reader.fill_buf() {
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Ok(bytes) if bytes.is_empty() => panic!("socket disconnected while admission pending"),
+            Ok(bytes) => panic!(
+                "admission produced an early response: {}",
+                String::from_utf8_lossy(bytes)
+            ),
+            Err(error) => panic!("checking pending admission response: {error}"),
+        }
+    }
+
+    fn directory_test_tree() -> crate::shell::state::WorkspaceTreeHandle {
+        let mut tree = crate::shell::state::WorkspaceTree::default();
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(71),
+            "Directory socket room",
+        );
+        workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
+        tree.workspaces.push(workspace);
+        tree.set_active(crate::shell::state::WorkspaceId(71));
+        tree.shared()
+    }
+
+    #[test]
+    fn socket_dispatch_retains_real_directory_admission_and_request_order() {
+        use std::io::Write as _;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let tree = directory_test_tree();
+            let mut directory =
+                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                    tree.clone(),
+                );
+            let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
+            frame_builder
+                .host_mut()
+                .attach_app_action_broker(directory.broker.clone());
+            let mut ctx = TestControlCtx::new();
+            let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+            let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+            let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+            let display: Display<State> = Display::new().expect("display");
+            let mut state = State::new(event_loop.handle(), display.handle());
+
+            let (server, client) = UnixStream::pair().expect("socket pair");
+            let mut writer = client.try_clone().expect("client writer");
+            let mut reader = BufReader::new(client);
+            reader
+                .get_mut()
+                .set_nonblocking(true)
+                .expect("nonblocking client");
+            let mut conn = TestControlConn::new(server).expect("server connection");
+
+            writer
+                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                .expect("queue cold directory query");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let _cold = socket_response(&mut reader);
+            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+
+            writer
+                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                .expect("queue warm directory query");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let warm = socket_response(&mut reader);
+            let test_control::Response::Answer(rows) = warm else {
+                panic!("warm directory query must enumerate the action");
+            };
+            let action_id = rows["actions"]
+                .as_array()
+                .expect("enumeration array")
+                .iter()
+                .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
+                .and_then(|row| row["id"].as_str())
+                .expect("directory action id")
+                .to_string();
+
+            let invoke = serde_json::json!({
+                "op": "actions_invoke",
+                "provider": "app-actions",
+                "id": action_id,
+            });
+            let later = serde_json::json!({"op": "actions_enumerate", "query": "settings"});
+            writer
+                .write_all(format!("{invoke}\n{later}\n").as_bytes())
+                .expect("pipeline invoke and later request");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            assert_socket_pending(&mut reader);
+
+            let (other_server, other_client) = UnixStream::pair().expect("second socket pair");
+            let mut other_writer = other_client.try_clone().expect("second writer");
+            let mut other_reader = BufReader::new(other_client);
+            other_reader
+                .get_mut()
+                .set_nonblocking(true)
+                .expect("nonblocking second client");
+            let mut other_conn = TestControlConn::new(other_server).expect("second connection");
+            other_writer
+                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"settings\"}\n")
+                .expect("second connection request");
+            pump_test_control_conn(
+                &mut other_conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            assert!(matches!(
+                socket_response(&mut other_reader),
+                test_control::Response::Answer(_)
+            ));
+
+            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
+                panic!("broker admission must be returned first");
+            };
+            let broker_id = admitted["receipt"]["broker_invocation_id"]
+                .as_u64()
+                .expect("real broker invocation id");
+            assert_ne!(broker_id, 0);
+            assert!(matches!(
+                socket_response(&mut reader),
+                test_control::Response::Answer(_)
+            ));
+            assert_eq!(
+                directory.resolve_count(),
+                1,
+                "one socket command starts admission once"
+            );
+            assert!(
+                directory.take_invocation_actor().is_some(),
+                "the real application stream receives the invocation"
+            );
+
+            // The deliberately pipelined later query replaced the provider's
+            // one retained search page. Rediscover the opaque address before
+            // testing authority revocation; a stale address must fail as
+            // unknown, while this phase is specifically proving that a
+            // currently disclosed address is re-resolved by the broker.
+            writer
+                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                .expect("refresh directory query after pipelined request");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let _ = socket_response(&mut reader);
+            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            writer
+                .write_all(b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n")
+                .expect("read refreshed directory query");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let test_control::Response::Answer(refreshed) = socket_response(&mut reader) else {
+                panic!("refreshed directory query must enumerate the action");
+            };
+            assert!(
+                refreshed["actions"]
+                    .as_array()
+                    .expect("refreshed enumeration array")
+                    .iter()
+                    .any(|row| row["provider"] == "app-actions" && row["id"] == action_id)
+            );
+
+            directory.set_resolve_mode(
+                crate::shell::collab_broker_capnp::tests::DirectoryResolveMode::NotFound,
+            );
+            writer
+                .write_all(format!("{invoke}\n").as_bytes())
+                .expect("queue revoked invocation");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let rejection = socket_response(&mut reader);
+            assert!(
+                matches!(
+                    rejection,
+                    test_control::Response::Err { ref code, ref message }
+                        if code == "action_failed" && message.contains("NotFound")
+                ),
+                "unexpected revoked-action response: {rejection:?}"
+            );
+            assert_eq!(directory.resolve_count(), 2);
+            assert!(
+                directory.take_invocation_actor().is_none(),
+                "revoked authority must not reach the application"
+            );
+        });
+    }
+
+    #[test]
+    fn socket_write_half_close_still_receives_real_directory_admission() {
+        use std::io::Write as _;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let tree = directory_test_tree();
+            let mut directory =
+                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                    tree.clone(),
+                );
+            let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
+            frame_builder
+                .host_mut()
+                .attach_app_action_broker(directory.broker.clone());
+            let mut ctx = TestControlCtx::new();
+            let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+            let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+            let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+            let display: Display<State> = Display::new().expect("display");
+            let mut state = State::new(event_loop.handle(), display.handle());
+
+            let (server, client) = UnixStream::pair().expect("socket pair");
+            let mut writer = client.try_clone().expect("client writer");
+            let mut reader = BufReader::new(client);
+            reader
+                .get_mut()
+                .set_nonblocking(true)
+                .expect("nonblocking client");
+            let mut conn = TestControlConn::new(server).expect("server connection");
+            let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
+            writer.write_all(enumerate).expect("cold directory query");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let _ = socket_response(&mut reader);
+            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            writer.write_all(enumerate).expect("warm directory query");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
+                panic!("warm query must enumerate the directory action");
+            };
+            let action_id = rows["actions"]
+                .as_array()
+                .expect("actions array")
+                .iter()
+                .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
+                .and_then(|row| row["id"].as_str())
+                .expect("directory action id");
+            let invoke = serde_json::json!({
+                "op": "actions_invoke",
+                "provider": "app-actions",
+                "id": action_id,
+            });
+            writer
+                .write_all(format!("{invoke}\n").as_bytes())
+                .expect("queue invocation");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            assert_socket_pending(&mut reader);
+
+            writer
+                .shutdown(std::net::Shutdown::Write)
+                .expect("client finishes its request stream");
+            assert_eq!(
+                pump_pending_test_control_conn(&mut conn),
+                PendingConnectionProgress::Waiting,
+                "write-side EOF must not discard a response the client can still read"
+            );
+            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            assert_eq!(
+                pump_pending_test_control_conn(&mut conn),
+                PendingConnectionProgress::WroteResponse
+            );
+            let test_control::Response::Answer(admitted) = socket_response(&mut reader) else {
+                panic!("half-closed client must receive the broker admission receipt");
+            };
+            assert_ne!(
+                admitted["receipt"]["broker_invocation_id"]
+                    .as_u64()
+                    .expect("real broker invocation id"),
+                0
+            );
+            assert!(directory.take_invocation_actor().is_some());
+        });
+    }
+
+    #[test]
+    fn socket_directory_admission_times_out_and_disconnects_without_restart() {
+        use std::io::Write as _;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let tree = directory_test_tree();
+            let mut directory =
+                crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_membership(
+                    tree.clone(),
+                );
+            let mut frame_builder = FrameBuilder::with_handle(tree, false, (800, 600));
+            frame_builder
+                .host_mut()
+                .attach_app_action_broker(directory.broker.clone());
+            let mut ctx = TestControlCtx::new();
+            let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+            let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+            let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+            let display: Display<State> = Display::new().expect("display");
+            let mut state = State::new(event_loop.handle(), display.handle());
+            let (server, client) = UnixStream::pair().expect("socket pair");
+            let mut writer = client.try_clone().expect("client writer");
+            let mut reader = BufReader::new(client);
+            reader
+                .get_mut()
+                .set_nonblocking(true)
+                .expect("nonblocking client");
+            let mut conn = TestControlConn::new(server).expect("server connection");
+
+            let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
+            writer.write_all(enumerate).expect("cold directory query");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let _ = socket_response(&mut reader);
+            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            writer.write_all(enumerate).expect("warm directory query");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let test_control::Response::Answer(rows) = socket_response(&mut reader) else {
+                panic!("warm query must enumerate the directory action");
+            };
+            let action_id = rows["actions"]
+                .as_array()
+                .expect("actions array")
+                .iter()
+                .find(|row| row["provider"] == "app-actions" && row["title"] == "Open Atlas")
+                .and_then(|row| row["id"].as_str())
+                .expect("directory action id")
+                .to_string();
+            let invoke = serde_json::json!({
+                "op": "actions_invoke",
+                "provider": "app-actions",
+                "id": action_id,
+            });
+
+            crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
+                Some(Duration::ZERO),
+            );
+            writer
+                .write_all(format!("{invoke}\n").as_bytes())
+                .expect("queue timeout invocation");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let timeout_response = socket_response(&mut reader);
+            assert!(
+                matches!(
+                    timeout_response,
+                test_control::Response::Err { ref code, ref message }
+                    if code == "action_failed" && message.contains("timed out")
+                ),
+                "unexpected timeout response: {timeout_response:?}"
+            );
+            crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
+                None,
+            );
+            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            assert!(directory.take_invocation_actor().is_none());
+
+            writer
+                .write_all(enumerate)
+                .expect("refresh invalidated directory page");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let _ = socket_response(&mut reader);
+            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            writer
+                .write_all(enumerate)
+                .expect("read refreshed directory page");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let _ = socket_response(&mut reader);
+
+            writer
+                .write_all(format!("{invoke}\n").as_bytes())
+                .expect("queue invocation before disconnect");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            assert_socket_pending(&mut reader);
+            drop(reader);
+            drop(writer);
+            assert_eq!(
+                pump_pending_test_control_conn(&mut conn),
+                PendingConnectionProgress::Closed
+            );
+            crate::shell::collab_broker_capnp::tests::drain_directory_bridge(&directory).await;
+            assert!(directory.take_invocation_actor().is_none());
+        });
+        crate::shell::search::providers::live_app_actions::set_directory_start_timeout_for_test(
+            None,
+        );
+    }
+
+    #[test]
+    fn nonblocking_socket_retains_a_partial_response_until_the_frame_is_complete() {
+        use std::io::Read as _;
+
+        let (server, mut client) = UnixStream::pair().expect("socket pair");
+        client.set_nonblocking(true).expect("nonblocking client");
+        let mut conn = TestControlConn::new(server).expect("server connection");
+        let response = test_control::Response::Answer(serde_json::json!({
+            "blob": "x".repeat(8 * 1024 * 1024),
+        }));
+        let mut expected = serialise_response(&response).into_bytes();
+        expected.push(b'\n');
+
+        assert_eq!(
+            queue_test_control_response(&mut conn, &response),
+            PendingConnectionProgress::OutputPending,
+            "a payload larger than the Unix receive buffer must exercise WouldBlock"
+        );
+        assert!(
+            conn.output_offset > 0,
+            "the first write must be a real short write"
+        );
+        assert!(conn.output_offset < conn.output.len());
+
+        let mut received = Vec::with_capacity(expected.len());
+        let mut chunk = [0_u8; 64 * 1024];
+        for _ in 0..1024 {
+            loop {
+                match client.read(&mut chunk) {
+                    Ok(0) => panic!("socket closed before the retained frame completed"),
+                    Ok(read) => received.extend_from_slice(&chunk[..read]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("read retained response: {error}"),
+                }
+            }
+            match flush_test_control_output(&mut conn) {
+                PendingConnectionProgress::OutputPending => {}
+                PendingConnectionProgress::WroteResponse => break,
+                progress => panic!("unexpected output progress: {progress:?}"),
+            }
+        }
+        loop {
+            match client.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => received.extend_from_slice(&chunk[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("read final retained response: {error}"),
+            }
+        }
+        assert!(
+            conn.output.is_empty(),
+            "the entire queued frame was flushed"
+        );
+        assert_eq!(
+            received, expected,
+            "backpressure must not truncate or duplicate JSON bytes"
+        );
     }
 
     #[test]
@@ -8585,6 +9517,174 @@ mod tests {
 
     // session lock chord / unlock detection
 
+    #[test]
+    fn native_consent_bootstrap_and_onboarding_publish_actual_state() {
+        const TEST: &str = "compositor::native::tests::native_consent_bootstrap_and_onboarding_publish_actual_state";
+        run_isolated_native_consent_test(TEST, || {
+            let mut frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle.snapshot().expect("native bootstrap").liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active
+            );
+
+            let fixture = native_consent_fixture_root();
+            frame_builder.enable_onboarding(fixture.join("onboarding"));
+            publish_native_session_state(
+                Some(&lifecycle),
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle
+                    .snapshot()
+                    .expect("onboarding revocation")
+                    .liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Inactive
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_lock_is_synchronous_and_unlock_uses_fresh_generation() {
+        const TEST: &str = "compositor::native::tests::native_consent_lock_is_synchronous_and_unlock_uses_fresh_generation";
+        run_isolated_native_consent_test(TEST, || {
+            use crate::compositor::backend::{Backend, BackendEvent, Output};
+            use vello::Scene;
+
+            #[derive(Default)]
+            struct SpyBackend {
+                outputs: Vec<Output>,
+            }
+            impl Backend for SpyBackend {
+                fn submit_frame(&mut self, _scene: &Scene, _output: OutputId) {}
+                fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
+                fn outputs(&self) -> &[Output] {
+                    &self.outputs
+                }
+            }
+
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            let active = lifecycle.snapshot().expect("active native session");
+            let mut backend = SpyBackend::default();
+
+            apply_session_transition(
+                SessionTransition::Locked,
+                &mut backend,
+                None,
+                Some(&lifecycle),
+            );
+            let locked = lifecycle.snapshot().expect("synchronous lock revoke");
+            assert_eq!(
+                locked.liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Inactive
+            );
+            assert!(locked.generation > active.generation);
+
+            apply_session_transition(
+                SessionTransition::Unlocked,
+                &mut backend,
+                None,
+                Some(&lifecycle),
+            );
+            let unlocked = lifecycle.snapshot().expect("fresh unlock");
+            assert_eq!(
+                unlocked.liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active
+            );
+            assert!(unlocked.generation > locked.generation);
+            assert_eq!(unlocked.epoch, active.epoch);
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_deferred_install_publishes_before_continuation() {
+        const TEST: &str = "compositor::native::tests::native_consent_deferred_install_publishes_before_continuation";
+        run_isolated_native_consent_test(TEST, || {
+            let mut deferred = true;
+            assert!(take_deferred_peer_sync_activation(&mut deferred, false));
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn deferred collaboration broker");
+            let session = SessionManager::new(
+                IdleConfig {
+                    blank_timeout: None,
+                    lock_timeout: None,
+                    suspend_timeout: None,
+                },
+                Instant::now(),
+            );
+            let lifecycle = install_native_session_lifecycle(
+                &broker,
+                &session,
+                frame_builder.host().onboarding_active(),
+            );
+            assert_eq!(
+                lifecycle
+                    .snapshot()
+                    .expect("deferred native state")
+                    .liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Active,
+                "the deferred broker must publish current native state before launch preparation"
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
+    #[test]
+    fn native_consent_logout_closes_before_loop_exit() {
+        const TEST: &str =
+            "compositor::native::tests::native_consent_logout_closes_before_loop_exit";
+        run_isolated_native_consent_test(TEST, || {
+            let frame_builder = FrameBuilder::new((800, 600));
+            let broker = spawn_session_collab_broker(&frame_builder.chrome_handle(), None)
+                .expect("spawn native collaboration broker");
+            let lifecycle = broker.local_session_lifecycle();
+            lifecycle.publish_native_state(false, false);
+            close_native_session_authority(Some(&lifecycle));
+            assert_eq!(
+                lifecycle.snapshot().expect("logout close").liveness,
+                crate::shell::collab_broker_capnp::LocalSessionLiveness::Closed
+            );
+            drop(broker);
+            wait_for_local_session_worker_teardown(&lifecycle);
+        });
+    }
+
     /// `apply_session_transition` maps Blanked/Woke to `set_dpms`;
     /// Locked/Unlocked are pure state and touch no backend — asserted via a spy backend recording `set_dpms` calls.
     #[test]
@@ -8609,10 +9709,10 @@ mod tests {
         }
 
         let mut backend = SpyBackend::default();
-        apply_session_transition(SessionTransition::Blanked, &mut backend, None);
-        apply_session_transition(SessionTransition::Woke, &mut backend, None);
-        apply_session_transition(SessionTransition::Locked, &mut backend, None);
-        apply_session_transition(SessionTransition::Unlocked, &mut backend, None);
+        apply_session_transition(SessionTransition::Blanked, &mut backend, None, None);
+        apply_session_transition(SessionTransition::Woke, &mut backend, None, None);
+        apply_session_transition(SessionTransition::Locked, &mut backend, None, None);
+        apply_session_transition(SessionTransition::Unlocked, &mut backend, None, None);
         // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
     }

@@ -32,6 +32,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
@@ -167,9 +168,13 @@ pub struct Autocomplete {
 
 impl Autocomplete {
     pub fn new() -> Self {
+        Self::with_input(TextInput::local())
+    }
+
+    fn with_input(input: TextInput) -> Self {
         Self {
             id: String::new(),
-            input: TextInput::local().with_kind(TextInputKind::Search),
+            input: input.with_kind(TextInputKind::Search),
             suggester: None,
             suggestions: Vec::new(),
             highlight: None,
@@ -184,10 +189,16 @@ impl Autocomplete {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn new_with_controlled_input(input: TextInput) -> Self {
+        Self::with_input(input)
+    }
+
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
-        self.input = std::mem::replace(&mut self.input, TextInput::local()).with_id(id);
+        self.input.set_id(id);
         self
     }
 
@@ -455,7 +466,7 @@ impl Autocomplete {
         let color = if armed {
             Some(accent)
         } else if hovered {
-            Some(tokens.colors.surface_white_10)
+            Some(tokens.colors.overlay_medium)
         } else {
             None
         };
@@ -512,8 +523,10 @@ impl Autocomplete {
             renderer_font_size(tokens.typography.scale.base, text_renderer.text_scale());
         let detail_size =
             renderer_font_size(tokens.typography.scale.sm, text_renderer.text_scale());
-        let rendered_text_height = f64::from(tokens.typography.scale.base);
-        let rendered_detail_height = f64::from(tokens.typography.scale.sm);
+        let rendered_text_height = f64::from(text_renderer.measure(&s.label, text_size, None).1);
+        let rendered_detail_height = s.detail.as_ref().map_or(0.0, |detail| {
+            f64::from(text_renderer.measure(detail, detail_size, None).1)
+        });
         let large_text = self.text_scale >= 1.5;
         let icon_px = ICON_PX * self.text_scale.min(1.5);
         let mut x = row.x0 + ROW_PAD_X;
@@ -658,6 +671,14 @@ impl Autocomplete {
 }
 
 impl Widget for Autocomplete {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        self.input.install_control_custody(domain, attachment);
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
 
     fn build_layout(
@@ -720,30 +741,30 @@ impl Widget for Autocomplete {
         let tokens = &theme.tokens;
         let accent = tokens.colors.accent.stops[ACCENT_PRIMARY_IDX];
         let shape = RoundedRect::from_rect(panel, f64::from(tokens.radii.md));
-        // Raised panel + hairline border, matching the toolkit's other popovers.
+        // The suggestion list is a Panel (HIG §9.1 / §9.5): panel ground and
+        // panel edge, like the toolkit's other popovers.
         scene.fill(
             Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(panel, f64::from(tokens.radii.md)),
         );
 
-        let text_size =
-            renderer_font_size(tokens.typography.scale.base, text_renderer.text_scale());
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
 
         // No rows yet: render the lone status line (loading / no matches).
         if self.suggestions.is_empty() {
             if let Some(status) = &self.status {
-                let rendered_text_height = f64::from(tokens.typography.scale.base);
-                let ty = panel.y0 + (panel.height() - rendered_text_height) / 2.0;
+                let (_, status_h) = text_renderer.measure(status, text_size, None);
+                let ty = panel.y0 + (panel.height() - f64::from(status_h)) / 2.0;
                 text_renderer.draw_text(
                     scene,
                     status,
@@ -1035,6 +1056,27 @@ mod tests {
         );
         assert!(!ac.is_open());
         assert!(!ac.perform_action_at(&Action::Activate, &[key], &mut state, &automerge::ROOT));
+    }
+
+    #[test]
+    fn controlled_autocomplete_with_id_preserves_supplied_input() {
+        let autocomplete = Autocomplete::new_with_controlled_input(
+            TextInput::local_with_language("en_US")
+                .with_spellcheck(false)
+                .with_autocorrect(false)
+                .with_initial_value("sentinel route"),
+        )
+        .with_id("route-search");
+
+        assert_eq!(Widget::test_id(&autocomplete), Some("route-search"));
+        let semantics = Widget::accessibility(&autocomplete).expect("text field semantics");
+        assert_eq!(semantics.semantic_key.as_deref(), Some("route-search"));
+        assert_eq!(semantics.action_target.as_deref(), Some("route-search"));
+        assert_eq!(autocomplete.text(), "sentinel route");
+        assert_eq!(autocomplete.input.spell_language(), "en_US");
+        assert!(!autocomplete.input.spellcheck_enabled());
+        assert!(!autocomplete.input.autocorrect_enabled());
+        assert_eq!(autocomplete.input.kind(), TextInputKind::Search);
     }
 
     fn suggester_paths() -> Autocomplete {

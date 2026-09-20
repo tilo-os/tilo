@@ -581,6 +581,40 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn canonical_worker_native_publication_failure_does_not_acknowledge_visible_bytes() {
+        use atomic_file::test_support::Checkpoint;
+        let root = TempDir::new().unwrap();
+        let store = Arc::new(DocStore::open_canonical_at("dev.tilo.test", root.path()).unwrap());
+        let mut doc = store.new_canonical_document().unwrap();
+        let mut saver = Autosave::try_spawn_canonical(&store, Duration::ZERO).unwrap();
+        saver.request_checkpoint(&mut doc);
+        saver.try_flush().unwrap();
+        let before = saver.durability_snapshot().durable_heads;
+        doc.put(ROOT, "body", "visible-but-uncommitted").unwrap();
+        *store.faults.publication_failure.lock().unwrap() = Some(Checkpoint::BeforeCommit);
+        saver.request_checkpoint(&mut doc);
+        assert!(saver.try_flush().is_err());
+        assert!(
+            store.faults.publication_failure.lock().unwrap().is_none(),
+            "actual worker consumed the fault"
+        );
+        assert_eq!(saver.durability_snapshot().durable_heads, before);
+        assert!(saver.last_error().is_some());
+        let loaded = AutoCommit::load(&std::fs::read(&store.document).unwrap()).unwrap();
+        assert_eq!(
+            loaded.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+            Some("visible-but-uncommitted")
+        );
+        saver.request_checkpoint(&mut doc);
+        saver.try_flush().unwrap();
+        assert_eq!(
+            saver.durability_snapshot().durable_heads,
+            Some(doc.get_heads())
+        );
+        assert!(saver.last_error().is_none());
+    }
+
+    #[test]
     fn canonical_initial_spawn_failure_and_duplicate_handle_keep_gate() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap());

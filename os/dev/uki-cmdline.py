@@ -9,6 +9,7 @@
     uki-cmdline.py replace OLD=VALUE NEW=VALUE [UKI]
     uki-cmdline.py osrel [UKI]
     uki-cmdline.py set-osrel KEY=VALUE [KEY=VALUE ...] UKI
+    uki-cmdline.py boot-digest UKI
 
 Run on a booted machine: the ESP is mounted at /boot on the sealed layout, so the
 UKI is under /boot/EFI/Linux and root can write it. With no path it finds the single
@@ -120,6 +121,10 @@ def find_cmdline(data):
         if name == ".cmdline":
             return raw, min(rsz, vsz)
     raise SystemExit("this PE has no .cmdline section, so it is not a UKI")
+
+
+def cmdline_whitespace(byte):
+    return byte in b" \n\t"
 
 
 def find_cmdline_room(data):
@@ -293,7 +298,8 @@ def default_uki():
 
 def main(argv):
     if len(argv) < 2 or argv[1] not in (
-        "show", "blank", "remove", "set", "append", "replace", "osrel", "set-osrel"
+        "show", "blank", "remove", "set", "append", "replace", "osrel", "set-osrel",
+        "boot-digest"
     ):
         raise SystemExit(__doc__)
     action = argv[1]
@@ -385,12 +391,18 @@ def main(argv):
             # The token to replace, taken from the command line as it stands rather
             # than assembled here: its length is what has to be preserved, and only
             # the file knows it.
-            start = cmdline.find(key + b"=")
-            if start < 0:
+            starts = [index for index in range(len(cmdline))
+                      if (index == 0 or cmdline_whitespace(cmdline[index - 1]))
+                      and cmdline.startswith(key + b"=", index)]
+            if not starts:
                 raise SystemExit(f"{key.decode()}= is not on the sealed command line:\n  "
                                  + cmdline.rstrip(b"\0").decode("utf-8", "replace"))
+            if len(starts) != 1:
+                raise SystemExit(f"expected exactly one {key.decode()} token, found {len(starts)}")
+            start = starts[0]
             end = start
-            while end < len(cmdline) and cmdline[end : end + 1] not in (b" ", b"\0", b"\n"):
+            while (end < len(cmdline) and cmdline[end] != 0
+                   and not cmdline_whitespace(cmdline[end])):
                 end += 1
             token = cmdline[start:end]
             if action == "replace" and token != old:

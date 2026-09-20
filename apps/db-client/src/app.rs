@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::Write;
+use std::ops::{Deref, DerefMut};
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
@@ -37,7 +38,10 @@ use tilo_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Reso
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{CodeEditor, EmptyState, FlapState, Language, SplitLayout, Widget};
+use ui::widget::{
+    Button, ButtonFace, CodeEditor, ContextMenu, EmptyState, FlapState, Language, MenuItem,
+    SplitLayout, TaffyTreeExt, Widget,
+};
 
 use crate::connect_modal::ConnectModal;
 use crate::doc::{ConnectionsDoc, EditorDoc};
@@ -50,6 +54,10 @@ use crate::theme_ext::ThemeExt;
 const SIDEBAR_W: f64 = 268.0;
 const TABBAR_H: f64 = 38.0;
 const TOOLBAR_H: f64 = 40.0;
+const QUERY_DIVIDER_H: f64 = 10.0;
+const QUERY_RESULT_STRIP_H: f64 = 26.0;
+const QUERY_GRID_MIN_H: f64 = 56.0;
+const QUERY_BOTTOM_PAD: f64 = 8.0;
 /// Below this allocated width (logical px) the sidebar stops being a docked
 /// pane and becomes an overlay flap. Chosen so the 268px sidebar plus a
 /// usable editor/results column stop fitting comfortably side by side.
@@ -57,6 +65,68 @@ const BREAKPOINT: f64 = 820.0;
 /// Hamburger toggle box drawn at the left of the tab bar when the sidebar is
 /// not fully docked-open, so a collapsed sidebar can be summoned.
 const TOGGLE_SIZE: f64 = 26.0;
+/// Horizontal inset shared by the sidebar's connection rows and its
+/// "New connection" button so they read as one column.
+const SIDEBAR_INSET: f64 = 8.0;
+
+/// Main-panel band heights measured from the renderer the panel paints with.
+///
+/// Refreshed at the top of every draw (and re-laid out in the same frame when
+/// they change), so the tab bar, toolbar, result strip and sidebar toggle grow
+/// with their labels at larger text scales instead of the 26 px "Query" pill
+/// touching the edges of a fixed 38 px bar. At 1× every value equals its
+/// constant: a 13 px label measures 16.25 px, so a tab pill is 16.25 + 2·4 ≤ 26
+/// inside the 38 px bar (6 px inset either side), a toolbar button
+/// 16.25 + 2·5 ≤ 28 inside the 40 px toolbar, and the 12 px result-strip line
+/// (15 px) sits in 15 + 2·5 ≤ 26. Tab bar and toolbar controls are inset 6 px
+/// from their band (`inset`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Bands {
+    tabbar_h: f64,
+    toolbar_h: f64,
+    strip_h: f64,
+    /// Sidebar toggle button side; square, centred in the tab bar.
+    toggle: f64,
+    /// Vertical inset of a tab pill / toolbar button inside its band.
+    inset: f64,
+}
+
+impl Default for Bands {
+    fn default() -> Self {
+        Self {
+            tabbar_h: TABBAR_H,
+            toolbar_h: TOOLBAR_H,
+            strip_h: QUERY_RESULT_STRIP_H,
+            toggle: TOGGLE_SIZE,
+            inset: 6.0,
+        }
+    }
+}
+
+impl Bands {
+    fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let one = Self::default();
+        let tab_h = f64::from(tr.measure("Ag", 13.0, None).1);
+        let toolbar_label_h = f64::from(tr.measure("Ag", 13.0, None).1);
+        let strip_label_h = f64::from(tr.measure("Ag", 12.0, None).1);
+        // Label padding: one spacing step inside a tab pill; 5 px (the
+        // toolbar's own off-grid value) inside a button and the strip.
+        let pill_pad = f64::from(theme.tokens.spacing.s1);
+        let tabbar_h = (tab_h + 2.0 * pill_pad + 2.0 * one.inset).max(TABBAR_H);
+        let toolbar_h = (toolbar_label_h + 2.0 * 5.0 + 2.0 * one.inset).max(TOOLBAR_H);
+        let strip_h = (strip_label_h + 2.0 * 5.0).max(QUERY_RESULT_STRIP_H);
+        Self {
+            tabbar_h,
+            toolbar_h,
+            strip_h,
+            toggle: (tabbar_h - 2.0 * one.inset).max(TOGGLE_SIZE),
+            inset: one.inset,
+        }
+    }
+}
+/// Minimum toolbar control widths; measured labels widen them when needed.
+const RUN_MIN_W: f64 = 150.0;
+const SNIPPETS_MIN_W: f64 = 110.0;
 /// The single externally-invokable effect protocol for live database work.
 /// Unlike document actions, these payloads contain only stable object ids and
 /// SQL/table names — never passwords or live driver handles.
@@ -82,6 +152,599 @@ pub(crate) fn catalog_resource_id(kind: &str, components: &[&str]) -> String {
         )
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct QueryLayout {
+    toolbar: Rect,
+    editor: Rect,
+    divider: Rect,
+    result_strip: Rect,
+    grid: Rect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QueryChildSig {
+    empty: bool,
+    tab: MainTab,
+    resize_menu: bool,
+}
+
+/// Stable retained identity for the immediate-mode embedded editor. The app
+/// still owns its rectangle and paint pass, while focus/accessibility actions
+/// see the real `CodeEditor` as a sibling of the query divider. Its absolute
+/// measuring leaf shapes at the embedded allocation without joining the app's
+/// visual flow.
+struct QueryEditorChild {
+    editor: CodeEditor,
+    measure_width: f32,
+}
+
+impl QueryEditorChild {
+    fn new(editor: CodeEditor) -> Self {
+        Self {
+            editor,
+            measure_width: 1.0,
+        }
+    }
+
+    fn set_measure_width(&mut self, width: f64) -> bool {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the editor width is a bounded logical window dimension"
+        )]
+        let width = width.max(1.0) as f32;
+        let changed = (self.measure_width - width).abs() > 0.5;
+        if changed {
+            self.measure_width = width;
+        }
+        changed
+    }
+}
+
+impl Deref for QueryEditorChild {
+    type Target = CodeEditor;
+
+    fn deref(&self) -> &Self::Target {
+        &self.editor
+    }
+}
+
+impl DerefMut for QueryEditorChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.editor
+    }
+}
+
+impl Widget for QueryEditorChild {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // Let the shared editor capture theme scale, then keep its measuring
+        // leaf out of the app's visual flow. Its width is the real embedded
+        // editor allocation learned by the preceding composition pass.
+        let node = self.editor.build_layout(taffy, theme, node_map);
+        let _ = taffy.set_style(
+            node,
+            Style {
+                position: Position::Absolute,
+                size: Size {
+                    width: length(self.measure_width),
+                    height: Dimension::auto(),
+                },
+                ..Default::default()
+            },
+        );
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        self.editor.measure(known, available, text_renderer)
+    }
+
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        self.editor.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "QueryEditorChild"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        self.editor.test_id()
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.editor.get_rect()
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.editor.is_focusable()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.editor.set_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.editor.is_focused()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.editor.cursor_shape(point)
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.editor.accessibility()
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.editor.perform_action(action, state, path)
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.editor.wants_pointer_capture()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.editor.ime_cursor_rect()
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.editor.ime_purpose()
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.editor.needs_commit()
+    }
+
+    fn on_commit(&mut self) {
+        self.editor.on_commit();
+    }
+
+    fn get_state(&self) -> Option<String> {
+        self.editor.get_state()
+    }
+
+    fn set_state(&mut self, state: &str) {
+        self.editor.set_state(state);
+    }
+
+    fn text_review(&self) -> Option<(usize, String)> {
+        self.editor.text_review()
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.editor.layout_needs_measure()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum QueryResizeCommand {
+    Adjust(f64),
+    Reset,
+    OpenMenu,
+}
+
+struct QueryDivider {
+    rect: Rect,
+    focused: bool,
+    automatic: bool,
+    effective_height: f64,
+    pending: Option<QueryResizeCommand>,
+}
+
+impl QueryDivider {
+    fn new() -> Self {
+        Self {
+            rect: Rect::ZERO,
+            focused: false,
+            automatic: true,
+            effective_height: 0.0,
+            pending: None,
+        }
+    }
+
+    fn set_geometry(&mut self, rect: Rect, effective_height: f64, automatic: bool) {
+        self.rect = rect;
+        self.effective_height = effective_height;
+        self.automatic = automatic;
+    }
+
+    fn take_command(&mut self) -> Option<QueryResizeCommand> {
+        self.pending.take()
+    }
+
+    fn handle_key(&mut self, key: &Key) -> bool {
+        if !self.focused {
+            return false;
+        }
+        self.pending = match key {
+            Key::Named(NamedKey::ArrowDown) => Some(QueryResizeCommand::Adjust(24.0)),
+            Key::Named(NamedKey::ArrowUp) => Some(QueryResizeCommand::Adjust(-24.0)),
+            Key::Named(NamedKey::Home) => Some(QueryResizeCommand::Reset),
+            Key::Named(NamedKey::Enter | NamedKey::ContextMenu) => {
+                Some(QueryResizeCommand::OpenMenu)
+            }
+            Key::Character(text) if text.as_str() == " " => Some(QueryResizeCommand::OpenMenu),
+            _ => None,
+        };
+        self.pending.is_some()
+    }
+}
+
+impl Widget for QueryDivider {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(QUERY_DIVIDER_H as f32),
+            },
+            ..Default::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let center = self.rect.center();
+        let track = Rect::new(
+            self.rect.x0 + 8.0,
+            center.y - 0.5,
+            self.rect.x1 - 8.0,
+            center.y + 0.5,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.border_standard,
+            None,
+            &track,
+        );
+        let grip = Rect::new(
+            center.x - 24.0,
+            center.y - 1.5,
+            center.x + 24.0,
+            center.y + 1.5,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if self.focused {
+                theme.accent_primary
+            } else {
+                theme.text_dim
+            },
+            None,
+            &grip.to_rounded_rect(1.5),
+        );
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+            && self.handle_key(logical_key)
+        {
+            *handled = true;
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "QueryDivider"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("db.query-divider")
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.rect
+            .contains(point)
+            .then_some(winit::window::CursorIcon::RowResize)
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Slider)
+                .with_name("Query editor height")
+                .with_description(
+                    "Arrow keys resize. Home resets automatic height. Enter opens resize actions.",
+                )
+                .with_value(if self.automatic {
+                    format!("Automatic, {:.0} pixels", self.effective_height)
+                } else {
+                    format!("Manual, {:.0} pixels", self.effective_height)
+                })
+                .with_state(
+                    ui::a11y::AccessState::new()
+                        .focusable(true)
+                        .focused(self.focused),
+                ),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        self.pending = match action {
+            ui::a11y::Action::Increment => Some(QueryResizeCommand::Adjust(24.0)),
+            ui::a11y::Action::Decrement => Some(QueryResizeCommand::Adjust(-24.0)),
+            ui::a11y::Action::Activate | ui::a11y::Action::ShowContextMenu => {
+                Some(QueryResizeCommand::OpenMenu)
+            }
+            _ => None,
+        };
+        self.pending.is_some()
+    }
+}
+
+struct QueryResizeMenu {
+    menu: ContextMenu,
+}
+
+impl QueryResizeMenu {
+    fn new() -> Self {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Increase query height", || {}));
+        menu.push(MenuItem::action("Decrease query height", || {}));
+        menu.push(MenuItem::action("Reset automatic query height", || {}));
+        Self { menu }
+    }
+
+    fn open(&mut self, anchor: Rect, viewport: Rect) {
+        self.menu.open_anchored(anchor, viewport);
+        self.menu.focus_first_action();
+    }
+
+    fn reanchor(&mut self, anchor: Rect, viewport: Rect) {
+        self.menu.reanchor(anchor, viewport);
+    }
+
+    fn is_open(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    fn close(&mut self) {
+        self.menu.close();
+    }
+
+    fn take_selection(&mut self) -> Option<usize> {
+        self.menu.take_selection()
+    }
+}
+
+impl Widget for QueryResizeMenu {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style::default());
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.menu
+            .draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        self.menu.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "QueryResizeMenu"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("db.query-resize-menu")
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.menu.get_rect()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let mut node = self.menu.accessibility()?;
+        for (index, child) in node.children.iter_mut().enumerate() {
+            let target = match index {
+                0 => "db.increase-query-height",
+                1 => "db.decrease-query-height",
+                2 => "db.reset-query-height",
+                _ => continue,
+            };
+            *child = child
+                .clone()
+                .with_action_target(target)
+                .with_bounds(self.menu.item_rect(index)?);
+        }
+        Some(node)
+    }
+
+    fn perform_action_at(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if matches!(action, ui::a11y::Action::Activate)
+            && let Some(index) = key_path.first().and_then(|key| usize::try_from(*key).ok())
+            && index < 3
+        {
+            self.menu.click_item(index);
+            return true;
+        }
+        false
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let index = match target {
+            "db.increase-query-height" => 0,
+            "db.decrease-query-height" => 1,
+            "db.reset-query-height" => 2,
+            _ => return false,
+        };
+        self.menu.click_item(index);
+        true
+    }
+
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        [
+            "db.increase-query-height",
+            "db.decrease-query-height",
+            "db.reset-query-height",
+        ]
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, id)| self.menu.item_rect(index).map(|rect| (id.into(), rect)))
+        .collect()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -137,11 +800,17 @@ pub(crate) fn encode_operation(operation: &DbClientOperation) -> EncodedAction {
 )]
 pub struct DbClientApp {
     session: Session,
-    editor: CodeEditor,
+    editor: QueryEditorChild,
+    editor_node: Option<NodeId>,
     /// Honest first-run surface. Kept as a real child widget so its primary
     /// action participates in focus navigation and the accessibility tree.
     empty_state: EmptyState,
     empty_state_node: Option<NodeId>,
+    query_divider: QueryDivider,
+    query_divider_node: Option<NodeId>,
+    query_resize_menu: QueryResizeMenu,
+    query_resize_menu_node: Option<NodeId>,
+    last_child_sig: Option<QueryChildSig>,
     grid: GridView,
     data_grid: GridView,
     tree: SchemaTree,
@@ -172,6 +841,17 @@ pub struct DbClientApp {
     /// Cached sub-rects, recomputed each `apply_layout`.
     sidebar_rect: Rect,
     main_rect: Rect,
+    query_layout: QueryLayout,
+    /// Main-panel band heights from the last draw (see [`Bands`]).
+    bands: Bands,
+    /// User-requested editor height. Relayout clamps only the effective
+    /// rectangle so a temporary short window cannot erase this preference.
+    query_height_request: Option<f64>,
+    /// Pointer origin plus effective height captured when a divider drag starts.
+    query_drag: Option<(f64, f64)>,
+    /// Requests one bounded composition rebuild after the embedded editor's
+    /// real available width changes, so its shared measure pass can reshape.
+    query_measure_dirty: bool,
     /// Adaptive sidebar flap: docked beside the content on a wide window,
     /// an overlay flap over a scrim on a narrow one. Drives the eased slide
     /// and the breakpoint default-reconciliation.
@@ -365,7 +1045,8 @@ impl DbClientApp {
         let mut app = Self {
             session,
             demo,
-            editor,
+            editor: QueryEditorChild::new(editor),
+            editor_node: None,
             empty_state: EmptyState::new("No connection yet")
                 .with_icon(ui::icons::Icon::HardDrive)
                 .with_message(
@@ -374,6 +1055,11 @@ impl DbClientApp {
                 .with_action("New connection")
                 .with_action_id("db.new-connection"),
             empty_state_node: None,
+            query_divider: QueryDivider::new(),
+            query_divider_node: None,
+            query_resize_menu: QueryResizeMenu::new(),
+            query_resize_menu_node: None,
+            last_child_sig: None,
             grid: GridView::new(),
             data_grid: GridView::new(),
             tree: SchemaTree::new(),
@@ -389,6 +1075,11 @@ impl DbClientApp {
             cursor: Point::ZERO,
             sidebar_rect: Rect::ZERO,
             main_rect: Rect::ZERO,
+            query_layout: QueryLayout::default(),
+            bands: Bands::default(),
+            query_height_request: None,
+            query_drag: None,
+            query_measure_dirty: false,
             flap: FlapState::open_when_docked(),
             last_tick: Instant::now(),
             scrim_rect: Rect::ZERO,
@@ -724,6 +1415,18 @@ impl DbClientApp {
         self.status_bubble.poke(Instant::now());
     }
 
+    /// `--shots --connect`: open the "New connection" sheet so the modal can
+    /// be reviewed from a single headless frame.
+    pub fn open_connect_modal_for_shots(&mut self) {
+        self.modal.open_new();
+    }
+
+    /// `--shots --confirm`: arm the destructive-statement confirmation with
+    /// a representative statement so the dialog can be reviewed headlessly.
+    pub fn arm_query_confirmation_for_shots(&mut self) {
+        self.pending_query_confirmation = Some("DROP TABLE albums;".to_string());
+    }
+
     /// Recompute every region rect from the root rect, honouring the flap's
     /// resolved layout and eased reveal.
     ///
@@ -774,34 +1477,70 @@ impl DbClientApp {
         );
         self.tree.set_rect(tree_rect);
 
-        // Main panel: tab bar, then tab content.
-        let content_top = self.main_rect.y0 + TABBAR_H;
+        // Main panel: tab bar, then tab content. Band heights are the ones the
+        // last draw measured (the 1× constants until text grows past them).
+        let bands = self.bands;
+        let content_top = self.main_rect.y0 + bands.tabbar_h;
         match self.session.tab {
             MainTab::Query => {
-                // toolbar, editor (top 45%), grid (rest)
-                let toolbar_y = content_top;
-                let editor_top = toolbar_y + TOOLBAR_H;
-                let avail = self.main_rect.y1 - editor_top;
-                let editor_h = (avail * 0.42).clamp(120.0, 360.0);
-                let editor_rect = Rect::new(
+                let toolbar = Rect::new(
+                    self.main_rect.x0,
+                    content_top,
+                    self.main_rect.x1,
+                    content_top + bands.toolbar_h,
+                );
+                let editor_top = toolbar.y1;
+                let editor_min = self.editor.line_height() * 3.0;
+                let editor_max = (self.main_rect.y1
+                    - editor_top
+                    - QUERY_DIVIDER_H
+                    - bands.strip_h
+                    - QUERY_GRID_MIN_H
+                    - QUERY_BOTTOM_PAD)
+                    .max(0.0);
+                let automatic =
+                    self.editor.inner().content_height() + self.editor.line_height() * 2.0;
+                let requested = self.query_height_request.unwrap_or(automatic);
+                let editor_h = requested.clamp(editor_min.min(editor_max), editor_max);
+                let editor = Rect::new(
                     self.main_rect.x0 + 8.0,
                     editor_top,
                     self.main_rect.x1 - 8.0,
                     editor_top + editor_h,
                 );
-                self.editor.set_rect(editor_rect);
-                let grid_rect = Rect::new(
+                let divider =
+                    Rect::new(editor.x0, editor.y1, editor.x1, editor.y1 + QUERY_DIVIDER_H);
+                let result_strip =
+                    Rect::new(editor.x0, divider.y1, editor.x1, divider.y1 + bands.strip_h);
+                let grid = Rect::new(
                     self.main_rect.x0 + 8.0,
-                    editor_top + editor_h + 30.0, // gap for the result message strip
+                    result_strip.y1,
                     self.main_rect.x1 - 8.0,
                     self.main_rect.y1 - 8.0,
                 );
-                self.grid.set_rect(grid_rect);
+                self.query_layout = QueryLayout {
+                    toolbar,
+                    editor,
+                    divider,
+                    result_strip,
+                    grid,
+                };
+                if self.query_resize_menu.is_open() {
+                    self.query_resize_menu.reanchor(divider, self.main_rect);
+                }
+                self.query_measure_dirty |= self.editor.set_measure_width(editor.width());
+                self.query_divider.set_geometry(
+                    divider,
+                    editor.height(),
+                    self.query_height_request.is_none(),
+                );
+                self.editor.set_rect(editor);
+                self.grid.set_rect(grid);
             }
             MainTab::Data => {
                 let grid_rect = Rect::new(
                     self.main_rect.x0 + 8.0,
-                    content_top + TOOLBAR_H,
+                    content_top + bands.toolbar_h,
                     self.main_rect.x1 - 8.0,
                     self.main_rect.y1 - 8.0,
                 );
@@ -825,6 +1564,55 @@ impl DbClientApp {
             0.0
         };
         32.0 + rows * 44.0 + empty_hint + 30.0 + 16.0
+    }
+
+    fn request_query_height(&mut self, height: Option<f64>) {
+        self.query_height_request = height.map(|height| height.max(0.0));
+        self.relayout();
+        self.dirty = true;
+    }
+
+    fn adjust_query_height(&mut self, delta: f64) {
+        let base = self
+            .query_height_request
+            .unwrap_or_else(|| self.query_layout.editor.height());
+        self.request_query_height(Some(base + delta));
+    }
+
+    fn open_query_resize_menu(&mut self) {
+        self.query_resize_menu
+            .open(self.query_layout.divider, self.main_rect);
+        self.dirty = true;
+    }
+
+    fn apply_query_resize_command(&mut self, command: QueryResizeCommand) {
+        match command {
+            QueryResizeCommand::Adjust(delta) => self.adjust_query_height(delta),
+            QueryResizeCommand::Reset => self.request_query_height(None),
+            QueryResizeCommand::OpenMenu => self.open_query_resize_menu(),
+        }
+    }
+
+    fn drain_query_resize_actions(&mut self) {
+        if let Some(command) = self.query_divider.take_command() {
+            self.apply_query_resize_command(command);
+        }
+        if let Some(index) = self.query_resize_menu.take_selection() {
+            match index {
+                0 => self.adjust_query_height(24.0),
+                1 => self.adjust_query_height(-24.0),
+                2 => self.request_query_height(None),
+                _ => {}
+            }
+        }
+    }
+
+    fn child_sig(&self) -> QueryChildSig {
+        QueryChildSig {
+            empty: self.session.connections.is_empty(),
+            tab: self.session.tab,
+            resize_menu: self.session.tab == MainTab::Query && self.query_resize_menu.is_open(),
+        }
     }
 
     /// Whether the sidebar pane should be painted this frame. Once the overlay
@@ -1381,6 +2169,7 @@ impl Widget for DbClientApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        self.drain_query_resize_actions();
         // Accessibility activation is delivered directly to the focused child;
         // drain its semantic action here and enter the same modal flow as a
         // pointer press.
@@ -1441,7 +2230,28 @@ impl Widget for DbClientApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let empty_state_node = self.empty_state.build_layout(taffy, theme, node_map);
+        self.empty_state_node = None;
+        self.editor_node = None;
+        self.query_divider_node = None;
+        self.query_resize_menu_node = None;
+        let mut children = Vec::new();
+        if self.session.connections.is_empty() {
+            let child = self.empty_state.build_layout(taffy, theme, node_map);
+            self.empty_state_node = Some(child);
+            children.push(child);
+        } else if self.session.tab == MainTab::Query {
+            let child = self.editor.build_layout(taffy, theme, node_map);
+            self.editor_node = Some(child);
+            children.push(child);
+            let child = self.query_divider.build_layout(taffy, theme, node_map);
+            self.query_divider_node = Some(child);
+            children.push(child);
+            if self.query_resize_menu.is_open() {
+                let child = self.query_resize_menu.build_layout(taffy, theme, node_map);
+                self.query_resize_menu_node = Some(child);
+                children.push(child);
+            }
+        }
         let node = match taffy.new_with_children(
             Style {
                 size: Size {
@@ -1451,7 +2261,7 @@ impl Widget for DbClientApp {
                 flex_grow: 1.0,
                 ..Default::default()
             },
-            &[empty_state_node],
+            &children,
         ) {
             Ok(node) => node,
             // `TaffyTree::new_leaf` only ever returns `Err` when the tree is
@@ -1461,7 +2271,6 @@ impl Widget for DbClientApp {
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
-        self.empty_state_node = Some(empty_state_node);
         node
     }
 
@@ -1510,7 +2319,7 @@ impl Widget for DbClientApp {
                 .apply_layout(taffy, empty_state_node, origin);
             self.empty_state.apply_layout_external(Rect::new(
                 self.main_rect.x0,
-                self.main_rect.y0 + TABBAR_H,
+                self.main_rect.y0 + self.bands.tabbar_h,
                 self.main_rect.x1,
                 self.main_rect.y1,
             ));
@@ -1528,6 +2337,17 @@ impl Widget for DbClientApp {
         let p = theme.db();
         // App background.
         scene.fill(Fill::NonZero, transform, p.panel_bg, None, &self.rect);
+
+        // Band heights from the renderer this frame paints with. When they
+        // change (first frame, text-scale change) re-lay out now, so the
+        // frame paints and hit-tests the same geometry.
+        let bands = Bands::measure(tr, theme);
+        if bands != self.bands {
+            self.bands = bands;
+            self.relayout();
+        }
+        self.grid.measure_bands(tr);
+        self.data_grid.measure_bands(tr);
 
         // Bind result sets to grids when the worker has delivered a fresh one
         // (the session bumps these generations as replies land).
@@ -1569,6 +2389,11 @@ impl Widget for DbClientApp {
         self.draw_sidebar_toggle(scene, transform, tr, theme);
 
         self.draw_status_bubble(scene, transform, tr, theme);
+
+        if self.session.tab == MainTab::Query && self.query_resize_menu.is_open() {
+            self.query_resize_menu
+                .draw(scene, transform, tr, theme, presence);
+        }
 
         if self.pending_query_confirmation.is_some() {
             self.draw_query_confirmation_modal(scene, transform, tr, theme);
@@ -1637,10 +2462,49 @@ impl Widget for DbClientApp {
             }
         }
 
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.on_cursor_moved(position.x, position.y, scale_factor);
+        if self.query_resize_menu.is_open()
+            && let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+            && self.handle_reserved_shortcut(logical_key, *modifiers)
+        {
+            *handled = true;
+            return;
+        }
+
+        if self.query_resize_menu.is_open() {
+            self.query_resize_menu.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                self.query_resize_menu_node.unwrap_or(node_id),
+                taffy,
+            );
+            self.drain_query_resize_actions();
+            if *handled {
+                return;
             }
+        }
+
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.on_cursor_moved(position.x, position.y, scale_factor);
+        }
+        if self.handle_query_divider_pointer(event, handled, focus_target) {
+            return;
+        }
+
+        match event {
+            WindowEvent::CursorMoved { .. } => {}
             WindowEvent::MouseWheel { delta, .. } => {
                 self.on_mouse_wheel(delta, *modifiers, handled);
             }
@@ -1678,7 +2542,7 @@ impl Widget for DbClientApp {
                 path,
                 handled,
                 focus_target,
-                node_id,
+                self.editor_node.unwrap_or(node_id),
                 taffy,
             );
             if self.editor.take_dirty().is_some() {
@@ -1695,13 +2559,16 @@ impl Widget for DbClientApp {
         self.rect
     }
 
-    fn is_focusable(&self) -> bool {
-        !self.session.connections.is_empty()
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        if self.session.tab == MainTab::Query && self.query_resize_menu.is_open() {
+            self.query_resize_menu.test_rects()
+        } else {
+            Vec::new()
+        }
     }
 
-    fn set_focus(&mut self, focused: bool) {
-        self.editor
-            .set_focus(focused && !self.session.connections.is_empty());
+    fn is_focusable(&self) -> bool {
+        false
     }
 
     fn is_focused(&self) -> bool {
@@ -1714,6 +2581,9 @@ impl Widget for DbClientApp {
         if self.session.connections.is_empty() {
             return self.empty_state.cursor_shape(point);
         }
+        if self.session.tab == MainTab::Query && self.query_layout.divider.contains(point) {
+            return Some(winit::window::CursorIcon::RowResize);
+        }
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.cursor_shape(point))
             .flatten()
@@ -1725,6 +2595,18 @@ impl Widget for DbClientApp {
 
     fn is_layout_dirty(&self) -> bool {
         true
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let measurement_changed = std::mem::take(&mut self.query_measure_dirty);
+        let mut child_changed = false;
+        for child in self.children_mut() {
+            child_changed |= child.take_structure_dirty();
+        }
+        let sig = self.child_sig();
+        let self_changed = self.last_child_sig != Some(sig);
+        self.last_child_sig = Some(sig);
+        measurement_changed || child_changed || self_changed
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1851,15 +2733,19 @@ impl Widget for DbClientApp {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
-        if self.session.connections.is_empty() {
-            return false;
-        }
-        self.session.tab == MainTab::Query && self.editor.perform_action(action, state, path)
+        let _ = (action, state, path);
+        false
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
         if self.session.connections.is_empty() {
             vec![&self.empty_state]
+        } else if self.session.tab == MainTab::Query {
+            let mut children: Vec<&dyn Widget> = vec![&self.editor, &self.query_divider];
+            if self.query_resize_menu.is_open() {
+                children.push(&self.query_resize_menu);
+            }
+            children
         } else {
             Vec::new()
         }
@@ -1868,15 +2754,23 @@ impl Widget for DbClientApp {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.session.connections.is_empty() {
             vec![&mut self.empty_state]
+        } else if self.session.tab == MainTab::Query {
+            let mut children: Vec<&mut dyn Widget> =
+                vec![&mut self.editor, &mut self.query_divider];
+            if self.query_resize_menu.is_open() {
+                children.push(&mut self.query_resize_menu);
+            }
+            children
         } else {
             Vec::new()
         }
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        !self.session.connections.is_empty()
-            && self.session.tab == MainTab::Query
-            && self.editor.wants_pointer_capture()
+        self.query_drag.is_some()
+            || (!self.session.connections.is_empty()
+                && self.session.tab == MainTab::Query
+                && self.editor.wants_pointer_capture())
     }
 
     fn needs_commit(&self) -> bool {
@@ -1920,7 +2814,7 @@ impl DbClientApp {
         scene.fill(
             Fill::NonZero,
             t,
-            Color::from_rgba8(0, 0, 0, 155),
+            theme.tokens.colors.surfaces.scrim,
             None,
             &self.rect,
         );
@@ -1934,16 +2828,16 @@ impl DbClientApp {
         scene.fill(
             Fill::NonZero,
             t,
-            theme.bg_primary,
+            ui::chrome::panel_ground(theme),
             None,
             &panel.to_rounded_rect(10.0),
         );
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &panel.to_rounded_rect(10.0),
+            &ui::surface::edge_outline(panel, 10.0),
         );
         tr.draw_text(
             scene,
@@ -2011,45 +2905,29 @@ impl DbClientApp {
             panel.x1 - 20.0,
             panel.y1 - 16.0,
         );
-        scene.fill(
-            Fill::NonZero,
-            t,
-            theme.bg_app,
-            None,
-            &self.confirm_cancel_btn.to_rounded_rect(6.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            t,
-            theme.tokens.colors.semantic.danger,
-            None,
-            &self.confirm_run_btn.to_rounded_rect(6.0),
-        );
-        tr.draw_text(
+        // Both actions paint through the shared face: the neutral one gets
+        // its rest edge, the destructive one the danger palette, and the
+        // labels centre on their measured line instead of a fixed offset.
+        Button::paint(
             scene,
-            "Cancel",
-            12.0,
-            theme.text_primary,
-            t * Affine::translate((
-                self.confirm_cancel_btn.x0 + 20.0,
-                self.confirm_cancel_btn.y0 + 8.0,
-            )),
-            None,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(self.confirm_cancel_btn, "Cancel")
+                .radius(6.0)
+                .text_size(12.0)
+                .hovered(self.confirm_cancel_btn.contains(self.cursor)),
         );
-        tr.draw_text(
+        Button::paint(
             scene,
-            "Run",
-            12.0,
-            theme
-                .tokens
-                .colors
-                .on_surface(theme.tokens.colors.semantic.danger)
-                .ink,
-            t * Affine::translate((
-                self.confirm_run_btn.x0 + 21.0,
-                self.confirm_run_btn.y0 + 8.0,
-            )),
-            None,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(self.confirm_run_btn, "Run")
+                .danger()
+                .radius(6.0)
+                .text_size(12.0)
+                .hovered(self.confirm_run_btn.contains(self.cursor)),
         );
     }
 
@@ -2069,6 +2947,57 @@ impl DbClientApp {
             self.data_grid.hover_row = self.data_grid.row_hit(self.cursor);
         }
         self.tree.set_cursor(self.cursor);
+    }
+
+    fn handle_query_divider_pointer(
+        &mut self,
+        event: &WindowEvent,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+    ) -> bool {
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.query_drag = None;
+            return false;
+        }
+        if self.session.connections.is_empty() || self.session.tab != MainTab::Query {
+            return false;
+        }
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.query_layout.divider.contains(self.cursor) => {
+                self.query_drag = Some((self.cursor.y, self.query_layout.editor.height()));
+                self.editor.set_focused(false);
+                self.query_divider.set_focus(true);
+                *focus_target = self.query_divider_node;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } if self.query_layout.divider.contains(self.cursor) => {
+                self.editor.set_focused(false);
+                self.query_divider.set_focus(true);
+                *focus_target = self.query_divider_node;
+                self.open_query_resize_menu();
+            }
+            WindowEvent::CursorMoved { .. } if self.query_drag.is_some() => {
+                let (origin_y, origin_height) = self.query_drag.unwrap_or_default();
+                self.request_query_height(Some(origin_height + self.cursor.y - origin_y));
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.query_drag.is_some() => {
+                self.query_drag = None;
+            }
+            _ => return false,
+        }
+        *handled = true;
+        true
     }
 
     fn on_mouse_wheel(
@@ -2121,26 +3050,14 @@ impl DbClientApp {
     }
 
     fn on_key_pressed(&mut self, logical_key: &Key, modifiers: Modifiers, handled: &mut bool) {
-        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-        // Global shortcut: Ctrl+Enter runs regardless of focus.
-        if ctrl {
-            if let Key::Named(NamedKey::Enter) = logical_key {
-                if let Some(sql) = self.pending_query_confirmation.take() {
-                    self.run_sql_effect(sql);
-                    *handled = true;
-                    return;
-                }
-                self.run_current_query();
-                *handled = true;
-                return;
-            }
-            if let Key::Character(c) = logical_key
-                && c.eq_ignore_ascii_case("n")
-            {
-                self.modal.open_new();
-                *handled = true;
-                return;
-            }
+        if self.handle_reserved_shortcut(logical_key, modifiers) {
+            *handled = true;
+            return;
+        }
+        if self.session.tab == MainTab::Query && self.query_divider.handle_key(logical_key) {
+            self.drain_query_resize_actions();
+            *handled = true;
+            return;
         }
         // Esc closes the snippet menu, then dismisses an open overlay flap
         // (in docked mode Esc leaves the sidebar untouched).
@@ -2163,6 +3080,28 @@ impl DbClientApp {
                 *handled = true;
             }
         }
+    }
+
+    fn handle_reserved_shortcut(&mut self, logical_key: &Key, modifiers: Modifiers) -> bool {
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        if !ctrl {
+            return false;
+        }
+        if matches!(logical_key, Key::Named(NamedKey::Enter)) {
+            if let Some(sql) = self.pending_query_confirmation.take() {
+                self.run_sql_effect(sql);
+            } else {
+                self.run_current_query();
+            }
+            return true;
+        }
+        if let Key::Character(c) = logical_key
+            && c.eq_ignore_ascii_case("n")
+        {
+            self.modal.open_new();
+            return true;
+        }
+        false
     }
 
     /// Whether sidebar widgets (connection rows, schema tree, new-connection
@@ -2190,6 +3129,7 @@ impl DbClientApp {
 
         // Click into the editor body focuses it (editor handles caret).
         if self.session.tab == MainTab::Query && self.editor.rect().contains(c) {
+            self.query_divider.set_focus(false);
             self.editor.set_focused(true);
         } else {
             self.editor.set_focused(false);
@@ -2270,6 +3210,8 @@ impl DbClientApp {
         for (tab, r) in self.tab_rects.clone() {
             if r.contains(c) {
                 self.session.tab = tab;
+                self.query_divider.set_focus(false);
+                self.query_resize_menu.close();
                 if tab == MainTab::Data {
                     self.session.load_table_data();
                 }
@@ -2410,7 +3352,7 @@ impl DbClientApp {
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.border_standard,
+            ui::surface::edge_on(p.sidebar_bg),
             None,
             &Line::new(Point::new(r.x1, r.y0), Point::new(r.x1, r.y1)),
         );
@@ -2461,7 +3403,7 @@ impl DbClientApp {
     ) {
         let p = theme.db();
         let r = self.sidebar_rect;
-        let row = Rect::new(r.x0 + 6.0, y, r.x1 - 6.0, y + 40.0);
+        let row = Rect::new(r.x0 + SIDEBAR_INSET, y, r.x1 - SIDEBAR_INSET, y + 40.0);
         self.conn_rects.push((idx, row));
         let is_active = idx == active;
         if is_active {
@@ -2607,7 +3549,7 @@ impl DbClientApp {
         }
 
         // "New connection" button.
-        let btn = Rect::new(r.x0 + 8.0, y, r.x1 - 8.0, y + 30.0);
+        let btn = Rect::new(r.x0 + SIDEBAR_INSET, y, r.x1 - SIDEBAR_INSET, y + 30.0);
         self.new_conn_btn = btn;
         let btn_color = if btn.contains(self.cursor) {
             theme.accent_hover
@@ -2615,12 +3557,14 @@ impl DbClientApp {
             theme.accent_primary
         };
         scene.fill(Fill::NonZero, t, btn_color, None, &btn.to_rounded_rect(6.0));
+        let label = "+  New connection";
+        let (_, lh) = tr.measure(label, 12.0, None);
         tr.draw_text(
             scene,
-            "+  New connection",
+            label,
             12.0,
             Color::WHITE,
-            t * Affine::translate((btn.x0 + 12.0, btn.y0 + 8.0)),
+            t * Affine::translate((btn.x0 + 12.0, btn.y0 + (btn.height() - f64::from(lh)) / 2.0)),
             None,
         );
     }
@@ -2648,7 +3592,7 @@ impl DbClientApp {
         }
 
         match self.session.tab {
-            MainTab::Query => self.draw_query_tab(scene, t, tr, theme),
+            MainTab::Query => self.draw_query_tab(scene, t, tr, theme, presence),
             MainTab::Data => self.draw_data_tab(scene, t, tr, theme),
             MainTab::Structure => self.draw_structure_tab(scene, t, tr, theme),
         }
@@ -2663,17 +3607,18 @@ impl DbClientApp {
     ) -> Rect {
         let p = theme.db();
         // Tab bar.
+        let bands = self.bands;
         let bar = Rect::new(
             self.main_rect.x0,
             self.main_rect.y0,
             self.main_rect.x1,
-            self.main_rect.y0 + TABBAR_H,
+            self.main_rect.y0 + bands.tabbar_h,
         );
         scene.fill(Fill::NonZero, t, p.header_bg, None, &bar);
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.border_standard,
+            ui::surface::edge_on(p.header_bg),
             None,
             &Line::new(Point::new(bar.x0, bar.y1), Point::new(bar.x1, bar.y1)),
         );
@@ -2682,7 +3627,7 @@ impl DbClientApp {
         // Reserve space for the hamburger toggle at the left of the tab bar
         // whenever the sidebar isn't fully docked-open.
         let toggle_inset = if self.show_toggle() {
-            TOGGLE_SIZE + 14.0
+            bands.toggle + 14.0
         } else {
             0.0
         };
@@ -2691,7 +3636,7 @@ impl DbClientApp {
             let label = tab.label();
             let (lw, _) = tr.measure(label, 13.0, None);
             let w = f64::from(lw) + 28.0;
-            let tab_rect = Rect::new(x, bar.y0 + 6.0, x + w, bar.y1 - 6.0);
+            let tab_rect = Rect::new(x, bar.y0 + bands.inset, x + w, bar.y1 - bands.inset);
             self.tab_rects.push((tab, tab_rect));
             let active = tab == self.session.tab;
             if active {
@@ -2716,12 +3661,16 @@ impl DbClientApp {
             } else {
                 theme.text_dim
             };
+            let (_, lh) = tr.measure(label, 13.0, None);
             tr.draw_text(
                 scene,
                 label,
                 13.0,
                 color,
-                t * Affine::translate((x + 14.0, bar.y0 + 11.0)),
+                t * Affine::translate((
+                    x + 14.0,
+                    tab_rect.y0 + (tab_rect.height() - f64::from(lh)) / 2.0,
+                )),
                 None,
             );
             x += w + 4.0;
@@ -2730,13 +3679,16 @@ impl DbClientApp {
         // Selected-table breadcrumb on the right of the tab bar.
         if let Some(relation) = &self.session.selected_relation {
             let crumb = format!("{} · {}", relation.schema, relation.name);
-            let (cw, _) = tr.measure(&crumb, 12.0, None);
+            let (cw, ch) = tr.measure(&crumb, 12.0, None);
             tr.draw_text(
                 scene,
                 &crumb,
                 12.0,
                 theme.text_dim,
-                t * Affine::translate((bar.x1 - f64::from(cw) - 14.0, bar.y0 + 12.0)),
+                t * Affine::translate((
+                    bar.x1 - f64::from(cw) - 14.0,
+                    bar.y0 + (bar.height() - f64::from(ch)) / 2.0,
+                )),
                 None,
             );
         }
@@ -2763,8 +3715,9 @@ impl DbClientApp {
         let p = theme.db();
         let bar_y0 = self.main_rect.y0;
         let bx = self.main_rect.x0 + 10.0;
-        let by = bar_y0 + (TABBAR_H - TOGGLE_SIZE) / 2.0;
-        let btn = Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE);
+        let size = self.bands.toggle;
+        let by = bar_y0 + (self.bands.tabbar_h - size) / 2.0;
+        let btn = Rect::new(bx, by, bx + size, by + size);
         self.toggle_btn = btn;
 
         let bg = if btn.contains(self.cursor) {
@@ -2772,17 +3725,10 @@ impl DbClientApp {
         } else {
             p.header_bg
         };
-        scene.fill(Fill::NonZero, t, bg, None, &btn.to_rounded_rect(6.0));
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            theme.border_standard,
-            None,
-            &btn.to_rounded_rect(6.0),
-        );
+        ui::surface::card(scene, t, btn, 6.0, bg);
 
-        let cx = btn.x0 + TOGGLE_SIZE / 2.0;
-        let cy = btn.y0 + TOGGLE_SIZE / 2.0;
+        let cx = btn.x0 + size / 2.0;
+        let cy = btn.y0 + size / 2.0;
         let open = self.flap.reveal() > 0.5;
         if open {
             // Close "X" while the sidebar is showing.
@@ -2827,24 +3773,27 @@ impl DbClientApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         let p = theme.db();
         // Toolbar.
-        let toolbar = Rect::new(
-            self.main_rect.x0,
-            self.main_rect.y0 + TABBAR_H,
-            self.main_rect.x1,
-            self.main_rect.y0 + TABBAR_H + TOOLBAR_H,
-        );
+        let toolbar = self.query_layout.toolbar;
         scene.fill(Fill::NonZero, t, p.panel_bg, None, &toolbar);
 
-        // Run button.
-        let enlarged_text = theme.text_scale > 1.25;
+        // Run button. Both toolbar controls size themselves from their
+        // measured labels and centre those labels on the measured line
+        // height, so "Run" and "Snippets" share one centre line instead of
+        // two different hand-tuned offsets.
+        let run_label = "▶  Run";
+        let run_hint = "⌘↵";
+        let (run_lw, run_lh) = tr.measure(run_label, 13.0, None);
+        let (hint_w, hint_h) = tr.measure(run_hint, 12.0, None);
+        let run_w = (14.0 + f64::from(run_lw) + 16.0 + f64::from(hint_w) + 14.0).max(RUN_MIN_W);
         let run = Rect::new(
             toolbar.x0 + 10.0,
-            toolbar.y0 + 6.0,
-            toolbar.x0 + if enlarged_text { 150.0 } else { 160.0 },
-            toolbar.y1 - 6.0,
+            toolbar.y0 + self.bands.inset,
+            toolbar.x0 + 10.0 + run_w,
+            toolbar.y1 - self.bands.inset,
         );
         self.run_btn = run;
         let run_color = if self.run_hover {
@@ -2855,29 +3804,36 @@ impl DbClientApp {
         scene.fill(Fill::NonZero, t, run_color, None, &run.to_rounded_rect(6.0));
         tr.draw_text(
             scene,
-            "▶  Run",
+            run_label,
             13.0,
             Color::WHITE,
-            t * Affine::translate((run.x0 + 14.0, run.y0 + 7.0)),
+            t * Affine::translate((
+                run.x0 + 14.0,
+                run.y0 + (run.height() - f64::from(run_lh)) / 2.0,
+            )),
             None,
         );
-        if !enlarged_text {
-            tr.draw_text(
-                scene,
-                "⌘↵",
-                12.0,
-                Color::from_rgba8(255, 255, 255, 190),
-                t * Affine::translate((run.x1 - 32.0, run.y0 + 7.0)),
-                None,
-            );
-        }
+        tr.draw_text(
+            scene,
+            run_hint,
+            12.0,
+            theme.tokens.colors.on_surface(run_color).ink_dim,
+            t * Affine::translate((
+                run.x1 - 14.0 - f64::from(hint_w),
+                run.y0 + (run.height() - f64::from(hint_h)) / 2.0,
+            )),
+            None,
+        );
 
         // Snippets button.
+        let snip_label = "Snippets ▾";
+        let (snip_lw, snip_lh) = tr.measure(snip_label, 12.5, None);
+        let snip_w = (12.0 + f64::from(snip_lw) + 12.0).max(SNIPPETS_MIN_W);
         let snip = Rect::new(
             run.x1 + 8.0,
-            toolbar.y0 + 6.0,
-            run.x1 + if enlarged_text { 164.0 } else { 118.0 },
-            toolbar.y1 - 6.0,
+            toolbar.y0 + self.bands.inset,
+            run.x1 + 8.0 + snip_w,
+            toolbar.y1 - self.bands.inset,
         );
         self.snippet_btn = snip;
         let snip_color = if snip.contains(self.cursor) || self.snippets_open {
@@ -2885,34 +3841,25 @@ impl DbClientApp {
         } else {
             theme.bg_primary
         };
-        scene.fill(
-            Fill::NonZero,
-            t,
-            snip_color,
-            None,
-            &snip.to_rounded_rect(6.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            theme.border_standard,
-            None,
-            &snip.to_rounded_rect(6.0),
-        );
+        ui::surface::card(scene, t, snip, 6.0, snip_color);
         tr.draw_text(
             scene,
-            "Snippets ▾",
+            snip_label,
             12.5,
             theme.text_primary,
-            t * Affine::translate((snip.x0 + 12.0, snip.y0 + 8.0)),
+            t * Affine::translate((
+                snip.x0 + 12.0,
+                snip.y0 + (snip.height() - f64::from(snip_lh)) / 2.0,
+            )),
             None,
         );
 
         // Editor.
         self.editor.draw_embedded(scene, t, tr, theme);
+        self.query_divider.draw(scene, t, tr, theme, presence);
 
         // Result message strip between editor and grid.
-        let strip_y = self.editor.rect().y1 + 4.0;
+        let strip_y = self.query_layout.result_strip.y0;
         self.confirm_cancel_btn = Rect::ZERO;
         self.confirm_run_btn = Rect::ZERO;
         if self.pending_query_confirmation.is_none() {
@@ -2926,12 +3873,17 @@ impl DbClientApp {
                 RunStatus::Busy(m) => (m.clone(), theme.accent_primary),
                 RunStatus::Idle => ("Ready".to_string(), theme.text_dim),
             };
+            let strip_h = self.query_layout.result_strip.height();
+            let (_, mh) = tr.measure(&msg, 12.0, None);
             tr.draw_text(
                 scene,
                 &msg,
                 12.0,
                 color,
-                t * Affine::translate((self.main_rect.x0 + 12.0, strip_y + 4.0)),
+                t * Affine::translate((
+                    self.main_rect.x0 + 12.0,
+                    strip_y + (strip_h - f64::from(mh)) / 2.0,
+                )),
                 None,
             );
         }
@@ -2970,19 +3922,20 @@ impl DbClientApp {
             self.snippet_btn.x0 + 240.0,
             self.snippet_btn.y1 + 2.0 + items.len() as f64 * 28.0,
         );
+        // The snippets menu is a Panel: panel ground plus its derived border.
         scene.fill(
             Fill::NonZero,
             t,
-            theme.bg_primary,
+            ui::chrome::panel_ground(theme),
             None,
             &menu.to_rounded_rect(8.0),
         );
         scene.stroke(
             &Stroke::new(1.0),
             t,
-            theme.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &menu.to_rounded_rect(8.0),
+            &ui::surface::edge_outline(menu, 8.0),
         );
         let mut y = menu.y0;
         for (name, _) in items {
@@ -2990,12 +3943,13 @@ impl DbClientApp {
             if item.contains(self.cursor) {
                 scene.fill(Fill::NonZero, t, p.hover, None, &item);
             }
+            let (_, nh) = tr.measure(name, 12.0, None);
             tr.draw_text(
                 scene,
                 name,
                 12.0,
                 theme.text_primary,
-                t * Affine::translate((item.x0 + 12.0, y + 7.0)),
+                t * Affine::translate((item.x0 + 12.0, y + (28.0 - f64::from(nh)) / 2.0)),
                 None,
             );
             y += 28.0;
@@ -3004,14 +3958,21 @@ impl DbClientApp {
 
     fn draw_data_tab(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let p = theme.db();
+        let bands = self.bands;
         let toolbar = Rect::new(
             self.main_rect.x0,
-            self.main_rect.y0 + TABBAR_H,
+            self.main_rect.y0 + bands.tabbar_h,
             self.main_rect.x1,
-            self.main_rect.y0 + TABBAR_H + TOOLBAR_H,
+            self.main_rect.y0 + bands.tabbar_h + bands.toolbar_h,
         );
         scene.fill(Fill::NonZero, t, p.panel_bg, None, &toolbar);
 
+        // Both toolbar messages centre on the toolbar's measured line rather
+        // than sitting at fixed 11/12 px offsets that only fit 1× text.
+        let centred = |tr: &mut TextRenderer, text: &str, size: f32| {
+            let (_, lh) = tr.measure(text, size, None);
+            toolbar.y0 + (toolbar.height() - f64::from(lh)) / 2.0
+        };
         match (&self.session.selected_relation, &self.session.data_result) {
             (Some(relation), Some(res)) => {
                 let total = self.session.selected_table_rows();
@@ -3021,23 +3982,26 @@ impl DbClientApp {
                     "{}.{}   ·   rows {from}–{to} of {total}",
                     relation.schema, relation.name
                 );
+                let iy = centred(tr, &info, 13.0);
                 tr.draw_text(
                     scene,
                     &info,
                     13.0,
                     theme.text_primary,
-                    t * Affine::translate((toolbar.x0 + 12.0, toolbar.y0 + 11.0)),
+                    t * Affine::translate((toolbar.x0 + 12.0, iy)),
                     None,
                 );
                 self.data_grid.draw(scene, t, tr, theme, res);
             }
             _ => {
+                let hint = "Select a table in the schema browser to view its rows.";
+                let hy = centred(tr, hint, 14.0);
                 tr.draw_text(
                     scene,
-                    "Select a table in the schema browser to view its rows.",
+                    hint,
                     14.0,
                     theme.text_dim,
-                    t * Affine::translate((toolbar.x0 + 12.0, toolbar.y0 + 12.0)),
+                    t * Affine::translate((toolbar.x0 + 12.0, hy)),
                     None,
                 );
             }
@@ -3053,7 +4017,7 @@ impl DbClientApp {
     ) {
         let content = Rect::new(
             self.main_rect.x0 + 8.0,
-            self.main_rect.y0 + TABBAR_H + 8.0,
+            self.main_rect.y0 + self.bands.tabbar_h + 8.0,
             self.main_rect.x1 - 8.0,
             self.main_rect.y1 - 8.0,
         );
@@ -3206,6 +4170,65 @@ mod responsive_tests {
         );
         // No scrim while docked.
         assert_eq!(app.scrim_rect.width(), 0.0, "docked layout paints no scrim");
+    }
+
+    #[test]
+    fn demo_query_automatic_height_follows_its_content() {
+        let mut app = DbClientApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut app, 1200.0, 800.0);
+
+        assert_eq!(
+            app.editor.line_count(),
+            4,
+            "the demo fixture stays representative"
+        );
+        assert!(
+            app.editor.rect().height() < 180.0,
+            "four query lines plus editing allowance should leave substantially more result space"
+        );
+    }
+
+    #[test]
+    fn shaped_wrapped_query_refines_the_automatic_height() {
+        let mut app = DbClientApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.editor.set_text(
+            "SELECT this_is_a_deliberately_long_projection_name, another_long_projection_name, a_third_long_projection_name FROM albums;",
+        );
+        lay_out(&mut app, 480.0, 900.0);
+        let fallback = app.editor.rect().height();
+
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut renderer = TextRenderer::new();
+        app.editor
+            .draw_embedded(&mut scene, Affine::IDENTITY, &mut renderer, &theme);
+        app.relayout();
+
+        assert!(
+            app.editor.rect().height() > fallback,
+            "the settled editor height counts shaped visual rows, not only newlines"
+        );
+    }
+
+    #[test]
+    fn short_query_layout_keeps_every_region_ordered_and_usable() {
+        let mut app = DbClientApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut app, 800.0, 480.0);
+        let layout = app.query_layout;
+
+        assert_eq!(layout.toolbar.y1, layout.editor.y0);
+        assert_eq!(layout.editor.y1, layout.divider.y0);
+        assert_eq!(layout.divider.y1, layout.result_strip.y0);
+        assert_eq!(layout.result_strip.y1, layout.grid.y0);
+        assert!(layout.editor.height() >= app.editor.line_height() * 3.0);
+        assert!(layout.grid.height() >= QUERY_GRID_MIN_H);
+        assert!(layout.grid.y1 <= app.main_rect.y1);
     }
 
     #[test]
@@ -3391,8 +4414,12 @@ mod behavior_tests {
     }
 
     fn enter_event() -> WindowEvent {
+        named_key_event(NamedKey::Enter)
+    }
+
+    fn named_key_event(key: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Enter);
+        ev.logical_key = Key::Named(key);
         ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
@@ -3403,6 +4430,46 @@ mod behavior_tests {
             event: ev,
             is_synthetic: false,
         }
+    }
+
+    fn cursor_event(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: device_id(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn left_button(state: ElementState) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: device_id(),
+            state,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn right_button() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: device_id(),
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+        }
+    }
+
+    fn lay_out(app: &mut DbClientApp, w: f64, h: f64) {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
     }
 
     fn send(
@@ -3433,6 +4500,561 @@ mod behavior_tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         (app, doc)
+    }
+
+    #[test]
+    fn divider_drag_preserves_requested_height_state_and_query_models() {
+        let (mut app, mut doc) = synced();
+        lay_out(&mut app, 1200.0, 800.0);
+        app.editor.set_selection(2, 9);
+        app.grid.sort_col = Some(1);
+        app.grid.sort_asc = false;
+        app.grid.scroll_row = 3;
+        app.grid.scroll_x = 17.0;
+        let before = app.query_layout.divider;
+
+        assert!(!send(
+            &mut app,
+            &mut doc,
+            &cursor_event(before.center().x, before.center().y),
+            Modifiers::default(),
+        ));
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &left_button(ElementState::Pressed),
+            Modifiers::default(),
+        ));
+        assert!(app.wants_pointer_capture());
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &cursor_event(before.center().x, before.center().y + 300.0),
+            Modifiers::default(),
+        ));
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &left_button(ElementState::Released),
+            Modifiers::default(),
+        ));
+        lay_out(&mut app, 1200.0, 800.0);
+        let manual = app.query_layout.divider;
+        assert_eq!(manual.y0, before.y0 + 300.0);
+        app.grid.hover_row = Some(4);
+
+        app.session.tab = MainTab::Data;
+        app.relayout();
+        app.session.tab = MainTab::Structure;
+        app.relayout();
+        app.session.tab = MainTab::Query;
+        app.relayout();
+        assert_eq!(app.query_layout.divider.y0, manual.y0);
+        assert_eq!(app.query_layout.divider.height(), manual.height());
+
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        assert!(send(&mut app, &mut doc, &enter_event(), ctrl));
+        app.session.block_until_idle();
+        app.sync(&mut doc, &ROOT);
+        app.relayout();
+        assert_eq!(
+            app.query_layout.divider.y0, manual.y0,
+            "running the query keeps the local requested split"
+        );
+        assert_eq!(app.query_layout.divider.height(), manual.height());
+
+        lay_out(&mut app, 800.0, 480.0);
+        assert!(app.query_layout.divider.y0 < manual.y0);
+        lay_out(&mut app, 1200.0, 800.0);
+        assert_eq!(app.query_layout.divider.y0, manual.y0);
+        assert_eq!(app.query_layout.divider.height(), manual.height());
+        assert_eq!(app.editor.selection(), Some((2, 9)));
+        assert_eq!(app.grid.sort_col, Some(1));
+        assert!(!app.grid.sort_asc);
+        assert_eq!(app.grid.scroll_row, 3);
+        assert_eq!(app.grid.scroll_x, 17.0);
+        assert_eq!(app.grid.hover_row, Some(4));
+    }
+
+    #[test]
+    fn divider_keyboard_semantics_and_context_reset_share_the_manual_height() {
+        let (mut app, mut doc) = synced();
+        lay_out(&mut app, 1200.0, 800.0);
+        let automatic = app.query_layout.divider;
+        assert!(app.take_structure_dirty());
+        assert!(!app.take_structure_dirty());
+
+        let divider = app
+            .children_mut()
+            .into_iter()
+            .find(|child| child.test_id() == Some("db.query-divider"))
+            .expect("query layout exposes a retained divider");
+        divider.set_focus(true);
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowDown),
+            Modifiers::default(),
+        ));
+        lay_out(&mut app, 1200.0, 800.0);
+        assert_eq!(app.query_layout.divider.y0, automatic.y0 + 24.0);
+
+        let divider = app
+            .children_mut()
+            .into_iter()
+            .find(|child| child.test_id() == Some("db.query-divider"))
+            .unwrap();
+        assert!(divider.perform_action(&ui::a11y::Action::Increment, &mut doc, &ROOT));
+        app.sync(&mut doc, &ROOT);
+        lay_out(&mut app, 1200.0, 800.0);
+        assert_eq!(app.query_layout.divider.y0, automatic.y0 + 48.0);
+
+        let divider_rect = app.query_layout.divider;
+        send(
+            &mut app,
+            &mut doc,
+            &cursor_event(divider_rect.center().x, divider_rect.center().y),
+            Modifiers::default(),
+        );
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &right_button(),
+            Modifiers::default(),
+        ));
+        assert!(app.take_structure_dirty());
+        let menu = app
+            .children()
+            .into_iter()
+            .find(|child| child.test_id() == Some("db.query-resize-menu"))
+            .expect("secondary click opens the bounded resize menu");
+        let semantics = menu.accessibility().expect("resize menu is accessible");
+        assert!(
+            semantics
+                .children
+                .iter()
+                .any(|node| { node.name.as_deref() == Some("Reset automatic query height") })
+        );
+        let reset = menu
+            .test_rects()
+            .into_iter()
+            .find(|(id, _)| id == "db.reset-query-height")
+            .expect("reset row publishes its actual pointer geometry")
+            .1;
+        send(
+            &mut app,
+            &mut doc,
+            &cursor_event(reset.center().x, reset.center().y),
+            Modifiers::default(),
+        );
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &left_button(ElementState::Pressed),
+            Modifiers::default(),
+        ));
+        assert!(app.take_structure_dirty());
+        lay_out(&mut app, 1200.0, 800.0);
+        assert_eq!(app.query_layout.divider, automatic);
+
+        let divider = app
+            .children_mut()
+            .into_iter()
+            .find(|child| child.test_id() == Some("db.query-divider"))
+            .unwrap();
+        divider.set_focus(true);
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowDown),
+            Modifiers::default(),
+        ));
+        let divider = app
+            .children_mut()
+            .into_iter()
+            .find(|child| child.test_id() == Some("db.query-divider"))
+            .unwrap();
+        assert!(divider.perform_action(&ui::a11y::Action::ShowContextMenu, &mut doc, &ROOT,));
+        app.sync(&mut doc, &ROOT);
+        let menu = app
+            .children_mut()
+            .into_iter()
+            .find(|child| child.test_id() == Some("db.query-resize-menu"))
+            .expect("semantic context action opens the retained resize menu");
+        assert!(menu.perform_action_at(&ui::a11y::Action::Activate, &[2], &mut doc, &ROOT,));
+        app.sync(&mut doc, &ROOT);
+        lay_out(&mut app, 1200.0, 800.0);
+        assert_eq!(app.query_layout.divider, automatic);
+
+        let divider = app
+            .children_mut()
+            .into_iter()
+            .find(|child| child.test_id() == Some("db.query-divider"))
+            .unwrap();
+        divider.set_focus(true);
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &named_key_event(NamedKey::ArrowDown),
+            Modifiers::default(),
+        ));
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &named_key_event(NamedKey::Home),
+            Modifiers::default(),
+        ));
+        lay_out(&mut app, 1200.0, 800.0);
+        assert_eq!(app.query_layout.divider, automatic);
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &named_key_event(NamedKey::Enter),
+            Modifiers::default(),
+        ));
+        assert!(app.query_resize_menu.is_open());
+        assert!(send(
+            &mut app,
+            &mut doc,
+            &named_key_event(NamedKey::Escape),
+            Modifiers::default(),
+        ));
+        assert!(!app.query_resize_menu.is_open());
+        assert!(app.query_divider.is_focused());
+    }
+
+    #[test]
+    fn host_routes_named_divider_focus_keyboard_and_pointer_reset() {
+        fn reset_rect(snapshot: &ui::headless::InspectionSnapshot) -> Rect {
+            fn find(node: &ui::headless::InspectionNode) -> Option<Rect> {
+                if node.test_id.as_deref() == Some("db.query-resize-menu") {
+                    return node.semantics.as_ref()?.children.iter().find_map(|child| {
+                        (child.action_target.as_deref() == Some("db.reset-query-height"))
+                            .then(|| child.bounds.map(ui::a11y::AccessBounds::to_rect))
+                            .flatten()
+                    });
+                }
+                node.children.iter().find_map(find)
+            }
+
+            find(&snapshot.root).expect("reset action publishes its pointer bounds")
+        }
+
+        let mut driver = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(DbClientApp::new_demo()),
+            (1200, 800),
+        );
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::Focus)
+            .unwrap();
+        let automatic = driver.targets()["db.query-divider"];
+        driver.key("ArrowDown");
+        assert_eq!(driver.targets()["db.query-divider"].y0, automatic.y0 + 24.0);
+
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::ShowContextMenu)
+            .unwrap();
+        let reset = reset_rect(&driver.inspection());
+        driver.click_at(reset.center().x, reset.center().y);
+        assert_eq!(driver.targets()["db.query-divider"], automatic);
+    }
+
+    fn menu_action_rects(snapshot: &ui::headless::InspectionSnapshot) -> Vec<(String, Rect)> {
+        fn find(node: &ui::headless::InspectionNode) -> Option<Vec<(String, Rect)>> {
+            if node.test_id.as_deref() == Some("db.query-resize-menu") {
+                return Some(
+                    node.semantics
+                        .as_ref()?
+                        .children
+                        .iter()
+                        .filter_map(|child| {
+                            Some((
+                                child.action_target.clone()?,
+                                child.bounds.map(ui::a11y::AccessBounds::to_rect)?,
+                            ))
+                        })
+                        .collect(),
+                );
+            }
+            node.children.iter().find_map(find)
+        }
+
+        find(&snapshot.root).expect("open resize menu publishes semantic action bounds")
+    }
+
+    fn mounted_app(app: &DbClientApp) -> *const DbClientApp {
+        std::ptr::from_ref(app)
+    }
+
+    #[test]
+    fn modified_enter_runs_once_ahead_of_the_open_resize_menu() {
+        let app = Box::new(DbClientApp::new_demo());
+        let app_ptr = mounted_app(&app);
+        let mut driver = ui::headless::Driver::new(ui::State::new(), app, (1200, 800));
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::Increment)
+            .unwrap();
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::ShowContextMenu)
+            .unwrap();
+
+        // SAFETY: `app_ptr` points into the Box now owned by `driver`; the
+        // allocation stays stable and no Driver borrow is active while read.
+        let (generation, requested, effective) = unsafe {
+            let app = &*app_ptr;
+            (
+                app.session.query_gen,
+                app.query_height_request,
+                app.query_layout.editor.height(),
+            )
+        };
+        assert!(requested.is_some(), "precondition: resize is manual");
+        driver.set_modifiers(&["ctrl".into()]);
+        driver.key("Enter");
+        driver.set_modifiers(&[]);
+        assert!(
+            driver.wait_until(std::time::Duration::from_millis(500), |_| {
+                // SAFETY: same stable allocation; the mutable frame borrow has
+                // ended before this condition callback runs.
+                unsafe { (&*app_ptr).session.query_gen > generation }
+            })
+        );
+        // SAFETY: same stable allocation and non-overlapping read.
+        let app = unsafe { &*app_ptr };
+        assert_eq!(app.session.query_gen, generation + 1, "Run executes once");
+        assert_eq!(app.query_height_request, requested);
+        assert_eq!(app.query_layout.editor.height(), effective);
+        assert!(
+            app.query_resize_menu.is_open(),
+            "the reserved shortcut does not select or dismiss a resize item"
+        );
+    }
+
+    #[test]
+    fn open_resize_menu_reanchors_and_keeps_every_action_mapped_after_resize() {
+        fn assert_bounded_and_anchored(
+            driver: &ui::headless::Driver,
+            app: &DbClientApp,
+            width: f64,
+            height: f64,
+        ) -> Vec<(String, Rect)> {
+            let viewport = Rect::new(0.0, 0.0, width, height);
+            let menu = driver.targets()["db.query-resize-menu"];
+            assert!(
+                menu.x0 >= viewport.x0
+                    && menu.y0 >= viewport.y0
+                    && menu.x1 <= viewport.x1
+                    && menu.y1 <= viewport.y1
+            );
+            assert_eq!(menu.x0, app.query_layout.divider.x0);
+            assert!(
+                menu.y0 == app.query_layout.divider.y1
+                    || menu.y1 == app.query_layout.divider.y0
+                    || menu.y0 == viewport.y0
+                    || menu.y1 == viewport.y1,
+                "menu remains attached to the recomputed divider"
+            );
+            let actions = menu_action_rects(&driver.inspection());
+            assert_eq!(actions.len(), 3);
+            for (_, rect) in &actions {
+                assert!(
+                    rect.x0 >= menu.x0
+                        && rect.y0 >= menu.y0
+                        && rect.x1 <= menu.x1
+                        && rect.y1 <= menu.y1
+                );
+            }
+            actions
+        }
+
+        let app = Box::new(DbClientApp::new_demo());
+        let app_ptr = mounted_app(&app);
+        let mut driver = ui::headless::Driver::new(ui::State::new(), app, (1200, 800));
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::Increment)
+            .unwrap();
+        let requested = unsafe { (&*app_ptr).query_height_request.unwrap() };
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::ShowContextMenu)
+            .unwrap();
+        driver.key("ArrowDown");
+        driver.resize((480, 900)).unwrap();
+        // SAFETY: stable Driver-owned Box; read occurs between Driver calls.
+        assert_bounded_and_anchored(&driver, unsafe { &*app_ptr }, 480.0, 900.0);
+        driver.resize((800, 480)).unwrap();
+        assert_bounded_and_anchored(&driver, unsafe { &*app_ptr }, 800.0, 480.0);
+        if let Ok(path) = std::env::var("DB_CLIENT_TASK12_MENU_CAPTURE") {
+            driver.render_png(std::path::Path::new(&path));
+        }
+        assert_eq!(unsafe { (&*app_ptr).query_height_request }, Some(requested));
+        driver.key("Enter");
+        assert_eq!(
+            unsafe { (&*app_ptr).query_height_request },
+            Some(requested - 24.0),
+            "the highlighted Decrease action survives reanchoring"
+        );
+
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::ShowContextMenu)
+            .unwrap();
+        driver.resize((480, 900)).unwrap();
+        driver.resize((800, 480)).unwrap();
+        let actions = assert_bounded_and_anchored(&driver, unsafe { &*app_ptr }, 800.0, 480.0);
+        let increase = actions
+            .iter()
+            .find(|(target, _)| target == "db.increase-query-height")
+            .unwrap()
+            .1;
+        let before_increase = unsafe { (&*app_ptr).query_height_request.unwrap() };
+        driver.click_at(increase.center().x, increase.center().y);
+        assert_eq!(
+            unsafe { (&*app_ptr).query_height_request },
+            Some(before_increase + 24.0),
+            "the pointer row maps to Increase"
+        );
+
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::ShowContextMenu)
+            .unwrap();
+        driver.resize((480, 900)).unwrap();
+        driver.resize((800, 480)).unwrap();
+        assert_bounded_and_anchored(&driver, unsafe { &*app_ptr }, 800.0, 480.0);
+        driver
+            .perform_semantic_named(
+                "db.query-resize-menu",
+                Some("db.reset-query-height"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        assert_eq!(
+            unsafe { (&*app_ptr).query_height_request },
+            None,
+            "the semantic Reset target maps to automatic height"
+        );
+    }
+
+    #[test]
+    fn mounted_clamped_long_query_remains_editable_and_scrollable() {
+        let app = Box::new(DbClientApp::new_demo());
+        let app_ptr = mounted_app(&app);
+        let mut driver = ui::headless::Driver::new(ui::State::new(), app, (800, 480));
+        let long_query = (0..60)
+            .map(|line| format!("SELECT {line} AS value;"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        driver
+            .perform_named(
+                "sql-editor",
+                &ui::a11y::Action::SetValue(long_query.clone()),
+            )
+            .unwrap();
+        let editor = driver.targets()["sql-editor"];
+        driver.click_at(editor.x0 + 64.0, editor.y0 + 12.0);
+        driver
+            .perform_named(
+                "sql-editor",
+                &ui::a11y::Action::SetSelection {
+                    anchor: long_query.len(),
+                    focus: long_query.len(),
+                },
+            )
+            .unwrap();
+        driver.type_text("\n-- edited at the end");
+        let editor = driver.targets()["sql-editor"];
+        driver.send(&cursor_event(editor.center().x, editor.center().y));
+        driver.scroll(0.0, -12.0);
+
+        // SAFETY: stable Driver-owned Box; reads occur between Driver calls.
+        unsafe {
+            let app = &*app_ptr;
+            assert!(app.editor.inner().content_height() > app.editor.rect().height());
+            assert!(
+                app.editor.inner().scroll_y() > 0.0,
+                "wheel scroll reaches the clamped editor: scroll={} content={} viewport={} focused={}",
+                app.editor.inner().scroll_y(),
+                app.editor.inner().content_height(),
+                app.editor.rect().height(),
+                app.editor.is_focused()
+            );
+            assert!(app.editor.value().ends_with("-- edited at the end"));
+            assert_eq!(app.editor.cursor_pos(), app.editor.value().len());
+            assert!(app.query_layout.grid.height() >= QUERY_GRID_MIN_H);
+        }
+        let shared_sql = EditorDoc::read_sql(&driver.state_mut().doc);
+        assert_eq!(shared_sql, unsafe { (&*app_ptr).editor.value() });
+
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::Increment)
+            .unwrap();
+        let requested = unsafe { (&*app_ptr).query_height_request };
+        driver.resize((800, 700)).unwrap();
+        driver.resize((800, 480)).unwrap();
+        let app = unsafe { &*app_ptr };
+        assert_eq!(app.query_height_request, requested);
+        assert!(app.editor.value().ends_with("-- edited at the end"));
+        assert_eq!(app.editor.cursor_pos(), app.editor.value().len());
+        assert!(app.query_layout.grid.height() >= QUERY_GRID_MIN_H);
+    }
+
+    #[test]
+    fn many_connections_keep_narrow_drawer_and_query_actions_reachable() {
+        let mut app = Box::new(DbClientApp::new_demo());
+        for index in 3..8 {
+            let name = format!("Connection {index}");
+            app.session
+                .connections
+                .push(ConnectionProfile::new(&name, Engine::Postgres));
+        }
+        let app_ptr = mounted_app(&app);
+        let mut driver = ui::headless::Driver::new(ui::State::new(), app, (480, 900));
+        // SAFETY: stable Driver-owned Box; reads occur between Driver calls.
+        let closed_split = unsafe { (&*app_ptr).query_layout };
+        let toggle = unsafe { (&*app_ptr).toggle_btn };
+        assert!(toggle.width() > 0.0 && toggle.y0 >= 0.0 && toggle.y1 <= 900.0);
+        driver.click_at(toggle.center().x, toggle.center().y);
+        // Settle the existing flap animation after proving the real trigger.
+        unsafe { (&mut *(app_ptr.cast_mut())).flap.snap(true) };
+        driver.relayout();
+        let app = unsafe { &*app_ptr };
+        assert_eq!(app.session.connections.len(), 8);
+        assert!(app.flap.is_open(SplitLayout::Overlay));
+        assert_eq!(app.query_layout, closed_split);
+        assert_eq!(app.conn_rects.len(), 8);
+        let seventh = app.conn_rects[6].1;
+        assert!(seventh.y0 >= 0.0 && seventh.y1 <= 900.0);
+        driver.click_at(seventh.center().x, seventh.center().y);
+        assert_eq!(unsafe { (&*app_ptr).session.active }, 6);
+
+        let toggle = unsafe { (&*app_ptr).toggle_btn };
+        driver.click_at(toggle.center().x, toggle.center().y);
+        unsafe { (&mut *(app_ptr.cast_mut())).flap.snap(false) };
+        driver.relayout();
+        assert!(!unsafe { (&*app_ptr).flap.is_open(SplitLayout::Overlay) });
+        assert!(unsafe { (&*app_ptr).toggle_btn.width() > 0.0 });
+    }
+
+    #[test]
+    fn host_first_frame_measures_query_content_before_painting_the_split() {
+        let wide = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(DbClientApp::new_demo()),
+            (1200, 800),
+        );
+        assert!(
+            wide.targets()["sql-editor"].height() >= 100.0,
+            "the normal first frame must show the four-line demo query with editing allowance"
+        );
+
+        let narrow = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(DbClientApp::new_demo()),
+            (480, 900),
+        );
+        assert!(
+            narrow.targets()["sql-editor"].height() >= 120.0,
+            "the first narrow frame must include rows introduced by wrapping"
+        );
     }
 
     /// A keystroke driven through the production `handle_event` splices into the

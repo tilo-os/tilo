@@ -57,6 +57,9 @@ jobs:
       - name: Repository policy suite
         run: bash tools/policy/run.sh
 
+      - name: Application platform contract
+        run: python3 tools/policy/check_app_platform_contract.py
+
       - name: cargo deny
         run: cargo deny --workspace check --hide-inclusion-graph
 

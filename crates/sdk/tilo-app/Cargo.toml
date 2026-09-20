@@ -6,16 +6,23 @@ publish.workspace = true
 license.workspace = true
 
 [features]
+install-artifacts = ["dep:tilo-install-artifacts"]
+folder-copy = ["dep:tilo-folder-service"]
 default = []
+test-support = ["ui-core/test-support"]
 webview-adblock = ["ui-core/webview-adblock"]
 webview-wpe = ["ui-core/webview-wpe"]
 dmabuf-import = ["ui-core/dmabuf-import"]
 gpu-video = ["ui-core/gpu-video"]
 mpris = ["ui-core/mpris"]
 portal = ["ui-core/portal"]
+# Optional native presentation diagnostics shared by app entrypoints.
+presentation-feedback = ["ui-core/presentation-feedback"]
 notifications = ["ui-core/notifications"]
 
 [dependencies]
+tilo-install-artifacts = { path = "../../packaging/install-artifacts", optional = true }
+tilo-folder-service = { path = "../../system/folder-service", optional = true }
 ui-core = { package = "ui", path = "../ui-core" }
 
 [lints]

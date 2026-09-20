@@ -3,29 +3,6 @@ use std::path::Path;
 
 use crate::i18n::{arg, t, t_args};
 
-/// Request restoration of one exact immutable version through the filesystem.
-///
-/// # Errors
-///
-/// Returns a localized error when the request cannot be encoded within its
-/// bound or written to the history-control extended attribute.
-pub fn restore_version(path: &Path, version_id: collab_types::FileVersionId) -> Result<(), String> {
-    let request = collab_types::HistoryControlRequestV1 {
-        schema_version: collab_types::HISTORY_CONTROL_VERSION,
-        operation: collab_types::HistoryControlOperationV1::Restore { version_id },
-    };
-    let bytes = serde_json::to_vec(&request).map_err(|_| t("files-history-encode-failed"))?;
-    if bytes.len() > collab_types::MAX_HISTORY_CONTROL_BYTES {
-        return Err(t("files-history-request-too-large"));
-    }
-    xattr::set(path, crate::model::HISTORY_CONTROL_XATTR, &bytes).map_err(|error| {
-        t_args(
-            "files-history-restore-failed",
-            &[arg("error", error.to_string())],
-        )
-    })
-}
-
 /// Request resolution of one exact conflict member using `strategy`.
 ///
 /// # Errors
@@ -72,31 +49,54 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(unix)]
     fn restore_request_is_versioned_bounded_and_exact() {
+        use collab_types::files::*;
+        use ui::history_mode::checked_files::FileHistoryTransport;
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("record");
         std::fs::write(&path, b"").unwrap();
         let version_id = collab_types::FileVersionId(uuid::Uuid::new_v4());
-        restore_version(&path, version_id).unwrap();
-        let bytes = xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
+        let request = CheckedHistoryRequestV1 {
+            schema_version: CHECKED_HISTORY_VERSION,
+            intent_id: uuid::Uuid::new_v4(),
+            review: FileRestoreReviewV1 {
+                schema_version: CHECKED_HISTORY_VERSION,
+                workspace_id: uuid::Uuid::new_v4(),
+                mount_lifetime: uuid::Uuid::new_v4(),
+                record_id: collab_types::FileRecordId(uuid::Uuid::new_v4()),
+                frontier: [1; 32],
+            },
+            operation: CheckedHistoryOperationV1::Restore { version_id },
+        };
+        let response = CheckedHistoryResponseV1 {
+            schema_version: CHECKED_HISTORY_VERSION,
+            outcome: CheckedHistoryOutcomeV1::RecoveryPending {
+                intent_id: request.intent_id,
+            },
+        };
+        xattr::set(
+            &path,
+            format!("{CHECKED_HISTORY_RESULT_XATTR_PREFIX}{}", request.intent_id),
+            &serde_json::to_vec(&response).unwrap(),
+        )
+        .unwrap();
+        let transport = crate::framework_history::MountedFileHistory::open(&path).unwrap();
+        assert_eq!(transport.submit(request), response.outcome);
+        let bytes = xattr::get(&path, CHECKED_HISTORY_RESTORE_XATTR)
             .unwrap()
             .unwrap();
-        assert!(bytes.len() <= collab_types::MAX_HISTORY_CONTROL_BYTES);
-        let request: collab_types::HistoryControlRequestV1 =
-            serde_json::from_slice(&bytes).unwrap();
+        assert!(bytes.len() <= MAX_CHECKED_HISTORY_REQUEST_BYTES);
+        let actual: CheckedHistoryRequestV1 = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(actual.schema_version, CHECKED_HISTORY_VERSION);
         assert_eq!(
-            request.schema_version,
-            collab_types::HISTORY_CONTROL_VERSION
+            actual.operation,
+            CheckedHistoryOperationV1::Restore { version_id }
         );
-        assert_eq!(
-            request.operation,
-            collab_types::HistoryControlOperationV1::Restore { version_id }
-        );
+        assert_eq!(actual, request);
     }
 
     #[test]
-    #[cfg(unix)]
     fn conflict_request_names_the_exact_member_for_every_supported_strategy() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("record");

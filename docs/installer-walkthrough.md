@@ -1,5 +1,9 @@
 # Tilo installation: download to first login
 
+Guided migration is still under development. USB-free Full Tilo installation
+and Connected folders are unavailable; see [migration feature status](migration-status.md)
+for implemented paths, platform limits, and remaining validation.
+
 This is the user journey and the release acceptance checklist for Tilo Imager
 and the live installer. A release is not complete unless the walkthrough works
 on Linux, Windows, and macOS with a real removable drive, and then in a UEFI VM

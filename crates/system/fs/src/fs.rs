@@ -233,6 +233,11 @@ struct AclVisibleRecordIndex {
     by_id: HashMap<collab_types::FileRecordId, crate::syncstate::RecordIndexEntryV1>,
 }
 
+#[path = "checked_restore.rs"]
+mod checked_restore;
+#[path = "history_read.rs"]
+mod history_read;
+
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
@@ -290,6 +295,8 @@ pub struct QuickFS {
     /// Signed exact-record projection used by partial-share network sessions.
     record_publisher: Option<Arc<crate::record_publisher::RecordPublisher>>,
     replacement_transactions: Option<ReplacementTransactionRuntime>,
+    checked_history_workspace: Option<uuid::Uuid>,
+    mount_lifetime: uuid::Uuid,
     /// Explicit one-time owner migration permission. Joining peers disable
     /// this so unsigned legacy namespace bytes are never automatically
     /// blessed into their certified actor's signed history.
@@ -340,6 +347,8 @@ impl QuickFS {
             history: None,
             record_publisher: None,
             replacement_transactions: None,
+            checked_history_workspace: None,
+            mount_lifetime: uuid::Uuid::new_v4(),
             allow_legacy_record_migration: true,
             share_control_path: None,
         }
@@ -689,6 +698,11 @@ impl QuickFS {
         namespace_path: std::path::PathBuf,
     ) -> Result<Self, crate::record_publisher::RecordPublisherError> {
         if let (Some(publisher), Some((history, _))) = (&self.record_publisher, &self.history) {
+            publisher
+                .repository()
+                .restore_admission_fences(&*journal.lock().map_err(|_| {
+                    crate::record_publisher::RecordPublisherError::PublicationUnavailable
+                })?)?;
             let sync = self.sync.clone();
             publisher.recover_replacement_transactions(
                 &mut journal
@@ -705,6 +719,12 @@ impl QuickFS {
                 },
             )?;
         }
+        self.recover_legacy_restores(
+            &mut *journal.lock().map_err(|_| {
+                crate::record_publisher::RecordPublisherError::PublicationUnavailable
+            })?,
+            &namespace_path,
+        )?;
         self.replacement_transactions = Some(ReplacementTransactionRuntime {
             journal,
             namespace_path,
@@ -1469,7 +1489,7 @@ impl QuickFS {
         {
             return Err(EBUSY);
         }
-        if self.is_document(ino) {
+        if self.restore_codec(&self.ns(), ino).is_err() {
             // Document restoration needs codec-aware CRDT checkout rather
             // than replacing its exported bytes as if it were a plain file.
             return Err(libc::ENOTSUP);
@@ -1498,6 +1518,22 @@ impl QuickFS {
             }
             None => Vec::new(),
         };
+        if qdoc::Document::load(&data).is_ok() {
+            return Err(libc::ENOTSUP);
+        }
+        let current_hash = self.ns().hash_for(ino);
+        if let Some(hash) = current_hash.filter(|hash| {
+            Some(collab_types::ContentHash(*hash.as_bytes())) != version.content_hash
+        }) {
+            let hydrator = self.hydrator.clone();
+            let runtime = hydrator.runtime_handle.clone();
+            let current =
+                tokio::task::block_in_place(|| runtime.block_on(hydrator.read(hash, 0, u64::MAX)))
+                    .map_err(|_| EIO)?;
+            if qdoc::Document::load(&current).is_ok() {
+                return Err(libc::ENOTSUP);
+            }
+        }
         let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
         if restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0) {
             return Err(EIO);
@@ -4980,6 +5016,13 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EINVAL));
             return;
         }
+        if name.to_str() == Some(collab_types::files::CHECKED_HISTORY_RESTORE_XATTR) {
+            match self.checked_restore_xattr(ino.0, value) {
+                Ok(()) => reply.ok(),
+                Err(errno) => reply.error(to_errno(errno)),
+            }
+            return;
+        }
         if name.to_str() == Some(crate::syncstate::AVAILABILITY_CONTROL_XATTR) {
             let result = match value {
                 b"retry" => self.retry_transfer(ino.0),
@@ -5062,6 +5105,69 @@ impl Filesystem for QuickFS {
         // attribute name, so the sync state never reports on a hidden file.
         if !self.ino_in_view(ino.0) {
             reply.error(to_errno(ENOENT));
+            return;
+        }
+        if let Some(name) = name
+            .to_str()
+            .filter(|name| name.starts_with(collab_types::files::HISTORY_READ_XATTR))
+        {
+            use collab_types::files::{FileHistoryReadQueryV1 as Query, FileHistoryReadResponseV1};
+            let query = match Query::parse_xattr(name) {
+                Ok(query) => query,
+                Err(error) => {
+                    reply.error(to_errno(history_read::errno(error)));
+                    return;
+                }
+            };
+            if let Query::Preview {
+                frontier,
+                version_id,
+            } = query
+            {
+                match self.read_file_history_preview_at_frontier(ino.0, frontier, version_id) {
+                    Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                    Err(error) => reply.error(to_errno(history_read::errno(error))),
+                }
+            } else {
+                let response = FileHistoryReadResponseV1 {
+                    schema_version: 1,
+                    result: self.read_file_history(ino.0, query),
+                };
+                match serde_json::to_vec(&response) {
+                    Ok(bytes) if bytes.len() <= collab_types::files::MAX_HISTORY_READ_BYTES => {
+                        reply_xattr_bytes(reply, &bytes, size)
+                    }
+                    _ => reply.error(to_errno(EIO)),
+                }
+            }
+            return;
+        }
+        if name.to_str() == Some(collab_types::files::CHECKED_HISTORY_REVIEW_XATTR) {
+            let projection = collab_types::files::CheckedHistoryReviewResponseV1 {
+                schema_version: 1,
+                result: self.checked_history_review(ino.0),
+            };
+            match serde_json::to_vec(&projection) {
+                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                Err(_) => reply.error(to_errno(EIO)),
+            }
+            return;
+        }
+        if let Some(id) = name.to_str().and_then(|name| {
+            name.strip_prefix(collab_types::files::CHECKED_HISTORY_RESULT_XATTR_PREFIX)
+        }) {
+            let Ok(id) = uuid::Uuid::parse_str(id) else {
+                reply.error(to_errno(EINVAL));
+                return;
+            };
+            let projection = collab_types::files::CheckedHistoryResponseV1 {
+                schema_version: 1,
+                outcome: self.checked_history_result(ino.0, id),
+            };
+            match serde_json::to_vec(&projection) {
+                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                Err(_) => reply.error(to_errno(EIO)),
+            }
             return;
         }
         if let Some(version) = name
@@ -5354,6 +5460,14 @@ impl Filesystem for QuickFS {
             buf.push(0);
             buf.extend_from_slice(crate::history::HISTORY_CONTROL_XATTR.as_bytes());
             buf.push(0);
+            if self.replacement_transactions.is_some() {
+                buf.extend_from_slice(collab_types::files::CHECKED_HISTORY_REVIEW_XATTR.as_bytes());
+                buf.push(0);
+                buf.extend_from_slice(
+                    collab_types::files::CHECKED_HISTORY_RESTORE_XATTR.as_bytes(),
+                );
+                buf.push(0);
+            }
         }
         if ino.0 == crate::namespace::ROOT_INO && self.share_control_path.is_some() {
             buf.extend_from_slice(crate::syncstate::SHARE_CONTROL_XATTR.as_bytes());

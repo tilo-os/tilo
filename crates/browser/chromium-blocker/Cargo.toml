@@ -1,0 +1,14 @@
+[package]
+name = "qos-chromium-blocker"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+adblock = { version = "0.12", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
+serde_json.workspace = true
+url.workspace = true

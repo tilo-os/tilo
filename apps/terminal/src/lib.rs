@@ -35,6 +35,7 @@
 )]
 
 pub mod actions;
+pub mod framework_history;
 mod graphics;
 
 pub use graphics::TerminalImagePlacement;
@@ -55,6 +56,8 @@ mod inner {
 
 mod app_widget_impl;
 
+#[cfg(test)]
+mod framework_history_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 

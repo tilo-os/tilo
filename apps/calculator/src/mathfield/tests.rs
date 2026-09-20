@@ -889,3 +889,88 @@ fn copy_then_paste_round_trips_through_editor_core() {
     e.paste_linear(&copied);
     assert_eq!(e.to_linear(), "x+123123");
 }
+
+// -- field scrolling -------------------------------------------------------
+
+/// Only the focused field follows its caret. An inactive row (a neighbouring
+/// surface in the Graph 3D list) shows its formula from the start, instead of
+/// the left-clipped tail the caret-at-end seed would otherwise scroll it to.
+#[test]
+fn unfocused_field_shows_its_start_while_the_focused_field_follows_the_caret() {
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use vello::kurbo::{Affine, Rect};
+
+    let mut tr = TextRenderer::new();
+    let theme = Theme::dark();
+    let mut field = MathField::new("0.05*(x^2+y^2)-3+0.25*(x^2+y^2)").with_size(20.0);
+    let rect = Rect::new(0.0, 0.0, 120.0, 40.0);
+    field.set_rect(rect, &mut tr);
+    field.park_caret_at_end();
+    assert!(
+        field.overflows(),
+        "the fixture formula must be wider than the field"
+    );
+
+    let mut scene = Scene::new();
+    field.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        theme.text_primary,
+        true,
+    );
+    assert!(
+        field.scroll.x > 0.0,
+        "a focused field scrolls to keep its caret in view"
+    );
+    field.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        theme.text_primary,
+        false,
+    );
+    assert!(
+        field.scroll.x.abs() < f64::EPSILON,
+        "a field that just lost focus shows the formula from its start"
+    );
+    assert!((field.content_origin().x - (rect.x0 + MathField::PAD_X)).abs() < f64::EPSILON);
+
+    // Wheel-scrolling an inactive row sticks: the next unfocused frame keeps
+    // the offset (clamped) instead of chasing the parked caret or snapping
+    // back to the start.
+    field.scroll_by(30.0, 0.0);
+    field.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        theme.text_primary,
+        false,
+    );
+    assert!(
+        (field.scroll.x - 30.0).abs() < f64::EPSILON,
+        "an unfocused field keeps its wheel scroll, got {}",
+        field.scroll.x
+    );
+    // Regaining focus resumes following the caret at the formula's end.
+    field.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        theme.text_primary,
+        true,
+    );
+    let (max_x, _) = field.scroll_bounds();
+    assert!(
+        (field.scroll.x - max_x).abs() < f64::EPSILON,
+        "the focused field scrolls its end caret into view: {} vs {max_x}",
+        field.scroll.x
+    );
+}

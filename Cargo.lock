@@ -135,6 +135,7 @@ dependencies = [
  "chacha20poly1305",
  "dirs 6.0.0",
  "getrandom 0.2.17",
+ "libc",
  "private-fs",
  "serde",
  "serde_json",
@@ -516,7 +517,6 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "hex",
  "launcher",
- "libc",
  "pkg",
  "registry-types",
  "reqwest 0.12.28",
@@ -611,8 +611,6 @@ dependencies = [
  "automerge",
  "cli",
  "dirs 6.0.0",
- "libc",
- "same-file",
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
@@ -999,7 +997,11 @@ dependencies = [
 name = "atomic-file"
 version = "0.1.0"
 dependencies = [
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1102,8 +1104,6 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "automerge"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2aab56635599ee2e9df28d9ce180c155b8dbcdd96e4c3f62895fc6a44137d328"
 dependencies = [
  "cfg-if",
  "flate2",
@@ -1531,16 +1531,20 @@ dependencies = [
 name = "browser"
 version = "0.1.0"
 dependencies = [
+ "accesskit_consumer",
  "atomic-file",
  "automerge",
+ "base64 0.22.1",
  "blake3",
  "dirs 6.0.0",
+ "libc",
  "png 0.18.1",
  "pollster",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -6684,6 +6688,10 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "bounded-command",
+ "cap-fs-ext",
+ "cap-primitives",
+ "cap-std",
+ "dirs 6.0.0",
  "libc",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -6694,10 +6702,13 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-folder-service",
  "vello",
+ "windows-sys 0.61.2",
  "winit",
  "zbus 4.4.0",
  "zstd",
+ "tilo-install-artifacts",
 ]
 
 [[package]]
@@ -9566,6 +9577,7 @@ dependencies = [
  "bitflags 2.11.0",
  "block2 0.6.2",
  "objc2 0.6.3",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
 
@@ -9963,6 +9975,7 @@ dependencies = [
  "automerge",
  "libc",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "swipe",
  "taffy",
@@ -11471,6 +11484,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-chromium-blocker"
+version = "0.1.0"
+dependencies = [
+ "adblock",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "qos-ntfs-helper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "qos-ntfs-protocol",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "qos-ntfs-protocol"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "qrcode"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12346,6 +12389,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-connected"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tilo-connected-protocol",
+]
+
+[[package]]
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
@@ -12395,6 +12446,7 @@ dependencies = [
 name = "runtime-fs"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "blake3",
  "cap-std",
  "capnp",
@@ -12415,6 +12467,7 @@ name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "atomic-file",
  "bounded-command",
  "chacha20poly1305",
  "ed25519-dalek 2.2.0",
@@ -12443,6 +12496,7 @@ dependencies = [
  "capnp-rpc",
  "libc",
  "nix 0.30.1",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -12871,6 +12925,7 @@ dependencies = [
  "anyhow",
  "atomic-file",
  "automerge",
+ "clap",
  "dirs 6.0.0",
  "fs",
  "iroh-blobs",
@@ -13479,6 +13534,7 @@ dependencies = [
  "reis",
  "runtime-collab",
  "runtime-identity",
+ "runtime-portal",
  "rustls",
  "seccompiler",
  "serde",
@@ -13682,6 +13738,7 @@ dependencies = [
  "tilo-app",
  "uuid",
  "vello",
+ "vello_encoding",
  "winit",
  "zip 4.6.1",
 ]
@@ -14790,7 +14847,9 @@ dependencies = [
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
+ "tilo-folder-service",
  "ui",
+ "tilo-install-artifacts",
 ]
 
 [[package]]
@@ -14819,6 +14878,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+]
+
+[[package]]
+name = "tilo-connected-protocol"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -14891,6 +14960,41 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-dev",
+]
+
+[[package]]
+name = "tilo-install-artifacts"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "cap-fs-ext",
+ "cap-primitives",
+ "cap-std",
+ "dirs 6.0.0",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tilo-folder-service"
+version = "0.1.0"
+dependencies = [
+ "cap-fs-ext",
+ "cap-primitives",
+ "cap-std",
+ "dirs 6.0.0",
+ "libc",
+ "qos-ntfs-protocol",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -16152,6 +16256,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base32",
+ "base64 0.22.1",
  "blake3",
  "capnp",
  "capnp-rpc",
@@ -16187,6 +16292,7 @@ dependencies = [
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
+ "rustc-hash 2.1.1",
  "rustls",
  "serde",
  "serde_bytes",
@@ -16222,6 +16328,7 @@ dependencies = [
  "vello",
  "vello_encoding",
  "wgpu",
+ "wgpu-hal",
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",

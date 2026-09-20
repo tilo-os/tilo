@@ -19,7 +19,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use ui::color_compat::ColorCompat;
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -351,8 +350,10 @@ impl Widget for BreadcrumbBar {
         let accent = c.accent[ACCENT_PRIMARY_IDX];
 
         // Hairline divider along the bottom, separating the bar from the
-        // list below — the clean "toolbar / breadcrumb / list" banding.
-        let divider = c.border_standard.with_alpha_factor(0.6);
+        // list below — the clean "toolbar / breadcrumb / list" banding. It is
+        // derived against the base the bar sits on (HIG §9.5), so it reads on
+        // the dark preset where a declared `border_standard` is one shade off.
+        let divider = ui::surface::edge_on(c.surfaces.base);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -379,8 +380,12 @@ impl Widget for BreadcrumbBar {
             if ls.chevron_before {
                 let (cw, _) = text_renderer.measure(CHEVRON, TEXT_SIZE, None);
                 let sep_x = ls.rect.x0 - SEP_PAD - f64::from(cw);
-                let sep_y =
-                    crate::text_layout::centered_text_y(ls.rect.y0, ls.rect.height(), TEXT_SIZE);
+                let sep_y = crate::text_layout::centered_text_y(
+                    ls.rect.y0,
+                    ls.rect.height(),
+                    TEXT_SIZE,
+                    text_renderer.text_scale(),
+                );
                 text_renderer.draw_text(
                     scene,
                     CHEVRON,
@@ -407,6 +412,7 @@ impl Widget for BreadcrumbBar {
                         ls.rect.y0,
                         ls.rect.height(),
                         TEXT_SIZE,
+                        text_renderer.text_scale(),
                     );
                     text_renderer.draw_text(
                         scene,

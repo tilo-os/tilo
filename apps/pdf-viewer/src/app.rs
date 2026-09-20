@@ -31,6 +31,7 @@ enum PortalActionKind {
     Open,
     Save,
 }
+use ui::chrome::SelectionState;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -42,6 +43,7 @@ use ui::widget::{
     SmallContentAlign, TextInput, ToggleGroup, ViewportState,
 };
 
+use crate::chrome::{self as chrome, rhythm};
 use crate::doc::{PagePlanEntry, PdfDoc};
 use crate::model::{
     self, AnnoKind, Annotation, Comment, Document, MARGIN, Match, PAGE_H, PAGE_W, PtRect, Reply,
@@ -65,6 +67,9 @@ const RAIL_W_MAX: f64 = 280.0;
 const RAIL_GRIP: f64 = 6.0;
 const SIDEBAR_W: f64 = 324.0;
 const SEARCH_H: f64 = 46.0;
+/// One placed-signature row in the sidebar — the panel row metric; rows are a
+/// sibling step apart.
+const SIG_ROW_H: f64 = ui::tokens::metrics::Metrics::BASE.panel_row_height as f64;
 /// Screen-px padding the viewport reserves around the page stack (top / sides
 /// alike). Handed to [`ViewportState::with_padding`] so the shared kernel and
 /// the reader agree on where the content origin sits.
@@ -196,7 +201,7 @@ fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
     vec![flourish, underline]
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SidebarTab {
     Comments,
     Outline,
@@ -602,6 +607,17 @@ pub struct PdfApp {
     /// this only for surrounding geometry; glyph scaling remains owned by the
     /// shared renderer.
     text_scale: f64,
+    /// Distance from either window edge to the first / last toolbar control,
+    /// cached from the theme's `spacing.s3` during layout because
+    /// `toolbar_layout` is pure geometry shared by paint, hit-testing and the
+    /// accessibility tree and has no `Theme` in scope. Symmetric: the right
+    /// edge used to sit at 16 while the left sat at 12.
+    toolbar_inset: f64,
+    /// Nominal type-scale sizes for the renderer (see `TypePx`).
+    type_px: TypePx,
+    /// The empty state's "Open a PDF…" pill as last painted (see
+    /// `empty_open_button_rect`).
+    empty_open_button: std::cell::Cell<Rect>,
 
     /// An in-flight XDG-portal file-open. When the user asks to open a
     /// document (toolbar folder button, Ctrl+O, or the empty state's Open
@@ -943,7 +959,9 @@ impl PdfApp {
             sig_stroke: None,
             sig_pad_rect: Rect::ZERO,
             search_active: false,
-            search_input: TextInput::local().with_plain_chrome().with_font_size(13.0),
+            search_input: TextInput::local()
+                .with_plain_chrome()
+                .with_font_size(TypePx::default().base),
             matches: Vec::new(),
             active_match: 0,
             search_whole_word: false,
@@ -977,6 +995,9 @@ impl PdfApp {
             tooltip_pending: false,
             reduce_motion: false,
             text_scale: 1.0,
+            toolbar_inset: f64::from(ui::tokens::spacing::Spacing::default().s3),
+            type_px: TypePx::default(),
+            empty_open_button: std::cell::Cell::new(Rect::ZERO),
             portal_rx: None,
             overlay_mode: false,
             prev_overlay: None,
@@ -1294,8 +1315,13 @@ impl PdfApp {
 
     fn recompute_regions(&mut self) {
         let r = self.rect;
-        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
-        let mut mid_top = r.y0 + TOOLBAR_H;
+        // The toolbar is one row unless the tool cluster has to wrap under the
+        // edge clusters; the layout decides that from the width alone, so lay
+        // a one-row bar out and size the real bar to the rows it asks for.
+        let one_row = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
+        let toolbar_h = TOOLBAR_H * self.toolbar_layout_for(one_row).rows as f64;
+        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + toolbar_h);
+        let mut mid_top = r.y0 + toolbar_h;
         if self.search_active {
             let search_h = SEARCH_H * self.text_scale;
             self.search_rect = Rect::new(r.x0, mid_top, r.x1, mid_top + search_h);
@@ -2749,10 +2775,11 @@ impl PdfApp {
     /// text and dropping the caret at the end. Any in-flight edit is dropped
     /// without committing — callers that need to preserve it commit first.
     fn begin_edit(&mut self, target: EditTarget, initial: &str) {
+        // The same type-scale steps the sidebar measures and paints these
+        // texts at, so the editor's glyphs are the glyphs it replaces.
         let size = match target {
-            EditTarget::CommentBody(_) => 12.0,
-            EditTarget::Reply(_) => 11.5,
-            EditTarget::Signer => 13.0,
+            EditTarget::CommentBody(_) | EditTarget::Reply(_) => self.type_px.sm,
+            EditTarget::Signer => self.type_px.base,
         };
         let mut input = TextInput::local()
             .multiline(true)
@@ -3720,15 +3747,12 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    /// The centred "Open a PDF…" button drawn on the empty state. Pure so the
-    /// draw and the click handler agree on its rect.
+    /// The centred "Open a PDF…" button drawn on the empty state, as the last
+    /// draw pass laid it out from its measured label (`draw_empty_state`), so
+    /// the click handler hits exactly the painted pill. Empty until the first
+    /// frame and while an open is pending (nothing to click).
     fn empty_open_button_rect(&self) -> Rect {
-        let canvas = self.canvas_rect;
-        let cx = f64::midpoint(canvas.x0, canvas.x1);
-        let cy = f64::midpoint(canvas.y0, canvas.y1);
-        let w = 150.0;
-        let h = 38.0;
-        Rect::new(cx - w / 2.0, cy + 78.0, cx + w / 2.0, cy + 78.0 + h)
+        self.empty_open_button.get()
     }
 }
 
@@ -3931,6 +3955,27 @@ impl Widget for PdfApp {
         self.markup_record.clone()
     }
 
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.editing.is_some() {
+            return Err("Finish or cancel the active PDF edit before switching documents".into());
+        }
+        self.portal_rx = None;
+        self.portal_save_rx = None;
+        self.portal_import_rx = None;
+        self.cancel_pending_open();
+        self.pending_import = None;
+        if let Some(request) = self.pending_save.take() {
+            let _ = self
+                .raster_handle
+                .as_ref()
+                .and_then(|handle| handle.cancel_save(request).ok());
+        }
+        self.pending_worker_plan = None;
+        self.portal_action = None;
+        self.completed_portal_action = None;
+        Ok(())
+    }
+
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         (self.has_document && !self.awaiting_markup_record)
             .then(|| {
@@ -4042,6 +4087,10 @@ impl Widget for PdfApp {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        self.toolbar_inset = f64::from(theme.tokens.spacing.s3);
+        self.type_px = TypePx::from_theme(theme);
+        // The find field types at the size its placeholder is painted at.
+        self.search_input.set_font_size(self.type_px.base);
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
@@ -4901,6 +4950,67 @@ impl Widget for PdfApp {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn owner_release_refuses_inline_draft_then_detaches_all_old_worker_requests() {
+        let mut app = PdfApp::loading_preview();
+        let selected = ui::RecordCheckout::new(
+            ui::RecordId::for_tab(9201),
+            ui::RecordKind::new("pdf-markup"),
+        );
+        app.markup_record = Some(selected.clone());
+        app.source_path = Some("selected.pdf".into());
+        app.begin_edit(EditTarget::Signer, "Draft signer");
+        assert!(app.release_record_scope().is_err());
+        assert!(app.pending_open.is_some());
+        assert_eq!(app.markup_record, Some(selected.clone()));
+        assert_eq!(
+            app.source_path.as_deref(),
+            Some(std::path::Path::new("selected.pdf"))
+        );
+
+        app.editing = None;
+        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        app.portal_save_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        app.portal_import_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        app.pending_import = Some(ImportRequest {
+            id: 2,
+            document_id: 1,
+            path: "import.pdf".into(),
+            at: 0,
+            after: None,
+        });
+        app.pending_save = Some(SaveRequest {
+            id: 3,
+            document_id: 1,
+            annotations: Vec::new(),
+            comments: Vec::new(),
+            signatures: Vec::new(),
+            path: "save.pdf".into(),
+        });
+        app.pending_worker_plan = Some(Vec::new());
+        let invocation = tilo_actions::InvocationId::new();
+        app.portal_action = Some((invocation, PortalActionKind::Open));
+        app.completed_portal_action = Some(tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput::default(),
+        });
+        app.release_record_scope().unwrap();
+        assert!(app.portal_rx.is_none());
+        assert!(app.portal_save_rx.is_none());
+        assert!(app.portal_import_rx.is_none());
+        assert!(app.pending_open.is_none());
+        assert!(app.pending_import.is_none());
+        assert!(app.pending_save.is_none());
+        assert!(app.pending_worker_plan.is_none());
+        assert!(app.portal_action.is_none());
+        assert!(app.completed_portal_action.is_none());
+        assert_eq!(app.markup_record, Some(selected));
+        assert_eq!(
+            app.source_path.as_deref(),
+            Some(std::path::Path::new("selected.pdf"))
+        );
+    }
 
     /// Two real PDFs on disk, from the bundled fixture. "Open a second
     /// document" has to be a second *file* — the bug is about one document's
@@ -8018,8 +8128,9 @@ mod tests {
         // A very long name/email truncates to fit the bounded width.
         let mut tr = ui::text_render::TextRenderer::new();
         let long = "quinten.van.der.berg.reviewer@really-long-domain.example.com";
-        let shown = truncate_to_width(&mut tr, long, 11.5, hdr.name_max);
-        let (w, _) = tr.measure(&shown, 11.5, None);
+        // Measured and painted Semibold, like `draw_comment_header_row`.
+        let shown = truncate_to_width(&mut tr, long, 11.5, hdr.name_max, TextWeight::Semibold);
+        let (w, _) = tr.measure_weighted(&shown, 11.5, None, TextWeight::Semibold);
         assert!(
             w <= hdr.name_max + 0.5,
             "the truncated name ({shown:?}, {w}px) fits within the bounded width {}px",
@@ -8094,8 +8205,59 @@ mod tests {
         );
     }
 
-    /// Drive the fixture PDF through the live frame path to produce the
-    /// review shots: a search hit over glyphs, a placed highlight +
+    /// `vcenter` centres the *measured* line box, whatever the renderer's
+    /// text scale made of it — the height half of a `measure` result is the
+    /// only input it accepts, so no caller can centre on a nominal font size.
+    #[test]
+    fn vcenter_centres_the_measured_line_box() {
+        let rect = Rect::new(0.0, 10.0, 100.0, 44.0);
+        assert!((vcenter(rect, 15.0) - 19.5).abs() < 1e-9);
+        // A 2× line box in the same control still lands centred, not low.
+        let two_x = vcenter(rect, 30.0);
+        assert!((two_x - 12.0).abs() < 1e-9);
+        assert!(((rect.y1 - (two_x + 30.0)) - (two_x - rect.y0)).abs() < 1e-9);
+        let mut tr = ui::text_render::TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let (_, h) = tr.measure("Fit", 11.0, None);
+        let y = vcenter(rect, h);
+        assert!(
+            (y - rect.y0 - (rect.y1 - (y + f64::from(h)))).abs() < 1e-6,
+            "top gap equals bottom gap for a 2× scaled run"
+        );
+    }
+
+    /// A comment body painted from `card.x0 + 12·s` and wrapped with the shared
+    /// helper ends `12·s` before the card's right edge at every text scale —
+    /// the unscaled wrap used to spill 8px past the border at 2×.
+    #[test]
+    fn comment_text_wraps_keep_a_symmetric_inset_at_every_scale() {
+        for s in [1.0_f64, 1.5, 2.0] {
+            let inner_w = SIDEBAR_W - 28.0 * s;
+            let body_x = 12.0 * s;
+            let body_end = body_x + f64::from(PdfApp::comment_body_wrap(inner_w, s));
+            assert!(
+                (body_end - (inner_w - 12.0 * s)).abs() < 1e-6,
+                "body right inset at {s}×: {}",
+                inner_w - body_end
+            );
+            let reply_end = 24.0 * s + f64::from(PdfApp::comment_reply_wrap(inner_w, s));
+            assert!(
+                (reply_end - (inner_w - 12.0 * s)).abs() < 1e-6,
+                "reply right inset at {s}×: {}",
+                inner_w - reply_end
+            );
+            // Composer field: inset 12·s, editor text inset a further 10·s.
+            let compose_end = 22.0 * s + f64::from(PdfApp::comment_compose_wrap(inner_w, s));
+            assert!(
+                (compose_end - (inner_w - 22.0 * s)).abs() < 1e-6,
+                "composer right inset at {s}×: {}",
+                inner_w - compose_end
+            );
+        }
+    }
+
+    /// Drive the real fixture PDF through the live frame path to produce the
+    /// review shots: a search hit over genuine glyphs, a placed highlight +
     /// signature, and the *reopened saved* file rendered by pdfium with the
     /// flattened markup baked in. PNGs are written only under `PDF_SHOTS=1`
     /// (to `$PDF_SHOT_DIR`, default a temp dir); the assertions always run.

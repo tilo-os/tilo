@@ -114,6 +114,28 @@ fn record(doc: &AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
         _ => None,
     }
 }
+/// Materialize only the addressed valid legacy record for an explicit edit.
+/// Validation of the requested field happens before this function is called.
+fn editable_record(doc: &mut AutoCommit, root: &ObjId, id: &str) -> Option<ObjId> {
+    if let Some(row) = record(doc, root, id) {
+        return Some(row);
+    }
+    if !valid_id(id) || is_tombstoned(doc, root, id) || presets().iter().any(|s| s.id == id) {
+        return None;
+    }
+    // A malformed or competing native entry is never replaced by legacy data.
+    if map(doc, root, KEY_THEMES).is_some_and(|m| doc.get(&m, id).ok().flatten().is_some()) {
+        return None;
+    }
+    let spec = legacy_customs(doc, root).into_iter().find(|s| s.id == id)?;
+    if !spec.radius_norm.is_finite() || !spec.spacing_norm.is_finite() {
+        return None;
+    }
+    if !create_custom_theme(doc, root, &spec) {
+        return None;
+    }
+    record(doc, root, id)
+}
 fn read_record(doc: &AutoCommit, id: &str, r: &ObjId) -> Option<ThemeSpec> {
     let name = get_str(doc, r, "name")?;
     let font = get_str(doc, r, "font")?;
@@ -203,7 +225,7 @@ pub fn set_name(doc: &mut AutoCommit, root: &ObjId, id: &str, value: &str) -> bo
     if !valid_name(value) {
         return false;
     }
-    record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "name", value))
+    editable_record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "name", value))
 }
 pub fn set_token(
     doc: &mut AutoCommit,
@@ -212,26 +234,28 @@ pub fn set_token(
     token: TokenId,
     value: [u8; 3],
 ) -> bool {
-    record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, token.key(), hex(value)))
+    editable_record(doc, root, id)
+        .is_some_and(|r| ui::doc::put_if_changed(doc, &r, token.key(), hex(value)))
 }
 pub fn set_radius(doc: &mut AutoCommit, root: &ObjId, id: &str, value: f32) -> bool {
     value.is_finite()
-        && record(doc, root, id).is_some_and(|r| {
+        && editable_record(doc, root, id).is_some_and(|r| {
             ui::doc::put_if_changed(doc, &r, "radius_norm", f64::from(value.clamp(0.0, 1.0)))
         })
 }
 pub fn set_spacing(doc: &mut AutoCommit, root: &ObjId, id: &str, value: f32) -> bool {
     value.is_finite()
-        && record(doc, root, id).is_some_and(|r| {
+        && editable_record(doc, root, id).is_some_and(|r| {
             ui::doc::put_if_changed(doc, &r, "spacing_norm", f64::from(value.clamp(0.0, 1.0)))
         })
 }
 pub fn set_font(doc: &mut AutoCommit, root: &ObjId, id: &str, value: &str) -> bool {
     valid_font(value)
-        && record(doc, root, id).is_some_and(|r| ui::doc::put_if_changed(doc, &r, "font", value))
+        && editable_record(doc, root, id)
+            .is_some_and(|r| ui::doc::put_if_changed(doc, &r, "font", value))
 }
 pub fn delete_custom_theme(doc: &mut AutoCommit, root: &ObjId, id: &str) -> bool {
-    if record(doc, root, id).is_none() {
+    if editable_record(doc, root, id).is_none() {
         return false;
     }
     ensure_map(doc, root, KEY_THEME_TOMBSTONES)
@@ -294,6 +318,77 @@ pub fn save_catalog(doc: &mut AutoCommit, root: &ObjId, catalog: &[ThemeSpec]) {
         let _ = create_custom_theme(doc, root, s);
     }
 }
+/// Validate the authored catalog without migration, seeding, or OS-store access.
+pub(crate) fn validate_history_catalog(doc: &AutoCommit) -> Result<(), String> {
+    use ui::history_mode::adapter::map_collection;
+    let root = &automerge::ROOT;
+    if let Some(map) = map_collection(doc, KEY_THEMES)? {
+        for id in doc.keys(&map) {
+            let Some((Value::Object(ObjType::Map), row)) =
+                doc.get(&map, &id).map_err(|e| e.to_string())?
+            else {
+                return Err("Invalid theme record".into());
+            };
+            if read_record(doc, &id, &row).is_none() {
+                return Err("Incomplete or invalid theme record".into());
+            }
+            for key in doc.keys(&row) {
+                if TokenId::ALL.iter().any(|t| t.key() == key)
+                    || [
+                        "name",
+                        "font",
+                        "radius_norm",
+                        "spacing_norm",
+                        "order",
+                        "dark_base",
+                    ]
+                    .contains(&key.as_str())
+                {
+                } else {
+                    return Err(format!("Unknown theme field: {key}"));
+                }
+                if key == "dark_base" && get_bool(doc, &row, &key).is_none() {
+                    return Err("Invalid dark_base".into());
+                }
+                if key == "order"
+                    && !get_f64(doc, &row, &key)
+                        .is_some_and(|v| v.is_finite() && v >= 0. && v <= f64::from(u32::MAX))
+                {
+                    return Err("Invalid order".into());
+                }
+            }
+        }
+    }
+    if let Some(map) = map_collection(doc, KEY_THEME_TOMBSTONES)? {
+        for id in doc.keys(&map) {
+            if !valid_id(&id) || get_bool(doc, &map, &id).is_none() {
+                return Err("Invalid theme tombstone".into());
+            }
+        }
+    }
+    if let Some((value, obj)) = doc.get(root, KEY_CATALOG).map_err(|e| e.to_string())? {
+        if value != Value::Object(ObjType::Text) {
+            return Err("Legacy catalog must be Text".into());
+        }
+        let specs: Vec<ThemeSpec> =
+            serde_json::from_str(&doc.text(&obj).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        let mut ids = std::collections::HashSet::new();
+        for s in specs {
+            if !valid_id(&s.id)
+                || !valid_name(&s.name)
+                || !valid_font(&s.font)
+                || !s.radius_norm.is_finite()
+                || !s.spacing_norm.is_finite()
+                || !ids.insert(s.id)
+            {
+                return Err("Invalid legacy theme".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

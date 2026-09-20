@@ -55,11 +55,60 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.backups", backups::app_root)
-            .shot_root(shot_root)
-            .scenarios(&["status", "progress", "failure", "restore", "unavailable"])
-            .allowed_flags(&["--empty"])
-            .configure_app(|app| backups::actions::register(app.action_registry_mut())),
-    );
+    ui::launch::run_or_exit(&launch_spec(backups::app_root));
+}
+
+fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
+    LaunchSpec::new("dev.tilo.backups", root)
+        .shot_root(shot_root)
+        .scenarios(&[
+            "status",
+            "progress",
+            "failure",
+            "restore",
+            "sources",
+            "destinations",
+            "schedules",
+            "unavailable",
+        ])
+        .allowed_flags(&["--empty"])
+        .configure_app(|app| backups::actions::register(app.action_registry_mut()))
+        .history(&backups::framework_history::HISTORY)
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+
+    fn inert_root() -> Box<dyn Widget> {
+        Box::new(backups::history_test_root())
+    }
+
+    fn memory_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+        (
+            ui::State::new(),
+            ui::persist::Autosave::disabled("controlled Backups launch"),
+        )
+    }
+
+    #[test]
+    fn production_launch_installs_backups_history() {
+        let spec = launch_spec(inert_root).open_app_global_state(memory_state);
+        let app = spec.build_controlled_app_for_test().unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(std::ptr::eq(
+            installed.unwrap(),
+            std::ptr::addr_of!(backups::framework_history::HISTORY)
+        ));
+        assert!(std::ptr::eq(
+            root.unwrap(),
+            std::ptr::addr_of!(backups::framework_history::HISTORY)
+        ));
+        assert!(
+            app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("History"))
+        );
+    }
 }

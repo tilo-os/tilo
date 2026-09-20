@@ -11,8 +11,16 @@
 //! power loss can leave the directory entry pointing at a file whose data blocks were never
 //! written.
 //!
-//! [`write`] does all four steps: write the temp file, `fsync` it, rename, and `fsync` the
-//! containing directory so the rename itself is durable.
+//! On Unix, [`write`] writes and flushes a sibling file, renames it, and flushes
+//! the held containing directory. On admitted local NTFS, it creates a native
+//! write-through sibling, flushes it, renames through the held parent using
+//! extended POSIX semantics, then flushes the same retained writable file.
+//!
+//! The Windows sequence composes documented NTFS metadata behavior; native
+//! crash, operating-system and storage/filter qualification remains required.
+//! Unsupported Windows volumes fail admission before file publication effects.
+//! Both protocols require an existing durably provisioned parent and a trusted
+//! child namespace (or caller-held exclusion against child-name mutation).
 //!
 //! # What it does not do
 //!
@@ -37,16 +45,54 @@
     )
 )]
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
+mod existing;
+pub mod lease;
+#[cfg(unix)]
+pub use existing::ExistingCommitError;
 
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(unix)]
+mod provision;
+#[cfg(unix)]
+pub use provision::{
+    DirectoryReconcileError, DirectoryState, ProvisionError, directory_state, provision_directory,
+    reconcile_directory,
+};
+
+#[cfg(feature = "test-support")]
+pub mod directory_probe;
+
+#[cfg(any(unix, windows))]
+mod directory;
+#[cfg(any(unix, windows))]
+mod identity;
+#[cfg(not(any(unix, windows)))]
+mod legacy;
+#[cfg(any(unix, windows))]
+mod native;
+#[cfg(any(unix, windows))]
+mod publication;
+#[cfg(all(any(unix, windows), feature = "test-support"))]
+pub mod test_support;
+
+#[cfg(any(unix, windows))]
+pub use directory::StorageDirectory;
+#[cfg(any(unix, windows))]
+pub use identity::{FileIdentity, VolumeIdentity};
+#[cfg(any(unix, windows))]
+pub use publication::{
+    Privacy, PublicationError, PublicationState, PublishMode, publication_state, publish_if_absent,
+    replace,
+};
+
+use std::fs;
+use std::io;
+use std::path::Path;
 
 /// Replace `path`'s contents with `bytes`, durably. On success the file holds exactly
 /// `bytes`, and a crash at any point leaves either the previous contents or the new ones.
-/// The parent directory must already exist — see [`write_creating_parent`].
+/// The parent directory must already be durable — see [`write_creating_parent`]
+/// for first-launch preparation (durable on Unix; transitional on Windows).
 ///
 /// # Errors
 ///
@@ -54,7 +100,14 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// over `path` fails (including `EXDEV` if `path`'s parent is on a different filesystem
 /// than the temp file, or if `path`'s parent doesn't exist).
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    write_inner(path, bytes, None)
+    #[cfg(any(unix, windows))]
+    {
+        return replace(path, bytes, Privacy::Inherit).map_err(PublicationError::into_io_error);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        legacy::write(path, bytes)
+    }
 }
 
 /// Atomically save a user document, following an existing symbolic link and
@@ -93,7 +146,7 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     // Do not let directory replacement bypass the target's write access. This
     // opens without truncating, so an access refusal leaves its bytes intact.
-    drop(OpenOptions::new().write(true).open(&target)?);
+    drop(fs::OpenOptions::new().write(true).open(&target)?);
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -111,26 +164,91 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// [`write`], creating the parent directory first when it is missing.
 ///
+/// Unix opens/creates the entire parent chain, fsyncs every held directory
+/// leaf-to-root, and publishes relative to the held leaf. Existing aliases are
+/// admitted, but unresolved `missing/../other` suffixes fail before creation.
+/// Windows parent creation remains transitional: file commit does not establish
+/// durability of newly created ancestors.
+///
 /// # Errors
 ///
 /// Returns an error if the parent directory can't be created, or any error [`write`] documents.
 pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    create_parent(path)?;
-    write_inner(path, bytes, None)
+    #[cfg(unix)]
+    {
+        return write_provisioned(path, bytes, None);
+    }
+    #[cfg(windows)]
+    {
+        create_parent(path)?;
+        return write(path, bytes);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        legacy::write_creating_parent(path, bytes)
+    }
 }
 
 /// [`write_with_mode`], creating the parent directory first when it is
 /// missing. The final file gets its restrictive mode before its atomic rename.
+/// Directory creation uses ordinary inherited modes, independently of file mode.
+/// Parent durability has the same platform-specific behavior as
+/// [`write_creating_parent`].
 ///
 /// # Errors
 ///
 /// Returns an error if the parent directory cannot be created, or any error
 /// [`write_with_mode`] documents.
 pub fn write_creating_parent_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
-    create_parent(path)?;
-    write_inner(path, bytes, Some(mode))
+    #[cfg(windows)]
+    publication::validate_windows_mode(mode).map_err(PublicationError::into_io_error)?;
+    #[cfg(unix)]
+    {
+        return write_provisioned(path, bytes, Some(mode));
+    }
+    #[cfg(windows)]
+    {
+        create_parent(path)?;
+        return publication::replace_with_mode(path, bytes, mode)
+            .map_err(PublicationError::into_io_error);
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        legacy::write_creating_parent_with_mode(path, bytes, mode)
+    }
 }
 
+#[cfg(unix)]
+fn write_provisioned(path: &Path, bytes: &[u8], exact_mode: Option<u32>) -> io::Result<()> {
+    let not_published =
+        |source| PublicationError::new(PublicationState::NotPublished, source).into_io_error();
+    let name = path.file_name().ok_or_else(|| {
+        not_published(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "publication path has no file name",
+        ))
+    })?;
+    native::validate_component(name).map_err(not_published)?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let directory =
+        provision_directory(parent, Privacy::Inherit).map_err(ProvisionError::into_io_error)?;
+    directory
+        .publish_with_mode(
+            name,
+            bytes,
+            PublishMode::Replace,
+            Privacy::Inherit,
+            exact_mode,
+        )
+        .map_err(PublicationError::into_io_error)
+}
+
+#[cfg(windows)]
+// Transitional parent preparation only. Task 4 owns ancestor durability;
+// create_dir_all does not establish that the new parent is crash durable.
 fn create_parent(path: &Path) -> io::Result<()> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
@@ -147,43 +265,18 @@ fn create_parent(path: &Path) -> io::Result<()> {
 ///
 /// # Errors
 ///
-/// Returns any error [`write`] documents. `mode` is ignored (no-op) on non-Unix targets.
+/// Returns any error [`write`] documents. On Windows, only `0o600` is supported
+/// and maps to [`Privacy::OwnerOnly`]; other raw modes fail before mutation.
 pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
-    write_inner(path, bytes, Some(mode))
-}
-
-fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
-    let (tmp, mut file) = create_temp(path, mode)?;
-    let written = file.write_all(bytes).and_then(|()| file.sync_all());
-    drop(file);
-    if let Err(error) = written {
-        let _ = fs::remove_file(&tmp);
-        return Err(error);
+    #[cfg(any(unix, windows))]
+    {
+        return publication::replace_with_mode(path, bytes, mode)
+            .map_err(PublicationError::into_io_error);
     }
-
-    if let Err(e) = fs::rename(&tmp, path) {
-        // Don't leave litter beside the target when the rename fails.
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
+    #[cfg(not(any(unix, windows)))]
+    {
+        legacy::write_with_mode(path, bytes, mode)
     }
-
-    // The data is durable before rename, but the new directory entry is not
-    // durable until its containing directory is synced. Reporting success
-    // without this step can resurrect an old rollback floor after power loss.
-    // A failure happens after publication, so callers may observe the new file,
-    // but they must not treat it as crash-durable and may safely retry.
-    let dir = path.parent().map_or_else(
-        || Path::new("."),
-        |parent| {
-            if parent.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                parent
-            }
-        },
-    );
-    sync_directory(dir)?;
-    Ok(())
 }
 
 /// Flush an existing directory after publishing or renaming a file inside it.
@@ -213,63 +306,10 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
     directory.sync_all()
 }
 
-/// The temp file's path: beside the target so the rename never crosses a filesystem
-/// boundary, dot-prefixed so a directory listing (or a `pages/*.md` glob) doesn't treat it
-/// as real content, and process-id-suffixed so two processes writing the same file don't
-/// clobber each other's temp file.
-fn temp_path(path: &Path, sequence: u64) -> PathBuf {
-    let name = path
-        .file_name()
-        .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().into_owned());
-    let tmp_name = format!(".{name}.{}.{sequence}.tmp", std::process::id());
-    match path.parent() {
-        Some(d) if !d.as_os_str().is_empty() => d.join(tmp_name),
-        _ => PathBuf::from(tmp_name),
-    }
-}
-
-fn create_temp(path: &Path, mode: Option<u32>) -> io::Result<(PathBuf, File)> {
-    for _ in 0..32 {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let tmp = temp_path(path, sequence);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        if let Some(mode) = mode {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(mode);
-        }
-        #[cfg(not(unix))]
-        let _ = mode;
-        match options.open(&tmp) {
-            Ok(file) => {
-                #[cfg(unix)]
-                if let Some(mode) = mode {
-                    use std::os::unix::fs::PermissionsExt;
-                    // `mode()` is filtered by umask. Restore the caller's
-                    // exact contract while the file still has only its hidden
-                    // temporary name; the initial mode can only be stricter.
-                    if let Err(error) = file.set_permissions(fs::Permissions::from_mode(mode)) {
-                        drop(file);
-                        let _ = fs::remove_file(&tmp);
-                        return Err(error);
-                    }
-                }
-                return Ok((tmp, file));
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not allocate a unique atomic-write temporary file",
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn directory_barrier_flushes_the_directory_and_reports_invalid_targets() {
@@ -311,35 +351,6 @@ mod tests {
             .filter(|n| Path::new(n).extension().is_some_and(|e| e == "tmp"))
             .collect();
         assert!(left.is_empty(), "left {left:?}");
-    }
-
-    #[test]
-    fn the_temp_file_sits_beside_the_target() {
-        // A temp file in /tmp would make the rename cross a filesystem and fail with EXDEV on any
-        // machine where /tmp is a separate mount.
-        let t = temp_path(Path::new("/var/lib/tilo/state.automerge"), 7);
-        assert_eq!(t.parent(), Some(Path::new("/var/lib/tilo")));
-        assert!(
-            t.file_name().unwrap().to_string_lossy().starts_with('.'),
-            "temp file should be hidden: {t:?}"
-        );
-        assert!(
-            t.extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp")),
-            "expected a .tmp extension, got {t:?}"
-        );
-    }
-
-    #[test]
-    fn two_writes_do_not_share_a_temp_path() {
-        let a = temp_path(Path::new("/x/doc"), 1);
-        let b = temp_path(Path::new("/x/doc"), 2);
-        assert_ne!(a, b, "every write needs a no-clobber temporary path");
-        assert!(
-            a.to_string_lossy()
-                .contains(&std::process::id().to_string()),
-            "temp path must be process-scoped: {a:?}"
-        );
     }
 
     #[test]
@@ -391,14 +402,41 @@ mod tests {
         fs::create_dir(&target).unwrap();
         fs::write(target.join("marker"), b"original").unwrap();
 
-        assert!(write(&target, b"replacement").is_err());
+        let error = write(&target, b"replacement").unwrap_err();
+        #[cfg(windows)]
+        assert_eq!(
+            publication_state(&error),
+            Some(PublicationState::PublicationUnknown)
+        );
+        #[cfg(not(windows))]
+        let _ = error;
         assert_eq!(fs::read(target.join("marker")).unwrap(), b"original");
         let leftovers = fs::read_dir(d.path())
             .unwrap()
             .filter_map(Result::ok)
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
             .count();
+        #[cfg(not(windows))]
         assert_eq!(leftovers, 0, "failed rename must remove its temporary file");
+        #[cfg(windows)]
+        {
+            assert_eq!(leftovers, 1, "ambiguous rename must preserve its stage");
+            let stage = fs::read_dir(d.path())
+                .unwrap()
+                .map(Result::unwrap)
+                .find(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+                .unwrap();
+            assert_eq!(fs::read(stage.path()).unwrap(), b"replacement");
+            let typed = error
+                .into_inner()
+                .unwrap()
+                .downcast::<PublicationError>()
+                .unwrap();
+            assert_eq!(
+                typed.retry_commit().unwrap_err().state(),
+                PublicationState::PublicationUnknown
+            );
+        }
     }
 
     #[test]
@@ -434,11 +472,31 @@ mod tests {
         write(&p, b"").unwrap();
         assert_eq!(fs::read(&p).unwrap(), b"");
     }
+
+    #[cfg(all(any(unix, windows), feature = "test-support"))]
+    #[test]
+    fn publication_commit_failure_can_be_retried_without_republishing() {
+        use crate::test_support::{Checkpoint, with_failure};
+        use crate::{Privacy, PublicationState};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("state");
+        crate::write(&path, b"old").unwrap();
+        let error = with_failure(Checkpoint::BeforeCommit, || {
+            crate::replace(&path, b"new", Privacy::Inherit)
+        })
+        .unwrap_err();
+        assert_eq!(error.state(), PublicationState::PublishedDurabilityUnknown);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert!(error.retry_commit().is_ok());
+    }
 }
 
 #[cfg(test)]
 mod document_target_tests {
     use super::*;
+    #[cfg(unix)]
+    use std::path::PathBuf;
 
     #[test]
     fn document_save_readonly_target_refuses_without_changing_bytes() {

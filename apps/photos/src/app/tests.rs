@@ -957,6 +957,7 @@ fn accessibility_exposes_and_routes_every_toolbar_control() {
     let image = OpenImage::from_path("/tmp/accessible.png", 100, 50);
     PhotosDoc::set_image(&mut doc, Some(&image));
     app.original = Some(("/tmp/accessible.png".into(), shots_pattern(100, 50)));
+    app.original_identity = Some(decode_key(&image));
     app.refresh(&doc);
     app.sync(&mut doc, &ROOT);
     assert!(Widget::perform_semantic_action(
@@ -1049,6 +1050,7 @@ fn compact_more_is_a_keyboard_menu_with_a_share_action() {
     let image = OpenImage::from_path("/tmp/compact.png", 100, 50);
     PhotosDoc::set_image(&mut doc, Some(&image));
     app.original = Some(("/tmp/compact.png".into(), shots_pattern(100, 50)));
+    app.original_identity = Some(decode_key(&image));
     app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
     app.sync(&mut doc, &ROOT);
     app.compact_more_open = true;
@@ -2147,4 +2149,467 @@ fn folder_status_and_details_adapt_to_phone_geometry() {
     assert!(layout.card.x0 >= app.rect.x0 && layout.card.x1 <= app.rect.x1);
     assert!(layout.card.y0 >= app.rect.y0 && layout.card.y1 <= app.rect.y1);
     assert!(layout.close.is_some_and(|rect| rect.width() >= 32.0));
+}
+
+#[test]
+fn edited_content_effect_stores_and_returns_the_exact_transformed_png() {
+    let original = pixels::Rgba::new(
+        3,
+        2,
+        vec![
+            1, 10, 0, 255, 2, 10, 0, 255, 3, 10, 0, 255, 1, 20, 0, 255, 2, 20, 0, 255, 3, 20, 0,
+            255,
+        ],
+    )
+    .expect("asymmetric source");
+    let source_png = pixels::encode_png(&original).expect("source PNG");
+    let source_hash = qdoc::blobstore::put(&source_png).expect("stage source content");
+    let open = OpenImage::from_path("fixture.png", 3, 2).with_content(source_hash.clone());
+    let edits = crate::model::Edits {
+        crop: crate::model::Rect01 {
+            x: 1.0 / 3.0,
+            y: 0.0,
+            w: 2.0 / 3.0,
+            h: 1.0,
+        },
+        rotate_quarters: 1,
+    };
+    let mut doc = AutoCommit::new();
+    PhotosDoc::seed(&mut doc);
+    PhotosDoc::set_image(&mut doc, Some(&open));
+    PhotosDoc::set_edits(&mut doc, &edits);
+    let resource_id = crate::actions::resource_id(&open);
+
+    let resources = PhotosResources.resources(&doc);
+    let exported = tilo_actions::flatten(&resources)
+        .into_iter()
+        .find(|entry| {
+            entry.resource_id.as_str() == resource_id
+                && entry.action.id == crate::actions::EXPORT_EDITED_CONTENT_ACTION_ID
+        })
+        .expect("addressed image exports edited content");
+    assert_eq!(exported.action.kind, tilo_actions::OperationKind::Effect);
+    assert_eq!(
+        exported.action.contract.retry,
+        tilo_actions::RetryPolicy::Idempotent
+    );
+    assert_eq!(
+        exported.action.contract.result,
+        tilo_actions::ResultSpec::Resource {
+            resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.into(),
+        }
+    );
+
+    let payload = tilo_actions::EncodedAction::encode_operation(
+        PHOTOS_OPERATION_TYPE,
+        &PhotosOperation::ExportEditedContent {
+            resource_id: resource_id.clone(),
+            source_content: source_hash.clone(),
+            edits,
+        },
+    )
+    .expect("export operation encodes");
+    let mut app = PhotosApp::new();
+    let started = Widget::start_resource_operation(
+        &mut app,
+        tilo_actions::InvocationId::new(),
+        tilo_actions::OperationKind::Effect,
+        PHOTOS_OPERATION_TYPE,
+        &payload.payload,
+        &doc,
+        &ROOT,
+    )
+    .expect("export succeeds")
+    .expect("Photos handles its operation");
+    let ui::widget::ResourceOperationStart::Completed(output) = started else {
+        panic!("bounded content production completes with its live output");
+    };
+    assert_eq!(output.resources.len(), 1);
+    let produced_hash =
+        tilo_actions::content_hash(&output.resources[0]).expect("one canonical content result");
+    assert_ne!(
+        produced_hash, source_hash,
+        "edited bytes must not reuse the source hash"
+    );
+    let stored = qdoc::blobstore::get(produced_hash).expect("produced bytes are retrievable");
+    let decoded = pixels::decode(&stored).expect("produced PNG decodes");
+    assert_eq!(
+        decoded,
+        pixels::render(&original, edits.crop, edits.rotate_quarters)
+    );
+
+    PhotosDoc::set_edits(&mut doc, &crate::model::Edits::default());
+    assert!(
+        Widget::start_resource_operation(
+            &mut app,
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            PHOTOS_OPERATION_TYPE,
+            &payload.payload,
+            &doc,
+            &ROOT,
+        )
+        .is_err(),
+        "a stale edit snapshot must not produce different content"
+    );
+}
+
+#[test]
+fn justified_timeline_preserves_aspects_and_never_crosses_a_day() {
+    let item = |id: &str, day: &str, aspect_ratio| TimelinePhoto {
+        id: id.into(),
+        name: id.into(),
+        favorite: false,
+        day: day.into(),
+        captured_at: day.into(),
+        aspect_ratio,
+    };
+    let mut projection = TimelineProjection::default();
+    projection.replace([
+        item("wide", "2026-06-18", 2.0),
+        item("portrait", "2026-06-18", 0.5),
+        item("square", "2026-06-18", 1.5),
+        item("next-day", "2026-06-17", 1.5),
+    ]);
+    projection.set_geometry(TimelineGeometry {
+        width: 600.0,
+        target_height: 160.0,
+        gap: 12.0,
+        compact: false,
+    });
+    let layout = projection.visible_photos(0.0, projection.total_height());
+    assert_eq!(layout.len(), 4);
+    let first_day: Vec<_> = layout
+        .iter()
+        .filter(|entry| entry.photo.day == "2026-06-18")
+        .collect();
+    assert_eq!(first_day.len(), 3);
+    assert!(first_day.iter().all(|entry| entry.y == first_day[0].y));
+    let first_day_width = first_day.iter().map(|entry| entry.width).sum::<f64>() + 24.0;
+    assert!((first_day_width - 600.0).abs() <= 1.0);
+    let next_day = layout
+        .iter()
+        .find(|entry| entry.photo.id == "next-day")
+        .unwrap();
+    assert!(next_day.y >= first_day[0].y + first_day[0].height);
+    assert!(
+        layout
+            .iter()
+            .all(|entry| entry.width >= 44.0 && entry.height >= 76.0)
+    );
+    assert!(
+        layout
+            .iter()
+            .all(|entry| (entry.width / entry.height - entry.photo.aspect_ratio).abs() < 0.01)
+    );
+}
+
+#[test]
+fn edited_content_effect_rejects_missing_or_misdirected_source_bytes() {
+    let missing = "f".repeat(64);
+    let open = OpenImage::from_path("missing.png", 3, 2).with_content(missing.clone());
+    let mut doc = AutoCommit::new();
+    PhotosDoc::seed(&mut doc);
+    PhotosDoc::set_image(&mut doc, Some(&open));
+    let edits = PhotosDoc::edits(&doc);
+    let encoded = |resource_id: String| {
+        tilo_actions::EncodedAction::encode_operation(
+            PHOTOS_OPERATION_TYPE,
+            &PhotosOperation::ExportEditedContent {
+                resource_id,
+                source_content: missing.clone(),
+                edits,
+            },
+        )
+        .expect("export operation encodes")
+    };
+    let mut app = PhotosApp::new();
+    for payload in [
+        encoded(crate::actions::resource_id(&open)),
+        encoded("photos.image:wrong-target".into()),
+    ] {
+        assert!(
+            Widget::start_resource_operation(
+                &mut app,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
+                PHOTOS_OPERATION_TYPE,
+                &payload.payload,
+                &doc,
+                &ROOT,
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn density_reanchors_the_same_first_photo() {
+    let mut app = PhotosApp::new();
+    let mut doc = AutoCommit::new();
+    let mut library = crate::model::PhotoLibrary::default();
+    for index in 0..90 {
+        let mut photo = LibraryPhoto::from_image(OpenImage::from_path(
+            &format!("/photos/anchor-{index:03}.png"),
+            30,
+            20,
+        ));
+        photo.captured_at = Some("2026-06-18".into());
+        library.photos.push(photo);
+    }
+    PhotosDoc::set_library(&mut doc, &library);
+    app.show_library();
+    app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 800.0);
+    app.timeline_density = 1;
+    app.sync(&mut doc, &ROOT);
+    let mut scene = Scene::new();
+    let mut text = TextRenderer::new();
+    app.draw_library(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &Theme::dark(),
+        &PresenceCtx::empty(),
+    );
+    app.timeline_scroll_y = 900.0;
+    let (photo, screen_y) = {
+        let visible = app
+            .timeline_projection
+            .visible_photos(app.timeline_scroll_y, app.timeline_viewport_height);
+        let first = visible
+            .iter()
+            .find(|entry| entry.y + entry.height >= 0.0)
+            .unwrap();
+        (first.photo.id.clone(), first.y)
+    };
+    assert!(app.adjust_timeline_density(true));
+    app.draw_library(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &Theme::dark(),
+        &PresenceCtx::empty(),
+    );
+    let visible = app
+        .timeline_projection
+        .visible_photos(app.timeline_scroll_y, app.timeline_viewport_height);
+    let restored = visible
+        .iter()
+        .find(|entry| entry.photo.id == photo)
+        .expect("the previous first photo remains visible after density changes");
+    assert!((restored.y - screen_y).abs() < 0.001);
+}
+
+#[test]
+fn date_index_boundaries_are_chronological_and_mark_year_changes() {
+    let item = |id: &str, day: &str| TimelinePhoto {
+        id: id.into(),
+        name: id.into(),
+        favorite: false,
+        day: day.into(),
+        captured_at: day.into(),
+        aspect_ratio: 1.5,
+    };
+    let mut projection = TimelineProjection::default();
+    projection.replace([
+        item("new", "2026-02-03"),
+        item("same-day", "2026-02-03"),
+        item("old", "2025-12-31"),
+    ]);
+    projection.set_geometry(TimelineGeometry {
+        width: 600.0,
+        target_height: 160.0,
+        gap: 12.0,
+        compact: false,
+    });
+    let markers = projection.date_markers(0.0);
+    assert_eq!(markers.len(), 2, "one boundary per capture day");
+    assert!(
+        markers[0].2 && markers[1].2,
+        "each year change is a major boundary"
+    );
+    assert!(markers[0].1 < markers[1].1);
+    assert_eq!(timeline_date_label(&markers[0].0), "Feb 03, 2026");
+    assert_eq!(timeline_date_label(&markers[1].0), "Dec 31, 2025");
+}
+
+#[test]
+fn toolbar_capsules_and_status_band_contain_their_text_at_any_scale() {
+    assert_eq!(btn_h(1.0), BTN_H, "1× keeps the authored capsule");
+    assert_eq!(status_h(1.0), BAR_H * 0.6, "1× keeps the authored band");
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(2.0);
+    let (_, label_line) = tr.measure("More", BUTTON_LABEL_SIZE, None);
+    let (_, status_line) = tr.measure("harbour.png · 1200 × 800", STATUS_TEXT_SIZE, None);
+    assert!(
+        btn_h(2.0) >= label_line + 2.0 * BTN_PAD_Y,
+        "2× capsule {} contains a {label_line} px label",
+        btn_h(2.0)
+    );
+    assert!(
+        status_h(2.0) >= status_line + 2.0 * STATUS_PAD_Y,
+        "2× band {} contains a {status_line} px line",
+        status_h(2.0)
+    );
+    // Icon-only items stay square at every scale.
+    assert_eq!(item_width(Face::IconOnly, "", btn_h(2.0)), btn_h(2.0));
+}
+
+#[test]
+fn metadata_sheet_footer_never_covers_a_focused_field() {
+    for (scale, (w, h)) in [(1.0_f32, (1200.0_f32, 800.0_f32)), (2.0, (800.0, 900.0))] {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        app.show_library();
+        let staging = tempfile::tempdir().expect("staging dir");
+        crate::seed_scenario(&mut app, &mut doc, "metadata-edit", staging.path());
+        let theme = Theme::dark().with_text_scale(scale);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        for frame in 0..3 {
+            if frame == 1 {
+                assert!(
+                    app.metadata_editor,
+                    "the metadata-edit scenario opens the sheet"
+                );
+                app.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
+                app.set_metadata_editor_focus(3);
+            }
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(w),
+                            height: Dimension::length(h),
+                        },
+                        ..Default::default()
+                    },
+                    &[child],
+                )
+                .unwrap();
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(w),
+                        height: taffy::AvailableSpace::Definite(h),
+                    },
+                    |known, available, id, _, _| {
+                        measure_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                            (*p).measure(known, available, trr)
+                        })
+                    },
+                )
+                .unwrap();
+            app.apply_layout(&taffy, child, Point::ORIGIN);
+            let mut scene = Scene::new();
+            app.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &ui::presence::PresenceCtx::empty(),
+            );
+        }
+        let body = app.metadata_editor_body;
+        let captured = app.metadata_longitude_input.get_rect();
+        assert!(
+            captured.y0 >= body.y0 - 0.01 && captured.y1 <= body.y1 + 0.01,
+            "{scale}×: the focused Longitude field {captured:?} is inside the visible body {body:?}"
+        );
+        let footer: Vec<_> = app
+            .metadata_editor_buttons
+            .iter()
+            .filter(|(hit, _)| matches!(hit, MetadataEditorHit::Cancel | MetadataEditorHit::Save))
+            .map(|(_, button)| button.get_rect())
+            .collect();
+        assert_eq!(footer.len(), 2);
+        assert!(
+            footer.iter().all(|rect| rect.y0 >= body.y1 - 0.01),
+            "{scale}×: retained Cancel and Save sit below the visible body {body:?}: {footer:?}"
+        );
+        if (scale - 1.0).abs() < f32::EPSILON {
+            assert_eq!(
+                app.metadata_editor_scroll, 0.0,
+                "1× holds the whole sheet without scrolling"
+            );
+        } else {
+            assert!(
+                app.metadata_editor_scroll > 0.0,
+                "2× on 800×900 needs the field list to scroll to reveal Longitude"
+            );
+        }
+    }
+}
+
+#[test]
+fn library_card_actions_share_one_edge_inset() {
+    let mut app = PhotosApp::new();
+    let mut doc = AutoCommit::new();
+    app.show_library();
+    let staging = tempfile::tempdir().expect("staging dir");
+    crate::seed_scenario(&mut app, &mut doc, "library", staging.path());
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    // Two frames: the first lays out roomy, the second refits the toolbar
+    // to the width it produced (see `build_layout`).
+    for _ in 0..2 {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1200.0),
+                        height: Dimension::length(800.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        let measure_map = node_map.clone();
+        let trr = &mut tr;
+        taffy
+            .compute_layout_with_measure(
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1200.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+                |known, available, id, _, _| {
+                    measure_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
+                        (*p).measure(known, available, trr)
+                    })
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &ui::presence::PresenceCtx::empty(),
+        );
+    }
+    let rects = app.library_card_action_rects();
+    assert!(!rects.is_empty(), "the library scenario paints cards");
+    for (card, details, _remove, star) in &rects {
+        let left_inset = details.x0 - card.x0;
+        let right_inset = card.x1 - star.x1;
+        assert!(
+            (left_inset - right_inset).abs() < 0.5,
+            "card {card:?}: Details inset {left_inset} vs star inset {right_inset}"
+        );
+    }
 }

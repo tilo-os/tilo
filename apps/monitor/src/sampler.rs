@@ -5,9 +5,55 @@
 
 use std::time::Instant;
 
+#[cfg(test)]
+use std::cell::{Cell, RefCell};
+#[cfg(test)]
+use std::rc::Rc;
+
 use sysinfo::{Networks, Pid, ProcessesToUpdate, Signal, System, Users};
 
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
+
+#[cfg(test)]
+thread_local! {
+    static PROVIDER_READ_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_provider_read() {
+    PROVIDER_READ_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+pub(crate) fn reset_provider_read_count() {
+    PROVIDER_READ_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn provider_read_count() -> usize {
+    PROVIDER_READ_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SignalAttempt {
+    pub(crate) pid: u32,
+    pub(crate) started_at: u64,
+    pub(crate) kind: StopKind,
+}
+
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct SignalProbe {
+    attempts: Rc<RefCell<Vec<SignalAttempt>>>,
+}
+
+#[cfg(test)]
+impl SignalProbe {
+    pub(crate) fn attempts(&self) -> Vec<SignalAttempt> {
+        self.attempts.borrow().clone()
+    }
+}
 
 /// Which POSIX signal a stop action dispatches. `Term` asks a process to
 /// shut down cleanly (catchable); `Kill` is the un-catchable hard stop.
@@ -33,6 +79,8 @@ pub struct Sampler {
     networks: Networks,
     users: Users,
     last: Option<Instant>,
+    #[cfg(test)]
+    signal_probe: Option<SignalProbe>,
 }
 
 impl Sampler {
@@ -40,15 +88,50 @@ impl Sampler {
         let mut sys = System::new();
         // Prime CPU + process state so the first real `refresh` produces
         // meaningful deltas rather than a cold zero reading.
+        #[cfg(test)]
+        note_provider_read();
         sys.refresh_cpu_all();
+        #[cfg(test)]
+        note_provider_read();
         sys.refresh_memory();
+        #[cfg(test)]
+        note_provider_read();
         sys.refresh_processes(ProcessesToUpdate::All, true);
+        #[cfg(test)]
+        note_provider_read();
+        let networks = Networks::new_with_refreshed_list();
+        #[cfg(test)]
+        note_provider_read();
+        let users = Users::new_with_refreshed_list();
         Self {
             sys,
-            networks: Networks::new_with_refreshed_list(),
-            users: Users::new_with_refreshed_list(),
+            networks,
+            users,
             last: None,
+            #[cfg(test)]
+            signal_probe: None,
         }
+    }
+
+    /// Construct storage for a deterministic sample without refreshing any
+    /// native provider. The live constructor remains eagerly primed so its
+    /// first refresh has meaningful CPU and process deltas.
+    pub(crate) fn inert() -> Self {
+        Self {
+            sys: System::new(),
+            networks: Networks::new(),
+            users: Users::new(),
+            last: None,
+            #[cfg(test)]
+            signal_probe: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn controlled(signal_probe: SignalProbe) -> Self {
+        let mut sampler = Self::inert();
+        sampler.signal_probe = Some(signal_probe);
+        sampler
     }
 
     /// Fold a fresh reading into `model`. Network and disk throughput are
@@ -176,6 +259,15 @@ impl Sampler {
     /// tick immediately before dispatch. A vanished or replaced process is a
     /// clean failure, never a signal delivered to its replacement.
     pub fn signal_if_current(&mut self, pid: u32, started_at: u64, kind: StopKind) -> bool {
+        #[cfg(test)]
+        if let Some(probe) = &self.signal_probe {
+            probe.attempts.borrow_mut().push(SignalAttempt {
+                pid,
+                started_at,
+                kind,
+            });
+            return true;
+        }
         let target = Pid::from_u32(pid);
         self.sys
             .refresh_processes(ProcessesToUpdate::Some(&[target]), true);
