@@ -109,7 +109,13 @@ impl GbmScanoutBuffers {
         }
         let allocate = |index: usize| {
             device
-                .create_buffer_object::<()>(width, height, gbm::Format::Xrgb8888, flags)
+                .create_buffer_object_with_modifiers2::<()>(
+                    width,
+                    height,
+                    gbm::Format::Xrgb8888,
+                    std::iter::once(gbm::Modifier::Linear),
+                    flags,
+                )
                 .map_err(|error| format!("GBM scanout buffer[{index}]: {error}"))
         };
         let buffers = [allocate(0)?, allocate(1)?];
@@ -186,6 +192,14 @@ pub struct DirectScanoutTargets {
     imported: [ui::dmabuf_import::ImportedRenderTarget; 2],
     buffers: GbmScanoutBuffers,
     state: DirectScanoutState,
+}
+
+/// Result of handing a completed imported target to KMS.
+#[derive(Debug)]
+pub enum DirectSubmit {
+    Queued,
+    Busy,
+    Failed(String),
 }
 
 impl DirectScanoutTargets {
@@ -302,11 +316,11 @@ fn validate_gbm_scanout_buffer(
             buffer.stride_for_plane(0)
         ));
     }
-    if !matches!(
-        buffer.modifier(),
-        gbm::Modifier::Linear | gbm::Modifier::Invalid
-    ) {
-        return Err(format!("modifier {:?} is not linear", buffer.modifier()));
+    if buffer.modifier() != gbm::Modifier::Linear {
+        return Err(format!(
+            "modifier {:?} is not explicit linear layout",
+            buffer.modifier()
+        ));
     }
     Ok(())
 }
@@ -1920,12 +1934,14 @@ impl DrmScanout {
         &mut self,
         targets: &mut DirectScanoutTargets,
         index: usize,
-    ) -> bool {
+    ) -> DirectSubmit {
         if !self.use_pageflip || self.flip_pending || targets.state.render_slot() != Some(index) {
-            return false;
+            return DirectSubmit::Busy;
         }
         let Some(framebuffer) = targets.framebuffer(index) else {
-            return false;
+            return DirectSubmit::Failed(format!(
+                "direct scanout slot {index} has no KMS framebuffer"
+            ));
         };
         match self
             .card
@@ -1933,16 +1949,26 @@ impl DrmScanout {
         {
             Ok(()) => {
                 self.flip_pending = true;
-                targets.state.submit(index)
+                if targets.state.submit(index) {
+                    DirectSubmit::Queued
+                } else {
+                    self.flip_pending = false;
+                    DirectSubmit::Failed(format!(
+                        "direct scanout slot {index} lost ownership before submit"
+                    ))
+                }
             }
             Err(error) => {
                 let errno = error.raw_os_error().unwrap_or_default();
                 if errno == libc::EBUSY || errno == libc::EAGAIN {
                     tracing::trace!("DRM direct scanout page_flip busy; dropping frame");
+                    DirectSubmit::Busy
                 } else {
                     tracing::warn!(%error, errno, "DRM direct scanout page_flip failed; retaining CPU fallback");
+                    DirectSubmit::Failed(format!(
+                        "DRM direct scanout page flip failed (errno {errno}): {error}"
+                    ))
                 }
-                false
             }
         }
     }
