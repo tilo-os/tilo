@@ -13,6 +13,7 @@
 #include <unistd.h>
 #ifdef __linux__
 #include <linux/fs.h>
+#include <sys/syscall.h>
 #endif
 #ifdef __APPLE__
 #include <sys/disk.h>
@@ -149,7 +150,13 @@ static int dev_sync(struct ntfs_device *d) {
 }
 static int dev_stat(struct ntfs_device *d, struct stat *st) {
   struct state *s = d->d_private;
+#ifdef __linux__
+  /* Keep the sandbox contract on fstat even when glibc translates the wrapper
+     to newfstatat on x86_64. */
+  return (int)syscall(SYS_fstat, s->fd, st);
+#else
   return fstat(s->fd, st);
+#endif
 }
 static int dev_ioctl(struct ntfs_device *d, unsigned long request, void *arg) {
   struct state *s = d->d_private;
