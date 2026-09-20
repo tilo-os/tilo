@@ -125,8 +125,8 @@ grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh"
   && ok 'generation allocation authenticates provenance and the latest channel' \
   || bad 'generation allocation still trusts registry tags alone'
 
-if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
-   && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
+if grep -Fq 'runner":"ubuntu-24.04"' "$workflow" \
+   && grep -Fq 'runner":"ubuntu-24.04-arm"' "$workflow" \
    && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}' "$workflow" \
    && grep -Fq 'candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'expected exactly two native child descriptors' "$workflow" \

@@ -33,7 +33,7 @@ if [ -n "$kernel_refs" ]; then
     and (map(.ref) | unique | length) == 2
     and all(.[].ref;
       type == "string"
-      and test("^code\\.podesta\\.ai/tilo/tilo-kernel@sha256:[0-9a-f]{64}$"))
+      and test("^ghcr\\.io/tilo-os/tilo-kernel@sha256:[0-9a-f]{64}$"))
   ' >/dev/null || {
     printf 'release provenance: invalid TILO_KERNEL_REFS_JSON\n' >&2
     exit 1
@@ -109,7 +109,7 @@ jq -n \
       )
     },
     runDetails: {
-      builder: {id: "https://code.podesta.ai/tilo/forgejo/actions/bootc-release-v1"},
+      builder: {id: "https://github.com/tilo-os/tilo/actions/bootc-release-v1"},
       metadata: {invocationId: (env.GITHUB_RUN_ID // "local")},
       byproducts: [{
         name: "independent-rebuild",

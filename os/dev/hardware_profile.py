@@ -38,15 +38,17 @@ DEVELOPMENT_ORIGIN = DEVELOPMENT_PATH / "origin.json"
 
 def development_target(value, architecture=None):
     """One explicitly selected development repository, never production."""
-    match = re.fullmatch(r"([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?/(tilo-development/os|tilo/tilo-development)(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value or "")
+    match = re.fullmatch(r"([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?/(tilo-development/os|tilo-os/tilo-development)(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value or "")
     if not match:
         raise ValueError("development origin must name an approved development repository with an explicit tag or digest")
     host, port, path, selector = match.groups()
     if architecture is not None and architecture not in ARCH_CONFIG:
         raise ValueError("unsupported development image architecture")
-    retained = host == "code.podesta.ai" and port is None and path == "tilo/tilo-development"
-    if (host == "code.podesta.ai" or path == "tilo/tilo-development") and not retained:
+    retained = host == "ghcr.io" and port is None and path == "tilo-os/tilo-development"
+    if (host == "ghcr.io" or path == "tilo-os/tilo-development") and not retained:
         raise ValueError("retained development repository must use its exact HTTPS registry identity")
+    if host == "code.podesta.ai":
+        raise ValueError("legacy development registry is not an approved update origin")
     if host == "localhost" or ".." in host or any(not part or part.startswith('-') or part.endswith('-') for part in host.split('.')):
         raise ValueError("development registry host is invalid or a production alias")
     if retained and selector.startswith(':'):

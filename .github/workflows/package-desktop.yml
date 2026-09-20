@@ -83,7 +83,7 @@ jobs:
          (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
         true
       }}
-    runs-on: tilo-build-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}
@@ -140,8 +140,8 @@ jobs:
           EOF
           )
           # Fat-LTO desktop packaging needs the larger runner class.
-          amd64_runner=tilo-build-x64
-          arm64_runner=tilo-build-arm64
+          amd64_runner=ubuntu-24.04
+          arm64_runner=ubuntu-24.04-arm
           # menci's cross-build image deliberately declares an amd64 OCI
           # config around an ARM rootfs. Keep it for the x86/QEMU fallback,
           # but give native runners an arm64-declared image.
@@ -269,7 +269,7 @@ jobs:
   publish-os-payload:
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: package
-    runs-on: tilo-build-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -359,7 +359,7 @@ jobs:
   release-guard:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
     needs: validate
-    runs-on: tilo-build-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -373,7 +373,7 @@ jobs:
   release:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
     needs: [validate, package, release-guard]
-    runs-on: tilo-build-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

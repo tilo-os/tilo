@@ -25,8 +25,8 @@ class VerifierWorkflowTests(unittest.TestCase):
         source = WORKFLOW.read_text()
         triggers = source.split('\non:\n', 1)[1].split('\nconcurrency:', 1)[0]
         self.assertEqual(['workflow_dispatch'], re.findall(r'^  ([a-z_]+):', triggers, re.M))
-        self.assertIn('arch: x86_64\n            runner: tilo-build-x64', source)
-        self.assertIn('arch: aarch64\n            runner: tilo-build-arm64', source)
+        self.assertIn('arch: x86_64\n            runner: ubuntu-24.04', source)
+        self.assertIn('arch: aarch64\n            runner: ubuntu-24.04-arm', source)
         self.assertIn('image: ${{ needs.builder.outputs.image }}', source)
         self.assertIn('BUILDER_IMAGE: ${{ needs.builder.outputs.image }}', source)
         self.assertIn('uses: ./.github/actions/restore-cargo-downloads', source)

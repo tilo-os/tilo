@@ -3,8 +3,8 @@
 # catalog embedded by all native Imager builds.
 set -euo pipefail
 : "${GITHUB_REF_NAME:?missing release tag}"
-release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
-release_server="${GITHUB_SERVER_URL:-https://code.podesta.ai}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/tilo}"
+release_server="${GITHUB_SERVER_URL:-https://github.com}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 [[ "$release_server" =~ ^https://[^/]+$ ]] \
@@ -39,7 +39,7 @@ jq -e --arg prefix "$release_prefix" '
       (.provenance.source_image_id | test("^sha256:[0-9a-f]{64}$")) and
       (.provenance.input_qcow2_sha256 | test("^[0-9a-f]{64}$")) and
       (.provenance.hardware_profile_sha256 | test("^[0-9a-f]{64}$")) and
-      (.provenance.target_update_ref | test("^code\\.podesta\\.ai/tilo/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$"))
+      (.provenance.target_update_ref | test("^ghcr\\.io/tilo-os/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$"))
     end))
 ' --arg tag "$GITHUB_REF_NAME" "$catalog" >/dev/null
 schema="$(jq -r .schema "$catalog")"

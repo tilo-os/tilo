@@ -55,7 +55,7 @@ concurrency:
 
 jobs:
   plan:
-    runs-on: tilo-build-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
@@ -78,11 +78,11 @@ jobs:
             publish=true
           fi
           if [[ $publish == true ]]; then
-            matrix='{"include":[{"arch":"x86_64","runner":"ubuntu-24.04"},{"arch":"aarch64","runner":"tilo-build-arm64"}]}'
+            matrix='{"include":[{"arch":"x86_64","runner":"ubuntu-24.04"},{"arch":"aarch64","runner":"ubuntu-24.04-arm"}]}'
           else
             # BuildKit layers and OCI export coexist; ordinary 50 GiB runners
             # can fill during export. Use the larger disk lane for this build.
-            matrix='{"include":[{"arch":"x86_64","runner":"tilo-build-x64"}]}'
+            matrix='{"include":[{"arch":"x86_64","runner":"ubuntu-24.04"}]}'
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "build-matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -90,7 +90,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
-    runs-on: tilo-build-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Checkout signing policy
@@ -1101,7 +1101,7 @@ jobs:
   promote-multiarch:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish == 'true'
-    runs-on: tilo-build-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

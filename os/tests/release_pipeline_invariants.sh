@@ -51,8 +51,8 @@ grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-
   && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
 
-if grep -Fq 'runner: tilo-build-arm64' "$workflows/build-kernel.yml" \
-  && grep -Fxq '            runner: tilo-build-x64' "$workflows/build-kernel.yml" \
+if grep -Fq 'runner: ubuntu-24.04-arm' "$workflows/build-kernel.yml" \
+  && grep -Fxq '            runner: ubuntu-24.04' "$workflows/build-kernel.yml" \
   && grep -Fq 'platforms: ${{ matrix.platform }}' "$workflows/build-kernel.yml" \
   && grep -Fq 'needs: build-and-push-kernel' "$workflows/build-kernel.yml" \
   && grep -Fq 'promote-native-kernels:' "$workflows/build-kernel.yml" \
@@ -101,8 +101,8 @@ else
 fi
 
 kernel_workflow="$workflows/build-kernel.yml"
-if grep -Fq 'runner: tilo-build-x64' "$kernel_workflow" \
-   && grep -Fq 'runner: tilo-build-arm64' "$kernel_workflow" \
+if grep -Fq 'runner: ubuntu-24.04' "$kernel_workflow" \
+   && grep -Fq 'runner: ubuntu-24.04-arm' "$kernel_workflow" \
    && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
    && grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
@@ -138,7 +138,7 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq '  schedule:' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_ARM64_RELEASES: "1"' "$desktop" \
   && grep -Fq '[[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' "$desktop" \
-  && grep -Fq 'arm64_runner=tilo-build-arm64' "$desktop" \
+  && grep -Fq 'arm64_runner=ubuntu-24.04-arm' "$desktop" \
   && grep -Fq 'release_arches=amd64,arm64' "$desktop" \
   && grep -Fq 'release_arches: ${{ steps.lanes.outputs.release_arches }}' "$desktop" \
   && grep -Fq 'RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}' "$desktop" \
@@ -195,7 +195,7 @@ fi
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
   && grep -Fq 'github.event.inputs.full_native' "$imager" \
   && grep -Fq 'runner":"ubuntu-24.04"' "$imager" \
-  && grep -Fq 'runner":"tilo-build-arm64"' "$imager" \
+  && grep -Fq 'runner":"ubuntu-24.04-arm"' "$imager" \
   && ! grep -Fq 'pull_request:' "$imager" \
   && ! grep -Fq 'branches: ["main"]' "$imager" \
   && ok 'imager native jobs are reserved for explicit release rehearsals and tags' \

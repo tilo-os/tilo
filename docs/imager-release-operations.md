@@ -213,15 +213,10 @@ newline-terminated `NAME=value` per line:
   the release bot write access to only that repository, and mint the token for
   that bot. Repository creation is supported by the script for bootstrap, but
   should not be part of the steady-state lease.
-- Release: for the `release` platform, write a 5–15 minute Forgejo token as the
-  complete raw output. Pre-create `tilo/releases` as a public repository with a
-  `main` branch. The token may create/update releases and attachments only in
-  that repository; it must have no write access to the private `tilo/tilo`
-  source repository, the Homebrew tap, or the website. The publisher checks
-  the target's exact full name and public/non-archived state before uploading,
-  reads every attachment back byte-for-byte, and publishes only a complete
-  draft. Set `IMAGER_PUBLIC_RELEASE_REPOSITORY` only when intentionally using
-  another pre-created public `OWNER/REPOSITORY` target.
+- Release: GitHub Actions publishes signed artifacts to private GitHub Releases
+  in `tilo-os/tilo` with the repository-scoped job token. Do not redirect this
+  lane to a public repository before the project itself is intentionally made
+  public.
 - WinGet: for the `winget` platform, write the complete raw GitHub token. A
   GitHub App **installation** token scoped only to the bot's fork can push the
   branch but cannot be relied on to create a pull request in
@@ -314,11 +309,8 @@ as `imager-v1.2.3` on the same commit. A successful tag must finish the native m
 verification, Homebrew installation on four hosts, WinGet PR creation, and the
 landing-page production build in that order.
 
-The Forgejo release is created as a draft. CI uploads and reads back every
-required attachment, including signed installer images, the signed installer
-catalog, Windows portable zip, and both macOS app zips, before making that draft
-public. Reruns may resume a draft, but never add to or replace files in an
-already-public release.
+The GitHub release stays private with the repository. CI requires every signed
+installer image, catalog, and native package before publishing the tag release.
 
 ### Forgejo configuration inventory
 
@@ -329,7 +321,6 @@ administrators):
 | Variable | Required value |
 |---|---|
 | the seven `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
-| `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional public binary repository in `OWNER/REPOSITORY` form; omit for `tilo/releases` |
 | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex Tilo-main registry-owner Ed25519 public key |
 | `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `ghcr.io/tilo-os/tilo@sha256:...` manifest-list reference used by installer media |
 | `TILO_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |

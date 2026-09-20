@@ -175,12 +175,10 @@ trust anchor: the full fingerprint must also be pinned on the Tilo website or
 another independently authenticated channel before the first release.
 
 Publishing to Homebrew and WinGet is a separate credentialed promotion after
-the signed release exists. Signed binaries are published to the dedicated
-public `tilo/releases` repository, never to the private source repository. The
-tag job obtains a 5–15 minute, target-only token from
-`IMAGER_RELEASE_CREDENTIAL_BROKER`; the source job token is not accepted for
-this step. `IMAGER_PUBLIC_RELEASE_REPOSITORY` can select another pre-created
-public `OWNER/REPOSITORY`. `publish-homebrew-tap.sh` creates/updates the
+the signed release exists. Until the project is intentionally made public,
+signed binaries and installer media remain in private GitHub Releases on
+`tilo-os/tilo`; the tag job uses only its repository-scoped GitHub token.
+`publish-homebrew-tap.sh` creates/updates the
 first-party `tilo/homebrew-tilo` tap, replaces the version, immutable base URL and
 release SHA-256 values, and runs strict audits. `publish-winget.sh` submits the
 generated three-file manifest to Microsoft's public community index. See
@@ -197,11 +195,8 @@ Once accepted, it runs the same idempotent site verification/build and changes
 WinGet to `available`; transient GitHub failures remain fail-safe as
 `submitted`.
 
-Public Forgejo releases remain drafts while artifacts are uploaded. Publication reads
-every attachment back and compares its exact bytes, then makes the complete
-release public in one final API update. A failed upload therefore leaves a
-recoverable private draft; an already-public release is immutable and cannot be
-filled in or changed by a rerun.
+The retained Forgejo publisher is only for the legacy infrastructure path and
+is not used by the GitHub release workflow.
 
 ### Versioned installer catalogs
 

@@ -1,10 +1,6 @@
 self-hosted-runner:
   # Labels of self-hosted runner in array of strings.
   labels:
-    # Provider-neutral names for the large GitHub Actions pools. These are
-    # intentionally not tied to Forgejo or to one hosted-runner vendor.
-    - tilo-build-x64
-    - tilo-build-arm64
     # GitHub-hosted preview labels not yet known by the pinned actionlint.
     - windows-11-arm
     - macos-15-intel

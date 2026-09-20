@@ -3,6 +3,7 @@ name: Snapshot / WPE buildroots
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 # This is the only CI boundary allowed to resolve WPE build dependencies from
 # Fedora. It promotes signed, per-architecture immutable refs; OS release jobs
@@ -42,9 +43,9 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: tilo-build-x64
+            runner: ubuntu-24.04
           - arch: aarch64
-            runner: tilo-build-arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -125,7 +126,7 @@ jobs:
   promote:
     timeout-minutes: 60
     needs: build
-    runs-on: tilo-build-x64
+    runs-on: ubuntu-24.04
     env:
       WPE_SNAPSHOT_INPUTS: |
         os/Containerfile.wpe-buildroot

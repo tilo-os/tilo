@@ -14,15 +14,15 @@ SPEC.loader.exec_module(winget)
 class ManifestTests(unittest.TestCase):
     def setUp(self):
         environment = patch.dict(os.environ, {
-            "GITHUB_SERVER_URL": "https://code.podesta.ai",
-            "TILO_RELEASE_REPOSITORY": "tilo/releases",
+            "GITHUB_SERVER_URL": "https://github.com",
+            "TILO_RELEASE_REPOSITORY": "tilo-os/tilo",
         })
         environment.start()
         self.addCleanup(environment.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.url = "https://code.podesta.ai/tilo/releases/releases/download/imager-v1.2.3"
+        self.url = "https://github.com/tilo-os/tilo/releases/download/imager-v1.2.3"
         for arch in ("x86_64", "aarch64"):
             directory = self.root / arch
             directory.mkdir()
@@ -56,7 +56,7 @@ class ManifestTests(unittest.TestCase):
             winget.manifests(self.root, "1.2.3", self.url)
 
     def test_wrong_release_or_origin_fails(self):
-        for url in (self.url.replace("1.2.3", "1.2.4"), self.url.replace("code.podesta.ai", "example.org"), self.url + "?token=bad"):
+        for url in (self.url.replace("1.2.3", "1.2.4"), self.url.replace("github.com", "example.org"), self.url + "?token=bad"):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 winget.manifests(self.root, "1.2.3", url)
 

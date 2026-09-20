@@ -16,8 +16,6 @@ class BuilderWorkflow(unittest.TestCase):
         self.assertIn("platform: linux/amd64", WORKFLOW)
         self.assertIn("platform: linux/arm64", WORKFLOW)
         self.assertIn("runs-on: ${{ matrix.runner }}", WORKFLOW)
-        self.assertNotIn("tilo-build-x64", WORKFLOW)
-        self.assertNotIn("tilo-build-arm64", WORKFLOW)
 
     def test_builds_from_source_and_publishes_only_to_ghcr(self):
         self.assertIn("file: os/Containerfile.builder", WORKFLOW)

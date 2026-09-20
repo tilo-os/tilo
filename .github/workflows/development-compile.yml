@@ -130,7 +130,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/codex/'))
     # Full browser compilation requires additional disk capacity. The driver
     # samples free space and stops at an 8 GiB reserve.
-    runs-on: ${{ inputs.architecture == 'aarch64' && 'tilo-build-arm64' || 'tilo-build-x64' }}
+    runs-on: ${{ inputs.architecture == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     # Leave evidence-cleanup headroom inside the existing 180-minute runner cap.
     # This is a limit, not an estimate of full compilation duration.
     # A literal job bound is required by the repository timeout policy.

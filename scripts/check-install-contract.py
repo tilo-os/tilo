@@ -29,8 +29,8 @@ assert contract["completeSystem"]["alongside"] == {
 
 imager_workflow = (ROOT / ".github/workflows/release-imager.yml").read_text()
 for runner, architecture in (
-    ("imager-linux-x86_64", "x86_64"),
-    ("imager-linux-aarch64", "aarch64"),
+    ("ubuntu-24.04", "x86_64"),
+    ("ubuntu-24.04-arm", "aarch64"),
 ):
     assert f'{{"arch":"{architecture}","runner":"{runner}"}}' in imager_workflow
     medium = f"tilo-installer-linux-{architecture}.img.zst"
@@ -52,7 +52,8 @@ for host in ("linux", "windows", "macos"):
 windows_host = next(host for host in contract["imager"]["hosts"] if host["os"].startswith("Windows"))
 assert windows_host["architectures"] == ["x86_64", "aarch64"]
 for architecture in windows_host["architectures"]:
-    assert f"runner: imager-windows-{architecture}" in imager_workflow
+    runner = "windows-2025" if architecture == "x86_64" else "windows-11-arm"
+    assert f"runner: {runner}" in imager_workflow
     assert f"            tilo-imager-setup-windows-{architecture}.exe" in imager_workflow
 assert "python3 apps/imager/packaging/generate-winget.py release-assets" in imager_workflow
 
@@ -121,8 +122,8 @@ for desktop in contract["desktopSession"]:
     assert len(desktop["architectures"]) == 1
     assert len(desktop["plannedArchitectures"]) == 1
 assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
-assert "amd64_runner=runner-large" in session_workflow
-assert "arm64_runner=runner-large-arm64" in session_workflow
+assert "amd64_runner=ubuntu-24.04" in session_workflow
+assert "arm64_runner=ubuntu-24.04-arm" in session_workflow
 assert '{arch:"amd64",runner:$amd64_runner,targets:$amd64_targets}' in session_workflow
 assert '{arch:"arm64",runner:$arm64_runner,targets:$arm64_targets}' in session_workflow
 assert "docker.io/menci/archlinuxarm@sha256:" in session_workflow

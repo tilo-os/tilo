@@ -30,7 +30,7 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
 bash "$repo/os/tests/forgejo_release_publication.sh" \
   || bad 'Forgejo release publication is not idempotent and immutable'
 bash "$repo/os/tests/public_release_origin.sh" \
-  || bad 'installer catalog is not bound to the configured public release origin'
+  || bad 'installer catalog is not bound to the configured release origin'
 bash "$repo/os/tests/winget_acceptance_monitor.sh" \
   || bad 'WinGet acceptance monitor is not fail-closed and version-bound'
 
@@ -95,11 +95,10 @@ else
 fi
 
 grep -Fq 'id-token: write' "$workflow" \
-  && [ "$(grep -Fc 'id-token: write' "$workflow")" -eq 8 ] \
+  && [ "$(grep -Fc 'id-token: write' "$workflow")" -eq 7 ] \
   && grep -Fq 'IMAGER_LINUX_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_WINDOWS_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_MACOS_CREDENTIAL_BROKER' "$workflow" \
-  && grep -Fq 'IMAGER_RELEASE_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_HOMEBREW_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_WINGET_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$workflow" \
@@ -107,12 +106,12 @@ grep -Fq 'id-token: write' "$workflow" \
   && grep -Fq 'TILO_LINUX_SIGNER' "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'TILO_NOTARY_KEYCHAIN_PROFILE' "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'TILO_WINDOWS_SIGNER' "$repo/apps/imager/packaging/package-host.ps1" \
-  && ok 'all credentialed jobs enable Forgejo OIDC with platform-specific brokers' \
+  && ok 'all credentialed jobs enable GitHub OIDC with platform-specific brokers' \
   || bad 'short-lived credential path is not wired into every release job'
 
 grep -Fq 'acquire-release-credentials.sh' "$workflow" \
   && grep -Fq 'Acquire-ReleaseCredentials.ps1' "$workflow" \
-  && [ "$(grep -Fc 'acquire-release-token.sh' "$workflow")" -eq 4 ] \
+  && [ "$(grep -Fc 'acquire-release-token.sh' "$workflow")" -eq 3 ] \
   && grep -Fq 'credential output must not preexist' \
     "$repo/apps/imager/packaging/acquire-release-token.sh" \
   && grep -Fq 'lease file has an extended' \
@@ -136,24 +135,23 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
   && ok 'release brokers, signer paths, publisher identities, and cleanup fail closed' \
   || bad 'release credential outputs or signing identities are insufficiently constrained'
 
-publisher="$repo/apps/imager/packaging/publish-forgejo-release.sh"
-if grep -Fq "release_repository=\"\${TILO_RELEASE_REPOSITORY:-tilo/releases}\"" "$publisher" \
-   && grep -Fq 'release repository must be public' "$publisher" \
-   && grep -Fq 'release repository must be separate from the source repository' "$publisher" \
-   && grep -Fq 'release "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
-   && grep -Fq 'IMAGER_PUBLIC_RELEASE_REPOSITORY' "$workflow" \
+if grep -Fq 'TILO_RELEASE_REPOSITORY: ${{ github.repository }}' "$workflow" \
    && sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq 'persist-credentials: false' \
-   && ! sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq '${{ github.token }}' \
+   && sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq 'contents: write' \
+   && sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq -- '--repo "$TILO_RELEASE_REPOSITORY"' \
+   && sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq '${{ github.token }}' \
+   && ! grep -Fq 'PUBLIC_RELEASES_TOKEN' "$workflow" \
+   && ! grep -Fq 'IMAGER_PUBLIC_RELEASE_REPOSITORY' "$workflow" \
    && grep -Fq '.releaseRoot = $release_root' "$repo/apps/imager/packaging/publish-site-release.sh" \
    && grep -Fq 'landing page does not consume the public releaseRoot manifest field' "$repo/apps/imager/packaging/publish-site-release.sh" \
-   && ! grep -Fq 'tilo/tilo/releases/download' \
+   && grep -Fq 'tilo-os/tilo' \
       "$repo/apps/imager/packaging/package-install-medium.sh" \
       "$repo/apps/imager/packaging/build-release-catalog.sh" \
       "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
       "$repo/apps/imager/packaging/package-host.ps1" "$workflow"; then
-  ok 'public binaries use a dedicated public repository and a target-only OIDC lease'
+  ok 'release binaries remain in the private monorepo until intentional publication'
 else
-  bad 'binary publication can target the private source repository or reuse its job token'
+  bad 'release binaries can escape the private monorepo publication boundary'
 fi
 
 mac_broker="$repo/apps/imager/packaging/acquire-release-credentials.sh"
@@ -305,11 +303,11 @@ for artifact in \
     && ok "$artifact is carried into the release" \
     || bad "$artifact is absent from the release workflow"
 done
-grep -Fq 'runner: imager-linux-aarch64' "$workflow" \
-  && grep -Fq 'runner: imager-macos-x86_64' "$workflow" \
-  && grep -Fq 'runner: imager-macos-aarch64' "$workflow" \
-  && grep -Fq 'runner: imager-windows-x86_64' "$workflow" \
-  && grep -Fq 'runner: imager-windows-aarch64' "$workflow" \
+grep -Fq 'runner":"ubuntu-24.04-arm"' "$workflow" \
+  && grep -Fq 'runner: macos-15-intel' "$workflow" \
+  && grep -Fq 'runner: macos-15' "$workflow" \
+  && grep -Fq 'runner: windows-2025' "$workflow" \
+  && grep -Fq 'runner: windows-11-arm' "$workflow" \
   && ok 'Linux, Windows, and macOS have native x86-64 and ARM64 lanes' \
   || bad 'the requested native release architecture matrix is incomplete'
 grep -Fq 'Require the complete native release matrix' "$workflow" \
@@ -368,7 +366,7 @@ grep -Fq 'tilo-installer-medium-${{ matrix.arch }}' "$workflow" \
 grep -Fq 'key: github-assets-all-v1-' "$workflow" \
   && grep -Fq './os/dev/cache-github-assets.sh' "$workflow" \
   && grep -Fq 'podman login \' "$workflow" \
-  && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE" code.podesta.ai' "$workflow" \
+  && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE" ghcr.io' "$workflow" \
   && grep -Fq './os/dev/install-cached-cosign.sh' "$workflow" \
   && ok 'installer media restores pinned inputs and can authenticate/verify frozen images' \
   || bad 'installer-media release lane lacks immutable inputs or private-image prerequisites'
@@ -485,8 +483,8 @@ grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
 
 [ "$(grep -Fc 'branches: ["main"]' "$workflow")" -eq 0 ] \
   && [ "$(grep -Fc 'pull_request:' "$workflow")" -eq 0 ] \
-  && grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
-  && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
+  && grep -Fq 'runner":"ubuntu-24.04"' "$workflow" \
+  && grep -Fq 'runner":"ubuntu-24.04-arm"' "$workflow" \
   && grep -Fq './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' "$workflow" \
   && grep -Fq 'TILO_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
   && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE"' "$workflow" \

@@ -103,7 +103,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "os/tests/workflow_dependency_invariants.sh",
     ),
 }
-NATIVE_RUNNERS = {"x86_64": "tilo-build-x64", "aarch64": "tilo-build-arm64"}
+NATIVE_RUNNERS = {"x86_64": "ubuntu-24.04", "aarch64": "ubuntu-24.04-arm"}
 GLOBAL_FILES = {
     "Cargo.toml",
     "Cargo.lock",

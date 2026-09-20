@@ -87,7 +87,7 @@ jobs:
          (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
         true
       }}
-    runs-on: tilo-build-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     container:
       image: ghcr.io/tilo-os/tilo-builder:latest

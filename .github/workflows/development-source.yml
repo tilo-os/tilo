@@ -77,9 +77,9 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: tilo-build-x64
+            runner: ubuntu-24.04
           - arch: aarch64
-            runner: tilo-build-arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:

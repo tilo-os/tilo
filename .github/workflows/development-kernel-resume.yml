@@ -43,7 +43,7 @@ concurrency:
 
 jobs:
   kernel:
-    runs-on: tilo-build-arm64
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 170
     env:
       # This runner allocates four CPUs. Two jobs left roughly half idle;

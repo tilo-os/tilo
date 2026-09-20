@@ -13,7 +13,7 @@ version="${GITHUB_REF_NAME#imager-v}"
 [ "$version" != "$GITHUB_REF_NAME" ] || { printf 'expected imager-v* tag\n' >&2; exit 2; }
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
-release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/tilo}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 base_url="${GITHUB_SERVER_URL%/}/${release_repository}/releases/download/${GITHUB_REF_NAME}"

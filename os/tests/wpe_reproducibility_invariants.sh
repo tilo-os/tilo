@@ -87,7 +87,7 @@ has "$snapshot_workflow" 'ref="ghcr.io/tilo-os/tilo-wpe-buildroot@$DIGEST"' \
 digest=$(printf 'a%.0s' {1..64})
 [[ "ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:$digest" =~ $published_pattern ]] \
   && ok 'published immutable WPE reference is accepted' || bad 'published WPE reference is rejected'
-for invalid in "ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:$digest" \
+for invalid in "ghcr.io/not-tilo/tilo-wpe-buildroot@sha256:$digest" \
     'ghcr.io/tilo-os/tilo-wpe-buildroot:latest'; do
   [[ ! "$invalid" =~ $published_pattern ]] \
     && ok 'wrong namespace or mutable WPE reference is rejected' || bad 'invalid WPE reference accepted'
@@ -102,8 +102,8 @@ for arch in X86_64 AARCH64; do
   fi
 done
 
-has "$snapshot_workflow" 'runner: tilo-build-arm64' 'WPE snapshot builds on a native ARM64 runner'
-has "$snapshot_workflow" 'runner: runner' 'WPE snapshot builds on the native x86-64 runner'
+has "$snapshot_workflow" 'runner: ubuntu-24.04-arm' 'WPE snapshot builds on a native ARM64 runner'
+has "$snapshot_workflow" 'runner: ubuntu-24.04' 'WPE snapshot builds on the native x86-64 runner'
 has "$snapshot_workflow" './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' \
   'WPE snapshot fails early when a native runner label points at the wrong architecture'
 has "$snapshot_workflow" "if: github.ref == 'refs/heads/main'" \
@@ -114,7 +114,7 @@ has "$snapshot_workflow" 'actual_arch="$(docker run --rm --entrypoint cat "$ref"
 has "$snapshot_workflow" 'WPE_SNAPSHOT_CREDENTIAL_BROKER' \
   'WPE snapshots use an OIDC credential broker in steady state'
 has "$snapshot_workflow" 'id-token: write' \
-  'WPE snapshot jobs explicitly enable Forgejo OIDC'
+  'WPE snapshot jobs explicitly enable GitHub OIDC'
 has "$snapshot_workflow" '"$TILO_WPE_SIGNER" "$TILO_WPE_REF"' \
   'WPE buildroots are signed through a leased non-exportable signer'
 if grep -Eq 'WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP|WPE_STATIC_BOOTSTRAP_EXPIRES_AT|COSIGN_PRIVATE_KEY|COSIGN_PASSWORD' \
@@ -128,9 +128,9 @@ has "$credential_helper" "bounded_expiry \"\$lease_expiry\" 900" \
 has "$credential_helper" "trusted_root_executable \"\$signer\" 'WPE signer'" \
   'brokered WPE signer and its path are controlled by root'
 has "$snapshot_workflow" 'token: ${{ github.token }}' \
-  'WPE pin promotion uses only the job-scoped Forgejo repository token'
-if grep -Fq 'token: ${{ github.token }}' "$snapshot_workflow"; then
-  bad 'WPE promotion still uses the persistent registry PAT for checkout'
+  'WPE pin promotion uses only the job-scoped GitHub repository token'
+if grep -Eq 'REGISTRY_TOKEN|FORGEJO_TOKEN|WPE_REGISTRY_TOKEN' "$snapshot_workflow"; then
+  bad 'WPE promotion still uses a persistent registry PAT for checkout'
 else
   ok 'persistent registry PAT is not used for repository checkout or promotion'
 fi
@@ -153,7 +153,7 @@ snapshot_inputs=(
   .github/workflows/snapshot-wpe-buildroot.yml
 )
 trigger_block="$(sed -n '/^[[:space:]]*paths:/,/^$/p' "$snapshot_workflow")"
-input_block="$(sed -n '/^[[:space:]]*WPE_SNAPSHOT_INPUTS:/,/^[[:space:]]*enable-openid-connect:/p' "$snapshot_workflow")"
+input_block="$(sed -n '/^[[:space:]]*WPE_SNAPSHOT_INPUTS:/,/^[[:space:]]*steps:/p' "$snapshot_workflow")"
 has "$snapshot_workflow" "mapfile -t snapshot_inputs < <(printf '%s' \"\$WPE_SNAPSHOT_INPUTS\")" \
   'WPE promotion parses the authoritative input list without an empty pathspec'
 for input in "${snapshot_inputs[@]}"; do
@@ -162,10 +162,10 @@ for input in "${snapshot_inputs[@]}"; do
     && ok "$input triggers a snapshot and blocks stale promotion" \
     || bad "$input is missing from the snapshot trigger or stale-promotion guard"
 done
-if [ "$(grep -Fc -- '"${snapshot_inputs[@]}"' "$snapshot_workflow")" -eq 2 ]; then
-  ok 'both WPE promotion race checks use the complete authoritative input set'
+if [ "$(grep -Fc -- '"${snapshot_inputs[@]}"' "$snapshot_workflow")" -eq 1 ]; then
+  ok 'WPE promotion race check uses the complete authoritative input set'
 else
-  bad 'both WPE promotion race checks must use the complete authoritative input set'
+  bad 'WPE promotion race check must use the complete authoritative input set'
 fi
 
 has "$image_workflow" 'cosign verify --key keys/cosign.pub "$ref"' \

@@ -232,7 +232,7 @@ jobs:
       # Forgejo removes an empty matrix job entirely, leaving its aggregate
       # blocked. Keep one inert row when Rust is inapplicable; the job-level
       # condition skips it without consuming a runner.
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"tilo-build-x64"}]}') }}
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"ubuntu-24.04"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
       credentials:

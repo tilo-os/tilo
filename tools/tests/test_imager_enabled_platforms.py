@@ -55,7 +55,7 @@ class EnabledImagerPlatforms(unittest.TestCase):
         install = section(self.workflow, "homebrew-install-test", 2)
         self.assertNotIn("package_kind: cask", install)
         self.assertIn("runner: ubuntu-24.04", install)
-        self.assertIn("runner: tilo-build-arm64", install)
+        self.assertIn("runner: ubuntu-24.04-arm", install)
         deferred = section(self.workflow, "homebrew-macos-install-test", 2)
         self.assertIn("    if: ${{ false }}", deferred)
         self.assertIn("runner: macos-15-intel", deferred)

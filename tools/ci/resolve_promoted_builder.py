@@ -47,7 +47,7 @@ def resolve(token, run=command, fetch=resolver.fetch_versions):
     for digest in children.values():
         run("cosign", "verify", "--key", "keys/cosign.pub", f"{REPOSITORY}@{digest}")
     return {"include": [dict(arch=arch,
-                             runner="tilo-build-arm64" if arch == "aarch64" else "tilo-build-x64",
+                             runner="ubuntu-24.04-arm" if arch == "aarch64" else "ubuntu-24.04",
                              image=f"{REPOSITORY}@{children[arch]}")
                         for arch in sorted(children)]}
 

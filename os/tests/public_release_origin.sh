@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove catalogs accept only the configured public binary origin.
+# Prove catalogs accept only the configured release origin.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -29,14 +29,14 @@ jq -e --arg prefix "$prefix/" \
   "$work/catalog/tilo-installer-catalog-v1.json" >/dev/null
 
 write_fragment x86_64 \
-  'https://github.com/tilo-os/tilo/releases/download/imager-v1.2.3/tilo-installer-linux-x86_64.img.zst'
+  'https://github.com/tilo-os/releases/releases/download/imager-v1.2.3/tilo-installer-linux-x86_64.img.zst'
 if GITHUB_REF_NAME=imager-v1.2.3 \
    GITHUB_SERVER_URL=https://downloads.example \
    TILO_RELEASE_REPOSITORY=tilo/public-downloads \
      "$repo/apps/imager/packaging/build-release-catalog.sh" \
        "$work/fragments" "$work/rejected" >/dev/null 2>&1; then
-  printf 'catalog accepted a private-source download URL\n' >&2
+  printf 'catalog accepted a download URL from another repository\n' >&2
   exit 1
 fi
 
-printf 'ok    installer catalog is bound to the configured public release origin\n'
+printf 'ok    installer catalog is bound to the configured release origin\n'

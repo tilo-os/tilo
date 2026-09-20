@@ -165,7 +165,7 @@ class CheckAggregateTests(unittest.TestCase):
         affected = section(self.workflow, "affected", 2)
         self.assertIn("if: needs.select.outputs.rust_required == 'true'", affected)
         self.assertIn("fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix ||", affected)
-        self.assertIn('{"include":[{"runner":"tilo-build-x64"}]}', affected)
+        self.assertIn('{"include":[{"runner":"ubuntu-24.04"}]}', affected)
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
         self.assertIn("needs: [builder, select, security, affected, native-dependencies]", checks)

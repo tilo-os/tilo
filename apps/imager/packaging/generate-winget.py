@@ -11,10 +11,10 @@ from urllib.parse import urlparse
 def manifests(root, version, base_url):
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise ValueError("WinGet requires a stable semantic version")
-    repository = os.environ.get("TILO_RELEASE_REPOSITORY", "tilo/releases")
+    repository = os.environ.get("TILO_RELEASE_REPOSITORY", "tilo-os/tilo")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("release repository must be OWNER/REPOSITORY")
-    server = urlparse(os.environ.get("GITHUB_SERVER_URL", "https://code.podesta.ai"))
+    server = urlparse(os.environ.get("GITHUB_SERVER_URL", "https://github.com"))
     if server.scheme != "https" or not server.netloc or server.path not in ("", "/") or server.query or server.fragment:
         raise ValueError("release server must be an HTTPS origin")
     parsed = urlparse(base_url)
