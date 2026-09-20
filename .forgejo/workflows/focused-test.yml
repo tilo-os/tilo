@@ -1,0 +1,137 @@
+name: Development / focused native test
+
+permissions:
+  contents: read
+
+# Diagnostic evidence, not a replacement for required PR checks. Workflow code
+# comes from the dispatch ref; source_sha selects only the code being tested.
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Exact source commit (40 lowercase hex characters)'
+        required: true
+        type: string
+      package:
+        description: 'One Cargo workspace package'
+        required: true
+        type: string
+      operation:
+        description: 'Run one integration test or compile all tests of this package'
+        required: true
+        default: test
+        type: choice
+        options: [test, check-tests]
+      test_target:
+        description: 'Integration target for test, e.g. it; empty for check-tests'
+        required: false
+        type: string
+      test_name:
+        description: 'Exact Rust test path; empty for check-tests'
+        required: false
+        type: string
+
+env:
+  SOURCE_SHA: ${{ github.event.inputs.source_sha }}
+  PACKAGE: ${{ github.event.inputs.package }}
+  OPERATION: ${{ github.event.inputs.operation }}
+  TEST_TARGET: ${{ github.event.inputs.test_target }}
+  TEST_NAME: ${{ github.event.inputs.test_name }}
+  CARGO_HOME: /cargo-home
+  CARGO_BUILD_JOBS: '4'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_TERM_COLOR: never
+  SCCACHE_IGNORE_SERVER_IO_ERROR: '1'
+  RUSTFLAGS: '-D warnings'
+  WGPU_BACKEND: vulkan
+  WGPU_ADAPTER_NAME: llvmpipe
+
+jobs:
+  builder:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+      source: ${{ steps.validate.outputs.source }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          persist-credentials: false
+      - name: Validate focused request before native admission
+        id: validate
+        run: python3 -I tools/ci/focused_test.py validate
+      - name: Resolve immutable native builder
+        id: resolve
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: python3 tools/ci/resolve_builder.py
+
+  focused:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 90
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout workflow helpers
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          persist-credentials: false
+      - name: Checkout exact test source separately
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          ref: ${{ needs.builder.outputs.source }}
+          path: source
+          persist-credentials: false
+      - name: Restore source lockfile downloads
+        id: downloads
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        continue-on-error: true
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('source/Cargo.lock') }}
+          restore-keys: cargo-deps-
+      - name: Prepare native compiler cache and headless runtime
+        run: |
+          ./os/dev/assert-native-arch.sh x86_64
+          bash tools/ci/sccache.sh prepare
+          driver=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          test -r "$driver"
+          echo "VK_DRIVER_FILES=$driver" >> "$GITHUB_ENV"
+          mkdir -p /tmp/tilo-focused-runtime
+          chmod 700 /tmp/tilo-focused-runtime
+          bash tools/ensure-headless-audio.sh
+      - name: Execute focused request
+        env:
+          XDG_RUNTIME_DIR: /tmp/tilo-focused-runtime
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+        run: bash tools/with-headless-audio.sh python3 -I tools/ci/focused_test.py run --root source
+      - name: Report compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report
+      - name: Save source lockfile downloads
+        if: always() && steps.downloads.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('source/Cargo.lock') }}
