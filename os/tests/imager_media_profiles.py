@@ -114,7 +114,18 @@ class MediaProfilesTests(unittest.TestCase):
         # jq, SHA-256, sizes, filenames and catalog assembly run unchanged.
         for name, source_arg in (("qemu-img", "-2"), ("zstd", "-3")):
             stub = bin_dir / name
-            stub.write_text(f'#!/bin/bash\nset -eu\ncp -- "${{@: {source_arg}:1}}" "${{@: -1}}"\n')
+            if name == "zstd":
+                body = (
+                    '#!/bin/bash\nset -eu\n'
+                    'if [ "${1:-}" = "--decompress" ]; then\n'
+                    '  cat -- "${@: -1}"\n'
+                    'else\n'
+                    '  cp -- "${@: -3:1}" "${@: -1}"\n'
+                    'fi\n'
+                )
+            else:
+                body = f'#!/bin/bash\nset -eu\ncp -- "${{@: {source_arg}:1}}" "${{@: -1}}"\n'
+            stub.write_text(body)
             stub.chmod(0o755)
         self.env = {"PATH": f"{bin_dir}{os.pathsep}{os.defpath}", "HOME": str(self.root),
                     "GITHUB_REF_NAME": "imager-v1.2.3", "LANG": "C.UTF-8"}
