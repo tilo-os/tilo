@@ -385,26 +385,6 @@ struct PartitionColumns {
     used: f64,
 }
 
-#[derive(Clone, Copy)]
-struct PartitionRow<'a> {
-    area: Rect,
-    columns: PartitionColumns,
-    y: f64,
-    index: usize,
-    partition: &'a Partition,
-    selected: bool,
-    hovered: bool,
-}
-
-/// Mutable rendering resources shared by the app's immediate-mode paint
-/// passes. Geometry and domain data remain explicit at each boundary.
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-    transform: Affine,
-}
-
 pub struct DisksApp {
     topo: Topology,
     topo_json_cache: String,
