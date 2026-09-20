@@ -1468,7 +1468,7 @@ impl RecordStore {
     pub fn content_revision(&self) -> String {
         let set = self.0.borrow();
         let mut records = set.open.iter().collect::<Vec<_>>();
-        records.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        records.sort_unstable_by_key(|(id, _)| *id);
         let mut revision = String::new();
         for (id, parked) in records {
             use std::fmt::Write as _;

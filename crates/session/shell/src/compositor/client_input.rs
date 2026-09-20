@@ -1103,7 +1103,7 @@ fn route_mouse_input(
 /// Ordinary client gestures are refcounted with remote participants. A drag
 /// promoted from compositor chrome is different: its press belonged to the
 /// in-process widget and was therefore never entered in that ledger, but the
-/// server-side DnD grab still requires the matching release to finish a drop.
+/// server-side `DnD` grab still requires the matching release to finish a drop.
 fn admit_local_pointer_edge(
     state: &mut State,
     button: u32,
