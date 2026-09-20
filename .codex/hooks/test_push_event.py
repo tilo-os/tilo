@@ -31,6 +31,17 @@ class PushEventTests(unittest.TestCase):
         self.assertTrue(pushes_current_branch(target[1], "codex/dev-package-identity"))
         self.assertFalse(pushes_current_branch(target[1], "main"))
 
+    def test_both_exact_observed_push_code_fixtures(self):
+        for name, worktree, branch in [
+            ("qos157", "qos-registry-submission", "codex/dev-package-identity"),
+            ("infra240", "infra-registry-backup-suspend", "codex/suspend-registry-backup-cutover"),
+        ]:
+            event = json.loads((Path(__file__).parent / "fixtures" / f"{name}.json").read_text())
+            target = push_target(event)
+            self.assertIsNotNone(target, name)
+            self.assertEqual(str(target[0]).replace("\\", "/"), "C:/Users/xaver/" + worktree)
+            self.assertTrue(pushes_current_branch(target[1], branch))
+
     def test_plain_exec_command(self):
         event = self.event()
         event.update(tool_name="functions.exec_command", tool_input={"cmd": "git push", "workdir": "C:/repo"})
