@@ -12,6 +12,8 @@ containerfile="$repo_root/os/Containerfile.installer"
 production_containerfile="$repo_root/os/Containerfile"
 builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/tilo-firstboot-user"
+autologin_cleanup="$repo_root/os/usr/libexec/tilo-firstboot-autologin-cleanup"
+autologin_cleanup_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service"
 profile_extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
 installer_app="$repo_root/crates/session/installer/src/installer_app.rs"
 installer_disks="$repo_root/crates/session/installer/src/disks.rs"
@@ -98,12 +100,25 @@ fi
 
 if grep -Fq '"$INSTALLER_CONTEXT/rootfs/usr/share/tilo/greetd-config.toml"' "$builder" \
    && grep -Fq 'COPY rootfs/ /' "$containerfile" \
-   && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend" \
+   && grep -Fq 'install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"' "$backend" \
    && grep -Fq '[initial_session]' "$backend" \
-   && grep -Fq 'user = "%s"' "$backend"; then
-  ok "encrypted startup hands off directly to the installed user's session"
+   && grep -Fq 'command = "/usr/libexec/tilo-session --backend drm"' "$backend" \
+   && grep -Fq 'firstboot-autologin-pending' "$backend" \
+   && grep -Fq 'sync -f "$AUTOLOGIN_PENDING"' "$backend" \
+   && grep -Fq 'tilo-firstboot-autologin-cleanup.service' "$containerfile" \
+   && grep -Fqx 'After=greetd.service' "$autologin_cleanup_unit" \
+   && grep -Fqx 'ConditionPathExists=/etc/tilo/firstboot-autologin-pending' "$autologin_cleanup_unit" \
+   && grep -Fq 'greetd-config.toml' "$autologin_cleanup" \
+   && grep -Fq 'rm -f -- "$PENDING"' "$autologin_cleanup"; then
+  ok "first installed boot reaches OOBE directly, then restores password authentication"
 else
-  bad "installed system would ask for a second login after disk authentication"
+  bad "first-boot graphical handoff is missing, unsafe, or can persist past one boot"
+fi
+
+if bash "$repo_root/os/tests/firstboot_autologin_cleanup.sh"; then
+  ok "autologin cleanup atomically restores the greeter and fails closed on an unsafe marker"
+else
+  bad "autologin cleanup cannot recover a normal greeter after first boot"
 fi
 
 if grep -Fq ': "${TMPDIR:=${TILO_INSTALLER_OUTPUT}/.tmp}"' "$builder" \
@@ -368,10 +383,12 @@ if grep -Fq "refusing to modify pre-existing account" "$firstboot_user" \
    && grep -Fq "stat -c '%u:%a:%h'" "$firstboot_user" \
    && grep -Fq '[a-z_]* ) valid_user=1' "$firstboot_user" \
    && grep -Fq 'case "$hash" in' "$firstboot_user" \
-   && grep -Fq 'valid_hash=1' "$firstboot_user"; then
-  ok "first boot revalidates installer credentials and refuses privileged account replacement"
+   && grep -Fq 'valid_hash=1' "$firstboot_user" \
+   && grep -Fq 'useradd -m -p "$hash"' "$firstboot_user" \
+   && ! grep -Fq 'chpasswd -e' "$firstboot_user"; then
+  ok "first boot revalidates credentials and creates a password-bearing account atomically"
 else
-  bad "installer can reset a privileged or pre-existing account"
+  bad "installer can reset a privileged account or leave a new account without its password"
 fi
 
 firstboot_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-user.service"

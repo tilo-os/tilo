@@ -5,8 +5,9 @@
 # The custom installer cannot create users at install time (bootc install
 # makes no users), so it drops `<name>:<sha512-crypt-hash>` into the new
 # deployment's /etc/tilo/install-user.conf. On first boot, tilo-firstboot-user.service
-# runs this once: it creates the user (in wheel for sudo), sets the
-# pre-hashed password, then SHREDS the file so the hash doesn't linger.
+# runs this once: it creates the user (in wheel for sudo) with the supplied
+# pre-hashed password in the same account creation operation, then SHREDS the
+# file so the hash doesn't linger.
 set -euo pipefail
 
 CONF=/etc/tilo/install-user.conf
@@ -80,13 +81,11 @@ else
   # the brightness keys and the quick-settings slider write. Without it
   # brightness silently does nothing.
   if [ -n "$full_name" ]; then
-    useradd -m -c "$full_name" -G wheel,tilo-identity,video "$user"
+    useradd -m -p "$hash" -c "$full_name" -G wheel,tilo-identity,video "$user"
   else
-    useradd -m -G wheel,tilo-identity,video "$user"
+    useradd -m -p "$hash" -G wheel,tilo-identity,video "$user"
   fi
 fi
-
-printf '%s:%s\n' "$user" "$hash" | chpasswd -e
 
 # Remove the seed file (best-effort shred; fall back to rm).
 shred -u -- "$CONF" 2>/dev/null || rm -f -- "$CONF"
