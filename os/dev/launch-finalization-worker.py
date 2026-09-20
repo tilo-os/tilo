@@ -34,7 +34,8 @@ DIRECTORY_MODES = {'/var/lib': 0o755, '/var/lib/containers': 0o755,
 # Public receipts only. Never copy /work, /var/lib, logs, registry auth or spool.
 EVIDENCE = ('01-rebind.json', '02-loader.json', '03-provisional.json',
             '04-composefs.json', '05-reseal.json', '06-prediction.json',
-            '07-verified.json', '08-published.json', 'result.json', 'status.json', 'signing-pending.json')
+            '07-verified.json', '08-published.json', 'result.json', 'status.json',
+            'failure.json', 'signing-pending.json')
 STAGE5_EVIDENCE = EVIDENCE[:5]
 # The initial gate is an operator authorization window. It is deliberately
 # independent of the request-bound signing and build execution deadlines.
