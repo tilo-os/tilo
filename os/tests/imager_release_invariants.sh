@@ -423,7 +423,7 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'name: tilo-installer-full-cycle-${{ matrix.arch }}' "$workflow" \
   && grep -Fxq 'os/tests/installer_cycle_graphics.py' "$repo/tools/security-boundary-invariants.txt" \
   && grep -Fq 'Build and pin the isolated installer profile encoder' "$workflow" \
-  && grep -Fq -- '--manifest-path apps/imager/profile-tool/Cargo.toml' "$workflow" \
+  && grep -Fq -- '--manifest-path tools/imager-profile/Cargo.toml' "$workflow" \
   && grep -Fq 'encoder_sha256="$(sha256sum "$encoder"' "$workflow" \
   && grep -Fq 'TILO_PROFILE_ENCODER=%s\nTILO_PROFILE_ENCODER_SHA256=%s\n' "$workflow" \
   && grep -Fq '"$vm" login --passcode-only "$TILO_PASS"' "$cycle" \

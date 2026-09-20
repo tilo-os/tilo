@@ -11,6 +11,42 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+#[cfg(windows)]
+fn assert_default_main_stack() {
+    use std::io::{Read, Seek, SeekFrom};
+
+    // This regression runs the actual application, whose main thread does not
+    // inherit libtest's larger worker stack. Keep it sensitive to excess launch
+    // temporaries instead of hiding them with a larger linker stack reserve.
+    let mut image = std::fs::File::open(env!("CARGO_BIN_EXE_pdf-viewer")).unwrap();
+    let mut word = [0; 2];
+    image.read_exact(&mut word).unwrap();
+    assert_eq!(&word, b"MZ");
+    image.seek(SeekFrom::Start(60)).unwrap();
+    let mut dword = [0; 4];
+    image.read_exact(&mut dword).unwrap();
+    image
+        .seek(SeekFrom::Start(u64::from(u32::from_le_bytes(dword))))
+        .unwrap();
+    image.read_exact(&mut dword).unwrap();
+    assert_eq!(&dword, b"PE\0\0");
+    image.seek(SeekFrom::Current(20)).unwrap();
+    image.read_exact(&mut word).unwrap();
+    assert_eq!(
+        u16::from_le_bytes(word),
+        0x20b,
+        "the actual Windows application must have a PE32+ image"
+    );
+    image.seek(SeekFrom::Current(70)).unwrap();
+    let mut qword = [0; 8];
+    image.read_exact(&mut qword).unwrap();
+    let reserve = u64::from_le_bytes(qword);
+    assert!(
+        reserve > 0 && reserve <= 1024 * 1024,
+        "exercise the default main-thread stack, not an enlarged reserve: {reserve}"
+    );
+}
+
 fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Value) {
     let mut actions = vec![
         json!({"expect": {"target": "pdf_app", "semantic_target": "pdf.page:source-1", "name": "Page 1", "selected": true, "timeout_ms": 30000}}),
@@ -104,6 +140,8 @@ fn find_canvas<'a>(node: &'a Value, found: &mut Vec<&'a Value>) {
 
 #[test]
 fn cli_note_survives_other_document_and_restart() {
+    #[cfg(windows)]
+    assert_default_main_stack();
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap();
     let bytes =

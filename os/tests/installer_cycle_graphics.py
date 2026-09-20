@@ -59,7 +59,7 @@ class CycleGraphicsTests(unittest.TestCase):
             clean.pop('TILO_PROFILE_ENCODER_SHA256', None)
             local = subprocess.run(['bash', '-c', local_script], env=clean, capture_output=True, text=True)
             self.assertEqual(local.returncode, 0, local.stderr)
-            self.assertIn('/apps/imager/profile-tool/Cargo.toml', local.stdout)
+            self.assertIn('/tools/imager-profile/Cargo.toml', local.stdout)
             self.assertNotIn('--example', local.stdout)
 
 

@@ -1,8 +1,8 @@
 name: CI / legacy app E2E
 
 # This is a merge gate when compositor/input compatibility changes, plus a
-# daily drift check against the toolkit/application packages baked into
-# tilo-builder. Running it for unrelated documentation or application changes
+# daily drift check against the Fedora toolkit/application packages installed
+# explicitly below. Running it for unrelated documentation or application changes
 # would spend runner time without increasing confidence.
 on:
   pull_request:
@@ -19,10 +19,11 @@ on:
       - "crates/sdk/ui-core/src/interaction.rs"
       - "crates/sdk/ui-core/src/widget/group_row.rs"
       - "scripts/legacy-app-caret-e2e.py"
-      - "os/Containerfile.builder"
       - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/actions/prepare-rust-build/**"
       - ".forgejo/workflows/legacy-app-e2e.yml"
+      - "tools/ci/workflow_applicability.py"
+      - "tools/ci/prepare_pr_history.py"
   # Capacity relief: main-push validation is covered by nightly/manual runs.
   # push:
   #   branches: ["main"]
@@ -38,7 +39,6 @@ on:
   #     - "crates/sdk/ui-core/src/interaction.rs"
   #     - "crates/sdk/ui-core/src/widget/group_row.rs"
   #     - "scripts/legacy-app-caret-e2e.py"
-  #     - "os/Containerfile.builder"
   #     - ".forgejo/actions/restore-cargo-downloads/**"
   #     - ".forgejo/actions/prepare-rust-build/**"
   #     - ".forgejo/workflows/legacy-app-e2e.yml"
@@ -51,7 +51,43 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  applicability:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      applicable: ${{ steps.compare.outputs.applicable }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+          sparse-checkout: |
+            tools/ci/prepare_pr_history.py
+            tools/ci/workflow_applicability.py
+            .forgejo/workflows/legacy-app-e2e.yml
+          sparse-checkout-cone-mode: false
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Prepare targeted PR history
+        run: python3 -I tools/ci/prepare_pr_history.py
+      - name: Require an exact relevant PR diff before legacy-app work
+        id: compare
+        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/legacy-app-e2e.yml
+
   caret:
+    needs: applicability
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        true
+      }}
     runs-on: runner
     timeout-minutes: 45
     container:
@@ -78,18 +114,14 @@ jobs:
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
-      - name: Verify real app subjects
+      - name: Install and verify real app subjects
         run: |
-          # The builder-image update and this workflow can race on the first
-          # merge that introduces a new subject. Normally these packages are
-          # already baked in; this fallback handles that transition.
-          if ! command -v gnome-text-editor >/dev/null ||
-             ! command -v libreoffice >/dev/null ||
-             ! find /usr/lib64/qt6/examples /usr/lib/qt6/examples \
-                 -type f -path '*/widgets/lineedits/*/lineedits' -perm /111 \
-                 -print -quit 2>/dev/null | grep -q .; then
-            dnf install -y gnome-text-editor qt6-qtbase-examples libreoffice-writer
-          fi
+          # Keep large test applications out of the general CI builder. Request
+          # only these subjects and required dependencies; record exact versions
+          # so failures identify the exact Fedora update-stream versions tested.
+          dnf install -y --setopt=install_weak_deps=False \
+            gnome-text-editor qt6-qtbase-examples libreoffice-writer
+          rpm -q gnome-text-editor qt6-qtbase-examples libreoffice-writer
           command -v gnome-text-editor
           command -v libreoffice
           find /usr/lib64/qt6/examples /usr/lib/qt6/examples \

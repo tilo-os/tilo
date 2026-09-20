@@ -43,6 +43,7 @@ class TransportTests(unittest.TestCase):
                         'restart_count': 0, 'pod_spec_sha256': spool.digest(spool.canonical(spec)),
                         'context_sha256': spool.context(self.context), 'endpoint': '/trusted/signing-spool-endpoint.py'}
         self.events = []
+        self.transfer_timeouts = []
         self.client = transfer.Transport('existing-context', self.binding, self.runner)
         self.mutate_after = None
         self.nested = None
@@ -64,6 +65,7 @@ class TransportTests(unittest.TestCase):
             index = argv.index('/trusted/signing-spool-endpoint.py')
             operation = argv[index + 1]
             self.events.append(operation)
+            self.transfer_timeouts.append((operation, kwargs.get('timeout')))
             response = argv[argv.index('--response') + 1] if '--response' in argv else None
             nonce = argv[argv.index('--request-id') + 1] if '--request-id' in argv else None
             output = io.BytesIO()
@@ -81,6 +83,7 @@ class TransportTests(unittest.TestCase):
         local = self.root / 'received'
         self.client.fetch(self.nonce, local)
         self.assertEqual((local / 'input').read_bytes(), self.data)
+        self.assertIn(('input', transfer.payload_timeout(len(self.data))), self.transfer_timeouts)
         self.assertEqual(self.events, ['check', 'request', 'check', 'check', 'input', 'check'])
         outgoing = self.root / 'outgoing'
         outgoing.mkdir(mode=0o700)
@@ -92,6 +95,7 @@ class TransportTests(unittest.TestCase):
         self.events.clear()
         self.client.deliver(outgoing)
         self.assertEqual((self.remote / 'output').read_bytes(), signed)
+        self.assertIn(('put-output', transfer.payload_timeout(len(signed))), self.transfer_timeouts)
         self.assertEqual(spool.document(self.remote / 'response.json'), response)
         self.assertEqual(self.events, ['check', 'request', 'check', 'check', 'put-output', 'check', 'check', 'publish-response', 'check'])
         with self.assertRaises(FileExistsError):
@@ -132,6 +136,13 @@ class TransportTests(unittest.TestCase):
             transfer.bounded_process([sys.executable, '-c', 'print("x"*100)'], io.BytesIO(), 10)
         with self.assertRaisesRegex(ValueError, 'deadline'):
             transfer.bounded_process([sys.executable, '-c', 'import time; time.sleep(2)'], io.BytesIO(), 10, timeout=0.1)
+
+    def test_large_payload_deadline_includes_a_conservative_stream_budget(self):
+        mib = 1024 * 1024
+        self.assertEqual(transfer.payload_timeout(256 * mib), 376)
+        self.assertEqual(transfer.payload_timeout(spool.MAX_INPUT + 65536), 633)
+        with self.assertRaises(ValueError):
+            transfer.payload_timeout(spool.MAX_INPUT + 65537)
 
     def test_corrupt_response_never_published(self):
         response = {k: self.request[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
