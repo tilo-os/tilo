@@ -318,6 +318,95 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
         serde_json::from_slice(&retry.stdout).unwrap();
     assert_eq!(retried.entry, request.entry);
 
+    // Continuous versions advance numerically; hash metadata never ranks them.
+    for dev_version in ["0.1.1-dev.9+gffff", "0.1.1-dev.10+gaaaa"] {
+        std::fs::write(
+            &manifest_path,
+            sample_manifest_with(&"00".repeat(32)).replace(
+                "version     = \"0.1.0\"",
+                &format!("version     = \"{dev_version}\""),
+            ),
+        )
+        .unwrap();
+        let packed = Command::new(bin_path())
+            .args([
+                "pack",
+                "--manifest",
+                manifest_path.to_str().unwrap(),
+                "--payload",
+                payload_dir.to_str().unwrap(),
+                "--identity",
+                identity.to_str().unwrap(),
+                "-o",
+                qpkg.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(packed.status.success(), "{packed:?}");
+        let updated = Command::new(bin_path())
+            .args([
+                "entry",
+                "--url",
+                "https://packages.example/dev.qpkg",
+                "--identity",
+                identity.to_str().unwrap(),
+                "--action",
+                "update",
+                "--previous-entry",
+                previous.to_str().unwrap(),
+                qpkg.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(updated.status.success(), "{updated:?}");
+        let updated: registry_types::EntryChangeRequest =
+            serde_json::from_slice(&updated.stdout).unwrap();
+        registry_types::verify_change_request(&updated, &[publisher]).unwrap();
+        assert_eq!(updated.entry.versions[0].version, dev_version);
+        std::fs::write(&previous, serde_json::to_vec(&updated.entry).unwrap()).unwrap();
+    }
+    // A new hash at the same semantic sequence is a collision, not an update.
+    std::fs::write(
+        &manifest_path,
+        sample_manifest_with(&"00".repeat(32)).replace(
+            "version     = \"0.1.0\"",
+            "version     = \"0.1.1-dev.10+gzzzz\"",
+        ),
+    )
+    .unwrap();
+    let packed = Command::new(bin_path())
+        .args([
+            "pack",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            "--payload",
+            payload_dir.to_str().unwrap(),
+            "--identity",
+            identity.to_str().unwrap(),
+            "-o",
+            qpkg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(packed.status.success(), "{packed:?}");
+    let collision = Command::new(bin_path())
+        .args([
+            "entry",
+            "--url",
+            "https://packages.example/dev.qpkg",
+            "--identity",
+            identity.to_str().unwrap(),
+            "--action",
+            "update",
+            "--previous-entry",
+            previous.to_str().unwrap(),
+            qpkg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!collision.status.success());
+    assert!(String::from_utf8_lossy(&collision.stderr).contains("different package bytes"));
+
     let missing_previous = Command::new(bin_path())
         .args([
             "entry",
