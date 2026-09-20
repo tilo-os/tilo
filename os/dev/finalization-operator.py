@@ -173,8 +173,23 @@ def admit_job(c, qraw, run, jobs, attempt):
             run['commit_sha'] == c['helper_revision'], 'unexpected finalization run')
     event = json.loads(run['event_payload'], object_pairs_hook=spool.unique)
     require(event['ref'] == 'refs/heads/' + c['dispatch_ref'], 'dispatch ref differs')
-    require(event['inputs'] == {'request': qraw.decode(), 'request_sha256': c['request_sha256'],
-                               'helpers_revision': c['helper_revision']}, 'dispatch inputs differ')
+    inputs = event['inputs']
+    base = {'request': qraw.decode(), 'request_sha256': c['request_sha256'],
+            'helpers_revision': c['helper_revision']}
+    restore_fields = ('restore_run_id', 'restore_run_attempt', 'restore_receipt_sha256')
+    require(isinstance(inputs, dict) and set(inputs) == set(base) | set(restore_fields) | {'restore_stage'}
+            and all(inputs.get(key) == value for key, value in base.items()), 'dispatch inputs differ')
+    restore = tuple(inputs[key] for key in restore_fields)
+    require(all(isinstance(value, str) for value in (*restore, inputs['restore_stage'])),
+            'dispatch restore inputs differ')
+    if any(restore):
+        require(all(restore) and re.fullmatch(r'[1-9][0-9]*', restore[0]) is not None
+                and re.fullmatch(r'[1-9][0-9]*', restore[1]) is not None
+                and HEX.fullmatch(restore[2]) is not None
+                and inputs['restore_stage'] in ('2', '5'), 'dispatch restore inputs differ')
+    else:
+        require(restore == ('', '', '') and inputs['restore_stage'] == '5',
+                'fresh dispatch restore defaults differ')
     selected = [j for j in jobs if j['run_id'] == run['id'] and j['attempt'] == attempt and j['name'] == 'finalize']
     require(len(selected) == 1, 'ambiguous run attempt')
     return selected[0]
