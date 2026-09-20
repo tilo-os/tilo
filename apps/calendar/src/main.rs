@@ -632,15 +632,6 @@ fn shot_theme(theme_name: Option<&str>, text_scale: Option<f32>, reduce_motion: 
     theme.with_reduce_motion(reduce_motion)
 }
 
-/// The custom offscreen renderer does not instantiate [`ui::App`], so it must
-/// read the same preference names explicitly before rendering a review frame.
-fn shot_motion_reduced() -> bool {
-    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| motion_env_value_enabled(&value))
-}
-
 fn motion_env_value_enabled(value: &str) -> bool {
     let value = value.trim();
     !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
