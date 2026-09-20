@@ -1,4 +1,4 @@
-//! Compile fixture for source emitted by every `tilo-dev new` template.
+//! Compile fixture for source emitted by every `tilo-app new` template.
 
 pub mod locales {
     const CATALOG_0: &str = "starter-title = Deine erste Tilo-App\n\
@@ -79,35 +79,35 @@ fn install_catalog() {
 }
 
 pub mod starter {
-    include!("../../tilo-dev/templates/starter.rs");
+    include!("../../tilo-app-cli/templates/starter.rs");
 }
 
 pub mod data {
-    include!("../../tilo-dev/templates/data.rs");
+    include!("../../tilo-app-cli/templates/data.rs");
 }
 
 pub mod list {
-    include!("../../tilo-dev/templates/list.rs");
+    include!("../../tilo-app-cli/templates/list.rs");
 }
 
 pub mod tree {
-    include!("../../tilo-dev/templates/tree.rs");
+    include!("../../tilo-app-cli/templates/tree.rs");
 }
 
 pub mod async_task {
-    include!("../../tilo-dev/templates/async.rs");
+    include!("../../tilo-app-cli/templates/async.rs");
 }
 
 pub mod document {
-    include!("../../tilo-dev/templates/document.rs");
+    include!("../../tilo-app-cli/templates/document.rs");
 }
 
 pub mod qr {
-    include!("../../tilo-dev/templates/qr.rs");
+    include!("../../tilo-app-cli/templates/qr.rs");
 }
 
 pub mod workspace {
-    include!("../../tilo-dev/templates/workspace.rs");
+    include!("../../tilo-app-cli/templates/workspace.rs");
 }
 
 pub mod generated_form_component {
@@ -260,7 +260,7 @@ pub mod screens {
 }
 
 pub mod graph {
-    include!("../../tilo-dev/templates/graph.rs");
+    include!("../../tilo-app-cli/templates/graph.rs");
 }
 
 pub mod components {
