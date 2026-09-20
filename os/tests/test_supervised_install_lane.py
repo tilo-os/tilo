@@ -1,4 +1,5 @@
 """Pure admission tests; no cluster, image, disk or VM operation."""
+import hashlib
 import importlib.util
 from pathlib import Path
 import unittest
@@ -17,6 +18,23 @@ def node(name,*,disk=False,kvm=False,ready=True):
 
 
 class LaneAdmission(unittest.TestCase):
+    def test_gui_evidence_requires_desktop_and_rendered_local_browser_page(self):
+        html='<!doctype html><h1>Tilo browser offline ready</h1>\n'
+        good={'desktop_ocr':'cycle-tilo',
+              'browser_ocr':'Tilo browser offline ready',
+              'browser_fixture':'url=http://10.0.2.2:18765/index.html\n'
+                                'sha256='+hashlib.sha256(html.encode()).hexdigest()+'\n'
+                                'transport=qemu-user-local-gateway\n'
+                                'external_references=none\n',
+              'browser_fixture_html':html}
+        self.assertIsNone(lane.validate_gui_evidence(good))
+        for key,bad in [('desktop_ocr',''),('browser_ocr','Browser opened'),
+                        ('browser_fixture',good['browser_fixture'].replace('external_references=none','external_references=https')),
+                        ('browser_fixture_html',html+'tampered')]:
+            changed=dict(good);changed[key]=bad
+            with self.subTest(key=key),self.assertRaises(ValueError):
+                lane.validate_gui_evidence(changed)
+
     def test_selects_separate_current_workers(self):
         document={'items':[node('disk',disk=True),node('verify',disk=True),node('vm',kvm=True)]}
         disk,vm=lane.select_nodes(document)
