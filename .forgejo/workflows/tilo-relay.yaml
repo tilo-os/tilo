@@ -18,6 +18,8 @@ on:
       - "os/base-snapshot.env"
       - "os/rpms-snapshot.env"
       - "os/dev/verify-rpm-snapshot-package-set.sh"
+      - "os/dev/verify-rpm-snapshot-buildkit.py"
+      - "os/tests/test_rpm_snapshot_buildkit.py"
       - "crates/hosting/tilo-relay/**"
       - "os/containers/tilo-relay/**"
       - "crates/collab/tilo-user-identity/**"
@@ -54,6 +56,8 @@ on:
       - "os/base-snapshot.env"
       - "os/rpms-snapshot.env"
       - "os/dev/verify-rpm-snapshot-package-set.sh"
+      - "os/dev/verify-rpm-snapshot-buildkit.py"
+      - "os/tests/test_rpm_snapshot_buildkit.py"
       - "crates/hosting/tilo-relay/**"
       - "os/containers/tilo-relay/**"
       - "crates/collab/tilo-user-identity/**"
@@ -212,16 +216,19 @@ jobs:
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
           echo "rpms=$RPMS_REF"
 
-      - name: Verify the frozen RPM package set
-        run: ./os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"
-
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
       - name: Set up buildx for registry cache export
+        id: buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
+
+      - name: Verify the frozen RPM package set
+        env:
+          SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
+        run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"
 
       - name: Extract image metadata (tags, labels)
         id: meta
@@ -245,6 +252,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: os/containers/tilo-relay/Containerfile
           push: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}

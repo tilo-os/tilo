@@ -8,6 +8,7 @@ os/tests/image_build_profile.py
 os/tests/native_index_promotion.py
 os/tests/test_builder_candidate_workflow.py
 os/tests/test_rpm_snapshot_architecture.py
+os/tests/test_rpm_snapshot_buildkit.py
 os/tests/test_fex_payload.py
 os/tests/test_fex_patches.py
 os/tests/test_windows_guest_contract.py
