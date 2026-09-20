@@ -4,8 +4,8 @@
 //! the live catalog).
 //!
 //! These require reachable servers and are explicitly ignored by ordinary test
-//! runs. `tests/run-live.sh` starts disposable rootless-Podman PostgreSQL and
-//! MariaDB containers and selects the ignored tests. Everything the driver
+//! runs. `tests/run-live.sh` starts disposable rootless-Podman `PostgreSQL` and
+//! `MariaDB` containers and selects the ignored tests. Everything the driver
 //! layer does with no server (connection-param building, row/column mapping)
 //! is proven unconditionally in the crate's unit tests.
 //!
