@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tomllib
 from typing import Iterable
 
 
@@ -304,15 +305,21 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
     return min(max(1, maximum), len(names), cost_limited)
 
 
-def native_dependencies_required(changes: list[str], force_full: bool = False) -> bool:
-    """Run native archive regressions when their source or build contract changes."""
-    files = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
-             ".forgejo/workflows/check.yml", "os/Containerfile.builder",
-             "os/tests/test_openh264_source_order.py",
+def native_dependencies_required(root: Path, changes: list[str], force_full: bool = False) -> bool:
+    """Select a declared native dependency contract without hiding missing payloads."""
+    manifest = tomllib.loads((root / "Cargo.toml").read_text())
+    declared = "openh264-sys2" in manifest.get("patch", {}).get("crates-io", {})
+    # Introduction/deletion of native sources must be checked even if the patch
+    # declaration was also removed. Never infer applicability from file presence.
+    if any(path.startswith("vendor/openh264-sys2/") for path in changes):
+        return True
+    if not declared:
+        return False
+    files = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "os/Containerfile.builder",
+             ".forgejo/workflows/check.yml", "os/tests/test_openh264_source_order.py",
              "tools/ci/affected_packages.py", "tools/tests/test_ci_select.py",
              "tools/tests/test_ci_check_aggregate.py"}
-    prefixes = ("vendor/openh264-sys2/", ".cargo/",
-                ".forgejo/actions/prepare-rust-build/")
+    prefixes = (".cargo/", ".forgejo/actions/prepare-rust-build/")
     return force_full or any(path in files or path.startswith(prefixes) for path in changes)
 
 
@@ -421,7 +428,7 @@ def make_plan(
         "full": full,
         "rust_required": bool(selected),
         "security_required": not security_not_applicable,
-        "native_dependencies_required": native_dependencies_required(changes, force_full),
+        "native_dependencies_required": native_dependencies_required(root, changes, force_full),
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),

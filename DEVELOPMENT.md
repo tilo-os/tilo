@@ -3,6 +3,62 @@
 Build dependencies, local development and testing. See `AGENTS.md` for repository
 conventions.
 
+## Routine delivery workflow
+
+Routine changes land through pull requests to `main`. Each PR head revision gets
+its own affected-package check and fast-quality lint result; those runs are keyed
+to the exact event and commit and are not cancelled when a newer commit arrives.
+
+Once the required checks pass and the head is stable, the controller posts a PR
+comment explaining the next step. Keep iterating until ready, then the PR author
+comments `/merge <full-head-sha>` to request integration of that exact revision.
+A new push requires fresh checks and a fresh merge request. The controller also
+checks that the branch is up to date and the change is eligible for routine
+integration; a green check alone does not merge a PR.
+
+Review is optional only for Rust source changes under an existing app's
+`apps/<app>/src/` directory. After checks pass, the author can request **claude**
+through Forgejo's reviewer control. This holds merging until the request is
+cancelled or receives an allowed approval for that head; change requests block.
+Automatic review-agent launches are currently disabled, so a native request alone
+does not start an agent. The eligibility comment reports review availability.
+
+Documentation, tools, workflow YAML and Python/shell/PowerShell scripts under
+`dist/` or `os/` use the reviewed operator path. After checks pass, obtain an
+official **claude** approval and post the author's `/merge <full-head-sha>` intent.
+An authorized operator then runs this command from the `PodestaAI/infra` checkout:
+
+```sh
+python scripts/run-qos-reviewed-merge.py PR FULL_HEAD_SHA --execute
+```
+
+It runs the deployed merge worker, which rechecks scope, current main, CI, author
+intent and approval before integration. Direct merges do not bypass that worker.
+Other paths, including Cargo manifests, `Cargo.lock`, vendored code and non-app
+Rust crates, currently have no supported admission path; they need a reviewed
+policy extension and appropriate validation first.
+
+The CI scheduler assigns runners and queue order. Submit normally; do not reserve
+build slots or negotiate them with other agents. The repository's Codex hook sends
+final CI status back to the task after a successful normal `git push` when the
+hook is installed in the running environment. Use `fgj pr checks <number>` or
+`fgj actions` to inspect missing notifications or failures, rather than repeatedly
+polling queued jobs.
+
+After a merge, app packaging selects directly changed apps and apps that depend
+on changed shared crates, then reuses unchanged collection members. PRs run the
+selection plan without release-mode packaging. Shared runtime or toolchain changes
+can still select every app; see [Preview affected applications](#preview-affected-applications)
+for how selection and shared runtime compatibility interact. Use **Release / apps** manual
+dispatch for a development artifact, selecting the smallest applicable app and
+architecture set and leaving `publish` off unless publication is intended.
+
+OS publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually
+run **Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
+scheduled integration runs do not publish an OS release. macOS setup packaging,
+cask publication and installation tests remain in **Release / imager** but are
+disabled during alpha; tags do not enable those lanes.
+
 ## Fast checks before assembly
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
@@ -48,10 +104,11 @@ For an actual installer VM cycle with an already prepared medium, continue using
 session use `dist/dev/fedora44-vm-iterate.sh`. Baseline discovery and one-command
 artifact-backed VM orchestration remain planned work.
 
-For CI timing, use an explicit internal run ID from the Forgejo API:
+For CI timing, use the repository run number from the Forgejo URL or `fgj actions
+run list`, not the Forgejo API's internal database ID:
 
 ```sh
-python3 tools/ci/timing_report.py --repo qos/qos --run 22684 --output target/ci-timing.json
+python3 tools/ci/timing_report.py --repo qos/qos --run 11408 --output target/ci-timing.json
 ```
 
 For an automatic before/after view of the newest comparable runs, no run IDs or
