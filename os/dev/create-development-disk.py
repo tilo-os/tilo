@@ -290,8 +290,11 @@ def _create_verified_disk(args):
         with source.verified_source(args) as verified:
             auth_args = []
             if verified.auth_file is not None:
-                auth_args = ['--volume', f'{verified.auth_file}:/run/tilo-registry-auth.json:ro',
-                             '--env', 'REGISTRY_AUTH_FILE=/run/tilo-registry-auth.json']
+                # skopeo honors REGISTRY_AUTH_FILE while bootc's OSTree
+                # importer reads the root runtime auth file directly.  Give
+                # both consumers the same held, read-only credential snapshot.
+                auth_args = ['--volume', f'{verified.auth_file}:/run/ostree/auth.json:ro',
+                             '--env', 'REGISTRY_AUTH_FILE=/run/ostree/auth.json']
             boot = prediction.verify_prediction(verified.root, verified.public_bundle,
                 args.manifest_sha256, args.architecture, args.generation,
                 args.composefs_digest, args.systemd_version)
