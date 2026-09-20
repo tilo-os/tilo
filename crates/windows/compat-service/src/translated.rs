@@ -235,6 +235,7 @@ impl PreparationChildren {
     }
 
     fn reap_descendants(&self) -> io::Result<()> {
+        let mut empty_since = None;
         loop {
             let mut children = Vec::new();
             for pid in direct_children()? {
@@ -250,8 +251,18 @@ impl PreparationChildren {
                 }
             }
             if children.is_empty() {
-                return Ok(());
+                let since = empty_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_millis(250) {
+                    return Ok(());
+                }
+                // A detached grandchild becomes our child as its direct parent
+                // exits. Procfs can briefly publish the empty pre-adoption
+                // snapshot even though waitid already observes the new child.
+                // Require a quiet interval before releasing the prefix lock.
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
             }
+            empty_since = None;
             for pid in children {
                 // Only our unreaped direct children appear here. No concurrent
                 // reaper exists in this single-threaded helper, so the PID
