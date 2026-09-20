@@ -2351,6 +2351,20 @@ pub(crate) fn launch_key_for_app_id(app_id: &str) -> Option<String> {
         .map(|(key, _, _)| key.clone())
 }
 
+/// Return the durable launch key claimed by this exact mapped surface.
+///
+/// Unlike textual identity matching, this also works for host applications
+/// whose desktop file omits `StartupWMClass`: the pending launch destination
+/// is claimed by the concrete surface during adoption, so the relationship is
+/// authoritative even when the runtime toolkit id was undeclared.
+pub(crate) fn launch_key_for_surface(surface_id: u64) -> Option<String> {
+    let pending = lock(&PENDING_PLACEMENT);
+    pending
+        .iter()
+        .find(|note| note.claimed_by == Some(surface_id))
+        .map(|note| note.key.clone())
+}
+
 /// Forget every launch this session has recorded — for tests asserting
 /// the fallback resolution rather than a name a neighbouring test left,
 /// since the table is process-wide and append-only.
