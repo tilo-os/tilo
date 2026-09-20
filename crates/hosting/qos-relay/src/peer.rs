@@ -1241,7 +1241,7 @@ async fn enqueue_state_inner(
     let mut sequence = None;
     let mut retained_build: Option<crate::store::retained::RetainBuild> = None;
     let mut pending_work = None;
-    owner.submit_resumable(
+    owner.submit_resumable_wait(
         charge,
         async move {
             let runtime = crate::workspace_io::fresh_membership(&prepare_workspace).await?;
@@ -1527,7 +1527,8 @@ async fn enqueue_state_inner(
             }
             result
         },
-    )?;
+    )
+    .await?;
     Ok(())
 }
 

@@ -524,6 +524,53 @@ async fn state_admission_bounds_messages_and_bytes_without_obstructing_authoriza
 }
 
 #[tokio::test]
+async fn inbound_delta_waits_for_owner_capacity_without_failing_its_session() {
+    let fixture = Fixture::new();
+    let owner = crate::persistence::handle(&fixture.workspace).await;
+    let (release, reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "hold-owner");
+    owner
+        .read(1, |state| {
+            crate::store::test_barrier::pause(state.store.root(), "hold-owner");
+            Ok(())
+        })
+        .unwrap();
+    reached.await.unwrap();
+    for _ in 0..32 {
+        owner.read(1, |_| Ok(())).unwrap();
+    }
+
+    let workspace = fixture.workspace.clone();
+    let envelope = fixture.envelope(0);
+    let source = fixture.source.clone();
+    let metrics = fixture.metrics.clone();
+    let mut admitting = tokio::spawn(async move {
+        enqueue_state(
+            &workspace,
+            envelope,
+            Some(source),
+            PeerRole::Device,
+            metrics,
+        )
+        .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut admitting)
+            .await
+            .is_err(),
+        "a full persistence owner rejected a healthy inbound state stream"
+    );
+
+    drop(release);
+    tokio::time::timeout(std::time::Duration::from_secs(3), admitting)
+        .await
+        .expect("inbound state admission did not resume when owner capacity returned")
+        .unwrap()
+        .unwrap();
+    fixture.drained().await;
+}
+
+#[tokio::test]
 async fn aborting_state_receipt_waiter_cannot_cancel_started_transaction() {
     let fixture = Fixture::new();
     let owner = crate::persistence::handle(&fixture.workspace).await;

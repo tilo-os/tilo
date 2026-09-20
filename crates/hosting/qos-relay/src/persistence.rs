@@ -10,7 +10,7 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex, OnceLock},
 };
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 mod replay;
 pub(crate) use replay::output_budget;
 pub(crate) use replay::{Authority as ReplayAuthority, ReplayAdvance, ReplayTicket, WrittenBatch};
@@ -23,6 +23,25 @@ const RECLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1
 const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
 
 type Job = Box<dyn FnOnce(Arc<Mutex<State>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
+fn message_budget() -> &'static Arc<Semaphore> {
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| Arc::new(Semaphore::new(GLOBAL_MESSAGES)))
+}
+
+fn byte_budget() -> &'static Arc<Semaphore> {
+    static BYTES: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    BYTES.get_or_init(|| Arc::new(Semaphore::new(GLOBAL_BYTES)))
+}
+
+fn charged_bytes(bytes: usize) -> Result<u32, StoreError> {
+    let bytes = bytes.max(1);
+    if bytes > GLOBAL_BYTES {
+        return Err(error("state byte backpressure"));
+    }
+    u32::try_from(bytes).map_err(|_| error("state byte backpressure"))
+}
+
 #[derive(Clone)]
 pub(crate) struct Persistence {
     tx: mpsc::Sender<Job>,
@@ -280,7 +299,7 @@ impl Persistence {
         &self,
         bytes: usize,
         preparation: PF,
-        mut operation: F,
+        operation: F,
         completion: C,
     ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError>
     where
@@ -291,78 +310,72 @@ impl Persistence {
         C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
         CF: Future<Output = Result<T, StoreError>> + Send + 'static,
     {
-        static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-        static BYTES: OnceLock<Arc<Semaphore>> = OnceLock::new();
-        let slot = SLOTS
-            .get_or_init(|| Arc::new(Semaphore::new(GLOBAL_MESSAGES)))
+        let slot = message_budget()
             .clone()
             .try_acquire_owned()
             .map_err(|_| error("state message backpressure"))?;
-        let byte_count =
-            u32::try_from(bytes.max(1)).map_err(|_| error("state byte backpressure"))?;
-        let bytes = BYTES
-            .get_or_init(|| Arc::new(Semaphore::new(GLOBAL_BYTES)))
+        let byte_count = charged_bytes(bytes)?;
+        let bytes = byte_budget()
             .clone()
             .try_acquire_many_owned(byte_count)
             .map_err(|_| error("state byte backpressure"))?;
-        let (tx, rx) = oneshot::channel();
-        let queued = std::time::Instant::now();
+        let (job, rx) = resumable_job(
+            slot,
+            bytes,
+            byte_count,
+            preparation,
+            operation,
+            completion,
+        );
         self.tx
-            .try_send(Box::new(move |state| {
-                Box::pin(async move {
-                    let (_slot, _bytes) = (slot, bytes);
-                    let result = match preparation.await {
-                        Err(error) => Err(error),
-                        Ok(prepared) => {
-                            let mut prepared = Some(prepared);
-                            loop {
-                                let shared = state.clone();
-                                let quantum = blocking(move || {
-                                    let start = std::time::Instant::now();
-                                    let result = operation(
-                                        &mut shared
-                                            .lock()
-                                            .unwrap_or_else(std::sync::PoisonError::into_inner),
-                                        &mut prepared,
-                                    );
-                                    if diagnostics() {
-                                        tracing::info!(
-                                            phase = "state_persist",
-                                            charged_bytes = byte_count,
-                                            queue_us = u64::try_from(
-                                                start.duration_since(queued).as_micros()
-                                            )
-                                            .unwrap_or(u64::MAX),
-                                            persist_us = u64::try_from(start.elapsed().as_micros())
-                                                .unwrap_or(u64::MAX)
-                                        );
-                                    }
-                                    (operation, prepared, result)
-                                })
-                                .await;
-                                let (next_operation, next_prepared, result) = match quantum {
-                                    Ok(value) => value,
-                                    Err(error) => break Err(error),
-                                };
-                                operation = next_operation;
-                                prepared = next_prepared;
-                                match result {
-                                    Ok(Step::More) => tokio::task::yield_now().await,
-                                    Ok(Step::Done(value)) => break Ok(value),
-                                    Err(error) => break Err(error),
-                                }
-                            }
-                        }
-                    };
-                    // The owner serializes this asynchronous authorization/publication
-                    // step as well as the blocking transaction, even if tx is closed.
-                    let result = completion(result).await;
-                    let _ = tx.send(result);
-                })
-            }))
+            .try_send(job)
             .map_err(|_| error("workspace state backpressure"))?;
         Ok(rx)
     }
+
+    /// Durable inbound state applies capacity-driven backpressure instead of
+    /// turning a healthy replay burst into a connection error.
+    pub(crate) async fn submit_resumable_wait<P, PF, T, F, C, CF>(
+        &self,
+        bytes: usize,
+        preparation: PF,
+        operation: F,
+        completion: C,
+    ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError>
+    where
+        P: Send + 'static,
+        PF: Future<Output = Result<P, StoreError>> + Send + 'static,
+        T: Send + 'static,
+        F: FnMut(&mut State, &mut Option<P>) -> Result<Step<T>, StoreError> + Send + 'static,
+        C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
+        CF: Future<Output = Result<T, StoreError>> + Send + 'static,
+    {
+        let byte_count = charged_bytes(bytes)?;
+        let slot = message_budget()
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| error("state persistence unavailable"))?;
+        let bytes = byte_budget()
+            .clone()
+            .acquire_many_owned(byte_count)
+            .await
+            .map_err(|_| error("state persistence unavailable"))?;
+        let (job, rx) = resumable_job(
+            slot,
+            bytes,
+            byte_count,
+            preparation,
+            operation,
+            completion,
+        );
+        self.tx
+            .send(job)
+            .await
+            .map_err(|_| error("state persistence unavailable"))?;
+        Ok(rx)
+    }
+
     pub(crate) fn read<T: Send + 'static>(
         &self,
         bytes: usize,
@@ -370,6 +383,81 @@ impl Persistence {
     ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError> {
         self.submit(bytes, operation, |result| async { result })
     }
+}
+
+fn resumable_job<P, PF, T, F, C, CF>(
+    slot: OwnedSemaphorePermit,
+    bytes: OwnedSemaphorePermit,
+    byte_count: u32,
+    preparation: PF,
+    mut operation: F,
+    completion: C,
+) -> (Job, oneshot::Receiver<Result<T, StoreError>>)
+where
+    P: Send + 'static,
+    PF: Future<Output = Result<P, StoreError>> + Send + 'static,
+    T: Send + 'static,
+    F: FnMut(&mut State, &mut Option<P>) -> Result<Step<T>, StoreError> + Send + 'static,
+    C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
+    CF: Future<Output = Result<T, StoreError>> + Send + 'static,
+{
+    let (tx, rx) = oneshot::channel();
+    let queued = std::time::Instant::now();
+    let job = Box::new(
+        move |state: Arc<Mutex<State>>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            Box::pin(async move {
+                let (_slot, _bytes) = (slot, bytes);
+                let result = match preparation.await {
+                    Err(error) => Err(error),
+                    Ok(prepared) => {
+                        let mut prepared = Some(prepared);
+                        loop {
+                            let shared = state.clone();
+                            let quantum = blocking(move || {
+                                let start = std::time::Instant::now();
+                                let result = operation(
+                                    &mut shared
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                                    &mut prepared,
+                                );
+                                if diagnostics() {
+                                    tracing::info!(
+                                        phase = "state_persist",
+                                        charged_bytes = byte_count,
+                                        queue_us = u64::try_from(
+                                            start.duration_since(queued).as_micros()
+                                        )
+                                        .unwrap_or(u64::MAX),
+                                        persist_us = u64::try_from(start.elapsed().as_micros())
+                                            .unwrap_or(u64::MAX)
+                                    );
+                                }
+                                (operation, prepared, result)
+                            })
+                            .await;
+                            let (next_operation, next_prepared, result) = match quantum {
+                                Ok(value) => value,
+                                Err(error) => break Err(error),
+                            };
+                            operation = next_operation;
+                            prepared = next_prepared;
+                            match result {
+                                Ok(Step::More) => tokio::task::yield_now().await,
+                                Ok(Step::Done(value)) => break Ok(value),
+                                Err(error) => break Err(error),
+                            }
+                        }
+                    }
+                };
+                // The owner serializes this asynchronous authorization/publication
+                // step as well as the blocking transaction, even if tx is closed.
+                let result = completion(result).await;
+                let _ = tx.send(result);
+            })
+        },
+    );
+    (job, rx)
 }
 pub(crate) async fn receipt<T>(
     rx: oneshot::Receiver<Result<T, StoreError>>,
