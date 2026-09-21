@@ -986,7 +986,7 @@ impl BlockEditor {
             }
             let start = out.len();
             match &b.kind {
-                BlockKind::Paragraph => out.push_str(b.text()),
+                BlockKind::Paragraph | BlockKind::Table { .. } => out.push_str(b.text()),
                 BlockKind::Quote => {
                     out.push_str("> ");
                     out.push_str(b.text());
@@ -1027,7 +1027,6 @@ impl BlockEditor {
                     out.push_str(b.text());
                     out.push_str("\n```");
                 }
-                BlockKind::Table { .. } => out.push_str(b.text()),
                 BlockKind::Divider => {
                     out.push_str("---");
                 }

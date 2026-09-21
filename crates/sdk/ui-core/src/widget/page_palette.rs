@@ -212,8 +212,7 @@ impl PageJumpPalette {
         };
         let available = viewport.height() - 32.0 - (PADDING * 3.0 + INPUT_HEIGHT) * self.text_scale;
         (1..=MAX_VISIBLE_ROWS)
-            .filter(|rows| row_f64(*rows) * self.row_height() * self.text_scale <= available)
-            .next_back()
+            .rfind(|rows| row_f64(*rows) * self.row_height() * self.text_scale <= available)
             .unwrap_or(1)
     }
 
