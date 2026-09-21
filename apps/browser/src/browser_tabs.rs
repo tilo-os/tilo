@@ -11,8 +11,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    AppKind, AppWidget, ContextMenu, Continuable, IconDescriptor, MenuItem, TabDescriptor,
-    TaffyTreeExt, Widget, WindowCloseAdmission,
+    AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, FullscreenProvider,
+    IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -886,12 +886,91 @@ impl Continuable for BrowserTabs {
     }
 }
 
+impl FullscreenProvider for BrowserTabs {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        Some(self.active().content_fullscreen())
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        ui::fullscreen::FullscreenRequest::mirror(ui::fullscreen::FullscreenTarget::Largest)
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        self.window_fullscreen_active = active;
+        self.active_mut().set_window_fullscreen_active(active);
+        if active && self.active().content_fullscreen() {
+            self.observed_active_content_fullscreen = true;
+            self.start_fullscreen_hint();
+        } else {
+            if !active {
+                self.active_mut().exit_content_fullscreen();
+                self.observed_active_content_fullscreen = false;
+            }
+            self.clear_fullscreen_hint();
+        }
+        self.dirty = true;
+    }
+}
+
+impl FloatingSurfaceProvider for BrowserTabs {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.tabs
+            .iter_mut()
+            .find_map(|tab| tab.widget.take_floating_surface_request())
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
+        self.active_mut().take_capture_studio_request()
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.tabs
+            .iter_mut()
+            .flat_map(|tab| tab.widget.take_floating_surface_source_updates())
+            .collect()
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.widget.active_floating_surface_ids())
+            .collect()
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &ui::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        for tab in &mut self.tabs {
+            tab.widget.on_floating_surface_host_message(message);
+        }
+    }
+}
+
 impl Widget for BrowserTabs {
     fn continuable(&self) -> Option<&dyn Continuable> {
         Some(self)
     }
 
     fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
+    }
+
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
+
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
         Some(self)
     }
 
@@ -1476,27 +1555,6 @@ impl Widget for BrowserTabs {
             tab.widget.set_motion_reduced(reduced);
         }
     }
-    fn fullscreen_intent(&self) -> Option<bool> {
-        Some(self.active().content_fullscreen())
-    }
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        ui::fullscreen::FullscreenRequest::mirror(ui::fullscreen::FullscreenTarget::Largest)
-    }
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        self.window_fullscreen_active = active;
-        self.active_mut().set_window_fullscreen_active(active);
-        if active && self.active().content_fullscreen() {
-            self.observed_active_content_fullscreen = true;
-            self.start_fullscreen_hint();
-        } else {
-            if !active {
-                self.active_mut().exit_content_fullscreen();
-                self.observed_active_content_fullscreen = false;
-            }
-            self.clear_fullscreen_hint();
-        }
-        self.dirty = true;
-    }
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if let Some(recovery) = self.recovery.as_mut() {
             return recovery.panel.take_control_invocation();
@@ -1509,36 +1567,6 @@ impl Widget for BrowserTabs {
             return Some(invocation);
         }
         self.active_mut().take_control_invocation()
-    }
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.tabs
-            .iter_mut()
-            .find_map(|tab| tab.widget.take_floating_surface_request())
-    }
-    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
-        self.active_mut().take_capture_studio_request()
-    }
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        self.tabs
-            .iter_mut()
-            .flat_map(|tab| tab.widget.take_floating_surface_source_updates())
-            .collect()
-    }
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.tabs
-            .iter()
-            .flat_map(|tab| tab.widget.active_floating_surface_ids())
-            .collect()
-    }
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &ui::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        for tab in &mut self.tabs {
-            tab.widget.on_floating_surface_host_message(message);
-        }
     }
     fn modal_capture(&self) -> Option<Rect> {
         if let Some(panel) = self.exit_panel.as_ref() {
