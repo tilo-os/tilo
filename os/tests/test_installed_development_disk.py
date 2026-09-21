@@ -245,9 +245,12 @@ class InstallerBootcIsolation(unittest.TestCase):
             'bootc_version': disk.installer_bootc_helper.BOOTC_VERSION,
             'source_tag': disk.installer_bootc_helper.SOURCE_TAG,
             'source_commit': disk.installer_bootc_helper.SOURCE_COMMIT,
+            'source_cargo_lock_sha256': disk.installer_bootc_helper.SOURCE_CARGO_LOCK_SHA256,
             'patch_sha256': disk.installer_bootc_helper.PATCH_SHA256,
             'binary_sha256': helper_sha, 'binary_build_id': 'ab' * 20,
             'rustc_version': 'rustc 1.91.0', 'cargo_version': 'cargo 1.91.0',
+            'rust_toolchain': disk.installer_bootc_helper.RUST_TOOLCHAIN,
+            'build_image': disk.installer_bootc_helper.BUILD_IMAGE,
             'build_target': disk.installer_bootc_helper.TARGETS['aarch64'],
             'build_command': disk.installer_bootc_helper.BUILD_COMMAND,
         }

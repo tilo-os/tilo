@@ -14,6 +14,10 @@ import struct
 SOURCE_TAG = "v1.16.10"
 SOURCE_COMMIT = "3e76c16556c55e6d15d31bd47602b231e2131cb2"
 PATCH_SHA256 = "b8bd058f6a10010421d7847cd8ad36f91b224d7f8758b986ca8abab6c0fc2a3e"
+SOURCE_CARGO_LOCK_SHA256 = "2f5ac1f48ea43b8fd6d1f5cfa031a85c3c4ed812ea7ccbae71b8ffe3683eebaf"
+RUST_TOOLCHAIN = "1.97.1"
+BUILD_IMAGE = ("code.sandbox.example/qos/tilo-builder@sha256:"
+               "568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9")
 BOOTC_VERSION = "1.16.10"
 BUILD_COMMAND = "cargo build --locked --release -p bootc"
 PURPOSE = "tilo-installer-bootc-helper"
@@ -21,6 +25,7 @@ RECEIPT_KEYS = {
     "schema", "purpose", "architecture", "bootc_version", "source_tag",
     "source_commit", "patch_sha256", "binary_sha256", "rustc_version",
     "cargo_version", "build_target", "build_command", "binary_build_id",
+    "source_cargo_lock_sha256", "rust_toolchain", "build_image",
 }
 MACHINES = {"x86_64": 62, "aarch64": 183}
 TARGETS = {
@@ -116,6 +121,8 @@ def verify_artifact(directory, expected_sha256, architecture):
         "schema": 1, "purpose": PURPOSE, "architecture": architecture,
         "bootc_version": BOOTC_VERSION, "source_tag": SOURCE_TAG,
         "source_commit": SOURCE_COMMIT, "patch_sha256": PATCH_SHA256,
+        "source_cargo_lock_sha256": SOURCE_CARGO_LOCK_SHA256,
+        "rust_toolchain": RUST_TOOLCHAIN, "build_image": BUILD_IMAGE,
         "binary_sha256": actual_sha256, "build_target": TARGETS[architecture],
         "build_command": BUILD_COMMAND, "binary_build_id": identity["build_id"],
     }
