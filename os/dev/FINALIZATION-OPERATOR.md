@@ -53,9 +53,10 @@ existing partial directories are never overwritten. No credentials enter this co
 
 When a reviewed operator correction must continue an already initialized operation,
 pass `--compatible-operation-sha256` with the SHA-256 of that operation's exact
-immutable `operation.json`. Compatibility remains explicit and operation-specific:
-without the option, changed operator code still fails closed; a digest for another
-config is rejected. The config and its pinned snapshots are never rewritten.
+immutable `operation.json` and `--compatible-operator-sha256` with the identity of
+the exact reviewed replacement operator. Compatibility remains explicit and bound
+to both sides: changed code still fails closed, and a digest for another config or
+operator is rejected. The config and its pinned snapshots are never rewritten.
 
 ## Bind an actual attempt and stage
 

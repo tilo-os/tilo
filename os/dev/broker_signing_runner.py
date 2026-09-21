@@ -68,15 +68,18 @@ line=sys.stdin.buffer.readline(262145)
 if len(line)>262144 or not line.endswith(b'\n'): raise ValueError('header bound')
 p=json.loads(line)
 deadline=time.monotonic()+p['timeout']
-if set(p['auth']) != set(TARGETS): raise ValueError('broker target authorization differs')
 profiles=json.loads(os.environ['BROKER_CLUSTER_TARGETS'])
 if (not isinstance(profiles,list) or not all(isinstance(x,dict) and isinstance(x.get('name'),str) for x in profiles)
     or len({x['name'] for x in profiles})!=len(profiles)): raise ValueError('invalid broker target inventory')
 enabled={x['name']:x for x in profiles if x.get('ci_enabled') is True}
 if not enabled or not set(enabled) <= set(TARGETS): raise ValueError('unknown enabled CI target')
+selected=p.get('target')
+if selected not in enabled or selected not in TARGETS or set(p['auth']) != {selected}:
+ raise ValueError('pinned broker target differs')
+candidates={selected:enabled[selected]}
 matches=[]
-for name in sorted(enabled):
- target=TARGETS[name];profile=enabled[name];cfg=client.Configuration()
+for name in sorted(candidates):
+ target=TARGETS[name];profile=candidates[name];cfg=client.Configuration()
  expected=target['kubeconfig']
  if profile.get('kubeconfig') != expected: raise ValueError('broker target path differs')
  if target['mode']=='in-cluster':
@@ -148,6 +151,9 @@ BRIDGE = "REMOTE_WRAPPER = " + repr(REMOTE_WRAPPER) + "\nTARGETS = " + repr(TARG
 class BrokerRunner:
     def __init__(self, binding, *, local_user='benn1x', process=transport.bounded_process):
         self.binding = transport.validate_binding(binding)
+        self.target = self.binding.get('cluster')
+        if self.target not in TARGETS:
+            raise ValueError('invalid pinned broker target')
         if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', local_user):
             raise ValueError('invalid existing operator user')
         self.user = local_user
@@ -221,8 +227,9 @@ class BrokerRunner:
                     if count > MAX_STREAM or time.monotonic() >= deadline:
                         raise ValueError('broker input exceeds admission')
                     public.write(data)
+            targets = {self.target: TARGETS[self.target]}
             auth = {}
-            for name, target in TARGETS.items():
+            for name, target in targets.items():
                 if target['mode'] == 'in-cluster':
                     auth[name] = None
                     continue
@@ -236,7 +243,7 @@ class BrokerRunner:
                 auth[name] = token
             remaining = deadline-time.monotonic()
             if remaining <= 0: raise ValueError('broker operation deadline')
-            header = {'auth': auth, 'operation': operation, 'command': command,
+            header = {'auth': auth, 'target': self.target, 'operation': operation, 'command': command,
                 'pod': self.binding['pod'], 'namespace': self.binding['namespace'],
                 'uid': self.binding['pod_uid'], 'container': self.binding['container'],
                 'input_bytes': count, 'limit': limit, 'timeout': remaining}

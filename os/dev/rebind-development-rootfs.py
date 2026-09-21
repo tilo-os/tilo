@@ -65,7 +65,14 @@ def sanitized_diagnostic(value, limit=DIAGNOSTIC_LIMIT):
                   '[REDACTED PRIVATE KEY]', text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'(?i)Bearer\s+[^\s,;]+', 'Bearer [REDACTED]', text)
     text = re.sub(r'\bk8s-aws-v1\.[A-Za-z0-9._~+/-]+={0,2}', '[REDACTED AWS TOKEN]', text)
-    text = re.sub(r'(?i)\b(password|passwd|token|secret|authorization|credential)\s*[:=]\s*[^\s,;]+',
+    text = re.sub(r'(?i)\b(authorization)\s*:\s*[^\r\n]+',
+                  lambda match: match.group(1) + ': [REDACTED]', text)
+    credential_name = (r'(?:[A-Za-z0-9]+_)*'
+                       r'(?:password|passwd|token|secret|authorization|credential|'
+                       r'api_key|access_key|private_key)'
+                       r'(?:_[A-Za-z0-9]+)*')
+    credential_value = r'(?:"[^"]*"|\'[^\']*\'|[^\s,;]+)'
+    text = re.sub(r'(?i)\b(' + credential_name + r')\s*[:=]\s*' + credential_value,
                   lambda match: match.group(1) + '=[REDACTED]', text)
     text = re.sub(r'([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s:]+:[^/@\s]+@', r'\1[REDACTED]@', text)
     text = ''.join(character if character in '\n\t' or 32 <= ord(character) < 127 else '\ufffd'
@@ -105,7 +112,11 @@ def bounded_process(arguments, environment, limit=8 * 1024 * 1024, timeout=900):
                     if len(output) > limit:
                         raise CommandFailure(command_step(arguments),
                                              'container command exceeded output bound', output[-limit:])
-            returncode = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            try:
+                returncode = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired as error:
+                raise CommandFailure(command_step(arguments),
+                                     'container command exceeded time bound', output) from error
             if returncode:
                 raise CommandFailure(command_step(arguments),
                                      f'container command failed (exit {returncode})', output)
