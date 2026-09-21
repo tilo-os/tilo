@@ -163,7 +163,7 @@ fn assert_local_app_behavior() {
     };
     let mut app = App::from_scoped_parts_local(scope, State::new(), Box::new(root));
     app.init_layout();
-    let author = app.local_author.0.clone();
+    let author = app.collaboration.local_author.0.clone();
     let result = app
         .invoke_resource_action(
             &tilo_actions::ActionAddress::new("private-tab", "navigate"),
@@ -217,10 +217,10 @@ fn assert_local_app_behavior() {
     );
     assert!(app.continuation.pending_restore.is_none());
     assert!(app.continuation.pending_view.is_none());
-    assert!(!app.collab_manager.is_connected());
-    assert!(app.collab_manager.primary_route().is_none());
+    assert!(!app.collaboration.manager.is_connected());
+    assert!(app.collaboration.manager.primary_route().is_none());
     assert!(app.floating_surface_client.is_none());
-    assert!(app.presence_broadcast_scope.is_none());
+    assert!(app.presence.broadcast_scope.is_none());
     assert_ne!(author, "ambient-workspace-user");
     assert!(!app.presence_ctx.is_own_identity("ambient-workspace-user"));
     assert_eq!(
@@ -241,7 +241,7 @@ fn assert_local_app_behavior() {
         Box::new(crate::widget::Column::new()),
     );
     assert_ne!(
-        author, second.local_author.0,
+        author, second.collaboration.local_author.0,
         "each local app needs an ephemeral identity"
     );
     let callback_wake = captured.borrow().as_ref().unwrap().clone();

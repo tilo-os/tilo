@@ -189,8 +189,8 @@ impl App {
         let before: std::collections::HashSet<_> =
             self.actions.local_invocations.keys().copied().collect();
         let broker_request = self.actions.next_broker_request_id;
-        let connected = self.collab_manager.is_connected();
-        let actor = self.local_author.0.clone();
+        let connected = self.collaboration.manager.is_connected();
+        let actor = self.collaboration.local_author.0.clone();
         // Do not supply an invocation or claim broker admission. This is the
         // ordinary local canonical action door, including permissions/effects.
         let result = self.invoke_resource_action(
@@ -294,7 +294,7 @@ impl App {
         }
         if self.close_admission.save_waiting
             && self.close_admission.save_broker_request.is_some()
-            && !self.collab_manager.is_connected()
+            && !self.collaboration.manager.is_connected()
         {
             self.close_admission.save_result = Some(Err(crate::i18n::I18nManager::lookup_plain(
                 "close-broker-disconnected",
@@ -326,7 +326,7 @@ impl App {
             && self.close_admission.save_broker_request.is_none()
             && std::time::Instant::now() >= self.close_admission.save_poll_at
         {
-            if !self.collab_manager.is_connected() {
+            if !self.collaboration.manager.is_connected() {
                 self.close_admission.save_result = Some(Err("save broker disconnected".into()));
                 return;
             }
@@ -335,7 +335,7 @@ impl App {
                 self.close_admission.save_broker_id,
             ) {
                 self.close_admission.save_broker_request = Some(request_id);
-                self.collab_manager.send(
+                self.collaboration.manager.send(
                     crate::collaboration::CollabRequest::PublishedInvocationStatus {
                         request_id,
                         id,

@@ -85,7 +85,7 @@ impl App {
         );
         // The exact live owner map exists before any join can deliver callbacks.
         for route in joins {
-            self.collab_manager.join_route(route);
+            self.collaboration.manager.join_route(route);
         }
         if self.document_sync_status() != before.as_deref() {
             self.layout.layout_dirty = true;
@@ -96,7 +96,7 @@ impl App {
         self.document_routes
             .sent
             .push((route.clone(), request.clone()));
-        self.collab_manager.send_to_route(route, request);
+        self.collaboration.manager.send_to_route(route, request);
     }
     pub(super) fn publish_owned_documents(&mut self) {
         self.refresh_document_routes();
@@ -211,7 +211,7 @@ impl App {
     ) {
         // Before the first record checkout the launcher's unqualified route
         // carries room-index discovery, never the editable record document.
-        if self.persistence.records.is_some() && self.room_collab_manager.is_none() {
+        if self.persistence.records.is_some() && self.collaboration.room_manager.is_none() {
             let _ = self.apply_room_index_document_envelope(envelope, decrypted_payload);
             return;
         }

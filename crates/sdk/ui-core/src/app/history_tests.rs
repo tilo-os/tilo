@@ -1143,7 +1143,7 @@ fn native_tile_effect_isolation(semantic: bool) {
         .push(Box::new(tiles.remove(0)));
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
     layout(&mut app);
-    let actor = app.local_author.0.clone();
+    let actor = app.collaboration.local_author.0.clone();
     app.invoke_resource_action(
         &tilo_actions::ActionAddress::new("first", "export"),
         None,
@@ -1220,7 +1220,7 @@ fn native_admitted_legacy_effect_cannot_poll_replacement_or_closed_owner() {
         let pointer = std::ptr::from_mut(tile.as_mut());
         let mut app = App::new_with_controlled_inputs(State::new(), tile);
         layout(&mut app);
-        let actor = app.local_author.0.clone();
+        let actor = app.collaboration.local_author.0.clone();
         app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("retained", "export"),
             None,

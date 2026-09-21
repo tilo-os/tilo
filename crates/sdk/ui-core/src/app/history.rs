@@ -339,7 +339,7 @@ impl App {
                 self.root_widget.as_mut(),
                 &mut self.state,
                 &self.permission_ctx,
-                &self.local_author,
+                &self.collaboration.local_author,
             );
             if !restored.is_empty() {
                 self.needs_sync = true;
@@ -388,7 +388,7 @@ impl App {
                 &mut self.state,
                 self.root_widget.as_ref(),
                 &self.permission_ctx,
-                &self.local_author,
+                &self.collaboration.local_author,
             );
             let restored = history.take_restored_source();
             if changed {
