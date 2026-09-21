@@ -8,7 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::widget::{
+use tilo_ui::widget::{
     AppKind, TabDescriptor, TileContent, WIDTH_MAX_PERMILLE, WindowGroup, WindowWidth,
     max_group_px, min_group_px,
 };

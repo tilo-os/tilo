@@ -39,9 +39,9 @@ use ui::webview::{
 };
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
-    AppKind, AppWidget, Button, Column, Container, ContextMenu, EmptyState, IconDescriptor,
-    MenuItem, ProgressBar, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, TextInputKind,
-    WebView, Widget,
+    AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
+    IconDescriptor, MenuItem, ProgressBar, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput,
+    TextInputKind, WebView, Widget,
 };
 
 use crate::actions::{
@@ -4142,7 +4142,7 @@ fn restore_address(widget: &mut dyn Widget, id: &str, state: &str) {
     }
 }
 
-impl Widget for BrowserWidget {
+impl Continuable for BrowserWidget {
     fn continuation_metadata(
         &self,
         _state: &AutoCommit,
@@ -4192,6 +4192,16 @@ impl Widget for BrowserWidget {
             self.engine.send(WebViewCommand::Navigate(url.to_owned()));
         }
         true
+    }
+}
+
+impl Widget for BrowserWidget {
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -6327,7 +6337,7 @@ mod architecture_tests {
             .start_resource_operation(
                 ui::tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
-                "qos.ui.control.invoke",
+                "tilo.ui.control.invoke",
                 &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
                 &AutoCommit::new(),
                 &automerge::ROOT,
@@ -7452,7 +7462,7 @@ mod tests {
                 .start_resource_operation(
                     ui::tilo_actions::InvocationId::new(),
                     OperationKind::Effect,
-                    "qos.ui.control.invoke",
+                    "tilo.ui.control.invoke",
                     &serde_json::to_vec(id).unwrap(),
                     &doc,
                     &root,
@@ -7507,7 +7517,7 @@ mod tests {
                 .start_resource_operation(
                     ui::tilo_actions::InvocationId::new(),
                     OperationKind::Effect,
-                    "qos.ui.control.invoke",
+                    "tilo.ui.control.invoke",
                     &serde_json::to_vec(id).unwrap(),
                     &doc,
                     &root,
@@ -7627,7 +7637,7 @@ mod tests {
                         .start_resource_operation(
                             ui::tilo_actions::InvocationId::new(),
                             OperationKind::Effect,
-                            "qos.ui.control.invoke",
+                            "tilo.ui.control.invoke",
                             &serde_json::to_vec("browser.site.connection").unwrap(),
                             &doc,
                             &root,
@@ -7772,7 +7782,7 @@ mod tests {
                     .start_resource_operation(
                         ui::tilo_actions::InvocationId::new(),
                         OperationKind::Effect,
-                        "qos.ui.control.invoke",
+                        "tilo.ui.control.invoke",
                         &serde_json::to_vec("browser.site.toggle").unwrap(),
                         &doc,
                         &root,
@@ -7919,7 +7929,7 @@ mod tests {
             .start_resource_operation(
                 ui::tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
-                "qos.ui.control.invoke",
+                "tilo.ui.control.invoke",
                 &serde_json::to_vec("browser.site.close").unwrap(),
                 &doc,
                 &root,

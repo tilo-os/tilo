@@ -15,7 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::widget::{BlockEditor, BlockKind};
+use tilo_ui::widget::{BlockEditor, BlockKind};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey, SmolStr};
 

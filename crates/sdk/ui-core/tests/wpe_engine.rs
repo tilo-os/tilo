@@ -22,8 +22,8 @@
 
 use std::time::{Duration, Instant};
 
-use ui::webview::wpe::WpeEngine;
-use ui::webview::{WebViewCommand, WebViewEngine, WebViewEvent};
+use tilo_ui::webview::wpe::WpeEngine;
+use tilo_ui::webview::{WebViewCommand, WebViewEngine, WebViewEvent};
 
 #[test]
 fn wpe_engine_renders_a_page_offscreen() {

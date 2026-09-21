@@ -229,6 +229,10 @@ fn cli_unpack_round_trips() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario covers add, target, and retry semantics"
+)]
 fn cli_entry_emits_a_server_acceptable_signed_change() {
     let workdir = tempfile::tempdir().unwrap();
     let identity = workdir.path().join("publisher.json");
@@ -267,6 +271,8 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
             "https://packages.example/dev.qos.example.qpkg",
             "--identity",
             identity.to_str().unwrap(),
+            "--arch",
+            "x86_64",
             "--action",
             "add",
             qpkg.to_str().unwrap(),
@@ -274,15 +280,15 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
         .output()
         .unwrap();
     assert!(emitted.status.success(), "entry: {emitted:?}");
-    let request: registry_types::EntryChangeRequest =
+    let x86_request: registry_types::EntryChangeRequest =
         serde_json::from_slice(&emitted.stdout).unwrap();
-    let key = hex::decode(&request.entry.publisher_pubkey_hex).unwrap();
+    let key = hex::decode(&x86_request.entry.publisher_pubkey_hex).unwrap();
     let mut publisher = [0_u8; 32];
     publisher.copy_from_slice(&key);
-    registry_types::verify_change_request(&request, &[publisher]).unwrap();
-    assert_eq!(request.action, registry_types::EntryAction::Add);
-    assert_eq!(request.entry.versions.len(), 1);
-    let version = &request.entry.versions[0];
+    registry_types::verify_change_request(&x86_request, &[publisher]).unwrap();
+    assert_eq!(x86_request.action, registry_types::EntryAction::Add);
+    assert_eq!(x86_request.entry.versions.len(), 1);
+    let version = &x86_request.entry.versions[0];
     assert_eq!(version.qpkg_blake3_hex.as_ref().map(String::len), Some(64));
     assert_eq!(
         version
@@ -292,10 +298,58 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
         Some("x86_64")
     );
 
+    let aarch_manifest = workdir.path().join("manifest-aarch64.toml");
+    std::fs::write(
+        &aarch_manifest,
+        sample_manifest_with(&"00".repeat(32)).replace("x86_64 = \"v3\"", "aarch64 = \"v8.2-a\""),
+    )
+    .unwrap();
+    let aarch_qpkg = workdir.path().join("example-aarch64.qpkg");
+    let packed = Command::new(bin_path())
+        .args([
+            "pack",
+            "--manifest",
+            aarch_manifest.to_str().unwrap(),
+            "--payload",
+            payload_dir.to_str().unwrap(),
+            "--identity",
+            identity.to_str().unwrap(),
+            "-o",
+            aarch_qpkg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(packed.status.success(), "aarch64 pack: {packed:?}");
+    let emitted = Command::new(bin_path())
+        .args([
+            "entry",
+            "--url",
+            "https://packages.example/dev.tilo.example-aarch64.qpkg",
+            "--identity",
+            identity.to_str().unwrap(),
+            "--arch",
+            "aarch64",
+            "--action",
+            "add",
+            aarch_qpkg.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(emitted.status.success(), "aarch64 entry: {emitted:?}");
+    let aarch_request: registry_types::EntryChangeRequest =
+        serde_json::from_slice(&emitted.stdout).unwrap();
+    assert_eq!(
+        aarch_request.entry.versions[0]
+            .target
+            .as_ref()
+            .map(|target| target.architecture.as_str()),
+        Some("aarch64")
+    );
+
     let previous = workdir.path().join("previous-entry.json");
     std::fs::write(
         &previous,
-        serde_json::to_vec_pretty(&request.entry).unwrap(),
+        serde_json::to_vec_pretty(&x86_request.entry).unwrap(),
     )
     .unwrap();
     let retry = Command::new(bin_path())
@@ -316,7 +370,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
     assert!(retry.status.success(), "idempotent update: {retry:?}");
     let retried: registry_types::EntryChangeRequest =
         serde_json::from_slice(&retry.stdout).unwrap();
-    assert_eq!(retried.entry, request.entry);
+    assert_eq!(retried.entry, x86_request.entry);
 
     let missing_previous = Command::new(bin_path())
         .args([
