@@ -1,5 +1,4 @@
 use crate::component_support::*;
-use automerge::transaction::Transactable;
 use notes::{doc::NotesDoc, hosting};
 use ui::application::{ApplicationHost, LaunchTarget};
 use ui::headless::{Driver, SemanticExpectation};
@@ -191,8 +190,14 @@ fn one_host_shares_the_owner_but_competing_hosts_cannot_start_another_writer() {
     );
     let checkout = hosting::default_notebook();
     assert_eq!(
-        records.read(&checkout.id, |doc| doc.base_heads()),
-        shared.read(&checkout.id, |doc| doc.base_heads())
+        records.read(
+            &checkout.id,
+            automerge::transaction::Transactable::base_heads
+        ),
+        shared.read(
+            &checkout.id,
+            automerge::transaction::Transactable::base_heads
+        )
     );
     let result = hosting::prepare_default(&mut host(&f), 207, None, runner_inputs());
     assert!(matches!(
@@ -217,7 +222,10 @@ fn named_new_record_uses_the_definition_factory_and_refuses_reinitialization() {
         .unwrap();
     let records = owner.records_for(notes::definition()).unwrap();
     let before = records
-        .read(&component.record().id, |doc| doc.base_heads())
+        .read(
+            &component.record().id,
+            automerge::transaction::Transactable::base_heads,
+        )
         .unwrap();
     let refused = ui::application::HostContext::prepare_new_record(
         notes::definition(),
@@ -233,7 +241,7 @@ fn named_new_record_uses_the_definition_factory_and_refuses_reinitialization() {
         "fixture-device".into(),
         209,
         f.authority.clone(),
-        f.author.clone(),
+        f.author,
         tilo_actions::ActionContext::default(),
         component.record().id.clone(),
     );
@@ -243,7 +251,10 @@ fn named_new_record_uses_the_definition_factory_and_refuses_reinitialization() {
     ));
     assert_eq!(
         records
-            .read(&component.record().id, |doc| doc.base_heads())
+            .read(
+                &component.record().id,
+                automerge::transaction::Transactable::base_heads,
+            )
             .unwrap(),
         before
     );

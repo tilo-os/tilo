@@ -35,7 +35,9 @@ fn code_copy_feedback_follows_identity_and_expires_after_draw() {
     assert!(editor.needs_animation_frame());
     editor.copied_code_feedback = Some((
         id,
-        std::time::Instant::now() - std::time::Duration::from_secs(3),
+        std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(3))
+            .expect("three seconds is within Instant's representable past"),
     ));
     editor.draw(
         &mut Scene::new(),

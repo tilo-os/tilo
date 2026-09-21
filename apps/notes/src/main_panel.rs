@@ -320,12 +320,12 @@ impl MainPanel {
     /// caret) is discarded — switching pages is a hard cut.
     /// Parsing goes through `notes::markdown`, which owns the inline-mark
     /// grammar that `BlockEditor::from_markdown` does not handle.
-    pub fn load_page(&mut self, id: PageId, title: &str, body: String) {
+    pub fn load_page(&mut self, id: PageId, title: &str, body: &str) {
         self.page_id = Some(id);
         self.dates = self.date_index.get(id);
         self.empty_action_focused = false;
         self.set_title_value(title);
-        let specs = crate::markdown::parse(&body);
+        let specs = crate::markdown::parse(body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
         self.editor = self.fresh_editor();
         self.editor.set_blocks(blocks);
@@ -355,7 +355,7 @@ impl MainPanel {
         &mut self,
         id: PageId,
         title: &str,
-        body: String,
+        body: &str,
         resolver: F,
     ) where
         F: FnMut(&str) -> Option<PageId>,
@@ -363,7 +363,7 @@ impl MainPanel {
         self.page_id = Some(id);
         self.dates = self.date_index.get(id);
         self.set_title_value(title);
-        let mut specs = crate::markdown::parse(&body);
+        let mut specs = crate::markdown::parse(body);
         crate::markdown::resolve_link_ids(&mut specs, resolver);
         let blocks = crate::markdown::specs_to_blocks(&specs);
         self.editor = self.fresh_editor();
@@ -432,9 +432,9 @@ impl MainPanel {
         doc: &AutoCommit,
         page: PageId,
         title: &str,
-        blocks: ObjId,
+        blocks: &ObjId,
     ) -> Result<(), String> {
-        if crate::doc::NotesDoc::page_blocks_list(doc, page).as_ref() != Some(&blocks) {
+        if crate::doc::NotesDoc::page_blocks_list(doc, page).as_ref() != Some(blocks) {
             return Err("block list does not belong to the requested page".into());
         }
         let mut editor = self.fresh_editor();
@@ -442,7 +442,7 @@ impl MainPanel {
         editor
             .bind_existing_block_objects(
                 doc,
-                &crate::doc::NotesDoc::checked_block_objects(doc, &blocks)?,
+                &crate::doc::NotesDoc::checked_block_objects(doc, blocks)?,
             )
             .map_err(|error| error.to_string())?;
         editor.set_focus(true);
@@ -475,7 +475,7 @@ impl MainPanel {
             let title = &workspace.get(page).ok_or("selected page missing")?.title;
             let blocks =
                 crate::doc::NotesDoc::page_blocks_list(doc, page).ok_or("page blocks missing")?;
-            panel.bind_canonical_page(doc, page, title, blocks)?;
+            panel.bind_canonical_page(doc, page, title, &blocks)?;
         }
         Ok(panel)
     }
@@ -1359,6 +1359,10 @@ impl Widget for MainPanel {
     // `layout` only errors for a `NodeId` from a different tree, which never
     // happens here since `node` is always the id this same widget received
     // from its own `build_layout`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "applies and propagates the complete panel geometry in one layout pass"
+    )]
     #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).unwrap();
@@ -2345,7 +2349,7 @@ mod tests {
     #[test]
     fn surface_hints_follow_hit_targets_and_reveal_exact_compact_dates() {
         let mut panel = MainPanel::new();
-        panel.load_page(fresh_page_id(), "Launch", String::new());
+        panel.load_page(fresh_page_id(), "Launch", "");
         panel.rect = Rect::new(0.0, 0.0, 300.0, 600.0);
         panel.title_rect = Rect::new(32.0, 32.0, 268.0, 76.0);
         panel.dates = crate::metadata::NoteDates {
@@ -2426,7 +2430,7 @@ mod tests {
     fn accessible_page_title_queues_the_same_rename_boundary() {
         let mut panel = MainPanel::new();
         let id = fresh_page_id();
-        panel.load_page(id, "Launch", String::new());
+        panel.load_page(id, "Launch", "");
         let node = panel
             .accessibility()
             .expect("open pages expose their title");
@@ -2466,7 +2470,7 @@ mod tests {
     fn load_page_seeds_editor_from_markdown() {
         let mut p = MainPanel::new();
         let id = fresh_page_id();
-        p.load_page(id, "Hello", "# H\n\nbody\n".into());
+        p.load_page(id, "Hello", "# H\n\nbody\n");
         assert_eq!(p.page_id(), Some(id));
         assert_eq!(p.editor().blocks().len(), 2);
         assert!(matches!(p.editor().blocks()[0].kind, BlockKind::Heading(1)));
@@ -2478,7 +2482,7 @@ mod tests {
         panel.load_page(
             fresh_page_id(),
             "Links",
-            "Read [the guide](https://example.test/guide).\n".into(),
+            "Read [the guide](https://example.test/guide).\n",
         );
         assert!(matches!(
             &panel.editor().blocks()[0].line.marks()[0].mark,
@@ -2489,7 +2493,7 @@ mod tests {
     #[test]
     fn take_body_snapshot_round_trips() {
         let mut p = MainPanel::new();
-        p.load_page(fresh_page_id(), "T", "# H\n\nbody\n".into());
+        p.load_page(fresh_page_id(), "T", "# H\n\nbody\n");
         let snap = p.take_body_snapshot();
         assert_eq!(snap, "# H\n\nbody\n");
     }
@@ -2497,7 +2501,7 @@ mod tests {
     #[test]
     fn clear_resets_state() {
         let mut p = MainPanel::new();
-        p.load_page(fresh_page_id(), "T", "# H\n".into());
+        p.load_page(fresh_page_id(), "T", "# H\n");
         p.clear();
         assert!(p.page_id().is_none());
         assert!(p.title().is_none());

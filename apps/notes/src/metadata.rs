@@ -133,6 +133,10 @@ mod tests {
     use super::*;
     use crate::actions::{self, NotesAction};
     use tilo_actions::Action;
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "test helper models handing an owned action to the production executor"
+    )]
     fn apply(doc: &mut AutoCommit, action: NotesAction, timestamp: i64) {
         action.apply(doc).unwrap();
         doc.commit_with(automerge::transaction::CommitOptions::default().with_time(timestamp));

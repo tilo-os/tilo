@@ -17,7 +17,7 @@ pub(crate) fn stored(doc: &AutoCommit, block: &ObjId) -> Option<Vec<u8>> {
             ScalarValue::Bytes(bytes) => Some(bytes.clone()),
             _ => None,
         },
-        _ => None,
+        Value::Object(_) => None,
     }
 }
 
@@ -100,7 +100,8 @@ pub(crate) fn between(lo: Option<&[u8]>, hi: Option<&[u8]>, id: Uuid) -> Result<
 fn cell_upper(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut upper = prefix.to_vec();
     let index = upper.iter().rposition(|digit| *digit < 255)?;
-    upper[index] += 1;
+    let digit = upper.get_mut(index)?;
+    *digit = digit.saturating_add(1);
     upper.truncate(index + 1);
     Some(upper)
 }

@@ -310,6 +310,10 @@ pub(crate) fn asset_manifest(doc: &AutoCommit) -> Result<Vec<(String, String)>, 
     Ok(manifest)
 }
 
+/// Validate a content-addressed image payload before it enters the notebook.
+///
+/// # Errors
+/// Returns an error for an invalid digest, unsupported image bytes, size, or hash mismatch.
 pub fn validate_asset_payload(digest: &str, bytes: &[u8]) -> Result<(), String> {
     let Some(digest) = asset_digest(digest) else {
         return Err("image asset digest is invalid".into());
@@ -329,6 +333,10 @@ pub fn validate_asset_payload(digest: &str, bytes: &[u8]) -> Result<(), String> 
     Ok(())
 }
 
+/// Store one validated content-addressed image payload.
+///
+/// # Errors
+/// Returns an error when validation fails or the collaborative asset map cannot be updated.
 pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(), String> {
     validate_asset_payload(digest, bytes)?;
     let assets = match assets_map(doc)? {
@@ -350,6 +358,10 @@ pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(),
         .map_err(|e| e.to_string())
 }
 
+/// Snapshot all validated image assets using their canonical `asset:` keys.
+///
+/// # Errors
+/// Returns an error when the notebook asset schema or any payload is invalid.
 pub fn asset_snapshot(doc: &AutoCommit) -> Result<HashMap<String, Vec<u8>>, String> {
     validate_assets(doc)?;
     let Some(assets) = assets_map(doc)? else {
@@ -363,7 +375,7 @@ pub fn asset_snapshot(doc: &AutoCommit) -> Result<HashMap<String, Vec<u8>>, Stri
             continue;
         };
         if let ScalarValue::Bytes(bytes) = value.as_ref() {
-            snapshot.insert(format!("asset:{digest}"), bytes.to_vec());
+            snapshot.insert(format!("asset:{digest}"), bytes.clone());
         }
     }
     Ok(snapshot)

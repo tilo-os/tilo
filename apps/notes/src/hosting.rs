@@ -58,6 +58,10 @@ pub fn prepare_native(
 /// # Errors
 /// Refuses corrupt canonical data, contested writers, invalid legacy sources,
 /// durability failures and malformed local presentation without overwriting them.
+#[allow(
+    clippy::result_large_err,
+    reason = "launch setup must preserve the recovery-bearing ComponentSetup error variant"
+)]
 pub fn prepare_default(
     host: &mut ApplicationHost,
     instance_id: u64,

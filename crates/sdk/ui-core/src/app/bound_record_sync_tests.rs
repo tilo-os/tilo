@@ -1,6 +1,10 @@
 // Exercise the same record selection, serialization and merge used by App's
 // broker pump. The fixture provides an admitted route without a live socket.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the end-to-end sync test keeps one transport and undo timeline visible"
+)]
 fn native_bound_sync_routes_notebook_bytes_and_preserves_local_undo_and_retries() {
     let mut fixture = ActionFixture::new();
     let binding = fixture.bindings[0].clone();
@@ -18,7 +22,10 @@ fn native_bound_sync_routes_notebook_bytes_and_preserves_local_undo_and_retries(
     let outer = fixture.app.state.doc.get_heads();
     let other = fixture
         .records
-        .read(&fixture.bindings[1].checkout.id, |doc| doc.base_heads())
+        .read(
+            &fixture.bindings[1].checkout.id,
+            automerge::transaction::Transactable::base_heads,
+        )
         .unwrap();
     let (initial, heads) = fixture.app.pending_primary_document_delta().unwrap();
     let mut remote = automerge::AutoCommit::new();
@@ -103,7 +110,10 @@ fn native_bound_sync_routes_notebook_bytes_and_preserves_local_undo_and_retries(
     assert_eq!(
         fixture
             .records
-            .read(&fixture.bindings[1].checkout.id, |doc| doc.base_heads())
+            .read(
+                &fixture.bindings[1].checkout.id,
+                automerge::transaction::Transactable::base_heads,
+            )
             .unwrap(),
         other
     );

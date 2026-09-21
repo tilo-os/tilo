@@ -7,7 +7,7 @@
 //! only ever lives on this path — the shipped app starts from the
 //! user's own pages.
 
-use std::path::Path;
+use std::{fmt::Write as _, path::Path};
 
 use crate::model::Workspace;
 use crate::storage;
@@ -191,9 +191,10 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
     if scenario == Some("scrolled") {
         let mut body = storage::read_page_body(root, launch)?;
         for index in 1..=20 {
-            body.push_str(&format!(
+            let _ = write!(
+                body,
                 "\nFollow-up item {index}: keep the document readable while scrolling.\n\n"
-            ));
+            );
         }
         storage::write_page_body(root, launch, &body)?;
     }
@@ -208,6 +209,9 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
 
 /// Render one canonical component capture. Unknown scenarios fail instead of
 /// falling back to a second, app-owned renderer.
+///
+/// # Errors
+/// Returns an error for unsupported scenarios or when fixture setup/rendering fails.
 pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,

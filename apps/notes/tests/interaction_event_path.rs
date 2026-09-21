@@ -256,7 +256,7 @@ fn nested_table_and_quote_use_the_same_outline_inset_as_prose() {
     assert_eq!(
         blocks
             .iter()
-            .map(|block| block.indent())
+            .map(ui::widget::Block::indent)
             .collect::<Vec<_>>(),
         [0, 1, 1, 1]
     );
@@ -370,6 +370,10 @@ fn backward_selection_at_block_start_deletes_text_without_merging_blocks() {
     assert_eq!(editor.blocks()[1].text(), "");
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "test helper owns each synthetic event for immediate dispatch"
+)]
 fn block_event(
     editor: &mut ui::widget::BlockEditor,
     tree: &TaffyTree<()>,
@@ -579,7 +583,7 @@ fn block_drag_previews_motion_and_drops_in_the_nearby_gap() {
         .encoding()
         .draw_tags
         .len();
-    let gap = (second.y0 + first.y1) / 2.0;
+    let gap = f64::midpoint(second.y0, first.y1);
     block_event(&mut editor, &tree, node, cursor_moved(first.x0 - 14.0, gap));
     let preview = block_scene(&mut editor, &mut renderer);
     assert!(
@@ -630,7 +634,11 @@ fn block_drag_previews_motion_and_drops_in_the_nearby_gap() {
         },
     );
     assert_eq!(
-        editor.blocks().iter().map(|b| b.text()).collect::<Vec<_>>(),
+        editor
+            .blocks()
+            .iter()
+            .map(ui::widget::Block::text)
+            .collect::<Vec<_>>(),
         ["second", "first", "third", "fourth"]
     );
     assert!(third.y0 > second.y1);
@@ -713,7 +721,11 @@ fn block_drag_escape_and_focus_loss_preserve_order() {
             },
         );
         assert_eq!(
-            editor.blocks().iter().map(|b| b.text()).collect::<Vec<_>>(),
+            editor
+                .blocks()
+                .iter()
+                .map(ui::widget::Block::text)
+                .collect::<Vec<_>>(),
             ["first", "second", "third", "fourth"]
         );
     }
@@ -1369,7 +1381,7 @@ fn multiline_code_block_renders_as_one_contiguous_unit() {
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.workspace_pages_for_test()[0].id;
     let body = "Intro line.\n\n```rust\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```\n\nAfter.\n";
-    app.main_panel_mut().load_page(id, "T", body.to_string());
+    app.main_panel_mut().load_page(id, "T", body);
 
     let mut state = ui::State::new();
     let _ = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
@@ -1744,7 +1756,7 @@ fn double_click_in_editor_selects_a_word() {
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.workspace_pages_for_test()[0].id;
     app.main_panel_mut()
-        .load_page(id, "T", "the quick brown fox\n".into());
+        .load_page(id, "T", "the quick brown fox\n");
 
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();

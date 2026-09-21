@@ -1256,6 +1256,10 @@ fn insert_note_block(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "all note edit variants share one atomic CRDT mutation boundary"
+)]
 fn apply_note_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Result<(), String> {
     match op {
         BlockEditOp::Insert {

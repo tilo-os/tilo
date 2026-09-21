@@ -1324,8 +1324,9 @@ impl Widget for NoteTreeView {
             ));
         }
         let index = self.hovered_row(point)?;
-        let row = &self.flat_rows[index];
-        let (child_action, more_action) = self.row_action_rects(self.row_rects[index]);
+        let row = self.flat_rows.get(index)?;
+        let row_rect = *self.row_rects.get(index)?;
+        let (child_action, more_action) = self.row_action_rects(row_rect);
         if child_action.contains(point) {
             return Some((child_action, ui::i18n!("notes-affordance-new-child")));
         }
@@ -1333,7 +1334,7 @@ impl Widget for NoteTreeView {
             return Some((more_action, ui::i18n!("notes-affordance-note-actions")));
         }
         let hint = ui::i18n!("notes-affordance-note-row");
-        Some((self.row_rects[index], format!("{}\n{}", row.title, hint)))
+        Some((row_rect, format!("{}\n{}", row.title, hint)))
     }
 
     /// A latched drag (or an open context menu) wants to keep receiving
@@ -1460,6 +1461,10 @@ impl NoteTreeView {
     #[allow(
         clippy::too_many_arguments,
         reason = "draw-context bundle, not real parameter coupling"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one row's layered visuals share geometry and interaction state"
     )]
     fn draw_one_row(
         &self,

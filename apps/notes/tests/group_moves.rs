@@ -84,7 +84,7 @@ fn move_group_and_verify(source: &str, order: &[usize], keyboard: bool) {
     live.relayout();
     assert_eq!(
         revision(&f, &checkout),
-        revision_before + 1,
+        revision_before.saturating_add(1),
         "a whole group is one undoable action"
     );
     assert_eq!(

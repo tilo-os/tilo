@@ -10,7 +10,7 @@ fn exported(doc: &automerge::AutoCommit, page: notes::PageId) -> String {
             doc,
             page,
             "Code",
-            NotesDoc::page_blocks_list(doc, page).unwrap(),
+            &NotesDoc::page_blocks_list(doc, page).unwrap(),
         )
         .unwrap();
     markdown::serialize(&markdown::blocks_to_specs(panel.editor().blocks()))
@@ -31,12 +31,15 @@ fn list_children_include_real_paragraphs_and_fences_after_import_and_reopen() {
                 doc,
                 f.child,
                 "Mixed content",
-                NotesDoc::page_blocks_list(doc, f.child).unwrap(),
+                &NotesDoc::page_blocks_list(doc, f.child).unwrap(),
             )
             .unwrap();
         let blocks = panel.editor().blocks();
         assert_eq!(
-            blocks.iter().map(|b| b.text()).collect::<Vec<_>>(),
+            blocks
+                .iter()
+                .map(ui::widget::Block::text)
+                .collect::<Vec<_>>(),
             [
                 "Parent A",
                 "Paragraph child",
@@ -58,7 +61,7 @@ fn list_children_include_real_paragraphs_and_fences_after_import_and_reopen() {
         assert_eq!(
             blocks
                 .iter()
-                .map(|block| block.indent())
+                .map(ui::widget::Block::indent)
                 .collect::<Vec<_>>(),
             [0, 1, 1, 1, 1, 2, 0]
         );
@@ -84,6 +87,10 @@ fn list_children_include_real_paragraphs_and_fences_after_import_and_reopen() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "end-to-end semantic test verifies nested code edits, persistence, and undo as one flow"
+)]
 fn nested_content_indents_semantically_and_exits_code_into_the_same_list_item() {
     use notes::actions;
     let f = LegacyFixture::rich();
@@ -210,7 +217,7 @@ fn adjacent_same_language_fences_remain_separate_after_canonical_import_and_reop
         let list = NotesDoc::page_blocks_list(doc, f.child).unwrap();
         let mut panel = notes::MainPanel::new();
         panel
-            .bind_canonical_page(doc, f.child, "Separate fences", list)
+            .bind_canonical_page(doc, f.child, "Separate fences", &list)
             .unwrap();
         let actual = markdown::serialize(&markdown::blocks_to_specs(panel.editor().blocks()));
         assert_eq!(
@@ -326,6 +333,11 @@ fn copy_targets(live: &ui::headless::Driver) -> Vec<String> {
 }
 
 #[test]
+#[allow(
+    clippy::items_after_statements,
+    clippy::too_many_lines,
+    reason = "clipboard backend and the full split/copy lifecycle are local to this regression test"
+)]
 fn closing_a_fence_in_the_middle_keeps_both_copy_buttons_addressable() {
     let f = LegacyFixture::rich();
     f.write_page(

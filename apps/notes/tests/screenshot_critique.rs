@@ -6,9 +6,10 @@
 
 #[test]
 fn critique_state_dump() {
-    let directory = std::env::var_os("NOTES_CRITIQUE_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("target/notes-critique"));
+    let directory = std::env::var_os("NOTES_CRITIQUE_DIR").map_or_else(
+        || std::path::PathBuf::from("target/notes-critique"),
+        std::path::PathBuf::from,
+    );
     std::fs::create_dir_all(&directory).expect("create screenshot evidence directory");
     let only = std::env::var("NOTES_CRITIQUE_SCENARIO").ok();
     for (name, scenario, viewport) in [

@@ -412,6 +412,10 @@ fn table_context_commands_edit_the_selected_table_without_creating_notes() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "single interaction test follows selection and shortcut isolation through the menu lifecycle"
+)]
 fn note_text_menu_preserves_selection_and_blocks_background_shortcuts() {
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
