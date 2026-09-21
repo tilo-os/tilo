@@ -3767,6 +3767,17 @@ impl MapsApp {
                 theme.text_dim,
                 TextWeight::Semibold,
             );
+            draw::text_right(
+                scene,
+                tr,
+                t,
+                clear_label,
+                right,
+                y,
+                11.0,
+                theme.accent_primary,
+            );
+            self.click_targets.push((clear, Hit::ClearRecents));
             y += label_advance;
             let recents = self.model.recents.clone();
             let recent_h = f64::from(self.spacing.s8);
@@ -8677,6 +8688,40 @@ mod local_layout_tests {
         tap(&mut a, &Hit::Search(SearchHit::Clear));
         assert!(a.model.query.is_empty(), "clear empties the query");
         assert!(a.model.results.is_empty(), "clear empties the results");
+    }
+
+    /// The Recents header exposes its canonical clear action through the same
+    /// painted hit target a real pointer press consumes.
+    #[test]
+    fn clear_recents_is_painted_and_pointer_dispatches_action() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        a.model.panel = Panel::Explore;
+        a.model.route = None;
+        a.model.selected = None;
+        a.model.results.clear();
+        a.pois.clear();
+        a.model.recents = vec!["Marienplatz".to_string()];
+
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let clear = a
+            .click_targets
+            .iter()
+            .find(|(_, hit)| matches!(hit, Hit::ClearRecents))
+            .map(|(rect, _)| *rect)
+            .expect("the painted Recents header exposes a Clear target");
+
+        move_to(&mut a, clear.center().x, clear.center().y);
+        assert!(
+            press_left(&mut a),
+            "the Clear target handles a pointer press"
+        );
+        assert!(
+            a.model.recents.is_empty(),
+            "the canonical action clears recents"
+        );
     }
 
     /// Clearing an active route drops it (the place-card / directions clear-×).
