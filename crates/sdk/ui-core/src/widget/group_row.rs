@@ -18,8 +18,8 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::TileContent;
 use crate::widget::{
-    DEFAULT_STRIP_USABLE_PX, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor, TileHost, Widget,
-    WindowGroup, WindowWidth,
+    DEFAULT_STRIP_USABLE_PX, FloatingSurfaceProvider, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor,
+    TileHost, Widget, WindowGroup, WindowWidth,
 };
 
 /// Idle time before the strip snaps to the nearest group's left edge.
@@ -1250,6 +1250,80 @@ impl GroupRow {
     }
 }
 
+impl FloatingSurfaceProvider for GroupRow {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        self.groups
+            .iter_mut()
+            .find_map(FloatingSurfaceProvider::take_floating_surface_request)
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+        self.groups
+            .iter_mut()
+            .find_map(FloatingSurfaceProvider::take_capture_studio_request)
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.groups
+            .iter_mut()
+            .flat_map(FloatingSurfaceProvider::take_floating_surface_source_updates)
+            .collect()
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::draw_floating_surfaces(
+                group,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::set_floating_surface_bounds(group, bounds);
+        }
+    }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        self.groups
+            .iter()
+            .flat_map(FloatingSurfaceProvider::floating_surface_presentations)
+            .collect()
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.groups
+            .iter()
+            .flat_map(FloatingSurfaceProvider::active_floating_surface_ids)
+            .collect()
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_host_message(group, message);
+        }
+    }
+}
+
 impl Widget for GroupRow {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         for g in &mut self.groups {
@@ -1628,66 +1702,12 @@ impl Widget for GroupRow {
         self.rect
     }
 
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        self.groups
-            .iter_mut()
-            .find_map(super::Widget::take_floating_surface_request)
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
-        self.groups
-            .iter_mut()
-            .find_map(super::Widget::take_capture_studio_request)
-    }
-
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        self.groups
-            .iter_mut()
-            .flat_map(super::Widget::take_floating_surface_source_updates)
-            .collect()
-    }
-
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        for group in &mut self.groups {
-            group.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
-        for group in &mut self.groups {
-            group.set_floating_surface_bounds(bounds);
-        }
-    }
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-        self.groups
-            .iter()
-            .flat_map(super::Widget::floating_surface_presentations)
-            .collect()
-    }
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.groups
-            .iter()
-            .flat_map(super::Widget::active_floating_surface_ids)
-            .collect()
-    }
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &crate::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        for group in &mut self.groups {
-            group.on_floating_surface_host_message(message);
-        }
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -1806,7 +1826,10 @@ impl Widget for GroupRow {
         // `fold` rather than `any`: must not short-circuit, every child
         // has to clear its own flag too.
         let own = std::mem::take(&mut self.structure_dirty);
-        #[allow(clippy::unnecessary_fold)] // see comment above: must not short-circuit
+        #[allow(
+            clippy::unnecessary_fold,
+            reason = "all child dirty flags must be drained without short-circuiting"
+        )]
         let children = self
             .groups
             .iter_mut()

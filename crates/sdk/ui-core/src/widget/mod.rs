@@ -481,6 +481,61 @@ pub trait NativeViewLifecycle {
     fn native_view_frame_start(&mut self);
 }
 
+/// Optional capture and detachable-surface capability.
+pub trait FloatingSurfaceProvider {
+    /// One-shot request to hand app content to the shared floating-surface
+    /// host. Shell and in-app hosts consume the same description, so `PiP` does
+    /// not require a second rendering/widget API.
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        None
+    }
+
+    /// One-shot request for the session shell's shared capture/`PiP` chooser.
+    fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
+        None
+    }
+
+    /// Rising-edge source-geometry updates for an adopted floating surface.
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
+        Vec::new()
+    }
+
+    /// Paint app-owned content whose presentation has moved into shell space.
+    fn draw_floating_surfaces(
+        &mut self,
+        _scene: &mut vello::Scene,
+        _transform: vello::kurbo::Affine,
+        _text_renderer: &mut crate::text_render::TextRenderer,
+        _theme: &crate::theme::Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+    }
+
+    /// Desktop-space presentations that need a native secondary window.
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        Vec::new()
+    }
+
+    /// Stable IDs whose underlying activity still exists.
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Push the shell's authoritative combined-output bounds into the owner.
+    fn set_floating_surface_bounds(&mut self, _bounds: vello::kurbo::Rect) {}
+
+    /// Deliver an acknowledged shell lifecycle edge back to the owner.
+    fn on_floating_surface_host_message(
+        &mut self,
+        _message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+    }
+}
+
 pub trait Widget {
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
@@ -571,6 +626,16 @@ pub trait Widget {
 
     /// Expose platform-native child lifecycle only for widgets that own it.
     fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
+        None
+    }
+
+    /// Expose detachable/capture surfaces only for widgets that own them.
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::floating_surface_provider`].
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
         None
     }
 
@@ -784,22 +849,6 @@ pub trait Widget {
         None
     }
 
-    /// One-shot request to hand app content to the shared floating-surface
-    /// host. Shell and in-app hosts consume the same description, so `PiP` does
-    /// not require a second rendering/widget API.
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        None
-    }
-
-    /// One-shot request for the session shell's shared capture/`PiP` chooser.
-    /// Apps request only the starting mode; the shell remains authoritative
-    /// for targets, consent, capture execution, and the visible selector.
-    fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
-        None
-    }
-
     /// One-shot request to open the host's action palette directly at a typed
     /// resource action. Parameter collection and permission checks remain host
     /// policy; widgets only name an address already present in `resources()`.
@@ -807,62 +856,6 @@ pub trait Widget {
         self.children_mut()
             .into_iter()
             .find_map(Widget::take_action_palette_request)
-    }
-
-    /// Rising-edge source-geometry updates for an already adopted generic
-    /// floating surface. App-owned native call/navigation windows publish
-    /// complete presentation geometry below; browser media `PiP` instead keeps
-    /// a shell mirror pointed at the current app-local element rectangle.
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
-        Vec::new()
-    }
-
-    /// Paint app-owned content whose presentation has moved into shell space.
-    /// The ordinary app draw remains clipped to its window; the shell invokes
-    /// this second pass above window content so the exact same live widget can
-    /// cross that clip without being snapshotted or reimplemented.
-    fn draw_floating_surfaces(
-        &mut self,
-        _scene: &mut vello::Scene,
-        _transform: vello::kurbo::Affine,
-        _text_renderer: &mut crate::text_render::TextRenderer,
-        _theme: &crate::theme::Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
-    }
-
-    /// Desktop-space app-owned presentations currently needing a native
-    /// secondary window. Kept separate from `draw_floating_surfaces` so the
-    /// runtime can synchronize compositor geometry without inspecting app
-    /// state or duplicating placement logic.
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-        Vec::new()
-    }
-
-    /// Stable IDs whose underlying activity still exists, whether currently
-    /// attached or floating. This lets the runtime distinguish an ordinary
-    /// animated reattachment (suspend the warm native surface) from the
-    /// activity actually ending (permanently dismiss it).
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    /// Push the shell's authoritative combined-output bounds down to apps
-    /// that own live floating surfaces. Attached surfaces still resolve from
-    /// their app rect; detached ones use this desktop rect for reachable-edge
-    /// clamping and release snapping. The default is a no-op so ordinary
-    /// widgets do not need to know about shell presentation geometry.
-    fn set_floating_surface_bounds(&mut self, _bounds: vello::kurbo::Rect) {}
-
-    /// Deliver an acknowledged shell lifecycle edge back to the app-owned
-    /// surface. Standalone app roots use this for native-surface adoption,
-    /// close, and graceful reattachment; ordinary widgets ignore it.
-    fn on_floating_surface_host_message(
-        &mut self,
-        _message: &crate::floating_surface::FloatingSurfaceHostMessage,
-    ) {
     }
 
     /// `point` is logical coords, same space as [`Widget::get_rect`];
@@ -1815,6 +1808,100 @@ pub trait Widget {
     ) {
         for child in self.children_mut() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+}
+
+/// Ergonomic forwarding API for optional floating-surface capabilities.
+///
+/// This keeps host/container call sites concise while the core [`Widget`]
+/// contract contains only capability accessors.
+pub trait FloatingSurfaceWidgetExt {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest>;
+    fn take_capture_studio_request(&mut self) -> Option<CaptureMode>;
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)>;
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    );
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation>;
+    fn active_floating_surface_ids(&self) -> Vec<String>;
+    fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect);
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    );
+}
+
+impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        self.floating_surface_provider_mut()
+            .and_then(FloatingSurfaceProvider::take_floating_surface_request)
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
+        self.floating_surface_provider_mut()
+            .and_then(FloatingSurfaceProvider::take_capture_studio_request)
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
+        self.floating_surface_provider_mut().map_or_else(
+            Vec::new,
+            FloatingSurfaceProvider::take_floating_surface_source_updates,
+        )
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        if let Some(provider) = self.floating_surface_provider_mut() {
+            provider.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        self.floating_surface_provider().map_or_else(
+            Vec::new,
+            FloatingSurfaceProvider::floating_surface_presentations,
+        )
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.floating_surface_provider().map_or_else(
+            Vec::new,
+            FloatingSurfaceProvider::active_floating_surface_ids,
+        )
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect) {
+        if let Some(provider) = self.floating_surface_provider_mut() {
+            provider.set_floating_surface_bounds(bounds);
+        }
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        if let Some(provider) = self.floating_surface_provider_mut() {
+            provider.on_floating_surface_host_message(message);
         }
     }
 }
