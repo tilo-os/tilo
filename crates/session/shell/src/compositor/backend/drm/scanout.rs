@@ -94,20 +94,40 @@ pub struct GbmScanoutSlot<'a> {
 impl GbmScanoutBuffers {
     fn new(card: Card, width: u32, height: u32) -> Result<Self, String> {
         let device = GbmDevice::new(card).map_err(|error| format!("gbm_create_device: {error}"))?;
-        let flags = GbmBufferFlags::SCANOUT | GbmBufferFlags::RENDERING | GbmBufferFlags::LINEAR;
-        if !device.is_format_supported(gbm::Format::Xrgb8888, flags) {
+        let usage = GbmBufferFlags::SCANOUT | GbmBufferFlags::RENDERING;
+        let implicit_linear_usage = usage | GbmBufferFlags::LINEAR;
+        if !device.is_format_supported(gbm::Format::Xrgb8888, implicit_linear_usage) {
             return Err("GBM does not support linear XRGB8888 scanout+rendering".to_owned());
         }
         let allocate = |index: usize| {
-            device
-                .create_buffer_object_with_modifiers2::<()>(
-                    width,
-                    height,
-                    gbm::Format::Xrgb8888,
-                    std::iter::once(gbm::Modifier::Linear),
-                    flags,
-                )
-                .map_err(|error| format!("GBM scanout buffer[{index}]: {error}"))
+            // With an explicit modifier, the modifier list owns the layout
+            // contract. Passing GBM_BO_USE_LINEAR as well is redundant and
+            // rejected with EINVAL by Mesa/AMD. Prefer the explicit-modifier
+            // API, then support older GBM stacks through the implicit linear
+            // allocator. The common validator below still rejects anything
+            // tiled or otherwise unsuitable before Vulkan/KMS sees it.
+            match device.create_buffer_object_with_modifiers2::<()>(
+                width,
+                height,
+                gbm::Format::Xrgb8888,
+                std::iter::once(gbm::Modifier::Linear),
+                usage,
+            ) {
+                Ok(buffer) => Ok(buffer),
+                Err(explicit_error) => device
+                    .create_buffer_object::<()>(
+                        width,
+                        height,
+                        gbm::Format::Xrgb8888,
+                        implicit_linear_usage,
+                    )
+                    .map_err(|implicit_error| {
+                        format!(
+                            "GBM scanout buffer[{index}]: explicit linear allocation: \
+                             {explicit_error}; implicit linear allocation: {implicit_error}"
+                        )
+                    }),
+            }
         };
         let buffers = [allocate(0)?, allocate(1)?];
         for (index, buffer) in buffers.iter().enumerate() {
