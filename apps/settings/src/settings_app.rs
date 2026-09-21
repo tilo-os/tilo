@@ -66,14 +66,6 @@ const ACCOUNTS_READABLE_WIDTH: f32 = 1040.0;
 /// label. See [`SettingsApp::readable_content_measure`].
 const FORM_READABLE_WIDTH: f32 = 720.0;
 
-/// Keep enough horizontal room for a readable detail pane after the custom
-/// Settings sidebar expands for large text. The shared shell deliberately has
-/// no theme dependency, so this app supplies the scale-aware breakpoint.
-fn nav_breakpoint_for_text_scale(text_scale: f32) -> f64 {
-    let sidebar_width = sidebar::width_for_text_scale(text_scale);
-    NAV_BREAKPOINT + (sidebar_width - sidebar::SIDEBAR_WIDTH).max(0.0)
-}
-
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
@@ -548,12 +540,7 @@ impl SettingsApp {
     /// search and the seeded shot state, for `shell_text_scale` (see
     /// [`Self::shell_scale`]).
     fn build_shell(&self) -> AppShell {
-        let nav = sidebar::build_with_text_scale(
-            self.selected,
-            &self.search_query,
-            &self.sidebar_selection,
-            self.shell_text_scale,
-        );
+        let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
         let content = self.build_content();
         // A narrow (phone) layout keeps the selected category's CONTENT on
         // screen — the category list is one back-tap away, never the default a
@@ -575,12 +562,7 @@ impl SettingsApp {
     /// query. No-op before the shell exists (the first `build_layout` will
     /// build them fresh).
     fn refresh_shell_children(&mut self) {
-        let nav = sidebar::build_with_text_scale(
-            self.selected,
-            &self.search_query,
-            &self.sidebar_selection,
-            self.shell_text_scale,
-        );
+        let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
         let content = self.build_content();
         if let Some(shell) = &mut self.shell {
             shell.set_nav(nav);

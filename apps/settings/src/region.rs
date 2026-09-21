@@ -52,8 +52,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::accounts::config_root;
-
 /// World currency, by ISO-4217 code. The serde repr is the bare variant
 /// name, which equals the ISO code — matching Sheets' `Currency`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

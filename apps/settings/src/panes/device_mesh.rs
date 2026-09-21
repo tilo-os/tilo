@@ -721,6 +721,9 @@ impl DeviceMeshPane {
                             pin: self.config.device_role.can_serve(),
                             replication: ReplicationIntent::OnDemand,
                             admitted_users: Vec::new(),
+                            // Workspace discovery proves only that the room exists. It
+                            // cannot confer the native shell governor's retained authority.
+                            shell_authority: None,
                         });
                     } else if !*enabled {
                         self.config.remove_workspace(*id);
