@@ -206,6 +206,42 @@ class ControllerAdmission(unittest.TestCase):
             with self.assertRaises(controller.ControllerTransportError):
                 controller.checked(['kubectl','--context','fixture','get','pods'])
 
+    def test_registry_auth_stdin_reaches_detached_creator_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); pins=root/'pins'; args=root/'args'
+            pins.write_text('{}');args.write_text('{}')
+            binding={'operation':'run1'}; launches=[]
+            def checked(argv,payload=None):
+                if controller.HOST_INSPECT in argv:return '{}'
+                if controller.GUEST_LAUNCH in argv:
+                    launches.append(json.loads(payload))
+                    return json.dumps({'schema':1,'purpose':'tilo-supervised-creator-job',
+                                       'state':'launched','binding':binding,'launched_at':1})
+                kind,name=argv[argv.index('get')+1:argv.index('get')+3]
+                if kind=='node':return json.dumps({'metadata':{'uid':'node-uid'}})
+                if name=='agent':return json.dumps({'metadata':{'labels':{'name':'kata-deploy'}},
+                                                     'spec':{'nodeName':self.node,'hostPID':True}})
+                return json.dumps(self.pod)
+            argv=['controller','--context','fixture','--namespace','kata-system','--pod','probe',
+                  '--pod-uid',self.uid,'--node',self.node,'--node-uid','node-uid',
+                  '--host-agent','agent','--guest-image',self.image,'--pins',str(pins),
+                  '--disk-args',str(args),'--evidence',str(root/'evidence'),
+                  '--creation-receipt',str(root/'creation.json'),'--helper-revision','a'*40,
+                  '--operation','run1','--registry-auth-stdin']
+            auth=b'{"auths":{"registry.test":{"auth":"x"}}}'
+            with patch.object(controller,'checked',checked), \
+                    patch.object(controller,'inspect_pod',return_value='c'*64), \
+                    patch.object(controller,'inspect_host',return_value={}), \
+                    patch.object(controller,'helper_bundle',return_value=(b'zip','b'*64)), \
+                    patch.object(controller,'creator_job_binding',return_value=(binding,'d'*64)), \
+                    patch.object(controller,'validate_creator_job_status'), \
+                    patch.object(controller,'poll_creator_job',return_value={'creation_sha256':'a'*64}), \
+                    patch.object(controller,'remote_creator_receipt',return_value=b'{"purpose":"tilo-development-unaccepted-test-disk","disk_created":true}'), \
+                    patch.object(sys,'argv',argv),patch.object(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(auth))), \
+                    patch.object(sys,'stdout',io.StringIO()):
+                controller.main()
+            self.assertEqual(base64.b64decode(launches[0]['registry_auth']),auth)
+
     def test_creation_receipt_is_private_and_atomic(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'evidence'/'creation.json'
