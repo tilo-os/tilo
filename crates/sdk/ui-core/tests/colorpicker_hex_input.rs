@@ -16,9 +16,9 @@ use std::collections::HashMap;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use ui::ColorCompat;
-use ui::Widget;
-use ui::widget::ColorPicker;
+use tilo_ui::ColorCompat;
+use tilo_ui::Widget;
+use tilo_ui::widget::ColorPicker;
 use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Ime, Modifiers, MouseButton, WindowEvent};
@@ -28,7 +28,7 @@ fn layout_picker(picker: &mut ColorPicker) -> (TaffyTree<()>, NodeId) {
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root_node = (picker as &mut dyn Widget).build_layout(
         &mut taffy,
-        &ui::theme::Theme::dark(),
+        &tilo_ui::theme::Theme::dark(),
         &mut node_map,
     );
     taffy

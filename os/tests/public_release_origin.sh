@@ -29,7 +29,7 @@ jq -e --arg prefix "$prefix/" \
   "$work/catalog/tilo-installer-catalog-v1.json" >/dev/null
 
 write_fragment x86_64 \
-  'https://code.sandbox.example/qos/tilo/releases/download/imager-v1.2.3/tilo-installer-linux-x86_64.img.zst'
+  'https://code.sandbox.example/qos/qos/releases/download/imager-v1.2.3/tilo-installer-linux-x86_64.img.zst'
 if GITHUB_REF_NAME=imager-v1.2.3 \
    GITHUB_SERVER_URL=https://downloads.example \
    TILO_RELEASE_REPOSITORY=tilo/public-downloads \

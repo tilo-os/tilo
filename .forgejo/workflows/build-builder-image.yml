@@ -14,7 +14,9 @@ on:
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
+      - "os/dev/install-aws-cli.sh"
       - "os/dev/promote-native-index.py"
+      - "os/dev/replicate-builder-index.py"
       - "os/dev/builder-canary-inputs.py"
       - "rust-toolchain.toml"
       - "crates/system/atomic-file/**"
@@ -484,10 +486,14 @@ jobs:
           ./os/dev/install-cached-cosign.sh
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends podman skopeo
+            sudo -n apt-get install -y --no-install-recommends software-properties-common
+            sudo -n add-apt-repository --yes universe
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends curl unzip podman skopeo
           else
-            sudo -n dnf install -y podman skopeo
+            sudo -n dnf install -y curl unzip podman skopeo
           fi
+          bash ./os/dev/install-aws-cli.sh
       - name: Verify and publish the tested native builder index
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
@@ -521,9 +527,24 @@ jobs:
             --revision "$GITHUB_SHA" --descriptors native-children \
             --signing-key "$COSIGN_KEY_REF" --output builder-index.txt
           cat builder-index.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Replicate the promoted builder beside Oregon runners
+        if: github.ref == 'refs/heads/main'
+        env:
+          AWS_REPLICATION_ROLE_ARN: arn:aws:iam::125650147312:role/burst-us-qos-builder-replication
+        run: |
+          python3 os/dev/replicate-builder-index.py \
+            --source-file builder-index.txt \
+            --target-repository 125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder \
+            --role-arn "$AWS_REPLICATION_ROLE_ARN" \
+            --region us-west-2 \
+            --public-key keys/cosign.pub \
+            --output builder-replication.txt
+          cat builder-replication.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Retain the immutable builder reference
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: builder-index-${{ github.sha }}
-          path: builder-index.txt
+          path: |
+            builder-index.txt
+            builder-replication.txt
           if-no-files-found: error

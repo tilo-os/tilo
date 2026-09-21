@@ -3,7 +3,7 @@
 //! Everything here drives the production path: real `automerge` documents with
 //! the real `qdoc` schema the word processor stores, real replication by
 //! fork/merge and by `State::load_incremental` (the code path a peer's CRDT
-//! delta actually arrives through), the real `ui::history_source` producer, and
+//! delta actually arrives through), the real `tilo_ui::history_source` producer, and
 //! the real revert. Nothing is stubbed, and every assertion that matters is on
 //! **document content** rather than on a return value — a revert that reported
 //! success while leaving the text alone fails these tests.
@@ -21,12 +21,12 @@
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use ui::history_source::revert::{RevertError, Slot, latest_run_by, plan_revert, revert_run};
-use ui::history_source::run_undo::{StepState, refuse_run, undo_run, unreachable_steps};
-use ui::history_source::runs::{AgentRun, RunStep, read_runs, record_run};
-use ui::history_source::{AuthorDirectory, HistorySource, entry_id_from_hash};
-use ui::permissions::UserId;
-use ui::state::State;
+use tilo_ui::history_source::revert::{RevertError, Slot, latest_run_by, plan_revert, revert_run};
+use tilo_ui::history_source::run_undo::{StepState, refuse_run, undo_run, unreachable_steps};
+use tilo_ui::history_source::runs::{AgentRun, RunStep, read_runs, record_run};
+use tilo_ui::history_source::{AuthorDirectory, HistorySource, entry_id_from_hash};
+use tilo_ui::permissions::UserId;
+use tilo_ui::state::State;
 
 /// The agent commits under a stable actor derived from its name — see
 /// `apps/agent/src/apply.rs`, which does `ActorId::from(name.as_bytes())`. That
@@ -129,7 +129,7 @@ fn agent_writes_two_paragraphs(report: &mut Report) -> (String, String) {
 /// The run covering everything the agent authored, found the way a caller with
 /// no recorded run finds it: the maximal contiguous band under the agent's
 /// actor.
-fn agents_run(doc: &mut AutoCommit) -> ui::history_source::revert::ChangeRun {
+fn agents_run(doc: &mut AutoCommit) -> tilo_ui::history_source::revert::ChangeRun {
     latest_run_by(doc, &actor_hex(AGENT)).expect("the agent authored something")
 }
 
@@ -143,7 +143,7 @@ fn directory() -> AuthorDirectory {
 
 #[test]
 fn a_peer_cannot_reach_the_agents_work_through_the_undo_stack() {
-    // Alice's session, holding the document as `ui::State` — the real thing an
+    // Alice's session, holding the document as `tilo_ui::State` — the real thing an
     // app runs on.
     let (mut report, _intro) = Report::started_by_a_person();
     let mut alice = State::from_doc(report.doc.fork());
@@ -302,7 +302,7 @@ fn a_paragraph_the_person_edited_afterwards_is_kept_and_reported() {
     let mut dir = directory();
     dir.register(
         &actor_hex(PERSON),
-        ui::widget::history::HistoryAuthor::new("Alice", 200.0, "a11ce000"),
+        tilo_ui::widget::history::HistoryAuthor::new("Alice", 200.0, "a11ce000"),
     );
 
     // The dry run says what will happen before anything is written.
@@ -677,7 +677,7 @@ fn the_run_record_does_not_become_a_row_in_the_history() {
     );
     assert!(
         rows.iter()
-            .all(|r| r.summary != ui::history_source::NO_VISIBLE_CHANGE),
+            .all(|r| r.summary != tilo_ui::history_source::NO_VISIBLE_CHANGE),
         "and left no empty row behind: {:?}",
         rows.iter().map(|r| r.summary.clone()).collect::<Vec<_>>()
     );
