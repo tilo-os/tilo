@@ -28,7 +28,7 @@ use ui::widget::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Fill};
 
 use crate::compositor::frame::FrameBuilder;
 use crate::shell::capture_surface::{
