@@ -58,10 +58,12 @@ pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
                         Ok((id, update)) if update.is_terminal() => {
                             finished = Some(json!({"id":id,"update":update}))
                         }
-                        Ok((id, _)) => manager.send(CollabRequest::PublishedInvocationStatus {
-                            request_id: sequence,
-                            id,
-                        }),
+                        Ok((id, _)) => {
+                            manager.send(CollabRequest::PublishedInvocationStatus {
+                                request_id: sequence,
+                                id,
+                            });
+                        }
                     }
                 }
             }
