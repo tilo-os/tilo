@@ -307,18 +307,17 @@ jobs:
         if: contains(matrix.test_packages, '-p imager')
         run: |
           root="$GITHUB_WORKSPACE/target/ci/imager-test-fs"
-          mkdir -p "$root/tmp" "$root/cache" "$root/home"
-          chmod 700 "$root/tmp" "$root/cache" "$root/home"
+          mkdir -p "$root"
+          chmod 700 "$root"
           case "$(stat -f -c %T "$root")" in
             ext2/ext3|ext2/ext3/ext4|xfs|btrfs) ;;
             *) echo "workspace does not provide qualified imager semantics" >&2; exit 1 ;;
           esac
-          printf 'TMPDIR=%s\n' "$root/tmp" >> "$GITHUB_ENV"
-          printf 'XDG_CACHE_HOME=%s\n' "$root/cache" >> "$GITHUB_ENV"
-          # Import fixtures intentionally live below HOME so production path
-          # qualification is exercised. Keep HOME on the same qualified
-          # filesystem instead of the runner's container-overlay /root.
-          printf 'HOME=%s\n' "$root/home" >> "$GITHUB_ENV"
+          # Do not redirect HOME/TMPDIR/XDG_CACHE_HOME for the whole mixed
+          # package shard: those process-wide variables alter unrelated apps'
+          # persistence and git fixtures. Only the imager's native syscall
+          # tests consume this dedicated location.
+          printf 'QOS_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
 
       # Build and run tests first. The resulting rlibs/rmeta are then reusable
       # by the all-target check; doing this in the opposite order makes rustc
