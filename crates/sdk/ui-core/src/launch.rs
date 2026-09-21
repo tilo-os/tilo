@@ -21,6 +21,10 @@ pub type ComponentHostPreparer =
         &LaunchArgs,
     ) -> Result<crate::application::PreparedComponentInputs, LaunchError>;
 
+/// Drive a mounted capture through its normal actions/input before rendering.
+/// The callback receives no unbound root or document mutation shortcut.
+pub type ComponentCaptureScenario = fn(&mut FrameHarness, &LaunchArgs) -> Result<(), LaunchError>;
+
 type RootFactory = fn() -> Box<dyn Widget>;
 type ArgsRootFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
 type LegacyPreparer = fn(&LaunchArgs) -> Result<LegacyLaunchInputs, LaunchError>;
@@ -159,6 +163,8 @@ impl LaunchArgs {
 pub struct LaunchSpec {
     definition: Option<&'static crate::application::ApplicationDefinition>,
     component_host: Option<ComponentHostPreparer>,
+    component_capture_scenario: Option<ComponentCaptureScenario>,
+    component_native_services: bool,
     legacy_setup_override: bool,
     app_id: &'static str,
     live_root: Option<RootFactory>,
@@ -200,6 +206,23 @@ impl LaunchSpec {
         self
     }
 
+    /// Use the shared native system-service runner for a prepared application.
+    /// Service discovery happens only when opening a window, after preparation;
+    /// captures, audits and headless driving retain their explicit isolation.
+    #[must_use]
+    pub fn native_services(mut self) -> Self {
+        self.component_native_services = true;
+        self
+    }
+
+    /// Apply capture-only interactions after the normal factory and restoration.
+    /// Never runs for live/headless launches or native certification audits.
+    #[must_use]
+    pub fn capture_scenario(mut self, scenario: ComponentCaptureScenario) -> Self {
+        self.component_capture_scenario = Some(scenario);
+        self
+    }
+
     /// Prepare this definition using already authenticated host inputs.
     /// # Errors
     /// Returns argument, capability, binding, factory, or restoration failures.
@@ -224,6 +247,8 @@ impl LaunchSpec {
         Self {
             definition: None,
             component_host: None,
+            component_capture_scenario: None,
+            component_native_services: false,
             legacy_setup_override: false,
             app_id,
             live_root: Some(live_root),
@@ -253,6 +278,8 @@ impl LaunchSpec {
         Self {
             definition: None,
             component_host: None,
+            component_capture_scenario: None,
+            component_native_services: false,
             legacy_setup_override: false,
             app_id,
             live_root: None,
@@ -467,6 +494,10 @@ pub enum LaunchError {
         records: crate::record::RecordStore,
         reports: Vec<crate::application::ComponentCloseReport>,
     },
+    ComponentCapture {
+        source: Box<LaunchError>,
+        reports: Vec<crate::application::ComponentCloseReport>,
+    },
     MissingValue(String),
     Duplicate(String),
     InvalidViewport(String),
@@ -497,6 +528,7 @@ impl fmt::Display for LaunchError {
             Self::BindingMismatch => f.write_str("application binding does not match"),
             Self::RecoveryRequired => f.write_str("legacy state requires explicit recovery"),
             Self::ComponentSetup { source, .. } => write!(f, "application setup failed: {source}"),
+            Self::ComponentCapture { source, .. } => write!(f, "{source}"),
             Self::MissingValue(flag) => write!(f, "{flag} requires a value"),
             Self::Duplicate(flag) => write!(f, "{flag} was supplied more than once"),
             Self::InvalidViewport(value) => write!(
@@ -546,6 +578,11 @@ impl fmt::Debug for LaunchError {
                 .field("record", record)
                 .field("close_report_count", &reports.len())
                 .finish_non_exhaustive(),
+            Self::ComponentCapture { source, reports } => f
+                .debug_struct("ComponentCapture")
+                .field("source", source)
+                .field("close_report_count", &reports.len())
+                .finish_non_exhaustive(),
             Self::MissingValue(value) => f.debug_tuple("MissingValue").field(value).finish(),
             Self::Duplicate(value) => f.debug_tuple("Duplicate").field(value).finish(),
             Self::InvalidViewport(value) => f.debug_tuple("InvalidViewport").field(value).finish(),
@@ -582,7 +619,9 @@ impl std::error::Error for LaunchError {
         match self {
             Self::Record(error) => Some(error),
             Self::Restore(error) => Some(error),
-            Self::ComponentSetup { source, .. } => Some(source.as_ref()),
+            Self::ComponentSetup { source, .. } | Self::ComponentCapture { source, .. } => {
+                Some(source.as_ref())
+            }
             _ => None,
         }
     }
@@ -596,6 +635,7 @@ impl LaunchError {
                 | Self::Record(_)
                 | Self::Restore(_)
                 | Self::ComponentSetup { .. }
+                | Self::ComponentCapture { .. }
                 | Self::CapabilityDenied(_)
                 | Self::BindingMismatch
                 | Self::MissingComponentHost
@@ -810,9 +850,12 @@ fn close_component_capture(driver: &mut FrameHarness) -> Result<(), LaunchError>
             || report.record_error.is_some()
             || report.teardown_error.is_some()
     }) {
-        return Err(LaunchError::Operation(
-            "component capture close failed".into(),
-        ));
+        return Err(LaunchError::ComponentCapture {
+            source: Box::new(LaunchError::Operation(
+                "component capture close failed".into(),
+            )),
+            reports: driver.component_close_reports().to_vec(),
+        });
     }
     Ok(())
 }
@@ -846,6 +889,24 @@ enum DefinitionDispatch {
 fn dispatch_definition(
     spec: &LaunchSpec,
     args: &LaunchArgs,
+) -> Result<DefinitionDispatch, LaunchError> {
+    dispatch_definition_with_native(spec, args, |component, inputs, native_services| {
+        if native_services {
+            App::from_component_with_native_services(component, inputs)
+        } else {
+            App::from_component(component, inputs)
+        }
+    })
+}
+
+fn dispatch_definition_with_native(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    native: impl FnOnce(
+        crate::application::AppComponent,
+        crate::application::ComponentRunnerInputs,
+        bool,
+    ) -> Result<App, LaunchError>,
 ) -> Result<DefinitionDispatch, LaunchError> {
     validate_spec_args(args, spec)?;
     if spec.legacy_setup_override {
@@ -884,6 +945,16 @@ fn dispatch_definition(
             viewport,
             prepared.runner_inputs,
         )?);
+        if !args.native_audit
+            && let Some(scenario) = spec.component_capture_scenario
+            && let Err(source) = scenario(&mut driver, args)
+        {
+            driver.close_components();
+            return Err(LaunchError::ComponentCapture {
+                source: Box::new(source),
+                reports: driver.take_component_close_reports(),
+            });
+        }
         driver.enable_document_history_chrome();
         return Ok(if args.native_audit {
             DefinitionDispatch::Audit(driver)
@@ -891,7 +962,11 @@ fn dispatch_definition(
             DefinitionDispatch::Rendered(driver)
         });
     }
-    let app = App::from_component(component, prepared.runner_inputs)?;
+    let app = native(
+        component,
+        prepared.runner_inputs,
+        spec.component_native_services,
+    )?;
     Ok(DefinitionDispatch::Native(Box::new(app)))
 }
 
@@ -1023,12 +1098,18 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
 /// Custom shot handlers should use this when constructing their own harness.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
+    capture_theme(args.text_scale)
+}
+
+/// The same capture presentation for app-specific fixture drivers.
+#[must_use]
+pub fn capture_theme(text_scale: Option<f32>) -> Theme {
     let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
-    let theme = if let Some(scale) = args.text_scale {
+    let theme = if let Some(scale) = text_scale {
         theme.with_text_scale(scale)
     } else {
         theme
@@ -1995,6 +2076,21 @@ mod prepared_launch_tests {
     use std::cell::Cell;
     use std::rc::Rc;
     thread_local! { static PREPARES: Cell<usize> = const { Cell::new(0) }; }
+    thread_local! { static CAPTURE_SCENARIOS: Cell<usize> = const { Cell::new(0) }; }
+
+    fn edit_capture(driver: &mut FrameHarness, _: &LaunchArgs) -> Result<(), LaunchError> {
+        CAPTURE_SCENARIOS.set(CAPTURE_SCENARIOS.get().saturating_add(1));
+        driver
+            .invoke_bound_action(
+                &crate::bound_dispatch::BoundActionAddress {
+                    instance_id: 11,
+                    address: tilo_actions::ActionAddress::new("probe:shared", "edit"),
+                },
+                &serde_json::Map::new(),
+            )
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        Ok(())
+    }
 
     fn prepare(
         definition: &crate::application::ApplicationDefinition,
@@ -2331,11 +2427,67 @@ mod prepared_launch_tests {
     }
 
     #[test]
+    fn native_services_are_discovered_only_by_the_selected_native_runner() {
+        for enabled in [false, true] {
+            for mode in ["native", "headless", "shots", "matrix", "audit"] {
+                let temp = tempfile::tempdir().unwrap();
+                let mut spec = LaunchSpec::from_definition(runner_probe_definition())
+                    .component_host(prepare)
+                    .allowed_live_options(&["--fixture-root"]);
+                if enabled {
+                    spec = spec.native_services();
+                }
+                let mut values = vec![
+                    "app".into(),
+                    "--fixture-root".into(),
+                    temp.path().join("state").to_string_lossy().into_owned(),
+                ];
+                match mode {
+                    "headless" => values.extend(["--headless-drive".into(), "{}".into()]),
+                    "audit" => values.push("--native-audit".into()),
+                    "shots" => values.extend([
+                        "--shots".into(),
+                        temp.path().join("out.png").to_string_lossy().into_owned(),
+                    ]),
+                    "matrix" => values.extend([
+                        "--responsive-matrix".into(),
+                        temp.path().join("matrix").to_string_lossy().into_owned(),
+                    ]),
+                    _ => {}
+                }
+                let args = parsed(&spec, &values);
+                let before = calls();
+                let native_calls = Cell::new(0);
+                let dispatched =
+                    dispatch_definition_with_native(&spec, &args, |component, inputs, services| {
+                        native_calls.set(native_calls.get() + 1);
+                        assert_eq!(services, enabled);
+                        // The real native merge is covered in prepared_runner_tests;
+                        // this mode-selection test must never discover ambient services.
+                        App::from_component(component, inputs)
+                    })
+                    .unwrap();
+                assert_eq!(native_calls.get(), usize::from(mode == "native"));
+                assert_eq!(calls(), before + 1);
+                match dispatched {
+                    DefinitionDispatch::Native(mut app) => app.close_components(),
+                    DefinitionDispatch::Rendered(mut driver)
+                    | DefinitionDispatch::Audit(mut driver) => {
+                        close_component_capture(&mut driver).unwrap();
+                    }
+                    DefinitionDispatch::Headless(status) => assert_eq!(status, 0),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn definition_native_headless_and_render_selection_prepare_once() {
         for mode in ["native", "headless", "shots", "matrix", "audit"] {
             let temp = tempfile::tempdir().unwrap();
             let spec = LaunchSpec::from_definition(runner_probe_definition())
                 .component_host(prepare)
+                .capture_scenario(edit_capture)
                 .allowed_live_options(&["--fixture-root"]);
             let mut values = vec![
                 "app".into(),
@@ -2357,9 +2509,14 @@ mod prepared_launch_tests {
             }
             let before = calls();
             PREPARES.set(0);
+            CAPTURE_SCENARIOS.set(0);
             let args = parsed(&spec, &values);
             let prepared = dispatch_definition(&spec, &args).unwrap();
             assert_eq!(PREPARES.get(), 1);
+            assert_eq!(
+                CAPTURE_SCENARIOS.get(),
+                usize::from(matches!(mode, "shots" | "matrix"))
+            );
             assert_eq!(calls(), before.saturating_add(1));
             assert!(matches!(
                 (mode, &prepared),
@@ -2370,7 +2527,87 @@ mod prepared_launch_tests {
             ));
             assert!(!temp.path().join("shot.png").exists());
             assert!(!temp.path().join("matrix").exists());
+            if let DefinitionDispatch::Rendered(mut driver) = prepared {
+                close_component_capture(&mut driver).unwrap();
+                drop(driver);
+                let root = temp.path().join("state");
+                let saved =
+                    crate::application_view::InstanceViewStore::new(root.clone(), DEVICE, ROOM)
+                        .unwrap()
+                        .load(11)
+                        .unwrap()
+                        .unwrap();
+                let checkout = crate::record::RecordCheckout::new(
+                    crate::record::RecordId::parse(&saved.record_id).unwrap(),
+                    runner_probe_definition().record_kind.clone(),
+                );
+                let records = crate::record::RecordOwners::new(root)
+                    .open(APP, ROOM)
+                    .unwrap();
+                records.try_open_record(&checkout).unwrap();
+                assert_eq!(
+                    body(&records, &checkout),
+                    "edited",
+                    "capture actions persist through the same owner"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn capture_scenario_failure_closes_component_and_retains_failed_save_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        let spec = LaunchSpec::from_definition(runner_probe_definition())
+            .component_host(prepare)
+            .capture_scenario(|driver, args| {
+                edit_capture(driver, args)?;
+                let root = PathBuf::from(args.value("--fixture-root").unwrap());
+                std::fs::write(root.join("instance-views"), b"intentional collision").unwrap();
+                Err(LaunchError::Operation(
+                    "scenario failed after editing".into(),
+                ))
+            })
+            .allowed_live_options(&["--fixture-root"]);
+        let args = parsed(
+            &spec,
+            &[
+                "app".into(),
+                "--fixture-root".into(),
+                root.to_string_lossy().into_owned(),
+                "--shots".into(),
+                temp.path().join("never.png").to_string_lossy().into_owned(),
+            ],
+        );
+        let Err(LaunchError::ComponentCapture { source, reports }) =
+            dispatch_definition(&spec, &args)
+        else {
+            panic!("capture must fail")
+        };
+        assert_eq!(source.to_string(), "scenario failed after editing");
+        let mut failed = reports
+            .into_iter()
+            .find(|report| report.view_error.is_some())
+            .unwrap();
+        assert!(failed.record_error.is_none());
+        assert!(failed.view_retry.is_some());
+        assert!(!temp.path().join("never.png").exists());
+        std::fs::remove_file(root.join("instance-views")).unwrap();
+        failed.retry_view().unwrap();
+        let saved = crate::application_view::InstanceViewStore::new(root.clone(), DEVICE, ROOM)
+            .unwrap()
+            .load(11)
+            .unwrap()
+            .unwrap();
+        let checkout = crate::record::RecordCheckout::new(
+            crate::record::RecordId::parse(&saved.record_id).unwrap(),
+            runner_probe_definition().record_kind.clone(),
+        );
+        let records = crate::record::RecordOwners::new(root)
+            .open(APP, ROOM)
+            .unwrap();
+        records.try_open_record(&checkout).unwrap();
+        assert_eq!(body(&records, &checkout), "edited");
     }
 
     #[test]
