@@ -689,36 +689,64 @@ def read_private(path,limit):
   if len(value)!=i.st_size:result('invalid')
   return value
  except BaseException:result('invalid')
-def failed_job(path):
+def exact_job(path):
  if path.is_symlink() or not path.is_dir():result('active')
  info=path.lstat()
  if info.st_uid or info.st_gid or stat.S_IMODE(info.st_mode)!=0o700:result('active')
  try:status=json.loads(read_private(path/'status.json',65536))
  except BaseException:result('active')
  binding=status.get('binding') if isinstance(status,dict) else None
- log_bytes=status.get('log_bytes')
- if (status.get('schema')!=1 or status.get('purpose')!='tilo-supervised-creator-job'
-     or status.get('state')!='failed' or type(log_bytes) is not int or not 0<=log_bytes<=256*1024
+ if (not isinstance(status,dict) or status.get('schema')!=1
+     or status.get('purpose')!='tilo-supervised-creator-job'
      or not isinstance(binding,dict)
      or binding.get('operation')!=expected_operation
      or binding.get('pod_uid')!=expected_pod_uid
      or binding.get('node_uid')!=expected_node_uid
      or binding.get('output')!='/work/disk-output/disk.raw'):
   result('active')
+ state=status.get('state'); base={'schema','purpose','state','binding'}
+ if state in ('running','succeeded'):
+  binding_fields={'schema','purpose','operation','pod_uid','node_uid','container_id','image','output',
+                  'helper_revision','helper_bundle_sha256','job_sha256','disk_args_sha256',
+                  'observation_sha256'}
+  expected=base|{'process'}
+  if state=='succeeded':expected|={'creation_sha256','log_bytes','log_truncated'}
+  process=status.get('process')
+  if (set(binding)!=binding_fields or binding.get('schema')!=1
+      or binding.get('purpose')!='tilo-supervised-creator-job-binding'
+      or not isinstance(binding.get('container_id'),str) or not binding['container_id']
+      or not isinstance(binding.get('image'),str) or not binding['image']
+      or not re.fullmatch(r'[0-9a-f]{40}',binding.get('helper_revision',''))
+      or any(not re.fullmatch(r'[0-9a-f]{64}',binding.get(name,'')) for name in
+             ('helper_bundle_sha256','job_sha256','disk_args_sha256','observation_sha256'))
+      or set(status)!=expected or not isinstance(process,dict)
+      or set(process)!={'pid','start','argv_sha256','cgroup_sha256','request_sha256'}
+      or type(process.get('pid')) is not int or process['pid']<=1
+      or not isinstance(process.get('start'),str) or not process['start'].isdigit()
+      or any(not re.fullmatch(r'[0-9a-f]{64}',process.get(name,'')) for name in
+             ('argv_sha256','cgroup_sha256','request_sha256'))):result('active')
+  if state=='succeeded' and (not re.fullmatch(r'[0-9a-f]{64}',status.get('creation_sha256',''))
+      or type(status.get('log_bytes')) is not int or not 0<=status['log_bytes']<=256*1024
+      or type(status.get('log_truncated')) is not bool):result('active')
+  return 'adoptable',None,None,None
+ log_bytes=status.get('log_bytes')
+ if state!='failed' or type(log_bytes) is not int or not 0<=log_bytes<=256*1024:result('active')
  if log_bytes:
   log_path=path/'log.txt'; log_raw=read_private(log_path,256*1024)
   if len(log_raw)!=log_bytes:result('active')
   log_sha256=hashlib.sha256(log_raw).hexdigest()
  else:log_sha256=hashlib.sha256(b'').hexdigest()
- return binding,log_sha256,log_bytes
+ return 'retryable-failed',binding,log_sha256,log_bytes
 job_state=None
 job_binding=None; job_log_sha256=None; job_log_bytes=None
 backup_job=work/'disk-output/.creator-job.failed-backup'
 if job.exists() or job.is_symlink():
  if backup_job.exists() or backup_job.is_symlink():result('active')
- job_state='retryable-failed'; job_binding,job_log_sha256,job_log_bytes=failed_job(job)
+ job_state,job_binding,job_log_sha256,job_log_bytes=exact_job(job)
 elif backup_job.exists() or backup_job.is_symlink():
- job_state='retryable-cleanup'; job_binding,job_log_sha256,job_log_bytes=failed_job(backup_job)
+ failed_state,job_binding,job_log_sha256,job_log_bytes=exact_job(backup_job)
+ if failed_state!='retryable-failed':result('active')
+ job_state='retryable-cleanup'
 raw=read_private(receipt,4096)
 if raw is None:
  if job_state is not None: result('invalid')
@@ -730,6 +758,8 @@ if (set(document)!={'schema','purpose','helpers','public','installer'}
     or document.get('purpose')!='tilo-supervised-creator-inputs'
     or any(not isinstance(document.get(name),str) or not re.fullmatch(r'[0-9a-f]{64}',document[name])
            for name in ('helpers','public','installer'))): result('invalid')
+receipt_sha256=hashlib.sha256(raw).hexdigest()
+if job_state=='adoptable':result('adoptable',receipt=document,receipt_sha256=receipt_sha256)
 marker_value=None
 marker_raw=read_private(marker,4096)
 if marker_raw is not None:
@@ -752,7 +782,6 @@ if marker_raw is not None:
    if (not stat.S_ISDIR(backup_info.st_mode) or backup_info.st_uid or backup_info.st_gid
        or backup_info.st_mode&0o077):result('invalid')
   if not path.exists() and not backup.exists():result('invalid')
-receipt_sha256=hashlib.sha256(raw).hexdigest()
 if marker_value is not None and receipt_sha256!=marker_value['old_receipt_sha256']:
  for name in marker_value['changed'].split(','):
   if not (work/names[name]).exists():result('invalid')
@@ -769,7 +798,7 @@ for name in names:
 result(job_state or ('reconcile' if marker_value is not None else 'ready'),receipt=document,
        receipt_sha256=receipt_sha256,**({'marker':marker_value} if marker_value is not None else {}),
        **({'job_binding':job_binding,'job_log_sha256':job_log_sha256,
-           'job_log_bytes':job_log_bytes} if job_state is not None else {}))'''
+           'job_log_bytes':job_log_bytes} if job_state in ('retryable-failed','retryable-cleanup') else {}))'''
 
 
 def validate_creator_job_failure_receipt(path, status):
@@ -812,10 +841,12 @@ def creator_input_status(context, disk, acceptance_id='run1', operation_dir=None
     if state=='active':
         raise CreatorInputReconciliationError('cannot reconcile creator inputs while creator job is active')
     retry_fields={'state','receipt','receipt_sha256','job_binding','job_log_sha256','job_log_bytes'}
-    if state not in ('ready','reconcile','reconcile-complete','retryable-failed','retryable-cleanup') \
+    if state not in ('ready','reconcile','reconcile-complete','retryable-failed','retryable-cleanup',
+                     'adoptable') \
             or set(value) != (retry_fields if state in ('retryable-failed','retryable-cleanup') else
                                {'state','receipt','receipt_sha256'}
-                               if state=='ready' else {'state','receipt','receipt_sha256','marker'}):
+                               if state in ('ready','adoptable') else
+                               {'state','receipt','receipt_sha256','marker'}):
         raise CreatorInputReconciliationError('creator input receipt or component state is invalid')
     receipt=value['receipt']
     marker=value.get('marker')
@@ -3115,6 +3146,11 @@ def main():
                     with timer.stage('input_transfer'):
                         stream_creator_inputs(args.context,disk['namespace'],disk['pod'],'disk',
                                               helpers,public,installer_bootc)
+                elif status['state']=='adoptable':
+                    # The detached controller validates the complete job binding
+                    # before polling it.  Preserve every retained input and output
+                    # byte until that exact adoption has completed.
+                    timer.skip('input_transfer')
                 else:
                     if status['state'] in ('retryable-failed','retryable-cleanup'):
                         reset_failed_creator_job(args.context,disk,args.acceptance_id,status)
