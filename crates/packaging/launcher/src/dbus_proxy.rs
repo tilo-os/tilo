@@ -10,7 +10,7 @@
 //! allowlist, running as a per-sandbox helper.
 //!
 //! What we do here: locate `xdg-dbus-proxy` (from `flatpak-xdg-utils`,
-//! falling back to the raw-bind path if missing); spawn one proxy per
+//! leaving the bus unavailable if missing); spawn one proxy per
 //! sandbox allowing `org.freedesktop.DBus` (needed for the `Hello`
 //! handshake), the `org.freedesktop.portal.*` tree,
 //! `org.freedesktop.Notifications`, and `org.mpris.MediaPlayer2.*`;
@@ -55,16 +55,15 @@ pub const PROXY_BIN_ENV: &str = "TILO_LAUNCHER_DBUS_PROXY_BIN";
 /// then leaves D-Bus unavailable; it never falls back to binding the raw
 /// session bus into an untrusted sandbox.
 ///
-/// Lookup order: `$TILO_LAUNCHER_DBUS_PROXY_BIN` (test/override),
+/// An explicit `$TILO_LAUNCHER_DBUS_PROXY_BIN` is authoritative, including an
+/// invalid or empty path, which leaves D-Bus unavailable. When unset, look for
 /// `xdg-dbus-proxy` on `$PATH`,
 /// `/usr/libexec/flatpak-xdg-utils/xdg-dbus-proxy` (Fedora), then
 /// `/usr/lib/flatpak-xdg-utils/xdg-dbus-proxy` (some Debian derivatives).
 pub fn find_proxy_binary() -> Option<PathBuf> {
     if let Some(bin) = std::env::var_os(PROXY_BIN_ENV) {
         let p = PathBuf::from(bin);
-        if p.is_file() {
-            return Some(p);
-        }
+        return p.is_file().then_some(p);
     }
     if let Some(paths) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&paths) {
@@ -273,10 +272,34 @@ mod tests {
         assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
     }
 
-    // Both of these mutate `PROXY_BIN_ENV` (and one nukes `PATH`), process-wide
-    // state, so they take the same `process_env` lock as the rest of the
-    // crate's env-reading tests to avoid clobbering each other or unrelated
-    // tests.
+    // Callers hold the process_env serial lock. Restore exact prior values
+    // before returning so a failed assertion cannot leak the fixture inputs.
+    fn find_with_environment(
+        proxy: Option<&std::ffi::OsStr>,
+        path: &std::ffi::OsStr,
+    ) -> Option<PathBuf> {
+        let old_proxy = std::env::var_os(PROXY_BIN_ENV);
+        let old_path = std::env::var_os("PATH");
+        // SAFETY: all callers hold the process_env serial lock.
+        unsafe {
+            match proxy {
+                Some(value) => std::env::set_var(PROXY_BIN_ENV, value),
+                None => std::env::remove_var(PROXY_BIN_ENV),
+            }
+            std::env::set_var("PATH", path);
+        }
+        let found = find_proxy_binary();
+        // SAFETY: restore the serialized process environment before asserting.
+        unsafe {
+            for (name, value) in [(PROXY_BIN_ENV, old_proxy), ("PATH", old_path)] {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+        found
+    }
 
     #[test]
     #[serial_test::serial(process_env)]
@@ -284,36 +307,42 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("xdg-dbus-proxy-mock");
         std::fs::write(&bin, "#!/bin/sh\n").unwrap();
-        // Env var wins.
-        unsafe { std::env::set_var(PROXY_BIN_ENV, &bin) };
-        let found = find_proxy_binary().expect("env override");
-        assert_eq!(found, bin);
-        unsafe { std::env::remove_var(PROXY_BIN_ENV) };
+        std::fs::write(tmp.path().join("xdg-dbus-proxy"), "#!/bin/sh\n").unwrap();
+        let found = find_with_environment(Some(bin.as_os_str()), tmp.path().as_os_str());
+        assert_eq!(found, Some(bin));
     }
 
     #[test]
     #[serial_test::serial(process_env)]
     fn find_proxy_binary_returns_none_when_env_points_at_nonexistent() {
-        let saved_path = std::env::var_os("PATH");
-        unsafe {
-            std::env::set_var(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy");
-            // Nuke PATH so the fallback can't find a real binary.
-            std::env::set_var("PATH", "");
+        use std::os::unix::ffi::OsStringExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("xdg-dbus-proxy"), "#!/bin/sh\n").unwrap();
+        let invalid_paths = [
+            tmp.path().join("missing").into_os_string(),
+            std::ffi::OsString::new(),
+            tmp.path()
+                .join(std::ffi::OsString::from_vec(vec![0xff]))
+                .into_os_string(),
+        ];
+        for invalid in invalid_paths {
+            let found = find_with_environment(Some(&invalid), tmp.path().as_os_str());
+            assert!(
+                found.is_none(),
+                "an invalid explicit override must not use the available PATH proxy: {found:?}"
+            );
         }
-        let found = find_proxy_binary();
-        unsafe {
-            std::env::remove_var(PROXY_BIN_ENV);
-            // Put `PATH` back before asserting: a failed assertion must not strand
-            // the rest of the suite with an empty PATH.
-            match &saved_path {
-                Some(p) => std::env::set_var("PATH", p),
-                None => std::env::remove_var("PATH"),
-            }
-        }
-        assert!(
-            found.is_none(),
-            "expected None with bad env + empty PATH, got {found:?}"
-        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn find_proxy_binary_uses_path_when_override_is_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join("xdg-dbus-proxy");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        let found = find_with_environment(None, tmp.path().as_os_str());
+        assert_eq!(found, Some(bin));
     }
 
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket path)

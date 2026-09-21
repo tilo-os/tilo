@@ -2592,8 +2592,9 @@ fn resolve_dbus_bind(
         }
     } else {
         tracing::warn!(
-            "xdg-dbus-proxy not found on PATH; portal access stays unavailable. \
-             Install `flatpak-xdg-utils` to enable filtered portal traffic."
+            "xdg-dbus-proxy unavailable; portal access stays unavailable. \
+             Check TILO_LAUNCHER_DBUS_PROXY_BIN or install `flatpak-xdg-utils` \
+             to enable filtered portal traffic."
         );
     }
     (None, None)
