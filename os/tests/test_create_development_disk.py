@@ -427,8 +427,8 @@ class CreationTests(unittest.TestCase):
                      '--enforce-container-sigpolicy', '--run-fetch-check',
                      '--filesystem=btrfs'):
             self.assertIn(flag, argv)
-        self.assertIn(self.image, argv)
-        self.assertIn('--source-imgref=docker://' + self.args.source, argv)
+        self.assertIn(self.args.source, argv)
+        self.assertNotIn('--source-imgref=docker://' + self.args.source, argv)
         self.assertIn('--target-imgref=' + self.args.target, argv)
         self.assertIn('--entrypoint=/usr/bin/python3', argv)
         self.assertIn('/run/tilo-bootc-registry-wrapper.py', argv)
