@@ -15,6 +15,9 @@
 #     --no-default-kargs      drop the implicit rw + console=tty0,ttyS0
 #     --user NAME:PASS[:G,G]  create a login account in the installed system
 #     --target-imgref REF     what the installed system updates FROM
+#     --sealed-source-imgref REF
+#                            digest-equivalent registry mirror used for a sealed
+#                            install without first importing IMAGE locally
 #     --raw                   leave the raw image, skip the qcow2 conversion
 #
 # Why not bib: bib has no composefs, UKI or backend-selection surface anywhere
@@ -66,7 +69,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 IMAGE=""; OUTDIR=""
 COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=12G; ESP_SIZE=2G
 RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
-KARGS=(); USERSPEC=""; TARGET_IMGREF=""; KEEP_RAW=0; DEFAULT_KARGS=yes
+KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
+KEEP_RAW=0; DEFAULT_KARGS=yes
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -82,6 +86,7 @@ while [ $# -gt 0 ]; do
     --no-default-kargs) DEFAULT_KARGS=no ;;
     --user) USERSPEC="$2"; shift ;;
     --target-imgref) TARGET_IMGREF="$2"; shift ;;
+    --sealed-source-imgref) SEALED_SOURCE_IMGREF="$2"; shift ;;
     --raw) KEEP_RAW=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*) die "unknown option: $1" ;;
@@ -92,7 +97,20 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$IMAGE" ] && [ -n "$OUTDIR" ] || { sed -n '2,20p' "$0"; exit 1; }
 
-podman image exists "$IMAGE" || die "$IMAGE is not in rootless podman storage"
+if [ -z "$SEALED_SOURCE_IMGREF" ]; then
+  podman image exists "$IMAGE" || die "$IMAGE is not in rootless podman storage"
+else
+  [ "$COMPOSEFS" = yes ] || die "--sealed-source-imgref requires --composefs"
+  [[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] \
+    || die "--sealed-source-imgref requires digest-pinned IMAGE as the authoritative target-imgref"
+  command -v skopeo >/dev/null || die "--sealed-source-imgref requires skopeo to verify the mirror digest"
+  source_digest="$(skopeo inspect --tls-verify=false --format '{{.Digest}}' \
+    "docker://${SEALED_SOURCE_IMGREF#docker://}")" \
+    || die "cannot inspect sealed registry source $SEALED_SOURCE_IMGREF"
+  target_digest="sha256:${IMAGE##*@sha256:}"
+  [ "$source_digest" = "$target_digest" ] || die "sealed registry source digest is $source_digest,
+  but authoritative IMAGE is $target_digest. Refusing to install different content."
+fi
 
 # --- sizes -------------------------------------------------------------------
 # Everything is compared in MiB so a check can talk about "864 MiB" instead of
@@ -113,7 +131,11 @@ to_mib() {
 # A UKI in the image means bootc selects the composefs backend by itself, and
 # the install must agree — so detect rather than make the caller remember.
 HAS_UKI=no; WANTS_SYSTEMD_BOOT=no
-if podman run --rm --entrypoint /bin/sh "$IMAGE" \
+if [ -n "$SEALED_SOURCE_IMGREF" ]; then
+  # The explicit option names the source as sealed and its digest was verified
+  # above. Avoid importing a multi-gigabyte image only to rediscover that fact.
+  HAS_UKI=yes
+elif podman run --rm --entrypoint /bin/sh "$IMAGE" \
      -c 'ls /boot/EFI/Linux/*.efi >/dev/null 2>&1'; then
   HAS_UKI=yes
 fi
@@ -125,7 +147,7 @@ fi
 # backend, whether or not it has a UKI. This is also why the last bib-built
 # desktop qcow2 could not have had systemd-boot: bib hits the same refusal, from
 # the same drop-in.
-if podman run --rm --entrypoint /bin/sh "$IMAGE" \
+if [ -z "$SEALED_SOURCE_IMGREF" ] && podman run --rm --entrypoint /bin/sh "$IMAGE" \
      -c 'grep -rqs "bootloader *= *\"systemd\"" /usr/lib/bootc/install/'; then
   WANTS_SYSTEMD_BOOT=yes
 fi
@@ -309,7 +331,15 @@ start_registry() {
   return 1
 }
 
-if [ "$COMPOSEFS" = yes ]; then
+if [ -n "$SEALED_SOURCE_IMGREF" ]; then
+  RUNREF="${SEALED_SOURCE_IMGREF#docker://}"
+  SRC_REF="docker://$RUNREF"
+  REG="${RUNREF%%/*}"
+  TLS_ARGS=(--tls-verify=false)
+  REGCONF="$OUTDIR/.registries.conf"
+  printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
+  msg "using verified sealed registry source $SRC_REF (no local import or republish)"
+elif [ "$COMPOSEFS" = yes ]; then
   REG="$(start_registry)" || die "could not bring up a local registry, and the composefs
   backend cannot install from container storage: pulling an image out of
   containers-storage (or one moved across with \`podman save | sudo podman load\`)
