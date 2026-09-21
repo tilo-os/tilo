@@ -26,13 +26,9 @@ function response(body,{status=200}={}){
   const value=body instanceof Uint8Array?body:new TextEncoder().encode(JSON.stringify(body));
   return {ok:status>=200&&status<300,status,clone(){return response(value.slice(),{status});},async arrayBuffer(){return value.slice().buffer;},async json(){return JSON.parse(new TextDecoder().decode(value));}};
 }
-function memoryCaches(initial=new Map()){
-  return {initial,async open(name){return {async match(url){const hit=initial.get(`${name}:${url}`);return hit?.clone();},async put(url,value){initial.set(`${name}:${url}`,value.clone());},async delete(url){return initial.delete(`${name}:${url}`);}};}};
-}
-
 test('startup fetches only declared startup fonts and verifies immutable bytes',async()=>{
   const manifest=await descriptor(),requested=[];
-  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,caches:memoryCaches(),fetch:async (url,options)=>{
+  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:async (url,options)=>{
     requested.push([String(url),options]);
     if(String(url).endsWith('fonts.json'))return response(manifest);
     const name=new URL(url).pathname.split('/').at(-1).replace('.ttf','');
@@ -47,7 +43,7 @@ test('startup fetches only declared startup fonts and verifies immutable bytes',
 
 test('optional demands are deduplicated and bounded to two concurrent fetches',async()=>{
   const manifest=await descriptor(),gates=new Map(),starts=[];let concurrent=0,peak=0;
-  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,caches:memoryCaches(),fetch:async url=>{
+  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:async url=>{
     if(String(url).endsWith('fonts.json'))return response(manifest);
     const name=new URL(url).pathname.split('/').at(-1).replace('.ttf','');starts.push(name);concurrent++;peak=Math.max(peak,concurrent);
     await new Promise(resolve=>gates.set(name,resolve));concurrent--;return response(bytes[name]);
@@ -61,28 +57,57 @@ test('optional demands are deduplicated and bounded to two concurrent fetches',a
   gates.get('cjk')();gates.get('emoji')();await Promise.all([cjk,emoji]);assert.equal(peak,2);
 });
 
-test('corrupt cache is evicted and refetched while unavailable cache is only an optimization',async()=>{
-  const manifest=await descriptor(),cache=memoryCaches(),network=[];
-  const fontURL='https://example.test/app/fonts/arabic.ttf';
-  cache.initial.set('qos-fonts-release-a:'+fontURL,response(new Uint8Array([99,99])));
-  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,caches:cache,fetch:async url=>{
-    if(String(url).endsWith('fonts.json'))return response(manifest);network.push(String(url));return response(bytes.arabic);
-  }});
-  assert.deepEqual([...(await loader.request('arabic.ttf'))],[4,5]);assert.deepEqual(network,[fontURL]);
-  const denied=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,caches:{open:async()=>{throw Error('quota denied');}},fetch:async url=>String(url).endsWith('fonts.json')?response(manifest):response(bytes.arabic)});
-  assert.deepEqual([...(await denied.request('arabic.ttf'))],[4,5]);
+test('CacheStorage cannot block verified startup font readiness',async()=>{
+  const manifest=await descriptor(),requested=[];let cacheOpens=0,timeout;
+  const loader=createFontLoader({baseURL:'https://example.test/releases/digest/',crypto:webcrypto,
+    caches:{open:()=>{cacheOpens++;return new Promise(()=>{});}},
+    fetch:async url=>{requested.push(String(url));return String(url).endsWith('fonts.json')?response(manifest):response(bytes.core);},
+  });
+  const outcome=await Promise.race([
+    loader.startup(),
+    new Promise(resolve=>{timeout=setTimeout(()=>resolve('blocked'),100);}),
+  ]);
+  clearTimeout(timeout);
+  assert.notEqual(outcome,'blocked');
+  assert.deepEqual([...outcome['core.ttf']],[1,2,3]);
+  assert.equal(cacheOpens,0);
+  assert.deepEqual(requested,[
+    'https://example.test/releases/digest/fonts.json',
+    'https://example.test/releases/digest/fonts/core.ttf',
+  ]);
 });
 
-test('a verified release cache supplies startup and optional assets offline',async()=>{
-  const manifest=await descriptor(),cache=memoryCaches();
-  const online=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,caches:cache,fetch:async url=>{
+test('an integrity mismatch reloads once outside the browser HTTP cache',async()=>{
+  const manifest=await descriptor(),fontRequests=[];
+  const loader=createFontLoader({baseURL:'https://example.test/releases/digest/',crypto:webcrypto,fetch:async (url,options)=>{
     if(String(url).endsWith('fonts.json'))return response(manifest);
-    const name=new URL(url).pathname.split('/').at(-1).replace('.ttf','');return response(bytes[name]);
+    fontRequests.push(options);return response(fontRequests.length===1?new Uint8Array([9,9,9]):bytes.core);
   }});
-  await online.startup();await online.request('arabic.ttf');
-  const offline=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,caches:cache,fetch:async()=>{throw Error('offline');}});
-  assert.deepEqual(Object.keys(await offline.startup()),['core.ttf']);
-  assert.deepEqual([...(await offline.request('arabic.ttf'))],[4,5]);
+  assert.deepEqual([...(await loader.startup())['core.ttf']],[1,2,3]);
+  assert.equal(fontRequests.length,2);
+  assert.equal(fontRequests[0].cache,undefined);
+  assert.equal(fontRequests[1].cache,'reload');
+  assert(fontRequests.every(options=>options.credentials==='same-origin'&&options.mode==='same-origin'&&options.redirect==='error'));
+});
+
+test('a permanently corrupt HTTP response is rejected after one reload',async()=>{
+  const manifest=await descriptor();let fontRequests=0;
+  const loader=createFontLoader({baseURL:'https://example.test/releases/digest/',crypto:webcrypto,fetch:async url=>{
+    if(String(url).endsWith('fonts.json'))return response(manifest);
+    fontRequests++;return response(new Uint8Array([9,9,9]));
+  }});
+  await assert.rejects(loader.startup(),/font asset (size|SHA-256) mismatch/);
+  assert.equal(fontRequests,2);
+});
+
+test('an offline font request fails without an arbitrary retry',async()=>{
+  const manifest=await descriptor();let fontRequests=0;
+  const loader=createFontLoader({baseURL:'https://example.test/releases/digest/',crypto:webcrypto,fetch:async url=>{
+    if(String(url).endsWith('fonts.json'))return response(manifest);
+    fontRequests++;throw Error('offline');
+  }});
+  await assert.rejects(loader.startup(),/offline/);
+  assert.equal(fontRequests,1);
 });
 
 test('failed optional demand backs off, then a later relevant demand retries',async()=>{

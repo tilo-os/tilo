@@ -8,7 +8,6 @@ export function createFontLoader({
   baseURL,
   fetch:fetchAsset=globalThis.fetch,
   crypto=globalThis.crypto,
-  caches=globalThis.caches,
   now=Date.now,
   retryDelayMs=2_000,
   optionalConcurrency=2,
@@ -18,8 +17,8 @@ export function createFontLoader({
   const loaded=new Map(),pending=new Map(),failures=new Map(),queue=[];
   let active=0;
 
-  async function fetchRequired(url){
-    const result=await fetchAsset(url,{credentials:'same-origin',mode:'same-origin',redirect:'error'});
+  async function fetchRequired(url,options={}){
+    const result=await fetchAsset(url,{...options,credentials:'same-origin',mode:'same-origin',redirect:'error'});
     if(!result.ok)throw Error(`font asset HTTP ${result.status}`);
     return result;
   }
@@ -37,19 +36,7 @@ export function createFontLoader({
   }
   async function loadManifest(){
     const url=new URL('./fonts.json',root);
-    let cache;
-    if(caches?.open){try{cache=await caches.open('qos-font-manifests-v1');}catch{}}
-    let response;
-    try{response=await fetchRequired(url);}
-    catch(error){
-      if(cache){try{response=await cache.match(url.href);}catch{}}
-      if(!response)throw error;
-    }
-    let cacheCopy;
-    if(cache){try{cacheCopy=response.clone();}catch{}}
-    const value=parseManifest(await response.json());
-    if(cacheCopy){try{await cache.put(url.href,cacheCopy);}catch{}}
-    return value;
+    return parseManifest(await (await fetchRequired(url)).json());
   }
   function manifest(){
     if(parsed)return Promise.resolve(parsed);
@@ -61,30 +48,19 @@ export function createFontLoader({
   }
   async function verify(asset,value){
     const bytes=value instanceof Uint8Array?value:new Uint8Array(value);
-    if(bytes.byteLength!==asset.bytes)throw Error(`font asset size mismatch: ${asset.name}`);
+    if(bytes.byteLength!==asset.bytes)throw Object.assign(Error(`font asset size mismatch: ${asset.name}`),{fontIntegrity:true});
     const digest=hex(await crypto.subtle.digest('SHA-256',bytes));
-    if(digest!==asset.sha256)throw Error(`font asset SHA-256 mismatch: ${asset.name}`);
+    if(digest!==asset.sha256)throw Object.assign(Error(`font asset SHA-256 mismatch: ${asset.name}`),{fontIntegrity:true});
     return bytes;
   }
-  async function cacheFor(catalog){
-    if(!caches?.open)return undefined;
-    try{return await caches.open(`qos-fonts-${catalog}`);}catch{return undefined;}
-  }
-  async function load(asset,catalog){
+  async function load(asset){
     const url=new URL(`./fonts/${asset.name}`,root);
     if(url.origin!==root.origin)throw Error('font asset crossed its release origin');
-    const cache=await cacheFor(catalog);
-    if(cache){
-      try{
-        const hit=await cache.match(url.href);
-        if(hit)return await verify(asset,await hit.arrayBuffer());
-      }catch{
-        try{await cache.delete(url.href);}catch{}
-      }
+    try{return await verify(asset,await (await fetchRequired(url)).arrayBuffer());}
+    catch(error){
+      if(!error?.fontIntegrity)throw error;
+      return verify(asset,await (await fetchRequired(url,{cache:'reload'})).arrayBuffer());
     }
-    const bytes=await verify(asset,await (await fetchRequired(url)).arrayBuffer());
-    if(cache){try{await cache.put(url.href,new Response(bytes));}catch{}}
-    return bytes;
   }
   function schedule(operation){
     return new Promise((resolve,reject)=>{queue.push({operation,resolve,reject});pump();});
@@ -103,7 +79,7 @@ export function createFontLoader({
       if(!asset)throw Error(`unknown font asset: ${name}`);
       const failure=failures.get(name);
       if(failure&&now()<failure.until){const error=Error(`font asset retry backoff: ${name}`);error.fontBackoff=true;error.retryAt=failure.until;throw error;}
-      return schedule(()=>load(asset,value.catalog));
+      return schedule(()=>load(asset));
     }).then(bytes=>{loaded.set(name,bytes);failures.delete(name);return bytes;},error=>{if(!error.fontBackoff)failures.set(name,{until:now()+retryDelayMs,error});throw error;});
     pending.set(name,attempt);attempt.finally(()=>{if(pending.get(name)===attempt)pending.delete(name);}).catch(()=>{});
     return attempt;
@@ -111,7 +87,7 @@ export function createFontLoader({
   async function startup(){
     const value=await manifest();
     const assets=[...value.assets.values()].filter(asset=>asset.startup);
-    const pairs=await Promise.all(assets.map(async asset=>[asset.name,await load(asset,value.catalog)]));
+    const pairs=await Promise.all(assets.map(async asset=>[asset.name,await load(asset)]));
     for(const [name,bytes] of pairs)loaded.set(name,bytes);
     return Object.fromEntries(pairs);
   }
