@@ -7000,6 +7000,24 @@ impl App {
         })
     }
 
+    /// Shared native Tab admission, preserving text-input and modal capture.
+    fn handle_tab_navigation(
+        &mut self,
+        event: &WindowEvent,
+        modal_rect: Option<KurboRect>,
+    ) -> bool {
+        if self.focused_widget_wants_tab_input() || !self.keyboard_nav_allowed(modal_rect) {
+            return false;
+        }
+        if matches!(event, WindowEvent::KeyboardInput { event, .. }
+            if event.state == winit::event::ElementState::Pressed
+                && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
+        {
+            return self.focus_tab(self.modifiers.state().shift_key());
+        }
+        false
+    }
+
     fn focus_tab(&mut self, shift: bool) -> bool {
         let len = self.focusable_order.len();
         if len == 0 {
@@ -10675,21 +10693,8 @@ impl AppHandler {
             }
         }
 
-        if !handled
-            && !app.focused_widget_wants_tab_input()
-            && app.keyboard_nav_allowed(modal_rect)
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let shift = app.modifiers.state().shift_key();
-            handled = app.focus_tab(shift);
+        if !handled && app.handle_tab_navigation(&event, modal_rect) {
+            handled = true;
         }
 
         if !handled
@@ -12299,7 +12304,7 @@ mod pointer_broadcast_tests {
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(app_state, root);
         let route = crate::collaboration::RouteSpec::app("snapshot-fixture", uuid::Uuid::new_v4());
-        app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
             route: route.clone(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -13845,6 +13850,56 @@ mod action_palette_tests {
     /// One open resource exporting a [`Flip`] action, plus a searchable
     /// People provider.
     struct Publisher;
+    struct ConsumingKeyboardRoot;
+    impl Widget for ConsumingKeyboardRoot {
+        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &Theme,
+            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = tree.new_leaf(taffy::Style::default()).unwrap();
+            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            doc: &mut AutoCommit,
+            _: &ObjId,
+            handled: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
+        ) {
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            ) {
+                doc.put(&ROOT, "escaped_keyboard", true).unwrap();
+                *handled = true;
+            }
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+        fn name(&self) -> &'static str {
+            "consuming-keyboard-root"
+        }
+    }
     impl Widget for Publisher {
         fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
@@ -13990,10 +14045,12 @@ mod action_palette_tests {
             app.refresh_control_action_availability();
         }
         assert_eq!(calls.load(Ordering::Relaxed), 0);
-        app.last_control_availability =
-            Some((app.resource_cache_key(), app.permission_generation.get()));
+        app.actions.last_control_availability = Some((
+            app.resource_cache_key(),
+            app.actions.permission_generation.get(),
+        ));
         app.refresh_control_action_availability();
-        assert!(app.last_control_availability.is_none());
+        assert!(app.actions.last_control_availability.is_none());
         // Discovery still sees the complete surface on demand.
         assert!(
             app.collect_resources()
@@ -14150,7 +14207,8 @@ mod action_palette_tests {
                     "focused chrome input must never reach consuming app content"
                 );
                 assert!(!handled, "Button leaves activation to the native fallback");
-                assert!(app.activate_focused_control_key(&event));
+                app.handle_unconsumed_activation_key(&event, &mut handled);
+                assert!(handled);
                 assert_eq!(app.dispatch_control_invocations(), 1);
                 assert_eq!(app.action_palette().is_some(), open_search);
                 assert_eq!(app.document_history.is_open(), !open_search);
@@ -15937,7 +15995,7 @@ mod semantic_tree_app_tests {
                 .all(|descriptor| descriptor.address.action != "reset"),
             "reset is unavailable before the counter changes"
         );
-        let publication_attempts = app.action_surface_publication_attempts;
+        let publication_attempts = app.actions.action_surface_publication_attempts;
 
         app.apply_collab_event_for_test(CollabEvent::Invocation {
             id: 42,
@@ -15956,7 +16014,7 @@ mod semantic_tree_app_tests {
             "the post-mutation surface exposes the newly valid reset action"
         );
         assert_eq!(
-            app.action_surface_publication_attempts,
+            app.actions.action_surface_publication_attempts,
             publication_attempts.saturating_add(1),
             "the broker event batch republishes without waiting for native window input"
         );
@@ -15983,7 +16041,8 @@ mod semantic_tree_app_tests {
         });
         assert_eq!(counter(&app), 0, "admission alone does not mutate");
         assert_eq!(
-            app.directed_invocations
+            app.actions
+                .directed_invocations
                 .get(&invocation)
                 .map(|pending| pending.wire_id),
             Some(43),
@@ -15998,15 +16057,15 @@ mod semantic_tree_app_tests {
                 .any(|descriptor| descriptor.address.action == "reset"),
             "the terminal document now exposes reset"
         );
-        let publication_attempts = app.action_surface_publication_attempts;
+        let publication_attempts = app.actions.action_surface_publication_attempts;
 
         assert!(
             app.poll_directed_invocations(),
             "the terminal update arrived"
         );
-        assert!(app.directed_invocations.is_empty());
+        assert!(app.actions.directed_invocations.is_empty());
         assert_eq!(
-            app.action_surface_publication_attempts,
+            app.actions.action_surface_publication_attempts,
             publication_attempts.saturating_add(1),
             "terminal lifecycle polling republishes without native input"
         );
