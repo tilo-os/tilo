@@ -68,5 +68,10 @@ rand.workspace = true
 name = "it"
 path = "tests/it.rs"
 
+[[bench]]
+name = "install_timing"
+path = "benches/install_timing.rs"
+harness = false
+
 [lints]
 workspace = true
