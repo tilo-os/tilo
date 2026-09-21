@@ -74,16 +74,16 @@ class Protocol(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root,ignore_errors=True)
 
-    def receiver(self,token=None,source_ip='127.0.0.1',name='disk.raw',script=None):
-        argv=[sys.executable,'-c',script or lane.DIRECT_RECEIVER_SCRIPT,str(self.root/'target'),name,
+    def receiver(self,token=None,source_ip='127.0.0.1',name='disk.raw',script=None,directory='target'):
+        argv=[sys.executable,'-c',script or lane.DIRECT_RECEIVER_SCRIPT,str(self.root/directory),name,
               '127.0.0.1',source_ip,'operation','source-uid','target-uid',str(self.size),self.digest]
         process=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE,text=True)
         process.stdin.write((token or self.token)+'\n');process.stdin.close();process.stdin=None
         return process,argv
 
-    def sender(self,port,token=None):
-        argv=[sys.executable,'-c',lane.DIRECT_SENDER_SCRIPT,str(self.source),'127.0.0.1',str(port),
+    def sender(self,port,token=None,source=None):
+        argv=[sys.executable,'-c',lane.DIRECT_SENDER_SCRIPT,str(source or self.source),'127.0.0.1',str(port),
               'operation','source-uid','target-uid',str(self.size),self.digest,'127.0.0.1']
         process=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE,text=True)
@@ -102,10 +102,27 @@ class Protocol(unittest.TestCase):
         sent=json.loads(sender_out);received=json.loads(receiver_out);self.assertEqual(sent,received)
         target=self.root/'target/disk.raw'
         self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(),self.digest)
-        self.assertEqual(target.stat().st_mode&0o777,0o600)
+        self.assertEqual(target.stat().st_mode&0o777,0o400)
         self.assertLess(target.stat().st_blocks*512,self.size)
         evidence=json.dumps(received)+json.dumps(receiver_argv)+json.dumps(sender_argv)+sender_out+receiver_out
         self.assertNotIn(self.token,evidence)
+
+    def test_two_hop_creator_verifier_vm_chain(self):
+        first_receiver,_=self.receiver(name='verifier.raw',directory='verifier')
+        first_sender,_=self.sender(self.ready(first_receiver))
+        first_sender.communicate(timeout=20);first_receiver.communicate(timeout=20)
+        self.assertEqual((first_sender.returncode,first_receiver.returncode),(0,0))
+        verifier=self.root/'verifier/verifier.raw'
+        self.assertEqual(verifier.stat().st_mode&0o777,0o400)
+
+        second_receiver,_=self.receiver(name='installer.raw',directory='vm')
+        second_sender,_=self.sender(self.ready(second_receiver),source=verifier)
+        second_sender.communicate(timeout=20);second_receiver.communicate(timeout=20)
+        self.assertEqual((second_sender.returncode,second_receiver.returncode),(0,0))
+        installed=self.root/'vm/installer.raw'
+        self.assertEqual(installed.stat().st_mode&0o777,0o400)
+        self.assertEqual(hashlib.sha256(installed.read_bytes()).hexdigest(),self.digest)
+        self.assertLess(installed.stat().st_blocks*512,self.size)
 
     def test_wrong_token_and_source_ip_fail_without_partial_target(self):
         for case in ('token','ip'):
