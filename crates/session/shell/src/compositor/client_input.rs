@@ -666,16 +666,7 @@ pub fn touch_target(
     if !state.client_input.surfaces.contains_key(&hit.surface_id) {
         return None;
     }
-    let local_x = *x - hit.rect.x0;
-    let local_y = *y - hit.rect.y0;
-    Some(
-        crate::compositor::foreign::store()
-            .child_at(hit.surface_id, local_x, local_y)
-            .map_or(
-                (hit.surface_id, (hit.rect.x0, hit.rect.y0)),
-                |(child, child_x, child_y)| (child, (*x - child_x, *y - child_y)),
-            ),
-    )
+    Some((hit.surface_id, (hit.rect.x0, hit.rect.y0)))
 }
 
 /// Direct touch follows the same click-to-focus policy as pointer input.
@@ -1582,15 +1573,7 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
 /// Push the current cursor position at `hit` (or clear client focus when `None`), producing the enter/motion/leave sequence.
 fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
     let global = state.client_input.cursor();
-    let target = hit.map(|h| {
-        let local_x = global.0 - h.rect.x0;
-        let local_y = global.1 - h.rect.y0;
-        crate::compositor::foreign::store()
-            .child_at(h.surface_id, local_x, local_y)
-            .map_or((h.surface_id, (h.rect.x0, h.rect.y0)), |(child, x, y)| {
-                (child, (global.0 - x, global.1 - y))
-            })
-    });
+    let target = hit.map(|h| (h.surface_id, (h.rect.x0, h.rect.y0)));
     if state.selection.dnd_active {
         tracing::debug!(
             target: "shell::selection",
