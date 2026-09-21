@@ -631,7 +631,7 @@ fn routed_frame_packet_is_accepted_and_malformed_tab_rejected() {
 #[test]
 #[cfg(unix)]
 fn tab_endpoints_keep_runtime_and_waker_after_first_endpoint_closes() {
-    let (dir, host) = helper_fixture("exec cat >/dev/null");
+    let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
     let first = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
     let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let seen = wakes.clone();

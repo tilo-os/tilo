@@ -14,10 +14,10 @@ use std::thread;
 use std::time::Duration;
 
 use crate::support::{document_mutation, typed_collab::TypedBroker};
-use ui::collaboration::{
+use tilo_ui::collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, PresencePayload, RouteSpec,
 };
-use ui::presence::PresenceKey;
+use tilo_ui::presence::PresenceKey;
 use uuid::Uuid;
 
 #[test]

@@ -32,7 +32,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::tooltip::TooltipHost;
-use ui::widget::{ContextMenu as SharedContextMenu, MenuItem, TextInput, VideoPlayer};
+use ui::widget::{ContextMenu as SharedContextMenu, Continuable, MenuItem, TextInput, VideoPlayer};
 
 use crate::actions::{self, ChatAction};
 use crate::call::{CallState, SoundEngine};
@@ -2835,7 +2835,7 @@ fn chat_navigation_kind(kind: tilo_actions::OperationKind) -> Result<bool, Strin
     }
 }
 
-impl Widget for ChatApp {
+impl Continuable for ChatApp {
     fn continuation_metadata(
         &self,
         _state: &AutoCommit,
@@ -2856,6 +2856,16 @@ impl Widget for ChatApp {
         _path: &ObjId,
     ) -> bool {
         self.restore_call_continuation(metadata, state)
+    }
+}
+
+impl Widget for ChatApp {
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
     }
 
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {

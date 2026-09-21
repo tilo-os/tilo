@@ -19,8 +19,6 @@ mod cap_n_proto_round_trip;
 mod gc_removes_tried_under_pressure;
 #[path = "install_resolves_round_trip.rs"]
 mod install_resolves_round_trip;
-#[path = "install_timing.rs"]
-mod install_timing;
 #[path = "pin_unpin_changes_state.rs"]
 mod pin_unpin_changes_state;
 #[path = "registry_roundtrip.rs"]

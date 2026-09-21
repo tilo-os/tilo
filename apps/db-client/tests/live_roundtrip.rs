@@ -3,17 +3,16 @@
 //! real engine, `run_query` runs real SQL, and the schema is introspected from
 //! the live catalog).
 //!
-//! These require a reachable server, so each is gated behind an env var — set
-//! it (and the connection env vars) to run the round-trip; unset, the test
-//! prints why it is inert and returns. The CI/dev proof drives them against
-//! rootless-podman `postgres:16` / `mariadb` containers. Everything the driver
+//! These require reachable servers and are explicitly ignored by ordinary test
+//! runs. `tests/run-live.sh` starts disposable rootless-Podman `PostgreSQL` and
+//! `MariaDB` containers and selects the ignored tests. Everything the driver
 //! layer does with no server (connection-param building, row/column mapping)
 //! is proven unconditionally in the crate's unit tests.
 //!
-//! Env vars (all optional except the gate):
-//!   Postgres: `TILO_DB_TEST_PG` (gate), `TILO_DB_TEST_PG_HOST` (def 127.0.0.1),
+//! Connection overrides (all optional):
+//!   Postgres: `TILO_DB_TEST_PG_HOST` (default 127.0.0.1),
 //!             `_PORT` (5432), `_USER` (postgres), `_PASS` (""), `_DB` (postgres)
-//!   `MySQL`:    `TILO_DB_TEST_MYSQL` (gate), `TILO_DB_TEST_MYSQL_HOST` (127.0.0.1),
+//!   `MySQL`:    `TILO_DB_TEST_MYSQL_HOST` (127.0.0.1),
 //!             `_PORT` (3306), `_USER` (root), `_PASS` (""), `_DB` (mysql)
 
 #![allow(
@@ -39,28 +38,35 @@ fn unique_table() -> String {
     format!("tilo_dbtest_{}", uuid::Uuid::new_v4().simple())
 }
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the live fixture intentionally keeps setup, value assertions, bounds, and cleanup in one transaction-shaped proof"
-)]
-fn postgres_real_round_trip() {
-    if std::env::var("TILO_DB_TEST_PG").is_err() {
-        eprintln!(
-            "skipping postgres_real_round_trip: set TILO_DB_TEST_PG to run against a live server"
-        );
-        return;
-    }
-
-    let mut profile = ConnectionProfile::new("live-pg", Engine::Postgres);
+fn postgres_profile(name: &str) -> ConnectionProfile {
+    let mut profile = ConnectionProfile::new(name, Engine::Postgres);
     profile.host = env_or("TILO_DB_TEST_PG_HOST", "127.0.0.1");
     profile.port = env_or("TILO_DB_TEST_PG_PORT", "5432").parse().unwrap();
     profile.user = env_or("TILO_DB_TEST_PG_USER", "postgres");
     profile.password = env_or("TILO_DB_TEST_PG_PASS", "");
     profile.database = env_or("TILO_DB_TEST_PG_DB", "postgres");
+    profile
+}
 
+fn mysql_profile(name: &str) -> ConnectionProfile {
+    let mut profile = ConnectionProfile::new(name, Engine::MySql);
+    profile.host = env_or("TILO_DB_TEST_MYSQL_HOST", "127.0.0.1");
+    profile.port = env_or("TILO_DB_TEST_MYSQL_PORT", "3306").parse().unwrap();
+    profile.user = env_or("TILO_DB_TEST_MYSQL_USER", "root");
+    profile.password = env_or("TILO_DB_TEST_MYSQL_PASS", "");
+    profile.database = env_or("TILO_DB_TEST_MYSQL_DB", "mysql");
+    profile
+}
+
+#[test]
+#[ignore = "requires PostgreSQL; run apps/db-client/tests/run-live.sh"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the live fixture intentionally keeps setup, value assertions, bounds, and cleanup in one transaction-shaped proof"
+)]
+fn postgres_real_round_trip() {
     let mut s = Session::new();
-    s.add_connection_blocking(profile);
+    s.add_connection_blocking(postgres_profile("live-pg"));
     assert!(s.connected, "postgres connect failed: {:?}", s.status);
 
     let table = unique_table();
@@ -171,21 +177,10 @@ fn postgres_real_round_trip() {
 }
 
 #[test]
+#[ignore = "requires PostgreSQL; run apps/db-client/tests/run-live.sh"]
 fn postgres_real_cancellation_stops_the_active_generation() {
-    if std::env::var("TILO_DB_TEST_PG").is_err() {
-        eprintln!(
-            "skipping postgres_real_cancellation_stops_the_active_generation: set TILO_DB_TEST_PG"
-        );
-        return;
-    }
-    let mut profile = ConnectionProfile::new("live-pg-cancel", Engine::Postgres);
-    profile.host = env_or("TILO_DB_TEST_PG_HOST", "127.0.0.1");
-    profile.port = env_or("TILO_DB_TEST_PG_PORT", "5432").parse().unwrap();
-    profile.user = env_or("TILO_DB_TEST_PG_USER", "postgres");
-    profile.password = env_or("TILO_DB_TEST_PG_PASS", "");
-    profile.database = env_or("TILO_DB_TEST_PG_DB", "postgres");
     let mut s = Session::new();
-    s.add_connection_blocking(profile);
+    s.add_connection_blocking(postgres_profile("live-pg-cancel"));
     assert!(s.connected, "postgres connect failed: {:?}", s.status);
     let started = std::time::Instant::now();
     s.run_query("SELECT pg_sleep(30)");
@@ -208,23 +203,10 @@ fn postgres_real_cancellation_stops_the_active_generation() {
 }
 
 #[test]
+#[ignore = "requires MariaDB; run apps/db-client/tests/run-live.sh"]
 fn mysql_real_round_trip() {
-    if std::env::var("TILO_DB_TEST_MYSQL").is_err() {
-        eprintln!(
-            "skipping mysql_real_round_trip: set TILO_DB_TEST_MYSQL to run against a live server"
-        );
-        return;
-    }
-
-    let mut profile = ConnectionProfile::new("live-mysql", Engine::MySql);
-    profile.host = env_or("TILO_DB_TEST_MYSQL_HOST", "127.0.0.1");
-    profile.port = env_or("TILO_DB_TEST_MYSQL_PORT", "3306").parse().unwrap();
-    profile.user = env_or("TILO_DB_TEST_MYSQL_USER", "root");
-    profile.password = env_or("TILO_DB_TEST_MYSQL_PASS", "");
-    profile.database = env_or("TILO_DB_TEST_MYSQL_DB", "mysql");
-
     let mut s = Session::new();
-    s.add_connection_blocking(profile);
+    s.add_connection_blocking(mysql_profile("live-mysql"));
     assert!(s.connected, "mysql connect failed: {:?}", s.status);
 
     let table = unique_table();
@@ -274,21 +256,10 @@ fn mysql_real_round_trip() {
 }
 
 #[test]
+#[ignore = "requires MariaDB; run apps/db-client/tests/run-live.sh"]
 fn mysql_real_cancellation_stops_the_active_generation() {
-    if std::env::var("TILO_DB_TEST_MYSQL").is_err() {
-        eprintln!(
-            "skipping mysql_real_cancellation_stops_the_active_generation: set TILO_DB_TEST_MYSQL"
-        );
-        return;
-    }
-    let mut profile = ConnectionProfile::new("live-mysql-cancel", Engine::MySql);
-    profile.host = env_or("TILO_DB_TEST_MYSQL_HOST", "127.0.0.1");
-    profile.port = env_or("TILO_DB_TEST_MYSQL_PORT", "3306").parse().unwrap();
-    profile.user = env_or("TILO_DB_TEST_MYSQL_USER", "root");
-    profile.password = env_or("TILO_DB_TEST_MYSQL_PASS", "");
-    profile.database = env_or("TILO_DB_TEST_MYSQL_DB", "mysql");
     let mut s = Session::new();
-    s.add_connection_blocking(profile);
+    s.add_connection_blocking(mysql_profile("live-mysql-cancel"));
     assert!(s.connected, "mysql connect failed: {:?}", s.status);
     let started = std::time::Instant::now();
     s.run_query("SELECT SLEEP(30)");

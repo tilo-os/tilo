@@ -39,9 +39,9 @@ use ui::webview::{
 };
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
-    AppKind, AppWidget, Button, Column, Container, ContextMenu, EmptyState, IconDescriptor,
-    MenuItem, ProgressBar, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, TextInputKind,
-    WebView, Widget,
+    AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
+    IconDescriptor, MenuItem, ProgressBar, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput,
+    TextInputKind, WebView, Widget,
 };
 
 use crate::actions::{
@@ -4142,7 +4142,7 @@ fn restore_address(widget: &mut dyn Widget, id: &str, state: &str) {
     }
 }
 
-impl Widget for BrowserWidget {
+impl Continuable for BrowserWidget {
     fn continuation_metadata(
         &self,
         _state: &AutoCommit,
@@ -4192,6 +4192,16 @@ impl Widget for BrowserWidget {
             self.engine.send(WebViewCommand::Navigate(url.to_owned()));
         }
         true
+    }
+}
+
+impl Widget for BrowserWidget {
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
