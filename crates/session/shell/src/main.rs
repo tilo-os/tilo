@@ -75,7 +75,7 @@ mod macos_tests {
             )
             .unwrap();
         }
-        let session = prepare(&Options {
+        let mut session = prepare(&Options {
             state_dir: root.join("state"),
             files_dir: files,
             shots: None,
@@ -86,6 +86,10 @@ mod macos_tests {
             shell::shell::state::AppKind::FileExplorer,
             "Files",
             shell::shell::window_actions::Destination::Beside,
+        );
+        assert!(
+            session.host.tick_workspace_content_for_tests(),
+            "the out-of-band fixture open must reconcile into the hosted desktop"
         );
         let tree = session.tree.clone();
         let records = session.records.clone();
@@ -242,6 +246,36 @@ mod macos_tests {
         assert!(
             first.y1 <= second.y0,
             "row bounds must not alias: {first:?} {second:?}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn hosted_files_empty_host_intent_poll_preserves_history_owner() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_tree, _records, mut driver) = files_driver(directory.path());
+        let heads = driver.state_mut().doc.get_heads();
+        let inspection = driver.inspection();
+        assert!(
+            find_semantic(&inspection.root, "Document-000.txt").is_some(),
+            "the real hosted Files draw must retain its History owner"
+        );
+        assert!(
+            driver.targets().contains_key("history-open"),
+            "the real hosted Files draw must retain its History control"
+        );
+        driver.click_named("history-open").unwrap();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Select a file with versioned history"),
+            "History must remain live after an empty host-intent poll"
+        );
+        assert_eq!(
+            driver.state_mut().doc.get_heads(),
+            heads,
+            "an empty host-intent poll must not mutate the incidental outer document"
         );
     }
 

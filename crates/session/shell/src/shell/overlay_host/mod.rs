@@ -4413,10 +4413,7 @@ impl ShellOverlayHost {
                 let Some(host) = group.active_host_mut() else {
                     continue;
                 };
-                let ui::widget::TileContent::App(app) = host.content_mut() else {
-                    continue;
-                };
-                if let Some(intent) = app.take_host_intent() {
+                if let Some(intent) = host.take_host_intent() {
                     intents.push(intent);
                 }
             }
