@@ -257,6 +257,7 @@ fn every_variable_in_the_sandbox_is_one_the_launcher_set() {
         "TILO_WORKSPACE_ROOTS".to_string(),
         "TILO_PARTICIPATION".to_string(),
         "TILO_CLI_COMMAND".to_string(),
+        "TILO_DURABLE_APP_ID".to_string(),
         // The egress gate and proxy variables naming it. Absent here (this
         // fixture declares `net = "off"`), but part of the set.
         "TILO_NET_GATE".to_string(),
