@@ -6903,6 +6903,26 @@ impl App {
         &self.accessibility.semantic_tree
     }
 
+    fn invoke_bound_semantic_action(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        arg: Option<&str>,
+    ) -> Result<bool, String> {
+        let actor = self.local_author.0.clone();
+        match self.invoke_bound_target(target, arg, &actor, false, false, None, None, None) {
+            Ok(_) => Ok(true),
+            Err(tilo_actions::DoorError::ConfirmationRequired) => {
+                self.open_action_palette();
+                Ok(self
+                    .actions
+                    .action_palette
+                    .as_mut()
+                    .is_some_and(|palette| palette.activate_bound(target)))
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     /// A [`Verb`](crate::a11y_tree::SemanticActionKind::Verb) routes through
     /// the same [`dispatch_a11y_action`](Self::dispatch_a11y_action) path an
     /// AccessKit `ActionRequest` takes; an
@@ -6930,19 +6950,7 @@ impl App {
             return Ok(false);
         };
         if let Some(target) = self.accessibility.semantic_tree.bound_target(id, name) {
-            let actor = self.local_author.0.clone();
-            match self.invoke_bound_target(&target, arg, &actor, false, false, None, None, None) {
-                Ok(_) => return Ok(true),
-                Err(tilo_actions::DoorError::ConfirmationRequired) => {
-                    self.open_action_palette();
-                    return Ok(self
-                        .actions
-                        .action_palette
-                        .as_mut()
-                        .is_some_and(|palette| palette.activate_bound(&target)));
-                }
-                Err(error) => return Err(error.to_string()),
-            }
+            return self.invoke_bound_semantic_action(&target, arg);
         }
         match action.kind {
             SemanticActionKind::App(encoded) => {
