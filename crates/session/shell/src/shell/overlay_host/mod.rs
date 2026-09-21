@@ -5077,6 +5077,11 @@ impl ShellOverlayHost {
                 // contract; here we only read `group_ids()`.
                 .any(|&p| unsafe { (*p).group_ids().contains(&gid) })
         });
+        // Publish the presentation edge before `take_structure_dirty` can
+        // rebuild the top bar and sidebar. Restore is especially sensitive:
+        // rebuilding while this still says `true` leaves the sidebar node at
+        // `display:none`, with no later structural edge to rebuild it again.
+        chrome.borrow_mut().set_fullscreen_presentation(owned);
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as every other `group_row_ptrs` accessor —
             // the pointer comes from a `Box<GroupRow>` owned by the content
