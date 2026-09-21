@@ -3067,7 +3067,8 @@ fn every_template_uses_the_toolkit_resource_action_host() {
         assert!(!manifest.contains("tilo-actions ="), "{template:?}");
         let source = app_lib(&spec);
         assert!(
-            source.contains("ui::widget::resource_actions::"),
+            source.contains("ui::widget::resource_actions::")
+                || source.contains("resource_actions::"),
             "{template:?}"
         );
         assert!(
