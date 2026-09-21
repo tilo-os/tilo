@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import struct
 import sys
 import tempfile
@@ -144,12 +145,15 @@ class LaneAdmission(unittest.TestCase):
         html='<!doctype html><h1>Tilo browser offline ready</h1>\n'
         good={'oobe_intro':'Create your local identity',
               'oobe_backup':'Back up your Tilo identity',
+              'oobe_backup_resumed':'Back up your Tilo identity',
               'oobe_ready':'Your identity is ready',
               'tour_move':'Everything is close at hand',
               'tour_arrange':'A place for each kind of work',
               'tour_share':'Sharing stays deliberate',
               'tour_start':'Your first five minutes',
               'desktop_ocr':'cycle-tilo',
+              'reboot_greeter':'Welcome back',
+              'reboot_login':'cycle-tilo',
               'browser_ocr':'Tilo browser offline ready',
               'browser_fixture':'url=http://10.0.2.2:18765/index.html\n'
                                 'sha256='+hashlib.sha256(html.encode()).hexdigest()+'\n'
@@ -157,12 +161,27 @@ class LaneAdmission(unittest.TestCase):
                                 'external_references=none\n',
               'browser_fixture_html':html}
         self.assertIsNone(lane.validate_gui_evidence(good))
-        for key,bad in [('oobe_ready',''),('tour_share',''),('desktop_ocr',''),('browser_ocr','Browser opened'),
+        for key,bad in [('oobe_backup_resumed',''),('oobe_ready',''),('tour_share',''),
+                        ('desktop_ocr',''),('reboot_greeter',''),('reboot_login',''),
+                        ('browser_ocr','Browser opened'),
                         ('browser_fixture',good['browser_fixture'].replace('external_references=none','external_references=https')),
                         ('browser_fixture_html',html+'tampered')]:
             changed=dict(good);changed[key]=bad
             with self.subTest(key=key),self.assertRaises(ValueError):
                 lane.validate_gui_evidence(changed)
+
+    def test_supervised_evidence_paths_match_cycle_screen_names(self):
+        cycle=(DEV/'test-installer-cycle.sh').read_text()
+        screen_names=set(re.findall(r'^wait_screen ([^ ]+)',cycle,re.MULTILINE))
+        paths=lane.cycle_evidence_paths('fixture')
+        screen_paths={key:Path(value).stem for key,value in paths.items()
+                      if value.endswith('.txt') and key not in {
+                          'verdict','exit_status','browser_fixture'}}
+        self.assertEqual(set(screen_paths.values()), {
+            '08-oobe-intro','09-oobe-backup','10-oobe-backup-resumed','11-oobe-ready',
+            '12-tour-move','13-tour-arrange','14-tour-share','15-tour-start',
+            '16-desktop-config','18-browser-offline','19-reboot-greeter','20-reboot-login'})
+        self.assertTrue(set(screen_paths.values()).issubset(screen_names))
 
     def test_selects_separate_current_workers(self):
         document={'items':[node('disk',disk=True),node('verify',disk=True),node('vm',kvm=True)]}
