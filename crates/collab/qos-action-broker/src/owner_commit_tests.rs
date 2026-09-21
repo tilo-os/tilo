@@ -2,6 +2,10 @@
 mod owner_commit_tests {
     use super::*;
 
+    fn canonical_tempdir() -> tempfile::TempDir {
+        tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
+    }
+
     struct ExplicitAuthority;
     impl crate::peer_actions::CertificateAuthority for ExplicitAuthority {
         fn authorize(
@@ -16,7 +20,7 @@ mod owner_commit_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn session_owner_commit_void_publisher_is_not_a_durable_ack() {
         tokio::task::LocalSet::new().run_until(async {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = canonical_tempdir();
             let root = SigningKey::from_bytes(&[24; 32]);
             let device = SigningKey::from_bytes(&[25; 32]);
             let principal = principal_id_for_root(root.verifying_key().to_bytes());
@@ -387,7 +391,7 @@ mod owner_commit_tests {
     async fn session_owner_commit_rpc_waits_for_actual_owner_before_fanout() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let root = tempfile::tempdir().unwrap();
+                let root = canonical_tempdir();
                 let mut f = owner_fixture(root.path());
                 let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
                 let envelope = owner_snapshot(&f);
@@ -418,7 +422,7 @@ mod owner_commit_tests {
     async fn owner_wait_rechecks_current_membership_before_document_fanout() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let root = tempfile::tempdir().unwrap();
+                let root = canonical_tempdir();
                 let mut f = owner_fixture(root.path());
                 let before = f.owner.status();
                 let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
@@ -447,7 +451,7 @@ mod owner_commit_tests {
     }
     #[tokio::test(flavor = "current_thread")]
     async fn session_owner_commit_production_startup_has_real_owner_attachment() {
-        let root = tempfile::tempdir().unwrap();
+        let root = canonical_tempdir();
         let mut owner =
             qos_session_peer::SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let membership = owner_tree(&owner);
@@ -540,7 +544,7 @@ mod owner_commit_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for failure in [0, 1, 2, 3] {
-                    let root = tempfile::tempdir().unwrap();
+                    let root = canonical_tempdir();
                     let mut f = owner_fixture(root.path());
                     let (key, result) = admitted_effect(&f);
                     // A real external side effect has happened before the application reports its result.
@@ -650,7 +654,7 @@ mod owner_commit_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 for fault in 1..=4 {
-                    let root = tempfile::tempdir().unwrap();
+                    let root = canonical_tempdir();
                     let mut f = owner_fixture_with_receipt_fault(root.path(), fault);
                     let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
                     let envelope = owner_snapshot(&f);
@@ -729,7 +733,7 @@ mod owner_commit_tests {
             fn app_presence(&self, _: String, _: String, _: collab_types::PeerPresence) {}
             fn scrollback_request(&self, _: ArtifactId, _: u64, _: u16) {}
         }
-        let root = tempfile::tempdir().unwrap();
+        let root = canonical_tempdir();
         let mut owner =
             qos_session_peer::SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let initial_generation = owner.status().generation;
