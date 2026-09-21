@@ -6,8 +6,20 @@ test('automatic recovery retries within one second, caps delay, and survives fai
  const c=clock();let calls=0,available=false;const states=[];
  const r=createRecoveryCoordinator({attempt:async()=>{calls++;if(!available)throw Error('offline');},...c,onState:s=>states.push(s)});
  r.schedule();assert.equal([...c.timers.values()][0].at,500);await c.tick(500);assert.equal(calls,1);
- await c.tick(1000);await c.tick(2000);await c.tick(2000);assert.equal(calls,4);assert(states.every(s=>s.nextAttemptAtMs===null||s.nextAttemptAtMs-c.now()<=4000));
- available=true;await c.tick(2000);assert.equal(calls,5);assert.equal(c.timers.size,0);r.dispose();
+ // Ladder at random()=0 (half the nominal delay): 1s, 2s, 4s, 8s, then the 15s cap.
+ await c.tick(1000);await c.tick(2000);await c.tick(4000);assert.equal(calls,4);assert(states.every(s=>s.nextAttemptAtMs===null||s.nextAttemptAtMs-c.now()<=15000));
+ available=true;await c.tick(7500);assert.equal(calls,5);assert.equal(c.timers.size,0);r.dispose();
+});
+test('a session that never settles keeps backing off; one that holds earns a fast retry',async()=>{
+ const c=clock();const delays=[];
+ const r=createRecoveryCoordinator({attempt:async()=>{},...c,onState:s=>{if(s.nextAttemptAtMs!==null)delays.push(s.nextAttemptAtMs-c.now());}});
+ // Reaching ready then dropping again immediately must not restart the ladder.
+ for(let index=0;index<3;index++){r.reset();await c.tick(10);r.schedule();await c.tick(20000);}
+ assert.deepEqual(delays.slice(0,3),[1000,2000,4000],'unstable sessions escalate');
+ // A session that stays ready past the window settles the fault.
+ r.reset();await c.tick(30000);r.schedule();
+ assert.equal(delays.at(-1),500,'a session that held resets the ladder');
+ r.dispose();
 });
 test('manual and online triggers coalesce; disposal ignores stale completion',async()=>{
  const c=clock();let calls=0,finish;const states=[];
@@ -30,7 +42,7 @@ test('fractional jitter publishes integer EpochMs deadlines matching capped coal
  for(let index=0;index<5;index++){
   assert.equal(c.timers.size,1,'repeated schedule requests coalesce');
   const next=[...c.timers.values()][0],state=states.at(-1),delay=next.at-c.now();
-  assert(Number.isSafeInteger(delay));assert(delay>=500&&delay<=4000);
+  assert(Number.isSafeInteger(delay));assert(delay>=500&&delay<=15000);
   assert(Number.isSafeInteger(state.nextAttemptAtMs));assert.equal(state.nextAttemptAtMs,epoch+next.at);
   await c.tick(delay);
  }
