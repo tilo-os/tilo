@@ -4869,10 +4869,10 @@ mod helper_tests {
             &mut state,
             &automerge::ROOT,
         ));
-        let core = core.borrow();
+        let mut core = core.borrow_mut();
         assert_eq!(core.model.selected_location().unwrap().id, chosen.id);
         assert!(
-            core.outbox
+            core.take_outbox()
                 .iter()
                 .any(|request| matches!(request, Request::Forecast { .. }))
         );

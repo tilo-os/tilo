@@ -3656,7 +3656,8 @@ impl CameraApp {
             .iter()
             .map(|(label, _, _)| p::text_h(tr, label, MODE_LABEL_SIZE))
             .fold(0.0_f64, f64::max);
-        let seg_h = (label_h + MODE_LABEL_PAD_Y * 2.0).max(MODE_SWITCHER_MIN_H);
+        let seg_h = (label_h + MODE_LABEL_PAD_Y * 2.0)
+            .max(MODE_SWITCHER_MIN_H * f64::from(theme.text_scale));
         // Keep the three mode targets inside a narrow/high-zoom viewport
         // instead of letting the fixed desktop-width pill clip off-screen.
         // The authored 150..240 px capsule is the 1× width; at an accessibility
@@ -6676,9 +6677,12 @@ mod tests {
                 "{scale}×: equal segments {photo:?} {video:?} {scan:?}"
             );
             if (scale - 1.0).abs() < f32::EPSILON {
+                let labels = ["Photo", "Video", "Codes", "Docs"];
+                let expected = 240.0_f64.max(CameraApp::segmented_min_w(&mut tr, &labels))
+                    / labels.len() as f64;
                 assert!(
-                    (seg_w - 80.0).abs() < 0.5,
-                    "1× keeps the authored 240/3: {seg_w}"
+                    (seg_w - expected).abs() < 0.5,
+                    "1× keeps the authored width unless its four labels need more: {seg_w}"
                 );
             } else {
                 let widest = ["Photo", "Video", "Scan"]
@@ -7687,7 +7691,7 @@ mod tests {
             const TOUCH_MIN: f64 = 44.0;
             let photo = bounds_of("camera.mode:photo");
             let shutter = bounds_of("camera.shutter");
-            let pill = bounds_of("camera.hdr");
+            let pill = bounds_of("camera.resolution");
             if (scale - 1.0).abs() < f32::EPSILON {
                 // 1× keeps the authored 30 / 34 px capsules (both under the
                 // touch minimum, so their regions read exactly 44) and the
@@ -7711,7 +7715,7 @@ mod tests {
                 // 2×: the measured label lines exceed the minima, so the grown
                 // capsules are what the regions report — and they contain the
                 // labels with their padding, bottom edge still on the shutter.
-                for target in ["camera.hdr", "camera.resolution"] {
+                for target in ["camera.resolution"] {
                     let pill = bounds_of(target);
                     assert!(
                         pill.height() + 0.5 >= pill_label_h + CTRL_PILL_PAD_Y * 2.0,
@@ -7729,12 +7733,12 @@ mod tests {
             }
             // Corner controls share one edge inset (checked through their
             // painted centres, which touch inflation never moves).
-            let thumb = bounds_of("camera.nav:gallery");
+            let photos = bounds_of("camera.open-photos");
             let lens = bounds_of("camera.facing");
             let settings = bounds_of("camera.nav:settings");
             assert!(
-                (thumb.center().x - (app.rect.x0 + EDGE + 30.0)).abs() < 0.5,
-                "thumb (60 px) on EDGE: {thumb:?}"
+                (photos.center().x - (app.rect.x1 - EDGE - 58.0)).abs() < 0.5,
+                "Photos handoff on the top control row: {photos:?}"
             );
             assert!(
                 (lens.center().x - (app.rect.x1 - EDGE - 26.0)).abs() < 0.5,
