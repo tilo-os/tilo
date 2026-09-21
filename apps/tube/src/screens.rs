@@ -344,7 +344,6 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
     // column (which the grid sizes between CARD_W and its natural max).
     Flex::col()
         .id(&format!("video_card_{}", v.id))
-        .fill_w()
         .gap(CARD_BODY_GAP)
         .pad(CARD_PAD)
         .hover_surface(Surface {

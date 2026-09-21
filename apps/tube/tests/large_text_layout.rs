@@ -82,6 +82,18 @@ fn card_meta_lines(h: &Harness<TubeApp>) -> Vec<Rect> {
     meta.children.iter().map(|n| n.rect).collect()
 }
 
+fn large_card_meta(h: &Harness<TubeApp>) -> Rect {
+    let card = tree(h, CARD);
+    assert_eq!(card.children.len(), 2, "card is thumbnail + metadata");
+    let details = &card.children[1];
+    assert_eq!(
+        details.children.len(),
+        1,
+        "large-text metadata is one measure-first leaf"
+    );
+    details.children[0].rect
+}
+
 #[test]
 fn card_meta_lines_stack_without_overlap_at_1x() {
     let h = at(Route::Home, 1.0);
@@ -102,9 +114,20 @@ fn card_meta_lines_stack_without_overlap_at_1x() {
 /// correctly when hosted outside the split.
 #[test]
 fn card_meta_rects_stay_stacked_in_order_at_2x_layout_pass() {
-    let h2 = at(Route::Home, 2.0);
+    let mut h2 = at(Route::Home, 2.0);
     assert_eq!(h2.text_scale(), 2.0, "the frame really is at 2×");
-    assert_stacked_without_overlap("2× card meta", &card_meta_lines(&h2));
+    let rect = large_card_meta(&h2);
+    let title = h2.measure_text(
+        "Rewriting a Wayland compositor in Rust: results and benchmarks",
+        14.5,
+        Some(rect.width() as f32),
+    );
+    let channel = h2.measure_text("Low Level Learning", 12.5, Some(rect.width() as f32));
+    let stats = h2.measure_text("842K • 2 days ago", 12.5, Some(rect.width() as f32));
+    assert!(
+        rect.height() as f32 >= title.1 + channel.1 + stats.1,
+        "measure-first metadata leaf must reserve all three painted lanes: {rect:?}"
+    );
 }
 
 /// One shared `Text` inside one app-local `Flex`, and the same `Text` on its
@@ -154,7 +177,6 @@ fn text_in_grid_and_scrollable_measures_at_renderer_scale() {
     let card = || {
         Flex::col()
             .id("card")
-            .fill_w()
             .gap(3.0)
             .push(tube::widgets::text(title, 14.5))
             .push(tube::widgets::text("Low Level Learning", 12.5))

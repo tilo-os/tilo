@@ -531,6 +531,11 @@ impl Widget for Flex {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // A grid column is a reading measure, so it must grow with large text.
+        // Besides producing a usable one-column accessibility layout, this
+        // prevents Taffy from measuring a wrapped label against a wider
+        // exploratory track and then assigning it to a narrower final track.
+        let grid_min_col = self.grid_min_col.map(|min| min * theme.text_scale.max(1.0));
         let child_nodes: Vec<NodeId> = self
             .children
             .iter_mut()
@@ -551,7 +556,7 @@ impl Widget for Flex {
         });
 
         let style = Style {
-            display: if self.grid_min_col.is_some() {
+            display: if grid_min_col.is_some() {
                 taffy::Display::Grid
             } else if self.block {
                 taffy::Display::Block
@@ -591,8 +596,7 @@ impl Widget for Flex {
             // fill the row. Grid items default to `justify_self: stretch`, so a
             // card fills its column exactly — the property that removes the
             // right-edge gutter. Empty (no-op) in flex/block mode.
-            grid_template_columns: self
-                .grid_min_col
+            grid_template_columns: grid_min_col
                 .map(|min| vec![repeat("auto-fill", vec![minmax(length(min), fr(1.0_f32))])])
                 .unwrap_or_default(),
             gap: taffy::Size {
@@ -637,8 +641,6 @@ impl Widget for Flex {
             },
             ..Default::default()
         };
-        let _ = theme;
-
         let node = if child_nodes.is_empty() {
             super::leaf_node(taffy, style)
         } else {
