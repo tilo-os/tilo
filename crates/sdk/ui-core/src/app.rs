@@ -892,6 +892,24 @@ impl PersistenceRuntime {
     }
 }
 
+/// Host-owned continuation publication and deferred restore state.
+struct ContinuationRuntime {
+    last_published: Option<crate::collaboration::ContinuationMetadata>,
+    pending_restore: Option<crate::collaboration::ContinuationMetadata>,
+    /// Generic view restoration waits until layout has built the focus order.
+    pending_view: Option<crate::view::View>,
+}
+
+impl ContinuationRuntime {
+    fn new(pending_restore: Option<crate::collaboration::ContinuationMetadata>) -> Self {
+        Self {
+            last_published: None,
+            pending_restore,
+            pending_view: None,
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -992,14 +1010,9 @@ pub struct App {
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_viewport_width: f64,
     history_focus_pending: bool,
-    /// Last app-owned continuation projection sent to the local shell.
-    last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
+    continuation: ContinuationRuntime,
     last_published_playback: Option<Vec<media::handoff::PlaybackReport>>,
     last_playback_publish: Option<Instant>,
-    pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
-    /// Generic view restoration waits until the first layout has built the
-    /// focus order. App-specific projections still apply before first sync.
-    pending_continuation_view: Option<crate::view::View>,
     profiler: Option<crate::profiling::FrameProfiler>,
 
     /// Wins over the automatic env/package-id/binary-name resolution.
@@ -1591,11 +1604,9 @@ impl App {
             history_layout: None,
             history_viewport_width: 1000.0,
             history_focus_pending: false,
-            last_published_continuation: None,
+            continuation: ContinuationRuntime::new((inputs.pending_continuation_restore)()),
             last_published_playback: None,
             last_playback_publish: None,
-            pending_continuation_restore: (inputs.pending_continuation_restore)(),
-            pending_continuation_view: None,
             profiler: (inputs.profiler)(),
             window_title: None,
             window_app_id: None,
@@ -3352,7 +3363,7 @@ impl App {
     /// focus itself or start playing media.
     fn publish_continuation_metadata(&mut self) {
         self.apply_pending_continuation_restore();
-        if !self.collab_manager.is_connected() || self.pending_continuation_view.is_some() {
+        if !self.collab_manager.is_connected() || self.continuation.pending_view.is_some() {
             return;
         }
         let semantic = self.root_widget.continuable().and_then(|continuable| {
@@ -3360,17 +3371,17 @@ impl App {
         });
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
         let metadata = compose_structural_continuation_metadata(view, semantic);
-        if metadata == self.last_published_continuation {
+        if metadata == self.continuation.last_published {
             return;
         }
         if let Some(request) = continuation_publication(
             crate::collaboration::local_app_id(),
             metadata.as_ref(),
-            self.last_published_continuation.is_some(),
+            self.continuation.last_published.is_some(),
         ) {
             self.collab_manager.send(request);
         }
-        self.last_published_continuation = metadata;
+        self.continuation.last_published = metadata;
     }
 
     /// Publish private source descriptors over the authenticated local app
@@ -3406,13 +3417,13 @@ impl App {
     }
 
     fn apply_pending_continuation_restore(&mut self) {
-        if let Some(metadata) = self.pending_continuation_restore.take() {
+        if let Some(metadata) = self.continuation.pending_restore.take() {
             if metadata.schema_version == STRUCTURAL_CONTINUATION_SCHEMA {
                 if let Ok(envelope) =
                     postcard::from_bytes::<StructuralContinuationEnvelope>(&metadata.bytes)
                     && valid_structural_envelope(&envelope)
                 {
-                    self.pending_continuation_view = Some(envelope.presentation.into_view());
+                    self.continuation.pending_view = Some(envelope.presentation.into_view());
                     if let Some(semantic) = envelope.semantic {
                         let root = self.state.root.clone();
                         let metadata = crate::collaboration::ContinuationMetadata {
@@ -3434,7 +3445,7 @@ impl App {
             if metadata.schema_version == GENERIC_VIEW_CONTINUATION_SCHEMA {
                 if let Ok(view) = postcard::from_bytes::<PortableContinuationView>(&metadata.bytes)
                 {
-                    self.pending_continuation_view = Some(view.into_view());
+                    self.continuation.pending_view = Some(view.into_view());
                 }
                 return;
             }
@@ -7202,7 +7213,7 @@ impl App {
         self.layout.node_map.clear();
         self.build_history_presentation();
         self.update_focusable_order();
-        if let Some(view) = self.pending_continuation_view.take() {
+        if let Some(view) = self.continuation.pending_view.take() {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         }
         if self.autofocus_first
@@ -13725,15 +13736,15 @@ mod view_presence_tests {
         // Model launcher delivery before first layout, which is the real
         // continuation order. The view waits until focus/layout nodes exist.
         let mut receiver = App::new(State::new(), Box::new(ViewRoot::new()));
-        receiver.pending_continuation_restore = Some(metadata);
+        receiver.continuation.pending_restore = Some(metadata);
         receiver.apply_pending_continuation_restore();
-        assert!(receiver.pending_continuation_view.is_some());
+        assert!(receiver.continuation.pending_view.is_some());
         receiver.init_layout();
 
         let restored = <App as FreezeThaw>::capture_view(&receiver);
         assert_eq!(restored.scroll, vec![48.0, 12.0]);
         assert_eq!(restored.view_mode.as_deref(), Some("grid"));
-        assert!(receiver.pending_continuation_view.is_none());
+        assert!(receiver.continuation.pending_view.is_none());
     }
 
     #[test]
@@ -13855,9 +13866,9 @@ mod view_presence_tests {
         )
         .unwrap();
         let mut receiver = App::new(State::new(), Box::new(ViewRoot::new()));
-        receiver.pending_continuation_restore = Some(metadata);
+        receiver.continuation.pending_restore = Some(metadata);
         receiver.apply_pending_continuation_restore();
-        assert!(receiver.pending_continuation_view.is_some());
+        assert!(receiver.continuation.pending_view.is_some());
         receiver.init_layout();
         let restored = <App as FreezeThaw>::capture_view(&receiver);
         assert_eq!(restored.scroll, vec![64.0]);
