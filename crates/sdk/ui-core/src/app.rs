@@ -944,6 +944,7 @@ pub struct App {
     actions: ActionRuntime,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
     history_chrome_enabled: bool,
+    native_document_chrome: bool,
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_viewport_width: f64,
     history_focus_pending: bool,
@@ -1479,6 +1480,7 @@ impl App {
             actions: ActionRuntime::new(),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
+            native_document_chrome: true,
             history_layout: None,
             history_viewport_width: 1000.0,
             history_focus_pending: false,
@@ -7373,6 +7375,22 @@ impl App {
         self.autosave.as_ref()
     }
 
+    /// Omit the automatically added History and Search controls at native
+    /// startup. System surfaces such as a login screen have no document to
+    /// browse. Their own semantic actions and accessibility remain available.
+    /// Ordinary applications retain native document chrome by default.
+    #[must_use]
+    pub fn without_native_document_chrome(mut self) -> Self {
+        self.native_document_chrome = false;
+        self
+    }
+
+    fn prepare_native_presentation(&mut self) {
+        if self.native_document_chrome {
+            self.enable_document_history_chrome();
+        }
+    }
+
     pub fn run(self) {
         self.run_with_setup(|_| {});
     }
@@ -7405,7 +7423,7 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
-        self.enable_document_history_chrome();
+        self.prepare_native_presentation();
         let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
         let proxy = event_loop.create_proxy();
         let wake_proxy = proxy.clone();
@@ -10201,6 +10219,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event_loop.exit();
             return;
         }
+        // Honour system/presentation roots before the first visible configure.
+        // The normal reconcile path still owns output selection and later changes.
+        self.app.reconcile_fullscreen(&window);
         tilo_startup_metrics::mark("primary-window-show-start");
         window.set_visible(true);
         tilo_startup_metrics::mark("primary-window-show-done");

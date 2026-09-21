@@ -78,7 +78,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proxy_slot: Arc<OnceLock<EventLoopProxy<UserEvent>>> = Arc::new(OnceLock::new());
     let widget = GreeterApp::new().with_proxy_slot(proxy_slot.clone());
     let state = ui::State::new();
-    let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget));
+    let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
+        .without_native_document_chrome();
     // On a personal machine with one unambiguous interactive account, the
     // greeter hides the redundant username field and this lands on Passcode.
     // Zero/multiple candidates retain the two-field fallback and autofocus
