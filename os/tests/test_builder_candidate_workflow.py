@@ -14,8 +14,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = (ROOT / '.forgejo/workflows/build-builder-image.yml').read_text()
-AWS_INSTALLER = (ROOT / 'os/dev/install-cached-aws-cli.sh').read_text()
-EXTERNAL_ASSETS = (ROOT / 'os/external-assets/github-assets.tsv').read_text()
 CHECK = (ROOT / '.forgejo/workflows/check.yml').read_text()
 SPEC = importlib.util.spec_from_file_location('builder_canary', ROOT / 'os/dev/builder-canary-inputs.py')
 CANARY = importlib.util.module_from_spec(SPEC)
@@ -357,24 +355,36 @@ class CanaryIdentity(unittest.TestCase):
         self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
         self.assertIn('burst-us-qos-builder-replication', replication)
 
-    def test_main_promotion_installs_checksum_pinned_aws_cli_v2(self):
-        promotion = BUILD.split('  promote-builder:', 1)[1]
-        tools = promotion.split('      - name: Install publication tools', 1)[1].split(
-            '      - name: Verify and publish the tested native builder index', 1
-        )[0]
-        asset = 'awscli-exe-linux-x86_64-2.31.30.zip'
-        digest = '660c5623e7036d99780371a594589a5aae6e102d3ef4df0d01d02812b90674c7'
-        self.assertIn('./os/dev/install-cached-aws-cli.sh', tools)
-        self.assertNotRegex(tools, r'(?m)(?:apt-get|dnf).*\bawscli\b')
-        self.assertNotIn('curl ', tools)
-        self.assertNotIn('unzip ', tools)
-        self.assertIn('x86_64|amd64)', AWS_INSTALLER)
-        self.assertNotIn('aarch64|arm64)', AWS_INSTALLER)
-        self.assertIn('cache-github-assets.sh" "$asset"', AWS_INSTALLER)
-        self.assertNotIn('curl ', AWS_INSTALLER)
-        self.assertNotIn('unzip ', AWS_INSTALLER)
-        self.assertIn(f'{digest}\t{asset}\thttps://awscli.amazonaws.com/{asset}',
-                      EXTERNAL_ASSETS)
+    def test_main_promotion_installs_pinned_aws_cli_without_distro_package(self):
+        tools = step_block(BUILD, 'Install publication tools')
+        self.assertIn('curl unzip podman skopeo', tools)
+        self.assertNotRegex(tools, r'install .*\bawscli\b')
+        self.assertIn('bash ./os/dev/install-aws-cli.sh', tools)
+
+    def test_aws_cli_rejects_corrupt_download_before_extraction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            # A successful transfer containing invalid bytes must never execute.
+            scripts = {
+                'curl': '#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\nprintf corrupt > "$2"\n',
+                'unzip': '#!/bin/sh\ntouch "$RUNNER_TEMP/extracted"\nexit 99\n',
+            }
+            for name, body in scripts.items():
+                path = bin_dir / name
+                path.write_text(body)
+                path.chmod(0o755)
+            result = subprocess.run(
+                ['bash', str(ROOT / 'os/dev/install-aws-cli.sh')],
+                env={**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
+                     'RUNNER_TEMP': directory, 'GITHUB_PATH': str(root / 'path')},
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / 'extracted').exists())
+            self.assertFalse((root / 'path').exists())
+            self.assertEqual(list(root.glob('aws-cli-download.*')), [])
 
     def test_reuse_never_reaches_signing_or_promotion(self):
         signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]
