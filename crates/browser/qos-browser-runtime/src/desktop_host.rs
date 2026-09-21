@@ -297,13 +297,17 @@ impl ComponentContextSource for Contexts {
         request: &TileRequest<'_>,
         target: &LaunchTarget,
     ) -> Result<(HostContext, RestoreInput), ui::launch::LaunchError> {
-        let durable_app_id = qos_desktop::resolver::canonical_app_id(&request.tab.tile)
+        let route_app_id = qos_desktop::resolver::canonical_app_id(&request.tab.tile)
             .ok_or_else(|| {
                 ui::launch::LaunchError::Operation("application identity unavailable".into())
             })?;
+        let (durable_app_id, _) = desktop::installed_application(&route_app_id)
+            .ok_or_else(|| {
+                ui::launch::LaunchError::Operation("application is not installed".into())
+            })?;
         let store = self
             .owners
-            .open(&durable_app_id, &self.room)
+            .open(durable_app_id, &self.room)
             .map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))?;
         let checkout = self.checkout(definition, request)?;
         let restore = self
@@ -323,9 +327,9 @@ impl ComponentContextSource for Contexts {
             target,
         )?;
         self.handle.records.borrow_mut().insert(
-            (durable_app_id.clone(), checkout.id.as_str().into()),
+            (durable_app_id.into(), checkout.id.as_str().into()),
             OwnedRecord {
-                app: durable_app_id,
+                app: durable_app_id.into(),
                 store,
                 checkout,
             },
@@ -883,9 +887,9 @@ impl DesktopRoot {
                         .iter()
                         .find(|v| v.id == g)
                 });
-            let applications = desktop::definitions()
+            let applications = desktop::installed_applications()
                 .iter()
-                .map(|d| json!({"id":d.app_id,"label":d.title}))
+                .map(|(app, definition)| json!({"id":app,"label":definition.title}))
                 .collect::<Vec<_>>();
             let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
             if *snapshot != next {
@@ -1368,8 +1372,8 @@ impl Widget for DesktopRoot {
                 .get(&strip.id)
                 .and_then(|id| strip.window_groups.iter().find(|g| g.id == *id))
                 .or_else(|| strip.window_groups.first());
-            for definition in desktop::definitions() {
-                let (app, label) = (definition.app_id, definition.title);
+            for (app, definition) in desktop::installed_applications() {
+                let label = definition.title;
                 add(
                     format!("open-{app}"),
                     format!("Open {label}"),
@@ -1506,8 +1510,8 @@ impl Widget for DesktopRoot {
                 }
             }
         } else {
-            for definition in desktop::definitions() {
-                let (app, label) = (definition.app_id, definition.title);
+            for (app, definition) in desktop::installed_applications() {
+                let label = definition.title;
                 add(
                     format!("open-{app}"),
                     format!("Open {label}"),
@@ -1833,14 +1837,8 @@ mod tests {
         let mut routes = BTreeMap::new();
         // Keep the real initialized stores alive until their checked components take custody.
         let mut retained = vec![];
-        for (i, definition) in [
-            word_processor::definition(),
-            chat::definition(),
-            notes::definition(),
-            calculator::definition(),
-        ]
-        .into_iter()
-        .enumerate()
+        for (i, (durable_app_id, definition)) in
+            desktop::installed_applications().into_iter().enumerate()
         {
             let id = (5 << 48) | ((i as u64) + 10);
             let record = if i == 0 {
@@ -1850,12 +1848,12 @@ mod tests {
                 )
             } else {
                 qos_desktop::records::component_record(
-                    definition.app_id,
+                    durable_app_id,
                     id,
                     definition.record_kind.clone(),
                 )
             };
-            let store = owners.open(definition.app_id, &room).unwrap();
+            let store = owners.open(durable_app_id, &room).unwrap();
             store.create_record(&record).unwrap();
             store.with(&record.id, |doc| match i {
                 0 => word_processor::initialize_empty_document(doc).unwrap(),
@@ -1870,7 +1868,7 @@ mod tests {
                 id,
                 title: definition.title.into(),
                 tile: TileContent::AppPlaceholder {
-                    kind: AppKind::Other(definition.app_id.into()),
+                    kind: AppKind::Other(durable_app_id.into()),
                     label: definition.title.into(),
                 },
             });
@@ -3833,7 +3831,7 @@ mod tests {
         frame.set_platform_conventions(ui::platform::PlatformConventions::new(
             ui::platform::Platform::Linux,
         ));
-        frame.set_modifiers(&["super".into()]);
+        frame.set_modifiers(&["ctrl".into()]);
         frame.key("k");
         frame.set_modifiers(&[]);
         frame.type_text("Open Notes");
@@ -3857,6 +3855,38 @@ mod tests {
             serde_json::to_string(&*handle.tree.borrow()).unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn empty_workspace_palette_enqueues_durable_notes_command() {
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            tree.workspaces[0].strips.clear();
+        });
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::state::State::new(),
+            Box::new(root),
+            (1024, 768),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        frame.set_platform_conventions(ui::platform::PlatformConventions::new(
+            ui::platform::Platform::Linux,
+        ));
+        frame.set_modifiers(&["ctrl".into()]);
+        frame.key("k");
+        frame.set_modifiers(&[]);
+        frame.type_text("Open Notes");
+        frame.key("Enter");
+        let requests = handle.session_requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert!(matches!(
+            &requests[0].1.command,
+            qos_desktop::session_commands::DesktopCommand::OpenTab {
+                app,
+                placement: qos_desktop::session_commands::TabPlacement::EmptyWorkspace,
+            } if app == "dev.qos.notes"
+        ));
     }
     fn browser_semantic_route(frame: &ui::headless::FrameHarness, label: &str) -> (String, String) {
         fn find(node: &ui::headless::InspectionNode, label: &str) -> Option<(String, String)> {
@@ -5075,10 +5105,12 @@ mod tests {
                 .iter()
                 .map(|a| a.app_id.as_str())
                 .collect::<Vec<_>>(),
-            desktop::definitions()
-                .iter()
-                .map(|d| d.app_id)
-                .collect::<Vec<_>>()
+            vec![
+                "dev.qos.word-processor",
+                "dev.qos.chat",
+                "dev.qos.notes",
+                "dev.qos.calculator",
+            ]
         );
         assert_eq!(data.tabs.len(), 4);
         assert_eq!(
@@ -5097,7 +5129,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         handle
-            .open_global_search(&mut frame, &handle.generation, "Writer")
+            .open_global_search(&mut frame, &handle.generation, "Notes")
             .unwrap();
         assert_eq!(
             frame.global_search_scope(),
@@ -5117,7 +5149,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].1.source.heads, vec![[7; 32]]);
         assert!(
-            matches!(&requests[0].1.command,qos_desktop::session_commands::DesktopCommand::OpenTab{app,..} if app=="dev.qos.word-processor")
+            matches!(&requests[0].1.command,qos_desktop::session_commands::DesktopCommand::OpenTab{app,..} if app=="dev.qos.notes")
         );
         assert_eq!(
             serde_json::to_value(&handle.tree.borrow().workspaces).unwrap(),

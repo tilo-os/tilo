@@ -48,7 +48,9 @@ impl SearchState {
                         let Some(app) = qos_desktop::resolver::canonical_app_id(&tab.tile) else {
                             continue;
                         };
-                        let Some(definition) = desktop::definition(&app) else {
+                        let Some((durable_app_id, definition)) =
+                            desktop::installed_application(&app)
+                        else {
                             continue;
                         };
                         let Ok(checkout) = desktop::checkout(definition, tab.id, routes) else {
@@ -61,7 +63,7 @@ impl SearchState {
                                 group: group.id.to_string(),
                                 tab: tab.id.to_string(),
                             },
-                            app,
+                            app: durable_app_id.into(),
                             record: checkout.id.as_str().into(),
                             title: tab.title.clone(),
                             active_workspace: workspace.id == tree.active,
@@ -85,15 +87,15 @@ impl SearchState {
         self.targets.clear();
         self.data = GlobalSearchSourceData {
             revision: format!("{generation}:{}", self.serial),
-            applications: desktop::definitions()
+            applications: desktop::installed_applications()
                 .into_iter()
-                .map(|d| GlobalSearchApplication {
-                    app_id: d.app_id.into(),
-                    title: d.title.into(),
+                .map(|(app, definition)| GlobalSearchApplication {
+                    app_id: app.into(),
+                    title: definition.title.into(),
                     icon: None,
                     action: tilo_actions::ActionAddress::new(
                         "desktop:requests",
-                        format!("open-{}", d.app_id),
+                        format!("open-{app}"),
                     ),
                 })
                 .collect(),

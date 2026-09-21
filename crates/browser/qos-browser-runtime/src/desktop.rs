@@ -6,18 +6,29 @@ use std::collections::BTreeMap;
 use ui::application::ApplicationDefinition;
 use ui::record::{RecordCheckout, RecordId};
 
-pub(crate) fn definitions() -> [&'static ApplicationDefinition; 4] {
+pub(crate) fn installed_applications() -> [(&'static str, &'static ApplicationDefinition); 4] {
     [
-        word_processor::definition(),
-        chat::definition(),
-        notes::definition(),
-        calculator::definition(),
+        ("dev.qos.word-processor", word_processor::definition()),
+        ("dev.qos.chat", chat::definition()),
+        ("dev.qos.notes", notes::definition()),
+        ("dev.qos.calculator", calculator::definition()),
     ]
 }
+pub(crate) fn definitions() -> [&'static ApplicationDefinition; 4] {
+    installed_applications().map(|(_, definition)| definition)
+}
+pub(crate) fn installed_application(
+    app: &str,
+) -> Option<(&'static str, &'static ApplicationDefinition)> {
+    installed_applications()
+        .into_iter()
+        .find(|(durable_app_id, definition)| {
+            *durable_app_id == app
+                || ui::application::lookup_compatible_first_party_app_ids(definition.app_id, app)
+        })
+}
 pub(crate) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
-    definitions().into_iter().find(|definition| {
-        ui::application::lookup_compatible_first_party_app_ids(definition.app_id, app)
-    })
+    installed_application(app).map(|(_, definition)| definition)
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Requirement {
@@ -50,16 +61,18 @@ pub(crate) fn checkout(
     tab: u64,
     routes: &BTreeMap<u64, String>,
 ) -> Result<RecordCheckout, String> {
+    let (durable_app_id, _) = installed_application(definition.app_id)
+        .ok_or("application is not in the installed durable catalog")?;
     match routes.get(&tab) {
         None => Ok(qos_desktop::records::component_record(
-            definition.app_id,
+            durable_app_id,
             tab,
             definition.record_kind.clone(),
         )),
-        Some(record) if record.is_empty() && definition.app_id == "dev.qos.chat" => Ok(
+        Some(record) if record.is_empty() && durable_app_id == "dev.qos.chat" => Ok(
             RecordCheckout::package_primary(definition.record_kind.clone()),
         ),
-        Some(record) if definition.app_id != "dev.qos.chat" => Ok(RecordCheckout::new(
+        Some(record) if durable_app_id != "dev.qos.chat" => Ok(RecordCheckout::new(
             RecordId::parse(record).ok_or("invalid canonical ordinary record route")?,
             definition.record_kind.clone(),
         )),
@@ -95,7 +108,7 @@ pub(crate) fn admission(state: &StatePeer) -> Result<Admission, String> {
                     let Some(app) = qos_desktop::resolver::canonical_app_id(&tab.tile) else {
                         continue;
                     };
-                    let Some(definition) = definition(&app) else {
+                    let Some((durable_app_id, definition)) = installed_application(&app) else {
                         if !unsupported.contains(&app) {
                             unsupported.push(app);
                         }
@@ -108,7 +121,7 @@ pub(crate) fn admission(state: &StatePeer) -> Result<Admission, String> {
                         checkout.id.as_str().into()
                     };
                     let requirement = Requirement {
-                        app_id: app,
+                        app_id: durable_app_id.into(),
                         record_id: record,
                     };
                     if !required.contains(&requirement) {
@@ -281,5 +294,13 @@ mod tests {
                 .map(|head| head.0)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn durable_chat_empty_route_uses_package_primary_checkout() {
+        let tab = 17;
+        let routes = BTreeMap::from([(tab, String::new())]);
+        let checkout = super::checkout(chat::definition(), tab, &routes).unwrap();
+        assert!(checkout.id.is_package_primary());
     }
 }
