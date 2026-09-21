@@ -366,6 +366,27 @@ fn dispatch_committed_publication(
     Ok(published)
 }
 
+fn dispatch_owner_commit_publication(
+    cadence: &mut CheckpointCadence,
+    owner: &SessionOwner,
+    before: crate::owner::PublicationRevision,
+    now: std::time::Instant,
+    desktop: bool,
+    transition_ready: impl FnOnce(&SessionOwner) -> bool,
+    send: impl FnOnce(bool) -> Result<()>,
+) -> Result<PublicationDispatch> {
+    let transition_ready = transition_ready(owner);
+    dispatch_committed_publication(
+        cadence,
+        owner,
+        before,
+        now,
+        transition_ready,
+        desktop,
+        || send(transition_ready),
+    )
+}
+
 pub struct NativeSubscription {
     session: Arc<RelayCoeditSession>,
     actions: Option<AttachedActions>,
@@ -1017,15 +1038,14 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     }
                 }
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
-                let transition_ready = !desktop && committed_transition_ready(&owner, session.as_ref());
-                let published = dispatch_committed_publication(
+                let published = dispatch_owner_commit_publication(
                     &mut cadence,
                     &owner,
                     publication_before,
                     std::time::Instant::now(),
-                    transition_ready,
                     desktop,
-                    || {
+                    |owner| committed_transition_ready(owner, session.as_ref()),
+                    |transition_ready| {
                         tracing::debug!(site = "owner_commit", "publish site");
                         #[cfg(feature = "test-support")]
                         if let Some(problem) = qualification.publication_failure_once() {
@@ -1461,8 +1481,11 @@ mod cadence_tests {
     use super::{
         CheckpointCadence, PublicationDispatch, PublicationFailureAction,
         committed_publication_failure, dispatch_committed_publication,
+        dispatch_owner_commit_publication,
     };
     use crate::{SessionOwner, owner::PublicationAdvance, publication::PublicationCursor};
+    use qos_peer_state::desktop_command::*;
+    use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
     use qos_peer_state::transport::Retention;
     use std::time::{Duration, Instant, SystemTime};
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
@@ -1485,6 +1508,37 @@ mod cadence_tests {
             .unwrap();
         owner
             .commit_mutation_candidate(candidate, owner.directory().to_vec())
+            .unwrap();
+    }
+
+    fn desktop_command(owner: &SessionOwner, name: &str) -> OwnerCommitRequest {
+        OwnerCommitRequest {
+            room: owner.peer().room().into(),
+            operation: CommitOperation::DesktopCommand {
+                invocation: uuid::Uuid::new_v4(),
+                caller: owner.peer().authority().clone(),
+                command: BoundCommand {
+                    source: CommandSource {
+                        room: owner.peer().room().into(),
+                        heads: owner
+                            .peer()
+                            .admitted_room()
+                            .unwrap()
+                            .clone()
+                            .get_heads()
+                            .into_iter()
+                            .map(|head| head.0)
+                            .collect(),
+                    },
+                    command: DesktopCommand::CreateStrip { name: name.into() },
+                },
+            },
+        }
+    }
+
+    fn commit_desktop(owner: &mut SessionOwner, name: &str) {
+        owner
+            .commit_desktop_command(&desktop_command(owner, name))
             .unwrap();
     }
 
@@ -1634,6 +1688,105 @@ mod cadence_tests {
                 panic!("transition send must advance this cursor")
             })
             .unwrap();
+    }
+
+    #[test]
+    fn caught_up_desktop_owner_commit_routes_the_compact_transition() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        let mut native = PublicationCursor::default();
+        let mut worker = PublicationCursor::default();
+        native.send(&owner, |_, _| Ok(())).unwrap();
+        worker.send(&owner, |_, _| Ok(())).unwrap();
+
+        commit_desktop(&mut owner, "pre-threshold");
+        native.send(&owner, |_, _| Ok(())).unwrap();
+        worker.send(&owner, |_, _| Ok(())).unwrap();
+        for value in 0..31 {
+            commit_small_changed_record(&mut owner, value);
+            native.send(&owner, |_, _| Ok(())).unwrap();
+            worker.send(&owner, |_, _| Ok(())).unwrap();
+        }
+
+        let before = owner.publication_revision();
+        commit_desktop(&mut owner, "threshold");
+        let expected = owner
+            .live_publication_transition()
+            .expect("desktop commit reaches the real 64-frame compaction threshold")
+            .messages()
+            .to_vec();
+        let mut cadence = CheckpointCadence::new();
+        let mut native_delivered = Vec::new();
+        let native_transition_ready = native.can_send_committed(&owner);
+        let dispatch = dispatch_owner_commit_publication(
+            &mut cadence,
+            &owner,
+            before,
+            Instant::now(),
+            true,
+            move |_| native_transition_ready,
+            |committed| {
+                if committed {
+                    native.send_committed(&owner, |bytes, kind| {
+                        native_delivered.push((bytes.to_vec(), kind));
+                        Ok(())
+                    })
+                } else {
+                    native.send(&owner, |bytes, kind| {
+                        native_delivered.push((bytes.to_vec(), kind));
+                        Ok(())
+                    })
+                }
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            dispatch,
+            PublicationDispatch::PublishedTransition { .. }
+        ));
+        assert_eq!(native_delivered, expected);
+        let mut worker_delivered = Vec::new();
+        worker
+            .send_committed(&owner, |bytes, kind| {
+                worker_delivered.push((bytes.to_vec(), kind));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(worker_delivered, expected);
+
+        let mut mismatched = PublicationCursor::default();
+        let mut mismatch_delivered = Vec::new();
+        let mut mismatch_cadence = CheckpointCadence::new();
+        let mismatch_transition_ready = mismatched.can_send_committed(&owner);
+        let mismatch = dispatch_owner_commit_publication(
+            &mut mismatch_cadence,
+            &owner,
+            before,
+            Instant::now(),
+            true,
+            move |_| mismatch_transition_ready,
+            |committed| {
+                assert!(!committed);
+                mismatched.send(&owner, |bytes, kind| {
+                    mismatch_delivered.push((bytes.to_vec(), kind));
+                    Ok(())
+                })
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            mismatch,
+            PublicationDispatch::PublishedBaseline { .. }
+        ));
+        assert_eq!(
+            mismatch_delivered,
+            owner
+                .outgoing()
+                .iter()
+                .cloned()
+                .zip(owner.outgoing_kinds().iter().copied())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
