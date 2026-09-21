@@ -322,7 +322,7 @@ def _create_verified_disk(args):
             # operator must provision this VM without device passthrough;
             # privileged Podman still has access to the VM's own devices.
             bootc_install([*run, '--privileged', '--network=host',
-                '--tmpfs', '/run/udev:rw,nosuid,nodev,noexec', *auth_args,
+                '--tmpfs', '/run/udev:ro,nosuid,nodev,noexec,mode=0755', *auth_args,
                 '--volume', f'{path}:/output/disk.raw:rw',
                 '--volume', f'{wrapper}:/run/tilo-bootc-registry-wrapper.py:ro',
                 '--entrypoint=/usr/bin/python3', verified.image_id,

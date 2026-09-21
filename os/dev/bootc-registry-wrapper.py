@@ -20,6 +20,8 @@ def require_private_udev():
         raise ValueError('supervised udev namespace is not a directory')
     if current.st_dev != pid1.st_dev:
         raise ValueError('supervised udev namespace differs from PID 1')
+    if not os.statvfs('/run/udev').f_flag & os.ST_RDONLY:
+        raise ValueError('supervised udev namespace is writable')
     if os.path.lexists('/run/udev/data'):
         raise ValueError('supervised udev namespace contains a stale database')
 
