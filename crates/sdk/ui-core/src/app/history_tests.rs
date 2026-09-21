@@ -39,7 +39,7 @@ fn app() -> App {
 }
 fn layout(app: &mut App) {
     app.init_layout();
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     assert!(run_layout_pass(app, root, 900, 650, 1.0, true, None).is_some());
     let mut scene = vello::Scene::new();
     draw_frame_content(app, &mut scene, 900, 650, 1.0, None);
@@ -75,7 +75,8 @@ fn named(app: &mut App, label: &str) -> accesskit::NodeId {
         .unwrap()
 }
 fn node_for_test_id(app: &App, id: &str) -> NodeId {
-    app.node_map
+    app.layout
+        .node_map
         .keys()
         .copied()
         .find(|node| {
@@ -99,8 +100,8 @@ fn native_key(app: &mut App, key: &str) {
             "the complete History key frame is intercepted: {key} {state:?}"
         );
         app.dispatch_framework_history_event(&event, 1.0);
-        let root = app.root_node.unwrap();
-        let _ = run_layout_pass(app, root, 900, 650, 1.0, app.structure_dirty, None);
+        let root = app.layout.root_node.unwrap();
+        let _ = run_layout_pass(app, root, 900, 650, 1.0, app.layout.structure_dirty, None);
     }
 }
 #[test]
@@ -982,6 +983,7 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
     app.rebuild_structure();
     let exported = named(&mut app, "replaceable editor");
     let old_node = app
+        .layout
         .node_map
         .keys()
         .copied()
@@ -995,7 +997,7 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
         })
         .unwrap();
     app.bindings.clear();
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.focused_node = None;
     // App owns this stable boxed root exclusively, and raw descendant maps
     // were discarded before the supported owner rebind.
@@ -1005,6 +1007,7 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
     app.root_widget.sync(&mut app.state.doc, &ROOT);
     app.rebuild_structure();
     let new_node = app
+        .layout
         .node_map
         .keys()
         .copied()
@@ -1259,7 +1262,7 @@ fn native_tile_effect_isolation(semantic: bool) {
     let named_action_target = named(&mut app, "Continue");
     app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
     assert!(
-        app.node_map.is_empty(),
+        app.layout.node_map.is_empty(),
         "continuation toolbar replacement must invalidate admitted raw maps first"
     );
     let continuation_labels = app
@@ -1333,7 +1336,7 @@ fn check_admitted_legacy_effect_owner_retirement(close: bool) {
     )
     .unwrap();
     assert_eq!(probe.starts.get(), 1);
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.bindings.clear();
     // The retained allocation stays owned by App; no borrowed widget/map
     // references survive the supported close/rebind operation.
@@ -3173,7 +3176,7 @@ fn native_queued_remote_cannot_retarget_same_id_new_legacy_store() {
     let before = replacement
         .read_checked(&checkout.id, |doc| (doc.clone().save(), doc.base_heads()))
         .unwrap();
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.bindings.clear();
     unsafe {
         (*pointer).bind_record(replacement.clone(), checkout.clone());
@@ -3345,7 +3348,12 @@ fn native_history_tab_shift_tab_release_and_ime_keep_pending_live_editor_isolate
     layout(&mut app);
     native_key(&mut app, "Tab");
     let tabbed = app.focused_node;
-    assert!(tabbed.is_some_and(|node| app.history.as_ref().unwrap().owns_node(node, &app.taffy)));
+    assert!(tabbed.is_some_and(|node| {
+        app.history
+            .as_ref()
+            .unwrap()
+            .owns_node(node, &app.layout.taffy)
+    }));
     app.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
     native_key(&mut app, "Tab");
     app.modifiers = winit::event::Modifiers::default();
@@ -3489,7 +3497,7 @@ fn round1_top_level_native_history_preserves_legacy_custody_and_stale_at_refusal
     app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("denied".into()));
     assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit");
     app.set_permission_ctx(allowed);
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.bindings.clear();
     // Exclusive App retains the box; old maps cannot be dereferenced while rebinding.
     unsafe {
@@ -3594,7 +3602,7 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
         1.0,
     );
     app.init_layout();
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
     assert!(
@@ -3605,7 +3613,7 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
     );
     let named_action_target = named(&mut app, "History");
     app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     assert!(
         app.history.as_ref().unwrap().live_visible(),
@@ -3623,7 +3631,7 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
     );
     let named_action_target = named(&mut app, "History");
     app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
     assert_eq!(native.mounts.get(), 2);
@@ -4436,7 +4444,7 @@ fn round4_palette_reentry_cannot_replace_exact_component_owner() {
     let original =
         crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
     let (replacement, new, _) = component_control_root(&[("same-address", confirmation)]);
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.bindings.clear();
     app.focused_node = None;
     app.root_widget = replacement;
@@ -5721,6 +5729,7 @@ fn custody_matrix_app_with_confirmation(
 fn custody_matrix_activate(app: &mut App, kind: &str, second: bool) -> serde_json::Value {
     use crate::a11y::Action;
     let node = app
+        .layout
         .node_map
         .keys()
         .copied()
@@ -6225,7 +6234,7 @@ fn custody_top_registration(owner: HistoryOwner) -> HistoryRegistration {
     .unwrap()
 }
 fn custody_embedded_click(app: &mut App, id: &str) {
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.bindings.clear();
     let mut clicked = false;
     app.root_widget
@@ -6238,17 +6247,21 @@ fn custody_embedded_click(app: &mut App, id: &str) {
 fn custody_outer_history(app: &mut App) {
     layout(app);
     let node = app
+        .layout
         .node_map
         .keys()
         .copied()
         .find(|node| {
-            app.history.as_ref().unwrap().owns_node(*node, &app.taffy)
+            app.history
+                .as_ref()
+                .unwrap()
+                .owns_node(*node, &app.layout.taffy)
                 && app
                     .inspect_node(*node, |widget| widget.test_id() == Some("history-open"))
                     .unwrap_or(false)
         })
         .unwrap();
-    let id = crate::accesskit_bridge::widget_ak_id(&app.node_map, node).unwrap();
+    let id = crate::accesskit_bridge::widget_ak_id(&app.layout.node_map, node).unwrap();
     app.dispatch_a11y_action(id, &crate::a11y::Action::Activate);
     layout(app);
 }
@@ -6526,7 +6539,7 @@ fn control_custody_core_mounted_modelview_hidden_builder_and_fresh_button() {
     layout(&mut app);
     key.set(true);
     // Public host synchronization used for model-derived structure changes.
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.bindings.clear();
     app.refresh_focus_order();
     layout(&mut app);
@@ -6797,7 +6810,7 @@ fn custody_round1_native_return(embedded: bool) {
     // Deliberately stop at the production layout boundary: a deferred/aborted
     // CPU frame must retain custody until a later successful draw completes.
     app.init_layout();
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     assert!(run_layout_pass(&mut app, root, 900, 650, 1.0, true, None).is_some());
     let deferred_request = tilo_actions::ControlInvocation {
         address: tilo_actions::ActionAddress::new("fixture:control", "run"),
@@ -6813,8 +6826,8 @@ fn custody_round1_native_return(embedded: bool) {
         "layout without frame completion keeps custody"
     );
     unsettled.set(true);
-    app.layout_dirty = true;
-    let root = app.root_node.unwrap();
+    app.layout.layout_dirty = true;
+    let root = app.layout.root_node.unwrap();
     assert!(
         run_layout_pass(&mut app, root, 900, 650, 1.0, true, None).is_none(),
         "actual unsettled layout aborts the frame"
@@ -6826,7 +6839,7 @@ fn custody_round1_native_return(embedded: bool) {
     );
     unsettled.set(false);
     app.init_layout();
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     assert!(run_layout_pass(&mut app, root, 900, 650, 1.0, true, None).is_some());
     armed.set(true);
     let mut scene = vello::Scene::new();

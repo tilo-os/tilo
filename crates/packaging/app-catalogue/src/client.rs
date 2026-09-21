@@ -478,6 +478,7 @@ mod tests {
             base_url: "https://registry.test".into(),
             owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
             enabled: true,
+            channel: pkg::version::ReleaseChannel::Stable,
         }
     }
 
@@ -714,6 +715,7 @@ mod tests {
                 base_url: base_url.into(),
                 owner_pubkey_hex: "11".repeat(32),
                 enabled: true,
+                channel: pkg::version::ReleaseChannel::Stable,
             };
             if base_url.contains('?') {
                 assert_eq!(
@@ -732,6 +734,7 @@ mod tests {
             base_url: "http://127.0.0.1:8080".into(),
             owner_pubkey_hex: "11".repeat(32),
             enabled: true,
+            channel: pkg::version::ReleaseChannel::Stable,
         };
         assert_eq!(
             registry_url(&loopback, "entries").unwrap().as_str(),

@@ -89,7 +89,7 @@ impl App {
             self.collab_manager.join_route(route);
         }
         if self.document_sync_status() != before.as_deref() {
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
         }
     }
     fn send_owned_document(&mut self, route: RouteSpec, request: CollabRequest) -> bool {
@@ -213,7 +213,7 @@ impl App {
                     "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
                 ));
                 self.collab_manager.stop_after_publication_failure();
-                self.layout_dirty = true;
+                self.layout.layout_dirty = true;
                 false
             }
         }
@@ -279,7 +279,7 @@ impl App {
         if changed {
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
         }
     }
     pub(super) fn apply_signed_document_envelope(
@@ -343,7 +343,7 @@ impl App {
         };
         let accepted = queue.admit(mutation);
         if !accepted {
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
             tracing::warn!(status = ?queue.failure, "collab: routed document deferred queue refused update; resynchronization required");
         }
         self.drain_document_routes();

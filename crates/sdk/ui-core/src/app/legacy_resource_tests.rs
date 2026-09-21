@@ -24,7 +24,7 @@ fn native_legacy_route_exact_owner_publication_and_repeat_idle_do_not_touch_sibl
     let mut app = App::new_with_controlled_inputs(state, Box::new(root));
     app.action_registry = registry();
     app.init_layout();
-    app.focused_node = app.node_map.keys().copied().find(|id| {
+    app.focused_node = app.layout.node_map.keys().copied().find(|id| {
         app.bindings
             .legacy_for(*id)
             .is_some_and(|owner| owner.same_owner(&b.target.owner))
@@ -130,6 +130,7 @@ fn native_legacy_route_old_changed_and_noop_actionhost_edges_have_one_boundary_e
             .read_checked(&f.checkout.id, |doc| doc.base_heads())
             .unwrap();
         let status_node = app
+            .layout
             .node_map
             .keys()
             .copied()
