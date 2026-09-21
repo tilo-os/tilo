@@ -333,7 +333,7 @@ use crate::render_thread::{FrameOutcome, RenderRequest, RenderThreadHandle, spaw
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{FloatingSurfaceWidgetExt as _, Widget};
+use crate::widget::{AudiencePresentationWidgetExt as _, FloatingSurfaceWidgetExt as _, Widget};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use taffy::{AvailableSpace, NodeId, TaffyTree};
@@ -18107,6 +18107,83 @@ mod bound_component_tests {
                 .is_err()
         );
     }
+    fn assert_bound_broker_route_refused(
+        fixture: &mut ActionFixture,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        alias: &str,
+        revision: &str,
+        witness: Option<crate::collaboration::PrimaryRouteWitness>,
+    ) {
+        fixture.app.actions.bound_broker_route_for_test = witness;
+        let resources = fixture.app.publication_resources();
+        assert!(resources.iter().all(|resource| {
+            !resource
+                .id
+                .as_str()
+                .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX)
+        }));
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(alias, "follow-up")
+                .is_none()
+        );
+        assert_ne!(fixture.app.action_directory_revision(), revision);
+        let next_id = fixture.app.actions.next_broker_request_id;
+        let mut sent = false;
+        let error = fixture
+            .app
+            .invoke_bound_target_with_broker(
+                target,
+                None,
+                "fixture-user",
+                true,
+                false,
+                None,
+                None,
+                None,
+                Some(&mut |_| sent = true),
+            )
+            .unwrap_err();
+        assert_eq!(
+            crate::bound_dispatch::door_error_code(&error),
+            "bound_broker_route_unavailable"
+        );
+        assert!(!sent);
+        assert_eq!(fixture.app.actions.next_broker_request_id, next_id);
+        fixture.app.invoke_published_action(
+            50,
+            alias.to_owned(),
+            "follow-up".into(),
+            None,
+            "fixture-user",
+            None,
+        );
+        assert!(
+            fixture
+                .records
+                .read(&target.binding.checkout.id, |doc| doc
+                    .get(ROOT, "follow-up")
+                    .unwrap()
+                    .is_none())
+                .unwrap()
+        );
+        // Local component View actions do not need this manager's broker route.
+        fixture
+            .app
+            .invoke_bound_target(
+                &fixture.target(1, "view"),
+                None,
+                "fixture-user",
+                true,
+                false,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+
     #[test]
     fn task4_bound_broker_route_refuses_wrong_app_workspace_record_and_missing_witness() {
         let mut fixture = ActionFixture::broker();
@@ -18137,74 +18214,7 @@ mod bound_component_tests {
             Some(wrong_record),
             None,
         ] {
-            fixture.app.actions.bound_broker_route_for_test = witness;
-            let resources = fixture.app.publication_resources();
-            assert!(resources.iter().all(|resource| {
-                !resource
-                    .id
-                    .as_str()
-                    .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX)
-            }));
-            assert!(
-                fixture
-                    .app
-                    .resolve_publication_resource(&alias, "follow-up")
-                    .is_none()
-            );
-            assert_ne!(fixture.app.action_directory_revision(), revision);
-            let next_id = fixture.app.actions.next_broker_request_id;
-            let mut sent = false;
-            let error = fixture
-                .app
-                .invoke_bound_target_with_broker(
-                    &target,
-                    None,
-                    "fixture-user",
-                    true,
-                    false,
-                    None,
-                    None,
-                    None,
-                    Some(&mut |_| sent = true),
-                )
-                .unwrap_err();
-            assert_eq!(
-                crate::bound_dispatch::door_error_code(&error),
-                "bound_broker_route_unavailable"
-            );
-            assert!(!sent);
-            assert_eq!(fixture.app.actions.next_broker_request_id, next_id);
-            fixture.app.invoke_published_action(
-                50,
-                alias.clone(),
-                "follow-up".into(),
-                None,
-                "fixture-user",
-                None,
-            );
-            assert!(
-                fixture
-                    .records
-                    .read(&target.binding.checkout.id, |doc| doc
-                        .get(ROOT, "follow-up")
-                        .unwrap()
-                        .is_none())
-                    .unwrap()
-            );
-            // Local component View actions do not need this manager's broker route.
-            fixture
-                .app
-                .invoke_bound_target(
-                    &fixture.target(1, "view"),
-                    None,
-                    "fixture-user",
-                    true,
-                    false,
-                    None,
-                    None,
-                    None,
-                )
-                .unwrap();
+            assert_bound_broker_route_refused(&mut fixture, &target, &alias, &revision, witness);
         }
         let mut replacement = matching;
         replacement.epoch = uuid::Uuid::new_v4();
@@ -18305,7 +18315,7 @@ mod prepared_runner_tests {
             due,
             || Some(std::time::SystemTime::UNIX_EPOCH),
             |app| {
-                app.base_theme = Theme::light();
+                app.accessibility.base_theme = Theme::light();
             },
         ));
         assert_eq!(app.theme.name, Theme::light().name);
