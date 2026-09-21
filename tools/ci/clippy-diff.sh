@@ -259,7 +259,10 @@ def diagnostics(path, tree, path_map=None):
                     except ValueError:
                         continue
                 else:
-                    file_name = file_path.as_posix().removeprefix("./")
+                    try:
+                        file_name = (tree / file_path).resolve().relative_to(tree).as_posix()
+                    except ValueError:
+                        continue
                 if file_name.startswith(("vendor/", "../")):
                     continue
                 file_name = path_map.get(file_name, file_name)

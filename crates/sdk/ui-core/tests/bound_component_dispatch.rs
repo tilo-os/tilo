@@ -1221,7 +1221,7 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
                 tile.view_state();
             }
             Callback::Restore => {
-                tile.restore_view_state(&tilo_ui::view::ViewContribution::default())
+                tile.restore_view_state(&tilo_ui::view::ViewContribution::default());
             }
             Callback::HostIntent => {
                 tile.take_host_intent();
