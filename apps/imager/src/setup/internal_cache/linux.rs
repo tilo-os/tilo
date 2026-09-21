@@ -358,6 +358,13 @@ mod native {
         manifest: String,
     }
     impl CacheRoot {
+        #[cfg_attr(
+            test,
+            expect(
+                dead_code,
+                reason = "coordinator tests use the deterministic fixture platform"
+            )
+        )]
         pub(in crate::setup) fn acquire(selected: &SelectedManifest) -> Result<Self> {
             let cache =
                 if let Some(raw) = std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty()) {
@@ -1160,6 +1167,13 @@ mod native {
 
         /// Verify once at actual consumption, then retain native guards through
         /// the callback, including its error path. Restore the original cursor.
+        #[cfg_attr(
+            test,
+            expect(
+                dead_code,
+                reason = "coordinator tests use the deterministic fixture platform"
+            )
+        )]
         pub(in crate::setup) fn with_verified_reader<T>(
             &mut self,
             cancel: &AtomicBool,
