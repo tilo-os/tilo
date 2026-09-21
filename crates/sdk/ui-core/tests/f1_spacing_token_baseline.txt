@@ -175,7 +175,7 @@ crates/sdk/ui-core/src/widget/activity_timeline.rs pixel_const 14
 crates/sdk/ui-core/src/widget/app_shell.rs pixel_const 3
 crates/sdk/ui-core/src/widget/autocomplete.rs pixel_const 5
 crates/sdk/ui-core/src/widget/banner.rs pixel_const 6
-crates/sdk/ui-core/src/widget/block_editor.rs pixel_const 12
+crates/sdk/ui-core/src/widget/block_editor.rs pixel_const 11
 crates/sdk/ui-core/src/widget/button.rs pixel_const 8
 crates/sdk/ui-core/src/widget/card.rs pixel_const 3
 crates/sdk/ui-core/src/widget/channel_browser.rs pixel_const 12

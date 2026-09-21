@@ -395,7 +395,13 @@ impl FrameHarness {
             .document_history
             .presentation_roots(&context)
             .unwrap_or_default();
-        let mut roots: Vec<(&dyn Widget, NodeId)> = vec![(self.root.as_ref(), self.child_node)];
+        let mut roots: Vec<(&dyn Widget, NodeId)> = vec![(
+            self.history.as_ref().map_or_else(
+                || self.root.as_ref(),
+                |history| history.as_ref() as &dyn Widget,
+            ),
+            self.child_node,
+        )];
         roots.extend(
             chrome
                 .into_iter()
@@ -404,8 +410,12 @@ impl FrameHarness {
         // SAFETY: all retained roots use the same fresh arena, admitted independently
         // so app callback authority never propagates into host chrome.
         unsafe {
-            self.bindings
-                .rebuild_roots(&roots, &self.taffy, &self.node_map);
+            self.bindings.rebuild_roots_with_retained(
+                &roots,
+                self.history.as_ref().map(|_| self.root.as_ref()),
+                &self.taffy,
+                &self.node_map,
+            );
         }
         layout.root
     }

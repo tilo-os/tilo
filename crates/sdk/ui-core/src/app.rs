@@ -1271,13 +1271,28 @@ impl App {
         {
             return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
         }
-        let root = Box::new(crate::widget::BoundAppWidget { component });
-        Ok(Self::from_scoped_parts_with_inputs(
-            scope,
-            State::new(),
-            root,
-            || inputs,
-        ))
+        let history = component.history.take();
+        let mut root = Box::new(crate::widget::BoundAppWidget { component });
+        if let Some(registration) = &history
+            && let Err(error) = registration.validate_root(root.as_ref())
+        {
+            return Err(root
+                .component
+                .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
+        }
+        let mut app = Self::from_scoped_parts_with_inputs(scope, State::new(), root, || inputs);
+        if let Some(registration) = history
+            && let Err(error) = app.install_history(registration)
+        {
+            app.close_components();
+            return Err(crate::launch::LaunchError::ComponentSetup {
+                source: Box::new(crate::launch::LaunchError::Operation(error.to_string())),
+                record: binding.checkout,
+                records: binding.records,
+                reports: app.take_component_close_reports(),
+            });
+        }
+        Ok(app)
     }
 
     pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
