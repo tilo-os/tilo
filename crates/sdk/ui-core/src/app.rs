@@ -859,6 +859,54 @@ impl ContinuationRuntime {
     }
 }
 
+/// Host-owned collaboration transports and local authorship identity.
+struct CollaborationRuntime {
+    manager: CollaborationManager,
+    /// Keeps the room record index subscribed while `manager` follows a
+    /// checked-out record route.
+    room_manager: Option<CollaborationManager>,
+    local_author: crate::permissions::UserId,
+}
+
+impl CollaborationRuntime {
+    fn new(manager: CollaborationManager, local_author: crate::permissions::UserId) -> Self {
+        Self {
+            manager,
+            room_manager: None,
+            local_author,
+        }
+    }
+}
+
+/// Host-owned presence publication, follow, and frame-pump state.
+struct PresenceRuntime {
+    broadcast_scope: Option<PresenceKey>,
+    pointer_space: Option<crate::presence::PointerSpace>,
+    followed_peer: Option<String>,
+    last_pointer_broadcast: Option<Instant>,
+    last_focus: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    last_location: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    last_view: Option<crate::view::ViewSubset>,
+    broadcast_sink: Option<PresenceBroadcastSink>,
+    frame_tick: Option<FrameTick>,
+}
+
+impl PresenceRuntime {
+    fn new() -> Self {
+        Self {
+            broadcast_scope: None,
+            pointer_space: None,
+            followed_peer: None,
+            last_pointer_broadcast: None,
+            last_focus: None,
+            last_location: None,
+            last_view: None,
+            broadcast_sink: None,
+            frame_tick: None,
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -910,43 +958,11 @@ pub struct App {
     last_stable_focus_idx: Option<usize>,
     last_stable_metadata: Option<String>,
 
-    // Collaboration
-    collab_manager: CollaborationManager,
-    /// The unqualified `(app, room)` channel carries the room's record
-    /// index.  Once a widget checks out a record, `collab_manager` switches
-    /// to that record's route while this manager remains subscribed solely
-    /// to grants/discovery.
-    room_collab_manager: Option<CollaborationManager>,
-    /// Every committed action is attributed to it and Ctrl+Z only reverts
-    /// actions carrying it, so undo walks past collaborators' work rather
-    /// than through it.
-    local_author: crate::permissions::UserId,
+    collaboration: CollaborationRuntime,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
 
-    /// `None` disables outbound broadcast (headless tests, `quick-ui`
-    /// examples).
-    presence_broadcast_scope: Option<PresenceKey>,
-    /// `None` is the ordinary case; the shell sets
-    /// [`crate::presence::PointerSpace::Desktop`] for its own chrome, whose
-    /// window *is* the desktop other surfaces resolve against. Set rather
-    /// than guessed â€” a wrong guess publishes a position in the wrong space
-    /// with nothing to detect it from outside.
-    pointer_space: Option<crate::presence::PointerSpace>,
-    /// The peer "followed" via a clicked presence indicator; `None` = not
-    /// following.
-    followed_peer: Option<String>,
-    last_pointer_broadcast: Option<Instant>,
-    /// Diffed against, to avoid re-sending unchanged presence every frame.
-    last_focus_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    last_location_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    last_view_presence: Option<crate::view::ViewSubset>,
-    /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
-    /// send. Invoked after the throttle gate.
-    presence_broadcast_sink: Option<PresenceBroadcastSink>,
-    /// Lets the shell drain `NeighbourMsg::PresenceMoved` into
-    /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
-    frame_tick: Option<FrameTick>,
+    presence: PresenceRuntime,
 
     accessibility: AccessibilityRuntime,
 
@@ -1343,7 +1359,7 @@ impl App {
         action: &crate::a11y::Action,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, String> {
-        let author = self.local_author.clone();
+        let author = self.collaboration.local_author.clone();
         // SAFETY: the runner exclusively owns the unchanged admitted tree.
         unsafe {
             crate::bound_dispatch::invoke_bound_semantic_node(
@@ -1675,20 +1691,13 @@ impl App {
             last_theme_store_check: Instant::now(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
-            collab_manager: inputs.collab_manager,
-            room_collab_manager: None,
-            local_author: inputs.local_author.resolve(),
+            collaboration: CollaborationRuntime::new(
+                inputs.collab_manager,
+                inputs.local_author.resolve(),
+            ),
             presence_ctx: inputs.presence_ctx.resolve(),
             permission_ctx: PermissionContext::permissive(),
-            presence_broadcast_scope: None,
-            pointer_space: None,
-            followed_peer: None,
-            last_pointer_broadcast: None,
-            last_focus_presence: None,
-            last_location_presence: None,
-            last_view_presence: None,
-            presence_broadcast_sink: None,
-            frame_tick: None,
+            presence: PresenceRuntime::new(),
             accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
             fullscreen_requested: false,
             fullscreen_active: false,
@@ -2626,7 +2635,7 @@ impl App {
         if let Some(route) = &self.actions.bound_broker_route_for_test {
             return Some(route);
         }
-        self.collab_manager.primary_route()
+        self.collaboration.manager.primary_route()
     }
     fn publication_app_id(&self) -> String {
         if crate::bound_dispatch::has_matching_broker_component(
@@ -2727,7 +2736,7 @@ impl App {
                 .action_surface_publication_attempts
                 .saturating_add(1);
         }
-        if !self.collab_manager.is_connected() {
+        if !self.collaboration.manager.is_connected() {
             return;
         }
         let route = self.bound_broker_route().cloned();
@@ -2741,7 +2750,8 @@ impl App {
         // broker owns the capability and asks the UI thread to materialise a
         // bounded page; large apps therefore do not become a flattened RPC
         // catalogue just because they are visible in shell search.
-        self.collab_manager
+        self.collaboration
+            .manager
             .publish_action_directory(publication_app_id.clone());
         let resources = self.publication_resources();
         // Use this exact snapshot for coverage as well as publication. That
@@ -2771,10 +2781,12 @@ impl App {
                 .as_ref()
                 .is_some_and(|actions| !actions.is_empty())
             {
-                self.collab_manager.send(CollabRequest::PublishActions {
-                    app_id: publication_app_id,
-                    actions: Vec::new(),
-                });
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::PublishActions {
+                        app_id: publication_app_id,
+                        actions: Vec::new(),
+                    });
                 self.actions.last_published_actions = Some(Vec::new());
             }
             return;
@@ -2816,10 +2828,12 @@ impl App {
             {
                 return;
             }
-            self.collab_manager.send(CollabRequest::PublishActions {
-                app_id: crate::collaboration::local_app_id(),
-                actions: Vec::new(),
-            });
+            self.collaboration
+                .manager
+                .send(CollabRequest::PublishActions {
+                    app_id: crate::collaboration::local_app_id(),
+                    actions: Vec::new(),
+                });
             self.actions.last_published_actions = Some(Vec::new());
             return;
         }
@@ -2829,10 +2843,12 @@ impl App {
             return;
         }
         let actions = descriptors.iter().map(Self::exported_action).collect();
-        self.collab_manager.send(CollabRequest::PublishActions {
-            app_id: publication_app_id,
-            actions,
-        });
+        self.collaboration
+            .manager
+            .send(CollabRequest::PublishActions {
+                app_id: publication_app_id,
+                actions,
+            });
         self.actions.last_published_actions = Some(descriptors);
     }
 
@@ -3696,7 +3712,7 @@ impl App {
     }
 
     fn pump_action_directory_requests(&mut self) {
-        for request in self.collab_manager.take_action_directory_requests() {
+        for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::Query { query, reply } => {
                     let _ = reply.send(self.action_directory_page(query));
@@ -3720,7 +3736,7 @@ impl App {
     /// focus itself or start playing media.
     fn publish_continuation_metadata(&mut self) {
         self.apply_pending_continuation_restore();
-        if !self.collab_manager.is_connected() || self.continuation.pending_view.is_some() {
+        if !self.collaboration.manager.is_connected() || self.continuation.pending_view.is_some() {
             return;
         }
         let semantic = self.root_widget.continuable().and_then(|continuable| {
@@ -3736,7 +3752,7 @@ impl App {
             metadata.as_ref(),
             self.continuation.last_published.is_some(),
         ) {
-            self.collab_manager.send(request);
+            self.collaboration.manager.send(request);
         }
         self.continuation.last_published = metadata;
     }
@@ -3745,7 +3761,7 @@ impl App {
     /// broker. Public cross-device state is derived by the shell and remains
     /// path/URL-free; this report never enters the room document.
     fn publish_playback_handoff(&mut self) {
-        if !self.collab_manager.is_connected() {
+        if !self.collaboration.manager.is_connected() {
             return;
         }
         let now = Instant::now();
@@ -3764,7 +3780,8 @@ impl App {
         let Ok(reports_json) = serde_json::to_vec(&reports) else {
             return;
         };
-        self.collab_manager
+        self.collaboration
+            .manager
             .send(crate::collaboration::CollabRequest::ReportPlayback {
                 app_id,
                 reports_json,
@@ -3865,7 +3882,8 @@ impl App {
                 },
             },
         };
-        self.collab_manager
+        self.collaboration
+            .manager
             .send(CollabRequest::UpdateInvocation { id, update });
     }
 
@@ -3909,13 +3927,13 @@ impl App {
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         Self::dispatch_broker_request(
             &mut self.actions.next_broker_request_id,
-            self.collab_manager.is_connected(),
+            self.collaboration.manager.is_connected(),
             address,
             typed_arguments,
             argument,
             confirmation_evidence,
             |request| {
-                self.collab_manager.send(request);
+                self.collaboration.manager.send(request);
             },
         )
     }
@@ -4041,7 +4059,7 @@ impl App {
             spec,
             encoded,
             actor,
-            &self.local_author.0,
+            &self.collaboration.local_author.0,
             confirmed_by_broker,
             tilo_actions::InvocationId::new(),
             ambient_context,
@@ -4136,7 +4154,7 @@ impl App {
         if !broker_admitted
             && ((kind == tilo_actions::OperationKind::Effect
                 && invocation.is_none()
-                && (broker_delivery.is_some() || self.collab_manager.is_connected()))
+                && (broker_delivery.is_some() || self.collaboration.manager.is_connected()))
                 || (kind == tilo_actions::OperationKind::Document
                     && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred))
         {
@@ -4289,7 +4307,7 @@ impl App {
         invocation: Option<tilo_actions::InvocationId>,
         ambient_context: Option<&tilo_actions::ActionContext>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let mut resources = if actor == self.local_author.0 {
+        let mut resources = if actor == self.collaboration.local_author.0 {
             self.collect_local_resources()
         } else {
             self.collect_resources()
@@ -4300,7 +4318,7 @@ impl App {
                 &self.state.doc,
                 &address.resource,
             );
-            let fallback = if actor == self.local_author.0 {
+            let fallback = if actor == self.collaboration.local_author.0 {
                 fallback.and_then(|resource| self.filter_resource_for_local_actor(resource))
             } else {
                 fallback
@@ -4316,7 +4334,7 @@ impl App {
             confirmation_satisfied,
         )?;
         let kind = resolved.kind;
-        if kind == tilo_actions::OperationKind::View && actor != self.local_author.0 {
+        if kind == tilo_actions::OperationKind::View && actor != self.collaboration.local_author.0 {
             return Err(tilo_actions::DoorError::Unavailable {
                 code: "private_view".into(),
                 reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
@@ -4331,7 +4349,7 @@ impl App {
         if kind == tilo_actions::OperationKind::Effect
             && invocation.is_none()
             && !broker_admitted
-            && self.collab_manager.is_connected()
+            && self.collaboration.manager.is_connected()
         {
             return self.invoke_via_broker(
                 address,
@@ -4370,7 +4388,7 @@ impl App {
                     "application launch payload is out of bounds".into(),
                 ));
             }
-            if !self.collab_manager.is_connected() {
+            if !self.collaboration.manager.is_connected() {
                 return Err(tilo_actions::DoorError::Unavailable {
                     code: "authoritative_host_unavailable".into(),
                     reason: "Opening staged media requires the workspace action broker".into(),
@@ -4383,7 +4401,8 @@ impl App {
                 ));
             };
             self.admit_application_launch(request_id, invocation)?;
-            self.collab_manager
+            self.collaboration
+                .manager
                 .send(CollabRequest::LaunchPublishedApplication {
                     request_id,
                     app_id: launch.app_id,
@@ -4398,36 +4417,41 @@ impl App {
                 Ok(handled) => handled,
                 Err(message) => {
                     if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                        self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                            address: address.clone(),
-                            update: tilo_actions::InvocationUpdate::Failed {
-                                invocation: operation_invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "semantic_action_failed".into(),
-                                    message: message.clone(),
-                                    details: None,
-                                    retryable: false,
+                        self.collaboration
+                            .manager
+                            .send(CollabRequest::RecordLocalEffect {
+                                address: address.clone(),
+                                update: tilo_actions::InvocationUpdate::Failed {
+                                    invocation: operation_invocation,
+                                    error: tilo_actions::ActionFailure {
+                                        code: "semantic_action_failed".into(),
+                                        message: message.clone(),
+                                        details: None,
+                                        retryable: false,
+                                    },
                                 },
-                            },
-                        });
+                            });
                     }
                     return Err(tilo_actions::DoorError::Failed(message));
                 }
             };
             if !handled {
                 if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                    self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                        address: address.clone(),
-                        update: tilo_actions::InvocationUpdate::Failed {
-                            invocation: operation_invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "unknown_action".into(),
-                                message: "the semantic target no longer accepts this action".into(),
-                                details: None,
-                                retryable: false,
+                    self.collaboration
+                        .manager
+                        .send(CollabRequest::RecordLocalEffect {
+                            address: address.clone(),
+                            update: tilo_actions::InvocationUpdate::Failed {
+                                invocation: operation_invocation,
+                                error: tilo_actions::ActionFailure {
+                                    code: "unknown_action".into(),
+                                    message: "the semantic target no longer accepts this action"
+                                        .into(),
+                                    details: None,
+                                    retryable: false,
+                                },
                             },
-                        },
-                    });
+                        });
                 }
                 return Err(tilo_actions::DoorError::Unknown(address.clone()));
             }
@@ -4439,13 +4463,15 @@ impl App {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
             if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                    address: address.clone(),
-                    update: tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: operation_invocation,
-                        output: tilo_actions::ActionOutput::default(),
-                    },
-                });
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::RecordLocalEffect {
+                        address: address.clone(),
+                        update: tilo_actions::InvocationUpdate::Succeeded {
+                            invocation: operation_invocation,
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                    });
             }
             return Ok(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
@@ -4462,7 +4488,7 @@ impl App {
             resolved,
             encoded,
             actor,
-            &self.local_author.0,
+            &self.collaboration.local_author.0,
             broker_admitted,
             operation_invocation,
             ambient_context,
@@ -4479,10 +4505,12 @@ impl App {
                             retryable: false,
                         },
                     };
-                    self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                        address: address.clone(),
-                        update,
-                    });
+                    self.collaboration
+                        .manager
+                        .send(CollabRequest::RecordLocalEffect {
+                            address: address.clone(),
+                            update,
+                        });
                 }
                 return Err(message);
             }
@@ -4504,13 +4532,15 @@ impl App {
             && kind == tilo_actions::OperationKind::Effect
             && invocation.is_none()
         {
-            self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                address: address.clone(),
-                update: tilo_actions::InvocationUpdate::Succeeded {
-                    invocation: operation_invocation,
-                    output: output.clone(),
-                },
-            });
+            self.collaboration
+                .manager
+                .send(CollabRequest::RecordLocalEffect {
+                    address: address.clone(),
+                    update: tilo_actions::InvocationUpdate::Succeeded {
+                        invocation: operation_invocation,
+                        output: output.clone(),
+                    },
+                });
         }
         // Effect/view operations are allowed to switch presentation-only
         // resources without touching Automerge.
@@ -4529,7 +4559,7 @@ impl App {
             tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::Value::Object(intent.arguments.clone())
         );
-        let actor = self.local_author.0.clone();
+        let actor = self.collaboration.local_author.0.clone();
         let result = self.invoke_bound_target(
             target,
             Some(&argument),
@@ -4634,7 +4664,7 @@ impl App {
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
                 serde_json::Value::Object(intent.arguments.clone())
             );
-            let actor = self.local_author.0.clone();
+            let actor = self.collaboration.local_author.0.clone();
             let result = self.invoke_resource_action(
                 &intent.address,
                 Some(&json),
@@ -4672,7 +4702,7 @@ impl App {
     }
 
     fn fail_pending_application_launches_on_disconnect(&mut self) -> bool {
-        if self.collab_manager.is_connected() {
+        if self.collaboration.manager.is_connected() {
             return false;
         }
 
@@ -4682,7 +4712,7 @@ impl App {
             let Some(directed) = self.actions.directed_invocations.remove(&invocation) else {
                 continue;
             };
-            self.collab_manager.send(CollabRequest::UpdateInvocation {
+            self.collaboration.manager.send(CollabRequest::UpdateInvocation {
                 id: directed.wire_id,
                 update: tilo_actions::InvocationUpdate::Failed {
                     invocation,
@@ -4761,10 +4791,12 @@ impl App {
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.directed_invocations.remove(&invocation);
             }
-            self.collab_manager.send(CollabRequest::UpdateInvocation {
-                id: pending.wire_id,
-                update,
-            });
+            self.collaboration
+                .manager
+                .send(CollabRequest::UpdateInvocation {
+                    id: pending.wire_id,
+                    update,
+                });
             changed = true;
         }
         let local_invocations = self
@@ -4831,7 +4863,8 @@ impl App {
                 } else {
                     update
                 };
-                self.collab_manager
+                self.collaboration
+                    .manager
                     .send(CollabRequest::RecordLocalEffect { address, update });
             }
             changed = true;
@@ -5037,7 +5070,7 @@ impl App {
             .and_then(crate::action_palette::ActionPalette::take_operation);
         if let Some(pending) = pending {
             let argument = pending.wire_argument();
-            let actor = self.local_author.0.clone();
+            let actor = self.collaboration.local_author.0.clone();
             // Confirmation was collected by the palette, but the request has
             // not crossed the session broker yet. Host-required documents are
             // therefore submitted to that broker rather than applied here.
@@ -5680,26 +5713,26 @@ impl App {
     where
         F: FnMut(&mut PresenceCtx) -> bool + Send + Sync + 'static,
     {
-        self.frame_tick = Some(Box::new(tick));
+        self.presence.frame_tick = Some(Box::new(tick));
     }
 
     pub fn set_presence_broadcast_sink<F>(&mut self, sink: F)
     where
         F: Fn(&PresenceKey, &PresencePayload) + Send + Sync + 'static,
     {
-        self.presence_broadcast_sink = Some(Box::new(sink));
+        self.presence.broadcast_sink = Some(Box::new(sink));
     }
 
     pub fn clear_presence_broadcast_sink(&mut self) {
-        self.presence_broadcast_sink = None;
+        self.presence.broadcast_sink = None;
     }
 
     pub fn set_pointer_space(&mut self, space: crate::presence::PointerSpace) {
-        self.pointer_space = Some(space);
+        self.presence.pointer_space = Some(space);
     }
 
     fn local_pointer_key(&self) -> PresenceKey {
-        match self.pointer_space.clone() {
+        match self.presence.pointer_space.clone() {
             Some(space) => PresenceKey::Pointer { space },
             None => PresenceKey::local_surface_pointer(),
         }
@@ -5709,16 +5742,16 @@ impl App {
     /// pointer is in â€” see [`Self::set_pointer_space`].
     pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
         let _entry = self.enter_wake_scope();
-        self.presence_broadcast_scope.clone_from(&key);
+        self.presence.broadcast_scope.clone_from(&key);
         // Reset the throttle so a new scope's first move fires immediately.
-        self.last_pointer_broadcast = None;
+        self.presence.last_pointer_broadcast = None;
         // Arrival remains ephemeral presence only. Document catch-up is a
         // broker-directed request with one selected snapshot responder.
         if let Some(k) = key {
             tracing::debug!(
                 target: "tilo.state",
                 event = "presence_arrived",
-                connected = self.collab_manager.is_connected(),
+                connected = self.collaboration.manager.is_connected(),
                 "publishing collaboration presence"
             );
             self.broadcast_presence(k, crate::collaboration::PresencePayload::Arrived);
@@ -5726,7 +5759,7 @@ impl App {
     }
 
     pub fn presence_broadcast_scope(&self) -> Option<&PresenceKey> {
-        self.presence_broadcast_scope.as_ref()
+        self.presence.broadcast_scope.as_ref()
     }
 
     pub fn presence_ctx(&self) -> &PresenceCtx {
@@ -5737,15 +5770,15 @@ impl App {
     }
 
     pub fn set_followed_peer(&mut self, user_id: Option<String>) {
-        self.followed_peer = user_id;
+        self.presence.followed_peer = user_id;
     }
 
     pub fn followed_peer(&self) -> Option<&str> {
-        self.followed_peer.as_deref()
+        self.presence.followed_peer.as_deref()
     }
 
     pub fn followed_peer_target(&self) -> Option<[f32; 2]> {
-        let id = self.followed_peer.as_deref()?;
+        let id = self.presence.followed_peer.as_deref()?;
         self.presence_ctx.peer_pointer(id)
     }
 
@@ -5757,7 +5790,7 @@ impl App {
     ) -> bool {
         let _entry = self.enter_wake_scope();
         if let Some(uid) = self.presence_ctx.hit_test_offscreen_mist(viewport, point) {
-            self.followed_peer = Some(uid);
+            self.presence.followed_peer = Some(uid);
             true
         } else {
             false
@@ -5796,10 +5829,11 @@ impl App {
         let _entry = self.enter_wake_scope();
         // Fan out to the optional out-of-band sink first (the shell's Iroh
         // bridge) so a slow socket never delays the network path.
-        if let Some(sink) = self.presence_broadcast_sink.as_ref() {
+        if let Some(sink) = self.presence.broadcast_sink.as_ref() {
             sink(&key, &payload);
         }
-        self.collab_manager
+        self.collaboration
+            .manager
             .send(CollabRequest::Presence { key, payload });
     }
 
@@ -5836,7 +5870,7 @@ impl App {
 
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
-        if self.collab_manager.is_connected() {
+        if self.collaboration.manager.is_connected() {
             match self.pending_primary_document_delta() {
                 Ok((delta, heads)) if !delta.is_empty() => {
                     tracing::debug!(
@@ -5847,7 +5881,7 @@ impl App {
                         heads = heads.len(),
                         "queueing document mutation"
                     );
-                    if self.collab_manager.send(
+                    if self.collaboration.manager.send(
                         crate::collaboration::CollabRequest::document_incremental(delta),
                     ) {
                         self.advance_primary_document(heads);
@@ -5866,8 +5900,8 @@ impl App {
     /// incremental cursor and route separate so an annotation/document delta
     /// can never be merged into the index (or vice versa).
     fn broadcast_room_index_delta(&mut self) {
-        let connected = self.room_collab_manager.as_ref().map_or_else(
-            || self.persistence.records.is_some() && self.collab_manager.is_connected(),
+        let connected = self.collaboration.room_manager.as_ref().map_or_else(
+            || self.persistence.records.is_some() && self.collaboration.manager.is_connected(),
             CollaborationManager::is_connected,
         );
         if !connected {
@@ -5880,7 +5914,7 @@ impl App {
         if delta.is_empty() {
             return;
         }
-        if let Some(manager) = self.room_collab_manager.as_mut() {
+        if let Some(manager) = self.collaboration.room_manager.as_mut() {
             if manager.is_connected()
                 && manager.send(crate::collaboration::CollabRequest::document_incremental(
                     delta,
@@ -5888,16 +5922,13 @@ impl App {
             {
                 room.advance_outbound(heads);
             }
-        } else if self.persistence.records.is_some() && self.collab_manager.is_connected() {
+        } else if self.persistence.records.is_some() && self.collaboration.manager.is_connected() {
             // Before the first record checkout the primary manager is the
-            // room route. It becomes `room_collab_manager` at that checkout.
+            // room route. It becomes `collaboration.room_manager` at that checkout.
             // Do not advance this cursor for ordinary (non-record) apps.
-            if self
-                .collab_manager
-                .send(crate::collaboration::CollabRequest::document_incremental(
-                    delta,
-                ))
-            {
+            if self.collaboration.manager.send(
+                crate::collaboration::CollabRequest::document_incremental(delta),
+            ) {
                 room.advance_outbound(heads);
             }
         }
@@ -5910,7 +5941,7 @@ impl App {
                 .ok()
                 .flatten()
         });
-        if current != self.last_focus_presence {
+        if current != self.presence.last_focus {
             // When the caret advances forward under the same scope, publish
             // `Typing` for the inserted run so peers light up a fading
             // highlighter. Backspace/left-arrow and scope changes don't
@@ -5918,7 +5949,7 @@ impl App {
             if let (
                 Some((new_key, PresencePayload::Caret { pos: new_pos })),
                 Some((old_key, PresencePayload::Caret { pos: old_pos })),
-            ) = (&current, &self.last_focus_presence)
+            ) = (&current, &self.presence.last_focus)
                 && new_key == old_key
                 && new_pos > old_pos
             {
@@ -5933,7 +5964,7 @@ impl App {
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
             }
-            self.last_focus_presence = current;
+            self.presence.last_focus = current;
         }
     }
 
@@ -5941,11 +5972,11 @@ impl App {
     /// focus.
     fn broadcast_location_presence(&mut self) {
         let current = self.root_widget.presence_payload();
-        if current != self.last_location_presence {
+        if current != self.presence.last_location {
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
             }
-            self.last_location_presence = current;
+            self.presence.last_location = current;
         }
     }
 
@@ -5955,12 +5986,12 @@ impl App {
     /// inert paired payload; the receiver recognises the key and decodes the
     /// subset instead.
     fn broadcast_view_presence(&mut self) {
-        if !self.collab_manager.is_connected() && self.presence_broadcast_sink.is_none() {
+        if !self.collaboration.manager.is_connected() && self.presence.broadcast_sink.is_none() {
             return;
         }
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
         let subset = crate::view::ViewSubset::from_view(&view);
-        if self.last_view_presence.as_ref() == Some(&subset) {
+        if self.presence.last_view.as_ref() == Some(&subset) {
             return;
         }
         self.broadcast_presence(
@@ -5970,7 +6001,7 @@ impl App {
             // with the routing key intact.
             crate::collaboration::PresencePayload::Arrived,
         );
-        self.last_view_presence = Some(subset);
+        self.presence.last_view = Some(subset);
     }
 
     /// Following a peer who hasn't published a View yet latches the intent
@@ -5978,17 +6009,17 @@ impl App {
     /// View arrives.
     pub fn follow(&mut self, peer_id: impl Into<String>) {
         let _entry = self.enter_wake_scope();
-        self.followed_peer = Some(peer_id.into());
+        self.presence.followed_peer = Some(peer_id.into());
         self.apply_follow();
     }
 
     pub fn unfollow(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.followed_peer = None;
+        self.presence.followed_peer = None;
     }
 
     fn apply_follow(&mut self) {
-        let Some(id) = self.followed_peer.clone() else {
+        let Some(id) = self.presence.followed_peer.clone() else {
             return;
         };
         let Some(view) = self
@@ -6013,7 +6044,7 @@ impl App {
     pub fn poll_and_apply_collab_events(&mut self) {
         let _entry = self.enter_wake_scope();
         self.pump_room_index_events();
-        let events = self.collab_manager.poll();
+        let events = self.collaboration.manager.poll();
         for event in events {
             self.apply_collab_event_for_test(event);
         }
@@ -6060,7 +6091,7 @@ impl App {
     /// presence are record scoped, so an index update cannot alter the app's
     /// resource/action namespace or presentation state.
     fn pump_room_index_events(&mut self) -> bool {
-        let Some(manager) = self.room_collab_manager.as_mut() else {
+        let Some(manager) = self.collaboration.room_manager.as_mut() else {
             return false;
         };
         let events = manager.poll();
@@ -6093,7 +6124,7 @@ impl App {
                 }
                 CollabEvent::DocumentSnapshotRequested { .. } => {
                     if let (Some(manager), Some(room)) = (
-                        self.room_collab_manager.as_mut(),
+                        self.collaboration.room_manager.as_mut(),
                         self.persistence.room_index.as_mut(),
                     ) {
                         let snapshot = room.document_mut().save();
@@ -6126,9 +6157,9 @@ impl App {
         self.drain_document_routes();
         self.publish_owned_documents();
         for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
-            self.collab_manager.send(request);
+            self.collaboration.manager.send(request);
         }
-        let events = self.collab_manager.poll();
+        let events = self.collaboration.manager.poll();
         let mut action_surface_may_have_changed = false;
         for event in events {
             any = true;
@@ -6146,7 +6177,8 @@ impl App {
                     match self.primary_document_snapshot() {
                         Ok(data) => {
                             let _ = self
-                                .collab_manager
+                                .collaboration
+                                .manager
                                 .send(crate::collaboration::CollabRequest::document_snapshot(data));
                         }
                         Err(error) => {
@@ -6272,10 +6304,12 @@ impl App {
                             },
                         },
                     };
-                    self.collab_manager.send(CollabRequest::UpdateInvocation {
-                        id: pending.wire_id,
-                        update,
-                    });
+                    self.collaboration
+                        .manager
+                        .send(CollabRequest::UpdateInvocation {
+                            id: pending.wire_id,
+                            update,
+                        });
                 }
                 // The generic catalogue/client responses are consumed by
                 // widgets such as Agent through their collaboration event
@@ -6293,7 +6327,7 @@ impl App {
         if any {
             self.invalidate_widget_resource_cache();
         }
-        let published_snapshot_was_evicted = self.collab_manager.is_connected()
+        let published_snapshot_was_evicted = self.collaboration.manager.is_connected()
             && self.actions.last_published_actions.is_some()
             && self.actions.action_directory_snapshot.is_none();
         if action_surface_may_have_changed || published_snapshot_was_evicted {
@@ -6419,7 +6453,8 @@ impl App {
             CollabEvent::DocumentSnapshotRequested { .. } => {
                 let data = self.state.save();
                 let _ = self
-                    .collab_manager
+                    .collaboration
+                    .manager
                     .send(crate::collaboration::CollabRequest::document_snapshot(data));
             }
             CollabEvent::Context { collaborators, .. } => {
@@ -6489,10 +6524,12 @@ impl App {
                         },
                     },
                 };
-                self.collab_manager.send(CollabRequest::UpdateInvocation {
-                    id: pending.wire_id,
-                    update,
-                });
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::UpdateInvocation {
+                        id: pending.wire_id,
+                        update,
+                    });
             }
             _ => {}
         }
@@ -6503,7 +6540,7 @@ impl App {
     }
 
     pub fn local_author(&self) -> &crate::permissions::UserId {
-        &self.local_author
+        &self.collaboration.local_author
     }
 
     #[doc(hidden)]
@@ -6720,7 +6757,7 @@ impl App {
                 std::ptr::from_mut(self.root_widget.as_mut()),
                 &self.layout.node_map,
                 &self.bindings,
-                &self.local_author,
+                &self.collaboration.local_author,
                 &self.permission_ctx,
             )
         };
@@ -6752,17 +6789,19 @@ impl App {
                         &owner,
                         request,
                         &self.permission_ctx,
-                        &self.local_author,
+                        &self.collaboration.local_author,
                     )
                     .ok()
                     .flatten()
                 } else {
                     match request {
                         crate::undo::UndoRequest::Undo => {
-                            self.state.undo_as(Some(&self.local_author), None, None)
+                            self.state
+                                .undo_as(Some(&self.collaboration.local_author), None, None)
                         }
                         crate::undo::UndoRequest::Redo => {
-                            self.state.redo_as(Some(&self.local_author), None, None)
+                            self.state
+                                .redo_as(Some(&self.collaboration.local_author), None, None)
                         }
                     }
                 };
@@ -6772,8 +6811,12 @@ impl App {
             // history existed. Preserve that boundary without deriving labels.
             if binding.is_none()
                 && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
-                && (self.state.can_undo_as(Some(&self.local_author))
-                    || self.state.can_redo_as(Some(&self.local_author)))
+                && (self
+                    .state
+                    .can_undo_as(Some(&self.collaboration.local_author))
+                    || self
+                        .state
+                        .can_redo_as(Some(&self.collaboration.local_author)))
             {
                 self.state.doc.get_heads();
             }
@@ -6782,14 +6825,19 @@ impl App {
             let bound_status = binding
                 .as_ref()
                 .map(|binding| binding.undo_status(&mut self.state.doc).unwrap_or_default())
-                .or_else(|| self.bindings.legacy_status(node, &self.local_author));
+                .or_else(|| {
+                    self.bindings
+                        .legacy_status(node, &self.collaboration.local_author)
+                });
             let embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
                     if embedded {
-                        self.state.undo_status_snapshot(Some(&self.local_author))
+                        self.state
+                            .undo_status_snapshot(Some(&self.collaboration.local_author))
                     } else {
-                        self.state.undo_status(Some(&self.local_author))
+                        self.state
+                            .undo_status(Some(&self.collaboration.local_author))
                     }
                 })
             };
@@ -6841,7 +6889,7 @@ impl App {
         let changed = self.state.commit_action_authored_with_context(
             self.last_stable_focus_idx,
             self.last_stable_metadata.clone(),
-            Some(self.local_author.clone()),
+            Some(self.collaboration.local_author.clone()),
             context,
         );
         self.last_stable_focus_idx = self
@@ -7270,7 +7318,7 @@ impl App {
             let _ = self.open_action_palette_at(&address);
             return true;
         }
-        let actor = self.local_author.0.clone();
+        let actor = self.collaboration.local_author.0.clone();
         if self
             .invoke_resource_action(&address, argument, &actor, false, false, None, None, None)
             .is_ok()
@@ -7509,7 +7557,7 @@ impl App {
         target: &crate::bound_dispatch::BoundActionTarget,
         arg: Option<&str>,
     ) -> Result<bool, String> {
-        let actor = self.local_author.0.clone();
+        let actor = self.collaboration.local_author.0.clone();
         match self.invoke_bound_target(target, arg, &actor, false, false, None, None, None) {
             Ok(_) => Ok(true),
             Err(tilo_actions::DoorError::ConfirmationRequired) => {
@@ -7990,31 +8038,32 @@ impl App {
                 // index before moving the editable document to its record
                 // route. The two Automerge graphs never share a channel or
                 // an apply target.
-                if self.room_collab_manager.is_none() {
+                if self.collaboration.room_manager.is_none() {
                     let room = std::mem::replace(
-                        &mut self.collab_manager,
+                        &mut self.collaboration.manager,
                         CollaborationManager::for_record(&id),
                     );
-                    self.room_collab_manager = Some(room);
+                    self.collaboration.room_manager = Some(room);
                 } else {
-                    self.collab_manager = CollaborationManager::for_record(&id);
+                    self.collaboration.manager = CollaborationManager::for_record(&id);
                 }
                 tracing::debug!(
                     target: "tilo.state",
                     event = "record_checkout",
                     record = id.as_str(),
-                    connected = self.collab_manager.is_connected(),
+                    connected = self.collaboration.manager.is_connected(),
                     "switched document collaboration route"
                 );
                 self.needs_sync = true;
                 self.layout.layout_dirty = true;
                 // Presence announces the location; document catch-up is an
                 // independently directed broker request on the new route.
-                if let Some(scope) = self.presence_broadcast_scope.clone() {
+                if let Some(scope) = self.presence.broadcast_scope.clone() {
                     self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
                 }
                 let _ = self
-                    .collab_manager
+                    .collaboration
+                    .manager
                     .send(crate::collaboration::CollabRequest::RequestDocumentSnapshot);
                 true
             }
@@ -10658,17 +10707,17 @@ impl AppHandler {
             _ => {}
         }
         // `CursorMoved` is measured in this window's own content,
-        // never the desktop â€” see the `pointer_space` field.
-        if app.presence_broadcast_scope.is_some() {
+        // never the desktop — see the `pointer_space` field.
+        if app.presence.broadcast_scope.is_some() {
             match &event {
                 WindowEvent::CursorMoved { position, .. } => {
                     let now = Instant::now();
                     if pointer_broadcast_allowed(
-                        app.last_pointer_broadcast,
+                        app.presence.last_pointer_broadcast,
                         now,
                         Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
                     ) {
-                        app.last_pointer_broadcast = Some(now);
+                        app.presence.last_pointer_broadcast = Some(now);
                         let where_it_is = app.local_pointer_key();
                         #[allow(
                             clippy::cast_possible_truncation,
@@ -10686,7 +10735,7 @@ impl AppHandler {
                 WindowEvent::CursorLeft { .. } => {
                     let where_it_was = app.local_pointer_key();
                     app.broadcast_presence(where_it_was, PresencePayload::Left);
-                    app.last_pointer_broadcast = None;
+                    app.presence.last_pointer_broadcast = None;
                 }
                 _ => {}
             }
@@ -10822,19 +10871,19 @@ impl AppHandler {
                             &owner,
                             request,
                             &app.permission_ctx,
-                            &app.local_author,
+                            &app.collaboration.local_author,
                         )
                         .ok()
                         .flatten()
                     } else {
                         match request {
                             crate::undo::UndoRequest::Undo => app.state.undo_as(
-                                Some(&app.local_author),
+                                Some(&app.collaboration.local_author),
                                 current_focus_idx,
                                 current_meta,
                             ),
                             crate::undo::UndoRequest::Redo => app.state.redo_as(
-                                Some(&app.local_author),
+                                Some(&app.collaboration.local_author),
                                 current_focus_idx,
                                 current_meta,
                             ),
@@ -12071,7 +12120,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Without this a first peer with no input never re-syncs to seed its
         // doc after the grace window, so a late joiner diverges.
-        if app.collab_manager.is_connected() && app.root_widget.needs_idle_sync() {
+        if app.collaboration.manager.is_connected() && app.root_widget.needs_idle_sync() {
             app.needs_sync = true;
             request_primary_redraw();
         }
@@ -12130,7 +12179,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // A background pump can run while its visible projection is stable.
         // Redrawing only on a changed snapshot avoids full-scene GPU work on
         // every otherwise-idle collaboration wake.
-        if let Some(tick) = app.frame_tick.as_mut()
+        if let Some(tick) = app.presence.frame_tick.as_mut()
             && tick(&mut app.presence_ctx)
         {
             request_primary_redraw();
@@ -12153,7 +12202,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // be delayed by at most the 250ms probe cap; independent history, record,
         // autosave and collaboration work above continues on its existing doors.
         let demand = crate::render_thread::retry::WakeDemand {
-            model: app.collab_manager.is_connected(),
+            model: app.collaboration.manager.is_connected(),
             typing: typing_active,
             primary_startup: awaiting_primary_first_present,
             tooltip: tooltip_pending,
@@ -12369,10 +12418,10 @@ mod pointer_broadcast_tests {
         let state = State::new();
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(state, root);
-        app.last_pointer_broadcast = Some(Instant::now());
+        app.presence.last_pointer_broadcast = Some(Instant::now());
         app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: "home".into() }));
         assert!(
-            app.last_pointer_broadcast.is_none(),
+            app.presence.last_pointer_broadcast.is_none(),
             "scope change must clear the throttle so the next move broadcasts immediately"
         );
         assert_eq!(
@@ -14784,7 +14833,7 @@ mod action_palette_tests {
         assert!(app.state.commit_action_authored_with_context(
             None,
             None,
-            Some(app.local_author.clone()),
+            Some(app.collaboration.local_author.clone()),
             Some(context),
         ));
         let changes = app.state.doc.get_changes(&before);
@@ -15985,7 +16034,7 @@ mod semantic_tree_app_tests {
         let result = app.invoke_resource_action(
             &address,
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -16011,7 +16060,7 @@ mod semantic_tree_app_tests {
         let denied = app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("test.lazy", "bump"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -16025,7 +16074,7 @@ mod semantic_tree_app_tests {
         let allowed = app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("test.lazy", "bump"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -16060,7 +16109,7 @@ mod semantic_tree_app_tests {
         let result = app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("test.lazy.child", "bump"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -16269,7 +16318,7 @@ mod semantic_tree_app_tests {
         let result = app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("test.invalid", "decode"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -16293,9 +16342,9 @@ mod semantic_tree_app_tests {
         app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
         let pending = app.state.doc.pending_ops();
         for (action, actor) in [
-            ("host-bump", app.local_author.0.clone()),
+            ("host-bump", app.collaboration.local_author.0.clone()),
             ("inspect", "agent:Scribe".to_string()),
-            ("missing", app.local_author.0.clone()),
+            ("missing", app.collaboration.local_author.0.clone()),
         ] {
             let result = app.invoke_resource_action(
                 &tilo_actions::ActionAddress::new("test.counter", action),
@@ -16322,7 +16371,7 @@ mod semantic_tree_app_tests {
         assert!(app.state.commit_action_authored_with_context(
             None,
             None,
-            Some(app.local_author.clone()),
+            Some(app.collaboration.local_author.clone()),
             Some(context),
         ));
         let changes = app.state.doc.get_changes(&before);
@@ -16342,7 +16391,7 @@ mod semantic_tree_app_tests {
         let local = app.invoke_resource_action(
             &address,
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -16598,7 +16647,7 @@ mod semantic_tree_app_tests {
         let result = app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("test.counter", "ping"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -18287,7 +18336,7 @@ mod bound_component_tests {
             .is_some(),
             "fixture must publish its operation before admission"
         );
-        let actor = app.local_author.0.clone();
+        let actor = app.collaboration.local_author.0.clone();
         assert!(matches!(
             app.invoke_resource_action(
                 &tilo_actions::ActionAddress::new("bound:probe", "follow-up"),
@@ -18593,7 +18642,7 @@ mod bound_component_tests {
         let mut fixture = ActionFixture::broker();
         let outer = fixture.app.state.doc.get_heads();
         let address = tilo_actions::ActionAddress::new("bound:probe", "follow-up");
-        let actor = fixture.app.local_author.0.clone();
+        let actor = fixture.app.collaboration.local_author.0.clone();
         let error = fixture
             .app
             .invoke_resource_action(&address, None, &actor, true, false, None, None, None)
@@ -18775,7 +18824,7 @@ mod bound_component_tests {
                 .invoke_bound_target(
                     &target,
                     None,
-                    &fixture.app.local_author.0.clone(),
+                    &fixture.app.collaboration.local_author.0.clone(),
                     true,
                     false,
                     None,
@@ -18850,7 +18899,7 @@ mod bound_component_tests {
                 .resolve_publication_resource(&alias, "follow-up")
                 .is_none()
         );
-        let actor = fixture.app.local_author.0.clone();
+        let actor = fixture.app.collaboration.local_author.0.clone();
         assert!(
             fixture
                 .app
@@ -19484,7 +19533,7 @@ mod bound_component_tests {
         let mut fixture = ActionFixture::broker();
         let target = fixture.target(1, "follow-up");
         let resources = fixture.app.publication_resources();
-        let actor = fixture.app.local_author.0.clone();
+        let actor = fixture.app.collaboration.local_author.0.clone();
         let evidence = serde_json::json!({"token": "controlled-confirmation"});
         let mut requests = Vec::new();
         // This seam captures submission only; no broker acceptance is simulated.
@@ -19601,7 +19650,7 @@ mod bound_component_tests {
             let target = fixture.target(1, "apply");
             let first = fixture.bindings[0].clone();
             let outer = fixture.app.state.doc.get_heads();
-            let actor = fixture.app.local_author.0.clone();
+            let actor = fixture.app.collaboration.local_author.0.clone();
             let result = first
                 .with_document(&mut fixture.app.state.doc, |doc, _| {
                     doc.put(ROOT, "before-nested", "A").unwrap();
