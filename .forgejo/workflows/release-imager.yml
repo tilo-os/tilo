@@ -147,7 +147,7 @@ jobs:
               display_device=virtio-gpu-gl-pci
             fi
             sudo -n apt-get install -y --no-install-recommends \
-              dosfstools e2fsprogs fdisk imagemagick mtools ntfs-3g qemu-system-gui \
+              clang dosfstools e2fsprogs fdisk imagemagick lld mtools ntfs-3g qemu-system-gui \
               qemu-utils socat tesseract-ocr $native_packages
           elif command -v dnf >/dev/null; then
             if [ "${{ matrix.arch }}" = x86_64 ]; then
@@ -159,14 +159,14 @@ jobs:
               qemu_binary=qemu-system-aarch64
               display_device=virtio-gpu-gl-pci
             fi
-            sudo -n dnf install -y dosfstools e2fsprogs ImageMagick mtools ntfs-3g util-linux \
+            sudo -n dnf install -y clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux \
               qemu-img qemu-ui-egl-headless qemu-ui-opengl socat tesseract $native_packages
           else
             printf 'unsupported runner OS for installer VM cycle\n' >&2
             exit 1
           fi
-          command -v debugfs mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat mtype ntfscp \
-            qemu-img "$qemu_binary" sfdisk socat tesseract >/dev/null
+          command -v clang debugfs ld.lld mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat \
+            mtype ntfscp qemu-img "$qemu_binary" sfdisk socat tesseract >/dev/null
           command -v magick >/dev/null || command -v convert >/dev/null
           if [ "${{ matrix.arch }}" = x86_64 ]; then
             command -v swtpm virt-fw-vars >/dev/null
