@@ -71,6 +71,12 @@ pub enum Action {
         dx: f32,
         dy: f32,
     },
+    /// Feed total signed travel from a shell-owned three-finger horizontal
+    /// gesture into the active strip.
+    StripPan(f64),
+    /// Lift/cancel the synthetic three-finger stream and let elastic overpull
+    /// settle to the nearest legal strip edge.
+    EndStripPan,
     /// Move the cursor onto a named target's centre without pressing.
     /// Sibling of [`Action::ClickNamed`], for the affordances that are
     /// hover-driven — a tab pill opening its control cluster — where a
@@ -506,6 +512,14 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::Drag { from, to, steps } => driver.drag(*from, *to, *steps),
         Action::MiddleDrag { from, to, steps } => driver.middle_drag(*from, *to, *steps),
         Action::MouseWheel { dx, dy } => driver.mouse_wheel(*dx, *dy),
+        Action::StripPan(travel) => {
+            driver.host_mut().update_active_strip_pan(*travel, true);
+        }
+        Action::EndStripPan => {
+            driver
+                .host_mut()
+                .end_active_strip_pan(std::time::Instant::now());
+        }
         Action::Relayout => driver.relayout(),
         Action::MoveCursor(p) => driver.move_cursor(*p),
         Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
@@ -2154,22 +2168,24 @@ fn strip_scroll_across_apps() -> Scenario {
         Action::Wait(6),
         Action::Snapshot("05-strip-at-rest"),
     ];
-    // Travel the strip by focus, the only sanctioned view motion: a
-    // bare wheel deliberately does NOT move the strip (hard boundary,
-    // 2026-08-22 — scrolling is for content inside a window). Focusing
-    // the far window slides the whole strip across on the eased snap
-    // curve, exactly what the Alt+Shift wheel jump produces live.
-    actions.push(Action::SelectGroup(Some(3)));
-    // Let the eased travel settle on its target before reading it.
+    // Pull well past the final app and hold: the visual position remains
+    // bounded by the rubber-band asymptote rather than hitting a wall.
+    actions.push(Action::StripPan(10_000.0));
+    actions.push(Action::Relayout);
+    actions.push(Action::Snapshot("06-held-past-trailing-edge"));
+    // Release back to the legal 20%-viewport trailing canvas allowance.
+    actions.push(Action::EndStripPan);
     actions.push(Action::Wait(PAN_SETTLE_FRAMES));
-    actions.push(Action::Snapshot("06-panned-right"));
-    actions.push(Action::SelectGroup(Some(0)));
+    actions.push(Action::Snapshot("07-settled-trailing-room"));
+    // The reverse gesture remains direct manipulation and returns home.
+    actions.push(Action::StripPan(-10_000.0));
+    actions.push(Action::EndStripPan);
     actions.push(Action::Wait(PAN_SETTLE_FRAMES));
-    actions.push(Action::Snapshot("07-panned-back"));
+    actions.push(Action::Snapshot("08-panned-back"));
     Scenario {
         name: "strip_scroll_across_apps",
         description: "Open Notes, Files, Terminal and Editor as four windows along the strip, \
-                      then travel focus across them and back.",
+                      then directly pan into the resisted trailing edge and back.",
         actions,
     }
 }
@@ -4339,7 +4355,7 @@ mod tests {
     /// Sink that records what the strip's scroll looks like at each
     /// named snapshot, straight off the live `GroupRow` the shell pans.
     struct StripScrollSink {
-        seen: Vec<(String, f64, f64)>,
+        seen: Vec<(String, f64, f64, f64)>,
     }
     impl SnapshotSink for StripScrollSink {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
@@ -4349,12 +4365,13 @@ mod tests {
                 tree.active_workspace()
                     .and_then(|ws| ws.strips.first().map(|s| s.id))
             };
-            let (scroll_x, max_scroll_x) = strip_id
+            let (scroll_x, max_scroll_x, pan_max_scroll_x) = strip_id
                 .and_then(|sid| driver.host_mut().group_row_mut_for_tests(sid))
-                .map_or((f64::NAN, f64::NAN), |row| {
-                    (row.scroll_x(), row.max_scroll_x())
+                .map_or((f64::NAN, f64::NAN, f64::NAN), |row| {
+                    (row.scroll_x(), row.max_scroll_x(), row.pan_max_scroll_x())
                 });
-            self.seen.push((name.to_string(), scroll_x, max_scroll_x));
+            self.seen
+                .push((name.to_string(), scroll_x, max_scroll_x, pan_max_scroll_x));
         }
     }
 
@@ -4409,25 +4426,25 @@ mod tests {
         }
     }
 
-    /// And it has to actually travel: the strip holds more than fits,
-    /// focusing the far window carries it off its resting position, and
-    /// focusing the first one returns it home. Read off the live
-    /// `GroupRow` the focus-follow reconciler writes to.
+    /// And it has to actually travel: the strip holds more than fits, direct
+    /// manipulation pulls beyond the legal trailing rest with resistance,
+    /// release settles there, and a reverse pan returns home. Read each state
+    /// off the live `GroupRow` the shell pans.
     #[test]
     fn strip_scroll_scenario_pans_the_strip_and_back() {
         let mut d = ShellDriver::new((1600, 900));
         let mut sink = StripScrollSink { seen: Vec::new() };
         run(&mut d, &strip_scroll_across_apps(), &mut sink);
 
-        let at = |name: &str| -> (f64, f64) {
-            let (_, sx, mx) = sink
+        let at = |name: &str| -> (f64, f64, f64) {
+            let (_, sx, mx, pan_mx) = sink
                 .seen
                 .iter()
-                .find(|(n, _, _)| n == name)
+                .find(|(n, _, _, _)| n == name)
                 .unwrap_or_else(|| panic!("scenario should snapshot {name}"));
-            (*sx, *mx)
+            (*sx, *mx, *pan_mx)
         };
-        let (rest_x, rest_max) = at("05-strip-at-rest");
+        let (rest_x, rest_max, rest_pan_max) = at("05-strip-at-rest");
         assert!(
             rest_max > 400.0,
             "four half-width windows must overflow the display by more than a third of \
@@ -4437,16 +4454,32 @@ mod tests {
             rest_x < 1.0,
             "the strip starts at its leftmost position (scroll_x = {rest_x})"
         );
-        let (panned_x, _) = at("06-panned-right");
         assert!(
-            panned_x > 600.0,
-            "focusing the far window must carry the strip most of the way \
-             along it (scroll_x = {panned_x})"
+            rest_pan_max > rest_max,
+            "direct panning must expose legal trailing canvas beyond the content-tight bound"
         );
-        let (back_x, _) = at("07-panned-back");
+        let (held_x, held_max, held_pan_max) = at("06-held-past-trailing-edge");
+        assert!(
+            held_x > held_pan_max,
+            "the held gesture must visibly pull beyond its legal resting end \
+             (scroll_x = {held_x}, pan_max_scroll_x = {held_pan_max})"
+        );
+        let viewport = (held_pan_max - held_max) / 0.20;
+        assert!(
+            held_x < held_pan_max + viewport * 0.28,
+            "rubber-band travel must stay below its 28%-viewport asymptote \
+             (scroll_x = {held_x}, pan_max_scroll_x = {held_pan_max})"
+        );
+        let (settled_x, _, settled_pan_max) = at("07-settled-trailing-room");
+        assert!(
+            (settled_x - settled_pan_max).abs() < 1.0,
+            "release must settle to the legal 20%-viewport trailing rest \
+             (scroll_x = {settled_x}, pan_max_scroll_x = {settled_pan_max})"
+        );
+        let (back_x, _, _) = at("08-panned-back");
         assert!(
             back_x < 1.0,
-            "focusing the first window again returns the strip home (scroll_x = {back_x})"
+            "the reverse direct pan returns the strip home (scroll_x = {back_x})"
         );
     }
 

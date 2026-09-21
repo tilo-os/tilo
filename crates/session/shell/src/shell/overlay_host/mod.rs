@@ -6140,6 +6140,49 @@ impl ShellOverlayHost {
         row.set_group_active_tab(group, tab)
     }
 
+    /// Directly pan the active strip from a three-finger gesture. Focus is
+    /// deliberately unchanged: moving the canvas and choosing an app are
+    /// separate operations, just as they are during a pointer drag.
+    pub fn update_active_strip_pan(&mut self, travel: f64, began: bool) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let strip = {
+            let st = chrome.borrow();
+            st.tree().active_strip.get(&st.tree().active).copied()
+        };
+        let Some(strip) = strip else { return false };
+        let Some(&ptr) = self.group_row_ptrs.get(&strip) else {
+            return false;
+        };
+        // SAFETY: stable Box<GroupRow> contract documented on
+        // `group_row_ptrs`; this method holds `&mut self` for the mutation.
+        let row: &mut GroupRow = unsafe { &mut *ptr };
+        if began {
+            row.begin_strip_pan();
+        }
+        row.update_strip_pan(travel)
+    }
+
+    /// Finish direct strip manipulation and start a boundary settle only if
+    /// the fingers released in elastic overpull.
+    pub fn end_active_strip_pan(&mut self, now: Instant) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let strip = {
+            let st = chrome.borrow();
+            st.tree().active_strip.get(&st.tree().active).copied()
+        };
+        let Some(strip) = strip else { return false };
+        let Some(&ptr) = self.group_row_ptrs.get(&strip) else {
+            return false;
+        };
+        // SAFETY: same stable ownership contract as update above.
+        let row: &mut GroupRow = unsafe { &mut *ptr };
+        row.end_strip_pan(now)
+    }
+
     /// Moves focus one or more windows along the active strip — the single
     /// implementation behind keyboard, scroll, touchpad and modifier-wheel
     /// navigation, so they can't drift into models that disagree at group
