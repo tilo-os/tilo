@@ -2316,7 +2316,10 @@ mod tests {
         let root = app.store.as_ref().unwrap().root().to_owned();
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
         app.start_operation(0).unwrap();
-        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Native durability includes directory fsyncs; allow slower virtual
+        // disks to reach the terminal checkpoint without weakening the state
+        // assertion that follows.
+        entered.recv_timeout(Duration::from_secs(15)).unwrap();
         let started = Instant::now();
         app.poll_background();
         assert!(started.elapsed() < Duration::from_millis(200));
@@ -2338,7 +2341,10 @@ mod tests {
         let root = app.store.as_ref().unwrap().root().to_owned();
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
         app.start_operation(0).unwrap();
-        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Native durability includes directory fsyncs; allow slower virtual
+        // disks to reach the terminal checkpoint without weakening the state
+        // assertion that follows.
+        entered.recv_timeout(Duration::from_secs(15)).unwrap();
         fs::rename(root.join("ownership.lock"), root.join("old-lock")).unwrap();
         release.send(()).unwrap();
         wait_terminal(&mut app);

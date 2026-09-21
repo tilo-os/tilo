@@ -704,10 +704,15 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn readiness_connection_refuses_a_full_backlog_without_hanging() {
+        use std::os::fd::AsRawFd;
         use std::os::unix::net::UnixListener;
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("gate");
         let _server = UnixListener::bind(&path).unwrap();
+        // Pin the fixture backlog instead of inheriting the kernel's changing
+        // SOMAXCONN default. The production client remains non-blocking either
+        // way; this test only needs to reach a known full queue promptly.
+        assert_eq!(unsafe { libc::listen(_server.as_raw_fd(), 1) }, 0);
         let mut held = Vec::new();
         let started = std::time::Instant::now();
         loop {
