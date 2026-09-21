@@ -596,6 +596,20 @@ class LaneAdmission(unittest.TestCase):
         self.assertEqual(command.call_args.kwargs['timeout'],7200)
         self.assertFalse(command.call_args.kwargs['text'])
 
+    def test_creator_create_intent_adopts_live_pod_after_create_transport_loss(self):
+        disk_node=node('disk',disk=True);disk_node['metadata']['uid']='disk-node-uid'
+        manifest=lane.disk_manifest('tilo-disk-run1',disk_node,operation='run1',expires_at=4102444800)
+        adopted={'pod':'tilo-disk-run1','pod_uid':'pod-uid','namespace':'kata-system',
+                 'node':'disk','node_uid':'disk-node-uid','spec':manifest['spec'],'image_id':lane.DISK_IMAGE}
+        with patch.object(lane,'create_worker',side_effect=lane.ControllerTransportError('kubectl lost')), \
+                patch.object(lane,'adopt_worker',return_value=adopted) as adopt:
+            self.assertEqual(lane.create_or_adopt_worker('ctx',manifest),adopted)
+        adopt.assert_called_once_with('ctx',manifest)
+        with tempfile.TemporaryDirectory() as directory:
+            lane.persist_creator_create_intent(directory,'run1',manifest)
+            loaded=lane.load_creator_create_intent(directory,'run1')
+        self.assertEqual(loaded['manifest'],manifest)
+
     def test_creator_child_transport_sentinel_preserves_worker(self):
         args=SimpleNamespace(context='ctx',host_pins=Path('/pins'),disk_args=Path('/args'),
             operation_dir=Path('/operation'),helper_revision='a'*40,acceptance_id='run1')
