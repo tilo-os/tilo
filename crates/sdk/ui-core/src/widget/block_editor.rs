@@ -67,24 +67,24 @@ fn case_folded_match_ranges(haystack: &str, needle: &str) -> Vec<(usize, usize)>
         .map(|(index, _)| index)
         .chain(std::iter::once(haystack.len()))
         .collect::<Vec<_>>();
-    let mut matches = Vec::new();
+    let mut ranges = Vec::new();
     let mut start_slot = 0usize;
     while start_slot + 1 < boundaries.len() {
         let start = boundaries[start_slot];
-        let mut matched = None;
+        let mut matched_end = None;
         for &end in boundaries.iter().skip(start_slot + 1) {
             let candidate = &haystack[start..end];
             let candidate_folded = candidate.to_lowercase();
             if candidate_folded == folded {
-                matched = Some(end);
+                matched_end = Some(end);
                 break;
             }
             if candidate_folded.len() > folded.len().saturating_add(4) {
                 break;
             }
         }
-        if let Some(end) = matched {
-            matches.push((start, end));
+        if let Some(end) = matched_end {
+            ranges.push((start, end));
             start_slot = boundaries
                 .iter()
                 .position(|boundary| *boundary == end)
@@ -93,7 +93,7 @@ fn case_folded_match_ranges(haystack: &str, needle: &str) -> Vec<(usize, usize)>
             start_slot += 1;
         }
     }
-    matches
+    ranges
 }
 
 fn syntax_role(scopes: &ScopeStack) -> Option<TransientColorRole> {
@@ -1705,7 +1705,7 @@ impl BlockEditor {
         }
         let len = self.find_matches.len();
         let next = match (self.find_active, reverse) {
-            (Some(0), true) | (None, true) => len - 1,
+            (Some(0) | None, true) => len - 1,
             (Some(index), true) => index - 1,
             (Some(index), false) => (index + 1) % len,
             (None, false) => 0,

@@ -1753,7 +1753,12 @@ impl TextInput {
     /// Prepare the shared shaped hit-testing geometry for a projected cell
     /// before its first focus/click, without painting a throwaway scene.
     pub(super) fn prepare_wrapped_layout(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        self.measure_wrapped_content(self.rect.width() as f32, tr, theme);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded widget geometry is consumed by the f32 text layout API"
+        )]
+        let width = self.rect.width() as f32;
+        self.measure_wrapped_content(width, tr, theme);
         self.single_origin = Point::new(
             self.rect.x0 + self.ml_left(),
             self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
