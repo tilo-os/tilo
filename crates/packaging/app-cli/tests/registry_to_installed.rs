@@ -141,7 +141,10 @@ fn signed_entry(package_id: &str, tapp_url: &str, tapp: &[u8]) -> RegistryEntry 
         name: "Sheets".into(),
         description: "A spreadsheet".into(),
         tagline: "Native Tilo OS app".into(),
-        images: registry_types::LocalizedImages::default(),
+        images: registry_types::LocalizedImages::english_icon(
+            "https://apps.tilo.so/images/test-icon.svg",
+            "Test icon",
+        ),
         supported_languages: vec!["en".into()],
         categories: vec!["Office".into()],
         source_url: None,
