@@ -6,7 +6,7 @@ set -euo pipefail
 : "${GITHUB_REF_NAME:?missing release tag}"
 : "${FORGEJO_TOKEN:?missing release token}"
 
-release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
+release_repository="${TILO_RELEASE_REPOSITORY:-qos/releases}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 [ "${GITHUB_REPOSITORY:-}" != "$release_repository" ] \
@@ -45,7 +45,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
     repository = json.load(source)
 if repository.get("full_name") != sys.argv[2]:
     raise SystemExit("Forgejo returned a different release repository")
-if repository.get("private") is not False:
+if repository.get("private") is not False or repository.get("internal") is not False:
     raise SystemExit("release repository must be public")
 if repository.get("archived") is True:
     raise SystemExit("release repository must not be archived")

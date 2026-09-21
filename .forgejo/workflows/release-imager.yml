@@ -30,7 +30,7 @@ concurrency:
 env:
   # Public binaries live outside the private source repository. Override only
   # to another pre-created public repository governed by the same broker.
-  TILO_RELEASE_REPOSITORY: ${{ vars.IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo/releases' }}
+  TILO_RELEASE_REPOSITORY: ${{ vars.IMAGER_PUBLIC_RELEASE_REPOSITORY || 'qos/releases' }}
 
 jobs:
   plan:
