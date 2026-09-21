@@ -193,6 +193,11 @@ pub struct DirectScanoutTargets {
     imported: [ui::dmabuf_import::ImportedRenderTarget; 2],
     buffers: GbmScanoutBuffers,
     state: DirectScanoutState,
+    /// Complete scene revision last copied into each independent scanout
+    /// image. Sparse Vello rendering retains its own source texture, but a
+    /// partial blit is valid only when the selected GBM destination contains
+    /// the immediately preceding revision too.
+    revisions: [Option<u64>; 2],
 }
 
 /// Result of handing a completed imported target to KMS.
@@ -257,6 +262,7 @@ impl DirectScanoutTargets {
             // imported target is submitted, so index zero is merely the
             // initial ownership anchor; the first render uses index one.
             state: DirectScanoutState::new(0),
+            revisions: [None, None],
         })
     }
 
@@ -267,6 +273,16 @@ impl DirectScanoutTargets {
 
     fn framebuffer(&self, index: usize) -> Option<framebuffer::Handle> {
         self.buffers.slot(index).map(|slot| slot.framebuffer)
+    }
+
+    pub fn previous_revision_for(&self, index: usize) -> Option<u64> {
+        self.revisions.get(index).copied().flatten()
+    }
+
+    pub fn mark_rendered(&mut self, index: usize, revision: u64) {
+        if let Some(slot) = self.revisions.get_mut(index) {
+            *slot = Some(revision);
+        }
     }
 }
 
