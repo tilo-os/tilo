@@ -442,21 +442,10 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the test widget implements the fixed Widget event-handler signature"
-        )]
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut AutoCommit,
-            _p: &ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<taffy::NodeId>,
-            _ni: taffy::NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {

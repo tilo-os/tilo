@@ -1870,17 +1870,10 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
             _event: &winit::event::WindowEvent,
-            _scale: f64,
-            _m: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -2082,17 +2075,10 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
             _event: &winit::event::WindowEvent,
-            _scale: f64,
-            _m: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
