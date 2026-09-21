@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Create/update the first-party qos/homebrew-tilo tap from immutable release assets.
+# Update the first-party tilo-os/homebrew-tilo tap from immutable release assets.
 set -euo pipefail
 
-: "${GITHUB_SERVER_URL:?missing Forgejo server URL}"
 : "${GITHUB_REF_NAME:?missing release tag}"
 : "${HOMEBREW_TAP_TOKEN:?missing protected tap token}"
 command -v brew >/dev/null 2>&1 \
@@ -13,11 +12,15 @@ version="${GITHUB_REF_NAME#imager-v}"
 [ "$version" != "$GITHUB_REF_NAME" ] || { printf 'expected imager-v* tag\n' >&2; exit 2; }
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
-release_repository="${TILO_RELEASE_REPOSITORY:-qos/releases}"
+release_server="${TILO_RELEASE_SERVER:-https://github.com}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/releases}"
+tap_repository="${TILO_HOMEBREW_TAP_REPOSITORY:-tilo-os/homebrew-tilo}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
-base_url="${GITHUB_SERVER_URL%/}/${release_repository}/releases/download/${GITHUB_REF_NAME}"
-release_page="${GITHUB_SERVER_URL%/}/${release_repository}"
+[[ "$tap_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'Homebrew tap repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
+base_url="${release_server%/}/${release_repository}/releases/download/${GITHUB_REF_NAME}"
+release_page="${release_server%/}/${release_repository}"
 
 digest() {
   local name="$1" path
@@ -36,13 +39,8 @@ if [ "$macos_enabled" = 1 ]; then
   mac_arm="$(digest tilo-imager-macos-aarch64.dmg)"
 fi
 
-api="${GITHUB_SERVER_URL}/api/v1"
-auth="Authorization: token ${HOMEBREW_TAP_TOKEN}"
-if ! curl --fail --silent -H "$auth" "$api/repos/qos/homebrew-tilo" >/dev/null; then
-  curl --fail --silent --show-error -H "$auth" -H 'Content-Type: application/json' \
-    --data '{"name":"homebrew-tilo","description":"Official Tilo Homebrew tap","private":false,"auto_init":true,"default_branch":"main"}' \
-    "$api/orgs/qos/repos" >/dev/null
-fi
+GITHUB_INSTALLATION_TOKEN="$HOMEBREW_TAP_TOKEN" \
+  "$(dirname "$0")/assert-github-installation-token.sh" "$tap_repository"
 
 work="$(mktemp -d)"
 audit_tapped=0
@@ -54,10 +52,16 @@ cleanup() {
 }
 trap cleanup EXIT
 askpass="$work/askpass.sh"
-printf '#!/bin/sh\nprintf "%%s" "$HOMEBREW_TAP_TOKEN"\n' > "$askpass"
+cat >"$askpass" <<'SH'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s' x-access-token ;;
+  *) printf '%s' "$HOMEBREW_TAP_TOKEN" ;;
+esac
+SH
 chmod 0700 "$askpass"
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
-  "${GITHUB_SERVER_URL}/qos/homebrew-tilo.git" "$work/tap"
+  "${release_server%/}/${tap_repository}.git" "$work/tap"
 formula="$work/tap/Formula/tilo-imager.rb"
 current_version=
 if [ -f "$formula" ]; then
@@ -135,8 +139,8 @@ HOMEBREW_NO_AUTO_UPDATE=1 brew untap tilo/release-audit >/dev/null
 audit_tapped=0
 
 if [ ! -f "$work/tap/README.md" ]; then
-  printf '# Tilo Homebrew tap\n\n```sh\nbrew tap tilo/tilo %s/qos/homebrew-tilo.git\nbrew install tilo-imager\n```\n' \
-    "$GITHUB_SERVER_URL" > "$work/tap/README.md"
+  printf '# Tilo Homebrew tap\n\n```sh\nbrew tap tilo/tilo %s/%s.git\nbrew install tilo-imager\n```\n' \
+    "$release_server" "$tap_repository" > "$work/tap/README.md"
   if [ "$macos_enabled" = 1 ]; then
     printf '\nmacOS GUI:\n```sh\nbrew install --cask tilo-imager\n```\n' >> "$work/tap/README.md"
   fi
