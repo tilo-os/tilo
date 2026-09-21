@@ -254,6 +254,23 @@ impl State {
         &mut self,
         authority: &Arc<Authority>,
     ) -> Result<Step<ReplayHandle>, StoreError> {
+        self.capture_replay_at(authority, false)
+    }
+    pub(crate) fn capture_pending_replay(
+        &mut self,
+        authority: &Arc<Authority>,
+    ) -> Result<Step<ReplayHandle>, StoreError> {
+        self.capture_replay_at(authority, true)
+    }
+    fn capture_replay_at(
+        &mut self,
+        authority: &Arc<Authority>,
+        pending_only: bool,
+    ) -> Result<Step<ReplayHandle>, StoreError> {
+        #[cfg(test)]
+        if pending_only {
+            crate::store::test_barrier::pause(self.store.root(), "replay-pending-capture");
+        }
         if !authority.active() {
             return Err(error("replay cancelled"));
         }
@@ -283,9 +300,13 @@ impl State {
             }
         }
         if !self.replays.entries.contains_key(&authority.id.0) {
-            let build = self
-                .store
-                .start_replay_capture(authority.id, authority.device);
+            let build = if pending_only {
+                self.store
+                    .start_pending_replay_capture(authority.id, authority.device)
+            } else {
+                self.store
+                    .start_replay_capture(authority.id, authority.device)
+            };
             // Register even a failed start so its known reserved root is reclaimed.
             self.replays.entries.insert(
                 authority.id.0,

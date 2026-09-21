@@ -664,7 +664,7 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                                 if !checking.dirty.load(std::sync::atomic::Ordering::SeqCst) {
                                     return Ok(Step::Done(None));
                                 }
-                                match state.capture_replay(&capture)? {
+                                match state.capture_pending_replay(&capture)? {
                                     Step::More => Ok(Step::More),
                                     Step::Done(handle) => Ok(Step::Done(Some(handle))),
                                 }
@@ -1390,6 +1390,136 @@ struct StateCommit {
     publish: bool,
     activation: Option<std::path::PathBuf>,
     activation_error: Option<crate::store::StoreError>,
+    replay_targets: Vec<ReplayPendingTarget>,
+}
+
+#[derive(Clone)]
+struct ReplayPendingTarget {
+    device: [u8; 32],
+    live: Arc<std::sync::atomic::AtomicBool>,
+    catchup: Arc<ReplayCatchup>,
+}
+impl ReplayPendingTarget {
+    fn active(&self) -> bool {
+        self.live.load(std::sync::atomic::Ordering::SeqCst)
+            && self.catchup.phase.load(std::sync::atomic::Ordering::SeqCst) == ReplayCatchup::ACTIVE
+    }
+    fn current(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
+        runtime
+            .state_sessions
+            .get(&self.device)
+            .is_some_and(|session| {
+                Arc::ptr_eq(&session.live, &self.live)
+                    && session
+                        .replay
+                        .as_ref()
+                        .is_some_and(|catchup| Arc::ptr_eq(catchup, &self.catchup))
+            })
+    }
+}
+
+enum ReplayPendingPublication {
+    Original(Option<Arc<Envelope>>),
+    Selected(crate::store::replay::PublicationCursor),
+}
+struct ReplayPendingFrame {
+    bytes: Vec<u8>,
+    _selected: Option<crate::store::replay::ReplayBatch>,
+    sequence: Option<u64>,
+    next_target: usize,
+}
+struct ReplayPendingWork {
+    publication: ReplayPendingPublication,
+    targets: Vec<ReplayPendingTarget>,
+    frame: Option<ReplayPendingFrame>,
+    written: u64,
+}
+impl ReplayPendingWork {
+    fn original(envelope: Arc<Envelope>, targets: Vec<ReplayPendingTarget>) -> Self {
+        Self {
+            publication: ReplayPendingPublication::Original(Some(envelope)),
+            targets,
+            frame: None,
+            written: 0,
+        }
+    }
+    fn selected(
+        generation: &std::path::Path,
+        targets: Vec<ReplayPendingTarget>,
+    ) -> Result<Self, crate::store::StoreError> {
+        Ok(Self {
+            publication: ReplayPendingPublication::Selected(
+                crate::store::replay::PublicationCursor::open(generation)?,
+            ),
+            targets,
+            frame: None,
+            written: 0,
+        })
+    }
+    fn step(
+        &mut self,
+        state: &mut crate::persistence::State,
+        budget: &crate::store::replay::ReplayBudget,
+    ) -> Result<Step<u64>, crate::store::StoreError> {
+        for _ in 0..crate::store::bounded::RUN_ENTRIES {
+            if self.frame.is_none() {
+                let (bytes, selected) = match &mut self.publication {
+                    ReplayPendingPublication::Original(envelope) => envelope
+                        .take()
+                        .map(|envelope| crate::transport::encode(&envelope))
+                        .transpose()
+                        .map(|bytes| (bytes, None))
+                        .map_err(|error| crate::persistence::error(error.to_string()))?,
+                    ReplayPendingPublication::Selected(cursor) => match cursor.step(budget)? {
+                        Step::More => continue,
+                        Step::Done(Some(batch)) => {
+                            let bytes = crate::transport::encode(
+                                batch.front().expect("one activation frame"),
+                            )
+                            .map_err(|error| crate::persistence::error(error.to_string()))?;
+                            (Some(bytes), Some(batch))
+                        }
+                        Step::Done(None) => (None, None),
+                    },
+                };
+                let Some(bytes) = bytes else {
+                    return Ok(Step::Done(self.written));
+                };
+                self.frame = Some(ReplayPendingFrame {
+                    bytes,
+                    _selected: selected,
+                    sequence: None,
+                    next_target: 0,
+                });
+            }
+            let frame = self.frame.as_mut().unwrap();
+            let Some(target) = self.targets.get(frame.next_target) else {
+                self.frame = None;
+                continue;
+            };
+            frame.next_target += 1;
+            if !target.active() {
+                continue;
+            }
+            let sequence = match frame.sequence {
+                Some(sequence) => sequence,
+                None => {
+                    let sequence = state.next_sequence()?;
+                    frame.sequence = Some(sequence);
+                    sequence
+                }
+            };
+            state
+                .store
+                .enqueue_pending(&target.device, sequence, &frame.bytes)?;
+            self.written = self.written.saturating_add(frame.bytes.len() as u64);
+        }
+        #[cfg(test)]
+        if self.frame.is_some() {
+            crate::store::test_barrier::pause(state.store.root(), "replay-pending-frame-held");
+        }
+        Ok(Step::More)
+    }
 }
 
 async fn enqueue_state(
@@ -1470,6 +1600,7 @@ async fn enqueue_state_inner(
     let mut sequence = None;
     let mut retained_build: Option<crate::store::retained::RetainBuild> = None;
     let mut pending_work = None;
+    let mut replay_pending_work: Option<ReplayPendingWork> = None;
     owner.submit_resumable_wait(
         charge,
         async move {
@@ -1502,6 +1633,21 @@ async fn enqueue_state_inner(
                 })
                 .map(|(key, sub)| (*key, sub.tx.clone()))
                 .collect::<Vec<_>>();
+            let replay_targets = sessions
+                .iter()
+                .filter_map(|(device, _)| {
+                    let session = runtime.state_sessions.get(device)?;
+                    let catchup = session.replay.as_ref()?.clone();
+                    (session.live.load(std::sync::atomic::Ordering::SeqCst)
+                        && catchup.phase.load(std::sync::atomic::Ordering::SeqCst)
+                            == ReplayCatchup::ACTIVE)
+                        .then(|| ReplayPendingTarget {
+                            device: *device,
+                            live: session.live.clone(),
+                            catchup,
+                        })
+                })
+                .collect::<Vec<_>>();
             recipients.extend(sessions.iter().map(|(key, _)| *key));
             if role == crate::auth::PeerRole::PeerRelay {
                 recipients.retain(|key| !runtime.known_peer_relays.contains(key));
@@ -1514,11 +1660,16 @@ async fn enqueue_state_inner(
             );
 
             drop(runtime);
-            Ok((recipients, sessions, logical_offline_bytes))
+            Ok((
+                recipients,
+                sessions,
+                replay_targets,
+                logical_offline_bytes,
+            ))
         },
         move |state, prepared| {
             if commit.is_none() {
-                let (recipients, sessions, logical_offline_bytes) =
+                let (recipients, sessions, replay_targets, logical_offline_bytes) =
                     prepared.take().expect("ordered recipients");
                 let envelope = envelope.take().expect("admitted envelope");
                 let Envelope::Delta { delta, .. } = &envelope else {
@@ -1535,6 +1686,7 @@ async fn enqueue_state_inner(
                         publish,
                         activation: None,
                         activation_error: None,
+                        replay_targets,
                     }));
                 }
                 let seq = state.next_sequence()?;
@@ -1566,6 +1718,7 @@ async fn enqueue_state_inner(
                     publish,
                     activation: None,
                     activation_error: None,
+                    replay_targets,
                 });
                 return Ok(Step::More);
             }
@@ -1587,9 +1740,30 @@ async fn enqueue_state_inner(
                     Step::Done(outcome) => {
                         let written = outcome.written;
                         match outcome.publication {
-                            crate::store::shell_selection::Publication::Suppress => current.publish = false,
-                            crate::store::shell_selection::Publication::Activate(path) => current.activation = Some(path),
-                            crate::store::shell_selection::Publication::Original => (),
+                            crate::store::shell_selection::Publication::Suppress => {
+                                current.publish = false;
+                                current.replay_targets.clear();
+                            }
+                            crate::store::shell_selection::Publication::Activate(path) => {
+                                current.activation = Some(path.clone());
+                                if !current.replay_targets.is_empty() {
+                                    match ReplayPendingWork::selected(
+                                        &path,
+                                        current.replay_targets.clone(),
+                                    ) {
+                                        Ok(work) => replay_pending_work = Some(work),
+                                        Err(error) => current.activation_error = Some(error),
+                                    }
+                                }
+                            }
+                            crate::store::shell_selection::Publication::Original => {
+                                if !current.replay_targets.is_empty() {
+                                    replay_pending_work = Some(ReplayPendingWork::original(
+                                        current.envelope.clone(),
+                                        current.replay_targets.clone(),
+                                    ));
+                                }
+                            }
                         }
                         if crate::persistence::diagnostics() {
                             tracing::info!(
@@ -1601,6 +1775,20 @@ async fn enqueue_state_inner(
                         persist_metrics.add_bytes_queued(written);
                         current.persisted_bytes = written;
                         retained_build = None;
+                    }
+                }
+            }
+            if let Some(work) = replay_pending_work.as_mut() {
+                match work.step(state, crate::persistence::output_budget()) {
+                    Ok(Step::More) => return Ok(Step::More),
+                    Ok(Step::Done(written)) => {
+                        persist_metrics.add_bytes_queued(written);
+                        current.persisted_bytes = current.persisted_bytes.saturating_add(written);
+                        replay_pending_work = None;
+                    }
+                    Err(error) => {
+                        current.activation_error = Some(error);
+                        replay_pending_work = None;
                     }
                 }
             }
@@ -1648,6 +1836,7 @@ async fn enqueue_state_inner(
                     tracing::info!(phase="state_commit", persisted_envelope_bytes=commit.persisted_bytes, logical_offline_bytes=commit.logical_offline_bytes);
                 }
                 let activating = commit.activation.is_some();
+                let replay_targets = commit.replay_targets.clone();
                 let mut delivered = 0u64;
                 let publication_result: Result<(), crate::store::StoreError> = async {
                 if let Some(error) = commit.activation_error.take() { return Err(error); }
@@ -1777,16 +1966,28 @@ async fn enqueue_state_inner(
                 }.await;
                 metrics.add_deltas_fanned_out(delivered);
                 if let Err(error) = publication_result {
-                    if activating {
+                    if activating || !replay_targets.is_empty() {
                         // A partial activation cannot leave a ready subscriber
                         // waiting forever for its missing exact half. Fence only
                         // the original session; reconnect uses durable full basis.
                         let mut runtime = workspace.lock().await;
-                        for (recipient, original) in &commit.sessions {
-                            if let Some(sub) = runtime.subscribers.get(recipient)
-                                && sub.tx.same_channel(original) {
-                                let _ = sub.disconnect.try_send(());
-                                runtime.remove_subscriber_session(recipient, original);
+                        if activating {
+                            for (recipient, original) in &commit.sessions {
+                                if let Some(sub) = runtime.subscribers.get(recipient)
+                                    && sub.tx.same_channel(original) {
+                                    let _ = sub.disconnect.try_send(());
+                                    runtime.remove_subscriber_session(recipient, original);
+                                }
+                            }
+                        } else {
+                            for target in &replay_targets {
+                                if target.current(&runtime)
+                                    && let Some(sub) = runtime.subscribers.get(&target.device)
+                                {
+                                    let outbound = sub.tx.clone();
+                                    let _ = sub.disconnect.try_send(());
+                                    runtime.remove_subscriber_session(&target.device, &outbound);
+                                }
                             }
                         }
                     }

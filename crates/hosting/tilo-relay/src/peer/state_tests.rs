@@ -1280,7 +1280,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
 }
 
 #[tokio::test]
-async fn detached_replay_allows_retention_then_catches_up_before_ready() {
+async fn detached_replay_catches_up_pending_without_replaying_selected_baseline() {
     let fixture = Arc::new(Fixture::new());
     let device = fixture.recipient.device_public_key;
     fixture
@@ -1291,6 +1291,8 @@ async fn detached_replay_allows_retention_then_catches_up_before_ready() {
             &crate::transport::encode(&fixture.envelope(0)).unwrap(),
         )
         .unwrap();
+    fixture.enqueue(1).await;
+    fixture.drained_wait().await;
 
     let (prepare_release, prepare_reached) =
         crate::store::test_barrier::install(fixture.store.root(), "replay-manifest-prepare");
@@ -1301,11 +1303,14 @@ async fn detached_replay_allows_retention_then_catches_up_before_ready() {
     let replay = tokio::spawn(async move { writer.replay_to_with_deliveries(&mut write).await });
     prepare_reached.await.unwrap();
 
-    fixture.enqueue(1).await;
+    fixture.enqueue(2).await;
     for kind in 3..42 {
         fixture.enqueue(kind).await;
     }
-    tokio::time::timeout(std::time::Duration::from_secs(3), fixture.drained_wait())
+    // The held replay barrier makes this an ordering assertion: owner work can
+    // finish only if detached preparation released the mutation lane. The
+    // timeout is just a loaded-suite hang guard for the forty queued commits.
+    tokio::time::timeout(std::time::Duration::from_secs(15), fixture.drained_wait())
         .await
         .expect("detached preparation still blocked the mutation owner");
     drop(prepare_release);
@@ -1327,7 +1332,24 @@ async fn detached_replay_allows_retention_then_catches_up_before_ready() {
     };
     let mut post_ready = replay.await.unwrap().unwrap();
     assert!(deltas.contains(&fixture.envelope(0)));
-    assert!(deltas.contains(&fixture.envelope(1)));
+    assert_eq!(
+        deltas
+            .iter()
+            .filter(|envelope| **envelope == fixture.envelope(1))
+            .count(),
+        1,
+        "final catch-up replayed the already-written selected baseline"
+    );
+    assert!(deltas.contains(&fixture.envelope(2)));
+    assert!(
+        deltas
+            .iter()
+            .position(|envelope| *envelope == fixture.envelope(1))
+            < deltas
+                .iter()
+                .position(|envelope| *envelope == fixture.envelope(2)),
+        "selected checkpoint and post-cut tail lost coherent order"
+    );
     for kind in 3..42 {
         assert!(
             deltas.contains(&fixture.envelope(kind)),
@@ -1340,6 +1362,87 @@ async fn detached_replay_allows_retention_then_catches_up_before_ready() {
         .try_recv()
         .expect("post-boundary commit was not queued behind Ready");
     assert_eq!(*delivery.envelope, fixture.envelope(43));
+    assert_eq!(
+        fixture.store.count_pending(&device).unwrap(),
+        1,
+        "only the post-Ready live delivery should remain pending"
+    );
+    assert!(
+        delivery
+            .cleanup
+            .as_ref()
+            .is_some_and(|pending| pending.exists()),
+        "post-Ready live delivery lost its durable cleanup entry"
+    );
+    fixture.write(delivery, &mut Vec::new()).await;
+    fixture.drained_wait().await;
+    assert_eq!(
+        fixture.store.count_pending(&device).unwrap(),
+        0,
+        "acknowledged initial, catch-up, and post-Ready entries were not retired"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnect() {
+    let fixture = Arc::new(Fixture::new());
+    fixture.enqueue(1).await;
+    fixture.drained_wait().await;
+    let (prepare_release, prepare_reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "replay-manifest-prepare");
+    let (capture_release, capture_reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "replay-pending-capture");
+    let replaying = fixture.clone();
+    let task = tokio::spawn(async move { replaying.replay_to(&mut Vec::new()).await });
+    prepare_reached.await.unwrap();
+    fixture.enqueue(2).await;
+    fixture.drained_wait().await;
+    drop(prepare_release);
+    capture_reached.await.unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .count_pending(&fixture.recipient.device_public_key)
+            .unwrap(),
+        1,
+        "post-cut retained output was not durable before catch-up"
+    );
+    task.abort();
+    assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    drop(capture_release);
+    fixture.drained_wait().await;
+    assert_eq!(
+        fixture
+            .store
+            .count_pending(&fixture.recipient.device_public_key)
+            .unwrap(),
+        1,
+        "cancelled catch-up retired an unwritten semantic update"
+    );
+
+    let mut wire = Vec::new();
+    fixture.replay_to(&mut wire).await.unwrap();
+    let mut reader = crate::transport_v2::SessionReader::new(wire.as_slice(), true);
+    let mut tail = 0;
+    loop {
+        match reader.read_next().await.unwrap() {
+            Some(EnvelopeV2::State(envelope @ Envelope::Delta { .. })) => {
+                if envelope == fixture.envelope(2) {
+                    tail += 1;
+                }
+            }
+            Some(EnvelopeV2::State(Envelope::Ready { .. })) => break,
+            frame => panic!("unexpected reconnect replay frame: {frame:?}"),
+        }
+    }
+    assert_eq!(tail, 1);
+    assert_eq!(
+        fixture
+            .store
+            .count_pending(&fixture.recipient.device_public_key)
+            .unwrap(),
+        0
+    );
 }
 
 #[tokio::test]

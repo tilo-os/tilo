@@ -271,3 +271,258 @@ async fn ordinary_writer_preserves_same_connection_replacement() {
 async fn selected_writer_drops_old_lease_after_resubscription() {
     writer_boundary(0, true, true, false).await;
 }
+
+#[tokio::test]
+async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baseline() {
+    let meta = producer_metadata();
+    let cert: tilo_user_identity::DeviceCert =
+        serde_json::from_value(meta["authority"].clone()).unwrap();
+    let source_peer = crate::auth::accept_hello(
+        &crate::auth::Hello {
+            cert: cert.clone(),
+            client_nonce: [0; 32],
+        },
+        &cert.user_public_key,
+        &crate::policy::TrustPolicy::AllowMatchingUser,
+        &RevocationList::new(),
+        now_ns(),
+    )
+    .unwrap();
+    let authority = qos_peer_state::retained_proof::RetentionAuthority::new(
+        meta["room"].as_str().unwrap(),
+        cert.clone(),
+    )
+    .unwrap();
+    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let mut runtime = crate::workspace::WorkspaceRuntime::open(
+        temp.path(),
+        id,
+        true,
+        crate::workspace::Membership::default(),
+    )
+    .unwrap();
+    runtime.store.bind_shell_authority(authority).unwrap();
+    for row in meta["baseline"].as_array().unwrap() {
+        let bytes = producer_frame(&meta, row, 1);
+        let Envelope::Delta { delta, .. } = crate::transport::decode(&bytes[4..]).unwrap() else {
+            panic!()
+        };
+        let crate::coedit::CoeditPayload::Checkpoint { channel, .. } =
+            crate::coedit::CoeditPayload::decode(&delta).unwrap()
+        else {
+            panic!()
+        };
+        runtime.store.retain_checkpoint(&channel, &bytes).unwrap();
+    }
+    let initial = crate::store::shell_selection_tests::replay_frames(&runtime.store);
+    assert!(!initial.is_empty());
+
+    let (root, user) = UserIdentity::generate("replay activation", 1);
+    let (recipient, _) = certified_device(&root, user.public_key, "recipient");
+    let (source_tx, _source_rx) = mpsc::channel(8);
+    let (outbound, _outbound_rx) = mpsc::channel(8);
+    let (source_disconnect, _source_disconnected) = mpsc::channel(1);
+    let (disconnect, _disconnected) = mpsc::channel(1);
+    let (state_tx, mut state_rx) = mpsc::channel(8);
+    let (private, mut private_rx) = mpsc::channel(8);
+    for (peer, tx, disconnect) in [
+        (&source_peer, &source_tx, &source_disconnect),
+        (&recipient, &outbound, &disconnect),
+    ] {
+        runtime.admit_device(peer.device_public_key).unwrap();
+        runtime.add_subscriber(Subscriber {
+            device_public_key: peer.device_public_key,
+            role: peer.role,
+            tx: tx.clone(),
+            disconnect: disconnect.clone(),
+        });
+    }
+    runtime.state_sessions.insert(
+        recipient.device_public_key,
+        StateSession {
+            peer: recipient.clone(),
+            tx: state_tx.clone(),
+            live: Arc::new(AtomicBool::new(true)),
+            replay: None,
+        },
+    );
+    let store = runtime.store.clone();
+    let workspace = Arc::new(AsyncMutex::new(runtime));
+    let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, workspace.clone())])));
+    let policy = Arc::new(std::sync::RwLock::new(
+        crate::policy::TrustPolicy::AllowList {
+            users: vec![
+                hex::encode(cert.user_public_key),
+                hex::encode(user.public_key),
+            ],
+        },
+    ));
+    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+    let metrics = Arc::new(crate::metrics::Metrics::default());
+    let source_live = Arc::new(AtomicBool::new(true));
+    let session = SessionCtx {
+        workspaces: &registry,
+        autobind: None,
+        outbound: &outbound,
+        state_outbound: Some(&state_tx),
+        connection_live: None,
+        own_user_public_key: &user.public_key,
+        metrics: &metrics,
+        trust_policy: &policy,
+        disconnect: &disconnect,
+        v2: true,
+        private_tx: &private,
+        revocations: &revocations,
+    };
+    let source_session = SessionCtx {
+        outbound: &source_tx,
+        disconnect: &source_disconnect,
+        connection_live: Some(&source_live),
+        ..session
+    };
+    let source = StateSource::new(&source_peer, &source_session);
+
+    let mut replay = None;
+    assert!(
+        handle_subscribe(&recipient, &session, &mut Vec::new(), &mut replay, id,)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    for row in &meta["tail"].as_array().unwrap()[..2] {
+        let bytes = producer_frame(&meta, row, 2);
+        enqueue_state(
+            &workspace,
+            crate::transport::decode(&bytes[4..]).unwrap(),
+            Some(source.clone()),
+            source_peer.role,
+            metrics.clone(),
+        )
+        .await
+        .unwrap();
+    }
+    let owner = crate::persistence::handle(&workspace).await;
+    crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+        .await
+        .unwrap();
+    let selected_after = crate::store::shell_selection_tests::replay_frames(&store);
+    let expected_activation = selected_after
+        .iter()
+        .filter(|frame| !initial.contains(frame))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected_activation.len(),
+        2,
+        "fixture did not produce the expected selected activation pair"
+    );
+    assert!(
+        state_rx.try_recv().is_err(),
+        "ACTIVE replay leaked selected activation onto the live lane"
+    );
+
+    let mut wire = Vec::new();
+    finish_replay_write(
+        ReplayWrite {
+            ticket: replay,
+            reply: None,
+            replaying: true,
+        },
+        &recipient,
+        &session,
+        &std::sync::atomic::AtomicUsize::new(1),
+        &mut private_rx,
+        &mut wire,
+    )
+    .await
+    .unwrap();
+    let mut reader = crate::transport_v2::SessionReader::new(wire.as_slice(), true);
+    let mut frames = Vec::new();
+    let ready = loop {
+        match reader.read_next().await.unwrap() {
+            Some(crate::transport_v2::EnvelopeV2::State(envelope @ Envelope::Delta { .. })) => {
+                frames.push(envelope)
+            }
+            Some(crate::transport_v2::EnvelopeV2::State(Envelope::Ready {
+                pending_deltas,
+                ..
+            })) => break pending_deltas,
+            frame => panic!("unexpected activation replay frame: {frame:?}"),
+        }
+    };
+    for baseline in &initial {
+        assert_eq!(
+            frames.iter().filter(|frame| *frame == baseline).count(),
+            1,
+            "pending catch-up repeated an unchanged selected baseline frame"
+        );
+    }
+    let activation = frames
+        .iter()
+        .filter(|frame| !initial.contains(frame))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        activation, expected_activation,
+        "selected activation pair changed identity or manifest order"
+    );
+    assert_eq!(ready as usize, frames.len());
+    assert_eq!(
+        store.count_pending(&recipient.device_public_key).unwrap(),
+        0
+    );
+
+    let selected_root = store.root().join(crate::store::shell_selection::DIRECTORY);
+    let current =
+        selected_root.join(std::fs::read_to_string(selected_root.join("CURRENT")).unwrap());
+    let generation = selected_root.join("pending-budget-fixture");
+    std::fs::create_dir(&generation).unwrap();
+    std::fs::copy(
+        current.join("basis.manifest"),
+        generation.join("live.manifest"),
+    )
+    .unwrap();
+    let targets = (0..=crate::store::bounded::RUN_ENTRIES)
+        .map(|_| ReplayPendingTarget {
+            device: [9; 32],
+            live: Arc::new(AtomicBool::new(false)),
+            catchup: Arc::new(ReplayCatchup::new()),
+        })
+        .collect();
+    let mut work = ReplayPendingWork::selected(&generation, targets).unwrap();
+    let budget = crate::store::replay::ReplayBudget::new(64 * 1024 * 1024);
+    let work_budget = budget.clone();
+    let (release, reached) =
+        crate::store::test_barrier::install(store.root(), "replay-pending-frame-held");
+    let receipt = owner
+        .submit_resumable_wait(
+            1,
+            async { Ok(()) },
+            move |state, _| work.step(state, &work_budget),
+            |result| async { result },
+        )
+        .await
+        .unwrap();
+    let mut receipt = Box::pin(receipt);
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        tokio::select! {
+            reached = reached => reached.unwrap(),
+            result = &mut receipt => panic!(
+                "selected pending frame did not span a work quantum: {:?}",
+                result.unwrap()
+            ),
+        }
+    })
+    .await
+    .expect("selected pending frame did not reach the held-work barrier");
+    assert!(
+        budget.used() > 0,
+        "selected pending bytes escaped their output-budget lease across a work quantum"
+    );
+    drop(release);
+    receipt.await.unwrap().unwrap();
+    assert_eq!(
+        budget.used(),
+        0,
+        "selected pending output-budget lease survived completed writes"
+    );
+}

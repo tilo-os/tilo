@@ -343,6 +343,21 @@ impl WorkspaceStore {
         id: ReplayId,
         device: [u8; 32],
     ) -> Result<ReplayBuild, StoreError> {
+        self.start_replay_capture_at(id, device, false)
+    }
+    pub(crate) fn start_pending_replay_capture(
+        &self,
+        id: ReplayId,
+        device: [u8; 32],
+    ) -> Result<ReplayBuild, StoreError> {
+        self.start_replay_capture_at(id, device, true)
+    }
+    fn start_replay_capture_at(
+        &self,
+        id: ReplayId,
+        device: [u8; 32],
+        pending_only: bool,
+    ) -> Result<ReplayBuild, StoreError> {
         let root = self.root.join("store-work-v1");
         fs::create_dir_all(&root)?;
         let root = root.join(format!("replay-{}", hex::encode(id.0)));
@@ -350,24 +365,27 @@ impl WorkspaceStore {
         fs::create_dir(root.join("pins"))?;
         fs::create_dir(root.join("index"))?;
         let sorter = Sorter::new(root.join("sort"))?;
-        let selection = self
-            .shell_authority()
-            .map(|_| super::shell_selection::Selection::new(self, root.clone(), None))
-            .transpose()?;
+        let selection = if pending_only {
+            None
+        } else {
+            self.shell_authority()
+                .map(|_| super::shell_selection::Selection::new(self, root.clone(), None))
+                .transpose()?
+        };
         Ok(ReplayBuild {
             selection,
-            selected: if self.shell_authority().is_none() {
+            selected: if !pending_only && self.shell_authority().is_none() {
                 retained::current(&self.root.join(super::shell_selection::DIRECTORY))?
                     .map(|p| File::open(p.join("basis.manifest")))
                     .transpose()?
             } else {
                 None
             },
-            shell_selected: self.shell_authority().is_some(),
+            shell_selected: !pending_only && self.shell_authority().is_some(),
             root,
             workspace: self.root.clone(),
             device,
-            phase: 0,
+            phase: if pending_only { 3 } else { 0 },
             outer: None,
             child: None,
             sorter: Some(sorter),
