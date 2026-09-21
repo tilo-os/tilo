@@ -9334,7 +9334,7 @@ impl ShellOverlayHost {
         let actor_id = st.local_user_for_room(&workspace.room);
         let actor = workspace.actor_for_person(&actor_id);
         CapabilityVisibility::new(workspace, actor).can_see(
-            &ResourceRef::new("actions", "peer.invite"),
+            &ResourceRef::new("actions", "peer.invite.named"),
             &crate::shell::search::ResourceKind::Action,
         )
     }
