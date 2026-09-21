@@ -297,12 +297,12 @@ impl ComponentContextSource for Contexts {
         request: &TileRequest<'_>,
         target: &LaunchTarget,
     ) -> Result<(HostContext, RestoreInput), ui::launch::LaunchError> {
-        let route_app_id = qos_desktop::resolver::canonical_app_id(&request.tab.tile)
-            .ok_or_else(|| {
+        let route_app_id =
+            qos_desktop::resolver::canonical_app_id(&request.tab.tile).ok_or_else(|| {
                 ui::launch::LaunchError::Operation("application identity unavailable".into())
             })?;
-        let (durable_app_id, _) = desktop::installed_application(&route_app_id)
-            .ok_or_else(|| {
+        let (durable_app_id, _) =
+            desktop::installed_application(&route_app_id).ok_or_else(|| {
                 ui::launch::LaunchError::Operation("application is not installed".into())
             })?;
         let store = self
