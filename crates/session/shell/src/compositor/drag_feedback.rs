@@ -149,18 +149,20 @@ fn draw_chip(
 }
 
 fn preview_rect(cursor: Point, preview: &DragPreview) -> Rect {
-    let (mut w, mut h) = match preview {
+    let (w, h) = match preview {
         DragPreview::Image { width, height, .. } if *width > 0 && *height > 0 => {
-            let scale = (PREVIEW_MAX_W / f64::from(*width))
-                .min(PREVIEW_MAX_H / f64::from(*height))
-                .min(1.0);
-            (f64::from(*width) * scale, f64::from(*height) * scale)
+            let source_w = f64::from(*width);
+            let source_h = f64::from(*height);
+            let maximum_scale = (PREVIEW_MAX_W / source_w).min(PREVIEW_MAX_H / source_h);
+            let preferred_scale = (PREVIEW_MIN_W / source_w)
+                .max(PREVIEW_MIN_H / source_h)
+                .max(1.0);
+            let scale = preferred_scale.min(maximum_scale) * 0.96;
+            (source_w * scale, source_h * scale)
         }
-        DragPreview::Text(_) | DragPreview::Kind(_) => (PREVIEW_MIN_W, PREVIEW_MIN_H),
-        DragPreview::Image { .. } => (PREVIEW_MIN_W, PREVIEW_MIN_H),
+        DragPreview::Text(_) | DragPreview::Kind(_) => (PREVIEW_MIN_W * 0.96, PREVIEW_MIN_H * 0.96),
+        DragPreview::Image { .. } => (PREVIEW_MIN_W * 0.96, PREVIEW_MIN_H * 0.96),
     };
-    w = w.clamp(72.0, PREVIEW_MAX_W) * 0.96;
-    h = h.clamp(72.0, PREVIEW_MAX_H) * 0.96;
     let x0 = cursor.x + CHIP_DX;
     let y0 = cursor.y + CHIP_DY + CHIP_H + 6.0;
     Rect::new(x0, y0, x0 + w, y0 + h)
@@ -315,7 +317,12 @@ pub fn image_preview(bytes: &[u8]) -> Option<DragPreview> {
     limits.max_image_height = Some(16_384);
     limits.max_alloc = Some(64 * 1024 * 1024);
     reader.limits(limits);
-    let image = reader.decode().ok()?.thumbnail(560, 380).to_rgba8();
+    let image = reader.decode().ok()?;
+    let image = if image.width() > 560 || image.height() > 380 {
+        image.thumbnail(560, 380).to_rgba8()
+    } else {
+        image.to_rgba8()
+    };
     let (width, height) = image.dimensions();
     Some(DragPreview::Image {
         rgba: Arc::new(image.into_raw()),
@@ -497,6 +504,23 @@ mod tests {
             },
         );
         assert!(rect.width() <= PREVIEW_MAX_W && rect.height() <= PREVIEW_MAX_H);
+        assert!((rect.width() / rect.height() - 32.0 / 18.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn raster_payload_is_downscaled_to_the_decode_bound() {
+        let source = image::RgbaImage::from_pixel(800, 500, image::Rgba([12, 90, 220, 255]));
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(source)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .expect("encode fixture");
+        let DragPreview::Image { width, height, .. } =
+            image_preview(encoded.get_ref()).expect("decode preview")
+        else {
+            panic!("image bytes must produce image pixels")
+        };
+        assert!(width <= 560 && height <= 380);
+        assert_eq!((width, height), (560, 350));
     }
 
     #[test]
