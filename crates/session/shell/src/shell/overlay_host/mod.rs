@@ -11860,6 +11860,12 @@ impl ShellOverlayHost {
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
+        // The command palette is the topmost modal surface. A rename buffer
+        // may remain alive underneath it, but must not intercept the
+        // palette's query text or navigation keys.
+        if self.palette_visible {
+            return false;
+        }
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -16870,11 +16876,31 @@ impl Widget for ShellOverlayHost {
                 });
                 notification_action.or_else(|| self.qs_root.accessibility_rect_for_path(child_path))
             }
-            AccessibleOverlay::WorkspaceSettings => match child_path {
-                [] => Some(self.workspace_settings_overlay.rect()),
-                [0] => Some(self.workspace_settings_overlay.ownership_action_rect()),
-                _ => None,
-            },
+            AccessibleOverlay::WorkspaceSettings => {
+                let ownership = self.workspace_settings_overlay.ownership_action_rect();
+                let ownership_present = ownership.area() > 0.0;
+                match child_path {
+                    [] => Some(self.workspace_settings_overlay.rect()),
+                    [0] if ownership_present => Some(ownership),
+                    [index] => self.chrome.as_ref().and_then(|chrome| {
+                        let state = chrome.borrow();
+                        if !matches!(state.ws_settings_tab, WsTab::General) {
+                            return None;
+                        }
+                        let index = index.checked_sub(usize::from(ownership_present))?;
+                        let body = self.workspace_settings_overlay.general_body_rect();
+                        let visible =
+                            |rect: Rect| (rect.y0 >= body.y0 && rect.y1 <= body.y1).then_some(rect);
+                        match index {
+                            0 => visible(self.workspace_settings_overlay.name_rect()),
+                            1 => Some(body),
+                            2 => visible(self.workspace_settings_overlay.general_summary_rect()),
+                            _ => None,
+                        }
+                    }),
+                    _ => None,
+                }
+            }
             AccessibleOverlay::Overview => match child_path {
                 [] => Some(self.overview_panel_rect()),
                 [index] if *index < self.overview_cards().len() => {
@@ -16953,12 +16979,7 @@ impl Widget for ShellOverlayHost {
                 }
             }
             AccessibleOverlay::WorkspaceSettings => {
-                matches!(child_path, [0])
-                    && self
-                        .workspace_settings_overlay
-                        .ownership_action_rect()
-                        .area()
-                        > 0.0
+                !child_path.is_empty() && self.synthetic_accessibility_rect(path).is_some()
             }
             AccessibleOverlay::Overview
             | AccessibleOverlay::MemberSheet
