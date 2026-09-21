@@ -20,6 +20,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+from typing import Any, TypedDict
 
 import installer_bootc_helper
 
@@ -35,11 +36,58 @@ FIRMWARE = {
     '/usr/share/edk2/aarch64/vars-template-pflash.raw':
         'b3b855c5a80310168051164986855692d1bdb06e67619856177965cd87c6774f',
 }
+PAUSE_TTL_SECONDS = 12 * 60 * 60
+OWNER_LABEL = 'tilo.sandbox.example/owner'
+OPERATION_LABEL = 'tilo.sandbox.example/operation'
+EXPIRES_LABEL = 'tilo.sandbox.example/expires-at'
+OWNER = 'supervised-install-lane'
+
+
+class ControllerTransportError(ValueError):
+    """The local controller lost its path to Kubernetes."""
+
+
+class CreatorBinding(TypedDict):
+    pod: str
+    pod_uid: str
+    namespace: str
+    node: str
+    node_uid: str
+    spec: dict[str, Any]
+    image_id: str
+
+
+class RawIdentity(TypedDict):
+    size: int
+    sha256: str
+
+
+class CreatorCheckpoint(TypedDict):
+    schema: int
+    purpose: str
+    helper_revision: str
+    acceptance_id: str
+    creator: CreatorBinding
+    creator_node: dict[str, Any]
+    creation_sha256: str
+    raw_identity: RawIdentity
+    expires_at: int
 
 
 def command(argv, payload=None, *, timeout=120, text=True):
-    result = subprocess.run(argv, input=payload, capture_output=True, timeout=timeout, text=text)
+    try:
+        result = subprocess.run(argv, input=payload, capture_output=True, timeout=timeout, text=text)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        if Path(argv[0]).name == 'kubectl':
+            raise ControllerTransportError('kubectl transport failed') from error
+        raise
     if result.returncode:
+        stderr = result.stderr if isinstance(result.stderr, str) else result.stderr.decode(errors='replace')
+        transport = ('unable to connect','connection refused','connection reset','context deadline',
+                     'i/o timeout','tls handshake timeout','server has asked for the client to provide',
+                     'timed out waiting','unexpected eof')
+        if Path(argv[0]).name == 'kubectl' and any(row in stderr.lower() for row in transport):
+            raise ControllerTransportError(f'kubectl failed (exit {result.returncode})')
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
     return result.stdout
 
@@ -121,13 +169,22 @@ def select_verifier_node(document, disk, vm, verifier_name=None):
     return sorted(choices,key=lambda row:row['metadata']['name'])[0]
 
 
-def disk_manifest(name, node, image=DISK_IMAGE, deadline=21600):
+def disk_manifest(name, node, image=DISK_IMAGE, deadline=43200, *, operation=None,
+                  expires_at=None):
     if not digest_reference(image) or not re.fullmatch(r'[a-z0-9](?:[-a-z0-9]*[a-z0-9])?', name):
         raise ValueError('invalid disk worker identity')
     kernel = node['metadata'].get('labels', {}).get('agent-sandbox.sandbox.example/disk-kernel')
     if not kernel:
         raise ValueError('disk node lacks the reviewed kernel label')
-    return {'apiVersion':'v1','kind':'Pod','metadata':{'name':name,'namespace':'kata-system'},
+    labels = {}
+    if operation is not None:
+        if (not re.fullmatch(r'[a-z0-9][a-z0-9-]{2,24}', operation)
+                or type(expires_at) is not int or expires_at <= 0):
+            raise ValueError('invalid resumable creator ownership')
+        labels = {OWNER_LABEL: OWNER, OPERATION_LABEL: operation,
+                  EXPIRES_LABEL: str(expires_at)}
+    return {'apiVersion':'v1','kind':'Pod','metadata':{'name':name,'namespace':'kata-system',
+      'labels':labels},
       'spec':{'runtimeClassName':'kata-qemu-runtime-rs','restartPolicy':'Never',
        'activeDeadlineSeconds':deadline,'automountServiceAccountToken':False,
        'nodeSelector':{'kubernetes.io/hostname':node['metadata']['name'],
@@ -177,6 +234,131 @@ def write_private(path, value):
     finally:
         try: os.unlink(temporary)
         except FileNotFoundError: pass
+
+
+def validate_creator_binding(value):
+    required = {'pod','pod_uid','namespace','node','node_uid','spec','image_id'}
+    if (not isinstance(value, dict) or set(value) != required
+            or any(not isinstance(value[key], str) or not value[key]
+                   for key in required - {'spec'})
+            or not isinstance(value['spec'], dict)
+            or value['namespace'] != 'kata-system'
+            or not digest_reference(value['image_id'])):
+        raise ValueError('creator checkpoint has an invalid worker binding')
+
+
+def validate_creator_node(value, creator):
+    try:
+        metadata = value['metadata']; labels = metadata['labels']
+        valid = (isinstance(value, dict) and metadata['name'] == creator['node']
+                 and metadata['uid'] == creator['node_uid']
+                 and labels.get('kubernetes.io/arch') == 'arm64'
+                 and isinstance(labels.get('agent-sandbox.sandbox.example/disk-kernel'), str)
+                 and bool(labels['agent-sandbox.sandbox.example/disk-kernel']))
+    except (KeyError, TypeError):
+        valid = False
+    if not valid:
+        raise ValueError('creator checkpoint has an invalid full node document')
+
+
+def validate_raw_identity(value):
+    if (not isinstance(value, dict) or set(value) != {'size','sha256'}
+            or type(value['size']) is not int or value['size'] != 64 * 1024**3
+            or not isinstance(value['sha256'], str)
+            or not re.fullmatch(r'[0-9a-f]{64}', value['sha256'])):
+        raise ValueError('creator checkpoint has an invalid raw identity')
+
+
+def validate_creator_checkpoint(value):
+    required = {'schema','purpose','helper_revision','acceptance_id','creator','creator_node',
+                'creation_sha256','raw_identity','expires_at'}
+    if (not isinstance(value, dict) or set(value) != required or value['schema'] != 1
+            or value['purpose'] != 'tilo-supervised-creator-checkpoint'
+            or not re.fullmatch(r'[0-9a-f]{40}', value['helper_revision'])
+            or not re.fullmatch(r'[a-z0-9][a-z0-9-]{2,24}', value['acceptance_id'])
+            or not re.fullmatch(r'[0-9a-f]{64}', value['creation_sha256'])
+            or type(value['expires_at']) is not int or value['expires_at'] <= 0):
+        raise ValueError('creator checkpoint has invalid metadata')
+    validate_creator_binding(value['creator'])
+    validate_creator_node(value['creator_node'], value['creator'])
+    validate_raw_identity(value['raw_identity'])
+
+
+def checkpoint_creator(args, creator, creator_node, creation, identity, expires_at):
+    if (args.operation_dir / 'registry-auth.json').exists():
+        raise ValueError('creator checkpoint cannot retain registry credentials')
+    document: CreatorCheckpoint = {
+      'schema':1, 'purpose':'tilo-supervised-creator-checkpoint',
+      'helper_revision':args.helper_revision, 'acceptance_id':args.acceptance_id,
+      'creator':creator, 'creator_node':creator_node,
+      'creation_sha256':hashlib.sha256(creation).hexdigest(),
+      'raw_identity':identity, 'expires_at':expires_at}
+    validate_creator_checkpoint(document)
+    write_private(args.operation_dir/'creator-checkpoint.json',
+                  (json.dumps(document,indent=2,sort_keys=True)+'\n').encode())
+    return document
+
+
+def load_creator_checkpoint(args, now=None):
+    path=args.operation_dir/'creator-checkpoint.json'
+    document=json.loads(path.read_text())
+    validate_creator_checkpoint(document)
+    if (document['helper_revision']!=args.helper_revision
+            or document['acceptance_id']!=args.acceptance_id):
+        raise ValueError('creator checkpoint belongs to a different operation')
+    creation=(args.operation_dir/'creation.json').read_bytes()
+    identity=json.loads((args.operation_dir/'raw-identity.json').read_text())
+    if (hashlib.sha256(creation).hexdigest()!=document['creation_sha256']
+            or identity!=document['raw_identity']):
+        raise ValueError('creator checkpoint durable media evidence changed')
+    if (now if now is not None else int(time.time())) >= document['expires_at']:
+        raise ValueError('creator checkpoint expired and must be cleaned up')
+    if (args.operation_dir/'registry-auth.json').exists():
+        raise ValueError('paused creator retained registry credentials')
+    return document,creation,identity
+
+
+def paused_cleanup_command(context, operation_dir):
+    return [os.fspath(Path(__file__).resolve()),'--context',context,
+            '--operation-dir',os.fspath(operation_dir),'--cleanup-paused']
+
+
+def pause_creator(args, checkpoint, reason):
+    if (args.operation_dir/'registry-auth.json').exists():
+        raise ValueError('refusing to pause a creator while credentials remain')
+    document={'schema':1,'purpose':'tilo-supervised-creator-paused','status':'paused',
+      'acceptance_id':args.acceptance_id,'creator':checkpoint['creator'],
+      'creator_checkpoint_sha256':hashlib.sha256(
+        (args.operation_dir/'creator-checkpoint.json').read_bytes()).hexdigest(),
+      'expires_at':checkpoint['expires_at'],'reason':reason,
+      'cleanup_command':paused_cleanup_command(args.context,args.operation_dir)}
+    write_private(args.operation_dir/'paused-creator.json',
+                  (json.dumps(document,indent=2,sort_keys=True)+'\n').encode())
+    return document
+
+
+def validate_pause_receipt(value, checkpoint):
+    required={'schema','purpose','status','acceptance_id','creator',
+              'creator_checkpoint_sha256','expires_at','reason','cleanup_command'}
+    if (not isinstance(value,dict) or set(value)!=required or value['schema']!=1
+            or value['purpose']!='tilo-supervised-creator-paused' or value['status']!='paused'
+            or value['acceptance_id']!=checkpoint['acceptance_id']
+            or value['creator']!=checkpoint['creator']
+            or value['expires_at']!=checkpoint['expires_at']
+            or not re.fullmatch(r'[0-9a-f]{64}',value['creator_checkpoint_sha256'])
+            or not isinstance(value['reason'],str) or not value['reason']
+            or not isinstance(value['cleanup_command'],list)
+            or not all(isinstance(item,str) and item for item in value['cleanup_command'])):
+        raise ValueError('paused creator receipt has an invalid type or binding')
+
+
+def current_creator_node(nodes, checkpoint):
+    matches=[node for node in nodes.get('items',[])
+             if node.get('metadata',{}).get('name')==checkpoint['creator']['node']]
+    if len(matches)!=1:
+        raise ValueError('paused creator node no longer exists')
+    validate_creator_node(matches[0],checkpoint['creator'])
+    return matches[0]
 
 
 def binding(pod, node, expected_manifest=None):
@@ -772,49 +954,147 @@ def delete_worker(context,worker):
                     '--wait=true','--timeout=2m'),timeout=150)
 
 
+def cleanup_paused_creator(context, operation_dir, now=None):
+    operation_dir=Path(operation_dir)
+    checkpoint=json.loads((operation_dir/'creator-checkpoint.json').read_text())
+    validate_creator_checkpoint(checkpoint)
+    pause=json.loads((operation_dir/'paused-creator.json').read_text())
+    validate_pause_receipt(pause,checkpoint)
+    expected_hash=hashlib.sha256((operation_dir/'creator-checkpoint.json').read_bytes()).hexdigest()
+    if pause['creator_checkpoint_sha256']!=expected_hash:
+        raise ValueError('paused creator receipt does not bind its checkpoint bytes')
+    if pause['cleanup_command']!=paused_cleanup_command(context,operation_dir):
+        raise ValueError('paused creator cleanup command differs from this controller')
+    current=int(time.time()) if now is None else now
+    if type(current) is not int or current < checkpoint['expires_at']:
+        raise ValueError('paused creator has not reached its cleanup expiry')
+    worker=checkpoint['creator']
+    pod=api_json(context,'-n',worker['namespace'],'get','pod',worker['pod'],
+                 '--request-timeout=15s')
+    labels=pod.get('metadata',{}).get('labels',{})
+    if (pod.get('metadata',{}).get('uid')!=worker['pod_uid']
+            or labels.get(OWNER_LABEL)!=OWNER
+            or labels.get(OPERATION_LABEL)!=checkpoint['acceptance_id']
+            or labels.get(EXPIRES_LABEL)!=str(checkpoint['expires_at'])):
+        raise ValueError('paused creator cleanup ownership does not match the live pod')
+    delete_worker(context,worker)
+    write_private(operation_dir/'paused-creator-cleaned.json',
+      (json.dumps({'schema':1,'purpose':'tilo-supervised-creator-expiry-cleanup',
+                   'acceptance_id':checkpoint['acceptance_id'],'creator':worker,
+                   'expired_at':checkpoint['expires_at'],'cleaned_at':current},
+                  indent=2,sort_keys=True)+'\n').encode())
+
+
+def resume_creator(args, nodes):
+    checkpoint,creation,identity=load_creator_checkpoint(args)
+    pause_path=args.operation_dir/'paused-creator.json'
+    if pause_path.exists():
+        pause=json.loads(pause_path.read_text())
+    else:
+        # A hard controller/WSL termination cannot write the pause receipt, but
+        # the credential-free checkpoint was fsynced before verifier work.
+        pause=pause_creator(args,checkpoint,'controller-restarted-after-checkpoint')
+    validate_pause_receipt(pause,checkpoint)
+    expected=hashlib.sha256((args.operation_dir/'creator-checkpoint.json').read_bytes()).hexdigest()
+    if pause['creator_checkpoint_sha256']!=expected:
+        raise ValueError('paused creator receipt does not bind its checkpoint bytes')
+    if pause['cleanup_command']!=paused_cleanup_command(args.context,args.operation_dir):
+        raise ValueError('paused creator cleanup command differs from this controller')
+    disk=checkpoint['creator']
+    require_same_worker(args.context,disk)
+    disk_node=current_creator_node(nodes,checkpoint)
+    _,vm_node=select_nodes(nodes,disk_node['metadata']['name'],args.vm_node)
+    return checkpoint,creation,identity,disk,disk_node,vm_node
+
+
+def provision_verifier_or_pause(args, nodes, checkpoint, disk_node, vm_node):
+    try:
+        verifier_node=select_verifier_node(nodes,disk_node,vm_node,args.verifier_node)
+        return create_worker(args.context,disk_manifest('tilo-verify-'+args.acceptance_id,
+                                                        verifier_node,deadline=7200))
+    except (ControllerTransportError,OSError,subprocess.TimeoutExpired) as error:
+        pause_creator(args,checkpoint,type(error).__name__)
+        raise ValueError('creator paused after controller loss; use --resume') from error
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--context',required=True);p.add_argument('--operation-dir',type=Path,required=True)
-    p.add_argument('--disk-args',type=Path,required=True);p.add_argument('--public-bundle',type=Path,required=True)
-    p.add_argument('--installer-bootc-helper',type=Path,required=True)
-    p.add_argument('--host-pins',type=Path,required=True);p.add_argument('--helper-revision',required=True)
-    p.add_argument('--acceptance-id',required=True);p.add_argument('--disk-node');p.add_argument('--verifier-node');p.add_argument('--vm-node')
-    auth=p.add_mutually_exclusive_group(required=True)
+    p.add_argument('--disk-args',type=Path);p.add_argument('--public-bundle',type=Path)
+    p.add_argument('--installer-bootc-helper',type=Path)
+    p.add_argument('--host-pins',type=Path);p.add_argument('--helper-revision')
+    p.add_argument('--acceptance-id');p.add_argument('--disk-node');p.add_argument('--verifier-node');p.add_argument('--vm-node')
+    mode=p.add_mutually_exclusive_group()
+    mode.add_argument('--resume',action='store_true')
+    mode.add_argument('--cleanup-paused',action='store_true')
+    auth=p.add_mutually_exclusive_group()
     auth.add_argument('--registry-auth',type=Path);auth.add_argument('--registry-secret',default=None)
     p.add_argument('--registry-secret-namespace',default='kata-system')
     args=p.parse_args()
+    if args.cleanup_paused:
+        cleanup_paused_creator(args.context,args.operation_dir)
+        return
+    required=('disk_args','public_bundle','installer_bootc_helper','host_pins',
+              'helper_revision','acceptance_id')
+    if any(getattr(args,name) is None for name in required):
+        p.error('creation and resume require all pinned operation inputs')
+    if args.registry_auth is None and args.registry_secret is None:
+        args.registry_secret='forgejo-pull-secret'
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]{2,24}',args.acceptance_id):
         p.error('acceptance ID must be a short DNS-safe fresh identifier')
-    args.registry_secret = args.registry_secret or 'forgejo-pull-secret'
-    args.operation_dir.mkdir(mode=0o700,parents=True,exist_ok=False)
+    if args.resume:
+        if not args.operation_dir.is_dir():
+            p.error('resume operation directory does not exist')
+    else:
+        args.operation_dir.mkdir(mode=0o700,parents=True,exist_ok=False)
     values=json.loads(args.disk_args.read_text());validate_disk_args(values)
     root=Path(__file__).resolve().parents[2]; helpers=git_archive(root,args.helper_revision)
-    public=public_archive(args.public_bundle); auth_bytes=registry_auth(args)
+    public=public_archive(args.public_bundle)
     installer_bootc = installer_bootc_archive(
         args.installer_bootc_helper, values['installer_bootc_sha256'])
-    write_private(args.operation_dir/'registry-auth.json',auth_bytes)
-    auth_path=args.operation_dir/'registry-auth.json'
-    cleanup_auth=lambda: auth_path.unlink(missing_ok=True)
-    atexit.register(cleanup_auth)
     nodes=api_json(args.context,'get','nodes','-l','kubernetes.io/arch=arm64','--request-timeout=20s')
-    disk_node,vm_node=select_nodes(nodes,args.disk_node,args.vm_node)
-    verifier_node=select_verifier_node(nodes,disk_node,vm_node,args.verifier_node)
-    disk=create_worker(args.context,disk_manifest('tilo-disk-'+args.acceptance_id,disk_node))
-    write_private(args.operation_dir/'worker-bindings.json',
-                  (json.dumps({'creator':disk},indent=2,sort_keys=True)+'\n').encode())
-    agent=host_agent(args.context,disk['node'])
-    stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/helpers',helpers)
-    stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/public-trust',public)
-    stream_tree(args.context,disk['namespace'],disk['pod'],'disk',
-                '/work/installer-bootc-helper',installer_bootc)
-    create_on_worker(root,args,disk,agent)
-    creation=(args.operation_dir/'creation.json').read_bytes()
-    freeze_raw(args.context,disk)
-    identity=raw_identity(args.context,disk)
-    write_private(args.operation_dir/'raw-identity.json',(json.dumps(identity,indent=2,sort_keys=True)+'\n').encode())
+    if args.resume:
+        checkpoint,creation,identity,disk,disk_node,vm_node=resume_creator(args,nodes)
+    else:
+        disk_node,vm_node=select_nodes(nodes,args.disk_node,args.vm_node)
+        expires_at=int(time.time())+PAUSE_TTL_SECONDS
+        disk=create_worker(args.context,disk_manifest('tilo-disk-'+args.acceptance_id,disk_node,
+          operation=args.acceptance_id,expires_at=expires_at))
+        write_private(args.operation_dir/'worker-bindings.json',
+                      (json.dumps({'creator':disk},indent=2,sort_keys=True)+'\n').encode())
+        auth_path=args.operation_dir/'registry-auth.json'
+        cleanup_auth=lambda: auth_path.unlink(missing_ok=True)
+        try:
+            auth_bytes=registry_auth(args)
+            write_private(auth_path,auth_bytes)
+            atexit.register(cleanup_auth)
+            agent=host_agent(args.context,disk['node'])
+            stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/helpers',helpers)
+            stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/public-trust',public)
+            stream_tree(args.context,disk['namespace'],disk['pod'],'disk',
+                        '/work/installer-bootc-helper',installer_bootc)
+            create_on_worker(root,args,disk,agent)
+            creation=(args.operation_dir/'creation.json').read_bytes()
+            freeze_raw(args.context,disk)
+            identity=raw_identity(args.context,disk)
+            write_private(args.operation_dir/'raw-identity.json',
+                          (json.dumps(identity,indent=2,sort_keys=True)+'\n').encode())
+        except BaseException:
+            cleanup_auth()
+            try:
+                delete_worker(args.context,disk)
+            finally:
+                try: atexit.unregister(cleanup_auth)
+                except Exception: pass
+            raise
+        cleanup_auth();atexit.unregister(cleanup_auth);del auth_bytes
+        checkpoint=checkpoint_creator(args,disk,disk_node,creation,identity,expires_at)
     # Only now provision the verifier. It has a distinct new Kata sandbox and
     # never coexisted with the privileged image execution.
-    verifier=create_worker(args.context,disk_manifest('tilo-verify-'+args.acceptance_id,verifier_node,deadline=7200))
+    verifier=provision_verifier_or_pause(args,nodes,checkpoint,disk_node,vm_node)
+    paused=args.operation_dir/'paused-creator.json'
+    if paused.exists():
+        os.replace(paused,args.operation_dir/'creator-resumed.json')
     write_private(args.operation_dir/'worker-bindings.json',
                   (json.dumps({'creator':disk,'verifier':verifier},indent=2,sort_keys=True)+'\n').encode())
     verifier_agent=host_agent(args.context,verifier['node'])
@@ -835,8 +1115,11 @@ def main():
     delete_worker(args.context,disk)
     # One authenticated exec installs its cleanup trap before reading the
     # credential stream, then removes the file on success, error or disconnect.
-    verification=verify_disk(args.context,verifier,values,auth_bytes)
-    cleanup_auth();atexit.unregister(cleanup_auth);del auth_bytes
+    auth_bytes=registry_auth(args)
+    try:
+        verification=verify_disk(args.context,verifier,values,auth_bytes)
+    finally:
+        del auth_bytes
     parsed=json.loads(verification)
     if (parsed.get('purpose') != 'tilo-installed-boot-and-root-verification'
             or not parsed.get('checks') or not all(parsed['checks'].values())):
