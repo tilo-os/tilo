@@ -20,7 +20,9 @@ pub(crate) fn outgoing_projection(
     let status = state.outbox_status(outbox, now);
     let expiry_at_ms = outbox
         .iter()
-        .filter(|message| !state.covers(message) && qos_peer_state::outbox::fresh(message, now))
+        .filter(|message| {
+            !state.outbox_message_retired(message) && qos_peer_state::outbox::fresh(message, now)
+        })
         .filter_map(|message| {
             let NeighbourMsg::AppDocument { envelope, .. } = message else {
                 return None;
@@ -711,14 +713,56 @@ mod tests {
                 .unwrap();
         }
         assert!(covered_state.covers(&original));
+        assert!(
+            covered_state
+                .durable_coverage(&route.app_id, &route.record_id)
+                .unwrap()
+                .is_none(),
+            "causal coverage alone is not a durable acknowledgement"
+        );
+        assert!(!covered_state.outbox_message_retired(&original));
         let covered =
             super::outgoing_projection(&covered_state, std::slice::from_ref(&original), now);
-        assert_eq!(covered.pending, 0);
+        assert_eq!(covered.pending, 1);
         assert_eq!(covered.blocked_expired, 0);
         assert_eq!(
-            covered.expiry_at_ms, None,
-            "covered envelopes need no wakeup"
+            covered.expiry_at_ms,
+            Some(2_300_001),
+            "causally covered evidence still needs a bounded durable-checkpoint wakeup"
         );
+        let later = now + Duration::from_secs(301);
+        let covered_expired =
+            super::outgoing_projection(&covered_state, std::slice::from_ref(&original), later);
+        assert_eq!(covered_expired.pending, 1);
+        assert_eq!(covered_expired.blocked_expired, 1);
+        assert_eq!(covered_expired.expiry_at_ms, None);
+
+        for message in covering_governor
+            .durable_bootstrap_messages(&authority_key, later, 6)
+            .unwrap()
+        {
+            covered_state
+                .receive_from(
+                    qos_peer_state::TransportOrigin::RelayDelta(
+                        authority_key.verifying_key().to_bytes(),
+                    ),
+                    message,
+                    later,
+                )
+                .unwrap();
+        }
+        assert!(
+            covered_state
+                .durable_coverage(&route.app_id, &route.record_id)
+                .unwrap()
+                .is_some()
+        );
+        assert!(covered_state.outbox_message_retired(&original));
+        let acknowledged =
+            super::outgoing_projection(&covered_state, std::slice::from_ref(&original), later);
+        assert_eq!(acknowledged.pending, 0);
+        assert_eq!(acknowledged.blocked_expired, 0);
+        assert_eq!(acknowledged.expiry_at_ms, None);
         let durable = client.durable().unwrap();
         let fresh_restored = StatePeer::restore(
             &durable,
@@ -735,7 +779,6 @@ mod tests {
         assert_eq!(fresh.blocked_expired, 0);
         assert_eq!(fresh.expiry_at_ms, Some(2_300_001));
 
-        let later = now + Duration::from_secs(301);
         let mut restored = StatePeer::restore(
             &durable,
             room,

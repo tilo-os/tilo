@@ -56,10 +56,26 @@ fn replacement(original: &NeighbourMsg, candidate: &NeighbourMsg, now: SystemTim
     }
 }
 impl StatePeer {
+    /// True only when causal coverage is backed by the exact governed durable receipt.
+    pub fn outbox_message_retired(&self, message: &NeighbourMsg) -> bool {
+        let NeighbourMsg::AppDocument {
+            app_id, record_id, ..
+        } = message
+        else {
+            return false;
+        };
+        self.covers(message)
+            && self
+                .durable_coverage(app_id, record_id)
+                .ok()
+                .flatten()
+                .is_some()
+    }
+
     pub fn outbox_status(&self, outbox: &[NeighbourMsg], now: SystemTime) -> OutboxStatus {
         let pending = outbox
             .iter()
-            .filter(|message| !self.covers(message))
+            .filter(|message| !self.outbox_message_retired(message))
             .collect::<Vec<_>>();
         OutboxStatus {
             pending: pending.len(),

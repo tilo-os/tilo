@@ -1167,20 +1167,7 @@ fn install_candidate(peer: &Peer, mut candidate: StatePeer) -> Result<(), String
     // Acceptance may reconcile author sequences, but cannot retire the
     // immutable original without an exact designated durable receipt.
     for original in peer.outbox.borrow().iter() {
-        let durable = match original {
-            NeighbourMsg::AppDocument {
-                app_id, record_id, ..
-            } => {
-                candidate
-                    .durable_coverage(app_id, record_id)
-                    .ok()
-                    .flatten()
-                    .is_some()
-                    && candidate.covers(original)
-            }
-            _ => false,
-        };
-        if !durable
+        if !candidate.outbox_message_retired(original)
             && !outbox.iter().any(|other| {
                 postcard::to_allocvec(other).ok() == postcard::to_allocvec(original).ok()
             })
