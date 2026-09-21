@@ -23,9 +23,6 @@ impl FrameMetrics {
         self.dropped = 0;
         self.notes.clear();
     }
-    pub fn enabled(&self) -> bool {
-        self.enabled
-    }
     /// Count a dynamic diagnostic key (for example a dirty widget path); bounded.
     pub fn note(&mut self, key: &str) {
         if !self.enabled {
@@ -55,6 +52,7 @@ impl FrameMetrics {
             });
         }
     }
+    #[cfg(target_arch = "wasm32")]
     pub fn count(&mut self, stage: &'static str) {
         if !self.enabled {
             return;

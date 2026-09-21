@@ -258,6 +258,7 @@ impl DesktopHandle {
         Ok(result)
     }
 
+    #[cfg(target_arch = "wasm32")]
     pub fn admit(
         &self,
         state: &qos_peer_state::StatePeer,

@@ -19,6 +19,7 @@ use ui::{
 
 /// Content-only semantics changes are delivered at most this often while they
 /// keep arriving; structure, focus and IME-line changes bypass the window.
+#[cfg(target_arch = "wasm32")]
 pub(crate) const SEMANTICS_WINDOW_MS: u64 = 100;
 
 #[derive(Debug, PartialEq, Eq)]

@@ -16,6 +16,7 @@ mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
 pub use fixture::{fixture_seed, fixture_writer_insert};
 
+#[cfg(any(target_arch = "wasm32", test))]
 mod admitted_records;
 
 #[cfg(any(target_arch = "wasm32", test))]

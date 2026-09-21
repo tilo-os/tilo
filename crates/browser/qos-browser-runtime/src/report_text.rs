@@ -131,7 +131,7 @@ mod report_benchmark {
         let mut old_light = Vec::new();
         let mut new_light = Vec::new();
         let mut hash = Vec::new();
-        let mut cached: Option<serde_json::Value> = None;
+        let mut cached: Option<serde_json::Value>;
         let mut bytes = 0;
         for i in 0..200 {
             let start = std::time::Instant::now();

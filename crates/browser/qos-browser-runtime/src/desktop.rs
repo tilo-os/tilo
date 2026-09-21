@@ -25,12 +25,18 @@ pub(crate) struct Requirement {
     pub record_id: String,
 }
 pub(crate) struct Admission {
+    #[cfg(any(target_arch = "wasm32", test))]
     pub admitted_room: automerge::AutoCommit,
+    #[cfg(any(target_arch = "wasm32", test))]
     pub source_heads: Vec<[u8; 32]>,
+    #[cfg(any(target_arch = "wasm32", test))]
     pub tree: WorkspaceTree,
+    #[cfg(any(target_arch = "wasm32", test))]
     pub routes: BTreeMap<u64, String>,
+    #[cfg(any(target_arch = "wasm32", test))]
     pub required: Vec<Requirement>,
     pub missing: Vec<Requirement>,
+    #[cfg(any(target_arch = "wasm32", test))]
     pub unsupported: Vec<String>,
     pub(crate) pending: usize,
 }
@@ -120,17 +126,23 @@ pub(crate) fn admission(state: &StatePeer) -> Result<Admission, String> {
         }
     }
     Ok(Admission {
+        #[cfg(any(target_arch = "wasm32", test))]
         admitted_room: doc.clone(),
+        #[cfg(any(target_arch = "wasm32", test))]
         source_heads: doc
             .clone()
             .get_heads()
             .into_iter()
             .map(|head| head.0)
             .collect(),
+        #[cfg(any(target_arch = "wasm32", test))]
         tree,
+        #[cfg(any(target_arch = "wasm32", test))]
         routes,
+        #[cfg(any(target_arch = "wasm32", test))]
         required,
         missing,
+        #[cfg(any(target_arch = "wasm32", test))]
         unsupported,
         pending: state.pending_count(),
     })
