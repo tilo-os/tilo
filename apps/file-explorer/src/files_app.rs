@@ -336,12 +336,50 @@ pub struct StartupInputs {
     pub trusted_humans: crate::identity_directory::TrustedHumanDirectory,
 }
 
+/// Exact document-open route supplied by a hosting shell.
+#[derive(Clone)]
+pub enum DocumentOpenRoute {
+    /// This embedding deliberately provides no document owner.
+    Unavailable,
+    /// Legacy synchronous host route, retained for standalone embeddings.
+    Immediate(Rc<RefCell<DocumentOpener>>),
+    /// The shell drains a capability-bound request after the tile releases its
+    /// record loan. A different app cannot construct the shell's matching
+    /// capability.
+    Deferred(ui::widget::DocumentOpenCapability),
+}
+
+impl HostedFileServices {
+    /// Create the one deferred route whose capability the hosting shell will
+    /// retain and validate before it reads or publishes a document.
+    #[must_use]
+    pub fn deferred_document_open() -> Self {
+        Self {
+            thumbnails: None,
+            document_opener: DocumentOpenRoute::Deferred(
+                ui::widget::DocumentOpenCapability::issue(),
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn accepts_document_open_capability(
+        &self,
+        capability: &ui::widget::DocumentOpenCapability,
+    ) -> bool {
+        matches!(
+            &self.document_opener,
+            DocumentOpenRoute::Deferred(expected) if expected == capability
+        )
+    }
+}
+
 /// Optional services supplied by an embedding host. Absence never selects
 /// the standalone thumbnail cache or global document opener.
 #[derive(Clone)]
 pub struct HostedFileServices {
     pub thumbnails: Option<Arc<ThumbnailService>>,
-    pub document_opener: Option<Rc<RefCell<DocumentOpener>>>,
+    pub document_opener: DocumentOpenRoute,
 }
 
 enum FileServices {
@@ -547,6 +585,11 @@ pub struct FileExplorerWidget {
     remote_browse_pending: Option<String>,
     remote_entries: HashMap<String, Vec<crate::remote_dav::RemoteEntry>>,
     host_intent: Option<ui::widget::AppHostIntent>,
+    /// A one-shot shell-owned document admission. The reply is strong only
+    /// while this Files widget still owns the request; the shell gets a weak
+    /// witness and cannot act after this widget has gone away.
+    pending_document_open: Option<(u64, Rc<RefCell<ui::widget::DocumentOpenReply>>)>,
+    next_document_open_token: u64,
     /// Folder rows the file view publishes each layout, so a drag's drop point
     /// can be resolved to the folder it lands on (the view never sees the
     /// release — the app captures the pointer for the duration of the drag).
@@ -861,6 +904,8 @@ impl FileExplorerWidget {
             remote_browse_pending: None,
             remote_entries: HashMap::new(),
             host_intent: None,
+            pending_document_open: None,
+            next_document_open_token: 0,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             thumbs,
@@ -3827,6 +3872,60 @@ impl FileExplorerWidget {
         });
     }
 
+    fn request_deferred_document_open(
+        &mut self,
+        path: PathBuf,
+        capability: ui::widget::DocumentOpenCapability,
+    ) -> Result<(), String> {
+        if self.pending_document_open.is_some() {
+            // One request already owns the only reply slot. Keep that
+            // truthful pending state instead of replacing it with a second
+            // status that the first successful reply could not clear.
+            return Ok(());
+        }
+        let token = self
+            .next_document_open_token
+            .checked_add(1)
+            .ok_or_else(|| "Document opening is unavailable".to_string())?;
+        self.next_document_open_token = token;
+        let reply = Rc::new(RefCell::new(ui::widget::DocumentOpenReply::pending(token)));
+        self.host_intent = Some(ui::widget::AppHostIntent::OpenDocument {
+            path,
+            capability,
+            token,
+            reply: Rc::downgrade(&reply),
+        });
+        self.pending_document_open = Some((token, reply));
+        self.set_external_status(t("files-opening-document"));
+        Ok(())
+    }
+
+    fn poll_deferred_document_open(&mut self) {
+        let Some((token, reply)) = &self.pending_document_open else {
+            return;
+        };
+        let Some(result) = reply
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut reply| reply.take_result(*token))
+        else {
+            return;
+        };
+        self.pending_document_open = None;
+        match result {
+            ui::widget::DocumentOpenOutcome::Opened => {
+                if self.status.as_deref() == Some(t("files-opening-document").as_str()) {
+                    self.status = None;
+                    self.structure_dirty = true;
+                }
+            }
+            ui::widget::DocumentOpenOutcome::Refused(reason) => self.set_external_status(reason),
+            ui::widget::DocumentOpenOutcome::Cancelled => {
+                self.set_external_status(t("files-document-opening-cancelled"));
+            }
+        }
+    }
+
     /// Open a path: navigate into directories, else launch its app.
     fn open_path(&mut self, path: PathBuf) {
         let mut runner = SystemRunner;
@@ -3877,12 +3976,19 @@ impl FileExplorerWidget {
             self.navigate(path);
             return Ok(false);
         }
-        let result = match &self.services {
-            FileServices::Legacy => ask_host_to_open(&path),
-            FileServices::Hosted(hosted) => Some(hosted.document_opener.as_ref().map_or_else(
-                || Err("Document opening is unavailable".into()),
-                |open| open.borrow_mut()(&path),
-            )),
+        let hosted_route = match &self.services {
+            FileServices::Legacy => None,
+            FileServices::Hosted(hosted) => Some(hosted.document_opener.clone()),
+        };
+        let result = match hosted_route {
+            None => ask_host_to_open(&path),
+            Some(DocumentOpenRoute::Unavailable) => {
+                Some(Err("Document opening is unavailable".into()))
+            }
+            Some(DocumentOpenRoute::Immediate(open)) => Some(open.borrow_mut()(&path)),
+            Some(DocumentOpenRoute::Deferred(capability)) => {
+                Some(self.request_deferred_document_open(path.clone(), capability))
+            }
         };
         match result {
             Some(Ok(())) => {}
@@ -8326,6 +8432,7 @@ impl Widget for FileExplorerWidget {
     }
 
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        self.poll_deferred_document_open();
         self.refresh_framework_history_target();
         self.refresh_metadata_if_due(Instant::now());
         // One bounded catalogue page per idle/sync turn. The palette only
@@ -8366,8 +8473,18 @@ impl Widget for FileExplorerWidget {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
+        let document_open_reply = self
+            .pending_document_open
+            .as_ref()
+            .and_then(|(token, reply)| {
+                reply
+                    .try_borrow()
+                    .ok()
+                    .and_then(|reply| (!reply.is_pending(*token)).then(Instant::now))
+            });
         Some(self.next_metadata_refresh.min(self.nearby_send.next_poll()))
             .into_iter()
+            .chain(document_open_reply)
             .chain(self.nav.next_wake_deadline())
             .chain(self.toolbar.next_wake_deadline())
             .min()

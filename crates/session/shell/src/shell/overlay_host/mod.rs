@@ -4410,18 +4410,19 @@ impl ShellOverlayHost {
         for &row_ptr in self.group_row_ids.values() {
             let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), row_ptr);
             for group in &mut row.groups {
+                let source_tab = group.active_tab_id();
                 let Some(host) = group.active_host_mut() else {
                     continue;
                 };
                 if let Some(intent) = host.take_host_intent() {
-                    intents.push(intent);
+                    intents.push((source_tab, intent));
                 }
             }
         }
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        for intent in intents {
+        for (source_tab, intent) in intents {
             match intent {
                 ui::widget::AppHostIntent::ShowWorkspaceActivity {
                     resource_id,
@@ -4441,8 +4442,59 @@ impl ShellOverlayHost {
                         },
                     ));
                 }
+                ui::widget::AppHostIntent::OpenDocument {
+                    path,
+                    capability,
+                    token,
+                    reply,
+                } => {
+                    let Some(reply) = reply.upgrade() else {
+                        continue;
+                    };
+                    let Ok(mut reply) = reply.try_borrow_mut() else {
+                        continue;
+                    };
+                    if !reply.is_pending(token) {
+                        continue;
+                    }
+                    Self::complete_document_open_request(
+                        &chrome,
+                        source_tab,
+                        &path,
+                        &capability,
+                        token,
+                        &mut reply,
+                    );
+                }
             }
         }
+    }
+
+    /// Resolve the one capability-bound Files request that drain admitted.
+    /// Keeping the authorization immediately beside the actual opener avoids
+    /// any generic app intent becoming a filesystem-read capability.
+    fn complete_document_open_request(
+        chrome: &crate::shell::chrome_state::Chrome,
+        source_tab: crate::shell::state::TabId,
+        path: &std::path::Path,
+        capability: &ui::widget::DocumentOpenCapability,
+        token: u64,
+        reply: &mut ui::widget::DocumentOpenReply,
+    ) {
+        let authorized_source = {
+            let state = chrome.borrow();
+            let files_app_id = crate::shell::state::AppKind::FileExplorer.app_id();
+            state.active_tab_id() == Some(source_tab)
+                && state.active_app_id().as_deref() == Some(files_app_id.as_str())
+                && state
+                    .hosted_inputs
+                    .accepts_document_open_capability(capability)
+        };
+        if !authorized_source {
+            reply.cancel(token);
+            return;
+        }
+        reply.complete(token, crate::shell::open_document_from_files(chrome, path));
     }
 
     /// Apply the canonical shared reconciliation while native services retain their refusal/readiness policy.
@@ -22295,6 +22347,17 @@ mod tab_context_menu_tests {
     /// closes, uses the hand-built tree. One structure pass settles the
     /// host's chrome revision the way the first frame's `update` does.
     fn harness(tabs: usize) -> Harness {
+        harness_with_inputs(
+            tabs,
+            crate::shell::hosted_inputs::HostedTileInputs::fixture()
+                .expect("scratch Files fixture"),
+        )
+    }
+
+    fn harness_with_inputs(
+        tabs: usize,
+        inputs: crate::shell::hosted_inputs::HostedTileInputs,
+    ) -> Harness {
         let tree = if tabs >= 2 {
             WorkspaceTree::bootstrap_demo()
         } else {
@@ -22318,7 +22381,12 @@ mod tab_context_menu_tests {
             tab_ids.len() >= tabs,
             "fixture has the tabs the test asked for"
         );
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = crate::shell::build_tilo_overlay_host_with_inputs(
+            tree.clone().shared(),
+            false,
+            ui::record::RecordStore::in_memory(),
+            inputs,
+        );
         let theme = Theme::dark();
         let (taffy, root) = lay_out_host_with_theme(&mut host, VW, VH, &theme);
         let _ = host.take_structure_dirty();
@@ -22438,6 +22506,182 @@ mod tab_context_menu_tests {
                 .map(|t| t.id)
                 .collect()
         }
+    }
+
+    fn files_document_open_capability(
+        chrome: &crate::shell::chrome_state::Chrome,
+    ) -> ui::widget::DocumentOpenCapability {
+        let state = chrome.borrow();
+        let services = state
+            .hosted_inputs
+            .file_services()
+            .expect("the production harness provides hosted Files services");
+        let file_explorer::files_app::DocumentOpenRoute::Deferred(capability) =
+            &services.document_opener
+        else {
+            panic!("the production harness routes Files opens through the deferred owner");
+        };
+        capability.clone()
+    }
+
+    fn tab_count(chrome: &crate::shell::chrome_state::Chrome) -> usize {
+        chrome
+            .borrow()
+            .tree()
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .map(|group| group.tabs.len())
+            .sum()
+    }
+
+    #[test]
+    fn stale_files_document_open_is_cancelled_before_record_or_tab_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let h = harness_with_inputs(
+            4,
+            crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(directory.path())
+                .expect("owned Files directory"),
+        );
+        let chrome = h.chrome.clone();
+        let source = h.tabs[1]; // Files in the production demo workspace.
+        let replacement = h.tabs[0];
+        let capability = files_document_open_capability(&chrome);
+        let tabs_before = tab_count(&chrome);
+        let path = directory.path().join("queued.txt");
+        std::fs::write(&path, "must not be read after source replacement\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let record = ui::record::RecordId::for_file(&path);
+        let reply = std::rc::Rc::new(std::cell::RefCell::new(
+            ui::widget::DocumentOpenReply::pending(41),
+        ));
+        let queued = ui::widget::AppHostIntent::OpenDocument {
+            path,
+            capability,
+            token: 41,
+            reply: std::rc::Rc::downgrade(&reply),
+        };
+        let workspace = chrome.borrow().tree().active;
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, h.strip, h.group, replacement);
+
+        let ui::widget::AppHostIntent::OpenDocument {
+            path,
+            capability,
+            token,
+            ..
+        } = queued
+        else {
+            unreachable!("the queued intent has the Files shape");
+        };
+        ShellOverlayHost::complete_document_open_request(
+            &chrome,
+            source,
+            &path,
+            &capability,
+            token,
+            &mut reply.borrow_mut(),
+        );
+
+        assert_eq!(
+            reply.borrow_mut().take_result(token),
+            Some(ui::widget::DocumentOpenOutcome::Cancelled)
+        );
+        assert!(!chrome.borrow().records().is_ready(&record));
+        assert_eq!(tab_count(&chrome), tabs_before);
+        assert_eq!(
+            crate::shell::window_actions::active_tab_id(&chrome.borrow()),
+            Some(replacement),
+            "a stale Files request must not replace the current tab"
+        );
+    }
+
+    #[test]
+    fn non_files_source_cannot_use_the_hosted_files_capability() {
+        let directory = tempfile::tempdir().unwrap();
+        let h = harness_with_inputs(
+            4,
+            crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(directory.path())
+                .expect("owned Files directory"),
+        );
+        let chrome = h.chrome.clone();
+        let source = h.tabs[0]; // Notes, not the Files tile at index 1.
+        let capability = files_document_open_capability(&chrome);
+        let tabs_before = tab_count(&chrome);
+        let path = directory.path().join("forged.txt");
+        std::fs::write(&path, "a non-Files app must not open this\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let record = ui::record::RecordId::for_file(&path);
+        let reply = std::rc::Rc::new(std::cell::RefCell::new(
+            ui::widget::DocumentOpenReply::pending(42),
+        ));
+        let workspace = chrome.borrow().tree().active;
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, h.strip, h.group, source);
+
+        ShellOverlayHost::complete_document_open_request(
+            &chrome,
+            source,
+            &path,
+            &capability,
+            42,
+            &mut reply.borrow_mut(),
+        );
+
+        assert_eq!(
+            reply.borrow_mut().take_result(42),
+            Some(ui::widget::DocumentOpenOutcome::Cancelled)
+        );
+        assert!(!chrome.borrow().records().is_ready(&record));
+        assert_eq!(tab_count(&chrome), tabs_before);
+        assert_eq!(
+            crate::shell::window_actions::active_tab_id(&chrome.borrow()),
+            Some(source),
+            "a non-Files intent must not publish a replacement tab"
+        );
+    }
+
+    #[test]
+    fn wrong_document_open_capability_cannot_use_the_current_files_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let h = harness_with_inputs(
+            4,
+            crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(directory.path())
+                .expect("owned Files directory"),
+        );
+        let chrome = h.chrome.clone();
+        let source = h.tabs[1]; // Files in the production demo workspace.
+        let tabs_before = tab_count(&chrome);
+        let path = directory.path().join("forged-capability.txt");
+        std::fs::write(&path, "a mismatched capability must not read this\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let record = ui::record::RecordId::for_file(&path);
+        let reply = std::rc::Rc::new(std::cell::RefCell::new(
+            ui::widget::DocumentOpenReply::pending(43),
+        ));
+        let workspace = chrome.borrow().tree().active;
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, h.strip, h.group, source);
+
+        ShellOverlayHost::complete_document_open_request(
+            &chrome,
+            source,
+            &path,
+            &ui::widget::DocumentOpenCapability::issue(),
+            43,
+            &mut reply.borrow_mut(),
+        );
+
+        assert_eq!(
+            reply.borrow_mut().take_result(43),
+            Some(ui::widget::DocumentOpenOutcome::Cancelled)
+        );
+        assert!(!chrome.borrow().records().is_ready(&record));
+        assert_eq!(tab_count(&chrome), tabs_before);
     }
 
     /// The whole pointer story, on the production `handle_event` path: a

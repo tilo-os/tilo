@@ -6,12 +6,91 @@
 //! `Terminal, Files, Editor, Browser, Settings`.
 
 use crate::widget::{AppKind, Widget};
+use std::cell::RefCell;
+use std::fmt;
+use std::path::PathBuf;
+use std::rc::Weak;
+
+/// An unguessable capability for one Files document-open route. A capability
+/// minted anywhere else is insufficient: the shell compares it against the
+/// exact capability installed in its current hosted Files inputs.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DocumentOpenCapability(uuid::Uuid);
+
+impl DocumentOpenCapability {
+    #[must_use]
+    pub fn issue() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl fmt::Debug for DocumentOpenCapability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DocumentOpenCapability(..)")
+    }
+}
+
+/// One Files-to-shell document-open request. The Files widget owns the
+/// strong cell; the shell receives only a weak witness, so a detached widget
+/// cannot leave an actionable request behind.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DocumentOpenReply {
+    token: u64,
+    result: Option<DocumentOpenOutcome>,
+}
+
+/// Shell-owned result for one exact Files document-open request.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DocumentOpenOutcome {
+    Opened,
+    Refused(String),
+    Cancelled,
+}
+
+impl DocumentOpenReply {
+    #[must_use]
+    pub fn pending(token: u64) -> Self {
+        Self {
+            token,
+            result: None,
+        }
+    }
+
+    #[must_use]
+    pub fn token(&self) -> u64 {
+        self.token
+    }
+
+    #[must_use]
+    pub fn is_pending(&self, token: u64) -> bool {
+        self.token == token && self.result.is_none()
+    }
+
+    pub fn complete(&mut self, token: u64, result: Result<(), String>) {
+        if self.is_pending(token) {
+            self.result = Some(match result {
+                Ok(()) => DocumentOpenOutcome::Opened,
+                Err(reason) => DocumentOpenOutcome::Refused(reason),
+            });
+        }
+    }
+
+    pub fn cancel(&mut self, token: u64) {
+        if self.is_pending(token) {
+            self.result = Some(DocumentOpenOutcome::Cancelled);
+        }
+    }
+
+    pub fn take_result(&mut self, token: u64) -> Option<DocumentOpenOutcome> {
+        (self.token == token).then(|| self.result.take()).flatten()
+    }
+}
 
 /// A typed, device-local request from app content to shell chrome. Keeping
 /// this on the common app contract lets both in-process tiles and future IPC
 /// adapters use one destination without an app reaching into compositor
 /// state or pretending a status toast completed the navigation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum AppHostIntent {
     ShowWorkspaceActivity {
         resource_id: String,
@@ -21,6 +100,57 @@ pub enum AppHostIntent {
         /// an empty resource lens while the durable indexes converge.
         entry: Option<crate::widget::HistoryEntry>,
     },
+    /// A Files-selected local document. The shell validates and admits it only
+    /// after the originating tile has released its record loan.
+    OpenDocument {
+        path: PathBuf,
+        capability: DocumentOpenCapability,
+        token: u64,
+        reply: Weak<RefCell<DocumentOpenReply>>,
+    },
+}
+
+impl PartialEq for AppHostIntent {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::ShowWorkspaceActivity {
+                    resource_id: left_resource,
+                    version_id: left_version,
+                    entry: left_entry,
+                },
+                Self::ShowWorkspaceActivity {
+                    resource_id: right_resource,
+                    version_id: right_version,
+                    entry: right_entry,
+                },
+            ) => {
+                left_resource == right_resource
+                    && left_version == right_version
+                    && left_entry == right_entry
+            }
+            (
+                Self::OpenDocument {
+                    path: left_path,
+                    capability: left_capability,
+                    token: left_token,
+                    reply: left_reply,
+                },
+                Self::OpenDocument {
+                    path: right_path,
+                    capability: right_capability,
+                    token: right_token,
+                    reply: right_reply,
+                },
+            ) => {
+                left_path == right_path
+                    && left_capability == right_capability
+                    && left_token == right_token
+                    && Weak::ptr_eq(left_reply, right_reply)
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A lightweight icon descriptor usable before the full asset pipeline lands.
