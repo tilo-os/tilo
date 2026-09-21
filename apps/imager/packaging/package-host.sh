@@ -211,6 +211,11 @@ case "$host" in
       printf 'Apple notarization credentials are required for a release build\n' >&2
       exit 1
     fi
+    if [ -n "${TILO_NOTARY_KEYCHAIN_PROFILE:-}" ] \
+       || { [ -n "${TILO_APPLE_ID:-}" ] && [ -n "${TILO_APPLE_TEAM_ID:-}" ] \
+            && [ -n "${TILO_APPLE_APP_PASSWORD:-}" ]; }; then
+      xcrun stapler validate "$app"
+    fi
     write_digest "$out/$artifact_base.zip"
     if command -v hdiutil >/dev/null 2>&1; then
       dmg_root="$(mktemp -d)"

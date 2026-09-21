@@ -316,7 +316,7 @@ Before creating a release tag, verify all of the following:
 
 - the protected tag rule matches `imager-v*`, forbids deletion/force-push, and
   restricts creation to release maintainers;
-- five native labels are online at least once: `imager-linux-x86_64`,
+- six native labels are online at least once: `imager-linux-x86_64`,
   `imager-linux-aarch64`, `imager-windows-x86_64`, `imager-windows-aarch64`,
   `imager-macos-x86_64`, and `imager-macos-aarch64`; each reports its expected
   native architecture and `:host` execution;
