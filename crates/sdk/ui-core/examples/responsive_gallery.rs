@@ -5,17 +5,17 @@
 
 use std::fs;
 
-use ui::i18n::I18nManager;
-use ui::icons::Icon;
-use ui::theme::Theme;
-use ui::widget::{
+use tilo_ui::i18n::I18nManager;
+use tilo_ui::icons::Icon;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{
     Banner, Button, Chip, Column, Container, Row, SearchField, Spacer, StatTile, Text, TextInput,
     Trend, Widget,
 };
-use ui::{App, State};
+use tilo_ui::{App, State};
 
 pub fn run(_args: &[String]) {
-    let wake_scope = ui::wake::WakeScope::new();
+    let wake_scope = tilo_ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
     I18nManager::init("en-US");
     I18nManager::add_resource(
