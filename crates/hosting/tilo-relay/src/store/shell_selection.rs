@@ -79,10 +79,17 @@ pub(crate) enum IncomingDisposition {
     SelectedLive,
     Original,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BatchProjectionReason {
+    Represented,
+    FinalBasisOmission,
+    UnresolvedTailDependencies,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BatchSelectionOutcome {
     pub publication: Publication,
     pub dispositions: Vec<IncomingDisposition>,
+    pub reason: BatchProjectionReason,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainOutcome {
@@ -366,6 +373,9 @@ impl Selection {
     pub(crate) fn activation_on_error(&self) -> Option<PathBuf> {
         (self.changed && self.switch_attempted).then(|| self.staged.clone())
     }
+    pub(crate) fn current_switch_attempted(&self) -> bool {
+        self.switch_attempted
+    }
     pub(crate) fn cleanup_paths(&self) -> (PathBuf, PathBuf) {
         (self.store.root.join(DIRECTORY), self.staged.clone())
     }
@@ -373,6 +383,11 @@ impl Selection {
         &self.sorter.stats
     }
     fn batch_outcome(&self) -> BatchSelectionOutcome {
+        let dispositions = self
+            .incoming_dispositions
+            .iter()
+            .map(|value| value.unwrap_or(IncomingDisposition::Original))
+            .collect::<Vec<_>>();
         BatchSelectionOutcome {
             publication: if self.changed {
                 Publication::Activate(self.staged.clone())
@@ -386,11 +401,12 @@ impl Selection {
             } else {
                 Publication::Original
             },
-            dispositions: self
-                .incoming_dispositions
-                .iter()
-                .map(|value| value.unwrap_or(IncomingDisposition::Original))
-                .collect(),
+            reason: if dispositions.contains(&IncomingDisposition::Original) {
+                BatchProjectionReason::FinalBasisOmission
+            } else {
+                BatchProjectionReason::Represented
+            },
+            dispositions,
         }
     }
     /// Finish the projected manifests without switching selected CURRENT.
@@ -408,6 +424,7 @@ impl Selection {
                 Ok(Step::Done(BatchSelectionOutcome {
                     publication: Publication::Original,
                     dispositions: vec![IncomingDisposition::Original; self.incoming.len()],
+                    reason: BatchProjectionReason::UnresolvedTailDependencies,
                 }))
             }
             Step::Done(_) => Err(invalid("projected selection committed before promotion")),

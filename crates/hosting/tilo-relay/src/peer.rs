@@ -2112,8 +2112,8 @@ fn step_checkpoint_batch(
     }
 }
 
-fn union_sessions(
-    prepared: &[PreparedRecipients],
+fn union_sessions<'a>(
+    prepared: impl IntoIterator<Item = &'a PreparedRecipients>,
 ) -> (
     Vec<([u8; 32], mpsc::Sender<Envelope>)>,
     Vec<ReplayPendingTarget>,
@@ -2196,31 +2196,127 @@ fn state_commit_for(
     })
 }
 
-fn checkpoint_batch_fast(batch: &CheckpointBatch) -> bool {
-    batch.projected.as_ref().is_some_and(|outcome| {
-        outcome
-            .dispositions
-            .iter()
-            .all(|value| *value != crate::store::shell_selection::IncomingDisposition::Original)
-    })
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CheckpointBatchMode {
+    Represented,
+    AllOriginal,
+    Serial,
 }
 
-struct FastCheckpointCommit {
+#[cfg(test)]
+static CHECKPOINT_BATCH_MODE_OBSERVERS: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<u64, Arc<std::sync::Mutex<Vec<CheckpointBatchMode>>>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn track_checkpoint_batch_modes(
+    workspace_id: u64,
+) -> Arc<std::sync::Mutex<Vec<CheckpointBatchMode>>> {
+    let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    CHECKPOINT_BATCH_MODE_OBSERVERS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .insert(workspace_id, observed.clone());
+    observed
+}
+
+#[cfg(test)]
+fn observe_checkpoint_batch_mode(batch: &CheckpointBatch, mode: CheckpointBatchMode) {
+    let Some(Envelope::Delta { workspace_id, .. }) =
+        batch.inputs.first().map(|input| &*input.envelope)
+    else {
+        return;
+    };
+    if let Some(observed) = CHECKPOINT_BATCH_MODE_OBSERVERS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .get(workspace_id)
+    {
+        observed.lock().unwrap().push(mode);
+    }
+}
+
+fn checkpoint_batch_mode(batch: &CheckpointBatch) -> CheckpointBatchMode {
+    checkpoint_mode_for(batch.projected.as_ref(), batch.inputs.len())
+}
+
+fn checkpoint_mode_for(
+    outcome: Option<&crate::store::shell_selection::BatchSelectionOutcome>,
+    input_count: usize,
+) -> CheckpointBatchMode {
+    use crate::store::shell_selection::{BatchProjectionReason, IncomingDisposition, Publication};
+    let Some(outcome) = outcome else {
+        return CheckpointBatchMode::Serial;
+    };
+    if outcome.dispositions.len() != input_count {
+        return CheckpointBatchMode::Serial;
+    }
+    if outcome.reason == BatchProjectionReason::FinalBasisOmission
+        && outcome.publication == Publication::Original
+        && outcome
+            .dispositions
+            .iter()
+            .all(|value| *value == IncomingDisposition::Original)
+    {
+        return CheckpointBatchMode::AllOriginal;
+    }
+    if outcome.reason == BatchProjectionReason::Represented
+        && outcome.publication != Publication::Original
+        && outcome
+            .dispositions
+            .iter()
+            .all(|value| *value != IncomingDisposition::Original)
+    {
+        return CheckpointBatchMode::Represented;
+    }
+    CheckpointBatchMode::Serial
+}
+
+enum ProjectedCheckpointStep {
+    More,
+    Commit(StateCommit),
+    Done,
+}
+
+struct ProjectedCheckpointCommit {
+    mode: CheckpointBatchMode,
     selected_committed: bool,
     publication: Option<crate::store::shell_selection::Publication>,
     gc_index: usize,
     commit: Option<StateCommit>,
     replay: Option<ReplayPendingWork>,
+    publication_index: usize,
+    emission_done: bool,
+    full_fence: Option<CheckpointCommitFence>,
 }
 
-impl FastCheckpointCommit {
-    fn new() -> Self {
+impl ProjectedCheckpointCommit {
+    fn new(batch: &CheckpointBatch, mode: CheckpointBatchMode) -> Self {
+        let full_fence = (mode == CheckpointBatchMode::AllOriginal).then(|| {
+            let (sessions, replay_targets) = union_sessions(
+                batch
+                    .inputs
+                    .iter()
+                    .filter_map(|input| input.prepared.as_ref()),
+            );
+            CheckpointCommitFence {
+                activating: true,
+                sessions,
+                replay_targets,
+            }
+        });
         Self {
+            mode,
             selected_committed: false,
             publication: None,
             gc_index: 0,
             commit: None,
             replay: None,
+            publication_index: 0,
+            emission_done: false,
+            full_fence,
         }
     }
 
@@ -2228,22 +2324,34 @@ impl FastCheckpointCommit {
         &mut self,
         state: &mut crate::persistence::State,
         batch: &mut CheckpointBatch,
-    ) -> Result<Step<StateCommit>, crate::store::StoreError> {
+    ) -> Result<ProjectedCheckpointStep, crate::store::StoreError> {
         if !self.selected_committed {
             match batch
                 .selector
                 .as_mut()
-                .expect("fast checkpoint selector")
+                .expect("projected checkpoint selector")
                 .step(Default::default())?
             {
-                Step::More => return Ok(Step::More),
+                Step::More => return Ok(ProjectedCheckpointStep::More),
                 Step::Done(crate::store::shell_selection::SelectionOutcome::BatchPublished {
                     publication,
-                    ..
+                    dispositions,
                 }) => {
+                    // CURRENT has already switched when Selection returns. Set
+                    // this before validating the repeated outcome so every
+                    // mismatch takes the immutable full-session fence.
                     self.selected_committed = true;
+                    let expected = batch.projected.as_ref().ok_or_else(|| {
+                        crate::persistence::error("projected checkpoint outcome disappeared")
+                    })?;
+                    if publication != expected.publication || dispositions != expected.dispositions
+                    {
+                        return Err(crate::persistence::error(
+                            "checkpoint projection changed while committing",
+                        ));
+                    }
                     self.publication = Some(publication);
-                    return Ok(Step::More);
+                    return Ok(ProjectedCheckpointStep::More);
                 }
                 Step::Done(_) => {
                     return Err(crate::persistence::error(
@@ -2259,13 +2367,63 @@ impl FastCheckpointCommit {
                 .unwrap()
                 .finish_gc(Default::default())?
             {
-                Step::More => return Ok(Step::More),
+                Step::More => return Ok(ProjectedCheckpointStep::More),
                 Step::Done(()) => {
                     commit_log_and_materialize(state, input)?;
                     self.gc_index += 1;
-                    return Ok(Step::More);
+                    return Ok(ProjectedCheckpointStep::More);
                 }
             }
+        }
+        if self.mode == CheckpointBatchMode::AllOriginal {
+            #[cfg(test)]
+            if self.publication_index == 1 {
+                crate::store::test_barrier::check(
+                    state.store.root(),
+                    "checkpoint-prefix-after-first-original",
+                )?;
+            }
+            if self.publication != Some(crate::store::shell_selection::Publication::Original) {
+                return Err(crate::persistence::error(
+                    "all-original checkpoint projection activated a selected basis",
+                ));
+            }
+            if self.publication_index == batch.inputs.len() {
+                return Ok(ProjectedCheckpointStep::Done);
+            }
+            if self.commit.is_none() {
+                let commit = state_commit_for(
+                    &mut batch.inputs[self.publication_index],
+                    crate::store::shell_selection::Publication::Original,
+                )?;
+                self.replay = (!commit.replay_targets.is_empty()).then(|| {
+                    ReplayPendingWork::original(
+                        commit.envelope.clone(),
+                        commit.replay_targets.clone(),
+                    )
+                });
+                self.commit = Some(commit);
+                return Ok(ProjectedCheckpointStep::More);
+            }
+            if let Some(replay) = &mut self.replay {
+                match replay.step(state, crate::persistence::output_budget())? {
+                    Step::More => return Ok(ProjectedCheckpointStep::More),
+                    Step::Done(written) => {
+                        self.commit.as_mut().unwrap().persisted_bytes = self
+                            .commit
+                            .as_ref()
+                            .unwrap()
+                            .persisted_bytes
+                            .saturating_add(written);
+                        self.replay = None;
+                    }
+                }
+            }
+            self.publication_index += 1;
+            return Ok(ProjectedCheckpointStep::Commit(self.commit.take().unwrap()));
+        }
+        if self.emission_done {
+            return Ok(ProjectedCheckpointStep::Done);
         }
         if self.commit.is_none() {
             let prepared = batch
@@ -2277,7 +2435,7 @@ impl FastCheckpointCommit {
             let (publish, activation) = match self
                 .publication
                 .take()
-                .expect("fast checkpoint publication")
+                .expect("represented checkpoint publication")
             {
                 crate::store::shell_selection::Publication::Suppress => (false, None),
                 crate::store::shell_selection::Publication::Activate(path) => (true, Some(path)),
@@ -2312,11 +2470,11 @@ impl FastCheckpointCommit {
             } else {
                 None
             };
-            return Ok(Step::More);
+            return Ok(ProjectedCheckpointStep::More);
         }
         if let Some(replay) = &mut self.replay {
             match replay.step(state, crate::persistence::output_budget())? {
-                Step::More => return Ok(Step::More),
+                Step::More => return Ok(ProjectedCheckpointStep::More),
                 Step::Done(written) => {
                     let commit = self.commit.as_mut().unwrap();
                     commit.persisted_bytes = commit.persisted_bytes.saturating_add(written);
@@ -2324,10 +2482,20 @@ impl FastCheckpointCommit {
                 }
             }
         }
-        Ok(Step::Done(self.commit.take().unwrap()))
+        self.emission_done = true;
+        Ok(ProjectedCheckpointStep::Commit(self.commit.take().unwrap()))
     }
 
     fn error_fence(&self, batch: &CheckpointBatch) -> Option<CheckpointCommitFence> {
+        if self.mode == CheckpointBatchMode::AllOriginal
+            && (self.selected_committed
+                || batch
+                    .selector
+                    .as_ref()
+                    .is_some_and(|selector| selector.current_switch_attempted()))
+        {
+            return self.full_fence.clone();
+        }
         if let Some(commit) = &self.commit {
             return Some(CheckpointCommitFence::capture(commit));
         }
@@ -2779,6 +2947,8 @@ async fn enqueue_checkpoint_prefix(
     metrics: Arc<crate::metrics::Metrics>,
     inbound_budget: Vec<Option<Arc<tokio::sync::OwnedSemaphorePermit>>>,
 ) -> Result<(), PeerError> {
+    let diagnostics = crate::persistence::diagnostics();
+    let admitted_at = diagnostics.then(std::time::Instant::now);
     let message_units = u32::try_from(envelopes.len())
         .map_err(|_| PeerError::Protocol("checkpoint prefix is too long".into()))?;
     let charged_size = envelopes.iter().try_fold(0usize, |total, envelope| {
@@ -2789,7 +2959,7 @@ async fn enqueue_checkpoint_prefix(
         };
         Ok(total.saturating_add(delta.len().saturating_add(256).saturating_mul(3)))
     })?;
-    if crate::persistence::diagnostics() {
+    if diagnostics {
         tracing::info!(
             phase = "checkpoint_prefix_admitted",
             inputs = message_units,
@@ -2805,6 +2975,8 @@ async fn enqueue_checkpoint_prefix(
             message_units,
             charged_size,
             move |state, workers| async move {
+                let queue_wait_ms = admitted_at.map_or(0, |started| started.elapsed().as_millis());
+                let projection_started = diagnostics.then(std::time::Instant::now);
                 let staging_state = state.clone();
                 let mut batch = crate::persistence::blocking(workers.clone(), move || {
                     let mut state = staging_state
@@ -2813,7 +2985,7 @@ async fn enqueue_checkpoint_prefix(
                     new_checkpoint_batch(&mut state, envelopes)
                 })
                 .await??;
-                let started = std::time::Instant::now();
+                let started = diagnostics.then(std::time::Instant::now);
                 loop {
                     let staging_state = state.clone();
                     let (next, result) = crate::persistence::blocking(workers.clone(), move || {
@@ -2830,7 +3002,73 @@ async fn enqueue_checkpoint_prefix(
                     }
                     tokio::task::yield_now().await;
                 }
-                let fast = checkpoint_batch_fast(&batch);
+                let projection_elapsed_ms =
+                    projection_started.map_or(0, |started| started.elapsed().as_millis());
+                if diagnostics {
+                    use crate::store::shell_selection::{
+                        BatchProjectionReason, IncomingDisposition, Publication,
+                    };
+                    let (publication, reason, dispositions) = batch.projected.as_ref().map_or(
+                        ("none", "unprojectable_stage", None),
+                        |outcome| {
+                            let publication = match outcome.publication {
+                                Publication::Original => "original",
+                                Publication::Suppress => "suppress",
+                                Publication::Activate(_) => "activate",
+                            };
+                            let reason = match outcome.reason {
+                                BatchProjectionReason::Represented => "represented",
+                                BatchProjectionReason::FinalBasisOmission => "final_basis_omission",
+                                BatchProjectionReason::UnresolvedTailDependencies => {
+                                    "unresolved_tail_dependencies"
+                                }
+                            };
+                            (publication, reason, Some(outcome.dispositions.as_slice()))
+                        },
+                    );
+                    let dispositions = dispositions.unwrap_or_default();
+                    let unclassified = batch.inputs.len().saturating_sub(dispositions.len());
+                    let covered = dispositions
+                        .iter()
+                        .filter(|value| **value == IncomingDisposition::Covered)
+                        .count();
+                    let staged = dispositions
+                        .iter()
+                        .filter(|value| **value == IncomingDisposition::Staged)
+                        .count();
+                    let selected_live = dispositions
+                        .iter()
+                        .filter(|value| **value == IncomingDisposition::SelectedLive)
+                        .count();
+                    let originals = dispositions
+                        .iter()
+                        .filter(|value| **value == IncomingDisposition::Original)
+                        .count();
+                    let first_original = dispositions
+                        .iter()
+                        .position(|value| *value == IncomingDisposition::Original);
+                    let last_original = dispositions
+                        .iter()
+                        .rposition(|value| *value == IncomingDisposition::Original);
+                    tracing::info!(
+                        phase = "checkpoint_prefix_projection",
+                        inputs = batch.inputs.len(),
+                        queue_wait_ms,
+                        projection_elapsed_ms,
+                        publication,
+                        reason,
+                        unclassified,
+                        covered,
+                        staged,
+                        selected_live,
+                        originals,
+                        ?first_original,
+                        ?last_original,
+                    );
+                }
+                let mode = checkpoint_batch_mode(&batch);
+                #[cfg(test)]
+                observe_checkpoint_batch_mode(&batch, mode);
                 for index in 0..batch.inputs.len() {
                     let input = &batch.inputs[index];
                     let Envelope::Delta {
@@ -2849,7 +3087,7 @@ async fn enqueue_checkpoint_prefix(
                     )
                     .await?;
                     batch.inputs[index].prepared = Some(prepared);
-                    if fast {
+                    if mode != CheckpointBatchMode::Serial {
                         let operation_state = state.clone();
                         let (next, result) =
                             crate::persistence::blocking(workers.clone(), move || {
@@ -2925,19 +3163,32 @@ async fn enqueue_checkpoint_prefix(
                         }
                     }
                 }
-                if fast {
-                    let mut work = FastCheckpointCommit::new();
+                if mode != CheckpointBatchMode::Serial {
+                    let mut work = ProjectedCheckpointCommit::new(&batch, mode);
                     loop {
+                        // Every AllOriginal worker quantum runs after all N
+                        // promotions. A worker acquisition/join error cannot
+                        // prove whether the selected CURRENT switched, so the
+                        // immutable exact-session fence is conservative here.
+                        let worker_fence = work.full_fence.clone();
                         let operation_state = state.clone();
-                        let (next_batch, next_work, result) =
-                            crate::persistence::blocking(workers.clone(), move || {
-                                let mut state = operation_state
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                let result = work.step(&mut state, &mut batch);
-                                (batch, work, result)
-                            })
-                            .await?;
+                        let blocking = crate::persistence::blocking(workers.clone(), move || {
+                            let mut state = operation_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let result = work.step(&mut state, &mut batch);
+                            (batch, work, result)
+                        })
+                        .await;
+                        let (next_batch, next_work, result) = match blocking {
+                            Ok(result) => result,
+                            Err(error) => {
+                                if let Some(fence) = worker_fence {
+                                    fence.apply(&work_workspace).await;
+                                }
+                                return Err(error);
+                            }
+                        };
                         batch = next_batch;
                         work = next_work;
                         let result = match result {
@@ -2950,28 +3201,40 @@ async fn enqueue_checkpoint_prefix(
                             }
                         };
                         match result {
-                            Step::More => tokio::task::yield_now().await,
-                            Step::Done(commit) => {
-                                publish_checkpoint_commit_fenced(
+                            ProjectedCheckpointStep::More => tokio::task::yield_now().await,
+                            ProjectedCheckpointStep::Commit(commit) => {
+                                let commit_fence = CheckpointCommitFence::capture(&commit);
+                                if let Err(error) = publish_checkpoint_commit(
                                     &work_workspace,
                                     &work_source,
                                     workers.clone(),
                                     &work_metrics,
                                     commit,
                                 )
-                                .await?;
-                                break;
+                                .await
+                                {
+                                    work.error_fence(&batch)
+                                        .unwrap_or(commit_fence)
+                                        .apply(&work_workspace)
+                                        .await;
+                                    return Err(error);
+                                }
                             }
+                            ProjectedCheckpointStep::Done => break,
                         }
                     }
                 }
-                if crate::persistence::diagnostics() {
+                if diagnostics {
                     tracing::info!(
                         phase = "checkpoint_prefix_complete",
                         inputs = batch.inputs.len(),
-                        disposition = if fast { "fast" } else { "serial" },
+                        disposition = match mode {
+                            CheckpointBatchMode::Represented => "represented",
+                            CheckpointBatchMode::AllOriginal => "all_original",
+                            CheckpointBatchMode::Serial => "serial",
+                        },
                         success = true,
-                        elapsed_ms = started.elapsed().as_millis(),
+                        elapsed_ms = started.map_or(0, |started| started.elapsed().as_millis()),
                         selection_preparation_reads = batch
                             .selector
                             .as_ref()
@@ -4741,6 +5004,515 @@ mod private_transport_tests {
             .unwrap();
         assert_eq!(shell_selection::selection_constructions(&store_root), 1);
         assert_ne!(std::fs::read(selected).unwrap(), selected_before_advance);
+    }
+
+    #[tokio::test]
+    async fn thirty_four_route_prefix_uses_one_all_original_selection_then_converges() {
+        use crate::store::{
+            bounded::{Step, WorkLimit},
+            shell_selection::{self, SelectedRead, Selection},
+            shell_selection_tests::replay_frames,
+        };
+        use automerge::transaction::Transactable;
+
+        fn frame(
+            authority: &qos_peer_state::retained_proof::RetentionAuthority,
+            message: &qos_peer_state::NeighbourMsg,
+        ) -> Vec<u8> {
+            let channel = qos_peer_state::transport::retention(message, true)
+                .unwrap()
+                .0;
+            let body = postcard::to_allocvec(message).unwrap();
+            let source = match message {
+                qos_peer_state::NeighbourMsg::AppDocument { envelope, .. } => {
+                    *envelope.author.as_bytes()
+                }
+                _ => authority.governor().device_public_key,
+            };
+            crate::transport::encode(&Envelope::Delta {
+                workspace_id: crate::room_workspace_id(authority.room()).unwrap(),
+                author_device_public_key: source,
+                authored_at_ns: 1,
+                signature: [0; 64],
+                delta: crate::coedit::CoeditPayload::Checkpoint { channel, body }
+                    .encode()
+                    .unwrap(),
+            })
+            .unwrap()
+        }
+
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "34 route production prefix".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
+        let (observer, _observer_key) = certified_device(
+            &root_key,
+            root_key.verifying_key().to_bytes(),
+            "34 route observer",
+        );
+        let (fenced_observer, _fenced_observer_key) = certified_device(
+            &root_key,
+            root_key.verifying_key().to_bytes(),
+            "34 route fenced observer",
+        );
+        let now = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_secs(4000);
+        let room = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        let mut publisher = qos_peer_state::StatePeer::new(
+            room,
+            cert.clone(),
+            vec![],
+            tilo_user_identity::RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        let documents = (0..34)
+            .map(|index| {
+                let mut document = automerge::AutoCommit::new();
+                document
+                    .put(automerge::ROOT, "index", index as u64)
+                    .unwrap();
+                qos_peer_state::SeedDocument {
+                    app_id: "threshold.app".into(),
+                    record_id: format!("record-{index:02}"),
+                    kind: "test".into(),
+                    bytes: document.save(),
+                }
+            })
+            .collect();
+        publisher
+            .install_seed(
+                qos_peer_state::SeedState {
+                    room_changes: qos_peer_state::seed_room(
+                        room,
+                        &cert,
+                        &[
+                            cert.clone(),
+                            observer.cert.clone(),
+                            fenced_observer.cert.clone(),
+                        ],
+                    )
+                    .unwrap(),
+                    documents,
+                },
+                &key,
+                now,
+            )
+            .unwrap();
+        let authority =
+            qos_peer_state::retained_proof::RetentionAuthority::new(room, cert.clone()).unwrap();
+        let baseline = publisher
+            .durable_bootstrap_messages(&key, now, 1)
+            .unwrap()
+            .iter()
+            .map(|message| frame(&authority, message))
+            .collect::<Vec<_>>();
+        let next = publisher
+            .durable_bootstrap_messages(&key, now, 2)
+            .unwrap()
+            .iter()
+            .map(|message| frame(&authority, message))
+            .collect::<Vec<_>>();
+        let third = publisher
+            .durable_bootstrap_messages(&key, now, 3)
+            .unwrap()
+            .iter()
+            .map(|message| frame(&authority, message))
+            .collect::<Vec<_>>();
+        assert_eq!(baseline.len(), 35);
+        assert_eq!(next.len(), 35);
+        assert_eq!(third.len(), 35);
+
+        let id = crate::room_workspace_id(room).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runtime = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        runtime.store.bind_shell_authority(authority).unwrap();
+        runtime.checkpoint_prefix_recovery =
+            crate::config::CheckpointPrefixRecovery::NativeOwnerDurableBaseline;
+        for raw in &baseline {
+            let Envelope::Delta { delta, .. } = crate::transport::decode(&raw[4..]).unwrap() else {
+                panic!()
+            };
+            let crate::coedit::CoeditPayload::Checkpoint { channel, .. } =
+                crate::coedit::CoeditPayload::decode(&delta).unwrap()
+            else {
+                panic!()
+            };
+            runtime.store.retain_checkpoint(&channel, raw).unwrap();
+        }
+        let scratch = runtime.store.root().join("store-work-v1").join(format!(
+            "retain-{}",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        let mut initial = Selection::new(&runtime.store, scratch, None).unwrap();
+        while matches!(initial.step(WorkLimit::default()).unwrap(), Step::More) {}
+        let store_root = runtime.store.root().to_path_buf();
+
+        let peer = AuthenticatedPeer {
+            user_public_key: cert.user_public_key,
+            device_public_key: cert.device_public_key,
+            cert,
+            role: crate::auth::PeerRole::Device,
+        };
+        runtime.admit_device(peer.device_public_key).unwrap();
+        let (tx, _source_rx) = mpsc::channel(512);
+        let (disconnect, _disconnected) = mpsc::channel(1);
+        runtime.add_subscriber(Subscriber {
+            device_public_key: peer.device_public_key,
+            role: peer.role,
+            tx: tx.clone(),
+            disconnect: disconnect.clone(),
+        });
+        runtime.admit_device(observer.device_public_key).unwrap();
+        let (observer_tx, _observer_rx) = mpsc::channel(512);
+        let (observer_state_tx, mut observer_state_rx) = mpsc::channel(512);
+        let (observer_disconnect, mut observer_disconnected) = mpsc::channel(1);
+        runtime.add_subscriber(Subscriber {
+            device_public_key: observer.device_public_key,
+            role: observer.role,
+            tx: observer_tx.clone(),
+            disconnect: observer_disconnect,
+        });
+        runtime.state_sessions.insert(
+            observer.device_public_key,
+            StateSession {
+                peer: observer.clone(),
+                tx: observer_state_tx,
+                live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                replay: None,
+            },
+        );
+        runtime
+            .admit_device(fenced_observer.device_public_key)
+            .unwrap();
+        let (fenced_observer_tx, _fenced_observer_rx) = mpsc::channel(512);
+        let (fenced_observer_state_tx, _fenced_observer_state_rx) = mpsc::channel(512);
+        let (fenced_observer_disconnect, _fenced_observer_disconnected) = mpsc::channel(1);
+        runtime.add_subscriber(Subscriber {
+            device_public_key: fenced_observer.device_public_key,
+            role: fenced_observer.role,
+            tx: fenced_observer_tx,
+            disconnect: fenced_observer_disconnect,
+        });
+        runtime.state_sessions.insert(
+            fenced_observer.device_public_key,
+            StateSession {
+                peer: fenced_observer.clone(),
+                tx: fenced_observer_state_tx,
+                live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                replay: None,
+            },
+        );
+        let workspace = Arc::new(AsyncMutex::new(runtime));
+        let source = StateSource {
+            peer,
+            tx,
+            disconnect,
+            revocations: Arc::new(std::sync::RwLock::new(
+                tilo_user_identity::RevocationList::new(),
+            )),
+            policy: Arc::new(std::sync::RwLock::new(
+                crate::policy::TrustPolicy::AllowMatchingUser,
+            )),
+            own_user: root_key.verifying_key().to_bytes(),
+            federation: None,
+            session_live: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
+        };
+        let owner = crate::persistence::handle(&workspace).await;
+
+        enqueue_checkpoint_prefix(
+            &workspace,
+            vec![crate::transport::decode(&next[0][4..]).unwrap()],
+            source.clone(),
+            crate::auth::PeerRole::Device,
+            Arc::new(crate::metrics::Metrics::default()),
+            vec![None],
+        )
+        .await
+        .unwrap();
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        let room_delivery =
+            tokio::time::timeout(std::time::Duration::from_secs(2), observer_state_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(
+            crate::transport::encode(&room_delivery.envelope).unwrap() == next[0],
+            "room Original was not published before its record checkpoint prefix"
+        );
+        let selection_count = shell_selection::track_selection_constructions(&store_root);
+        let batch_modes = track_checkpoint_batch_modes(id);
+
+        // This prefix is the verified FinalBasisOmission case: one projected
+        // Selection has switched CURRENT and the first exact Original is
+        // already published before the injected error. Replace one captured
+        // session while paused to prove that the immutable fence only removes
+        // exact old senders.
+        let fault =
+            crate::store::test_barrier::fail(&store_root, "checkpoint-prefix-after-first-original");
+        let (release, reached) = crate::store::test_barrier::install(
+            &store_root,
+            "checkpoint-prefix-after-first-original",
+        );
+        enqueue_checkpoint_prefix(
+            &workspace,
+            next.iter()
+                .skip(1)
+                .take(32)
+                .map(|raw| crate::transport::decode(&raw[4..]).unwrap())
+                .collect(),
+            source.clone(),
+            crate::auth::PeerRole::Device,
+            Arc::new(crate::metrics::Metrics::default()),
+            vec![None; 32],
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), reached)
+            .await
+            .expect("all-original prefix never reached the post-first-original barrier")
+            .unwrap();
+        let delivered_before_failure =
+            tokio::time::timeout(std::time::Duration::from_secs(2), observer_state_rx.recv())
+                .await
+                .expect("first exact Original was not visible before the injected failure")
+                .unwrap();
+        assert!(
+            crate::transport::encode(&delivered_before_failure.envelope).unwrap() == next[1],
+            "injected failure occurred before the first exact Original publication"
+        );
+        let (replacement_tx, _replacement_rx) = mpsc::channel(512);
+        let (replacement_state_tx, _replacement_state_rx) = mpsc::channel(512);
+        let (replacement_disconnect, mut replacement_disconnected) = mpsc::channel(1);
+        {
+            let mut runtime = workspace.lock().await;
+            runtime.add_subscriber(Subscriber {
+                device_public_key: fenced_observer.device_public_key,
+                role: fenced_observer.role,
+                tx: replacement_tx.clone(),
+                disconnect: replacement_disconnect,
+            });
+            runtime.state_sessions.insert(
+                fenced_observer.device_public_key,
+                StateSession {
+                    peer: fenced_observer.clone(),
+                    tx: replacement_state_tx,
+                    live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    replay: None,
+                },
+            );
+        }
+        drop(release);
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            observer_disconnected.recv(),
+        )
+        .await
+        .expect("post-CURRENT failure did not fence the captured observer")
+        .expect("captured observer disconnect channel closed before fencing");
+        assert!(
+            replacement_disconnected.try_recv().is_err(),
+            "immutable-session fence disconnected the replacement session"
+        );
+        {
+            let runtime = workspace.lock().await;
+            assert!(
+                !runtime
+                    .state_sessions
+                    .contains_key(&observer.device_public_key),
+                "captured observer state session survived the post-CURRENT failure"
+            );
+            assert!(
+                runtime.subscribers[&fenced_observer.device_public_key]
+                    .tx
+                    .same_channel(&replacement_tx),
+                "post-CURRENT fence removed a newer replacement session"
+            );
+        }
+        drop(fault);
+
+        // A reconnect receives the same durable prefix without a selected
+        // basis repair. Its successful suffix must converge normally.
+        let (reopened_tx, _reopened_rx) = mpsc::channel(512);
+        let (reopened_state_tx, mut reopened_state_rx) = mpsc::channel(512);
+        let (reopened_disconnect, mut reopened_disconnected) = mpsc::channel(1);
+        {
+            let mut runtime = workspace.lock().await;
+            runtime.add_subscriber(Subscriber {
+                device_public_key: observer.device_public_key,
+                role: observer.role,
+                tx: reopened_tx.clone(),
+                disconnect: reopened_disconnect,
+            });
+            runtime.state_sessions.insert(
+                observer.device_public_key,
+                StateSession {
+                    peer: observer.clone(),
+                    tx: reopened_state_tx,
+                    live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    replay: None,
+                },
+            );
+        }
+        enqueue_checkpoint_prefix(
+            &workspace,
+            next.iter()
+                .skip(1)
+                .take(32)
+                .map(|raw| crate::transport::decode(&raw[4..]).unwrap())
+                .collect(),
+            source.clone(),
+            crate::auth::PeerRole::Device,
+            Arc::new(crate::metrics::Metrics::default()),
+            vec![None; 32],
+        )
+        .await
+        .unwrap();
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            selection_count.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "failed prefix and reconnect did not each use one global Selection"
+        );
+        assert_eq!(
+            *batch_modes.lock().unwrap(),
+            [
+                CheckpointBatchMode::AllOriginal,
+                CheckpointBatchMode::AllOriginal,
+            ],
+            "the failed prefix or reconnect did not take the guarded all-Original path"
+        );
+        for (index, expected) in next.iter().skip(1).take(32).enumerate() {
+            let observed =
+                tokio::time::timeout(std::time::Duration::from_secs(2), reopened_state_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(
+                crate::transport::encode(&observed.envelope).unwrap() == *expected,
+                "all-Original checkpoint publication changed wire order at input {index}"
+            );
+        }
+        assert!(
+            replacement_disconnected.try_recv().is_err()
+                && reopened_disconnected.try_recv().is_err(),
+            "successful reconnect recovery disconnected a current session"
+        );
+        let retained_after_prefix = {
+            let runtime = workspace.lock().await;
+            replay_frames(&runtime.store)
+                .into_iter()
+                .map(|frame| crate::transport::encode(&frame).unwrap())
+                .collect::<Vec<_>>()
+        };
+        for raw in baseline.iter().chain(next.iter().take(33)) {
+            assert!(
+                retained_after_prefix.contains(raw),
+                "selected CURRENT omitted old basis or an exact Original prefix frame"
+            );
+        }
+
+        enqueue_checkpoint_prefix(
+            &workspace,
+            next.iter()
+                .skip(33)
+                .map(|raw| crate::transport::decode(&raw[4..]).unwrap())
+                .collect(),
+            source.clone(),
+            crate::auth::PeerRole::Device,
+            Arc::new(crate::metrics::Metrics::default()),
+            vec![None; 2],
+        )
+        .await
+        .unwrap();
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            *batch_modes.lock().unwrap(),
+            [
+                CheckpointBatchMode::AllOriginal,
+                CheckpointBatchMode::AllOriginal,
+                CheckpointBatchMode::Represented
+            ],
+            "the remaining checkpoints did not complete the represented selected basis"
+        );
+        let after_reconnect = {
+            let runtime = workspace.lock().await;
+            replay_frames(&runtime.store)
+                .into_iter()
+                .map(|frame| crate::transport::encode(&frame).unwrap())
+                .collect::<Vec<_>>()
+        };
+        for raw in &next {
+            assert!(
+                after_reconnect.contains(raw),
+                "reconnect suffix did not converge to the complete next checkpoint generation"
+            );
+        }
+        for (chunk, budgets) in [
+            (third.iter().take(1).collect::<Vec<_>>(), vec![None]),
+            (
+                third.iter().skip(1).take(32).collect::<Vec<_>>(),
+                vec![None; 32],
+            ),
+            (third.iter().skip(33).collect::<Vec<_>>(), vec![None; 2]),
+        ] {
+            enqueue_checkpoint_prefix(
+                &workspace,
+                chunk
+                    .into_iter()
+                    .map(|raw| crate::transport::decode(&raw[4..]).unwrap())
+                    .collect(),
+                source.clone(),
+                crate::auth::PeerRole::Device,
+                Arc::new(crate::metrics::Metrics::default()),
+                budgets,
+            )
+            .await
+            .unwrap();
+            crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+                .await
+                .unwrap();
+        }
+        assert!(
+            replacement_disconnected.try_recv().is_err()
+                && reopened_disconnected.try_recv().is_err(),
+            "later automatic recovery disconnected a current session"
+        );
+        let runtime = workspace.lock().await;
+        let final_frames = replay_frames(&runtime.store)
+            .into_iter()
+            .map(|frame| crate::transport::encode(&frame).unwrap())
+            .collect::<Vec<_>>();
+        for raw in &third {
+            assert!(
+                final_frames.contains(raw),
+                "reconnect recovery did not retain the next complete checkpoint generation"
+            );
+        }
+        let mut selected = SelectedRead::new(&runtime.store).unwrap().unwrap();
+        while matches!(selected.step().unwrap(), Step::More) {}
     }
 
     #[tokio::test]
@@ -7596,6 +8368,59 @@ mod retention_diagnostic_tests {
             .map(|frame| crate::transport_v2::encode(frame).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(suffix_before, suffix_after);
+    }
+
+    #[test]
+    fn checkpoint_batch_mode_requires_an_exact_completed_projection_shape() {
+        use crate::store::shell_selection::{
+            BatchProjectionReason, BatchSelectionOutcome, IncomingDisposition, Publication,
+        };
+        let represented = BatchSelectionOutcome {
+            publication: Publication::Suppress,
+            dispositions: vec![IncomingDisposition::Covered; 2],
+            reason: BatchProjectionReason::Represented,
+        };
+        assert_eq!(
+            checkpoint_mode_for(Some(&represented), 2),
+            CheckpointBatchMode::Represented
+        );
+        let all_original = BatchSelectionOutcome {
+            publication: Publication::Original,
+            dispositions: vec![IncomingDisposition::Original; 2],
+            reason: BatchProjectionReason::FinalBasisOmission,
+        };
+        assert_eq!(
+            checkpoint_mode_for(Some(&all_original), 2),
+            CheckpointBatchMode::AllOriginal
+        );
+        for rejected in [
+            BatchSelectionOutcome {
+                publication: Publication::Original,
+                dispositions: vec![IncomingDisposition::Original],
+                reason: BatchProjectionReason::FinalBasisOmission,
+            },
+            BatchSelectionOutcome {
+                publication: Publication::Original,
+                dispositions: vec![IncomingDisposition::Covered, IncomingDisposition::Original],
+                reason: BatchProjectionReason::FinalBasisOmission,
+            },
+            BatchSelectionOutcome {
+                publication: Publication::Activate(std::path::PathBuf::from("selected")),
+                dispositions: vec![IncomingDisposition::Original; 2],
+                reason: BatchProjectionReason::FinalBasisOmission,
+            },
+            BatchSelectionOutcome {
+                publication: Publication::Original,
+                dispositions: vec![IncomingDisposition::Original; 2],
+                reason: BatchProjectionReason::UnresolvedTailDependencies,
+            },
+        ] {
+            assert_eq!(
+                checkpoint_mode_for(Some(&rejected), 2),
+                CheckpointBatchMode::Serial
+            );
+        }
+        assert_eq!(checkpoint_mode_for(None, 2), CheckpointBatchMode::Serial);
     }
 
     #[test]

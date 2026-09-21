@@ -176,6 +176,7 @@ fn unchanged_all_covered_projected_prefix_suppresses_and_switches_current() {
         }
     };
     assert_eq!(projected.publication, Publication::Suppress);
+    assert_eq!(projected.reason, BatchProjectionReason::Represented);
     assert!(
         projected
             .dispositions
@@ -474,6 +475,7 @@ fn successful_old_basis_fallback_keeps_newer_checkpoint_original() {
         "fixture returned unresolved instead of completing the old-basis fallback"
     );
     assert_eq!(outcome.publication, Publication::Original);
+    assert_eq!(outcome.reason, BatchProjectionReason::FinalBasisOmission);
     assert!(
         outcome
             .dispositions
@@ -489,6 +491,195 @@ fn successful_old_basis_fallback_keeps_newer_checkpoint_original() {
         selected_before,
         "projection switched selected CURRENT before a serial retry"
     );
+}
+
+#[test]
+fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
+    use automerge::transaction::Transactable;
+
+    fn outcome(document_count: usize) -> BatchSelectionOutcome {
+        fn frame(
+            authority: &RetentionAuthority,
+            message: &qos_peer_state::NeighbourMsg,
+        ) -> Vec<u8> {
+            let channel = qos_peer_state::transport::retention(message, true)
+                .unwrap()
+                .0;
+            let body = postcard::to_allocvec(message).unwrap();
+            let source = match message {
+                qos_peer_state::NeighbourMsg::AppDocument { envelope, .. } => {
+                    *envelope.author.as_bytes()
+                }
+                _ => authority.governor().device_public_key,
+            };
+            crate::transport::encode(&crate::transport::Envelope::Delta {
+                workspace_id: crate::room_workspace_id(authority.room()).unwrap(),
+                author_device_public_key: source,
+                authored_at_ns: 1,
+                signature: [0; 64],
+                delta: CoeditPayload::Checkpoint { channel, body }
+                    .encode()
+                    .unwrap(),
+            })
+            .unwrap()
+        }
+
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[document_count as u8; 32]);
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: root_key.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: format!("{document_count} route prefix fixture"),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
+        let now = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_secs(3000);
+        let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        let mut owner = qos_peer_state::StatePeer::new(
+            room,
+            cert.clone(),
+            vec![],
+            tilo_user_identity::RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        let documents = (0..document_count)
+            .map(|index| {
+                let mut document = automerge::AutoCommit::new();
+                document
+                    .put(automerge::ROOT, "index", index as u64)
+                    .unwrap();
+                qos_peer_state::SeedDocument {
+                    app_id: "threshold.app".into(),
+                    record_id: format!("record-{index:02}"),
+                    kind: "test".into(),
+                    bytes: document.save(),
+                }
+            })
+            .collect();
+        owner
+            .install_seed(
+                qos_peer_state::SeedState {
+                    room_changes: qos_peer_state::seed_room(room, &cert, &[cert.clone()]).unwrap(),
+                    documents,
+                },
+                &key,
+                now,
+            )
+            .unwrap();
+        let authority = RetentionAuthority::new(room, cert).unwrap();
+        let baseline = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
+        let next = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
+        assert_eq!(baseline.len(), document_count + 1);
+        assert_eq!(next.len(), document_count + 1);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = WorkspaceStore::open(
+            tmp.path(),
+            crate::room_workspace_id(authority.room()).unwrap(),
+            true,
+        )
+        .unwrap();
+        store.bind_shell_authority(authority.clone()).unwrap();
+        for message in &baseline {
+            retained(&store, &frame(&authority, message));
+        }
+        let initial_root = store.root.join("store-work-v1").join(format!(
+            "retain-{}",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        let mut initial = Selection::new(&store, initial_root, None).unwrap();
+        while matches!(initial.step(WorkLimit::default()).unwrap(), Step::More) {}
+
+        // Native publication commits the newly signed room recovery checkpoint
+        // before the capped run of per-record checkpoints reaches the relay.
+        let room_frame = frame(&authority, &next[0]);
+        retained(&store, &room_frame);
+        let room_root = store.root.join("store-work-v1").join(format!(
+            "retain-{}",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        let mut room_selection = Selection::new(
+            &store,
+            room_root,
+            incoming_identity(&room_frame, store.workspace_id()),
+        )
+        .unwrap();
+        let room_publication = loop {
+            match room_selection.step(WorkLimit::default()).unwrap() {
+                Step::More => {}
+                Step::Done(SelectionOutcome::Published(publication)) => break publication,
+                Step::Done(other) => panic!("unexpected room checkpoint result: {other:?}"),
+            }
+        };
+        assert_eq!(room_publication, Publication::Original);
+
+        let root = store.root.join("store-work-v1").join(format!(
+            "retain-{}",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        fs::create_dir(&root).unwrap();
+        let mut stages = Vec::new();
+        let mut incoming = Vec::new();
+        for (index, message) in next.iter().skip(1).take(32).enumerate() {
+            let bytes = frame(&authority, message);
+            let (_, CoeditPayload::Checkpoint { channel, .. }) =
+                retained::payload(&bytes, store.workspace_id()).unwrap()
+            else {
+                panic!()
+            };
+            incoming.push(incoming_identity(&bytes, store.workspace_id()).unwrap());
+            let mut stage = store
+                .start_staged_checkpoint(&channel, bytes, root.join(format!("input-{index:02}")))
+                .unwrap();
+            while matches!(stage.step(WorkLimit::default()).unwrap(), Step::More) {}
+            stages.push(stage);
+        }
+        let overrides = stages
+            .iter()
+            .map(|stage| {
+                (
+                    stage.lineage_name().to_os_string(),
+                    stage.projected_generation().to_path_buf(),
+                )
+            })
+            .collect();
+        let mut selector =
+            Selection::new_projected(&store, root.join("selection"), incoming, overrides).unwrap();
+        loop {
+            if let Step::Done(outcome) = selector.step_projection(WorkLimit::default()).unwrap() {
+                return outcome;
+            }
+        }
+    }
+
+    let complete = outcome(32);
+    assert_eq!(complete.reason, BatchProjectionReason::Represented);
+    assert!(
+        complete
+            .dispositions
+            .iter()
+            .all(|value| *value != IncomingDisposition::Original)
+    );
+    for document_count in [33, 34] {
+        let truncated = outcome(document_count);
+        assert_eq!(
+            truncated.reason,
+            BatchProjectionReason::FinalBasisOmission,
+            "{document_count} records unexpectedly fit in the 32-frame projection"
+        );
+        assert!(
+            truncated
+                .dispositions
+                .iter()
+                .all(|value| *value == IncomingDisposition::Original),
+            "{document_count} record fallback was not the observed all-Original cut: {:?}",
+            truncated.dispositions
+        );
+    }
 }
 
 #[test]
