@@ -37,12 +37,12 @@ impl HistoryHost {
         self.file_target_resolved = false;
         self.timeline.set_entries(vec![]);
         self.unavailable = Text::new("Select a file with versioned history");
-        if self.open {
-            if let Some(target) = target {
-                let mut files = FileController::new(target);
-                files.activate();
-                self.files = Some(files);
-            }
+        if self.open
+            && let Some(target) = target
+        {
+            let mut files = FileController::new(target);
+            files.activate();
+            self.files = Some(files);
         }
         true
     }
@@ -83,11 +83,11 @@ impl HistoryHost {
         }
         // Files selects one immutable version. A drag/shift range in the shared
         // timeline must not imply a synthetic grouped file snapshot.
-        if let Some((start, end)) = self.timeline.selection() {
-            if start != end {
-                self.timeline.set_selection(Some((start, start)));
-                changed = true;
-            }
+        if let Some((start, end)) = self.timeline.selection()
+            && start != end
+        {
+            self.timeline.set_selection(Some((start, start)));
+            changed = true;
         }
         let mut selected = self
             .timeline
@@ -97,36 +97,35 @@ impl HistoryHost {
         if let Some(files) = &mut self.files {
             changed |= files.drain();
         }
-        if !self.file_target_resolved {
-            if let Some(identity) = self
+        if !self.file_target_resolved
+            && let Some(identity) = self
                 .files
                 .as_ref()
                 .and_then(FileController::resource_identity)
+        {
+            // The new descriptor first establishes current authorized identity.
+            // Reuse the old session, never transplant its request/receipts onto
+            // this fresh descriptor. Paths and transient binding IDs do not match.
+            if let Some(index) = self
+                .retired_files
+                .iter()
+                .position(|old| old.resource_identity() == Some(identity))
             {
-                // The new descriptor first establishes current authorized identity.
-                // Reuse the old session, never transplant its request/receipts onto
-                // this fresh descriptor. Paths and transient binding IDs do not match.
-                if let Some(index) = self
-                    .retired_files
-                    .iter()
-                    .position(|old| old.resource_identity() == Some(identity))
-                {
-                    let mut retained = self.retired_files.remove(index);
-                    let requested = self
-                        .requested_file_version
-                        .or_else(|| self.files.as_ref().and_then(FileController::selected));
-                    if let Some(fresh) = &self.files {
-                        retained.target.label.clone_from(&fresh.target.label);
-                    }
-                    self.close_files_presentation();
-                    retained.activate();
-                    self.files = Some(retained);
-                    self.requested_file_version = requested;
-                    selected = None;
-                    changed = true;
+                let mut retained = self.retired_files.remove(index);
+                let requested = self
+                    .requested_file_version
+                    .or_else(|| self.files.as_ref().and_then(FileController::selected));
+                if let Some(fresh) = &self.files {
+                    retained.target.label.clone_from(&fresh.target.label);
                 }
-                self.file_target_resolved = true;
+                self.close_files_presentation();
+                retained.activate();
+                self.files = Some(retained);
+                self.requested_file_version = requested;
+                selected = None;
+                changed = true;
             }
+            self.file_target_resolved = true;
         }
         self.refresh_file_selection(selected, changed);
     }
@@ -147,16 +146,16 @@ impl HistoryHost {
             self.review = None;
             self.review_request = None;
         }
-        if let Some(requested) = self.requested_file_version.take().or(selected) {
-            if Some(requested) != files.selected() {
-                files.select(requested, None);
-                self.selected = vec![crate::HistoryEntryId(*requested.0.as_bytes())];
-                self.activity_page = false;
-                self.side = PreviewSide::After;
-                self.review = None;
-                self.review_request = None;
-                changed = true;
-            }
+        if let Some(requested) = self.requested_file_version.take().or(selected)
+            && Some(requested) != files.selected()
+        {
+            files.select(requested, None);
+            self.selected = vec![crate::HistoryEntryId(*requested.0.as_bytes())];
+            self.activity_page = false;
+            self.side = PreviewSide::After;
+            self.review = None;
+            self.review_request = None;
+            changed = true;
         }
         self.timeline.set_entries(file_timeline_entries(files));
         if files.preview_changed {

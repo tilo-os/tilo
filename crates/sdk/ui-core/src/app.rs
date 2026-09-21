@@ -7528,10 +7528,7 @@ impl App {
             self.actions.resource_generation.get(),
         )
         .unwrap_or_default();
-        let mut tree = std::mem::replace(
-            &mut self.accessibility.semantic_tree,
-            crate::a11y_tree::SemanticTree::new(),
-        );
+        let mut tree = std::mem::take(&mut self.accessibility.semantic_tree);
         let delta = self
             .with_native_presentation(|root, nodes, focused, _| {
                 tree.refresh_components(root, nodes, focused, &resources, &components)
@@ -11284,48 +11281,43 @@ impl AppHandler {
                     .audience_presentation
                     .as_ref()
                     .is_some_and(|audience| audience.window.id() == window_id);
-            if auxiliary_event && self.primary_retry.request_probe() {
-                if let Some(primary) = &self.window {
-                    primary.request_redraw();
-                }
+            if auxiliary_event
+                && self.primary_retry.request_probe()
+                && let Some(primary) = &self.window
+            {
+                primary.request_redraw();
             }
 
             if self
                 .window
                 .as_ref()
                 .is_some_and(|window| window.id() == window_id)
+                && self.primary_retry.request_probe()
+                && let Some(window) = &self.window
             {
-                if self.primary_retry.request_probe() {
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
-                }
+                window.request_redraw();
             }
             if let Some(surface) = self
                 .floating_windows
                 .iter_mut()
                 .find(|surface| surface.window.id() == window_id)
-            {
-                if surface
+                && surface
                     .render
                     .as_mut()
                     .is_some_and(|render| render.retry.request_probe())
-                {
-                    surface.window.request_redraw();
-                }
+            {
+                surface.window.request_redraw();
             }
             if let Some(audience) = self
                 .audience_presentation
                 .as_mut()
                 .filter(|audience| audience.window.id() == window_id)
-            {
-                if audience
+                && audience
                     .render
                     .as_mut()
                     .is_some_and(|render| render.retry.request_probe())
-                {
-                    audience.window.request_redraw();
-                }
+            {
+                audience.window.request_redraw();
             }
         }
 
@@ -12005,10 +11997,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // frames are cheap but essential: the first real buffer should take
         // ownership as soon as it is ready, without waiting for fresh input.
         for surface in &self.floating_windows {
-            if !surface.suspended && !surface.adopted {
-                if auxiliary_redraw_allowed(surface.render.as_ref()) {
-                    surface.window.request_redraw();
-                }
+            if !surface.suspended
+                && !surface.adopted
+                && auxiliary_redraw_allowed(surface.render.as_ref())
+            {
+                surface.window.request_redraw();
             }
         }
         let awaiting_primary_first_present = primary_startup_pump_needed(
@@ -12169,10 +12162,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     surface.window.request_redraw();
                 }
             }
-            if let Some(audience) = self.audience_presentation.as_ref() {
-                if auxiliary_redraw_allowed(audience.render.as_ref()) {
-                    audience.window.request_redraw();
-                }
+            if let Some(audience) = self.audience_presentation.as_ref()
+                && auxiliary_redraw_allowed(audience.render.as_ref())
+            {
+                audience.window.request_redraw();
             }
         }
 

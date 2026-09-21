@@ -60,7 +60,7 @@ const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
 const SDK_PRIMARY_ROUTE_TIMEOUT: Duration = Duration::from_millis(4_500);
 /// One absolute deadline for each host identity request/response exchange.
 /// The identity client drops a failed stream, so this also bounds shutdown of
-/// partial and late replies without blocking the shovel's LocalSet.
+/// partial and late replies without blocking the shovel's `LocalSet`.
 const HOST_IDENTITY_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Maximum number of UI-to-shovel commands waiting behind a slow broker.
@@ -1526,7 +1526,7 @@ impl InboundBridge {
     }
 }
 
-/// A one-shot host handoff factory, evaluated on the SDK worker's LocalSet.
+/// A one-shot host handoff factory, evaluated on the SDK worker's `LocalSet`.
 ///
 /// The platform host supplies this to shared toolkit bootstrap. It must verify
 /// host/app/workspace handoff authority before returning its two connections.
@@ -1764,7 +1764,7 @@ enum SdkDocumentSigner {
     Harness(Box<ed25519_dalek::SigningKey>),
 }
 
-/// Identity state after the shovel thread has entered its LocalSet. The host
+/// Identity state after the shovel thread has entered its `LocalSet`. The host
 /// signer may be !Send because it is constructed there and never crosses the
 /// thread boundary; inherited Unix and harness identities remain Send.
 struct LocalSdkJoinIdentity {

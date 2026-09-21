@@ -2772,12 +2772,8 @@ impl FrameHarness {
             // finds their last edit; dropping the context loses the
             // provenance the history explorer reads.
             let context = self.root.take_commit_context();
-            self.state.commit_action_authored_with_context(
-                None,
-                None,
-                Some(author.clone()),
-                context,
-            );
+            self.state
+                .commit_action_authored_with_context(None, None, Some(author), context);
             self.root.on_commit();
         }
         // An Undo/Redo control the widget tree activated during that event.
@@ -3068,14 +3064,14 @@ impl FrameHarness {
     fn record_control_failure(&mut self, update: &tilo_actions::InvocationUpdate) {
         match update {
             tilo_actions::InvocationUpdate::Failed { error, .. } => {
-                self.control_failures.push(error.message.clone())
+                self.control_failures.push(error.message.clone());
             }
             tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
                 self.control_failures.push(
                     message
                         .clone()
                         .unwrap_or_else(|| "Control operation cancelled".into()),
-                )
+                );
             }
             _ => {}
         }
@@ -4252,16 +4248,14 @@ pub(crate) fn build_initialized_driver(
         expected_index,
         ..
     } = &inputs.records
-    {
-        if autosave.package_id() != records.package_id()
+        && (autosave.package_id() != records.package_id()
             || autosave.document_path() != expected_index
             || app_state::DocStore::legacy_package_document_path(records.package_id())
                 .ok()
                 .as_ref()
-                != Some(expected_index)
-        {
-            return Err("custom persistence namespace requires explicit prepared inputs".into());
-        }
+                != Some(expected_index))
+    {
+        return Err("custom persistence namespace requires explicit prepared inputs".into());
     }
     Ok(build_legacy_driver(inputs, viewport, Theme::dark(), true))
 }
@@ -4347,12 +4341,12 @@ pub(crate) fn run_initialized_with_history(
 
     driver.root.set_motion_reduced(theme.reduce_motion);
     driver.set_theme(theme);
-    if let Some(history) = history {
-        if let Err(error) = driver.install_history(history) {
-            tilo_startup_metrics::mark("headless-setup-failed");
-            eprintln!("headless: History setup failed: {error}");
-            return 3;
-        }
+    if let Some(history) = history
+        && let Err(error) = driver.install_history(history)
+    {
+        tilo_startup_metrics::mark("headless-setup-failed");
+        eprintln!("headless: History setup failed: {error}");
+        return 3;
     }
     driver.relayout();
     tilo_startup_metrics::mark("headless-setup-ready");
@@ -4388,9 +4382,7 @@ pub(crate) fn run_initialized_with_history(
     } else {
         autosave.request(driver.persistence_document());
         autosave.flush();
-        autosave
-            .last_error()
-            .map_or(Ok(()), |error| Err(error.to_owned()))
+        autosave.last_error().map_or(Ok(()), |error| Err(error))
     };
     if let Err(e) = durability {
         tilo_startup_metrics::mark("headless-durability-failed");

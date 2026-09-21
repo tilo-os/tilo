@@ -682,7 +682,7 @@ pub trait Widget {
         false
     }
 
-    /// App-declared external document obligations. An in-memory RecordSet is
+    /// App-declared external document obligations. An in-memory `RecordSet` is
     /// not evidence that an editable file has been saved.
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
         self.children()

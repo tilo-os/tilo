@@ -1339,11 +1339,11 @@ impl<Row> DataTable<Row> {
                 if s.ascending {
                     arrow.move_to((x0, cy + d / 2.0));
                     arrow.line_to((x1, cy + d / 2.0));
-                    arrow.line_to(((x0 + x1) / 2.0, cy - d / 2.0));
+                    arrow.line_to((f64::midpoint(x0, x1), cy - d / 2.0));
                 } else {
                     arrow.move_to((x0, cy - d / 2.0));
                     arrow.line_to((x1, cy - d / 2.0));
-                    arrow.line_to(((x0 + x1) / 2.0, cy + d / 2.0));
+                    arrow.line_to((f64::midpoint(x0, x1), cy + d / 2.0));
                 }
                 arrow.close_path();
                 scene.fill(
