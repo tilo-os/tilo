@@ -2721,6 +2721,9 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::NativeApplicationsProvider,
+        ));
         // Applications Tilo did not package: unconfined, separate chip
         // from the one above.
         search_registry.register(std::rc::Rc::new(
