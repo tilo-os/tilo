@@ -18305,7 +18305,7 @@ mod prepared_runner_tests {
             due,
             || Some(std::time::SystemTime::UNIX_EPOCH),
             |app| {
-                app.base_theme = Theme::light();
+                app.accessibility.base_theme = Theme::light();
             },
         ));
         assert_eq!(app.theme.name, Theme::light().name);
