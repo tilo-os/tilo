@@ -4183,6 +4183,16 @@
     },
     {
       "path": "apps/notes/src/app.rs",
+      "line": 5900,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(&image, root.path().join(\" \")).unwrap();",
+      "count": 1,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Native-only scoped-image custody test creates an actual escape symlink and verifies refusal. Attributed to A01-12/V01 capability-specific verification; preserve this security assertion when V01 provides the portable/native fixture boundary."
+    },
+    {
+      "path": "apps/notes/src/app.rs",
       "line": 5474,
       "rule": "native-api",
       "fingerprint": "source:use std::os::windows::process::CommandExt;",
@@ -4190,6 +4200,16 @@
       "finding_id": "A01-12",
       "removal_task": "V01",
       "rationale": "Pre-existing exact site from protected main, attributed to A01-12: Platform-dependent test fixtures need capability-specific verification (test-only; medium). Remove this exception when V01 closes the contract."
+    },
+    {
+      "path": "apps/notes/src/app.rs",
+      "line": 5891,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(all(test, unix))",
+      "count": 1,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Native-only scoped-image custody test creates an actual escape symlink and verifies refusal. Attributed to A01-12/V01 capability-specific verification; preserve this security assertion when V01 provides the portable/native fixture boundary."
     },
     {
       "path": "apps/notes/src/app.rs",
@@ -4220,6 +4240,36 @@
       "finding_id": "A01-12",
       "removal_task": "V01",
       "rationale": "Pre-existing exact site from protected main, attributed to A01-12: Platform-dependent test fixtures need capability-specific verification (test-only; medium). Remove this exception when V01 closes the contract."
+    },
+    {
+      "path": "apps/notes/src/capture.rs",
+      "line": 253,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::windows::fs::OpenOptionsExt;",
+      "count": 2,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Pre-existing exact native save-failure capture fixture from protected main 665af87d, attributed to A01-12/V01 capability-specific verification. Windows exclusive-open and Unix directory replacement preserve the same failed-save/retry proof; remove this exception when V01 closes the fixture contract."
+    },
+    {
+      "path": "apps/notes/src/capture.rs",
+      "line": 268,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Pre-existing exact native save-failure capture fixture from protected main 665af87d, attributed to A01-12/V01 capability-specific verification. Windows exclusive-open and Unix directory replacement preserve the same failed-save/retry proof; remove this exception when V01 closes the fixture contract."
+    },
+    {
+      "path": "apps/notes/src/capture.rs",
+      "line": 251,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(windows)",
+      "count": 1,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Pre-existing exact native save-failure capture fixture from protected main 665af87d, attributed to A01-12/V01 capability-specific verification. Windows exclusive-open and Unix directory replacement preserve the same failed-save/retry proof; remove this exception when V01 closes the fixture contract."
     },
     {
       "path": "apps/notes/src/main.rs",

@@ -5888,7 +5888,7 @@ mod tests {
         assert!(!destination.exists());
     }
 
-    #[cfg(unix)]
+    #[cfg(all(test, unix))]
     #[test]
     fn scoped_image_export_refuses_a_symlink_outside_custody() {
         let root = TempDir::new().unwrap();
