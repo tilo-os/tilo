@@ -1228,9 +1228,11 @@ def resume_creator(args, nodes):
     live=optional_same_worker(args.context,disk)
     if live is None:
         attempt=args.operation_dir/'creator-release-attempt.json'
-        if handoff is None or handoff['state'] not in ('ready','released') or not attempt.is_file():
+        if handoff is None or handoff['state'] not in ('started','ready','released') or not attempt.is_file():
             raise ValueError('paused creator disappeared before a durable release attempt')
         validate_release_attempt(json.loads(attempt.read_text()),checkpoint,handoff['verifier'])
+        if handoff['state']=='started':
+            handoff=complete_interrupted_creator_release(args,nodes,checkpoint,handoff)
     disk_node=current_creator_node(nodes,checkpoint)
     excluded=(() if handoff is None else (handoff['verifier']['node'],))
     _,vm_node=select_nodes(nodes,disk_node['metadata']['name'],args.vm_node,excluded)
@@ -1300,6 +1302,30 @@ def write_release_attempt(args, checkpoint, verifier):
     validate_release_attempt(value,checkpoint,verifier)
     write_private(args.operation_dir/'creator-release-attempt.json',
                   (json.dumps(value,indent=2,sort_keys=True)+'\n').encode())
+
+
+def complete_interrupted_creator_release(args, nodes, checkpoint, handoff):
+    """Finish the exact release whose durable attempt outlived the creator."""
+    verifier=handoff['verifier']
+    matches=[node for node in nodes.get('items',[])
+             if node.get('metadata',{}).get('name')==verifier['node']]
+    if len(matches)!=1:
+        raise ValueError('release-attempt verifier node no longer exists')
+    verifier_node=matches[0]
+    validate_creator_node(verifier_node,verifier)
+    creator_kernel=checkpoint['creator_node']['metadata']['labels'].get(
+      'agent-sandbox.podesta.ai/disk-kernel')
+    verifier_kernel=verifier_node['metadata']['labels'].get(
+      'agent-sandbox.podesta.ai/disk-kernel')
+    if verifier['node']==checkpoint['creator']['node'] or verifier_kernel!=creator_kernel:
+        raise ValueError('release-attempt verifier is not the separate reviewed worker')
+    manifest=verifier_manifest(args,verifier_node,checkpoint)
+    if optional_same_worker(args.context,verifier,manifest) is None:
+        raise ValueError('release-attempt verifier disappeared')
+    released=write_verifier_handoff(args,checkpoint,verifier,'released')
+    paused=args.operation_dir/'paused-creator.json'
+    if paused.exists(): os.replace(paused,args.operation_dir/'creator-released.json')
+    return released
 
 
 def acquire_verifier(args, nodes, checkpoint, disk_node, vm_node):

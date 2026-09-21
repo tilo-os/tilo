@@ -318,6 +318,31 @@ class LaneAdmission(unittest.TestCase):
             self.assertEqual(json.loads((Path(directory)/'verifier-handoff.json').read_text())['state'],'ready')
             self.assertTrue((Path(directory)/'creator-release-attempt.json').exists())
 
+    def test_resume_advances_started_release_after_creator_delete_crash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,disk,creator,_,_=self.resumable_fixture(directory)
+            lane.pause_creator(args,checkpoint,'ControllerTransportError')
+            verify=node('verify',disk=True);verify['metadata']['uid']='verify-node-uid'
+            vm=node('vm',kvm=True)
+            verifier=dict(creator,pod='tilo-verify-run1',pod_uid='verify-pod-uid',
+                          node='verify',node_uid='verify-node-uid')
+            lane.write_verifier_handoff(args,checkpoint,verifier,'started')
+            lane.write_release_attempt(args,checkpoint,verifier)
+            document={'items':[disk,verify,vm]}
+            with patch.object(lane,'optional_same_worker',side_effect=[None,verifier]) as same, \
+                    patch.object(lane,'create_worker') as create, \
+                    patch.object(lane,'delete_worker') as delete:
+                loaded=lane.resume_creator(args,document)
+            self.assertEqual(same.call_args_list[0].args,('ctx',creator))
+            self.assertEqual(same.call_args_list[1].args[:2],('ctx',verifier))
+            self.assertEqual(same.call_args_list[1].args[2]['metadata']['name'],'tilo-verify-run1')
+            self.assertEqual(json.loads((Path(directory)/'verifier-handoff.json').read_text())['state'],
+                             'released')
+            self.assertTrue((Path(directory)/'creator-released.json').exists())
+            self.assertFalse((Path(directory)/'paused-creator.json').exists())
+            self.assertIs(loaded[4],disk)
+            create.assert_not_called();delete.assert_not_called()
+
     def test_checkpoint_write_failure_deletes_creator(self):
         with tempfile.TemporaryDirectory() as directory:
             args,_,disk,creator,creation,identity=self.resumable_fixture(directory)
