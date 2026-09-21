@@ -27,6 +27,11 @@ Both must remain runnable through a named, documented opt-in lane. Network tests
 must use `#[ignore]` rather than returning early: ordinary CI should report that
 it did not execute them, never count a no-assertion branch as a passing test.
 
+Service-backed tests are different: an ordinary run must report them as
+explicitly ignored, rather than executing an empty test body and reporting a
+false pass. Their documented runner must provision the service and select the
+ignored tests so missing infrastructure fails closed.
+
 ## The reusable harness
 
 `maps/src/livetest.rs` (`maps::livetest`) is the template. It is generic over
@@ -57,6 +62,35 @@ MAPS_LIVE_OUT=apps/maps/live-out \
 Ordinary `tilo-build test -p maps` compiles these cases but reports them as
 ignored. The lane drives the whole app rather than duplicating a weaker raw
 `load_tile` network smoke test.
+
+## Running the Chat live-media lane
+
+```bash
+# Real iroh endpoints exchange GStreamer-encoded Opus over QUIC.
+tilo-build test -p chat --lib two_peers_exchange_encoded_audio_over_quic -- \
+  --ignored --nocapture --test-threads 1
+```
+
+Ordinary Chat tests report this case as ignored. An explicit run fails if the
+network endpoints or required GStreamer Opus elements are unavailable; it does
+not convert a missing prerequisite into a passing test.
+
+## Database client live lane
+
+The database client proves its production PostgreSQL and MySQL query,
+introspection, truncation, and cancellation paths against disposable services:
+
+```bash
+apps/db-client/tests/run-live.sh
+```
+
+The runner starts rootless-Podman PostgreSQL 16 and MariaDB 11 containers on
+random loopback ports, waits for both servers, selects all four ignored live
+tests, and removes the containers on exit. Override the images with
+`TILO_DB_TEST_POSTGRES_IMAGE` and `TILO_DB_TEST_MARIADB_IMAGE` when validating a
+different server release. Direct execution against existing servers remains
+available through the `TILO_DB_TEST_{PG,MYSQL}_*` connection variables described
+in `apps/db-client/tests/live_roundtrip.rs`.
 
 ## Display configuration live lane
 

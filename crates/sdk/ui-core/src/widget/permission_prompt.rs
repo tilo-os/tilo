@@ -728,7 +728,7 @@ mod tests {
 
     fn synth_device() -> DeviceId {
         // SAFETY: `DeviceId` is opaque; tests construct one via
-        // `mem::zeroed`. Same pattern as `quick-ui::widget::slider`'s
+        // `mem::zeroed`. Same pattern as `quick-tilo_ui::widget::slider`'s
         // own test helpers.
         unsafe { std::mem::zeroed() }
     }

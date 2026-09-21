@@ -19,13 +19,13 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use ui::icons::Icon;
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::search::{SearchRegistry, SearchResult, fuzzy_score};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{SearchField, SearchResultsView, Widget};
+use tilo_ui::icons::Icon;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::search::{SearchRegistry, SearchResult, fuzzy_score};
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{SearchField, SearchResultsView, Widget};
 
 const WIDTH: u32 = 480;
 const PAD: f64 = 16.0;
@@ -183,7 +183,7 @@ fn shoot(theme: &Theme, out: &Path, query: &str, cursor: usize) {
 }
 
 pub fn run(_args: &[String]) {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
     let dir =
         std::env::var("SEARCH_SHOWCASE_OUT").unwrap_or_else(|_| "/tmp/search_showcase".into());
     if let Err(e) = std::fs::create_dir_all(&dir) {

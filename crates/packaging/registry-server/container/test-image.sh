@@ -8,6 +8,22 @@ source_revision=${2:?usage: test-image.sh IMAGE SOURCE_REVISION}
 [[ $(docker image inspect --format '{{.Config.User}}' "$image") == 65532:65532 ]]
 [[ $(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image") == "$source_revision" ]]
 
+# Moderation downloads use Tilo's fixed native-root path. Verify the runtime
+# image actually carries a non-empty bundle there; distroless images use a
+# different distro path by default.
+trust_probe=$(docker create "$image")
+trust_file=$(mktemp)
+if ! docker cp "$trust_probe:/etc/pki/tls/certs/ca-bundle.crt" "$trust_file" >/dev/null \
+  || [[ ! -s $trust_file ]]
+then
+  docker rm "$trust_probe" >/dev/null 2>&1 || true
+  rm -f "$trust_file"
+  printf 'runtime image is missing the Tilo CA trust bundle\n' >&2
+  exit 1
+fi
+docker rm "$trust_probe" >/dev/null
+rm -f "$trust_file"
+
 # The deployed binary must expose the reviewed offline-root protocol. Exercise
 # Clap from the image itself so a stale or partial server build cannot publish.
 for command in \

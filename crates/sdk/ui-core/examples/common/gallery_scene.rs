@@ -12,19 +12,19 @@
 
 use automerge::transaction::Transactable;
 
-use ui::icons::Icon;
-use ui::theme::Theme;
-use ui::tokens::TextRole;
-use ui::widget::table;
-use ui::widget::toggle_group::Segment;
-use ui::widget::toolbar::Orientation;
-use ui::widget::{
+use tilo_ui::icons::Icon;
+use tilo_ui::theme::Theme;
+use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::table;
+use tilo_ui::widget::toggle_group::Segment;
+use tilo_ui::widget::toolbar::Orientation;
+use tilo_ui::widget::{
     Avatar, Badge, Banner, BarGauge, Breadcrumb, Button, Chart, Checkbox, Chip, Column, Container,
     Divider, Dropdown, EmptyState, NumberInput, ProgressBar, RingGauge, Row, SearchField, Series,
     Slider, Spacer, Sparkline, StatTile, TabBar, TabDescriptor, Table, Text, TextInput, Toggle,
     ToggleGroup, Toolbar, Trend, Widget,
 };
-use ui::{
+use tilo_ui::{
     FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
     State, TextStyle, TextWeight,
 };
@@ -526,7 +526,7 @@ fn build_feedback_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Spinner", theme))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(ui::widget::Spinner::with_size(28.0)))
+                        .push(Box::new(tilo_ui::widget::Spinner::with_size(28.0)))
                         .push(label("Loading…")),
                 )),
         ),

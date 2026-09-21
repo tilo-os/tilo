@@ -23,6 +23,26 @@ pub struct RsaCertificate {
     pub certificate_pem: String,
 }
 
+/// A portable RSA authority key for TPM policy authorization.
+///
+/// TPM implementations do not uniformly accept the 4096-bit keys used for
+/// Secure Boot signing. Tilo's production PCR authority is RSA-2048, so keep
+/// development and test authorities on that same interoperable path.
+pub struct TpmAuthorityKey {
+    private_key_pem: String,
+    public_key_pem: String,
+}
+
+impl TpmAuthorityKey {
+    pub fn private_key_pem(&self) -> &str {
+        &self.private_key_pem
+    }
+
+    pub fn public_key_pem(&self) -> &str {
+        &self.public_key_pem
+    }
+}
+
 /// Ephemeral CA and server credentials for a loopback TLS fixture.
 pub struct TlsFixture {
     pub ca_certificate_pem: String,
@@ -37,6 +57,12 @@ impl Drop for TlsFixture {
 }
 
 impl Drop for RsaCertificate {
+    fn drop(&mut self) {
+        self.private_key_pem.zeroize();
+    }
+}
+
+impl Drop for TpmAuthorityKey {
     fn drop(&mut self) {
         self.private_key_pem.zeroize();
     }
@@ -394,6 +420,32 @@ pub fn generate_secure_boot_certificate(common_name: &str) -> Result<RsaCertific
     Ok(RsaCertificate {
         private_key_pem: private_key_pem.to_string(),
         certificate_pem: certificate.pem(),
+    })
+}
+
+/// Generate an RSA-2048 key pair suitable for TPM policy authorization.
+///
+/// # Errors
+///
+/// Returns an error if the operating-system random source fails or either PEM
+/// representation cannot be encoded.
+pub fn generate_tpm_authority_key() -> Result<TpmAuthorityKey, String> {
+    use rsa::{
+        RsaPrivateKey, RsaPublicKey,
+        pkcs8::{EncodePrivateKey, EncodePublicKey},
+    };
+
+    let private = RsaPrivateKey::new(&mut rand10::rng(), 2048)
+        .map_err(|error| format!("cannot generate TPM authority key: {error}"))?;
+    let public_key_pem = RsaPublicKey::from(&private)
+        .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+        .map_err(|error| format!("cannot encode TPM authority public key: {error}"))?;
+    let private_key_pem = private
+        .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+        .map_err(|error| format!("cannot encode TPM authority private key: {error}"))?;
+    Ok(TpmAuthorityKey {
+        private_key_pem: private_key_pem.to_string(),
+        public_key_pem,
     })
 }
 
@@ -1439,6 +1491,19 @@ mod tests {
             sign_rsa_sha256(&generated.private_key_pem, b"measured image").expect("sign message");
         verify_rsa_sha256(&public, b"measured image", &signature).expect("verify signature");
         assert!(verify_rsa_sha256(&public, b"tampered image", &signature).is_err());
+    }
+
+    #[test]
+    fn tpm_authority_keys_match_the_portable_production_profile() {
+        let generated = generate_tpm_authority_key().expect("generate TPM authority key");
+        let (bits, identity) =
+            rsa_public_key_info(generated.public_key_pem()).expect("inspect public key");
+        assert_eq!(bits, 2048);
+        assert_eq!(identity.len(), 64);
+        let signature =
+            sign_rsa_sha256(generated.private_key_pem(), b"PCR policy").expect("sign policy");
+        verify_rsa_sha256(generated.public_key_pem(), b"PCR policy", &signature)
+            .expect("verify policy signature");
     }
 
     #[test]

@@ -10,8 +10,8 @@
 //! Apps opt in with one line in `main`, next to `--shots`:
 //!
 //! ```ignore
-//! if let Some(spec) = ui::headless::spec_from_args(&args) {
-//!     std::process::exit(ui::headless::run(spec, my_app::app_root(), "dev.tilo.my-app"));
+//! if let Some(spec) = tilo_ui::headless::spec_from_args(&args) {
+//!     std::process::exit(tilo_ui::headless::run(spec, my_app::app_root(), "dev.tilo.my-app"));
 //! }
 //! ```
 //!
@@ -3897,7 +3897,7 @@ fn parse_key(spec: &str) -> Key {
 // this same exit, for no behavioural change.
 #[allow(
     clippy::exit,
-    reason = "arg-parsing entry point mirrors a CLI flag parser: fails fast before any window/Drop state exists, exactly like the callers already do via `std::process::exit(ui::headless::run(..))`"
+    reason = "arg-parsing entry point mirrors a CLI flag parser: fails fast before any window/Drop state exists, exactly like the callers already do via `std::process::exit(tilo_ui::headless::run(..))`"
 )]
 pub fn spec_from_args(args: &[String]) -> Option<Spec> {
     let raw = value_arg(args, "--headless-drive")?;

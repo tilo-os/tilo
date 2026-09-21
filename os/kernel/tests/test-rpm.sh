@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Test the packaged payload, not a parallel pre-packaging build tree.
 set -euo pipefail
+# Forgejo's non-interactive runner PATH can omit the system administration
+# directories even when kmod is installed there.
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
+command -v modinfo >/dev/null
 rpm_file=$(realpath "${1:?usage: test-rpm.sh KERNEL.rpm NEW_OUTPUT_DIRECTORY}")
 out=${2:?new output directory required}
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
