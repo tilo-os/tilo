@@ -23653,7 +23653,7 @@ mod tab_context_menu_tests {
         );
         assert!(!live[0].contains(&active), "and took it out of the source");
         // The refusal path: a single-tab group is not split, and says why.
-        let mut single = harness(1);
+        let single = harness(1);
         let err = {
             let mut st = single.chrome.borrow_mut();
             crate::shell::window_actions::split_active_tab(
