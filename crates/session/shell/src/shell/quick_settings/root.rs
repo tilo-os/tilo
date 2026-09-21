@@ -114,6 +114,7 @@ impl QuickSettingsRoot {
     const ACTION_COUNT: usize = 4;
     const SLIDER_FOCUS_START: usize = Self::ACTION_COUNT + 1;
     const CONTROL_FOCUS_START: usize = Self::SLIDER_FOCUS_START + 2;
+    #[cfg(test)]
     const EDIT_ACTION_WIDTH: f64 = 76.0;
     const EDIT_HELP_COPY: &'static str = "Drag rows to reorder · Ctrl + Up/Down";
 
@@ -551,6 +552,7 @@ impl QuickSettingsRoot {
     fn edit_grid_top(&self, panel: Rect) -> f64 {
         self.header_bottom(panel) + 2.0 * self.caption_band()
     }
+    #[cfg(test)]
     fn header_baseline_offset(&self) -> f64 {
         self.scaled(PANEL_PAD) + self.header_height_at(self.layout_scale) / 2.0
             - self.line_height(ui::tokens::TypeScale::default().base) / 2.0
@@ -636,6 +638,7 @@ impl QuickSettingsRoot {
         let y = self.grid_top(panel) + n(row) * (card + gap);
         Rect::new(x, y, x + w, y + card)
     }
+    #[cfg(test)]
     fn edit_action_rect(&self, row: Rect) -> Rect {
         Rect::new(
             row.x1 - self.scaled(Self::EDIT_ACTION_WIDTH + 6.0),

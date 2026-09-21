@@ -11,7 +11,7 @@ pub(crate) enum LocalSessionLiveness {
 
 #[derive(Debug)]
 struct LocalSessionState {
-    epoch: Uuid,
+    _epoch: Uuid,
     generation: u64,
     liveness: LocalSessionLiveness,
     locked: Option<bool>,
@@ -28,6 +28,7 @@ pub(crate) struct LocalSessionLifecycle {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub(super) struct LiveLocalSession {
     pub(super) epoch: Uuid,
     pub(super) generation: u64,
@@ -47,7 +48,7 @@ impl LocalSessionAuthority {
     pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(LocalSessionState {
-                epoch: Uuid::new_v4(),
+                _epoch: Uuid::new_v4(),
                 generation: 0,
                 liveness: LocalSessionLiveness::Inactive,
                 locked: None,
@@ -62,10 +63,11 @@ impl LocalSessionAuthority {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn active_session(&self) -> Option<LiveLocalSession> {
         let state = self.state.lock().ok()?;
         (state.liveness == LocalSessionLiveness::Active).then_some(LiveLocalSession {
-            epoch: state.epoch,
+            epoch: state._epoch,
             generation: state.generation,
         })
     }
@@ -122,7 +124,7 @@ impl LocalSessionLifecycle {
         let state = self.state.upgrade()?;
         let state = state.lock().ok()?;
         Some(LocalSessionSnapshot {
-            epoch: state.epoch,
+            epoch: state._epoch,
             generation: state.generation,
             liveness: state.liveness,
             locked: state.locked,

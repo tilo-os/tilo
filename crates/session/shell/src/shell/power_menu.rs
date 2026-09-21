@@ -586,10 +586,12 @@ const ACTIONS: [(PowerMenuAction, &str, &str, ui::icons::Icon); 6] = [
     ),
 ];
 
+#[cfg(test)]
 fn panel_rect(viewport: Rect) -> Rect {
     panel_rect_with(viewport, PowerMenuMetrics::for_text_scale(1.0))
 }
 
+#[cfg(test)]
 fn action_rect(viewport: Rect, index: usize) -> Rect {
     action_rect_with(viewport, index, PowerMenuMetrics::for_text_scale(1.0))
 }

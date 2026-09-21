@@ -17450,6 +17450,7 @@ impl ShellOverlayHost {
         )
     }
 
+    #[cfg(test)]
     fn draw_shortcut_help_button(
         &mut self,
         scene: &mut Scene,

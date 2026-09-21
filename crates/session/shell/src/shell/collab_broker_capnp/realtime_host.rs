@@ -350,7 +350,7 @@ pub struct RealtimeContinuityUiView {
 }
 
 impl RealtimeFabricAppBridge {
-    pub(crate) fn from_state(state: Arc<NativeRealtimeState>) -> Self {
+    fn from_state(state: Arc<NativeRealtimeState>) -> Self {
         Self { state }
     }
 

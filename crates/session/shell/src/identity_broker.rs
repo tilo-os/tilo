@@ -381,6 +381,7 @@ fn require_trusted_current_device(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub(crate) struct LocalDeviceIdentity {
     pub(crate) profile_id: String,
     pub(crate) principal_id: String,
@@ -388,6 +389,7 @@ pub(crate) struct LocalDeviceIdentity {
     pub(crate) device_public_key: [u8; 32],
 }
 
+#[cfg(test)]
 pub(crate) fn trusted_current_device_public(room: &str) -> io::Result<LocalDeviceIdentity> {
     let room = RoomId::parse(room)
         .filter(|room| !room.is_nil())
