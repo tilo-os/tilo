@@ -113,7 +113,8 @@ mod component_adapter {
     use super::{AppCommand, AppHostIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
     use crate::widget::{
-        ActionDirectoryResourcePage, Affine, AppKind, AutoCommit, CaptureMode, Continuable,
+        ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
+        AudiencePresentationWidgetExt, AutoCommit, CaptureMode, Continuable,
         ControlBindingMetadata, DragPayload, FloatingSurfaceProvider, FloatingSurfaceWidgetExt,
         HashMap, HashSet, Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey,
         ResourceOperationStart, Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
@@ -261,6 +262,74 @@ mod component_adapter {
         }
     }
 
+    impl AudiencePresentationProvider for BoundAppWidget {
+        fn audience_presentation_request(
+            &self,
+        ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            self.component
+                .root
+                .as_deref()?
+                .audience_presentation_request()
+        }
+
+        fn on_audience_presentation_changed(&mut self, active: bool) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.on_audience_presentation_changed(active);
+            }
+        }
+
+        fn draw_audience_presentation(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            text_renderer: &mut TextRenderer,
+            theme: &Theme,
+            rect: vello::kurbo::Rect,
+        ) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component.root.as_deref_mut().is_some_and(|root| {
+                root.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
+            })
+        }
+
+        fn handle_audience_presentation_event(
+            &mut self,
+            event: &WindowEvent,
+            state: &mut AutoCommit,
+            _path: &ObjId,
+        ) -> bool {
+            let binding = self.component.callback_binding();
+            binding
+                .with_document(state, |document, record_root| {
+                    self.component.root.as_deref_mut().is_some_and(|root| {
+                        root.handle_audience_presentation_event(event, document, record_root)
+                    })
+                })
+                .unwrap_or(false)
+        }
+
+        fn on_audience_presentation_closed(&mut self) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.on_audience_presentation_closed();
+            }
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "existing Widget callback signatures"
@@ -279,6 +348,16 @@ mod component_adapter {
         }
 
         fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+            Some(self)
+        }
+
+        fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
+            Some(self)
+        }
+
+        fn audience_presentation_provider_mut(
+            &mut self,
+        ) -> Option<&mut dyn AudiencePresentationProvider> {
             Some(self)
         }
 
@@ -947,69 +1026,6 @@ mod component_adapter {
                 return;
             };
             root.on_fullscreen_changed(active);
-        }
-        fn audience_presentation_request(
-            &self,
-        ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.audience_presentation_request()
-        }
-        fn on_audience_presentation_changed(&mut self, active: bool) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.on_audience_presentation_changed(active);
-        }
-        fn draw_audience_presentation(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            rect: vello::kurbo::Rect,
-        ) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return false;
-            };
-            root.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
-        }
-        fn handle_audience_presentation_event(
-            &mut self,
-            event: &WindowEvent,
-            state: &mut AutoCommit,
-            _path: &ObjId,
-        ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.handle_audience_presentation_event(event, document, record_root)
-                })
-                .unwrap_or(false)
-        }
-        fn on_audience_presentation_closed(&mut self) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.on_audience_presentation_closed();
         }
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
             let binding = self.component.callback_binding();
