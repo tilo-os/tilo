@@ -2120,7 +2120,8 @@ mod tests {
             expected.text_scale = 2.0;
             expected.columns = expected.columns_for_width(replaced.width());
             assert!(
-                (replaced.height() - expected.content_height(replaced.width()).round()).abs() < 0.01
+                (replaced.height() - expected.content_height(replaced.width()).round()).abs()
+                    < 0.01
             );
         }
     }
