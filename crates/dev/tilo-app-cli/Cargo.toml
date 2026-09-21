@@ -19,7 +19,7 @@ clap.workspace = true
 fluent.workspace = true
 fluent-syntax.workspace = true
 libc.workspace = true
-notify.workspace = true
+notify = { workspace = true, default-features = true }
 image = { workspace = true, features = ["png"] }
 pkg = { path = "../../packaging/pkg" }
 serde.workspace = true
