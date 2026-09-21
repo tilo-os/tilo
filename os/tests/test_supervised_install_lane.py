@@ -38,6 +38,66 @@ def helper_elf():
 
 
 class LaneAdmission(unittest.TestCase):
+    def test_lane_timings_are_ordered_typed_and_credential_free(self):
+        class Clock:
+            value = 0
+            def __call__(self):
+                self.value += 10
+                return self.value
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'timings.json';timer=lane.LaneTimer(path,Clock())
+            for name in lane.TIMING_STAGES:
+                with timer.stage(name):
+                    pass
+            receipt=timer.finish()
+            persisted=json.loads(path.read_text())
+            lane.validate_lane_timings(persisted)
+            self.assertEqual(receipt['status'],'succeeded')
+            self.assertEqual([row['name'] for row in persisted['stages']],list(lane.TIMING_STAGES))
+            self.assertTrue(all(row['status']=='succeeded' for row in persisted['stages']))
+            self.assertNotIn('registry',path.read_text().lower())
+            hostile=dict(persisted);hostile['credential']='secret'
+            with self.assertRaises(ValueError):
+                lane.validate_lane_timings(hostile)
+
+    def test_lane_timing_failure_is_persisted_at_the_failed_stage(self):
+        class Clock:
+            value = 0
+            def __call__(self):
+                self.value += 10
+                return self.value
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'timings.json';timer=lane.LaneTimer(path,Clock())
+            with self.assertRaisesRegex(RuntimeError,'boom'):
+                with timer.stage('creator_admission'):
+                    raise RuntimeError('boom')
+            receipt=json.loads(path.read_text())
+            self.assertEqual(receipt['status'],'failed')
+            self.assertEqual(receipt['stages'],[{
+              'name':'creator_admission','status':'failed',
+              'started_offset_ns':10,'duration_ns':10}])
+            lane.validate_lane_timings(receipt)
+
+    def test_lane_timings_record_skipped_creator_work_on_resume(self):
+        class Clock:
+            value = 0
+            def __call__(self):
+                self.value += 10
+                return self.value
+        with tempfile.TemporaryDirectory() as directory:
+            timer=lane.LaneTimer(Path(directory)/'timings.json',Clock())
+            with timer.stage('creator_admission'):
+                pass
+            for name in ('input_transfer','create_install','freeze_identity'):
+                timer.skip(name)
+            for name in lane.TIMING_STAGES[4:]:
+                with timer.stage(name):
+                    pass
+            receipt=timer.finish()
+            self.assertEqual([row['status'] for row in receipt['stages'][1:4]],
+                             ['skipped']*3)
+            lane.validate_lane_timings(receipt)
+
     def resumable_fixture(self, directory, expires_at=4102444800):
         root=Path(directory)
         creator_node=node('disk',disk=True)
