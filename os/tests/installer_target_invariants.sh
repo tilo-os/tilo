@@ -50,21 +50,17 @@ else
   bad "installer profile routing regressed to an all-or-nothing shortcut"
 fi
 
-unlock_placeholder=tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000
-sample_uuid=00000000-0000-0000-0000-000000000000
-unlock_options="rd.luks.options=$sample_uuid=tpm2-device=auto,fido2-device=auto"
-if [ "${#unlock_placeholder}" -eq "${#unlock_options}" ] \
-   && [ "$(grep -Fc 'rd.luks.options=%s=tpm2-device=auto,fido2-device=auto' "$encryptor")" -eq 2 ]; then
-  ok "sealed unlock slot exactly fits TPM2 and FIDO2 initramfs discovery options"
+if grep -Fq 'root=tilo-auto' "$repo_root/os/usr/lib/bootc/kargs.d/00-root.toml" \
+   && grep -Fq 'rd.luks.options=tpm2-device=auto,fido2-device=auto' \
+      "$repo_root/os/usr/lib/bootc/kargs.d/00-root.toml"; then
+  ok "live and target UKIs inherit target-independent root and unlock discovery"
 else
-  bad "encrypted-root producer and sealed UKI hardware-token options disagree"
+  bad "sealed UKIs lack target-independent root or hardware-token discovery"
 fi
 
 karg_deletes="$(grep -c -- '--karg-delete tilo.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
-   && grep -Fq 'append root=tilo-auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'append systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec /boot/tilo-target/tilo-target.efi' "$containerfile" \
-   && grep -Fq 'append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'remove tilo.install /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
    && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
@@ -88,14 +84,13 @@ if grep -Fq 'tilo-uki-cmdline remove systemd.show_status' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove rd.udev.log_level' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove loglevel' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove vt.global_cursor_default' "$containerfile" \
-   && grep -Fq 'tilo-uki-cmdline remove root' "$containerfile" \
-   && grep -Fq 'tilo-uki-cmdline remove rd.luks.options' "$containerfile" \
-   && grep -Fq 'tilo-uki-cmdline append tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.mode=normal' "$containerfile" \
-   && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.install' "$containerfile"; then
-  ok "installer reserves measured UKI cmdline space without losing splash or mode"
+   && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.install' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline show | grep -qw root=tilo-auto' "$containerfile" \
+   && ! grep -Eq 'tilo\.(root|luks|unlock)=' "$containerfile"; then
+  ok "installer live UKI keeps the bootable root contract without inert placeholders"
 else
-  bad "installer UKI cmdline headroom or required boot markers are incomplete"
+  bad "installer live UKI root contract or required boot markers are incomplete"
 fi
 
 if grep -Fq 'set -- /boot/EFI/Linux/*.efi' "$containerfile" \
