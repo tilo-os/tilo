@@ -291,7 +291,8 @@ async fn connect_owner(
             SystemTime::now(),
         )
         .map_err(error)?;
-        (restored, journal.outbox)
+        let outbox = journal.into_unretired_outbox(&restored);
+        (restored, outbox)
     } else {
         (initial, vec![])
     };
@@ -731,29 +732,9 @@ fn install_records(peer: &Peer, state: &StatePeer) -> Result<(), String> {
 }
 
 fn stage_journal(peer: &Peer, state: &StatePeer, outbox: &[NeighbourMsg]) -> Result<(), String> {
-    let bytes = Journal {
-        state: state.durable()?,
-        outbox: outbox.to_vec(),
-        records: state.rows(),
-        receipts: state
-            .rows()
-            .iter()
-            .filter_map(|row| {
-                state
-                    .durable_coverage(&row.app_id, &row.record_id)
-                    .ok()
-                    .flatten()
-                    .map(|receipt| {
-                        (
-                            qos_peer_state::coverage::route_key(&row.app_id, &row.record_id),
-                            receipt.receipt_id,
-                        )
-                    })
-            })
-            .collect(),
-    }
-    .encode()
-    .map_err(|e| e.to_string())?;
+    let bytes = Journal::from_state(state, outbox.to_vec())
+        .and_then(|journal| journal.encode())
+        .map_err(|e| e.to_string())?;
     peer.cache.put(
         StorageKey::Admission {
             workspace: state.room().into(),

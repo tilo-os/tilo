@@ -1,7 +1,7 @@
 //! Browser journal framing: preserve the exact old postcard body on migration.
 #[cfg(test)]
 use automerge::transaction::Transactable;
-use qos_peer_state::{DocumentRow, NeighbourMsg};
+use qos_peer_state::{DocumentRow, NeighbourMsg, StatePeer};
 use serde::{Deserialize, Serialize};
 const MAGIC: &[u8] = b"QOSJ";
 #[derive(Serialize, Deserialize)]
@@ -17,6 +17,37 @@ pub(crate) struct Journal {
     pub receipts: std::collections::BTreeMap<String, String>,
 }
 impl Journal {
+    pub fn from_state(state: &StatePeer, outbox: Vec<NeighbourMsg>) -> Result<Self, String> {
+        Ok(Self {
+            state: state.durable()?,
+            outbox,
+            records: state.rows(),
+            receipts: state
+                .rows()
+                .iter()
+                .filter_map(|row| {
+                    state
+                        .durable_coverage(&row.app_id, &row.record_id)
+                        .ok()
+                        .flatten()
+                        .map(|receipt| {
+                            (
+                                qos_peer_state::coverage::route_key(&row.app_id, &row.record_id),
+                                receipt.receipt_id,
+                            )
+                        })
+                })
+                .collect(),
+        })
+    }
+
+    pub fn into_unretired_outbox(self, state: &StatePeer) -> Vec<NeighbourMsg> {
+        self.outbox
+            .into_iter()
+            .filter(|message| !state.outbox_message_retired(message))
+            .collect()
+    }
+
     /// Only matching committed record bytes and committed journal metadata prove a local basis.
     #[cfg(test)]
     pub fn durable_heads(&self, app: &str, record: &str, bytes: &[u8]) -> Option<Vec<String>> {
@@ -403,5 +434,239 @@ mod tests {
         .unwrap();
         bytes.push(1);
         assert!(Journal::decode(&bytes).is_err());
+    }
+
+    #[test]
+    fn restored_journal_retires_only_exact_durable_receipts_and_normalizes_roundtrip() {
+        use automerge::{AutoCommit, ROOT};
+        use ed25519_dalek::SigningKey;
+        use qos_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room};
+        use tilo_user_identity::{
+            DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert,
+        };
+        use web_time::{Duration, SystemTime};
+
+        fn certificate(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
+            let mut certificate = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: key.verifying_key().to_bytes(),
+                device_label: label.into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut certificate, root).unwrap();
+            certificate
+        }
+
+        fn seed_document(record_id: &str) -> SeedDocument {
+            let mut document = AutoCommit::new();
+            document.put(ROOT, "value", "seed").unwrap();
+            document.commit();
+            SeedDocument {
+                app_id: "test.app".into(),
+                record_id: record_id.into(),
+                kind: "test".into(),
+                bytes: document.save(),
+            }
+        }
+
+        fn publish(
+            state: &mut StatePeer,
+            record: &str,
+            key: &SigningKey,
+            now: SystemTime,
+        ) -> NeighbourMsg {
+            let mut document =
+                AutoCommit::load(&state.document("test.app", record).unwrap()).unwrap();
+            let before = document.get_heads();
+            document.put(ROOT, "saved", record).unwrap();
+            document.commit();
+            state
+                .publish_incremental("test.app", record, document.save_after(&before), key, now)
+                .unwrap()
+        }
+
+        let root = SigningKey::from_bytes(&[71; 32]);
+        let authority_key = SigningKey::from_bytes(&[72; 32]);
+        let member_key = SigningKey::from_bytes(&[73; 32]);
+        let authority = certificate(&root, &authority_key, "authority");
+        let member = certificate(&root, &member_key, "member");
+        let roster = vec![authority.clone(), member.clone()];
+        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000);
+        let mut client = StatePeer::new(
+            room,
+            authority.clone(),
+            roster.clone(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        client
+            .install_seed(
+                SeedState {
+                    room_changes: seed_room(room, &authority, &roster).unwrap(),
+                    documents: vec![
+                        seed_document("retired"),
+                        seed_document("causal-only"),
+                        seed_document("unacknowledged"),
+                    ],
+                },
+                &authority_key,
+                now,
+            )
+            .unwrap();
+        let base = client;
+
+        let mut causal_client = base.clone();
+        let mut causal_governor = base.clone();
+        let causal_only = publish(&mut causal_client, "causal-only", &member_key, now);
+        causal_governor
+            .receive_from(
+                TransportOrigin::RelayDelta(member_key.verifying_key().to_bytes()),
+                causal_only.clone(),
+                now,
+            )
+            .unwrap();
+        for message in causal_governor
+            .bootstrap_messages(&authority_key, now)
+            .unwrap()
+        {
+            causal_client
+                .receive_from(
+                    TransportOrigin::RelayDelta(authority.device_public_key),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        assert!(causal_client.covers(&causal_only));
+        assert!(!causal_client.outbox_message_retired(&causal_only));
+        let causal_journal = Journal::from_state(&causal_client, vec![causal_only.clone()])
+            .unwrap()
+            .encode()
+            .unwrap();
+        let causal_journal = Journal::decode(&causal_journal).unwrap();
+        let causal_restored = StatePeer::restore(
+            &causal_journal.state,
+            room,
+            authority.clone(),
+            roster.clone(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            postcard::to_allocvec(&causal_journal.into_unretired_outbox(&causal_restored)).unwrap(),
+            postcard::to_allocvec(&vec![causal_only]).unwrap(),
+            "causal coverage without its designated receipt remains in custody"
+        );
+
+        let mut client = base.clone();
+        let mut governor = base.clone();
+        let retired = publish(&mut client, "retired", &member_key, now);
+        governor
+            .receive_from(
+                TransportOrigin::RelayDelta(member_key.verifying_key().to_bytes()),
+                retired.clone(),
+                now,
+            )
+            .unwrap();
+        for message in governor
+            .durable_bootstrap_messages(&authority_key, now, 5)
+            .unwrap()
+        {
+            client
+                .receive_from(
+                    TransportOrigin::RelayDelta(authority.device_public_key),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        let unacknowledged = publish(&mut client, "unacknowledged", &member_key, now);
+        assert!(client.outbox_message_retired(&retired));
+        assert!(!client.covers(&unacknowledged));
+
+        let saved = Journal::from_state(&client, vec![retired, unacknowledged.clone()])
+            .unwrap()
+            .encode()
+            .unwrap();
+        let journal = Journal::decode(&saved).unwrap();
+        let restored = StatePeer::restore(
+            &journal.state,
+            room,
+            authority.clone(),
+            roster.clone(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        let outbox = journal.into_unretired_outbox(&restored);
+        assert_eq!(
+            postcard::to_allocvec(&outbox).unwrap(),
+            postcard::to_allocvec(&vec![unacknowledged.clone()]).unwrap()
+        );
+        assert!(
+            outbox
+                .iter()
+                .all(|message| !restored.outbox_message_retired(message))
+        );
+
+        let incomplete = StatePeer::new(
+            room,
+            authority.clone(),
+            roster.clone(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert!(!incomplete.has_governance());
+        let incomplete = Journal::from_state(&incomplete, vec![unacknowledged.clone()])
+            .unwrap()
+            .encode()
+            .unwrap();
+        let incomplete = Journal::decode(&incomplete).unwrap();
+        let incomplete_restored = StatePeer::restore(
+            &incomplete.state,
+            room,
+            authority.clone(),
+            roster.clone(),
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert!(!incomplete_restored.has_governance());
+        assert_eq!(
+            postcard::to_allocvec(&incomplete.into_unretired_outbox(&incomplete_restored)).unwrap(),
+            postcard::to_allocvec(&vec![unacknowledged.clone()]).unwrap(),
+            "an incomplete restored owner retains its unacknowledged evidence"
+        );
+
+        let normalized = Journal::from_state(&restored, outbox.clone())
+            .unwrap()
+            .encode()
+            .unwrap();
+        let normalized = Journal::decode(&normalized).unwrap();
+        assert_eq!(
+            postcard::to_allocvec(&normalized.outbox).unwrap(),
+            postcard::to_allocvec(&outbox).unwrap()
+        );
+        let restored_again = StatePeer::restore(
+            &normalized.state,
+            room,
+            authority,
+            roster,
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            postcard::to_allocvec(&normalized.into_unretired_outbox(&restored_again)).unwrap(),
+            postcard::to_allocvec(&outbox).unwrap(),
+            "normalization is stable across another restart"
+        );
     }
 }
