@@ -1434,17 +1434,19 @@ impl FrameHarness {
                     self.child_node
                 };
                 // SAFETY: exclusive runner owns this exact fresh topology.
-                unsafe {
-                    self.bindings.rebuild_with_retained_root(
-                        self.history.as_ref().map_or_else(
-                            || self.root.as_ref(),
-                            |history| history.as_ref() as &dyn Widget,
-                        ),
-                        self.history.as_ref().map(|_| self.root.as_ref()),
-                        &self.taffy,
-                        self.child_node,
-                        &self.node_map,
-                    );
+                if !self.history_chrome_enabled {
+                    unsafe {
+                        self.bindings.rebuild_with_retained_root(
+                            self.history.as_ref().map_or_else(
+                                || self.root.as_ref(),
+                                |history| history.as_ref() as &dyn Widget,
+                            ),
+                            self.history.as_ref().map(|_| self.root.as_ref()),
+                            &self.taffy,
+                            self.child_node,
+                            &self.node_map,
+                        );
+                    }
                 }
                 if let Some(view) = &view {
                     self.root.restore_view_state(view);

@@ -2353,7 +2353,7 @@ impl BoundNodeMap {
         unsafe { self.rebuild_roots_with_retained(roots, None, taffy, nodes) };
     }
 
-    unsafe fn rebuild_roots_with_retained(
+    pub(crate) unsafe fn rebuild_roots_with_retained(
         &mut self,
         roots: &[(&dyn Widget, NodeId)],
         retained: Option<&dyn Widget>,
