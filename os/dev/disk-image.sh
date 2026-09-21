@@ -104,12 +104,19 @@ else
   [[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] \
     || die "--sealed-source-imgref requires digest-pinned IMAGE as the authoritative target-imgref"
   command -v skopeo >/dev/null || die "--sealed-source-imgref requires skopeo to verify the mirror digest"
-  source_digest="$(skopeo inspect --tls-verify=false --format '{{.Digest}}' \
+  source_identity="$(skopeo inspect --tls-verify=false --format '{{.Name}} {{.Digest}}' \
     "docker://${SEALED_SOURCE_IMGREF#docker://}")" \
     || die "cannot inspect sealed registry source $SEALED_SOURCE_IMGREF"
+  read -r source_repository source_digest <<< "$source_identity"
+  [ -n "$source_repository" ] && [ -n "$source_digest" ] \
+    || die "sealed registry source inspection returned no repository or digest"
   target_digest="sha256:${IMAGE##*@sha256:}"
   [ "$source_digest" = "$target_digest" ] || die "sealed registry source digest is $source_digest,
   but authoritative IMAGE is $target_digest. Refusing to install different content."
+  # From this point on, address the mirror by the digest that was just compared
+  # with the authoritative image. A mutable convenience tag is useful for
+  # populating the mirror, but it must not remain in the install invocation.
+  SEALED_SOURCE_IMGREF="$source_repository@$source_digest"
 fi
 
 # --- sizes -------------------------------------------------------------------
@@ -281,6 +288,7 @@ LOG="$OUTDIR/.install.log"
 cleanup() {
   sudo -n umount -R "$MNT" 2>/dev/null || true
   [ -n "${LOOP:-}" ] && sudo -n losetup -d "$LOOP" 2>/dev/null || true
+  [ -z "${SOURCE_POLICY:-}" ] || rm -f "$SOURCE_POLICY"
   rm -rf "$DEFS"
 }
 trap cleanup EXIT
@@ -293,7 +301,7 @@ trap cleanup EXIT
 # splitstream reader: Invalid splitstream content type". The same image pulled
 # over HTTP installs. So a local registry is started and the image published to
 # it; this is a new requirement of dropping bib.
-REG=""; SRC_REF=""; RUNREF="$IMAGE"; TLS_ARGS=()
+REG=""; SRC_REF=""; RUNREF="$IMAGE"; TLS_ARGS=(); SOURCE_POLICY=""
 start_registry() {
   local want="${TILO_DISK_REG_PORT:-5000}" port
   # An already-present registry container of ours is authoritative: reuse it on
@@ -338,6 +346,30 @@ if [ -n "$SEALED_SOURCE_IMGREF" ]; then
   TLS_ARGS=(--tls-verify=false)
   REGCONF="$OUTDIR/.registries.conf"
   printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
+  # The image's runtime policy correctly trusts its signed authoritative
+  # repository, not an unsigned transport mirror. bootc evaluates the running
+  # mirror reference against that policy before install, so give this one
+  # invocation a policy that rejects everything except the digest-verified
+  # mirror repository. This file is bind-mounted over the running container's
+  # policy only; the installed system retains the policy shipped in the image.
+  SOURCE_POLICY="$OUTDIR/.source-policy.json"
+  python3 - "$SOURCE_POLICY" "$source_repository" <<'PY'
+import json
+import sys
+
+path, repository = sys.argv[1:]
+policy = {
+    "default": [{"type": "reject"}],
+    "transports": {
+        "docker": {
+            repository: [{"type": "insecureAcceptAnything"}],
+        },
+    },
+}
+with open(path, "w", encoding="utf-8") as output:
+    json.dump(policy, output, separators=(",", ":"))
+    output.write("\n")
+PY
   msg "using verified sealed registry source $SRC_REF (no local import or republish)"
 elif [ "$COMPOSEFS" = yes ]; then
   REG="$(start_registry)" || die "could not bring up a local registry, and the composefs
@@ -419,6 +451,9 @@ run_args=(--rm --privileged --pid=host
 if [ -n "$SRC_REF" ]; then
   run_args+=(--network host
     -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
+fi
+if [ -n "$SOURCE_POLICY" ]; then
+  run_args+=(-v "$SOURCE_POLICY:/etc/containers/policy.json:ro")
 fi
 
 msg "3/4 bootc install ${install_args[*]}"
