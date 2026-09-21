@@ -128,6 +128,14 @@ fn emit_text(f: &Function, text: &str) {
     let _ = f.call1(&JsValue::NULL, &JsValue::from_str(text));
 }
 fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
+    static PANIC_HOOK: std::sync::Once = std::sync::Once::new();
+    PANIC_HOOK.call_once(|| {
+        std::panic::set_hook(Box::new(|panic| {
+            web_sys::console::error_1(&JsValue::from_str(&format!(
+                "Browser runtime panic: {panic}"
+            )));
+        }));
+    });
     if let Some(p) = LOOP.with_borrow(|p| p.clone()) {
         return Ok(p);
     }
