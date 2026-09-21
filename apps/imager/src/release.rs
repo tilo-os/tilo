@@ -68,22 +68,22 @@ impl MediaProvenance {
         let origin = self.target_update_ref.as_deref().ok_or_else(|| {
             "The release catalog is missing a hardware update origin.".to_string()
         })?;
-        let valid_origin =
-            if let Some(digest) = origin.strip_prefix("ghcr.io/tilo-os/tilo@sha256:") {
-                validate_digest(digest).is_ok()
-            } else if let Some(tag) = origin.strip_prefix("ghcr.io/tilo-os/tilo:") {
-                !tag.is_empty()
-                    && tag.len() <= 128
-                    && tag
-                        .bytes()
-                        .next()
-                        .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                    && tag.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
-                    })
-            } else {
-                false
-            };
+        let valid_origin = if let Some(digest) = origin.strip_prefix("ghcr.io/tilo-os/tilo@sha256:")
+        {
+            validate_digest(digest).is_ok()
+        } else if let Some(tag) = origin.strip_prefix("ghcr.io/tilo-os/tilo:") {
+            !tag.is_empty()
+                && tag.len() <= 128
+                && tag
+                    .bytes()
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                && tag
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+        } else {
+            false
+        };
         if !valid_origin {
             return Err("The release catalog contains an untrusted hardware update origin.".into());
         }

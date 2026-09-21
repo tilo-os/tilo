@@ -763,7 +763,7 @@ mod tests {
 
     #[test]
     fn shipped_pci_catalogue_has_a_valid_separate_signature() {
-        let signed: SignedPciRecommendationCatalog = serde_json::from_slice(include_bytes!(
+        let mut signed: SignedPciRecommendationCatalog = serde_json::from_slice(include_bytes!(
             "../../../../../os/usr/share/tilo/system-extensions/hardware-catalog.d/pci-recommendations.json"
         ))
         .unwrap();
@@ -775,13 +775,12 @@ mod tests {
         verify_pci_catalog_against(&signed, &key).unwrap();
 
         // Renaming the key in both documents cannot authorize unsigned changes.
-        let mut renamed = signed.clone();
-        renamed.key_id = "tilo-pci-catalog-v1".into();
+        signed.key_id = "tilo-pci-catalog-v2".into();
         let renamed_key = PublicKeyDocument {
-            key_id: renamed.key_id.clone(),
+            key_id: signed.key_id.clone(),
             ..key
         };
-        assert!(verify_pci_catalog_against(&renamed, &renamed_key).is_err());
+        assert!(verify_pci_catalog_against(&signed, &renamed_key).is_err());
     }
 
     #[test]

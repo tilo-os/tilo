@@ -246,24 +246,24 @@ mod tests {
         assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 16);
 
         assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
-        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 18);
+        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);
 
         assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v2\0");
         assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
 
         assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"tilo-dir-delta-v1\0");
-        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 17);
+        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 18);
 
         assert_eq!(
             approval::APPROVAL_REQUEST_TAG,
             b"tilo-device-approval-request-v1\0"
         );
-        assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 31);
+        assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 32);
         assert_eq!(
             approval::APPROVAL_RESPONSE_TAG,
             b"tilo-device-approval-response-v1\0"
         );
-        assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 32);
+        assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 33);
     }
 
     #[test]

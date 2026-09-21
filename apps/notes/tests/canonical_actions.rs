@@ -985,7 +985,10 @@ fn bound_pointer_reparent_duplicate_and_checklist_are_owned_actions() {
             notes::notebook::validate(doc).unwrap();
         })
         .unwrap();
-    context_menu_select(&mut a, copied_root, 4);
+    // The page menu now has Copy link, Export, and Insert image between
+    // Duplicate and Delete. Keyboard navigation skips the separator, so the
+    // seventh action row is Delete.
+    context_menu_select(&mut a, copied_root, 7);
     assert_eq!(revision(&f, &checkout), 4);
     f.records
         .read(&checkout.id, |doc| {

@@ -1834,6 +1834,27 @@ fn native_close_refusal_preserves_live_owner_and_retry_persists_later_edits() {
     );
     std::fs::remove_dir(&document_path).unwrap();
     std::fs::remove_dir(&view_path).unwrap();
+    app.refresh_semantic_tree();
+    let (retry, retry_action) = {
+        let retry = app
+            .semantic_tree()
+            .iter()
+            .find(|node| node.actions.iter().any(|action| action.name == "retry"))
+            .expect("failed-close dialog publishes its Retry action");
+        let action = retry
+            .actions
+            .iter()
+            .find(|action| action.name == "retry")
+            .expect("Retry exposes an invocable action")
+            .name
+            .clone();
+        (retry.id.clone(), action)
+    };
+    assert!(
+        app.invoke_semantic_action(&retry, &retry_action, None)
+            .unwrap(),
+        "explicit Retry rechecks the retained live owners"
+    );
     assert!(
         app.request_close(),
         "repair must retry the same live record and view owners"

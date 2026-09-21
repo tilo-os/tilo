@@ -888,8 +888,7 @@ fn replace_native_marks(
     }
     // A version marker distinguishes an intentional empty formatting snapshot
     // from a pre-native-marks document that still needs Markdown migration.
-    doc.put(block, "notes_marks_version", 1_i64)
-        .map_err(|_| "block marks version could not be written")?;
+    put_if_changed(doc, block, "notes_marks_version", 1_i64);
     Ok(())
 }
 
@@ -954,7 +953,7 @@ fn block_map(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<(usize, ObjId)>
 pub(crate) fn valid_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "paragraph" | "divider" | "heading1" | "heading2" | "heading3"
+        "paragraph" | "quote" | "divider" | "heading1" | "heading2" | "heading3"
     ) || kind
         .strip_prefix("bullet:")
         .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
@@ -970,6 +969,7 @@ pub(crate) fn valid_kind(kind: &str) -> bool {
                 && parts.next().is_none()
         })
         || kind.starts_with("code:")
+        || matches!(kind, "table:0" | "table:1")
 }
 
 fn insert_block(
@@ -990,15 +990,11 @@ fn insert_block(
         .map_err(|_| "page block list no longer exists")?;
     doc.put(&block, "kind", kind)
         .map_err(|_| "page block list no longer exists")?;
-    if doc
-        .get(ROOT, "notes_schema_version")
-        .ok()
-        .flatten()
-        .is_some_and(|(value, _)| value.to_i64() == Some(1))
-    {
-        doc.put(&block, "notes_marks_version", 1_i64)
-            .map_err(|e| e.to_string())?;
-    }
+    // Every action-created block has an explicit formatting snapshot, even
+    // when it contains no marks. Without this marker an unformatted block is
+    // indistinguishable from legacy Markdown that still needs migration.
+    doc.put(&block, "notes_marks_version", 1_i64)
+        .map_err(|error| error.to_string())?;
     let text_obj = doc
         .put_object(&block, "text", ObjType::Text)
         .map_err(|_| "page block list no longer exists")?;

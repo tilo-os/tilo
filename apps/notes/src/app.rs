@@ -1326,14 +1326,47 @@ impl NotesApp {
                 empty_for_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
                 "seeding initial local Notes state"
             );
-            for p in self.workspace.pages().to_vec() {
-                self.perform_action(state, &actions::upsert_page_action(&p));
-                self.seed_legacy_page_body(state, p.id);
-                self.known_in_doc.insert(p.id);
+            if let Err(error) = self.ensure_legacy_document_ready(state) {
+                tracing::warn!(%error, "notes: refused to initialize canonical notebook schema");
             }
+        }
+    }
+
+    /// End the late-join grace period when a local filesystem-backed user
+    /// performs an explicit mutation. An already-populated peer document wins;
+    /// otherwise the complete local workspace becomes a versioned canonical
+    /// notebook before the requested action is dispatched.
+    fn ensure_legacy_document_ready(&mut self, doc: &mut AutoCommit) -> Result<(), String> {
+        if self.adopted {
+            return crate::notebook::validate(doc);
+        }
+        let remote_pages = NotesDoc::list_pages(doc);
+        if !remote_pages.is_empty() {
+            self.workspace = Self::project_workspace(doc, self.workspace.selected())?;
+            self.known_in_doc
+                .extend(self.workspace.pages().iter().map(|page| page.id));
+            self.sidebar.sync_from_workspace(&self.workspace);
             self.seeded = true;
             self.adopted = true;
+            return Ok(());
         }
+        if doc
+            .get(automerge::ROOT, "notes_schema_version")
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            crate::notebook::initialize_empty(doc)?;
+        } else {
+            crate::notebook::validate(doc)?;
+        }
+        for page in self.workspace.pages().to_vec() {
+            self.dispatch_canonical_action(doc, &actions::upsert_page_action(&page))?;
+            self.seed_legacy_page_body(doc, page.id);
+            self.known_in_doc.insert(page.id);
+        }
+        self.seeded = true;
+        self.adopted = true;
+        Ok(())
     }
 
     /// Reconcile tags after the page tree. Tags and membership edges are
@@ -1917,6 +1950,20 @@ impl NotesApp {
             }
             return;
         }
+        if !self.adopted
+            && let Err(error) = self.ensure_legacy_document_ready(doc)
+        {
+            tracing::warn!(%error, "notes: rejected local action before notebook initialization");
+            self.report_page_read_failure(error);
+            return;
+        }
+        if let OutEvent::Duplicate(source) = ev {
+            if let Err(error) = self.duplicate_legacy_subtree(doc, source) {
+                tracing::warn!(%error, "notes: rejected subtree duplicate");
+                self.report_page_read_failure(error);
+            }
+            return;
+        }
         let before = self.meta_map();
         self.apply_event(ev);
         let after = self.meta_map();
@@ -1925,6 +1972,76 @@ impl NotesApp {
         // drop the removals `apply_event` queued for the next `sync` — replaying
         // them would re-delete a page a Ctrl+Z undo has just restored.
         self.pending_doc_removals.clear();
+    }
+
+    /// Duplicate a filesystem-backed subtree through the same complete
+    /// canonical action used by record-native Notes. The legacy Markdown files
+    /// remain the local persistence projection, while page metadata, block
+    /// bodies, marks, and remapped links travel together to peers.
+    fn duplicate_legacy_subtree(
+        &mut self,
+        doc: &mut AutoCommit,
+        source: PageId,
+    ) -> Result<(), String> {
+        self.flush_main_panel_edit();
+        let action = actions::duplicate_subtree_action(doc, source)?;
+        let NotesAction::DuplicateSubtree { pages, .. } = &action else {
+            return Err("invalid duplicate action".into());
+        };
+        let mappings = pages
+            .iter()
+            .map(|page| {
+                Ok((
+                    page.source
+                        .parse::<PageId>()
+                        .map_err(|error| error.to_string())?,
+                    page.destination
+                        .parse::<PageId>()
+                        .map_err(|error| error.to_string())?,
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let destination = mappings
+            .iter()
+            .find_map(|(old, new)| (*old == source).then_some(*new))
+            .ok_or("duplicate root is missing")?;
+        let root = self
+            .legacy_fixture_storage
+            .as_ref()
+            .ok_or("filesystem-backed Notes storage is unavailable")?
+            .root
+            .clone();
+        let bodies = mappings
+            .iter()
+            .map(|(old, new)| {
+                storage::read_page_body(&root, *old)
+                    .map(|body| (*new, body))
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+
+        self.dispatch_canonical_action(doc, &action)?;
+        for (page, body) in &bodies {
+            storage::write_page_body(&root, *page, body).map_err(|error| error.to_string())?;
+        }
+        self.workspace = Self::project_workspace(doc, Some(destination))?;
+        self.sidebar.sync_from_workspace(&self.workspace);
+        let title = self
+            .workspace
+            .get(destination)
+            .ok_or("duplicate root metadata is missing")?
+            .title
+            .clone();
+        let body = bodies
+            .iter()
+            .find_map(|(page, body)| (*page == destination).then(|| body.clone()))
+            .ok_or("duplicate root body is missing")?;
+        self.load_page_with_resolver(destination, &title, body);
+        self.bound_page = None;
+        self.refresh_link_pages();
+        self.persist();
+        self.refresh_status();
+        Ok(())
     }
 
     /// Turn the page-tree change [`apply_event`] just made into the matching

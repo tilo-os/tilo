@@ -1343,6 +1343,9 @@ impl Widget for FirewallApp {
         }
         root.children.push(zones.accessibility());
         root.children.push(self.rules_table_accessibility());
+        if !self.layout.service_rows.is_empty() {
+            root.children.push(self.services_accessibility());
+        }
         Some(root)
     }
 
@@ -1548,6 +1551,15 @@ impl Widget for FirewallApp {
             }
             return true;
         }
+        if let Some(id) = target.strip_prefix("firewall.service:")
+            && matches!(action, A11yAction::Activate | A11yAction::ToggleCheck)
+            && let Some(index) = ServiceCatalog::ALL
+                .iter()
+                .position(|service| service.id == id)
+        {
+            self.toggle_service(index, state);
+            return true;
+        }
         false
     }
 
@@ -1560,6 +1572,32 @@ impl Widget for FirewallApp {
 }
 
 impl FirewallApp {
+    fn services_accessibility(&self) -> AccessNode {
+        let mut services = AccessNode::new(Role::List)
+            .with_name(format!("Services in {}", self.selected_zone.name()))
+            .with_bounds(if self.layout.compact_services {
+                self.layout.table
+            } else {
+                self.layout.services
+            });
+        let selected_zone = self.selected_zone_ref();
+        for (index, _row, toggle) in &self.layout.service_rows {
+            let Some(service) = ServiceCatalog::ALL.get(*index) else {
+                continue;
+            };
+            let enabled = selected_zone.is_some_and(|zone| zone.has_service(service.id));
+            services.children.push(
+                AccessNode::new(Role::Switch)
+                    .with_name(service.name)
+                    .with_description(format!("{}/{}", service.ports, service.proto))
+                    .with_action_target(format!("firewall.service:{}", service.id))
+                    .with_bounds(*toggle)
+                    .with_state(AccessState::new().focusable(true).checked(enabled)),
+            );
+        }
+        services
+    }
+
     fn rules_table_accessibility(&self) -> AccessNode {
         let table_name = format!("Rules in {}", self.selected_zone.name());
         let (target, proto, action, source, controls) = rule_columns(self.layout.table);
