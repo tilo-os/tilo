@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 DEV = Path(__file__).resolve().parents[1] / 'dev'
 sys.path.insert(0, str(DEV))
@@ -269,6 +270,24 @@ class DetachedCreatorJob(unittest.TestCase):
     def process(self):
         return {'pid':7,'start':'123','argv_sha256':'a'*64,
                 'cgroup_sha256':'b'*64,'request_sha256':'c'*64}
+
+    def test_helper_bundle_is_reproducible(self):
+        revision='d'*40
+        def checked(argv, payload=None):
+            if 'rev-parse' in argv:return revision+'\n'
+            if 'status' in argv:return ''
+            if 'ls-tree' in argv:return 'os/dev/b.py\nos/dev/a.py\n'
+            raise AssertionError(argv)
+        def git_show(argv, **kwargs):
+            return SimpleNamespace(stdout={'os/dev/a.py':b'a\n','os/dev/b.py':b'b\n'}[argv[-1].split(':',1)[1]])
+        with patch.object(controller,'checked',side_effect=checked), \
+                patch.object(controller.subprocess,'run',side_effect=git_show):
+            first=controller.helper_bundle(revision)
+            second=controller.helper_bundle(revision)
+        self.assertEqual(first,second)
+        with zipfile.ZipFile(io.BytesIO(first[0])) as archive:
+            self.assertEqual([item.filename for item in archive.infolist()],['b.py','a.py'])
+            self.assertTrue(all(item.date_time==(1980,1,1,0,0,0) for item in archive.infolist()))
 
     def test_poll_reconnects_after_transport_loss_then_accepts_bound_success(self):
         running=self.status('running',process=self.process())
