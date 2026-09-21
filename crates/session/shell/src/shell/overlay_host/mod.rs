@@ -2655,7 +2655,10 @@ impl ShellOverlayHost {
         if flags.collaborators {
             order.push(AccessibleOverlay::Collaborators);
         }
-        if flags.room_activity {
+        if self.chrome.as_ref().is_some_and(|chrome| {
+            crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
+                .is_some()
+        }) {
             order.push(AccessibleOverlay::RoomActivity);
         }
         if flags.quick_settings
@@ -5446,10 +5449,7 @@ impl ShellOverlayHost {
                 let row: &mut GroupRow = unsafe { &mut *ptr };
                 // A group focused the same frame it appeared has no rect yet
                 // (no layout pass); leave the memo and retry once it does.
-                // A reordered group likewise retains its old non-zero rect
-                // until the structural rebuild; that geometry cannot prove
-                // the group is visible in its new position.
-                if !row.group_geometry_is_current() || !row.group_is_laid_out(group_id) {
+                if !row.group_is_laid_out(group_id) {
                     continue;
                 }
                 // Eased, not teleported — matches Niri's focus-column slide.
@@ -9547,14 +9547,19 @@ impl ShellOverlayHost {
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
-        if !(self.activity_window_rect().is_some()
-            && matches!(
-                event,
-                WindowEvent::CursorMoved { .. }
-                    | WindowEvent::MouseWheel { .. }
-                    | WindowEvent::MouseInput { .. }
-                    | WindowEvent::KeyboardInput { .. }
-            ))
+        let pointer_event = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput { .. }
+        );
+        let keyboard_event = matches!(event, WindowEvent::KeyboardInput { .. });
+        let focused = self.chrome.as_ref().is_some_and(|chrome| {
+            crate::shell::tab_binding::focused_workspace_activity_tab(&chrome.borrow().tree())
+                .is_some()
+        });
+        if !((pointer_event && self.activity_window_rect().is_some())
+            || (keyboard_event && focused))
         {
             return false;
         }
@@ -9562,10 +9567,12 @@ impl ShellOverlayHost {
         let pointer_inside = self.last_cursor.is_some_and(|p| sheet.contains(p));
         let is_key = matches!(event, WindowEvent::KeyboardInput { .. });
         // Escape belongs to the dismissal ladder below, except while a
-        // name field is up — there it abandons the field instead, or
-        // closing the sheet would throw away what was typed.
+        // name field or typeahead is active — there it abandons the field
+        // instead. The tiled window itself is closed through window chrome.
         let naming = self.room_activity.wants_keyboard();
+        let filtering = !self.room_activity.timeline().author_query().is_empty();
         let is_escape = !naming
+            && !filtering
             && matches!(
                 event,
                 WindowEvent::KeyboardInput {
@@ -26363,6 +26370,22 @@ mod tests {
         build_harness_with_host(host, chrome)
     }
 
+    fn build_activity_harness() -> Harness {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let workspace = tree.active.raw();
+        let chrome = ChromeState::new(tree);
+        chrome.borrow_mut().open_room_activity(None);
+        let content = Box::new(StubContent::new());
+        let mut host = ShellOverlayHost::new(content)
+            .with_chrome(chrome.clone())
+            .with_content_workspace(workspace);
+        assert!(
+            host.tick_workspace_content_for_tests(),
+            "the fixture installs the production retained workspace tree"
+        );
+        build_harness_with_host(host, chrome)
+    }
+
     fn build_harness_with_host(
         mut host: ShellOverlayHost,
         chrome: crate::shell::chrome_state::Chrome,
@@ -26462,13 +26485,12 @@ mod tests {
 
     #[test]
     fn accessibility_overlay_paths_share_the_published_coexistence_order() {
-        let mut h = build_harness();
+        let mut h = build_activity_harness();
         h.host
             .workspace_settings_overlay
             .open_remove_member_sheet("peer".to_string());
         {
             let mut chrome = h.chrome.borrow_mut();
-            chrome.overlays.room_activity = true;
             chrome.overlays.quick_settings = true;
             chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
         }
@@ -26547,7 +26569,7 @@ mod tests {
 
     #[test]
     fn accessibility_focus_routes_through_shifted_overlay_indices() {
-        let mut h = build_harness();
+        let mut h = build_activity_harness();
         h.host
             .workspace_settings_overlay
             .open_remove_member_sheet("peer".to_string());
@@ -26559,7 +26581,6 @@ mod tests {
             }
             chrome.overlays.ws_settings = true;
             chrome.ws_settings_tab = crate::shell::workspace_settings::WsTab::Members;
-            chrome.overlays.room_activity = true;
             chrome.overlays.quick_settings = true;
             chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
         }
@@ -27343,8 +27364,7 @@ mod tests {
     /// a row's `[Revert]`. The generic absorb gate would otherwise eat it.
     #[test]
     fn pointer_over_the_sheet_reaches_the_timeline() {
-        let mut h = build_harness();
-        h.chrome.borrow_mut().overlays.room_activity = true;
+        let mut h = build_activity_harness();
         h.host
             .room_activity_mut()
             .set_view(crate::shell::room_activity::ActivityView::Explore);
@@ -27390,9 +27410,11 @@ mod tests {
         let handled = pump(&mut h, &left_button_pressed(), mods);
         assert!(handled);
         assert!(
-            h.chrome.borrow().overlays.room_activity,
-            "the row opened the sheet"
+            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
+                .is_some(),
+            "the row opened the tiled activity window"
         );
+        assert!(!h.chrome.borrow().overlays.room_activity);
         assert!(
             !h.chrome.borrow().overlays.collaborators,
             "the dropdown closed behind it rather than sitting on top"
@@ -27619,12 +27641,11 @@ mod tests {
         );
     }
 
-    /// Typing narrows by contributor while the sheet has the keyboard, but
-    /// Escape still belongs to the dismissal ladder.
+    /// Typing narrows by contributor while the activity window is focused;
+    /// Escape clears that typeahead without destroying the window.
     #[test]
     fn typing_filters_by_contributor_without_stealing_escape() {
-        let mut h = build_harness();
-        h.chrome.borrow_mut().overlays.room_activity = true;
+        let mut h = build_activity_harness();
         h.host
             .room_activity_mut()
             .set_view(crate::shell::room_activity::ActivityView::Explore);
@@ -27649,9 +27670,11 @@ mod tests {
         let handled = pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods);
         assert!(handled);
         assert!(
-            !h.chrome.borrow().overlays.room_activity,
-            "Escape closed the sheet rather than being eaten by the typeahead"
+            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
+                .is_some(),
+            "Escape clears the typeahead without destroying an ordinary window"
         );
+        assert_eq!(h.host.room_activity().timeline().author_query(), "");
     }
 
     /// Opening the palette with a stale query must both focus the input
