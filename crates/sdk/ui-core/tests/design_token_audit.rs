@@ -344,7 +344,7 @@ fn app_and_shell_theme_escape_hatches_do_not_grow() {
 // Declared edges on chrome surfaces (HIG §9.5). `border_standard` is one fixed
 // colour per theme; stroked on a raised or overlay surface it is three shades
 // from its ground on the dark preset and vanishes. Chrome derives its edges
-// (`ui::surface::{edge_on, card, separator}`, `chrome::{panel_border,
+// (`tilo_ui::surface::{edge_on, card, separator}`, `chrome::{panel_border,
 // chrome_hairline, selection_tier}`) instead. Apps are not in this scope: §7
 // allows `border_standard` as a rule on `surfaces.base` in app content.
 
@@ -361,7 +361,7 @@ fn declared_border_patterns() -> Vec<(&'static str, Regex, &'static str)> {
         )
         .unwrap(),
         "declared border/ramp token on a chrome surface (HIG §9.5) — derive the edge with \
-         ui::surface::{edge_on, card, separator} or ui::chrome::{panel_border, \
+         tilo_ui::surface::{edge_on, card, separator} or tilo_ui::chrome::{panel_border, \
          chrome_hairline, selection_tier}",
     )]
 }
@@ -386,7 +386,7 @@ fn declared_border_pattern_matches_the_shapes_it_names() {
         "theme.border_focus",
         "Colors::hairline_on(ground, HAIRLINE_ALPHA)",
         "border_standard: p.border,",
-        "ui::surface::edge_on(fill)",
+        "tilo_ui::surface::edge_on(fill)",
         "let neutral = colors.text_dim;",
     ] {
         assert!(

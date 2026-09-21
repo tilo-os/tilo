@@ -180,7 +180,7 @@ fn directory_snapshot_pages_roots_and_resumes_byte_and_work_limits() {
 #[test]
 fn directory_snapshot_unchanged_publish_stable_but_mutation_and_max_evict() {
     let (mut app, calls) = declared_directory(1);
-    app.resource_generation.set(u64::MAX);
+    app.actions.resource_generation.set(u64::MAX);
     publish_declared_directory(&mut app);
     let revision = app.action_directory_revision();
     publish_declared_directory(&mut app);
@@ -312,7 +312,7 @@ fn directory_snapshot_permission_change_at_max_evicts_without_committing_pending
         pending,
         "discovery must not close the undo transaction"
     );
-    app.permission_generation.set(u64::MAX);
+    app.actions.permission_generation.set(u64::MAX);
     app.set_permission_ctx(PermissionContext::from_capabilities(
         collab_types::caps::Actor::person(None, "restricted"),
         Vec::new(),
@@ -518,7 +518,7 @@ fn directory_snapshot_provider_generation_expires_cached_projection() {
         )
         .unwrap();
     assert_ne!(app.action_directory_revision(), revision);
-    assert!(app.action_directory_snapshot.is_none());
+    assert!(app.actions.action_directory_snapshot.is_none());
 }
 
 #[test]
@@ -608,6 +608,7 @@ fn directory_snapshot_old_descriptor_never_bypasses_changed_confirmation_contrac
     assert_eq!(error, tilo_actions::DoorError::ConfirmationRequired);
 }
 
+#[cfg(unix)]
 fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
     let (mut app, calls) = declared_directory(1);
     app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
@@ -621,7 +622,7 @@ fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
         !app.pump_collab_presence(),
         "fixture must be idle after the join baseline"
     );
-    assert!(app.last_published_actions.is_some());
+    assert!(app.actions.last_published_actions.is_some());
     assert_eq!(
         app.action_directory_page(directory_query("", "", 8, 8192, 8))
             .rows
@@ -631,6 +632,7 @@ fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
     (app, calls)
 }
 
+#[cfg(unix)]
 #[test]
 fn directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query() {
     let (mut app, calls) = connected_declared_directory();
@@ -642,7 +644,7 @@ fn directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query() {
     // This production entrypoint has the same sync -> invalidate ordering as
     // RedrawRequested, without requiring a live winit Window.
     app.refresh_focus_order();
-    assert!(app.action_directory_snapshot.is_none());
+    assert!(app.actions.action_directory_snapshot.is_none());
     let pending = app.state.doc.pending_ops();
     assert!(pending > 0);
     assert!(
@@ -650,7 +652,7 @@ fn directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query() {
         "no inbound event may trigger publication for this regression"
     );
     assert!(
-        app.action_directory_snapshot.is_some(),
+        app.actions.action_directory_snapshot.is_some(),
         "idle must repair the snapshot evicted by sync"
     );
     let rows = app.action_directory_page(directory_query("", "declared:0", 8, 8192, 8));
@@ -680,6 +682,7 @@ fn directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query() {
     assert_eq!(app.action_directory_revision(), revision);
 }
 
+#[cfg(unix)]
 #[test]
 fn directory_lifecycle_presence_eviction_recovers_on_normal_idle_without_input() {
     let (mut app, calls) = connected_declared_directory();
@@ -689,7 +692,7 @@ fn directory_lifecycle_presence_eviction_recovers_on_normal_idle_without_input()
         y: 2.0,
     });
     assert!(
-        app.action_directory_snapshot.is_none(),
+        app.actions.action_directory_snapshot.is_none(),
         "presence retains canonical cache invalidation"
     );
     assert!(
@@ -697,7 +700,7 @@ fn directory_lifecycle_presence_eviction_recovers_on_normal_idle_without_input()
         "presence was already applied; this is an empty idle pump"
     );
     assert!(
-        app.action_directory_snapshot.is_some(),
+        app.actions.action_directory_snapshot.is_some(),
         "presence-only invalidation must not permanently remove discovery"
     );
     let root = app.action_directory_page(directory_query("", "", 8, 8192, 8));

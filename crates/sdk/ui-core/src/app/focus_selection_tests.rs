@@ -4,7 +4,8 @@ use crate::widget::{Column, EditableLabel, TextInput};
 use automerge::transaction::Transactable;
 
 fn target(app: &App, id: &str) -> NodeId {
-    app.node_map
+    app.layout
+        .node_map
         .keys()
         .copied()
         .find(|node| {
@@ -39,7 +40,7 @@ fn selection_adopts_focus_only_when_the_semantic_target_acquires_it() {
     // Plain TextInput moves its selection without implicitly acquiring focus.
     app.dispatch_a11y_action(accesskit::NodeId(u64::from(body) + 1), &selection);
     assert_eq!(app.focused_node, Some(title));
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, None).unwrap();
     let title = target(&app, "title");
     assert_eq!(app.focused_node, Some(title));
@@ -59,12 +60,12 @@ fn anonymous_native_focus_is_rediscovered_without_stale_node_or_state_transfer()
         Box::new(AnonymousFocusProbe::new("own selection")),
     );
     app.init_layout();
-    let old = app.root_node.unwrap();
+    let old = app.layout.root_node.unwrap();
     app.set_focused_node(Some(old));
-    app.structure_dirty = true;
-    app.layout_dirty = true;
+    app.layout.structure_dirty = true;
+    app.layout.layout_dirty = true;
     run_layout_pass(&mut app, old, 900, 650, 1.0, true, None).unwrap();
-    let current = app.root_node.unwrap();
+    let current = app.layout.root_node.unwrap();
     assert_ne!(old, current);
     assert_eq!(app.focused_node, Some(current));
     assert_eq!(
@@ -89,9 +90,9 @@ fn anonymous_native_rediscovery_refuses_disabled_or_unrelated_focused_widgets() 
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
         app.focused_node = None;
-        app.structure_dirty = true;
-        app.layout_dirty = true;
-        let old = app.root_node.unwrap();
+        app.layout.structure_dirty = true;
+        app.layout.layout_dirty = true;
+        let old = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, old, 900, 650, 1.0, true, None).unwrap();
         assert!(app.focused_node.is_none());
     }

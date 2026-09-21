@@ -116,6 +116,24 @@ impl Widget for LocalEffectProbe {
         Ok(Some(tilo_actions::ActionOutput::default()))
     }
 
+    fn continuable(&self) -> Option<&dyn crate::widget::Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn crate::widget::Continuable> {
+        Some(self)
+    }
+}
+
+impl crate::widget::Continuable for LocalEffectProbe {
+    fn continuation_metadata(
+        &self,
+        _: &automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata> {
+        None
+    }
+
     fn restore_continuation_metadata(
         &mut self,
         _: &crate::collaboration::ContinuationMetadata,
@@ -251,9 +269,9 @@ fn local_app_ignores_ambient_services_and_runs_effects() {
 
     let scratch = tempfile::tempdir().unwrap();
     let services = [
-        "QOS_SVC_IDENTITY_FD",
-        "QOS_SVC_COLLAB_FD",
-        "QOS_SVC_SHELL-UI_FD",
+        "TILO_SVC_IDENTITY_FD",
+        "TILO_SVC_COLLAB_FD",
+        "TILO_SVC_SHELL-UI_FD",
     ];
     let pairs = services.map(|_| UnixStream::pair().unwrap());
     // A regression must fail promptly, without touching a real identity store
@@ -282,13 +300,13 @@ fn local_app_ignores_ambient_services_and_runs_effects() {
         .env("XDG_CACHE_HOME", scratch.path().join("cache"))
         .env("XDG_STATE_HOME", scratch.path().join("state"))
         .env("QOS_IDENTITY_ROOT", scratch.path().join("identity"))
-        .env("QOS_PACKAGE_ID", "test.ambient-browser")
-        .env("QOS_WORKSPACE_ID", "1c9f7a99-40cb-4a63-a562-3958d1810e65")
-        .env("QOS_USER_ID", "ambient-workspace-user")
-        .env("QOS_CONTINUITY_RESUME_HEX", "010203")
-        .env("QOS_CONTINUITY_RESUME_SCHEMA", "42")
-        .env("QOS_A11Y_HIGH_CONTRAST", "1")
-        .env("QOS_A11Y_TEXT_SCALE", "1.25");
+        .env("TILO_PACKAGE_ID", "test.ambient-browser")
+        .env("TILO_WORKSPACE_ID", "1c9f7a99-40cb-4a63-a562-3958d1810e65")
+        .env("TILO_USER_ID", "ambient-workspace-user")
+        .env("TILO_CONTINUITY_RESUME_HEX", "010203")
+        .env("TILO_CONTINUITY_RESUME_SCHEMA", "42")
+        .env("TILO_A11Y_HIGH_CONTRAST", "1")
+        .env("TILO_A11Y_TEXT_SCALE", "1.25");
     for (service, fd) in services.into_iter().zip(inherited) {
         command.env(service, fd.to_string());
     }

@@ -138,7 +138,8 @@ fn commit_workspace_name_applies_buffer_to_active_workspace() {
 
 #[test]
 fn guest_cannot_commit_a_workspace_rename() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tree.adopt_ownerless_workspaces(&"another-room-owner".into());
     let chrome = ChromeState::new(tree);
     let original = chrome
         .borrow()
@@ -150,7 +151,6 @@ fn guest_cannot_commit_a_workspace_rename() {
 
     {
         let mut st = chrome.borrow_mut();
-        st.local_user_id = "guest-without-workspace-authority".into();
         st.editing_workspace_name = Some("Misleading local rename".into());
         assert!(!st.can_rename_active_workspace());
     }

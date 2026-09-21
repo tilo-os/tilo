@@ -140,7 +140,7 @@ fn read_private_key(path: &Path) -> Result<Zeroizing<String>, String> {
 }
 
 fn usage() -> String {
-    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto generate-tls-fixture IP CA_CERT SERVER_KEY SERVER_CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
+    "usage:\n  tilo-crypto hash-password < password\n  tilo-crypto certificate-subject CERT\n  tilo-crypto certificate-sha256 CERT\n  tilo-crypto certificate-der CERT OUTPUT\n  tilo-crypto certificate-esl CERT OUTPUT\n  tilo-crypto firmware-read-esl EFIVARS VARIABLE OUTPUT\n  tilo-crypto firmware-write-esl EFIVARS VARIABLE INPUT [SIGNING_KEY SIGNING_CERT]\n  tilo-crypto generate-ed25519-key PRIVATE_KEY PUBLIC_HEX\n  tilo-crypto generate-secure-boot-cert COMMON_NAME KEY CERT\n  tilo-crypto generate-tpm-authority-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto generate-tls-fixture IP CA_CERT SERVER_KEY SERVER_CERT\n  tilo-crypto key-matches-certificate PRIVATE_KEY CERT\n  tilo-crypto p256-public-key-sha256 PUBLIC_KEY\n  tilo-crypto rsa-public-key PRIVATE_KEY PUBLIC_KEY\n  tilo-crypto rsa-public-key-info PUBLIC_KEY\n  tilo-crypto sign-rsa-sha256 KEY INPUT SIGNATURE\n  tilo-crypto verify-rsa-sha256 PUBLIC_KEY INPUT SIGNATURE\n  tilo-crypto sign-module KEY CERT INPUT OUTPUT\n  tilo-crypto verify-module CERT INPUT\n  tilo-crypto sign-efi KEY CERT INPUT OUTPUT\n  tilo-crypto verify-efi CERT INPUT\n  tilo-crypto verify-efi-signature-list CERT ESL\n  tilo-crypto verify-exclusive-efi-signature-list CERT ESL\n  tilo-crypto efi-signature-count INPUT\n  tilo-crypto durable-unlink PATH".into()
 }
 
 fn generate_ed25519_key(private_path: &Path, public_path: &Path) -> Result<(), String> {
@@ -436,6 +436,22 @@ fn generate(common_name: &str, key_path: &Path, cert_path: &Path) -> Result<(), 
     Ok(())
 }
 
+fn generate_tpm_authority_key(private_path: &Path, public_path: &Path) -> Result<(), String> {
+    if private_path == public_path {
+        return Err("private and public key paths must differ".into());
+    }
+    if private_path.exists() || public_path.exists() {
+        return Err("refusing to replace an existing TPM authority key".into());
+    }
+    let generated = tilo_crypto::generate_tpm_authority_key()?;
+    write_new(private_path, generated.private_key_pem().as_bytes(), 0o600)?;
+    if let Err(error) = write_new(public_path, generated.public_key_pem().as_bytes(), 0o644) {
+        let _ = fs::remove_file(private_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn sign_efi_command(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), String> {
     let key = args.next().map(PathBuf::from).ok_or_else(usage)?;
     let certificate = args.next().map(PathBuf::from).ok_or_else(usage)?;
@@ -619,6 +635,17 @@ fn generate_secure_boot_cert_command(
     )
 }
 
+fn generate_tpm_authority_key_command(
+    mut args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    let private = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    let public = args.next().map(PathBuf::from).ok_or_else(usage)?;
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    generate_tpm_authority_key(&private, &public)
+}
+
 fn generate_tls_fixture_command(
     mut args: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<(), String> {
@@ -766,6 +793,7 @@ fn run() -> Result<(), String> {
         Some("firmware-write-esl") => firmware_write_esl_command(args),
         Some("generate-ed25519-key") => generate_ed25519_key_command(args),
         Some("generate-secure-boot-cert") => generate_secure_boot_cert_command(args),
+        Some("generate-tpm-authority-key") => generate_tpm_authority_key_command(args),
         Some("generate-tls-fixture") => generate_tls_fixture_command(args),
         Some("p256-public-key-sha256") => p256_public_key_sha256_command(args),
         Some("sign-rsa-sha256") => sign_rsa_sha256_command(args),
@@ -831,6 +859,26 @@ mod tests {
     }
 
     #[test]
+    fn tpm_authority_generation_is_exclusive_and_private() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let private = temp.path().join("authority.key");
+        let public = temp.path().join("authority.pub");
+        generate_tpm_authority_key(&private, &public).expect("generate TPM authority");
+        let public_pem = fs::read_to_string(&public).expect("read public key");
+        assert_eq!(
+            tilo_crypto::rsa_public_key_info(&public_pem)
+                .expect("inspect public key")
+                .0,
+            2048
+        );
+        assert_eq!(
+            fs::metadata(&private).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(generate_tpm_authority_key(&private, &public).is_err());
+    }
+
+    #[test]
     fn durable_rename_is_same_directory_and_rejects_symlink_sources() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let other = temp.path().join("other");
@@ -893,7 +941,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // One lifecycle test keeps all efivarfs mutation assertions together.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one lifecycle test keeps all efivarfs mutation assertions together"
+    )]
     fn firmware_esl_round_trip_uses_attributes_and_refuses_symlinks() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let input = temp.path().join("db.esl");
