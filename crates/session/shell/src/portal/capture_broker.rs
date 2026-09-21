@@ -591,11 +591,6 @@ impl CaptureBroker {
             .count()
     }
 
-    #[cfg(test)]
-    pub(crate) fn pending_authorization_count(&self) -> usize {
-        self.authorizations.len()
-    }
-
     /// Revoke only the authorizations and leases for one exact verified
     /// realtime session, leaving other calls by the same app untouched.
     pub fn session_ended(&mut self, binding: &CaptureSessionBinding) {

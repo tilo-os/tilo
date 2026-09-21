@@ -2,6 +2,8 @@
 pub use qos_action_broker::collab_broker_capnp::*;
 
 mod local_consent;
+#[cfg(all(test, unix))]
+mod local_consent_tests;
 mod realtime_host;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use local_consent::LocalSessionLiveness;

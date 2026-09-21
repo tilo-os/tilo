@@ -3,7 +3,6 @@ use super::*;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const NATIVE_CONSENT_CHILD_TEST: &str = "TILO_NATIVE_CONSENT_CHILD_TEST";
@@ -96,24 +95,10 @@ pub(crate) fn wait_for_local_session_worker_teardown(lifecycle: &LocalSessionLif
     );
 }
 
-fn new_broker_state(
-    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
-) -> (Arc<FanoutState>, Arc<CapnpBrokerState>) {
-    let fanout = Arc::new(FanoutState::new());
-    let (state, _bridge_rx) = CapnpBrokerState::new(
-        &fanout,
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
-        None,
-        trusted_devices,
-    );
-    (fanout, state)
-}
-
 #[test]
 fn native_consent_authority_starts_inactive_and_publication_is_idempotent() {
-    let (_fanout, state) = new_broker_state(None);
-    let lifecycle = state.local_session_lifecycle();
+    let authority = LocalSessionAuthority::new();
+    let lifecycle = authority.lifecycle();
     let initial = lifecycle.snapshot().expect("broker owns authority");
     assert_eq!(initial.liveness, LocalSessionLiveness::Inactive);
     assert_eq!(initial.generation, 0);
@@ -127,7 +112,7 @@ fn native_consent_authority_starts_inactive_and_publication_is_idempotent() {
     assert_eq!(active.locked, Some(false));
     assert_eq!(active.onboarding_active, Some(false));
     assert_eq!(
-        state.active_local_session().expect("live session").epoch,
+        authority.active_session().expect("live session").epoch,
         active.epoch
     );
 
@@ -219,8 +204,8 @@ fn native_consent_harness_devices_do_not_activate_authority() {
 }
 
 #[test]
-fn native_consent_broker_drop_closes_authority_retained_by_action_broker() {
-    const TEST: &str = "shell::collab_broker_capnp::local_consent_tests::native_consent_broker_drop_closes_authority_retained_by_action_broker";
+fn native_consent_broker_drop_releases_authority_while_action_broker_is_retained() {
+    const TEST: &str = "shell::collab_broker_capnp::local_consent_tests::native_consent_broker_drop_releases_authority_while_action_broker_is_retained";
     run_isolated_native_consent_test(TEST, || {
         let root = native_consent_fixture_root();
         let broker = crate::shell::collab_broker::spawn_native_harness(
@@ -238,13 +223,9 @@ fn native_consent_broker_drop_closes_authority_retained_by_action_broker() {
         );
 
         drop(broker);
-        assert_eq!(
-            lifecycle
-                .snapshot()
-                .expect("retained closed state")
-                .liveness,
-            LocalSessionLiveness::Closed,
-            "dropping the socket/thread owner must close authority retained by RPC state"
+        assert!(
+            lifecycle.snapshot().is_none(),
+            "the retained shared action broker must not keep shell consent authority alive"
         );
         drop(retained);
         wait_for_local_session_worker_teardown(&lifecycle);

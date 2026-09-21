@@ -28,7 +28,7 @@ pub(crate) struct LocalSessionLifecycle {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) struct LiveLocalSession {
     pub(super) epoch: Uuid,
     pub(super) generation: u64,
@@ -63,7 +63,7 @@ impl LocalSessionAuthority {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn active_session(&self) -> Option<LiveLocalSession> {
         let state = self.state.lock().ok()?;
         (state.liveness == LocalSessionLiveness::Active).then_some(LiveLocalSession {
