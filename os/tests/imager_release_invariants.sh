@@ -17,6 +17,9 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/build-release-catalog.sh" \
   "$repo/apps/imager/packaging/verify-linux-release.sh" \
   "$repo/apps/imager/packaging/sign-linux-release-file.sh" \
+  "$repo/apps/imager/packaging/assert-github-installation-token.sh" \
+  "$repo/apps/imager/packaging/revoke-github-installation-token.sh" \
+  "$repo/apps/imager/packaging/publish-github-release.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
@@ -28,7 +31,7 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   || bad 'an imager release script does not parse'
 
 bash "$repo/os/tests/forgejo_release_publication.sh" \
-  || bad 'Forgejo release publication is not idempotent and immutable'
+  || bad 'GitHub release publication is not target-scoped, idempotent, and immutable'
 bash "$repo/os/tests/public_release_origin.sh" \
   || bad 'installer catalog is not bound to the configured public release origin'
 bash "$repo/os/tests/winget_publication_idempotency.sh" \
@@ -138,10 +141,10 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
   && ok 'release brokers, signer paths, publisher identities, and cleanup fail closed' \
   || bad 'release credential outputs or signing identities are insufficiently constrained'
 
-publisher="$repo/apps/imager/packaging/publish-forgejo-release.sh"
-if grep -Fq "release_repository=\"\${TILO_RELEASE_REPOSITORY:-qos/releases}\"" "$publisher" \
+publisher="$repo/apps/imager/packaging/publish-github-release.sh"
+if grep -Fq "release_repository=\"\${TILO_RELEASE_REPOSITORY:-tilo-os/releases}\"" "$publisher" \
    && grep -Fq 'release repository must be public' "$publisher" \
-   && grep -Fq 'release repository must be separate from the source repository' "$publisher" \
+   && grep -Fq 'assert-github-installation-token.sh' "$publisher" \
    && grep -Fq 'release "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
    && grep -Fq 'IMAGER_PUBLIC_RELEASE_REPOSITORY' "$workflow" \
    && sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq 'persist-credentials: false' \
@@ -222,7 +225,7 @@ grep -Fq 'AppImage.asc' "$workflow" \
   && grep -Fq 'IMAGER_LINUX_SIGNING_FINGERPRINT' "$workflow" \
   && grep -Fq 'verify-linux-release.sh release-assets' "$workflow" \
   && grep -Fq 'verify-linux-release.sh" "$asset_root"' \
-    "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
+    "$repo/apps/imager/packaging/publish-github-release.sh" \
   && grep -Fq 'tilo-imager-linux-*.flatpak.asc' "$workflow" \
   && ok 'Linux signatures, release key, and protected fingerprint are a fail-closed publication gate' \
   || bad 'Linux release trust bundle is incomplete or bypassable'
@@ -339,8 +342,8 @@ grep -Fq 'tilo-imager-linux-aarch64.tar.gz' \
   && ok 'Homebrew selects native Linux and macOS artifacts by architecture' \
   || bad 'Homebrew does not cover the requested Linux/macOS architectures'
 
-grep -Fq 'qos/homebrew-tilo' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
-  && [ "$(grep -Fc 'brew tap tilo/tilo https://code.sandbox.example/qos/homebrew-tilo.git' "$workflow")" -eq 2 ] \
+grep -Fq 'tilo-os/homebrew-tilo' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
+  && [ "$(grep -Fc 'brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git' "$workflow")" -eq 2 ] \
   && ! grep -Fq 'code.sandbox.example/tilo/homebrew-tilo.git' "$workflow" \
   && grep -Fq 'microsoft/winget-pkgs/pulls' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq -- '--retry 6 --retry-all-errors --retry-max-time 180' "$repo/apps/imager/packaging/publish-winget.sh" \

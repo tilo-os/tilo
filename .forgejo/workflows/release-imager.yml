@@ -28,9 +28,12 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/imager-v') }}
 
 env:
-  # Public binaries live outside the private source repository. Override only
-  # to another pre-created public repository governed by the same broker.
-  TILO_RELEASE_REPOSITORY: ${{ vars.IMAGER_PUBLIC_RELEASE_REPOSITORY || 'qos/releases' }}
+  # Public binaries live on GitHub, outside the private Forgejo source repository.
+  # Override only to pre-created public repositories governed by the same App.
+  TILO_RELEASE_SERVER: https://github.com
+  TILO_RELEASE_API_URL: https://api.github.com
+  TILO_RELEASE_REPOSITORY: ${{ vars.IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases' }}
+  TILO_HOMEBREW_TAP_REPOSITORY: ${{ vars.IMAGER_HOMEBREW_TAP_REPOSITORY || 'tilo-os/homebrew-tilo' }}
 
 jobs:
   plan:
@@ -505,7 +508,7 @@ jobs:
             "TILO_REQUIRE_NATIVE_PACKAGES=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             "TILO_VERSION=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             if ($env:TILO_RELEASE_REPOSITORY -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw "release repository must be OWNER/REPOSITORY" }
-            "TILO_RELEASE_BASE_URL=$($env:GITHUB_SERVER_URL.TrimEnd('/'))/$env:TILO_RELEASE_REPOSITORY/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "TILO_RELEASE_BASE_URL=$($env:TILO_RELEASE_SERVER.TrimEnd('/'))/$env:TILO_RELEASE_REPOSITORY/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
       - shell: powershell
         run: cargo test -p imager --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
@@ -737,7 +740,7 @@ jobs:
         run: |
           python3 apps/imager/packaging/generate-winget.py release-assets \
             --version "${GITHUB_REF_NAME#imager-v}" \
-            --base-url "${GITHUB_SERVER_URL%/}/${TILO_RELEASE_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+            --base-url "${TILO_RELEASE_SERVER%/}/${TILO_RELEASE_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
       - name: Require the complete native release matrix
         id: enabled-assets
         shell: bash
@@ -797,8 +800,14 @@ jobs:
           test ! -e "$token_file"
           apps/imager/packaging/acquire-release-token.sh \
             release "$CREDENTIAL_BROKER" "$token_file"
-          FORGEJO_TOKEN="$(cat "$token_file")" \
-            apps/imager/packaging/publish-forgejo-release.sh release-assets
+          release_token="$(cat "$token_file")"
+          revoke() {
+            GITHUB_INSTALLATION_TOKEN="$release_token" \
+              apps/imager/packaging/revoke-github-installation-token.sh || true
+          }
+          trap 'revoke; rm -f "$token_file"' EXIT
+          GITHUB_RELEASE_TOKEN="$release_token" \
+            apps/imager/packaging/publish-github-release.sh release-assets
 
   homebrew:
     timeout-minutes: 60
@@ -833,7 +842,13 @@ jobs:
             printf 'configure the OIDC credential broker for Homebrew publication\n' >&2
             exit 1
           fi
-          HOMEBREW_TAP_TOKEN="$(cat "$token_file")" \
+          tap_token="$(cat "$token_file")"
+          revoke() {
+            GITHUB_INSTALLATION_TOKEN="$tap_token" \
+              apps/imager/packaging/revoke-github-installation-token.sh || true
+          }
+          trap 'revoke; rm -f "$token_file"' EXIT
+          HOMEBREW_TAP_TOKEN="$tap_token" \
             apps/imager/packaging/publish-homebrew-tap.sh release-assets
 
   homebrew-install-test:
@@ -856,7 +871,7 @@ jobs:
           set -euo pipefail
           command -v brew >/dev/null
           export HOMEBREW_NO_AUTO_UPDATE=1
-          brew tap tilo/tilo https://code.sandbox.example/qos/homebrew-tilo.git
+          brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git
           if [ "$PACKAGE_KIND" = formula ]; then
             brew install tilo/tilo/tilo-imager
             brew test tilo/tilo/tilo-imager
@@ -887,7 +902,7 @@ jobs:
           set -euo pipefail
           command -v brew >/dev/null
           export HOMEBREW_NO_AUTO_UPDATE=1
-          brew tap tilo/tilo https://code.sandbox.example/qos/homebrew-tilo.git
+          brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git
           if [ "$PACKAGE_KIND" = formula ]; then
             brew install tilo/tilo/tilo-imager
             brew test tilo/tilo/tilo-imager
