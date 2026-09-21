@@ -230,7 +230,13 @@ pub fn compact_control_w(width: f32, control: El) -> El {
 /// rather than the control stretching full-width and pushing the label above
 /// it.
 pub fn choice_row(label: &str, control: El) -> El {
-    setting_row(label, compact_control(control))
+    Box::new(
+        Row::new()
+            .with_gap(spacing().s1)
+            .push(Box::new(Text::new(label).with_scaled_size(13.0)))
+            .push(Box::new(Spacer::new()))
+            .push(compact_control(control)),
+    )
 }
 
 /// [`choice_row`] with a helper line under the label.
@@ -269,10 +275,10 @@ pub fn choice_row_stacked(label: &str, control: El) -> El {
 /// are asked to.
 pub fn choice_rows_stack_below() -> f32 {
     /// Room reserved for the label beside a compact chooser: the longest
-    /// label the Formats card uses ("First day of week", ~92 px at 13 px)
-    /// with a little air, so a card stacks only when the chooser genuinely no
+    /// label the Formats card uses after the row's own text measurement, so a
+    /// card stacks only when the chooser genuinely no
     /// longer fits beside any of its labels — a 368 px card (a 440 px window)
-    /// stays inline, a 318 px phone card stacks.
+    /// stays inline, while the smaller phone card stacks.
     const CHOICE_LABEL_RESERVE: f32 = 100.0;
     let sp = spacing();
     COMPACT_CONTROL_W + sp.s3 + CHOICE_LABEL_RESERVE + 2.0 * sp.s3
