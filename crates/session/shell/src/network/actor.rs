@@ -4048,6 +4048,7 @@ mod tests {
                 replication: ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
                 shell_authority: None,
+                checkpoint_prefix_recovery: Default::default(),
             }],
             ..RelayConfig::default()
         };
@@ -4095,6 +4096,7 @@ mod tests {
                     replication: ReplicationIntent::FullWorkspace,
                     admitted_users: Vec::new(),
                     shell_authority: None,
+                    checkpoint_prefix_recovery: Default::default(),
                 }],
                 ..RelayConfig::default()
             },

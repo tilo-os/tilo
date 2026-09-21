@@ -171,7 +171,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert!(fixture.state.certificate_authority.set(authority.clone()).is_ok());
         assert!(invoke(&request).validate(), "empty canonical package-primary record is valid");
         let (relay_key, relay_cert) = device(55, true);
-        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), workspaces: vec![WorkspaceBinding { id: ws, pin: true, replication: tilo_relay::ReplicationIntent::FullWorkspace, admitted_users: vec![], shell_authority: None }], ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
+        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), workspaces: vec![WorkspaceBinding { id: ws, pin: true, replication: tilo_relay::ReplicationIntent::FullWorkspace, admitted_users: vec![], shell_authority: None, checkpoint_prefix_recovery: Default::default() }], ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
         relay.set_workspace_membership(ws, true, vec![device(52, false).1.device_public_key, device(53, false).1.device_public_key, device(54, false).1.device_public_key], relay_root.path().into()).await.unwrap();
         let caller = client(&relay, 52, room).await;
         let other = client(&relay, 53, room).await;
@@ -477,6 +477,7 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
                         replication: tilo_relay::ReplicationIntent::FullWorkspace,
                         admitted_users: vec![],
                         shell_authority: None,
+                        checkpoint_prefix_recovery: Default::default(),
                     }],
                     ..Default::default()
                 },
