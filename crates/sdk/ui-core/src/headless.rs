@@ -1366,6 +1366,7 @@ impl FrameHarness {
             p.record_since(crate::profiling::Pass::Sync, t_sync);
         }
 
+        self.prepare_history_frame();
         self.invalidate_unsupported_history_owner();
         let was_history = self
             .history
@@ -1424,6 +1425,11 @@ impl FrameHarness {
                     self.node_map.clear();
                     return Ok((None, true));
                 }
+                let presentation_node = if self.history_chrome_enabled {
+                    self.build_history_frame()
+                } else {
+                    self.child_node
+                };
                 // SAFETY: exclusive runner owns this exact fresh topology.
                 unsafe {
                     self.bindings.rebuild_with_retained_root(
@@ -1469,7 +1475,7 @@ impl FrameHarness {
                         },
                         ..Default::default()
                     },
-                    &[self.child_node],
+                    &[presentation_node],
                 );
             }
             let (w, h) = self.viewport;
@@ -1491,7 +1497,9 @@ impl FrameHarness {
                 profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
             }
             let t_apply = self.profiler.as_ref().map(|_| std::time::Instant::now());
-            if let Some(history) = &mut self.history {
+            if self.history_chrome_enabled {
+                self.apply_history_frame();
+            } else if let Some(history) = &mut self.history {
                 history.apply_composition(
                     self.root.as_mut(),
                     &self.taffy,
@@ -1572,6 +1580,7 @@ impl FrameHarness {
             .history
             .as_ref()
             .is_none_or(|history| history.live_visible())
+            && self.history_layout.is_none_or(|layout| layout.app_visible)
         {
             crate::widget::native_view_frame_start(self.root.as_mut());
             self.root.draw_with_presence(
@@ -1582,6 +1591,33 @@ impl FrameHarness {
                 &self.presence,
                 &self.permissions,
             );
+            if self.history_chrome_enabled {
+                self.root.draw_overlay(
+                    &mut self.scene,
+                    Affine::IDENTITY,
+                    &mut self.text,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
+        }
+        if self.history_chrome_enabled {
+            let context = crate::standalone_history::HistoryReadContext {
+                document: &self.state.doc,
+                active_record: self.records.as_ref().and_then(|records| records.active()),
+                document_identity: self.state.document_identity(),
+                permissions: &self.permissions,
+            };
+            self.document_history
+                .draw(
+                    &context,
+                    &mut self.scene,
+                    Affine::IDENTITY,
+                    &mut self.text,
+                    &self.theme,
+                    &self.presence,
+                )
+                .map_err(|_| crate::widget::WidgetLayoutError::CompositionDidNotSettle)?;
         }
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
@@ -1617,6 +1653,9 @@ impl FrameHarness {
             self.focused = unsafe {
                 CompositionFocus::current(&self.node_map, &self.bindings, Some(&allowed))
             };
+        }
+        if self.history_chrome_enabled {
+            self.restore_history_focus();
         }
 
         // One `relayout` is one rendered frame; commit it, folding in any

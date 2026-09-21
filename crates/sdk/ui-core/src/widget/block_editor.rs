@@ -1876,7 +1876,7 @@ impl BlockEditor {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
             None,
             &vello::kurbo::RoundedRect::from_rect(controls, 8.0 * self.text_scale),
         );
@@ -5698,7 +5698,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(scale),
                 ctx.transform,
-                ctx.theme.tokens.colors.border_standard,
+                crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.raised),
                 None,
                 &shape,
             );
@@ -5771,7 +5771,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &stroke,
             ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
+            crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &vello::kurbo::Line::new((x, table_rect.y0), (x, table_rect.y1)),
         );
@@ -5786,7 +5786,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &stroke,
             ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
+            crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &vello::kurbo::Line::new((table_rect.x0, y), (table_rect.x1, y)),
         );
@@ -5847,7 +5847,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
+            crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &shape,
         );
@@ -5856,7 +5856,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     ctx.scene.stroke(
         &vello::kurbo::Stroke::new(scale),
         ctx.transform,
-        ctx.theme.tokens.colors.border_standard,
+        crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
         None,
         &shape,
     );
@@ -6084,7 +6084,7 @@ fn draw_transclusion_card(
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        tokens.colors.border_standard,
+        crate::surface::edge_on(tokens.colors.surfaces.raised),
         None,
         &card,
     );
@@ -6881,8 +6881,6 @@ impl Widget for BlockEditor {
         presence: &PresenceCtx,
     ) {
         self.refresh_image_dimensions();
-        self.refresh_live_link_hits(theme);
-
         let single_block = self.blocks.len() == 1;
         for block in &mut self.blocks {
             let hint = if single_block && matches!(block.kind, BlockKind::Paragraph) {
@@ -7184,7 +7182,7 @@ impl Widget for BlockEditor {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 ghost_transform,
-                theme.tokens.colors.border_standard,
+                crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
                 None,
                 &card,
             );
@@ -7326,6 +7324,10 @@ impl Widget for BlockEditor {
             self.draw_block_drop_indicator(scene, transform, theme.tokens.colors.accent[5], drag);
         }
         self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
+        // Link hit geometry depends on the shaped positions produced by this
+        // frame's block draw. Refreshing it before that draw made first-frame
+        // style, scale, and BiDi changes unclickable.
+        self.refresh_live_link_hits(theme);
     }
 
     fn handle_event(
