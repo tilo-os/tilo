@@ -1,3 +1,8 @@
+#![allow(
+    clippy::single_match_else,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Renders the history surfaces over real documents, one PNG per case.
 //!
 //! ```bash

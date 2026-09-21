@@ -1,3 +1,8 @@
+#![allow(
+    clippy::exit,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! The component gallery mounted in a [`FrameHarness`], rendered in **dark
 //! and light** at 1× on the theme's own background, with the harness's
 //! inspection snapshot beside each PNG — the pair the 1× review batch reads:

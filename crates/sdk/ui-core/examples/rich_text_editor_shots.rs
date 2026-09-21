@@ -1,3 +1,8 @@
+#![allow(
+    clippy::exit,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Offscreen renders of the shared `RichTextEditor` in light + dark, so the
 //! WYSIWYG rich-text widget can be self-inspected without opening a window.
 //! Drives the real five-pass pipeline (`sync` → `build_layout` → `compute_layout` →

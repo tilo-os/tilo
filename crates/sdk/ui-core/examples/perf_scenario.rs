@@ -1,3 +1,9 @@
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Headless performance-scenario runner — the CLI face of
 //! [`tilo_ui::profiling`].
 //!

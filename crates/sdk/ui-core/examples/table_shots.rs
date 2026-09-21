@@ -1,3 +1,8 @@
+#![allow(
+    clippy::exit,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Offscreen shots for the editable [`tilo_ui::widget::table::Table`].
 //!
 //! Renders four frames through the widget's real five-pass pipeline and its
