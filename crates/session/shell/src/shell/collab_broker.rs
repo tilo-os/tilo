@@ -241,7 +241,7 @@ pub fn spawn_native(
         peer_sync.as_ref(),
         &publisher,
         Some(membership),
-        None,
+        CertificateProvisioning::Production,
         None,
     )
 }
@@ -250,6 +250,7 @@ pub fn spawn_native(
 /// Intended for integration harnesses that do not have the desktop identity
 /// registry on disk; certificate, proof, membership, role, and op validation
 /// remain identical to production.
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn spawn_native_harness(
     capnp_socket_path: PathBuf,
@@ -262,7 +263,7 @@ pub fn spawn_native_harness(
         None,
         &publisher,
         Some(membership),
-        Some(Arc::new(trusted_devices)),
+        CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices)),
         None,
     )
 }
@@ -287,9 +288,28 @@ pub fn spawn_native_peer(
         None,
         &publisher,
         Some(membership),
-        None,
+        CertificateProvisioning::Production,
         Some(&config),
     )
+}
+
+/// Selects certificate provisioning at a host-owned construction boundary.
+/// The fixture variant is unavailable from ordinary production builds and is
+/// selected only by `spawn_native_harness`.
+enum CertificateProvisioning {
+    Production,
+    #[cfg(any(test, feature = "test-support"))]
+    HarnessDevices(Arc<Vec<[u8; 32]>>),
+}
+
+impl CertificateProvisioning {
+    fn uses_harness_devices(&self) -> bool {
+        match self {
+            Self::Production => false,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::HarnessDevices(_) => true,
+        }
+    }
 }
 
 /// Inbound queues + shared fanout state the drain thread polls each
@@ -607,7 +627,7 @@ fn spawn_inner(
     peer_sync: Option<&Arc<ShellNetwork>>,
     publisher: &Arc<PeerPublisher>,
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
-    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    certificate_provisioning: CertificateProvisioning,
     config: Option<&crate::shell::peer_actions::NativePeerBrokerConfig>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
@@ -691,7 +711,7 @@ fn spawn_inner(
     } else {
         qos_action_broker::services::HostServices::default()
     };
-    if trusted_devices.is_some() && config.is_none() {
+    if certificate_provisioning.uses_harness_devices() && config.is_none() {
         services.native_certificates = None;
     }
     let realtime_fabric = if config.is_none() {
@@ -707,27 +727,32 @@ fn spawn_inner(
             tree.clone(),
         )) as qos_action_broker::services::WorkspaceAuthorityHandle
     });
-    #[cfg(test)]
-    let inner = qos_action_broker::collab_broker::spawn_with_test_services(
-        capnp_socket_path,
-        authority,
-        publisher.clone(),
-        config,
-        services,
-        trusted_devices,
-        channels,
-        table,
-    )?;
-    #[cfg(not(test))]
-    let inner = qos_action_broker::collab_broker::spawn_with_services(
-        capnp_socket_path,
-        authority,
-        publisher.clone(),
-        config,
-        services,
-        channels,
-        table,
-    )?;
+    let inner = match certificate_provisioning {
+        CertificateProvisioning::Production => {
+            qos_action_broker::collab_broker::spawn_with_services(
+                capnp_socket_path,
+                authority,
+                publisher.clone(),
+                config,
+                services,
+                channels,
+                table,
+            )?
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        CertificateProvisioning::HarnessDevices(trusted_devices) => {
+            qos_action_broker::collab_broker::spawn_with_test_services(
+                capnp_socket_path,
+                authority,
+                publisher.clone(),
+                config,
+                services,
+                Some(trusted_devices),
+                channels,
+                table,
+            )?
+        }
+    };
     if let (Some(network), Some(tree), Some(broker)) =
         (peer_sync, membership, inner.app_action_broker())
     {
