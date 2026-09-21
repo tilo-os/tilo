@@ -2121,6 +2121,8 @@ fn step_checkpoint_batch(
     state: &mut crate::persistence::State,
     batch: &mut CheckpointBatch,
 ) -> Result<Step<()>, crate::store::StoreError> {
+    #[cfg(test)]
+    let _progress = checkpoint_progress_step(batch);
     if let Some(input) = batch.inputs.get_mut(batch.stage_index) {
         let Some(stage) = input.stage.as_mut() else {
             batch.all_projectable = false;
@@ -2277,6 +2279,74 @@ enum CheckpointBatchMode {
 static CHECKPOINT_BATCH_MODE_OBSERVERS: std::sync::OnceLock<
     std::sync::Mutex<HashMap<u64, Arc<std::sync::Mutex<Vec<CheckpointBatchMode>>>>>,
 > = std::sync::OnceLock::new();
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct CheckpointProgress {
+    active: Option<String>,
+    completed: std::collections::BTreeMap<String, (usize, u128)>,
+}
+
+#[cfg(test)]
+static CHECKPOINT_PROGRESS: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<u64, Arc<std::sync::Mutex<CheckpointProgress>>>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+struct CheckpointProgressStep {
+    observed: Arc<std::sync::Mutex<CheckpointProgress>>,
+    phase: String,
+    started: std::time::Instant,
+}
+
+#[cfg(test)]
+impl Drop for CheckpointProgressStep {
+    fn drop(&mut self) {
+        let mut observed = self
+            .observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = observed.completed.entry(self.phase.clone()).or_default();
+        entry.0 += 1;
+        entry.1 += self.started.elapsed().as_micros();
+        observed.active = None;
+    }
+}
+
+#[cfg(test)]
+fn checkpoint_progress_step(batch: &CheckpointBatch) -> Option<CheckpointProgressStep> {
+    let phase = if batch.stage_index < batch.inputs.len() {
+        "retention-stage".into()
+    } else {
+        batch.selector.as_ref().map_or_else(
+            || "selection-create".into(),
+            |selector| selector.diagnostic_phase(),
+        )
+    };
+    checkpoint_progress_phase(batch, phase)
+}
+
+#[cfg(test)]
+fn checkpoint_progress_phase(
+    batch: &CheckpointBatch,
+    phase: String,
+) -> Option<CheckpointProgressStep> {
+    let Envelope::Delta { workspace_id, .. } = &*batch.inputs.first()?.envelope else {
+        return None;
+    };
+    let observed = CHECKPOINT_PROGRESS
+        .get()?
+        .lock()
+        .ok()?
+        .get(workspace_id)?
+        .clone();
+    observed.lock().ok()?.active = Some(phase.clone());
+    Some(CheckpointProgressStep {
+        observed,
+        phase,
+        started: std::time::Instant::now(),
+    })
+}
 
 #[cfg(test)]
 fn track_checkpoint_batch_modes(
@@ -3149,14 +3219,19 @@ async fn enqueue_checkpoint_prefix(
                     else {
                         unreachable!()
                     };
-                    let prepared = prepare_recipients(
-                        &work_workspace,
-                        &work_source,
-                        *author_device_public_key,
-                        role,
-                        input.delta.len(),
-                    )
-                    .await?;
+                    let prepared = {
+                        #[cfg(test)]
+                        let _progress =
+                            checkpoint_progress_phase(&batch, "fresh-recipients".into());
+                        prepare_recipients(
+                            &work_workspace,
+                            &work_source,
+                            *author_device_public_key,
+                            role,
+                            input.delta.len(),
+                        )
+                        .await?
+                    };
                     batch.inputs[index].prepared = Some(prepared);
                     if mode != CheckpointBatchMode::Serial {
                         let operation_state = state.clone();
@@ -3165,6 +3240,8 @@ async fn enqueue_checkpoint_prefix(
                                 let mut state = operation_state
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                                #[cfg(test)]
+                                let _progress = checkpoint_progress_phase(&batch, "promote".into());
                                 let result =
                                     promote_checkpoint_input(&mut state, &mut batch, index);
                                 let result = if index == 0 {
@@ -3247,6 +3324,20 @@ async fn enqueue_checkpoint_prefix(
                             let mut state = operation_state
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            #[cfg(test)]
+                            let _progress = checkpoint_progress_phase(
+                                &batch,
+                                if !work.selected_committed {
+                                    format!(
+                                        "selected-{}",
+                                        batch.selector.as_ref().unwrap().diagnostic_phase()
+                                    )
+                                } else if work.gc_index < batch.inputs.len() {
+                                    "retained-gc".into()
+                                } else {
+                                    "delivery".into()
+                                },
+                            );
                             let result = work.step(&mut state, &mut batch);
                             (batch, work, result)
                         })
@@ -3274,6 +3365,8 @@ async fn enqueue_checkpoint_prefix(
                         match result {
                             ProjectedCheckpointStep::More => tokio::task::yield_now().await,
                             ProjectedCheckpointStep::Commit(commit) => {
+                                #[cfg(test)]
+                                let _progress = checkpoint_progress_phase(&batch, "publish".into());
                                 let commit_fence = CheckpointCommitFence::capture(&commit);
                                 if let Err(error) = publish_checkpoint_commit(
                                     &work_workspace,
@@ -5331,6 +5424,15 @@ mod private_transport_tests {
         let selection_count = shell_selection::track_selection_constructions(&store_root);
         let batch_modes = track_checkpoint_batch_modes(id);
 
+        // Bounded, payload-free diagnostic: one count and total microseconds per
+        // fixed selection phase, observable without taking the owner state lock.
+        let progress = Arc::new(std::sync::Mutex::new(CheckpointProgress::default()));
+        CHECKPOINT_PROGRESS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .insert(id, progress.clone());
+
         // This prefix is the verified FinalBasisOmission case: one projected
         // Selection has switched CURRENT and the first exact Original is
         // already published before the injected error. Replace one captured
@@ -5366,8 +5468,9 @@ mod private_transport_tests {
                 };
                 let modes = batch_modes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 panic!(
-                    "all-original prefix never reached the post-first-original barrier: selection_count={} batch_modes={modes:?} source_disconnect={source_disconnect}",
+                    "all-original prefix never reached the post-first-original barrier: selection_count={} batch_modes={modes:?} source_disconnect={source_disconnect} progress={:?}",
                     selection_count.load(std::sync::atomic::Ordering::SeqCst),
+                    progress.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
                 );
             })
             .unwrap();

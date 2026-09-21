@@ -86,14 +86,16 @@ impl SelectedRead {
                 &value.body,
             )
             .map_err(|_| invalid("invalid selected application pair"))?;
-            self.basis
+            let route = self
+                .basis
                 .routes
                 .get_mut(&route_key(
                     &snapshot.coverage().app,
                     &snapshot.coverage().record,
                 ))
-                .ok_or_else(|| invalid("selected route missing"))?
-                .file = Some(meta);
+                .ok_or_else(|| invalid("selected route missing"))?;
+            route.file = Some(meta);
+            route.verified_input = Some(value.identity());
         }
         Ok(Step::More)
     }

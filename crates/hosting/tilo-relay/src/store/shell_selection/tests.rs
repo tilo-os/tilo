@@ -34,6 +34,267 @@ fn setup() -> (tempfile::TempDir, WorkspaceStore) {
 }
 
 #[test]
+fn unchanged_basis_does_not_repeat_snapshot_verification() {
+    let (_tmp, store) = setup();
+    let scratch = |name| store.root.join("store-work-v1").join(name);
+    let mut initial = Selection::new(&store, scratch("verification-initial"), None).unwrap();
+    while matches!(initial.step(WorkLimit::default()).unwrap(), Step::More) {}
+    let selected_before = crate::store::shell_selection_tests::replay_frames(&store);
+
+    let mut selector = Selection::new(&store, scratch("verification-repeat"), None).unwrap();
+    while matches!(selector.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert!(selector.basis.complete());
+    assert_eq!(selector.basis.routes.len(), 3);
+    assert_eq!(
+        selector.snapshot_verifications,
+        (3, 0),
+        "Pair verifies each possible route once; Check reuses only the identical proved input"
+    );
+    assert_eq!(
+        crate::store::shell_selection_tests::replay_frames(&store),
+        selected_before
+    );
+}
+
+fn changed_snapshot_frame(raw: &[u8], change: &str) -> Vec<u8> {
+    let mut envelope = crate::transport::decode(&raw[4..]).unwrap();
+    let crate::transport::Envelope::Delta {
+        author_device_public_key,
+        delta,
+        ..
+    } = &mut envelope
+    else {
+        panic!()
+    };
+    let CoeditPayload::Checkpoint {
+        mut channel,
+        mut body,
+    } = CoeditPayload::decode(delta).unwrap()
+    else {
+        panic!()
+    };
+    match change {
+        "source" => author_device_public_key[0] ^= 1,
+        "channel" => channel[0] ^= 1,
+        "body" => {
+            let mut message: NeighbourMsg = postcard::from_bytes(&body).unwrap();
+            let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
+                panic!()
+            };
+            envelope.seq += 1;
+            body = postcard::to_allocvec(&message).unwrap();
+        }
+        "kind" => {}
+        _ => unreachable!(),
+    }
+    *delta = if change == "kind" {
+        CoeditPayload::RetainedDelta { channel, body }
+    } else {
+        CoeditPayload::Checkpoint { channel, body }
+    }
+    .encode()
+    .unwrap();
+    crate::transport::encode(&envelope).unwrap()
+}
+
+#[test]
+fn fallback_original_proof_reuse_is_limited_to_exact_proved_incoming_slots() {
+    for change in ["unchanged", "source", "channel", "kind", "body", "unproved"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let meta = producer_metadata();
+        let authority = RetentionAuthority::new(
+            meta["room"].as_str().unwrap(),
+            serde_json::from_value(meta["authority"].clone()).unwrap(),
+        )
+        .unwrap();
+        let id = crate::room_workspace_id(authority.room()).unwrap();
+        let mut store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
+        store.bind_shell_authority(authority).unwrap();
+        for row in meta["baseline"].as_array().unwrap() {
+            retained(&store, &producer_frame(&meta, row, 1));
+        }
+        let raw_store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
+        let mut apps = Vec::new();
+        for row in meta["checkpoint2"].as_array().unwrap() {
+            let mut raw = producer_frame(&meta, row, 2);
+            let (_, CoeditPayload::Checkpoint { body, .. }) = retained::payload(&raw, id).unwrap()
+            else {
+                panic!()
+            };
+            if matches!(
+                postcard::from_bytes::<NeighbourMsg>(&body).unwrap(),
+                NeighbourMsg::AppDocument { .. }
+            ) {
+                if apps.len() == 2 {
+                    continue;
+                }
+                if apps.is_empty() && change == "unproved" {
+                    raw = changed_snapshot_frame(&raw, "source");
+                }
+                apps.push(raw.clone());
+            }
+            retained(&raw_store, &raw);
+        }
+        assert_eq!(apps.len(), 2);
+        let incoming = incoming_identity(&apps[0], id).unwrap();
+        let mut selector = Selection::new_batch(
+            &store,
+            store.root.join("store-work-v1").join("proved-original"),
+            vec![incoming],
+        )
+        .unwrap();
+        while !matches!(selector.phase, Phase::Check) {
+            selector.step_projection(WorkLimit::default()).unwrap();
+        }
+        assert!(selector.fallback && selector.basis.room.is_some());
+        assert_eq!(selector.incoming_verified, vec![change != "unproved"]);
+        let mut inventory = File::open(selector.inventory.as_ref().unwrap()).unwrap();
+        let path = loop {
+            let meta = read_meta(&mut inventory)
+                .unwrap()
+                .expect("incoming retained frame");
+            let path = store.root.join(meta.source);
+            if frame(&path, id)
+                .unwrap()
+                .is_some_and(|value| value.identity() == incoming)
+            {
+                break path;
+            }
+        };
+        let expected = if matches!(change, "unchanged" | "unproved") {
+            apps[0].clone()
+        } else {
+            changed_snapshot_frame(&apps[0], change)
+        };
+        fs::write(&path, &expected).unwrap();
+        let outcome = loop {
+            if let Step::Done(outcome) = selector.step_projection(WorkLimit::default()).unwrap() {
+                break outcome;
+            }
+        };
+        assert_eq!(
+            outcome.dispositions,
+            vec![IncomingDisposition::Original],
+            "{change}"
+        );
+        assert_eq!(outcome.publication, Publication::Original, "{change}");
+        assert_eq!(
+            selector.snapshot_verifications.1,
+            if change == "unchanged" { 1 } else { 2 },
+            "nonincoming and unproved/changed inputs must keep full verification: {change}"
+        );
+        assert_eq!(
+            fs::read(path).unwrap(),
+            expected,
+            "Original was retired: {change}"
+        );
+    }
+}
+
+#[test]
+fn changed_snapshot_input_cannot_reuse_a_paired_proof() {
+    for change in ["source", "channel", "kind", "body"] {
+        let (_tmp, store) = setup();
+        let scratch = |name| store.root.join("store-work-v1").join(name);
+        let mut initial = Selection::new(&store, scratch("proof-initial"), None).unwrap();
+        while matches!(initial.step(WorkLimit::default()).unwrap(), Step::More) {}
+        let mut selector = Selection::new(&store, scratch("proof-change"), None).unwrap();
+        while !matches!(selector.phase, Phase::Check) {
+            selector.step(WorkLimit::default()).unwrap();
+        }
+        let route = selector.basis.routes.values().next().unwrap();
+        assert!(route.verified_input.is_some());
+        let path = store.root.join(&route.file.as_ref().unwrap().source);
+        let raw = fs::read(&path).unwrap();
+        let mut envelope = crate::transport::decode(&raw[4..]).unwrap();
+        let crate::transport::Envelope::Delta {
+            author_device_public_key,
+            delta,
+            ..
+        } = &mut envelope
+        else {
+            panic!()
+        };
+        let CoeditPayload::Checkpoint {
+            mut channel,
+            mut body,
+        } = CoeditPayload::decode(delta).unwrap()
+        else {
+            panic!()
+        };
+        match change {
+            "source" => author_device_public_key[0] ^= 1,
+            "channel" => channel[0] ^= 1,
+            "body" => {
+                let mut message: NeighbourMsg = postcard::from_bytes(&body).unwrap();
+                let NeighbourMsg::AppDocument { envelope, .. } = &mut message else {
+                    panic!()
+                };
+                envelope.seq += 1; // Preserve the route, invalidate the signature.
+                body = postcard::to_allocvec(&message).unwrap();
+            }
+            "kind" => {}
+            _ => unreachable!(),
+        }
+        *delta = if change == "kind" {
+            CoeditPayload::RetainedDelta { channel, body }
+        } else {
+            CoeditPayload::Checkpoint { channel, body }
+        }
+        .encode()
+        .unwrap();
+        fs::write(&path, crate::transport::encode(&envelope).unwrap()).unwrap();
+
+        // Drive the actual Check path. Unchanged records may precede the edited
+        // one, but none needs a second proof. The changed input always does.
+        while selector.snapshot_verifications.1 == 0 {
+            assert!(matches!(selector.phase, Phase::Check), "{change}");
+            selector.step(WorkLimit::default()).unwrap();
+        }
+        assert_eq!(selector.snapshot_verifications.1, 1, "{change}");
+        assert_eq!(selector.blocked, change != "kind", "{change}");
+        assert!(
+            path.exists(),
+            "an uncommitted proof check retired its input"
+        );
+    }
+}
+
+#[test]
+fn replacement_room_does_not_inherit_old_snapshot_proofs_before_pairing() {
+    let (_tmp, store) = setup();
+    let mut selector = Selection::new(
+        &store,
+        store.root.join("store-work-v1").join("proof-room-change"),
+        None,
+    )
+    .unwrap();
+    while !matches!(selector.phase, Phase::Pair) {
+        selector.step(WorkLimit::default()).unwrap();
+    }
+    assert!(selector.old.complete());
+    assert!(
+        selector
+            .old
+            .routes
+            .values()
+            .all(|route| route.verified_input.is_some())
+    );
+    assert_ne!(
+        selector.old.room.as_ref().unwrap().heads(),
+        selector.basis.room.as_ref().unwrap().heads()
+    );
+    assert!(!selector.basis.routes.is_empty());
+    assert!(
+        selector
+            .basis
+            .routes
+            .values()
+            .all(|route| { route.file.is_none() && route.verified_input.is_none() })
+    );
+}
+
+#[test]
 fn serial_checkpoint_refresh_reference_repeats_global_selection_per_frame() {
     let tmp = tempfile::tempdir().unwrap();
     let meta = producer_metadata();
@@ -651,6 +912,12 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
             Selection::new_projected(&store, root.join("selection"), incoming, overrides).unwrap();
         loop {
             if let Step::Done(outcome) = selector.step_projection(WorkLimit::default()).unwrap() {
+                if document_count > 32 {
+                    assert_eq!(
+                        selector.snapshot_verifications.1, 0,
+                        "a proved newer Original needs no repeated signature proof against the older fallback room"
+                    );
+                }
                 return outcome;
             }
         }

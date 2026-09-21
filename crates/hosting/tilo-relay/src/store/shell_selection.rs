@@ -142,6 +142,14 @@ pub(super) struct Frame {
     pub kind: RoomInput,
 }
 impl Frame {
+    fn identity(&self) -> [u8; 32] {
+        input_identity(
+            self.source,
+            self.channel,
+            self.kind == RoomInput::Checkpoint,
+            &self.body,
+        )
+    }
     fn route(&self) -> Option<(String, u64)> {
         let (
             NeighbourMsg::AppDocument {
@@ -166,6 +174,9 @@ impl Frame {
 struct Route {
     coverage: Coverage,
     file: Option<Meta>,
+    // A successful snapshot proof under this exact Basis.room. Never persisted;
+    // set_room invalidates it, and fallback clones it only with the whole basis.
+    verified_input: Option<[u8; 32]>,
 }
 #[derive(Default, Clone)]
 struct Basis {
@@ -187,6 +198,7 @@ impl Basis {
                     Route {
                         coverage,
                         file: None,
+                        verified_input: None,
                     },
                 )
             })
@@ -196,6 +208,7 @@ impl Basis {
     }
 }
 
+#[cfg_attr(test, derive(Debug))]
 enum Phase {
     Old,
     Scan,
@@ -255,12 +268,21 @@ pub(crate) struct Selection {
     changed: bool,
     switch_attempted: bool,
     incoming: Vec<[u8; 32]>,
+    // Successful Pair proof for these exact inputs. After fallback this may
+    // prove only that a newer input stays Original, never coverage/retirement.
+    incoming_verified: Vec<bool>,
     incoming_dispositions: Vec<Option<IncomingDisposition>>,
     lineage_overrides: BTreeMap<std::ffi::OsString, PathBuf>,
     batch: bool,
     incoming_staged: bool,
+    #[cfg(test)]
+    snapshot_verifications: (usize, usize),
 }
 impl Selection {
+    #[cfg(test)]
+    pub(crate) fn diagnostic_phase(&self) -> String {
+        format!("{:?}", self.phase)
+    }
     pub(crate) fn new(
         store: &WorkspaceStore,
         scratch: PathBuf,
@@ -313,6 +335,7 @@ impl Selection {
             count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         let incoming_dispositions = vec![None; incoming.len()];
+        let incoming_verified = vec![false; incoming.len()];
         fs::create_dir_all(&scratch)?;
         let old_read =
             SelectedRead::new(store)?.ok_or_else(|| invalid("unbound shell selector"))?;
@@ -360,10 +383,13 @@ impl Selection {
             changed: false,
             switch_attempted: false,
             incoming,
+            incoming_verified,
             incoming_dispositions,
             lineage_overrides,
             batch,
             incoming_staged: false,
+            #[cfg(test)]
+            snapshot_verifications: (0, 0),
             scratch,
         })
     }
@@ -708,15 +734,39 @@ impl Selection {
             Phase::Pair => {
                 if let Some(meta) = read_meta(self.input.as_mut().unwrap())? {
                     if let Some(value) = self.read(&meta)? {
+                        // Rooms has finished. A different route/sequence cannot
+                        // match this basis's exact receipt; Check still sees the
+                        // complete input and retains its existing proof rules.
+                        if !value.route().is_some_and(|(key, sequence)| {
+                            self.basis
+                                .routes
+                                .get(&key)
+                                .is_some_and(|route| route.coverage.sequence == sequence)
+                        }) {
+                            return Ok(Step::More);
+                        }
                         if let Some(room) = &self.basis.room {
+                            #[cfg(test)]
+                            {
+                                self.snapshot_verifications.0 += 1;
+                            }
                             if let Ok(proof) =
                                 verify_snapshot(room, value.source, value.channel, &value.body)
                             {
+                                let identity = value.identity();
                                 let key =
                                     route_key(&proof.coverage().app, &proof.coverage().record);
                                 let route = self.basis.routes.get_mut(&key).unwrap();
                                 if route.file.is_none() {
-                                    route.file = Some(meta)
+                                    route.file = Some(meta);
+                                    route.verified_input = Some(identity);
+                                }
+                                for (incoming, verified) in
+                                    self.incoming.iter().zip(&mut self.incoming_verified)
+                                {
+                                    if incoming == &identity {
+                                        *verified = true;
+                                    }
                                 }
                             }
                         }
@@ -792,6 +842,40 @@ impl Selection {
                     self.extra(&meta)?;
                     return Ok(Step::More);
                 };
+                let identity = value.identity();
+                if self
+                    .basis
+                    .routes
+                    .get(&key)
+                    .is_some_and(|route| route.verified_input == Some(identity))
+                {
+                    self.covered(&meta, &value)?;
+                    return Ok(Step::More);
+                }
+                // Pair already proved this exact signed snapshot/document
+                // under our fixed authority. An absent or strictly older
+                // fallback receipt can only make it Unpaired. Preserve the
+                // Original exactly as the full check below would do.
+                if self.fallback
+                    && self.basis.room.is_some()
+                    && self
+                        .basis
+                        .routes
+                        .get(&key)
+                        .is_none_or(|route| seq > route.coverage.sequence)
+                    && self
+                        .incoming
+                        .iter()
+                        .zip(&self.incoming_verified)
+                        .any(|(incoming, verified)| *verified && incoming == &identity)
+                {
+                    self.stage_or_preserve_extra(&meta, &value)?;
+                    return Ok(Step::More);
+                }
+                #[cfg(test)]
+                if self.basis.room.is_some() {
+                    self.snapshot_verifications.1 += 1;
+                }
                 let snapshot_result =
                     self.basis.room.as_ref().map(|room| {
                         verify_snapshot(room, value.source, value.channel, &value.body)
