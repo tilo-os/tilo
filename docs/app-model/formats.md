@@ -159,14 +159,14 @@ exclude = ["crates/doc/qdoc-codec-markdown-wasm"]
 [package]
 name = "qdoc-codec-markdown-wasm"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
 qdoc = { path = "../qdoc" }
-wit-bindgen = "0.36"
+wit-bindgen = "0.57"
 ```
 
 ### src/lib.rs
@@ -231,7 +231,11 @@ target gives an empty lib so `cargo check` on the workspace still passes.
 ### Build
 
 ```bash
-cargo build -p qdoc-codec-markdown-wasm --target wasm32-wasip2 --release
+cargo build \
+  --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml \
+  --target wasm32-wasip2 \
+  --release \
+  --locked
 ```
 
 Output at `target/wasm32-wasip2/release/qdoc_codec_markdown_wasm.wasm`.

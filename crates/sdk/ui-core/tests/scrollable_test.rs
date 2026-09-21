@@ -8,7 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::widget::Scrollable;
+use tilo_ui::widget::Scrollable;
 
 #[test]
 fn scrollable_clamps_to_content_bounds() {
@@ -45,11 +45,11 @@ fn scrollable_momentum_decays() {
     assert!(s.momentum_speed() < 10.0);
 }
 
-use ui::State;
-use ui::headless::Driver;
-use ui::local_state::LocalState;
-use ui::theme::Theme;
-use ui::widget::{Button, Column, Container, Text, TextInput};
+use tilo_ui::State;
+use tilo_ui::headless::Driver;
+use tilo_ui::local_state::LocalState;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{Button, Column, Container, Text, TextInput};
 
 fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> Driver {
     let mut scroll = Scrollable::new_vertical().fill_parent_height();
@@ -174,9 +174,9 @@ fn writing_surface_preserves_explicit_child_height() {
 fn writing_surface_retained_tree_settles_without_changing_child_style() {
     use std::collections::HashMap;
     use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
-    use ui::bound_dispatch::BoundNodeMap;
-    use ui::text_render::TextRenderer;
-    use ui::widget::{Widget, compute_widget_layout};
+    use tilo_ui::bound_dispatch::BoundNodeMap;
+    use tilo_ui::text_render::TextRenderer;
+    use tilo_ui::widget::{Widget, compute_widget_layout};
     use vello::kurbo::Point;
 
     let text = LocalState::new(String::new());
@@ -295,7 +295,7 @@ fn pane_background_and_scrollbar_press_still_focus_the_scrollable() {
         driver.click_at(x, 20.0);
         assert_eq!(
             driver.focused_access_node().unwrap().role,
-            ui::a11y::Role::Group
+            tilo_ui::a11y::Role::Group
         );
         let before = driver.targets().get("content").unwrap().y0;
         driver.key("ArrowDown");

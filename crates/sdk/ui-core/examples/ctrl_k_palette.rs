@@ -1,4 +1,4 @@
-//! Offscreen renders of the unified Ctrl+K palette (`ui::ActionPalette`).
+//! Offscreen renders of the unified Ctrl+K palette (`tilo_ui::ActionPalette`).
 //!
 //! One surface, driven by the resource/action model: the focused app's exported
 //! `ActionSpec`s form the **Actions** group, and a folded-in `SearchProvider`
@@ -15,14 +15,14 @@ use std::path::{Path, PathBuf};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use ui::ActionPalette;
-use ui::icons::Icon;
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::search::{SearchProvider, SearchResult, fuzzy_score};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, Resource};
+use tilo_ui::ActionPalette;
+use tilo_ui::icons::Icon;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::search::{SearchProvider, SearchResult, fuzzy_score};
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, Resource};
 
 const WIDTH: u32 = 560;
 const MARGIN: f64 = 20.0;
@@ -128,7 +128,7 @@ fn shoot(theme: &Theme, out: &Path, query: &str, cursor: usize) {
 }
 
 pub fn run(_args: &[String]) {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
     let dir = std::env::var("CTRLK_PALETTE_OUT").unwrap_or_else(|_| "/tmp/ctrl_k_palette".into());
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("failed to create output dir {dir}: {e}");
