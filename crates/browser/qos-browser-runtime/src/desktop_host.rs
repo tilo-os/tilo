@@ -1832,6 +1832,12 @@ mod tests {
     fn fixture_with_topology(
         configure: impl FnOnce(&mut WorkspaceTree),
     ) -> (DesktopRoot, DesktopHandle, PortableStorage) {
+        fixture_with_extra_calculators(0, configure)
+    }
+    fn fixture_with_extra_calculators(
+        extra_calculators: usize,
+        configure: impl FnOnce(&mut WorkspaceTree),
+    ) -> (DesktopRoot, DesktopHandle, PortableStorage) {
         let cache = PortableStorage::new("desktop-host-test", "device").unwrap();
         let mut owners = RecordOwners::portable(cache.clone());
         let mut tree = WorkspaceTree::default();
@@ -1874,6 +1880,32 @@ mod tests {
                 tile: TileContent::AppPlaceholder {
                     kind: AppKind::Other(durable_app_id.into()),
                     label: definition.title.into(),
+                },
+            });
+            retained.push(store);
+        }
+        let (calculator_app, calculator_definition) = desktop::installed_applications()
+            .into_iter()
+            .find(|(app, _)| *app == "dev.qos.calculator")
+            .expect("Calculator is installed in the production desktop catalogue");
+        for extra in 0..extra_calculators {
+            let id = (5 << 48) | (14 + extra as u64);
+            let record = qos_desktop::records::component_record(
+                calculator_app,
+                id,
+                calculator_definition.record_kind.clone(),
+            );
+            let store = owners.open(calculator_app, &room).unwrap();
+            store.create_record(&record).unwrap();
+            store.with(&record.id, |doc| {
+                calculator::doc::initialize_empty(doc).unwrap();
+            });
+            tabs.push(Tab {
+                id,
+                title: calculator_definition.title.into(),
+                tile: TileContent::AppPlaceholder {
+                    kind: AppKind::Other(calculator_app.into()),
+                    label: calculator_definition.title.into(),
                 },
             });
             retained.push(store);
@@ -3930,6 +3962,140 @@ mod tests {
         }
         find(&frame.inspection().root, label).expect("exported browser semantic route")
     }
+    fn browser_semantic_route_for_instance(
+        frame: &ui::headless::FrameHarness,
+        label: &str,
+        instance: u64,
+    ) -> (String, String) {
+        fn targets(node: &ui::a11y::AccessNode, label: &str, out: &mut Vec<String>) {
+            if node.name.as_deref() == Some(label) && node.action_target.is_some() {
+                out.push(node.action_target.clone().unwrap());
+            }
+            for child in &node.children {
+                targets(child, label, out);
+            }
+        }
+        fn matching_routes(
+            frame: &ui::headless::FrameHarness,
+            node: &ui::headless::InspectionNode,
+            label: &str,
+            out: &mut Vec<(String, String, Option<String>, Option<u64>, Vec<String>)>,
+        ) {
+            if let Some(semantics) = &node.semantics {
+                let mut action_targets = Vec::new();
+                targets(semantics, label, &mut action_targets);
+                if !action_targets.is_empty() {
+                    out.push((
+                        node.path.clone(),
+                        node.widget.clone(),
+                        node.test_id.clone(),
+                        frame.semantic_owner_instance(&node.path),
+                        action_targets,
+                    ));
+                }
+            }
+            for child in &node.children {
+                matching_routes(frame, child, label, out);
+            }
+        }
+        fn find(
+            frame: &ui::headless::FrameHarness,
+            node: &ui::headless::InspectionNode,
+            label: &str,
+            instance: u64,
+        ) -> Option<(String, String)> {
+            if frame.semantic_owner_instance(&node.path) == Some(instance) {
+                let mut action_targets = Vec::new();
+                if let Some(semantics) = &node.semantics {
+                    targets(semantics, label, &mut action_targets);
+                }
+                if let Some(target) = action_targets.into_iter().next() {
+                    return Some((node.path.clone(), target));
+                }
+            }
+            node.children
+                .iter()
+                .find_map(|node| find(frame, node, label, instance))
+        }
+        let inspection = frame.inspection();
+        let found = find(frame, &inspection.root, label, instance);
+        found.unwrap_or_else(|| {
+            let mut candidates = Vec::new();
+            matching_routes(frame, &inspection.root, label, &mut candidates);
+            panic!(
+                "selected app instance {instance} exports no semantic route for {label:?}; matching retained routes (path, widget, test_id, registered owner, action targets): {candidates:#?}"
+            )
+        })
+    }
+    fn browser_semantic_action_for_instance(
+        frame: &ui::headless::FrameHarness,
+        action_target: &str,
+        instance: u64,
+    ) -> (String, ui::a11y::AccessNode) {
+        fn action(
+            node: &ui::a11y::AccessNode,
+            action_target: &str,
+        ) -> Option<ui::a11y::AccessNode> {
+            if node.action_target.as_deref() == Some(action_target) {
+                return Some(node.clone());
+            }
+            node.children
+                .iter()
+                .find_map(|child| action(child, action_target))
+        }
+        fn find(
+            frame: &ui::headless::FrameHarness,
+            node: &ui::headless::InspectionNode,
+            action_target: &str,
+            instance: u64,
+        ) -> Option<(String, ui::a11y::AccessNode)> {
+            if frame.semantic_owner_instance(&node.path) == Some(instance)
+                && let Some(action) = node
+                    .semantics
+                    .as_ref()
+                    .and_then(|node| action(node, action_target))
+            {
+                return Some((node.path.clone(), action));
+            }
+            node.children
+                .iter()
+                .find_map(|child| find(frame, child, action_target, instance))
+        }
+        find(frame, &frame.inspection().root, action_target, instance).unwrap_or_else(|| {
+            panic!(
+                "selected app instance {instance} exports no semantic action target {action_target:?}"
+            )
+        })
+    }
+    fn browser_semantic_node_for_instance(
+        frame: &ui::headless::FrameHarness,
+        label: &str,
+        instance: u64,
+    ) -> ui::a11y::AccessNode {
+        fn access(node: &ui::a11y::AccessNode, label: &str) -> Option<ui::a11y::AccessNode> {
+            if node.name.as_deref() == Some(label) {
+                return Some(node.clone());
+            }
+            node.children.iter().find_map(|node| access(node, label))
+        }
+        fn find(
+            frame: &ui::headless::FrameHarness,
+            node: &ui::headless::InspectionNode,
+            label: &str,
+            instance: u64,
+        ) -> Option<ui::a11y::AccessNode> {
+            if frame.semantic_owner_instance(&node.path) == Some(instance)
+                && let Some(access) = node.semantics.as_ref().and_then(|node| access(node, label))
+            {
+                return Some(access);
+            }
+            node.children
+                .iter()
+                .find_map(|node| find(frame, node, label, instance))
+        }
+        find(frame, &frame.inspection().root, label, instance)
+            .expect("selected app instance exports its semantic node")
+    }
     fn browser_owned_semantic_node(
         frame: &ui::headless::FrameHarness,
         owner: &str,
@@ -4081,6 +4247,244 @@ mod tests {
         assert_eq!(
             frame.inspection().keyboard_focus_owner.as_deref(),
             Some(keyboard_owner.as_str())
+        );
+    }
+    #[test]
+    fn selected_calculator_enter_commits_only_its_checked_record_after_local_history_opens() {
+        let (root, handle, _) = fixture_with_extra_calculators(2, |tree| {
+            let groups = &mut tree.workspaces[0].strips[0].window_groups;
+            let tabs = std::mem::take(&mut groups[0].tabs);
+            let (calculators, remaining): (Vec<_>, Vec<_>) =
+                tabs.into_iter().partition(|tab| tab.title == "Calculator");
+            assert_eq!(
+                calculators.len(),
+                3,
+                "fixture must expose three Calculator records"
+            );
+            groups[0].tabs = remaining;
+            groups[0].active_tab = groups[0].tabs[0].id;
+            for (offset, calculator) in calculators.into_iter().enumerate() {
+                groups.push(WindowGroup {
+                    id: 4 + offset as u64,
+                    active_tab: calculator.id,
+                    tabs: vec![calculator],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            }
+        });
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            Box::new(root),
+            (1280, 720),
+            Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        let navigation = handle.navigation.borrow();
+        let calculator_routes = navigation["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["label"] == "Calculator")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            calculator_routes.len(),
+            3,
+            "each Calculator group must remain addressable"
+        );
+        let target_route = calculator_routes
+            .into_iter()
+            .find(|entry| entry["route"]["group"] == "5")
+            .expect("middle Calculator group must have an exact desktop route")["route"]
+            .clone();
+        drop(navigation);
+        let target_tab = target_route["tab"]
+            .as_str()
+            .expect("route has a canonical tab identity")
+            .parse::<u64>()
+            .unwrap();
+        handle
+            .navigate(
+                &mut frame,
+                crate::desktop_navigation::Command::Select {
+                    generation: handle.generation.clone(),
+                    route: serde_json::from_value(target_route.clone()).unwrap(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            active_route(&handle.tree.borrow()),
+            Some(serde_json::from_value(target_route).unwrap()),
+            "the intended Calculator route must be active before input"
+        );
+        let default_owner = frame
+            .inspection()
+            .keyboard_focus_owner
+            .expect("selected Calculator must own native keyboard input");
+        assert_eq!(
+            frame.semantic_owner_instance(&default_owner),
+            Some(target_tab),
+            "route selection must activate the exact Calculator instance before semantic input"
+        );
+        let (initial_history_owner, initial_history) =
+            browser_semantic_action_for_instance(&frame, "calculator.history.toggle", target_tab);
+        assert_eq!(
+            frame.semantic_owner_instance(&initial_history_owner),
+            Some(target_tab),
+            "the selected Calculator must export the exact local History owner"
+        );
+        match initial_history.name.as_deref() {
+            Some("Hide history") => {
+                handle
+                    .perform_semantic_input(
+                        &mut frame,
+                        &initial_history_owner,
+                        Some("calculator.history.toggle"),
+                        &ui::a11y::Action::Activate,
+                    )
+                    .unwrap();
+                let (_, closed_history) = browser_semantic_action_for_instance(
+                    &frame,
+                    "calculator.history.toggle",
+                    target_tab,
+                );
+                assert_eq!(
+                    closed_history.name.as_deref(),
+                    Some("Show history"),
+                    "closing the selected Calculator drawer must expose its Show history control"
+                );
+            }
+            Some("Show history") => {}
+            name => {
+                panic!("selected Calculator history toggle has unexpected semantic name: {name:?}")
+            }
+        }
+        let (history_owner, history) =
+            browser_semantic_action_for_instance(&frame, "calculator.history.toggle", target_tab);
+        assert_eq!(history.name.as_deref(), Some("Show history"));
+        handle
+            .perform_semantic_input(
+                &mut frame,
+                &history_owner,
+                Some("calculator.history.toggle"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        let (_, open_history) =
+            browser_semantic_action_for_instance(&frame, "calculator.history.toggle", target_tab);
+        assert_eq!(
+            open_history.name.as_deref(),
+            Some("Hide history"),
+            "the selected Calculator's local drawer must be open without switching routes"
+        );
+        let (owner, expression_target) =
+            browser_semantic_route_for_instance(&frame, "Expression", target_tab);
+        assert_eq!(
+            frame.semantic_owner_instance(&owner),
+            Some(target_tab),
+            "the selected Calculator must export the exact Expression semantic owner"
+        );
+        handle
+            .perform_semantic_input(
+                &mut frame,
+                &owner,
+                Some(&expression_target),
+                &ui::a11y::Action::Focus,
+            )
+            .unwrap();
+        assert_eq!(
+            frame.inspection().keyboard_focus_owner.as_deref(),
+            Some(owner.as_str()),
+            "the exact Expression owner must receive the subsequent native Enter"
+        );
+        handle
+            .perform_semantic_input(
+                &mut frame,
+                &owner,
+                Some(&expression_target),
+                &ui::a11y::Action::SetValue("2^2".into()),
+            )
+            .unwrap();
+        assert_eq!(
+            browser_semantic_node_for_instance(&frame, "Result 4", target_tab)
+                .name
+                .as_deref(),
+            Some("Result 4"),
+            "the selected Calculator received the semantic expression input"
+        );
+        let target_record = ui::record::RecordId::for_tab(target_tab);
+        let before = handle
+            .records
+            .borrow()
+            .values()
+            .filter(|record| record.app == "dev.qos.calculator")
+            .map(|record| {
+                (
+                    record.checkout.id.clone(),
+                    record
+                        .store
+                        .read(&record.checkout.id, |doc| doc.base_heads().to_vec())
+                        .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(before.len(), 3);
+        assert!(
+            before.iter().any(|(id, _)| id == &target_record),
+            "the exact routed Calculator record must be captured before Enter"
+        );
+        frame.key("Enter");
+        assert_eq!(
+            browser_semantic_node_for_instance(&frame, "Expression", target_tab)
+                .value
+                .as_deref(),
+            Some("4"),
+            "Enter must replace the selected Calculator expression with its committed result"
+        );
+        for record in handle
+            .records
+            .borrow()
+            .values()
+            .filter(|record| record.app == "dev.qos.calculator")
+        {
+            let (heads, history) = record
+                .store
+                .read(&record.checkout.id, |doc| {
+                    (
+                        doc.base_heads().to_vec(),
+                        calculator::doc::load(doc).unwrap().history,
+                    )
+                })
+                .unwrap();
+            let previous_heads = before
+                .iter()
+                .find(|(id, _)| id == &record.checkout.id)
+                .map(|(_, heads)| heads)
+                .expect("each checked Calculator record was captured before Enter");
+            if record.checkout.id == target_record {
+                assert_ne!(
+                    heads, *previous_heads,
+                    "Enter must durably commit the selected record"
+                );
+                assert_eq!(history.len(), 1);
+                assert_eq!(history[0].expr, "2^2");
+                assert_eq!(history[0].result, "4");
+            } else {
+                assert_eq!(
+                    heads, *previous_heads,
+                    "Enter must not commit another Calculator record"
+                );
+                assert!(
+                    history.is_empty(),
+                    "Enter must not add history to another Calculator"
+                );
+            }
+        }
+        assert!(
+            handle.errors.borrow().is_empty(),
+            "the mounted owner/permission path must not reject the committed Calculator action: {:?}",
+            handle.errors.borrow()
         );
     }
     #[test]

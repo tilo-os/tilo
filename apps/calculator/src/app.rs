@@ -1390,6 +1390,18 @@ impl Widget for CalculatorApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // Window groups offer an event to visible apps in presentation order.
+        // Keyboard and IME input belongs to the host-selected Calculator only;
+        // an unfocused instance must leave it unclaimed so that selected sibling
+        // can receive the same event. Pointer routing remains geometry-based.
+        if !self.host_focused
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
+        {
+            return;
+        }
         self.relayout();
         self.layout_active();
         let hover_before = (
@@ -2162,10 +2174,83 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_and_ime_only_mutate_the_host_focused_calculator() {
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+
+        assert!(
+            !send(&mut app, &mut state, &keyboard(WKey::Character("2".into())),),
+            "an unfocused Calculator must leave keyboard input for the focused sibling"
+        );
+        assert!(app.model.expr.is_empty());
+        assert!(
+            !send(
+                &mut app,
+                &mut state,
+                &WindowEvent::Ime(winit::event::Ime::Commit("3".into())),
+            ),
+            "an unfocused Calculator must leave IME commits for the focused sibling"
+        );
+        assert!(app.model.expr.is_empty());
+        assert!(
+            !send(
+                &mut app,
+                &mut state,
+                &WindowEvent::Ime(winit::event::Ime::Preedit("3".into(), Some((1, 1)))),
+            ),
+            "an unfocused Calculator must not capture an IME preedit"
+        );
+
+        app.set_focus(true);
+        assert!(send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Character("2".into())),
+        ));
+        assert_eq!(app.model.expr, "2");
+
+        app.set_mode(Mode::Graph2d);
+        app.model.funcs = vec![PlotFn {
+            expr: String::new(),
+            visible: true,
+        }];
+        app.model.active_fn = 0;
+        assert!(send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Character("x".into())),
+        ));
+        assert_eq!(app.model.funcs[0].expr, "x");
+
+        app.set_mode(Mode::Graph3d);
+        app.model.surfaces = vec![PlotFn {
+            expr: "x+y".into(),
+            visible: true,
+        }];
+        app.model.active_surface = 0;
+        assert!(send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Named(NamedKey::Backspace)),
+        ));
+        assert_eq!(app.model.surfaces[0].expr, "x+");
+
+        app.set_focus(false);
+        let graph_expression = app.model.surfaces[0].expr.clone();
+        assert!(
+            !send(&mut app, &mut state, &keyboard(WKey::Character("y".into())),),
+            "an unfocused Calculator must not consume graph keyboard edits"
+        );
+        assert_eq!(app.model.surfaces[0].expr, graph_expression);
+    }
+
+    #[test]
     fn power_input_physical_keys_evaluates_once() {
         let mut app = CalculatorApp::new();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
+        app.set_focus(true);
         for text in ["2", "^", "2"] {
             send(
                 &mut app,
@@ -2189,6 +2274,7 @@ mod tests {
         let mut app = CalculatorApp::new();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
+        app.set_focus(true);
         send(&mut app, &mut state, &keyboard(WKey::Character("2".into())));
         send(&mut app, &mut state, &keyboard(WKey::Dead(Some('^'))));
         send(
@@ -2218,6 +2304,7 @@ mod tests {
         let mut app = CalculatorApp::new();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
+        app.set_focus(true);
         for text in ["2", "^", "2"] {
             send(
                 &mut app,
@@ -2262,6 +2349,7 @@ mod tests {
             let mut app = CalculatorApp::new();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
+            app.set_focus(true);
             app.on_key_with_paste(
                 &WKey::Character("v".into()),
                 primary.into(),
@@ -2930,7 +3018,7 @@ mod tests {
     // taffy are unused by the (single-leaf) calculator, so a throwaway leaf is
     // fine.
 
-    fn send(app: &mut CalculatorApp, st: &mut ui::State, ev: &WindowEvent) {
+    fn send(app: &mut CalculatorApp, st: &mut ui::State, ev: &WindowEvent) -> bool {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let node = taffy.new_leaf(taffy::Style::default()).unwrap();
         let mods = winit::event::Modifiers::default();
@@ -2947,6 +3035,7 @@ mod tests {
             node,
             &taffy,
         );
+        handled
     }
 
     fn cursor(p: Point) -> WindowEvent {
