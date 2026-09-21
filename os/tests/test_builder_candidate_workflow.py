@@ -355,25 +355,115 @@ class CanaryIdentity(unittest.TestCase):
         self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
         self.assertIn('podesta-burst-usw2-qos-builder-replication', replication)
 
-    def test_main_promotion_installs_aws_cli_from_ubuntu_universe(self):
+    def test_main_promotion_installs_checksum_pinned_aws_cli(self):
         promotion = BUILD.split('  promote-builder:', 1)[1]
         tools = promotion.split('      - name: Install publication tools', 1)[1].split(
             '      - name: Verify and publish the tested native builder index', 1
         )[0]
-        enable_universe = 'sudo -n add-apt-repository --yes universe'
-        install_aws = (
-            'sudo -n apt-get install -y --no-install-recommends '
-            'awscli podman skopeo'
-        )
+        self.assertIn('./os/dev/install-cached-awscli.sh', tools)
+        self.assertNotIn(' awscli ', tools)
         self.assertIn(
-            'sudo -n apt-get install -y --no-install-recommends '
-            'software-properties-common',
+            'sudo -n apt-get install -y --no-install-recommends unzip podman skopeo',
             tools,
         )
-        self.assertIn(enable_universe, tools)
-        self.assertIn(install_aws, tools)
-        self.assertLess(tools.index(enable_universe), tools.index(install_aws))
-        self.assertIn('sudo -n dnf install -y awscli podman skopeo', tools)
+        self.assertIn('sudo -n dnf install -y unzip podman skopeo', tools)
+        self.assertIn('sudo -n add-apt-repository --yes universe', tools)
+
+        manifest = (ROOT / 'os/external-assets/github-assets.tsv').read_text()
+        for arch, checksum in {
+            'x86_64': '15daae6cc803984064e3d4be9cfd07c4ae8ea703633c0a0b67acc6e321f706a3',
+            'aarch64': '2c6ed21cf7cff0a7d77118c69bee867128bf4c588db7b5c044ffba5faeb6ccde',
+        }.items():
+            asset = f'awscli-v2.27.41-linux-{arch}.zip'
+            url = f'https://awscli.amazonaws.com/awscli-exe-linux-{arch}-2.27.41.zip'
+            self.assertIn(f'{checksum}\t{asset}\t{url}', manifest)
+
+        installer = ROOT / 'os/dev/install-cached-awscli.sh'
+        self.assertTrue(installer.is_file(), 'promotion must use the checked-in pinned installer')
+        script = installer.read_text()
+        self.assertIn('cache-github-assets.sh" "$asset"', script)
+        self.assertIn('aws/install', script)
+        self.assertIn('"$bin_dir/aws" --version', script)
+
+    def test_cached_awscli_installer_publishes_only_the_pinned_version(self):
+        source = ROOT / 'os/dev/install-cached-awscli.sh'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dev = root / 'os/dev'
+            dev.mkdir(parents=True)
+            installer = dev / source.name
+            installer.write_text(source.read_text())
+            installer.chmod(0o755)
+
+            cache = dev / 'cache-github-assets.sh'
+            cache.write_text('''#!/usr/bin/env bash
+set -euo pipefail
+[ "${CACHE_RESULT:-ok}" = ok ] || exit 9
+mkdir -p "${TILO_GITHUB_ASSET_CACHE:?}"
+: > "$TILO_GITHUB_ASSET_CACHE/$1"
+''')
+            cache.chmod(0o755)
+
+            stubs = root / 'stubs'
+            stubs.mkdir()
+            (stubs / 'uname').write_text('''#!/usr/bin/env bash
+printf '%s\\n' "${UNAME_ARCH:-x86_64}"
+''')
+            (stubs / 'unzip').write_text('''#!/usr/bin/env bash
+set -euo pipefail
+[ "${UNZIP_RESULT:-ok}" = ok ] || exit 10
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -d ]; then destination="$2"; break; fi
+    shift
+done
+mkdir -p "$destination/aws"
+cat > "$destination/aws/install" <<'INSTALL'
+#!/usr/bin/env bash
+set -euo pipefail
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = --bin-dir ]; then bin_dir="$2"; shift 2; continue; fi
+    shift
+done
+mkdir -p "$bin_dir"
+cat > "$bin_dir/aws" <<'AWS'
+#!/usr/bin/env bash
+printf '%s\\n' "${AWS_VERSION:?}"
+AWS
+chmod 0755 "$bin_dir/aws"
+INSTALL
+chmod 0755 "$destination/aws/install"
+''')
+            for path in stubs.iterdir():
+                path.chmod(0o755)
+
+            def run(**values):
+                run_root = root / f"run-{len(list(root.glob('run-*')))}"
+                run_root.mkdir()
+                path_file = run_root / 'github-path'
+                path_file.touch()
+                environment = os.environ | {
+                    'RUNNER_TEMP': str(run_root),
+                    'GITHUB_PATH': str(path_file),
+                    'TILO_GITHUB_ASSET_CACHE': str(run_root / 'cache'),
+                    'AWS_VERSION': 'aws-cli/2.27.41 Python/3.11 Linux/x86_64',
+                    'PATH': str(stubs) + os.pathsep + os.environ['PATH'],
+                } | values
+                result = subprocess.run([installer], env=environment, text=True, capture_output=True)
+                return result, path_file.read_text()
+
+            result, published = run()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(published.splitlines()), 1)
+            self.assertTrue(published.rstrip().endswith('/bin'))
+
+            for values in (
+                {'AWS_VERSION': 'aws-cli/2.27.40 Python/3.11 Linux/x86_64'},
+                {'CACHE_RESULT': 'failed'},
+                {'UNAME_ARCH': 's390x'},
+            ):
+                result, published = run(**values)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(published, '')
 
     def test_reuse_never_reaches_signing_or_promotion(self):
         signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]

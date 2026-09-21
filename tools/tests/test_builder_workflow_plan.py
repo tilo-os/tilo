@@ -45,6 +45,16 @@ class BuilderPlanTests(unittest.TestCase):
         self.assertEqual(mode, "build")
         self.assertIn("replicate-builder-index.py", reason)
 
+    def test_publication_helper_qualifies_without_advancing_a_shared_tag(self):
+        self.assertEqual(
+            plan.choose("push", ["os/dev/install-cached-awscli.sh"]),
+            ("reuse", "qualification inputs only"),
+        )
+        self.assertEqual(
+            plan.choose("push", ["os/external-assets/github-assets.tsv"])[0],
+            "build",
+        )
+
     def test_native_build_contract_change_rebuilds(self):
         self.assertEqual(plan.choose("push", [plan.WORKFLOW], workflow(), workflow(build="echo changed"))[0], "build")
 

@@ -14,6 +14,9 @@ on:
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
+      # This starts qualification only: the plan keeps a publication helper
+      # outside image inputs, so it cannot advance a shared tag by itself.
+      - "os/dev/install-cached-awscli.sh"
       - "os/dev/promote-native-index.py"
       - "os/dev/replicate-builder-index.py"
       - "os/dev/builder-canary-inputs.py"
@@ -488,10 +491,11 @@ jobs:
             sudo -n apt-get install -y --no-install-recommends software-properties-common
             sudo -n add-apt-repository --yes universe
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends awscli podman skopeo
+            sudo -n apt-get install -y --no-install-recommends unzip podman skopeo
           else
-            sudo -n dnf install -y awscli podman skopeo
+            sudo -n dnf install -y unzip podman skopeo
           fi
+          ./os/dev/install-cached-awscli.sh
       - name: Verify and publish the tested native builder index
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
