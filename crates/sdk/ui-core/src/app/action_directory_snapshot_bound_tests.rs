@@ -96,7 +96,8 @@ fn directory_snapshot_bound_document_mutation_and_remounted_owner_change_revisio
         Box::new(crate::widget::Text::new("retired")),
     );
     fixture.app.root_widget = root;
-    fixture.app.actions.bound_broker_route_for_test = replacement.app.actions.bound_broker_route_for_test.clone();
+    fixture.app.actions.bound_broker_route_for_test =
+        replacement.app.actions.bound_broker_route_for_test.clone();
     assert_ne!(fixture.app.action_directory_revision(), revision);
     assert!(fixture.app.actions.action_directory_snapshot.is_none());
     let next = capture_bound_directory(&mut fixture);
