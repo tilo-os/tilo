@@ -5,8 +5,8 @@ use taffy::Size;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::tokens::TextRole;
 use tilo_ui::widget::{
-    Actions, Button, Checkbox, Container, Element, Field, Form, FormPage, Manual, ManualContext,
-    MeasureConstraint as M, Scrollable, Section, Text, TextInput, WidgetLayoutError,
+    Actions, Button, Checkbox, Container, Element, Field, Form, FormPage, FormSection, Manual,
+    ManualContext, MeasureConstraint as M, Scrollable, Text, TextInput, WidgetLayoutError,
 };
 use tilo_ui::{State, Theme};
 use vello::kurbo::Rect;
@@ -204,7 +204,7 @@ fn surface(child: Element) -> Element {
 fn account() -> Form {
     Form::new()
         .section(
-            Section::new("Profile")
+            FormSection::new("Profile")
                 .field(Field::new(NAME, input("name", "Alex Morgan", NAME)).with_help(NAME_HELP))
                 .field(
                     Field::new(EMAIL, input("email", "alex@", EMAIL))
@@ -212,7 +212,7 @@ fn account() -> Form {
                         .with_error(EMAIL_ERROR),
                 ),
         )
-        .section(Section::new("Preferences").content(Box::new(
+        .section(FormSection::new("Preferences").content(Box::new(
             Checkbox::new("updates", "updates").with_label(UPDATES),
         )))
         .with_actions(
@@ -260,7 +260,7 @@ fn manual_in_automatic() -> Element {
     Box::new(
         FormPage::new(
             "Account",
-            account().section(Section::new("Manual region").content(Box::new(region))),
+            account().section(FormSection::new("Manual region").content(Box::new(region))),
         )
         .with_description(DESCRIPTION),
     )
