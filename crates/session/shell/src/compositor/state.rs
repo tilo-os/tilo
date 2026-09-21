@@ -614,6 +614,21 @@ pub struct State {
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
 }
 
+fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
+    use smithay::wayland::compositor::get_parent;
+
+    let mut current = surface.clone();
+    let mut found_parent = false;
+    for _ in 0..64 {
+        let Some(parent) = get_parent(&current) else {
+            return found_parent.then_some(current);
+        };
+        current = parent;
+        found_parent = true;
+    }
+    None
+}
+
 impl State {
     pub(crate) fn authorize_floating_toplevel(&mut self, pending: PendingFloatingToplevel) {
         self.pending_floating_toplevels.retain(|candidate| {
@@ -2550,6 +2565,47 @@ impl RemoteInputSink for State {
 }
 
 impl State {
+    fn refresh_foreign_subsurface_tree(&self, root: &WlSurface) {
+        use smithay::wayland::compositor::{TraversalAction, with_surface_tree_upward};
+
+        let root_id = surface_id(root);
+        if !self.should_capture_foreign_surface(root_id) {
+            return;
+        }
+        let mut children = Vec::new();
+        with_surface_tree_upward(
+            root,
+            (0_i32, 0_i32),
+            |surface, states, parent| {
+                let location = if surface == root {
+                    *parent
+                } else {
+                    let offset = states
+                        .cached_state
+                        .get::<wl_compositor::SubsurfaceCachedState>()
+                        .current()
+                        .location;
+                    (
+                        parent.0.saturating_add(offset.x),
+                        parent.1.saturating_add(offset.y),
+                    )
+                };
+                TraversalAction::DoChildren(location)
+            },
+            |surface, _, location| {
+                if surface != root {
+                    children.push(crate::compositor::foreign::ChildFrame {
+                        surface: surface_id(surface),
+                        x: location.0,
+                        y: location.1,
+                    });
+                }
+            },
+            |_, _, _| true,
+        );
+        crate::compositor::foreign::store().set_children(root_id, children);
+    }
+
     fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
         let surface_id = crate::compositor::state::surface_id(surface);
         // `new_toplevel` registers the protocol surface before adopting it
@@ -2561,6 +2617,7 @@ impl State {
         // subsurface objects are registered through different paths, so this
         // does not turn arbitrary child commits into tiled windows.
         let captured_here = self.client_input.is_known(surface_id)
+            || foreign_root(surface).is_some()
             || self.osk_surface == Some(surface_id)
             || self.is_floating_toplevel(surface_id)
             || self.is_output_presentation_surface(surface_id)
@@ -2858,8 +2915,12 @@ impl CompositorHandler for State {
                 || self.active_sessions.contains_key(&surface_id)
         };
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
-        if self.should_capture_foreign_surface(surface_id) {
+        let foreign_root = foreign_root(surface);
+        if self.should_capture_foreign_surface(surface_id) || foreign_root.is_some() {
             Self::capture_foreign_surface(surface, surface_id);
+        }
+        if let Some(root) = foreign_root {
+            self.refresh_foreign_subsurface_tree(&root);
         }
         let floating_has_new_buffer = self.is_floating_toplevel(surface_id)
             && wl_compositor::with_states(surface, |states| {
@@ -2953,10 +3014,15 @@ impl CompositorHandler for State {
 
     fn destroyed(&mut self, surface: &WlSurface) {
         let id = crate::compositor::state::surface_id(surface);
+        let root = foreign_root(surface);
         self.drop_transients_for_surface(id);
         self.surface_handles.remove(&id);
         self.surface_tracker.forget(id);
         self.unregister_share_session(id);
+        crate::compositor::foreign::store().forget(id);
+        if let Some(root) = root {
+            self.refresh_foreign_subsurface_tree(&root);
+        }
     }
 }
 
