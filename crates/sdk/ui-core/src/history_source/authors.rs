@@ -16,6 +16,7 @@
 //! stranger keeps the same colour across sessions.
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::path::PathBuf;
 
 use crate::widget::history::HistoryAuthor;
@@ -159,6 +160,7 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
 /// `$XDG_CONFIG_HOME/tilo/identity/primary.json`, else
 /// `$HOME/.config/tilo/identity/primary.json`. Mirrors the resolution in
 /// `shell::firstboot::resolve_identity_dir`, which is what writes the file.
+#[cfg(unix)]
 fn config_identity_path() -> Option<PathBuf> {
     let base = match std::env::var("XDG_CONFIG_HOME") {
         Ok(v) if !v.is_empty() => PathBuf::from(v),
@@ -214,6 +216,7 @@ pub fn stable_hue(actor_hex: &str) -> f32 {
 /// RGB → hue in degrees. Saturation/value are fixed by
 /// `crate::widget::history::hue_to_rgb`, so only the hue survives —
 /// deliberate, it keeps the dots a coherent family.
+#[cfg(any(unix, test))]
 fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
     let red = f32::from(rgb[0]) / 255.0;
     let green = f32::from(rgb[1]) / 255.0;
@@ -240,6 +243,7 @@ fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
     (hue * 60.0).rem_euclid(360.0)
 }
 
+#[cfg(unix)]
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len().saturating_mul(2));

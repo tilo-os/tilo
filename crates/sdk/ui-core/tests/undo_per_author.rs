@@ -10,8 +10,8 @@
 
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
-use ui::permissions::UserId;
-use ui::state::State;
+use tilo_ui::permissions::UserId;
+use tilo_ui::state::State;
 
 #[test]
 fn commit_action_records_no_author_by_default() {

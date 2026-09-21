@@ -11,10 +11,10 @@
 )]
 
 use std::time::Duration;
-use ui::offscreen::OffscreenRenderer;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::toast::{ToastCard, ToastKind, ToastStack, paint_card};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::toast::{ToastCard, ToastKind, ToastStack, paint_card};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;

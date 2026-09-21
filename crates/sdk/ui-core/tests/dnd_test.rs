@@ -8,7 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::dnd::{DragDropManager, DragPayload};
+use tilo_ui::dnd::{DragDropManager, DragPayload};
 use vello::kurbo::Point;
 
 #[test]

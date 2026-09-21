@@ -1,0 +1,34 @@
+[package]
+name = "tilo-app-cli"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Developer workflow for creating Tilo applications"
+
+[lib]
+name = "tilo_app_cli"
+
+[[bin]]
+name = "tilo-app"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+fluent.workspace = true
+fluent-syntax.workspace = true
+libc.workspace = true
+notify.workspace = true
+image = { workspace = true, features = ["png"] }
+pkg = { path = "../../packaging/pkg" }
+serde.workspace = true
+serde_json.workspace = true
+syn = { version = "2.0", features = ["full"] }
+tempfile.workspace = true
+toml.workspace = true
+tilo-ui-graph = { path = "../ui-graph" }
+tilo-headless-schema = { path = "../headless-schema" }
+
+[lints]
+workspace = true

@@ -21,11 +21,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{Column, Container, NavPane, NavShell, Row, Spacer, Text, Widget};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{Column, Container, NavPane, NavShell, Row, Spacer, Text, Widget};
 
 /// A titled list panel filled with `fill`, a header band, and rows. The header
 /// title is indented by `header_indent` px so it clears the shell's top-left

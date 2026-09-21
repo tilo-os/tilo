@@ -11,12 +11,12 @@
 )]
 
 use std::sync::{Arc, Mutex};
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
-use ui::widget::command_palette::{CommandEntry, CommandPalette};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Widget;
+use tilo_ui::widget::command_palette::{CommandEntry, CommandPalette};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;

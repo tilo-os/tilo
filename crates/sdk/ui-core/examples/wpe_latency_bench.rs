@@ -1,8 +1,8 @@
 //! Black-box latency + throughput benchmark for the WPE `WebKit` engine
-//! behind `ui::webview` (feature `webview-wpe`).
+//! behind `tilo_ui::webview` (feature `webview-wpe`).
 //!
-//! Treats the engine purely through the [`ui::webview::WebViewEngine`]
-//! trait — commands in, frames out of the [`ui::webview::FrameSlot`]
+//! Treats the engine purely through the [`tilo_ui::webview::WebViewEngine`]
+//! trait — commands in, frames out of the [`tilo_ui::webview::FrameSlot`]
 //! mailbox — so the numbers reflect exactly what the `WebView` widget
 //! observes, including the SHM copy + BGRA→RGBA swizzle per frame.
 //!
@@ -37,8 +37,8 @@ mod bench {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use ui::webview::wpe::WpeEngine;
-    use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
+    use tilo_ui::webview::wpe::WpeEngine;
+    use tilo_ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
     const DEFAULT_URL: &str = "https://en.wikipedia.org/wiki/Web_browser";
     const WIDTH: u32 = 1400;

@@ -8,8 +8,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::Theme;
-use ui::tokens::{Metrics, Radii, Spacing, SpacingStep, Tokens};
+use tilo_ui::Theme;
+use tilo_ui::tokens::{Metrics, Radii, Spacing, SpacingStep, Tokens};
 
 #[test]
 fn tokens_dark_has_11_neutral_stops() {
@@ -145,9 +145,9 @@ fn text_growth_follows_larger_text_and_never_shrinks() {
     );
 }
 
-use ui::dnd::DragPayload;
-use ui::permissions::{PermissionScope, ResourceRef, Verb};
-use ui::presence::{PresenceCtx, PresenceKey};
+use tilo_ui::dnd::DragPayload;
+use tilo_ui::permissions::{PermissionScope, ResourceRef, Verb};
+use tilo_ui::presence::{PresenceCtx, PresenceKey};
 
 #[test]
 fn presence_ctx_empty_is_constructible() {

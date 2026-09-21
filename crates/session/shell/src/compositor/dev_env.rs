@@ -41,7 +41,7 @@ pub const DEV_ENV_OVERRIDES: bool = cfg!(debug_assertions);
 ///
 /// Deliberately searched for with a plain substring match over the file, so
 /// the check needs no parsing and no execution of the untrusted binary.
-pub const DEV_SESSION_MARKER: &str = "tilo-dev-session-build-marker-v1";
+pub const DEV_SESSION_MARKER: &str = "tilo-app-session-build-marker-v1";
 
 /// The marker itself, present only when the non-default `dev-session`
 /// feature is on **and** this is a debug build. Both conditions, so that
@@ -51,7 +51,7 @@ pub const DEV_SESSION_MARKER: &str = "tilo-dev-session-build-marker-v1";
 /// `#[used]` keeps the linker from discarding a static nothing reads.
 #[cfg(all(feature = "dev-session", debug_assertions))]
 #[used]
-pub static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-dev-session-build-marker-v1";
+pub static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1";
 
 #[cfg(test)]
 mod tests {
