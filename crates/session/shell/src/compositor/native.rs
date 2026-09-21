@@ -7366,7 +7366,11 @@ pub fn run() {
             let t_submit_start = Instant::now();
             let mut render_thread_lost = false;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
-                render_thread_lost = !pipe.submit_frame(frame_paint, OutputId(0));
+                render_thread_lost = !pipe.submit_frame_with_input_age(
+                    frame_paint,
+                    OutputId(0),
+                    metrics.pending_input_age(t_submit_start),
+                );
                 // This serial belongs to the scene submitted above.  Do not
                 // use a before/after presentation count here: an older
                 // desktop frame can be in flight when sleep locks, and its

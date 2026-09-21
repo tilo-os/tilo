@@ -826,6 +826,10 @@ pub struct DrmScanout {
     front: usize,
     /// True between requesting a page flip and draining its completion; guards against queuing a second flip before the first retires (kernel rejects with `EBUSY`).
     flip_pending: bool,
+    /// Monotonic instant at which the currently pending page flip was queued.
+    /// Diagnostic only: completion clears it and logs only anomalously slow
+    /// retirements, keeping the normal 144 Hz path silent.
+    flip_queued_at: Option<std::time::Instant>,
     /// Whether the page-flip path is in use; latched `false` if a flip fails with a "not supported" errno, falling back to `dirty_framebuffer/set_crtc`.
     use_pageflip: bool,
     width: u32,
@@ -1016,6 +1020,7 @@ impl DrmScanout {
             fbs: [fb0, fb1],
             front: 0,
             flip_pending: false,
+            flip_queued_at: None,
             use_pageflip: true,
             width,
             height,
@@ -1101,6 +1106,7 @@ impl DrmScanout {
         self.invalidate_xrgb_history();
         // The in-flight flip died with the master lock; clearing this first lets the next frame present at all.
         self.flip_pending = false;
+        self.flip_queued_at = None;
         // Re-binding the mode is what the kernel needs to scan out again.
         if let Some(fb) = self.fb_at(self.front) {
             if let Err(e) = self.card.set_crtc(
@@ -1446,7 +1452,13 @@ impl DrmScanout {
         {
             Ok(()) => {
                 self.flip_pending = true;
+                self.flip_queued_at = Some(std::time::Instant::now());
                 self.front = idx;
+                tracing::trace!(
+                    crtc = ?self.crtc,
+                    buffer = idx,
+                    "FRAME-LIFECYCLE event=drm-flip-queued"
+                );
                 true
             }
             Err(e) => {
@@ -1503,6 +1515,7 @@ impl DrmScanout {
         if let Ok(events) = self.card.receive_events() {
             for ev in events {
                 if let Event::PageFlip(_) = ev {
+                    self.log_flip_completion();
                     self.flip_pending = false;
                 }
             }
@@ -1526,7 +1539,22 @@ impl DrmScanout {
     /// Clear `flip_pending` iff `crtc` is this scanout's crtc.
     pub fn mark_flip_complete(&mut self, crtc: crtc::Handle) {
         if crtc == self.crtc {
+            self.log_flip_completion();
             self.flip_pending = false;
+        }
+    }
+
+    fn log_flip_completion(&mut self) {
+        let Some(queued_at) = self.flip_queued_at.take() else {
+            return;
+        };
+        let elapsed = queued_at.elapsed();
+        if elapsed >= std::time::Duration::from_millis(100) {
+            eprintln!(
+                "FRAME-LIFECYCLE event=drm-flip-completed crtc={:?} elapsed_us={}",
+                self.crtc,
+                elapsed.as_micros(),
+            );
         }
     }
 
