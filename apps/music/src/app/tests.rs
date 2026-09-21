@@ -1,5 +1,6 @@
 use super::*;
 use std::sync::{Mutex, OnceLock};
+use ui::widget::Continuable as _;
 
 static PROFILE_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 

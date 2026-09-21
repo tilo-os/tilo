@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 def manifests(root, version, base_url):
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
         raise ValueError("WinGet requires a stable semantic version")
-    repository = os.environ.get("TILO_RELEASE_REPOSITORY", "tilo/releases")
+    repository = os.environ.get("TILO_RELEASE_REPOSITORY", "qos/releases")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("release repository must be OWNER/REPOSITORY")
     server = urlparse(os.environ.get("GITHUB_SERVER_URL", "https://code.sandbox.example"))

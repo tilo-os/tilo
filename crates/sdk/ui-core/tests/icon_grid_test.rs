@@ -22,12 +22,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use ui::icons::Icon;
-use ui::presence::PresenceCtx;
-use ui::selection::SelectionModel;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{IconGrid, IconGridItem, Widget};
+use tilo_ui::icons::Icon;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::selection::SelectionModel;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{IconGrid, IconGridItem, Widget};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

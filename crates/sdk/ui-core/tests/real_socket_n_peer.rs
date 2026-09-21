@@ -24,8 +24,8 @@ use std::thread;
 use std::time::Duration;
 
 use crate::support::{document_mutation, typed_collab::TypedBroker};
-use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
-use ui::presence::PresenceKey;
+use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use tilo_ui::presence::PresenceKey;
 
 #[test]
 fn n_peer_fanout_and_per_peer_attribution() {

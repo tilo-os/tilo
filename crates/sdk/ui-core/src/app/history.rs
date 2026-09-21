@@ -36,7 +36,7 @@ impl App {
     pub(super) fn discard_history_local_intents(&mut self) {
         let _ = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
         while self.root_widget.take_control_invocation().is_some() {}
-        self.action_palette = None;
+        self.actions.action_palette = None;
     }
     pub(super) fn refresh_framework_history(&mut self, width: f64) {
         self.refresh_document_routes();
@@ -70,12 +70,12 @@ impl App {
             self.history_focus = unsafe {
                 crate::widget::layout::CompositionFocus::capture(
                     self.focused_node,
-                    &self.node_map,
+                    &self.layout.node_map,
                     &self.bindings,
                 )
             };
         }
-        self.node_map.clear();
+        self.layout.node_map.clear();
         self.bindings.clear();
         self.focused_node = None;
         if let Some(history) = &mut self.history {
@@ -103,8 +103,8 @@ impl App {
             self.discard_history_local_intents();
         }
         self.invalidate_widget_resource_cache();
-        self.structure_dirty = true;
-        self.layout_dirty = true;
+        self.layout.structure_dirty = true;
+        self.layout.layout_dirty = true;
     }
     pub(super) fn update_history_focus_order(&mut self) {
         self.focusable_order.clear();
@@ -112,15 +112,15 @@ impl App {
             .history
             .as_ref()
             .and_then(|history| history.review_layout_node())
-            .or(self.root_node);
+            .or(self.layout.root_node);
         let mut nodes: Vec<_> = root.into_iter().collect();
         while let Some(node) = nodes.pop() {
             let allowed = crate::history_mode::embedded::allows_focus(
                 self.root_widget.as_ref(),
                 node,
-                &self.taffy,
+                &self.layout.taffy,
             ) && self.history.as_ref().is_none_or(|history| {
-                !history.captures_input() || history.owns_node(node, &self.taffy)
+                !history.captures_input() || history.owns_node(node, &self.layout.taffy)
             });
             if allowed
                 && self
@@ -130,7 +130,8 @@ impl App {
                 self.focusable_order.push(node);
             }
             nodes.extend(
-                self.taffy
+                self.layout
+                    .taffy
                     .children(node)
                     .unwrap_or_default()
                     .into_iter()
@@ -149,9 +150,9 @@ impl App {
                 self.root_widget.as_mut(),
                 target,
                 self.focused_node,
-                &self.node_map,
+                &self.layout.node_map,
                 &self.bindings,
-                &self.taffy,
+                &self.layout.taffy,
             )
         } {
             self.focused_node = None;
@@ -159,7 +160,7 @@ impl App {
         let resumed = self.history.as_ref().is_some_and(|history| {
             !history.captures_input()
                 && history.has_saved_focus()
-                && target.is_some_and(|node| !history.owns_node(node, &self.taffy))
+                && target.is_some_and(|node| !history.owns_node(node, &self.layout.taffy))
         });
         if resumed {
             if let Some(history) = &mut self.history {
@@ -167,6 +168,7 @@ impl App {
             }
             self.history_focus = None;
             let old: Vec<_> = self
+                .layout
                 .node_map
                 .keys()
                 .copied()
@@ -182,17 +184,17 @@ impl App {
             }
         }
         if let Some(history) = &mut self.history
-            && target.is_some_and(|node| history.owns_node(node, &self.taffy))
+            && target.is_some_and(|node| history.owns_node(node, &self.layout.taffy))
             && self
                 .focused_node
-                .is_some_and(|node| !history.owns_node(node, &self.taffy))
+                .is_some_and(|node| !history.owns_node(node, &self.layout.taffy))
         {
             unsafe {
                 history.preserve_focus(
                     self.focused_node,
-                    &self.node_map,
+                    &self.layout.node_map,
                     &self.bindings,
-                    &self.taffy,
+                    &self.layout.taffy,
                 );
             }
             self.focused_node = None;
@@ -204,7 +206,7 @@ impl App {
             event,
             scale,
             self.focused_node,
-            &self.taffy,
+            &self.layout.taffy,
         );
         if let Some(history) = &mut self.history {
             history.observe_pointer(event, scale);
@@ -240,11 +242,11 @@ impl App {
                     crate::history_mode::embedded::owns_node(
                         self.root_widget.as_ref(),
                         *node,
-                        &self.taffy,
+                        &self.layout.taffy,
                     ) || self
                         .history
                         .as_ref()
-                        .is_some_and(|history| history.owns_node(*node, &self.taffy))
+                        .is_some_and(|history| history.owns_node(*node, &self.layout.taffy))
                 });
             }
         }
@@ -273,14 +275,14 @@ impl App {
             if history.captures_input()
                 && self
                     .focused_node
-                    .is_some_and(|node| !history.owns_node(node, &self.taffy))
+                    .is_some_and(|node| !history.owns_node(node, &self.layout.taffy))
             {
                 unsafe {
                     history.preserve_focus(
                         self.focused_node,
-                        &self.node_map,
+                        &self.layout.node_map,
                         &self.bindings,
-                        &self.taffy,
+                        &self.layout.taffy,
                     );
                 }
                 self.focused_node = None;
@@ -294,9 +296,9 @@ impl App {
                 &self.state.root,
                 &mut handled,
                 &mut focus,
-                &self.taffy,
+                &self.layout.taffy,
             );
-        } else if let Some(root) = self.root_node {
+        } else if let Some(root) = self.layout.root_node {
             self.root_widget.handle_event(
                 event,
                 scale,
@@ -306,7 +308,7 @@ impl App {
                 &mut handled,
                 &mut focus,
                 root,
-                &self.taffy,
+                &self.layout.taffy,
             );
         }
         if let Some(focus) = focus {
@@ -321,14 +323,16 @@ impl App {
             self.discard_history_local_intents();
         }
         self.poll_directed_invocations();
-        self.refresh_framework_history(self.last_layout_logical.map_or(900.0, |size| size.0));
-        self.layout_dirty = true;
+        self.refresh_framework_history(
+            self.layout.last_layout_logical.map_or(900.0, |size| size.0),
+        );
+        self.layout.layout_dirty = true;
         true
     }
     pub(super) fn settle_history_presentation(&mut self) -> bool {
         self.refresh_document_routes();
         if crate::history_mode::embedded::has_review(self.root_widget.as_ref()) {
-            self.node_map.clear();
+            self.layout.node_map.clear();
             self.bindings.clear();
             self.focused_node = None;
             let restored = crate::history_mode::embedded::service_reviews(
@@ -342,13 +346,13 @@ impl App {
                 self.invalidate_widget_resource_cache();
                 self.publish_owned_documents();
             }
-            self.structure_dirty = true;
+            self.layout.structure_dirty = true;
             return true;
         }
         let nested_focus = unsafe {
             crate::history_mode::embedded::restore_focus(
                 self.root_widget.as_mut(),
-                &self.node_map,
+                &self.layout.node_map,
                 &self.bindings,
             )
         };
@@ -358,22 +362,26 @@ impl App {
                 self.history_focus = None;
             } else if let Some(focus) = self.history_focus.take() {
                 self.focused_node = unsafe {
-                    focus.restore(&self.node_map, &self.bindings, Some(&self.focusable_order))
+                    focus.restore(
+                        &self.layout.node_map,
+                        &self.bindings,
+                        Some(&self.focusable_order),
+                    )
                 };
             }
             return false;
         };
 
         if history.validate_root(self.root_widget.as_ref()).is_err() {
-            self.node_map.clear();
+            self.layout.node_map.clear();
             self.bindings.clear();
             self.focused_node = None;
             let changed = history.invalidate_owner();
-            self.structure_dirty |= changed;
+            self.layout.structure_dirty |= changed;
             return changed;
         }
         if history.has_review_request() {
-            self.node_map.clear();
+            self.layout.node_map.clear();
             self.bindings.clear();
             self.focused_node = None;
             let changed = history.service_restore(
@@ -399,15 +407,20 @@ impl App {
                     self.publish_owned_documents();
                 }
             }
-            self.structure_dirty = true;
+            self.layout.structure_dirty = true;
             return true;
         }
         if history.returning_live() {
-            self.focused_node = unsafe { history.restore_focus(&self.node_map, &self.bindings) };
+            self.focused_node =
+                unsafe { history.restore_focus(&self.layout.node_map, &self.bindings) };
             self.history_focus = None;
         } else if let Some(focus) = self.history_focus.take() {
             self.focused_node = unsafe {
-                focus.restore(&self.node_map, &self.bindings, Some(&self.focusable_order))
+                focus.restore(
+                    &self.layout.node_map,
+                    &self.bindings,
+                    Some(&self.focusable_order),
+                )
             };
         }
         false

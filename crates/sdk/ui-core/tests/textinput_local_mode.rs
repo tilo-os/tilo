@@ -17,8 +17,8 @@ use std::collections::HashMap;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use ui::Widget;
-use ui::widget::TextInput;
+use tilo_ui::Widget;
+use tilo_ui::widget::TextInput;
 use winit::event::{Ime, Modifiers, WindowEvent};
 
 #[test]
@@ -28,7 +28,7 @@ fn local_textinput_accepts_typed_characters_and_reports_via_take_dirty() {
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root_node = (&mut input as &mut dyn Widget).build_layout(
         &mut taffy,
-        &ui::theme::Theme::dark(),
+        &tilo_ui::theme::Theme::dark(),
         &mut node_map,
     );
     taffy
