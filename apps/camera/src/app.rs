@@ -6638,18 +6638,27 @@ mod tests {
         (app, doc, root)
     }
 
-    /// 2026-09-17 review: the Photo / Video / Scan capsule split its authored
-    /// 240 px into three 80 px segments at every scale, so 200% labels ran
-    /// into each other. The capsule keeps 240 at 1× and takes the measured
-    /// labels' width (plus padding) when they need more.
+    /// The four live destinations share one measured segmented strip. Every
+    /// segment is wide enough for the widest label at the active text scale,
+    /// and adjacent centres stay evenly spaced.
     #[test]
     fn mode_switcher_segments_hold_their_measured_labels_at_2x() {
+        let labels = ["Photo", "Video", "Codes", "Docs"];
+        let targets = [
+            "camera.mode:photo",
+            "camera.mode:video",
+            "camera.nav:scanner",
+            "camera.nav:document",
+        ];
         let mut tr = TextRenderer::new();
+        let widest = labels
+            .iter()
+            .map(|label| f64::from(p::text_w(&mut tr, label, MODE_LABEL_SIZE)))
+            .fold(0.0_f64, f64::max);
         assert_eq!(
-            CameraApp::segmented_min_w(&mut tr, &["Photo", "Video", "Scan"]),
-            3.0 * (f64::from(p::text_w(&mut tr, "Photo", MODE_LABEL_SIZE))
-                + 2.0 * MODE_LABEL_PAD_X),
-            "the widest label sizes every segment"
+            CameraApp::segmented_min_w(&mut tr, &labels),
+            labels.len() as f64 * (widest + 2.0 * MODE_LABEL_PAD_X),
+            "the widest live label sizes every segment"
         );
         for scale in [1.0_f32, 2.0] {
             let (mut app, mut doc, root) = sample_app();
@@ -6657,39 +6666,32 @@ mod tests {
             let mut tr = TextRenderer::new();
             tr.set_text_scale(scale);
             let tree = app.accessibility().expect("camera has a semantic window");
-            let segment = |target: &str| -> Rect {
-                tree.children
-                    .iter()
-                    .find(|node| node.action_target.as_deref() == Some(target))
-                    .and_then(|node| node.bounds)
-                    .map(ui::a11y::AccessBounds::to_rect)
-                    .unwrap_or_else(|| panic!("{target} is a painted segment"))
-            };
-            let photo = segment("camera.mode:photo");
-            let video = segment("camera.mode:video");
-            let scan = segment("camera.nav:scanner");
-            // Tap regions grow narrow segments to the 44 px touch minimum
-            // around their centre, so widths are read from adjacent centres.
-            let seg_w = video.center().x - photo.center().x;
-            assert!(
-                (scan.center().x - video.center().x - seg_w).abs() < 0.5,
-                "{scale}×: equal segments {photo:?} {video:?} {scan:?}"
-            );
-            if (scale - 1.0).abs() < f32::EPSILON {
+            let segments: Vec<Rect> = targets
+                .iter()
+                .map(|target| {
+                    tree.children
+                        .iter()
+                        .find(|node| node.action_target.as_deref() == Some(*target))
+                        .and_then(|node| node.bounds)
+                        .map(ui::a11y::AccessBounds::to_rect)
+                        .unwrap_or_else(|| panic!("{target} is a painted segment"))
+                })
+                .collect();
+            let seg_w = segments[1].center().x - segments[0].center().x;
+            for pair in segments.windows(2) {
                 assert!(
-                    (seg_w - 80.0).abs() < 0.5,
-                    "1× keeps the authored 240/3: {seg_w}"
-                );
-            } else {
-                let widest = ["Photo", "Video", "Scan"]
-                    .iter()
-                    .map(|label| f64::from(p::text_w(&mut tr, label, MODE_LABEL_SIZE)))
-                    .fold(0.0_f64, f64::max);
-                assert!(
-                    seg_w >= widest + 2.0 * MODE_LABEL_PAD_X,
-                    "{scale}×: {seg_w} px segments hold a {widest} px label with padding"
+                    (pair[1].center().x - pair[0].center().x - seg_w).abs() < 0.5,
+                    "{scale}×: equal segments {segments:?}"
                 );
             }
+            let widest = labels
+                .iter()
+                .map(|label| f64::from(p::text_w(&mut tr, label, MODE_LABEL_SIZE)))
+                .fold(0.0_f64, f64::max);
+            assert!(
+                seg_w >= widest + 2.0 * MODE_LABEL_PAD_X,
+                "{scale}×: {seg_w} px segments hold a {widest} px label with padding"
+            );
         }
     }
 
@@ -7670,7 +7672,6 @@ mod tests {
             render_at_scaled(&mut app, &mut doc, &root, 1366.0, 768.0, scale);
             let mut tr = TextRenderer::new();
             tr.set_text_scale(scale);
-            let pill_label_h = f64::from(tr.measure("HDR", CTRL_PILL_LABEL_SIZE, None).1);
             let mode_label_h = f64::from(tr.measure("Photo", MODE_LABEL_SIZE, None).1);
             let tree = app.accessibility().expect("camera has a semantic window");
             let bounds_of = |target: &str| -> Rect {
@@ -7687,8 +7688,8 @@ mod tests {
             const TOUCH_MIN: f64 = 44.0;
             let photo = bounds_of("camera.mode:photo");
             let shutter = bounds_of("camera.shutter");
-            let pill = bounds_of("camera.hdr");
             if (scale - 1.0).abs() < f32::EPSILON {
+                let pill = bounds_of("camera.hdr");
                 // 1× keeps the authored 30 / 34 px capsules (both under the
                 // touch minimum, so their regions read exactly 44) and the
                 // 34 px switcher ends `ACTION_GAP` above the shutter's top
@@ -7711,11 +7712,24 @@ mod tests {
                 // 2×: the measured label lines exceed the minima, so the grown
                 // capsules are what the regions report — and they contain the
                 // labels with their padding, bottom edge still on the shutter.
-                for target in ["camera.hdr", "camera.resolution"] {
+                let timer_target = format!(
+                    "camera.timer:{}",
+                    cycle(&Timer::ALL, app.settings.timer).seconds()
+                );
+                let timer_label = if app.settings.timer == Timer::Off {
+                    "Timer"
+                } else {
+                    app.settings.timer.label()
+                };
+                for (target, label) in [
+                    ("camera.resolution", app.settings.resolution.label()),
+                    (timer_target.as_str(), timer_label),
+                ] {
                     let pill = bounds_of(target);
+                    let pill_label_h = f64::from(tr.measure(label, CTRL_PILL_LABEL_SIZE, None).1);
                     assert!(
                         pill.height() + 0.5 >= pill_label_h + CTRL_PILL_PAD_Y * 2.0,
-                        "2×: {target} pill {pill:?} cannot contain a {pill_label_h} px label"
+                        "2×: {target} pill {pill:?} cannot contain its {pill_label_h} px label"
                     );
                 }
                 assert!(
@@ -7729,7 +7743,7 @@ mod tests {
             }
             // Corner controls share one edge inset (checked through their
             // painted centres, which touch inflation never moves).
-            let thumb = bounds_of("camera.nav:gallery");
+            let thumb = bounds_of("camera.open-recent-capture");
             let lens = bounds_of("camera.facing");
             let settings = bounds_of("camera.nav:settings");
             assert!(
@@ -7772,9 +7786,13 @@ mod tests {
         let codes = bounds_for("camera.nav:scanner");
         let documents = bounds_for("camera.nav:document");
 
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let measured_h =
+            f64::from(tr.measure("Photo", MODE_LABEL_SIZE, None).1) + 2.0 * MODE_LABEL_PAD_Y;
         assert!(
-            photo.y1 - photo.y0 >= 64.0,
-            "200% text gets a full-height segmented touch target"
+            photo.y1 - photo.y0 + 0.5 >= measured_h.max(44.0),
+            "200% text gets a measured full-height segmented touch target"
         );
         assert!(photo.x1 <= video.x0);
         assert!(video.x1 <= codes.x0);

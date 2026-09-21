@@ -10564,13 +10564,16 @@ fn a_disabled_export_button_offers_no_pointer() {
     let (mut app, _doc) = app_and_doc();
     app.presentation.export_open = true;
     app.project = unexportable_project();
+    // Seed the dialog theme before starting the job. A frame rendered after
+    // `begin_export_to` polls this deliberately fast-failing job to completion
+    // and would no longer be testing the disabled in-flight action.
+    render(&mut app);
     let dest = scratch("cursor-export").join("never-written.mp4");
     app.begin_export_to(dest);
     assert!(
         !app.export_is_offered(),
         "a render in flight disables Export"
     );
-    render(&mut app);
     let mut tr = TextRenderer::new();
     let l = app.export_layout(&mut tr, &Theme::dark());
     assert_eq!(
@@ -10583,12 +10586,18 @@ fn a_disabled_export_button_offers_no_pointer() {
         Some(CursorIcon::Pointer),
         "Cancel is live and says so"
     );
+    assert_eq!(
+        app.cursor_shape(l.resolution[0].1.center()),
+        Some(CursorIcon::Pointer),
+        "the live option controls retain their pointer"
+    );
     app.export_job = None;
     app.export_status = ExportStatus::Idle;
     if app.export_is_offered() {
         assert_eq!(
             app.cursor_shape(l.confirm.center()),
-            Some(CursorIcon::Pointer)
+            Some(CursorIcon::Pointer),
+            "enabled Export offers a pointer"
         );
     }
 }
