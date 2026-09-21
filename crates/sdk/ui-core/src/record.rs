@@ -1997,6 +1997,7 @@ impl RecordStore {
 
     /// Merge broker-admitted bytes atomically into the canonical owner. Validate
     /// on a private copy before ending local typing or changing the undo baseline.
+    #[allow(dead_code, reason = "used by feature-gated collaboration paths")]
     pub(crate) fn merge_remote_document(
         &self,
         checkout: &RecordCheckout,
@@ -2151,6 +2152,7 @@ impl RecordStore {
     }
 }
 
+#[allow(dead_code, reason = "used by feature-gated collaboration paths")]
 fn validate_replica_identity(
     doc: &AutoCommit,
     checkout: &RecordCheckout,
