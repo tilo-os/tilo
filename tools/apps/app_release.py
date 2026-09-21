@@ -47,6 +47,7 @@ PACKAGING_INPUTS = {
     "tools/app_packaging_plan.py",
 }
 VERIFICATION_INPUTS = {
+    "tools/ci/app_release_history.py",
     "tools/apps/app_release.py",
     "tools/ci/__init__.py",
     "tools/ci/workspace_graph.py",
