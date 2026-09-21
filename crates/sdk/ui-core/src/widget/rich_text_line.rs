@@ -88,6 +88,7 @@ const DEFAULT_FONT_SIZE: f32 = 16.0;
 
 /// Geometry shared by every mark segment `draw` paints in one frame, so
 /// `paint_mark_segment` doesn't need a fistful of separate parameters.
+#[allow(dead_code, reason = "used by feature-gated rich text rendering")]
 struct MarkDrawCtx<'a> {
     text: &'a str,
     xs: &'a [f64],
@@ -1136,6 +1137,7 @@ fn transient_color(theme: &Theme, role: TransientColorRole) -> vello::peniko::Co
     }
 }
 
+#[allow(dead_code, reason = "used by feature-gated rich text rendering")]
 fn paint_transient_color(
     scene: &mut Scene,
     transform: Affine,
@@ -1170,6 +1172,7 @@ fn paint_transient_color(
 /// Paints one mark segment's overpaint (code chip, link/underline/strike
 /// rules, and restyled glyphs) inside the clip layer `draw` already pushed.
 /// A pure function of its inputs — no `self` needed.
+#[allow(dead_code, reason = "used by feature-gated rich text rendering")]
 fn paint_mark_segment(
     scene: &mut Scene,
     transform: Affine,
@@ -1246,6 +1249,7 @@ fn paint_mark_segment(
 /// Draws the code-chip background and the link/underline/strikethrough
 /// rules for one segment — the parts of `paint_mark_segment` that don't
 /// depend on the restyled text run itself.
+#[allow(dead_code, reason = "used by feature-gated rich text rendering")]
 fn paint_segment_decorations(
     scene: &mut Scene,
     transform: Affine,
@@ -1329,8 +1333,9 @@ fn paint_segment_decorations(
 /// overflow — same reasoning clippy already exempts bare `f64` arithmetic
 /// for.
 #[allow(
+    dead_code,
     clippy::arithmetic_side_effects,
-    reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
+    reason = "feature-gated rendering helper; Affine::mul cannot meaningfully overflow"
 )]
 fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
     transform * Affine::translate((dx, dy))
