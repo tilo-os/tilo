@@ -1296,15 +1296,20 @@ impl RoomActivityPane {
         ) else {
             return false;
         };
-        let (new_left_end, new_right_start) = match boundary.direction {
-            BoundaryDirection::IntoNewer if older.entry_ids.len() > 1 => (
-                older.entry_ids[older.entry_ids.len() - 2],
-                older.entry_ids[older.entry_ids.len() - 1],
-            ),
-            BoundaryDirection::IntoOlder if newer.entry_ids.len() > 1 => {
-                (newer.entry_ids[0], newer.entry_ids[1])
-            }
+        let older_tail = older
+            .entry_ids
+            .split_last()
+            .and_then(|(right, rest)| rest.last().map(|left| (*left, *right)));
+        let newer_head = newer
+            .entry_ids
+            .split_first()
+            .and_then(|(left, rest)| rest.first().map(|right| (*left, *right)));
+        let Some((new_left_end, new_right_start)) = (match boundary.direction {
+            BoundaryDirection::IntoNewer => older_tail,
+            BoundaryDirection::IntoOlder => newer_head,
             _ => return false,
+        }) else {
+            return false;
         };
         if ui::history_groups::materialize_and_move_boundary(
             &mut tree.doc,
@@ -3250,12 +3255,22 @@ impl RoomActivityPane {
         }
         let mut shown = 0usize;
         let mut previous_index = None;
-        for index in self.brief_offset..self.digest.briefs.len() {
-            let brief = &self.digest.briefs[index];
+        for (index, brief) in self
+            .digest
+            .briefs
+            .iter()
+            .enumerate()
+            .skip(self.brief_offset)
+        {
             let expanded = self.expanded_brief == Some(index);
             if let Some(newer) = previous_index
                 && (expanded || self.expanded_brief == Some(newer))
             {
+                let newer_has_multiple_changes = self
+                    .digest
+                    .briefs
+                    .get(newer)
+                    .is_some_and(|newer_brief| newer_brief.changes > 1);
                 let rail = Rect::new(x0 + 8.0, y - 5.0, x1 - 8.0, y + 21.0);
                 draw_work_session_boundary(
                     scene,
@@ -3264,10 +3279,10 @@ impl RoomActivityPane {
                     theme,
                     rail,
                     brief.changes > 1,
-                    self.digest.briefs[newer].changes > 1,
+                    newer_has_multiple_changes,
                 );
                 let (into_newer, into_older) = work_session_boundary_button_rects(rail);
-                if self.digest.briefs[newer].changes > 1 {
+                if newer_has_multiple_changes {
                     self.boundary_rects.push((
                         WorkSessionBoundary {
                             older: index,
