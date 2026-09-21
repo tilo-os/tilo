@@ -82,7 +82,10 @@ struct PciRecommendation {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-#[allow(clippy::struct_field_names)] // These names mirror the PCI sysfs ABI.
+#[allow(
+    clippy::struct_field_names,
+    reason = "these names mirror the PCI sysfs ABI"
+)]
 struct PciMatch {
     vendor_id: u16,
     device_id: u16,
@@ -99,7 +102,10 @@ struct PciCatalogSigningPayload<'a> {
 }
 
 #[derive(Clone, Debug)]
-#[allow(clippy::struct_field_names)] // These names mirror the PCI sysfs ABI.
+#[allow(
+    clippy::struct_field_names,
+    reason = "these names mirror the PCI sysfs ABI"
+)]
 struct PciDevice {
     vendor_id: u16,
     device_id: u16,
