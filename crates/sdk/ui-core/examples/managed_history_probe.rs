@@ -21,9 +21,7 @@ use tilo_ui::{
         HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
         PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView, restore,
     },
-    widget::{
-        AppKind, AppWidget, Column, IconDescriptor, Text, TileContent, TileHost, Widget,
-    },
+    widget::{AppKind, AppWidget, Column, IconDescriptor, Text, TileContent, TileHost, Widget},
 };
 use vello::{
     Scene,
