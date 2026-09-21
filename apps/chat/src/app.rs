@@ -32,7 +32,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::tooltip::TooltipHost;
-use ui::widget::{ContextMenu as SharedContextMenu, Continuable, MenuItem, TextInput, VideoPlayer};
+use ui::widget::{
+    Collaborative, ContextMenu as SharedContextMenu, Continuable, MenuItem, TextInput, VideoPlayer,
+};
 
 use crate::actions::{self, ChatAction};
 use crate::call::{CallState, SoundEngine};
@@ -2859,15 +2861,7 @@ impl Continuable for ChatApp {
     }
 }
 
-impl Widget for ChatApp {
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Some(self)
-    }
-
+impl Collaborative for ChatApp {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         self.queue_realtime_registration();
         if self.realtime.target_media_ready {
@@ -2942,6 +2936,20 @@ impl Widget for ChatApp {
             }
             _ => {}
         }
+    }
+}
+
+impl Widget for ChatApp {
+    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+        Some(self)
+    }
+
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {

@@ -1541,6 +1541,7 @@ impl FrameHarness {
             .as_ref()
             .is_none_or(|history| history.live_visible())
         {
+            crate::widget::native_view_frame_start(self.root.as_mut());
             self.root.draw_with_presence(
                 &mut self.scene,
                 Affine::IDENTITY,

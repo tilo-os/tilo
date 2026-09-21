@@ -939,6 +939,55 @@ impl Continuable for TileHost {
     }
 }
 
+impl crate::widget::NativeViewLifecycle for TileHost {
+    fn mount_native_view(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        if let TileContent::App(live) = &mut self.content {
+            if self
+                .history
+                .as_ref()
+                .is_none_or(|history| history.live_interactive())
+            {
+                crate::widget::mount_native_views(live.as_mut(), host);
+            } else {
+                crate::widget::unmount_native_views(live.as_mut());
+            }
+        }
+    }
+
+    fn unmount_native_view(&mut self) {
+        if let TileContent::App(live) = &mut self.content {
+            crate::widget::unmount_native_views(live.as_mut());
+        }
+    }
+
+    fn native_view_frame_start(&mut self) {
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive())
+            && let TileContent::App(live) = &mut self.content
+        {
+            crate::widget::native_view_frame_start(live.as_mut());
+        }
+    }
+}
+
+impl crate::widget::Collaborative for TileHost {
+    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+        if let TileContent::App(live) = &mut self.content {
+            crate::widget::take_collab_requests(live.as_mut())
+        } else {
+            vec![]
+        }
+    }
+
+    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
+        if let TileContent::App(live) = &mut self.content {
+            crate::widget::handle_collab_event(live.as_mut(), event);
+        }
+    }
+}
+
 impl Widget for TileHost {
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         if let Some(error) = &self.record_error {
@@ -1016,45 +1065,22 @@ impl Widget for TileHost {
         }
     }
 
-    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
-        if let TileContent::App(live) = &mut self.content {
-            if self
+    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn crate::widget::NativeViewLifecycle> {
+        (self.record_error.is_some()
+            || self
                 .history
                 .as_ref()
-                .is_none_or(|history| history.live_interactive())
-            {
-                live.mount_native_views(host);
-            } else {
-                live.unmount_native_views();
-            }
-        }
+                .is_some_and(|history| !history.live_interactive()))
+        .then_some(self)
     }
-    fn unmount_native_views(&mut self) {
-        if let TileContent::App(live) = &mut self.content {
-            live.unmount_native_views();
-        }
-    }
-    fn native_view_frame_start(&mut self) {
-        if self
-            .history
-            .as_ref()
-            .is_none_or(|history| history.live_interactive())
-            && let TileContent::App(live) = &mut self.content
-        {
-            live.native_view_frame_start();
-        }
-    }
-    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        if let TileContent::App(live) = &mut self.content {
-            live.take_collab_requests()
-        } else {
-            vec![]
-        }
-    }
-    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
-        if let TileContent::App(live) = &mut self.content {
-            live.handle_collab_event(event);
-        }
+
+    fn collaborative_mut(&mut self) -> Option<&mut dyn crate::widget::Collaborative> {
+        (self.record_error.is_some()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| !history.live_interactive()))
+        .then_some(self)
     }
 
     fn continuable(&self) -> Option<&dyn Continuable> {

@@ -1316,12 +1316,12 @@ fn native_tile_history_unmounts_live_native_view_and_remounts_on_return() {
         crate::platform::PlatformConventions::new(crate::platform::Platform::MacOs),
         1.0,
     );
-    app.root_widget.mount_native_views(&host);
+    crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
     assert_eq!(mounts.get(), 1);
     let target = named(&mut app, "History");
     app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
-    app.root_widget.mount_native_views(&host);
+    crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
     assert_eq!(unmounts.get(), 1);
     assert!(
         !app.build_a11y_tree_update(1.0)
@@ -1332,7 +1332,7 @@ fn native_tile_history_unmounts_live_native_view_and_remounts_on_return() {
     let target = named(&mut app, "History");
     app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
-    app.root_widget.mount_native_views(&host);
+    crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
     assert_eq!(mounts.get(), 2);
 }
 
