@@ -755,8 +755,8 @@ fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
         recorder.0.calls()
     );
 
-    // Row 1 is already connected, so the click connects directly with no
-    // passphrase needed.
+    // Row 1 is already connected. It is status, not a reconnect action:
+    // clicking it must not start a redundant NetworkManager operation.
     {
         let mut st = chrome.borrow_mut();
         st.quick_settings.wifi_password = None;
@@ -768,10 +768,9 @@ fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
         calls.is_empty(),
         "the compositor must not block in the injected dispatcher; got {calls:?}"
     );
-    assert_eq!(
-        chrome.borrow().quick_settings.wifi_joining.as_deref(),
-        Some(scanned[1].ssid.as_str()),
-        "an open or already-known network must enter the asynchronous join lifecycle"
+    assert!(
+        chrome.borrow().quick_settings.wifi_joining.is_none(),
+        "the active network must not enter a redundant join lifecycle"
     );
 }
 
