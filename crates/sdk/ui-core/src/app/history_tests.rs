@@ -909,13 +909,7 @@ fn native_tiled_history_preserves_first_pending_and_routes_sibling_at_to_second_
     );
     layout(&mut app);
     assert_eq!(
-        store
-            .with(&second.id, |doc| {
-                use automerge::ReadDoc;
-                let (_, text) = doc.get(ROOT, "body").unwrap().unwrap();
-                doc.text(text).unwrap()
-            })
-            .unwrap(),
+        crate::history_mode::integration_tests::legacy_body(&store, &second),
         "native second"
     );
     assert_eq!(
@@ -1626,11 +1620,21 @@ fn native_queued_remote_cannot_retarget_same_id_new_legacy_store() {
             .unwrap()
             .contains("owner closed or changed")
     );
-    assert!(
+    assert_eq!(
         first
-            .read_checked(&checkout.id, |doc| doc.pending_ops())
-            .unwrap()
-            > 0
+            .read_checked(&checkout.id, |doc| {
+                use automerge::ReadDoc;
+                (
+                    doc.pending_ops(),
+                    doc.get(ROOT, "draft")
+                        .unwrap()
+                        .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+                    doc.get(ROOT, "remote").unwrap().is_some(),
+                )
+            })
+            .unwrap(),
+        (0, Some("pending".into()), false),
+        "owner replacement settles its local draft but never applies the queued remote snapshot"
     );
 }
 

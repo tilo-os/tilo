@@ -440,6 +440,15 @@ pub enum WindowCloseAdmission {
 }
 
 pub trait Widget {
+    /// Concrete identity for host-side frame maps that must distinguish a
+    /// wrapper from its first field even when they share a data address.
+    /// Unlike trait-object pointer equality, this does not depend on the
+    /// compiler reusing one vtable instance across codegen units.
+    #[doc(hidden)]
+    fn concrete_type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// A successful, locally applied resource Document action on this exact owner.
     /// Immutable document access permits cache reconciliation only. Not called for
     /// submissions, failed execution, replay, remote merge, or History restore.
