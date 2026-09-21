@@ -16,8 +16,11 @@ import threading
 import time
 import tomllib
 
+import installer_bootc_helper
+
 
 SOURCE = re.compile(r'docker://code\.podesta\.ai/[a-z0-9_./-]+@(sha256:[0-9a-f]{64})')
+INSTALLER_BOOTC = '/run/tilo-installer-bootc'
 
 
 class ForwardedSignal(Exception):
@@ -224,7 +227,7 @@ def warm(source, expected, *, attempts=3, delays=(2, 5), sleep=time.sleep):
 
 
 def run_bootc(source, expected, argv, *, heartbeat_interval=30):
-    if not argv or argv[0] != '/usr/bin/bootc' or heartbeat_interval <= 0:
+    if not argv or argv[0] != INSTALLER_BOOTC or heartbeat_interval <= 0:
         raise ValueError('invalid supervised bootc command')
     require_bound_source(source, expected)
     if not warm(source, expected):
@@ -270,12 +273,21 @@ def run_bootc(source, expected, argv, *, heartbeat_interval=30):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--installer-bootc-sha256', required=True)
+    parser.add_argument('--installer-bootc-architecture', required=True)
+    parser.add_argument('--installer-bootc-runtime-receipt', required=True, type=Path)
     parser.add_argument('source')
     parser.add_argument('expected_digest')
     parser.add_argument('bootc', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     argv = args.bootc[1:] if args.bootc[:1] == ['--'] else args.bootc
     require_private_udev()
+    identity = installer_bootc_helper.verify_bound_binary(
+        INSTALLER_BOOTC, args.installer_bootc_sha256,
+        args.installer_bootc_architecture)
+    mount = installer_bootc_helper.mountinfo_receipt(INSTALLER_BOOTC)
+    installer_bootc_helper.write_runtime_receipt(
+        args.installer_bootc_runtime_receipt, identity, mount)
     try:
         with private_source_store_view():
             return run_bootc(args.source, args.expected_digest, argv)

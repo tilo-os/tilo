@@ -5,12 +5,15 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import struct
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 DEV=Path(__file__).resolve().parents[1]/'dev'
+sys.path.insert(0, str(DEV))
 spec=importlib.util.spec_from_file_location('lane',DEV/'run-supervised-install-lane.py')
 lane=importlib.util.module_from_spec(spec);spec.loader.exec_module(lane)
 
@@ -21,6 +24,15 @@ def node(name,*,disk=False,kvm=False,ready=True):
     return {'metadata':{'name':name,'labels':labels},'spec':{'unschedulable':False},
       'status':{'conditions':[{'type':'Ready','status':'True' if ready else 'False'}],
                 'allocatable':{'devic.es/kvm':'1' if kvm else '0'}}}
+
+
+def helper_elf():
+    value=bytearray(156);value[:6]=b'\x7fELF\x02\x01'
+    struct.pack_into('<H',value,18,183);struct.pack_into('<Q',value,32,64)
+    struct.pack_into('<HH',value,54,56,1);struct.pack_into('<I',value,64,4)
+    struct.pack_into('<Q',value,72,120);struct.pack_into('<Q',value,96,36)
+    struct.pack_into('<III',value,120,4,20,3);value[132:136]=b'GNU\0';value[136:156]=b'b'*20
+    return bytes(value)
 
 
 class LaneAdmission(unittest.TestCase):
@@ -83,11 +95,33 @@ class LaneAdmission(unittest.TestCase):
           'public_bundle':'/work/public-trust','output':'/work/disk-output/disk.raw',
           'generation':1,'size_bytes':64*1024**3,'offline_key_signature':True,
           'disposable_guest':True,'boot_profile':'installer-media',
-          'source_live_uki':'boot/EFI/Linux/live.efi'}
+          'source_live_uki':'boot/EFI/Linux/live.efi',
+          'installer_bootc_directory':'/work/installer-bootc-helper',
+          'installer_bootc_sha256':'e'*64}
         lane.validate_disk_args(value)
         for key,bad in [('size_bytes',1),('architecture','x86_64'),('boot_profile','installed-target')]:
             changed=dict(value);changed[key]=bad
             with self.assertRaises(ValueError):lane.validate_disk_args(changed)
+
+    def test_installer_bootc_archive_binds_exact_layout_and_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);binary=root/'bootc';binary.write_bytes(helper_elf());binary.chmod(0o755)
+            digest=hashlib.sha256(binary.read_bytes()).hexdigest()
+            receipt={'schema':1,'purpose':lane.installer_bootc_helper.PURPOSE,
+              'architecture':'aarch64','bootc_version':lane.installer_bootc_helper.BOOTC_VERSION,
+              'source_tag':lane.installer_bootc_helper.SOURCE_TAG,
+              'source_commit':lane.installer_bootc_helper.SOURCE_COMMIT,
+              'patch_sha256':lane.installer_bootc_helper.PATCH_SHA256,
+              'binary_sha256':digest,'binary_build_id':(b'b'*20).hex(),
+              'rustc_version':'rustc 1.91.0','cargo_version':'cargo 1.91.0',
+              'build_target':lane.installer_bootc_helper.TARGETS['aarch64'],
+              'build_command':lane.installer_bootc_helper.BUILD_COMMAND}
+            (root/'receipt.json').write_text(json.dumps(receipt))
+            archive=lane.installer_bootc_archive(root,digest)
+            self.assertGreater(len(archive),len(binary.read_bytes()))
+            (root/'unexpected').write_text('no')
+            with self.assertRaisesRegex(ValueError,'exactly'):
+                lane.installer_bootc_archive(root,digest)
 
     def test_manifests_pin_images_and_avoid_host_paths(self):
         disk=lane.disk_manifest('tilo-disk-run1',node('disk',disk=True))

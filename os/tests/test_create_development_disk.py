@@ -346,7 +346,9 @@ class CreationTests(unittest.TestCase):
             source='code.sandbox.example/qos/tilo-development@sha256:' + '1' * 64,
             target='code.sandbox.example/qos/tilo-development:aarch64',
             architecture='aarch64', manifest_sha256='2' * 64, generation=1,
-            composefs_digest='3' * 128, systemd_version='259.8')
+            composefs_digest='3' * 128, systemd_version='259.8',
+            installer_bootc_directory=Path('/work/installer-bootc-helper'),
+            installer_bootc_sha256='5' * 64)
         self.events = []
         self.calls = []
         self.image = 'sha256:' + '4' * 64
@@ -372,8 +374,10 @@ class CreationTests(unittest.TestCase):
         @contextmanager
         def store_scratch():
             events.append('store-scratch-created')
+            scratch = Path(self.tmp.name) / 'store-scratch'
+            scratch.mkdir()
             try:
-                yield Path('/private/store-scratch')
+                yield scratch
             finally:
                 events.append('store-scratch-removed')
 
@@ -407,6 +411,20 @@ class CreationTests(unittest.TestCase):
         patcher = patch.object(disk_creator.source, 'verified_source', verified)
         patcher.start()
         self.addCleanup(patcher.stop)
+        helper_artifact = {
+            'architecture': 'aarch64', 'binary_sha256': '5' * 64,
+            'binary_build_id': 'ab' * 20,
+        }
+        patcher = patch.object(disk_creator.installer_bootc_helper, 'verify_artifact',
+            return_value=(Path('/private/helper/bootc'), helper_artifact))
+        patcher.start(); self.addCleanup(patcher.stop)
+        patcher = patch.object(disk_creator.installer_bootc_helper, 'binary_identity',
+            return_value={'architecture': 'aarch64', 'sha256': '6' * 64,
+                          'build_id': 'cd' * 20})
+        patcher.start(); self.addCleanup(patcher.stop)
+        patcher = patch.object(disk_creator.installer_bootc_helper, 'verify_runtime_receipt',
+            return_value={'schema': 1, 'purpose': 'tilo-installer-bootc-runtime'})
+        patcher.start(); self.addCleanup(patcher.stop)
         patcher = patch.object(disk_creator, 'private_source_store_scratch', store_scratch)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -444,8 +462,10 @@ class CreationTests(unittest.TestCase):
         self.assertIn('--entrypoint=/usr/bin/python3', argv)
         self.assertIn('/run/tilo-bootc-registry-wrapper.py', argv)
         self.assertIn('/var/lib/containers:/run/tilo-parent-containers:ro', argv)
-        self.assertIn('/private/store-scratch:/run/tilo-source-store-scratch:rw', argv)
-        self.assertEqual(argv[argv.index('--') + 1], '/usr/bin/bootc')
+        self.assertTrue(any(value.endswith('/store-scratch:/run/tilo-source-store-scratch:rw') for value in argv))
+        self.assertEqual(argv[argv.index('--') + 1], '/run/tilo-installer-bootc')
+        self.assertIn('/private/helper/bootc:/run/tilo-installer-bootc:ro', argv)
+        self.assertNotIn('/private/helper/bootc:/usr/bin/bootc:ro', argv)
         self.assertNotIn('--skip-fetch-check', argv)
         self.assertFalse(receipt['installable'])
         self.assertFalse(receipt['installed_bytes_verified'])

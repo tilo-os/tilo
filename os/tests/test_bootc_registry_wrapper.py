@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sys
 from types import SimpleNamespace
 import threading
 import tempfile
@@ -13,6 +14,7 @@ import unittest
 from unittest.mock import mock_open, patch
 
 DEV=Path(__file__).resolve().parents[1]/'dev'
+sys.path.insert(0, str(DEV))
 spec=importlib.util.spec_from_file_location('wrapper',DEV/'bootc-registry-wrapper.py')
 wrapper=importlib.util.module_from_spec(spec);spec.loader.exec_module(wrapper)
 
@@ -167,7 +169,7 @@ class WrapperLifecycleTests(unittest.TestCase):
         def send_signal(self,value):self.signals.append(value)
 
     def test_bootc_argv_and_exit_code_propagate_exactly(self):
-        argv=['/usr/bin/bootc','install','to-disk','--target-imgref=x:y','/output/disk.raw']
+        argv=[wrapper.INSTALLER_BOOTC,'install','to-disk','--target-imgref=x:y','/output/disk.raw']
         child=self.Child(23)
         with patch.object(wrapper,'require_bound_source'), patch.object(wrapper,'warm',return_value=True), \
                 patch.object(wrapper.subprocess,'Popen',return_value=child) as popen:
@@ -180,7 +182,7 @@ class WrapperLifecycleTests(unittest.TestCase):
                 patch.object(wrapper,'inspect_digest',return_value=True) as inspect, \
                 patch.object(wrapper.subprocess,'Popen',return_value=child):
             self.assertEqual(wrapper.run_bootc(
-                SOURCE,DIGEST,['/usr/bin/bootc','install'],heartbeat_interval=.005),0)
+                SOURCE,DIGEST,[wrapper.INSTALLER_BOOTC,'install'],heartbeat_interval=.005),0)
         self.assertGreater(inspect.call_count,0)
         self.assertFalse(any(t.name=='tilo-registry-heartbeat' for t in threading.enumerate()))
 
@@ -191,7 +193,7 @@ class WrapperLifecycleTests(unittest.TestCase):
                 patch.object(wrapper,'inspect_digest',side_effect=failure) as inspect, \
                 patch.object(wrapper.subprocess,'Popen',return_value=child):
             self.assertEqual(wrapper.run_bootc(
-                SOURCE,DIGEST,['/usr/bin/bootc','install'],heartbeat_interval=.005),17)
+                SOURCE,DIGEST,[wrapper.INSTALLER_BOOTC,'install'],heartbeat_interval=.005),17)
         self.assertGreater(inspect.call_count,0)
         self.assertFalse(any(t.name=='tilo-registry-heartbeat' for t in threading.enumerate()))
 
@@ -204,14 +206,14 @@ class WrapperLifecycleTests(unittest.TestCase):
                 patch.object(wrapper.signal,'signal',side_effect=set_handler), \
                 patch.object(wrapper.subprocess,'Popen',return_value=child), \
                 self.assertRaises(wrapper.ForwardedSignal) as raised:
-            wrapper.run_bootc(SOURCE,DIGEST,['/usr/bin/bootc','install'])
+            wrapper.run_bootc(SOURCE,DIGEST,[wrapper.INSTALLER_BOOTC,'install'])
         self.assertEqual(child.signals,[signal.SIGTERM])
         self.assertEqual(raised.exception.signum,signal.SIGTERM)
 
     def test_failed_warmup_never_starts_bootc_or_heartbeat(self):
         with patch.object(wrapper,'require_bound_source'), patch.object(wrapper,'warm',return_value=False), \
                 patch.object(wrapper.subprocess,'Popen') as popen:
-            self.assertEqual(wrapper.run_bootc(SOURCE,DIGEST,['/usr/bin/bootc']),75)
+            self.assertEqual(wrapper.run_bootc(SOURCE,DIGEST,[wrapper.INSTALLER_BOOTC]),75)
         popen.assert_not_called()
         self.assertFalse(any(t.name=='tilo-registry-heartbeat' for t in threading.enumerate()))
 
