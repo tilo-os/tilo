@@ -7,6 +7,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+use ui::ColorCompat;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Stroke};
 use vello::peniko::{Color, Fill};
