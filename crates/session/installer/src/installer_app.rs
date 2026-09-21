@@ -441,11 +441,7 @@ pub fn valid_full_name(full_name: &str) -> bool {
 }
 
 pub fn valid_locale(locale: &str) -> bool {
-    !locale.is_empty()
-        && locale.len() <= 64
-        && locale
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'@' | b'-'))
+    crate::locales::contains(locale)
 }
 
 pub fn valid_timezone_name(timezone: &str) -> bool {
@@ -1298,6 +1294,24 @@ impl InstallerApp {
         self.tz_open_for_shot = true;
     }
 
+    /// Pose the exact shortened Options screen shown when every transported
+    /// choice except locale was valid. This keeps the repair UX available to
+    /// visual regression checks instead of testing it only as widget state.
+    pub fn shot_locale_repair(&mut self) {
+        self.apply_media_profile(crate::media_profile::MediaProfile {
+            hostname: Some("studio".into()),
+            username: Some("ada".into()),
+            full_name: Some("ada Example".into()),
+            locale: None,
+            keyboard: Some("de".into()),
+            timezone: Some("Europe/Berlin".into()),
+            filesystem: Some("ext4".into()),
+            repairs: vec![crate::media_profile::MediaProfileField::Locale],
+        });
+        self.selected_disk = Some(0);
+        self.step = Step::Options;
+    }
+
     /// Pose the Disk screen with the preserving dual-boot choice selected.
     pub fn shot_alongside(&mut self) {
         self.step = Step::Disk;
@@ -1702,7 +1716,7 @@ impl InstallerApp {
         }
         if self.step == Step::Options {
             if !valid_locale(self.locale.trim()) {
-                return Err("Enter a valid locale such as en_US.UTF-8".into());
+                return Err("Choose a supported language and locale from the list".into());
             }
             if !valid_timezone_name(self.timezone.trim())
                 || !self
@@ -2542,12 +2556,13 @@ impl InstallerApp {
         if self.profile_completion.is_none() || !completion.locale.is_complete() {
             children.push(Box::new(Text::new("Language & locale").with_size(base)));
             children.push(Box::new(
-                TextInput::new(Vec::new())
+                Dropdown::new(crate::locales::list(), LOCALE_PATH)
                     .with_id("installer.locale")
-                    .with_on_change_path(LOCALE_PATH),
+                    .with_accessible_name("Language & locale")
+                    .with_placeholder("Choose a language and locale"),
             ));
             children.push(Box::new(
-                Text::new("Use a locale such as en_US.UTF-8 or de_DE.UTF-8.")
+                Text::new("This controls language, formatting, and regional conventions after installation.")
                     .with_size(sm)
                     .with_color(dim),
             ));
@@ -3809,6 +3824,23 @@ mod tests {
             .find_map(|child| find_accessible(child, name))
     }
 
+    fn find_accessible_role(
+        widget: &dyn Widget,
+        name: &str,
+        role: ui::a11y::Role,
+    ) -> Option<ui::a11y::AccessNode> {
+        if let Some(node) = widget.accessibility()
+            && node.name.as_deref() == Some(name)
+            && node.role == role
+        {
+            return Some(node);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| find_accessible_role(child, name, role))
+    }
+
     fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
         widget.test_id() == Some(id)
             || widget
@@ -3982,6 +4014,14 @@ mod tests {
         assert!(!valid_hostname("x-"));
         assert!(!valid_hostname("has space"));
         assert!(!valid_hostname("under_score"));
+    }
+
+    #[test]
+    fn locale_validator_accepts_only_the_installed_catalog() {
+        assert!(valid_locale("en_US.UTF-8"));
+        assert!(valid_locale("de_DE.UTF-8"));
+        assert!(!valid_locale("zz_ZZ.UTF-8"));
+        assert!(!valid_locale("../../etc"));
     }
 
     // --- app behaviour --------------------------------------------
@@ -5347,6 +5387,36 @@ mod tests {
         assert_eq!(app.step, Step::Options, "invalid hostname needs one repair");
         let _ = build(&mut app);
         assert!(find_accessible(&app, "Hostname").is_some());
+        assert!(find_accessible(&app, "Filesystem").is_none());
+        assert!(find_accessible(&app, "Time zone").is_none());
+    }
+
+    #[test]
+    fn unsupported_profile_locale_gets_one_bounded_on_device_chooser() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.apply_media_profile(crate::media_profile::MediaProfile {
+            hostname: Some("studio".into()),
+            username: Some("ada".into()),
+            full_name: Some("ada Example".into()),
+            locale: None,
+            keyboard: Some("de".into()),
+            timezone: Some("Europe/Berlin".into()),
+            filesystem: Some("ext4".into()),
+            repairs: vec![crate::media_profile::MediaProfileField::Locale],
+        });
+        app.tpm2 = false;
+        app.selected_disk = Some(0);
+        app.go_next();
+        *app.password.lock().unwrap() = "correct horse battery staple".into();
+        *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
+        app.go_next();
+        assert_eq!(app.step, Step::Options);
+        let _ = build(&mut app);
+        assert!(
+            find_accessible_role(&app, "Language & locale", ui::a11y::Role::ComboBox).is_some(),
+            "locale repair must be a bounded chooser"
+        );
+        assert!(find_accessible(&app, "Hostname").is_none());
         assert!(find_accessible(&app, "Filesystem").is_none());
         assert!(find_accessible(&app, "Time zone").is_none());
     }

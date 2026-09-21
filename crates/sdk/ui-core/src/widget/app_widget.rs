@@ -113,10 +113,11 @@ mod component_adapter {
     use super::{AppCommand, AppHostIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
     use crate::widget::{
-        ActionDirectoryResourcePage, Affine, AppKind, AutoCommit, CaptureMode, Continuable,
-        ControlBindingMetadata, DragPayload, HashMap, HashSet, Instant, NodeId, ObjId,
-        PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart, Scene, TaffyTree,
-        TaffyTreeExt, TextRenderer, Theme, WindowEvent,
+        ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
+        AudiencePresentationWidgetExt, AutoCommit, CaptureMode, Continuable,
+        ControlBindingMetadata, DragPayload, FloatingSurfaceProvider, FloatingSurfaceWidgetExt,
+        HashMap, HashSet, Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey,
+        ResourceOperationStart, Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
     pub(crate) struct BoundAppWidget {
@@ -160,6 +161,175 @@ mod component_adapter {
         }
     }
 
+    impl FloatingSurfaceProvider for BoundAppWidget {
+        fn take_floating_surface_request(
+            &mut self,
+        ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            self.component
+                .root
+                .as_deref_mut()?
+                .take_floating_surface_request()
+        }
+
+        fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            self.component
+                .root
+                .as_deref_mut()?
+                .take_capture_studio_request()
+        }
+
+        fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return Vec::new();
+            };
+            self.component.root.as_deref_mut().map_or_else(
+                Vec::new,
+                FloatingSurfaceWidgetExt::take_floating_surface_source_updates,
+            )
+        }
+
+        fn draw_floating_surfaces(
+            &mut self,
+            scene: &mut vello::Scene,
+            transform: vello::kurbo::Affine,
+            text_renderer: &mut crate::text_render::TextRenderer,
+            theme: &crate::theme::Theme,
+            presence: &crate::presence::PresenceCtx,
+        ) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+            }
+        }
+
+        fn floating_surface_presentations(
+            &self,
+        ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return Vec::new();
+            };
+            self.component.root.as_deref().map_or_else(
+                Vec::new,
+                FloatingSurfaceWidgetExt::floating_surface_presentations,
+            )
+        }
+
+        fn active_floating_surface_ids(&self) -> Vec<String> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return Vec::new();
+            };
+            self.component.root.as_deref().map_or_else(
+                Vec::new,
+                FloatingSurfaceWidgetExt::active_floating_surface_ids,
+            )
+        }
+
+        fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.set_floating_surface_bounds(bounds);
+            }
+        }
+
+        fn on_floating_surface_host_message(
+            &mut self,
+            message: &crate::floating_surface::FloatingSurfaceHostMessage,
+        ) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.on_floating_surface_host_message(message);
+            }
+        }
+    }
+
+    impl AudiencePresentationProvider for BoundAppWidget {
+        fn audience_presentation_request(
+            &self,
+        ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            self.component
+                .root
+                .as_deref()?
+                .audience_presentation_request()
+        }
+
+        fn on_audience_presentation_changed(&mut self, active: bool) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.on_audience_presentation_changed(active);
+            }
+        }
+
+        fn draw_audience_presentation(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            text_renderer: &mut TextRenderer,
+            theme: &Theme,
+            rect: vello::kurbo::Rect,
+        ) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component.root.as_deref_mut().is_some_and(|root| {
+                root.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
+            })
+        }
+
+        fn handle_audience_presentation_event(
+            &mut self,
+            event: &WindowEvent,
+            state: &mut AutoCommit,
+            _path: &ObjId,
+        ) -> bool {
+            let binding = self.component.callback_binding();
+            binding
+                .with_document(state, |document, record_root| {
+                    self.component.root.as_deref_mut().is_some_and(|root| {
+                        root.handle_audience_presentation_event(event, document, record_root)
+                    })
+                })
+                .unwrap_or(false)
+        }
+
+        fn on_audience_presentation_closed(&mut self) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.on_audience_presentation_closed();
+            }
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "existing Widget callback signatures"
@@ -170,6 +340,24 @@ mod component_adapter {
         }
 
         fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+            Some(self)
+        }
+
+        fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+            Some(self)
+        }
+
+        fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+            Some(self)
+        }
+
+        fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
+            Some(self)
+        }
+
+        fn audience_presentation_provider_mut(
+            &mut self,
+        ) -> Option<&mut dyn AudiencePresentationProvider> {
             Some(self)
         }
 
@@ -246,56 +434,6 @@ mod component_adapter {
                 root.visit_components(request)?;
             }
             Ok(())
-        }
-        fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return Vec::new();
-            };
-            root.take_collab_requests()
-        }
-        fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.handle_collab_event(event);
-        }
-        fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.mount_native_views(host);
-        }
-        fn unmount_native_views(&mut self) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.unmount_native_views();
-        }
-        fn native_view_frame_start(&mut self) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.native_view_frame_start();
         }
         fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
             let binding = self.component.callback_binding();
@@ -565,96 +703,6 @@ mod component_adapter {
                 return vello::kurbo::Rect::ZERO;
             };
             root.get_rect()
-        }
-        fn take_floating_surface_request(
-            &mut self,
-        ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref_mut()?;
-            root.take_floating_surface_request()
-        }
-        fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref_mut()?;
-            root.take_capture_studio_request()
-        }
-        fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return Vec::new();
-            };
-            root.take_floating_surface_source_updates()
-        }
-        fn draw_floating_surfaces(
-            &mut self,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text_renderer: &mut crate::text_render::TextRenderer,
-            theme: &crate::theme::Theme,
-            presence: &crate::presence::PresenceCtx,
-        ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
-        }
-        fn floating_surface_presentations(
-            &self,
-        ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Vec::new();
-            };
-            root.floating_surface_presentations()
-        }
-        fn active_floating_surface_ids(&self) -> Vec<String> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Vec::new();
-            };
-            root.active_floating_surface_ids()
-        }
-        fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_floating_surface_bounds(bounds);
-        }
-        fn on_floating_surface_host_message(
-            &mut self,
-            message: &crate::floating_surface::FloatingSurfaceHostMessage,
-        ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.on_floating_surface_host_message(message);
         }
         fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
             let binding = self.component.callback_binding();
@@ -978,69 +1026,6 @@ mod component_adapter {
                 return;
             };
             root.on_fullscreen_changed(active);
-        }
-        fn audience_presentation_request(
-            &self,
-        ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.audience_presentation_request()
-        }
-        fn on_audience_presentation_changed(&mut self, active: bool) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.on_audience_presentation_changed(active);
-        }
-        fn draw_audience_presentation(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            rect: vello::kurbo::Rect,
-        ) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return false;
-            };
-            root.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
-        }
-        fn handle_audience_presentation_event(
-            &mut self,
-            event: &WindowEvent,
-            state: &mut AutoCommit,
-            _path: &ObjId,
-        ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.handle_audience_presentation_event(event, document, record_root)
-                })
-                .unwrap_or(false)
-        }
-        fn on_audience_presentation_closed(&mut self) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.on_audience_presentation_closed();
         }
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
             let binding = self.component.callback_binding();

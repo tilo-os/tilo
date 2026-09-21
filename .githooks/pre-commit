@@ -54,6 +54,10 @@ if [ -n "$added_ignores" ]; then
   fail=1
 fi
 
+# Match CI's whole-file policy for the exact staged blobs. Looking only at
+# added lines misses an unchanged `#[allow]` in a file that this commit edits.
+python3 "$root/tools/ci/check_changed_rust_allows.py" --root "$root" --staged || fail=1
+
 # Credentials in the staged diff.
 "$root/scripts/scan-secrets.sh" || fail=1
 

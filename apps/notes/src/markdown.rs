@@ -42,6 +42,23 @@ use std::fmt::Write as _;
 
 use ui::widget::marks::{Mark, MarkSpan, PageId};
 
+/// Avoid rendering the note title twice when an imported Markdown document
+/// starts with the same H1 as the title chosen by the importer. Only the exact
+/// leading heading is removed; unrelated headings and body whitespace remain.
+pub fn strip_matching_title_heading(body: &str, title: &str) -> String {
+    let normalized = body.strip_prefix('\u{feff}').unwrap_or(body);
+    let Some((first, rest)) = normalized.split_once('\n') else {
+        return normalized.to_string();
+    };
+    if first.trim_end() != format!("# {}", title.trim()) {
+        return normalized.to_string();
+    }
+    rest.strip_prefix("\r\n")
+        .or_else(|| rest.strip_prefix('\n'))
+        .unwrap_or(rest)
+        .to_string()
+}
+
 /// Storage-friendly block representation. Carries the kind tag, the
 /// raw text content (no inline markers), and any inline-mark spans.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -67,6 +84,11 @@ impl InlineText {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockSpec {
+    /// Non-list content at an outline level, independent of its presentation kind.
+    Nested {
+        depth: u8,
+        block: Box<BlockSpec>,
+    },
     Paragraph(InlineText),
     Quote(InlineText),
     Heading {
@@ -100,6 +122,35 @@ pub enum BlockSpec {
 pub const MAX_LIST_INDENT: u8 = 5;
 
 impl BlockSpec {
+    fn indented(self, depth: u8) -> Self {
+        match self {
+            Self::Bullet { indent, text } => Self::Bullet {
+                indent: (indent + depth).min(MAX_LIST_INDENT),
+                text,
+            },
+            Self::Numbered { indent, text } => Self::Numbered {
+                indent: (indent + depth).min(MAX_LIST_INDENT),
+                text,
+            },
+            Self::Checklist { indent, done, text } => Self::Checklist {
+                indent: (indent + depth).min(MAX_LIST_INDENT),
+                done,
+                text,
+            },
+            Self::Nested {
+                depth: inner,
+                block,
+            } => Self::Nested {
+                depth: (inner + depth).min(MAX_LIST_INDENT),
+                block,
+            },
+            block if depth > 0 => Self::Nested {
+                depth,
+                block: Box::new(block),
+            },
+            block => block,
+        }
+    }
     pub fn paragraph(s: impl Into<String>) -> Self {
         BlockSpec::Paragraph(InlineText::plain(s))
     }
@@ -627,11 +678,46 @@ pub fn serialize_inline(text: &InlineText) -> String {
 /// Parse a markdown string into a flat list of [`BlockSpec`]s.
 ///
 /// Empty input → a single empty paragraph.
+#[allow(
+    clippy::too_many_lines,
+    reason = "single-pass Markdown block parsing keeps lookahead and fence state local"
+)]
 pub fn parse(md: &str) -> Vec<BlockSpec> {
     let mut blocks = Vec::new();
     let mut lines = md.split('\n').peekable();
     while let Some(line) = lines.next() {
-        if line.is_empty() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (depth, body) = parse_list_indent(line);
+        if depth > 0
+            && !body.starts_with("- ")
+            && !body.starts_with("* ")
+            && strip_ordered_prefix(body).is_none()
+        {
+            // Parse a nested region with its structural indentation removed.
+            // Code indentation inside the fence remains ordinary source text.
+            let mut nested = body.to_string();
+            while let Some(next) = lines.peek().copied() {
+                if !next.is_empty() && parse_list_indent(next).0 < depth {
+                    break;
+                }
+                let _ = lines.next();
+                nested.push('\n');
+                let mut content = next;
+                for _ in 0..depth {
+                    content = content
+                        .strip_prefix("  ")
+                        .or_else(|| content.strip_prefix('\t'))
+                        .unwrap_or(content);
+                }
+                nested.push_str(content);
+            }
+            blocks.extend(
+                parse(&nested)
+                    .into_iter()
+                    .map(|block| block.indented(depth)),
+            );
             continue;
         }
         if let Some(block) = take_rich_block(line, &mut lines) {
@@ -658,6 +744,8 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
             blocks.push(BlockSpec::divider());
             continue;
         }
+        let joined = join_hard_breaks(line, &mut lines);
+        let line = joined.as_str();
         if let Some(rest) = line.strip_prefix("> ") {
             blocks.push(BlockSpec::Quote(parse_inline(rest)));
             continue;
@@ -730,12 +818,55 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
     blocks
 }
 
+// Hard line breaks belong to a single text block. Continuation indentation is
+// presentation syntax, not text, and is removed before parsing inline marks.
+fn join_hard_breaks<'a>(
+    line: &'a str,
+    lines: &mut std::iter::Peekable<std::str::Split<'a, char>>,
+) -> String {
+    let (depth, body) = parse_list_indent(line);
+    let prefix = if line.starts_with("> ") {
+        "> ".to_string()
+    } else {
+        let marker = if body.starts_with("- [ ] ")
+            || body.starts_with("- [x] ")
+            || body.starts_with("- [X] ")
+            || body.starts_with("* [ ] ")
+            || body.starts_with("* [x] ")
+            || body.starts_with("* [X] ")
+        {
+            6
+        } else if body.starts_with("- ") || body.starts_with("* ") {
+            2
+        } else {
+            strip_ordered_prefix(body).map_or(0, |rest| body.len() - rest.len())
+        };
+        " ".repeat(if marker == 0 {
+            0
+        } else {
+            usize::from(depth) * 2 + marker
+        })
+    };
+    let mut joined = line.to_string();
+    while joined.ends_with("  ") && lines.peek().is_some() {
+        let next = lines.next().unwrap_or_default();
+        joined.truncate(joined.len() - 2);
+        joined.push('\n');
+        joined.push_str(next.strip_prefix(&prefix).unwrap_or(next));
+    }
+    joined
+}
+
+fn serialize_hard_breaks(text: &InlineText, continuation: &str) -> String {
+    serialize_inline(text).replace('\n', &format!("  \n{continuation}"))
+}
+
 /// Inverse of [`parse`]. Always emits a trailing newline.
 pub fn serialize(blocks: &[BlockSpec]) -> String {
     let mut out = String::new();
     // Ordinal counters per indent level for numbered lists, mirroring the
     // renderer's `numbered_ordinals`: a numbered item increments its
-    // level and resets deeper ones; any other block resets all counters.
+    // level and resets deeper ones; mixed list children retain shallower counters.
     let mut counters = [0usize; MAX_LIST_INDENT as usize + 1];
     for (i, b) in blocks.iter().enumerate() {
         if i > 0 {
@@ -750,13 +881,33 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
                 *c = 0;
             }
         } else {
-            counters = [0usize; MAX_LIST_INDENT as usize + 1];
+            let depth = match b {
+                BlockSpec::Bullet { indent, .. } | BlockSpec::Checklist { indent, .. } => {
+                    usize::from(*indent)
+                }
+                BlockSpec::Nested { depth, .. } => usize::from(*depth),
+                _ => 0,
+            };
+            for counter in counters.iter_mut().skip(depth) {
+                *counter = 0;
+            }
         }
         match b {
-            BlockSpec::Paragraph(t) => out.push_str(&serialize_inline(t)),
+            BlockSpec::Nested { depth, block } => {
+                let source = serialize(std::slice::from_ref(block.as_ref()));
+                let source = source.strip_suffix('\n').unwrap_or(&source);
+                for (index, line) in source.split('\n').enumerate() {
+                    if index > 0 {
+                        out.push('\n');
+                    }
+                    push_indent(&mut out, *depth);
+                    out.push_str(line);
+                }
+            }
+            BlockSpec::Paragraph(t) => out.push_str(&serialize_hard_breaks(t, "")),
             BlockSpec::Quote(t) => {
                 out.push_str("> ");
-                out.push_str(&serialize_inline(t));
+                out.push_str(&serialize_hard_breaks(t, "> "));
             }
             BlockSpec::Heading { level, text } => {
                 let prefix = match *level {
@@ -765,12 +916,15 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
                     _ => "### ",
                 };
                 out.push_str(prefix);
-                out.push_str(&serialize_inline(text));
+                out.push_str(&serialize_hard_breaks(text, ""));
             }
             BlockSpec::Bullet { indent, text } => {
                 push_indent(&mut out, *indent);
                 out.push_str("- ");
-                out.push_str(&serialize_inline(text));
+                out.push_str(&serialize_hard_breaks(
+                    text,
+                    &" ".repeat(usize::from(*indent) * 2 + 2),
+                ));
             }
             BlockSpec::Numbered { indent, text } => {
                 push_indent(&mut out, *indent);
@@ -779,12 +933,18 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
                     .copied()
                     .unwrap_or(0);
                 let _ = write!(out, "{n}. ");
-                out.push_str(&serialize_inline(text));
+                out.push_str(&serialize_hard_breaks(
+                    text,
+                    &" ".repeat(usize::from(*indent) * 2 + n.to_string().len() + 2),
+                ));
             }
             BlockSpec::Checklist { indent, done, text } => {
                 push_indent(&mut out, *indent);
                 out.push_str(if *done { "- [x] " } else { "- [ ] " });
-                out.push_str(&serialize_inline(text));
+                out.push_str(&serialize_hard_breaks(
+                    text,
+                    &" ".repeat(usize::from(*indent) * 2 + 6),
+                ));
             }
             BlockSpec::CodeBlock { lang, text } => {
                 out.push_str("```");
@@ -811,9 +971,10 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
 /// land on the inner `RichTextLine`'s mark list.
 pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
     use ui::widget::{Block, BlockKind};
+    let mut groups = std::collections::HashMap::new();
     expanded_rows(specs)
         .into_iter()
-        .map(|(kind, inline)| {
+        .map(|(kind, inline, fence, nesting)| {
             let mut block = match kind {
                 BlockKind::Paragraph => Block::paragraph(&inline.text),
                 BlockKind::Quote => Block::quote(&inline.text),
@@ -828,6 +989,13 @@ pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
                 BlockKind::Divider => Block::divider(),
             };
             block.line.set_marks(inline.marks);
+            block.nesting = nesting;
+            block.code_group = fence.map(|fence| {
+                groups
+                    .entry(fence)
+                    .or_insert_with(|| block.id.clone())
+                    .clone()
+            });
             block
         })
         .collect()
@@ -835,11 +1003,30 @@ pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
 
 /// Data-only expansion shared by the legacy editor and canonical importer.
 /// Fenced code has one durable row per line, including one row for an empty fence.
-pub(crate) fn expanded_rows(specs: &[BlockSpec]) -> Vec<(ui::widget::BlockKind, InlineText)> {
+pub(crate) fn expanded_rows(
+    specs: &[BlockSpec],
+) -> Vec<(ui::widget::BlockKind, InlineText, Option<usize>, u8)> {
     use ui::widget::BlockKind;
     let mut rows = Vec::new();
-    for spec in specs {
+    for (fence, spec) in specs.iter().enumerate() {
         let (kind, text) = match spec {
+            BlockSpec::Nested { depth, block } => {
+                for (mut kind, text, group, nesting) in
+                    expanded_rows(std::slice::from_ref(block.as_ref()))
+                {
+                    let nesting = match &mut kind {
+                        BlockKind::Bullet { indent }
+                        | BlockKind::Numbered { indent }
+                        | BlockKind::Checklist { indent, .. } => {
+                            *indent = (*indent + depth).min(MAX_LIST_INDENT);
+                            0
+                        }
+                        _ => (nesting + depth).min(MAX_LIST_INDENT),
+                    };
+                    rows.push((kind, text, group.map(|_| fence), nesting));
+                }
+                continue;
+            }
             BlockSpec::Paragraph(text) => (BlockKind::Paragraph, text),
             BlockSpec::Quote(text) => (BlockKind::Quote, text),
             BlockSpec::Heading { level, text } => (BlockKind::Heading(*level), text),
@@ -857,23 +1044,27 @@ pub(crate) fn expanded_rows(specs: &[BlockSpec]) -> Vec<(ui::widget::BlockKind, 
                     rows.push((
                         BlockKind::CodeBlock { lang: lang.clone() },
                         InlineText::plain(line),
+                        Some(fence),
+                        0,
                     ));
                 }
                 continue;
             }
             BlockSpec::Table { source } => {
                 rows.push((
-                    BlockKind::Table { visual: false },
+                    BlockKind::Table { visual: true },
                     InlineText::plain(source),
+                    None,
+                    0,
                 ));
                 continue;
             }
             BlockSpec::Divider => {
-                rows.push((BlockKind::Divider, InlineText::plain("")));
+                rows.push((BlockKind::Divider, InlineText::plain(""), None, 0));
                 continue;
             }
         };
-        rows.push((kind, text.clone()));
+        rows.push((kind, text.clone(), None, 0));
     }
     rows
 }
@@ -948,17 +1139,13 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
                 i += 1;
             }
             BlockKind::CodeBlock { lang } => {
-                // Coalesce a run of consecutive code cells (with the same
-                // language tag) back into ONE fenced block, inverting the
-                // per-line split `specs_to_blocks` does. Distinct adjacent
-                // fences (different lang) stay separate.
+                // Reassemble the rows of one authored fence. Language alone
+                // cannot distinguish adjacent fences using the same syntax.
                 let mut lines: Vec<String> = vec![b.text().to_string()];
                 let run_lang = lang.clone();
                 i += 1;
                 while let Some(next) = blocks.get(i) {
-                    if let BlockKind::CodeBlock { lang: next_lang } = &next.kind
-                        && *next_lang == run_lang
-                    {
+                    if b.same_code_group(next) {
                         lines.push(next.text().to_string());
                         i += 1;
                         continue;
@@ -981,6 +1168,11 @@ pub fn blocks_to_specs(blocks: &[ui::widget::Block]) -> Vec<BlockSpec> {
                 i += 1;
             }
         }
+        if b.nesting > 0
+            && let Some(spec) = out.pop()
+        {
+            out.push(spec.indented(b.nesting));
+        }
     }
     out
 }
@@ -994,6 +1186,10 @@ where
     F: FnMut(&str) -> Option<PageId>,
 {
     for b in blocks {
+        let mut b = b;
+        while let BlockSpec::Nested { block, .. } = b {
+            b = block;
+        }
         let (BlockSpec::Paragraph(inline)
         | BlockSpec::Quote(inline)
         | BlockSpec::Heading { text: inline, .. }
@@ -1480,7 +1676,7 @@ sum_(i=1)^n frac(1, i^2)
         let blocks = specs_to_blocks(&parse(md));
         assert!(matches!(
             blocks[0].kind,
-            ui::widget::BlockKind::Table { visual: false }
+            ui::widget::BlockKind::Table { visual: true }
         ));
         assert_eq!(serialize(&blocks_to_specs(&blocks)), md);
     }
@@ -1494,5 +1690,17 @@ sum_(i=1)^n frac(1, i^2)
             panic!("standalone image remains one paragraph-backed image block");
         };
         assert!(inline.marks.is_empty());
+    }
+
+    #[test]
+    fn matching_import_heading_is_not_duplicated_below_the_note_title() {
+        assert_eq!(
+            strip_matching_title_heading("# Project brief\n\nFirst paragraph\n", "Project brief"),
+            "First paragraph\n"
+        );
+        assert_eq!(
+            strip_matching_title_heading("# Different\n\nFirst paragraph\n", "Project brief"),
+            "# Different\n\nFirst paragraph\n"
+        );
     }
 }

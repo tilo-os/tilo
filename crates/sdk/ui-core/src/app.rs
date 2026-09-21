@@ -8,6 +8,7 @@ use winit::{
 
 use std::cell::{Cell, RefCell};
 
+mod bound_record_sync;
 mod close_admission;
 mod document_history;
 pub use document_history::DocumentHistorySnapshot;
@@ -332,7 +333,7 @@ use crate::render_thread::{FrameOutcome, RenderRequest, RenderThreadHandle, spaw
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::Widget;
+use crate::widget::{AudiencePresentationWidgetExt as _, FloatingSurfaceWidgetExt as _, Widget};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use taffy::{AvailableSpace, NodeId, TaffyTree};
@@ -725,6 +726,29 @@ impl LayoutRuntime {
     }
 }
 
+/// Host-owned input modality, gesture, cursor, and tooltip state.
+struct InputRuntime {
+    modifiers: winit::event::Modifiers,
+    interaction: crate::interaction::InteractionEnvironment,
+    platform: crate::platform::PlatformConventions,
+    nav_gestures: crate::gesture::NavGestureRecognizer,
+    current_cursor: CursorIcon,
+    tooltip_host: crate::widget::TooltipHost,
+}
+
+impl InputRuntime {
+    fn new() -> Self {
+        Self {
+            modifiers: winit::event::Modifiers::default(),
+            interaction: crate::interaction::InteractionEnvironment::default(),
+            platform: crate::platform::PlatformConventions::default(),
+            nav_gestures: crate::gesture::NavGestureRecognizer::new(),
+            current_cursor: CursorIcon::Default,
+            tooltip_host: crate::widget::TooltipHost::new(),
+        }
+    }
+}
+
 /// Host-owned action discovery, dispatch, and invocation state.
 ///
 /// Actions remain directly connected to the retained widget tree; this
@@ -739,6 +763,7 @@ struct ActionRuntime {
     /// exact snapshot until the host crosses a state-mutation boundary.
     resource_cache: RefCell<Option<ResourceCache>>,
     bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
+    bound_record_sync: Option<bound_record_sync::BoundRecordSync>,
     bound_publication: crate::bound_dispatch::BoundPublication,
     bound_directory_route: Option<crate::collaboration::PrimaryRouteWitness>,
     last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
@@ -790,6 +815,7 @@ impl ActionRuntime {
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
             resource_cache: RefCell::new(None),
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
+            bound_record_sync: None,
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
             bound_directory_route: None,
             last_published_bound_route: None,
@@ -812,6 +838,78 @@ impl ActionRuntime {
     }
 }
 
+/// Host-owned accessibility state and semantic projection.
+struct AccessibilityRuntime {
+    /// `None` makes every narration call site a no-op, so a reader-off build
+    /// remains unaffected.
+    screen_reader: Option<crate::screen_reader::ScreenReader>,
+    /// winit doesn't expose the Insert reader modifier as a `Modifiers` bit.
+    screen_reader_modifier_down: bool,
+    live_region_last: std::collections::HashMap<String, String>,
+    focus_trap_active: bool,
+    focus_before_trap: Option<NodeId>,
+    /// Kept separate from the effective theme so disabling high contrast
+    /// restores the configured theme exactly.
+    base_theme: Theme,
+    a11y: crate::a11y::A11ySettings,
+    text_scale: f32,
+    ui_scale: f32,
+    semantic_tree: crate::a11y_tree::SemanticTree,
+}
+
+impl AccessibilityRuntime {
+    fn new(base_theme: Theme, screen_reader: Option<crate::screen_reader::ScreenReader>) -> Self {
+        Self {
+            screen_reader,
+            screen_reader_modifier_down: false,
+            live_region_last: std::collections::HashMap::new(),
+            focus_trap_active: false,
+            focus_before_trap: None,
+            base_theme,
+            a11y: crate::a11y::A11ySettings::default(),
+            text_scale: 1.0,
+            ui_scale: 1.0,
+            semantic_tree: crate::a11y_tree::SemanticTree::new(),
+        }
+    }
+}
+
+/// Host-owned persistence and record-checkout state.
+struct PersistenceRuntime {
+    autosave: Option<crate::persist::Autosave>,
+    /// The live document belongs to the record selected by the root widget.
+    records: Option<crate::record::RecordSet>,
+    room_index: Option<crate::state::DocumentReplica>,
+}
+
+impl PersistenceRuntime {
+    fn new() -> Self {
+        Self {
+            autosave: None,
+            records: None,
+            room_index: None,
+        }
+    }
+}
+
+/// Host-owned continuation publication and deferred restore state.
+struct ContinuationRuntime {
+    last_published: Option<crate::collaboration::ContinuationMetadata>,
+    pending_restore: Option<crate::collaboration::ContinuationMetadata>,
+    /// Generic view restoration waits until layout has built the focus order.
+    pending_view: Option<crate::view::View>,
+}
+
+impl ContinuationRuntime {
+    fn new(pending_restore: Option<crate::collaboration::ContinuationMetadata>) -> Self {
+        Self {
+            last_published: None,
+            pending_restore,
+            pending_view: None,
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -824,6 +922,7 @@ pub struct App {
     root_widget: Box<dyn Widget>,
     text_renderer: TextRenderer,
     palette_source: PaletteSource,
+    watch_system_settings: bool,
     layout: LayoutRuntime,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
@@ -849,12 +948,7 @@ pub struct App {
     /// Studio. Throttled so the render loop does not stat the file per frame.
     theme_store_stamp: Option<std::time::SystemTime>,
     last_theme_store_check: Instant,
-    modifiers: winit::event::Modifiers,
-
-    interaction: crate::interaction::InteractionEnvironment,
-    platform: crate::platform::PlatformConventions,
-
-    nav_gestures: crate::gesture::NavGestureRecognizer,
+    input: InputRuntime,
 
     // Stable state for Undo/Redo tracking
     last_stable_focus_idx: Option<usize>,
@@ -898,34 +992,7 @@ pub struct App {
     /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
     frame_tick: Option<FrameTick>,
 
-    /// Only calls into winit when it changes, keeping the hot pointer path
-    /// cheap.
-    current_cursor: CursorIcon,
-
-    tooltip_host: crate::widget::TooltipHost,
-
-    /// `None` makes every narration call site a no-op, so a reader-off
-    /// build is byte-for-byte unaffected.
-    screen_reader: Option<crate::screen_reader::ScreenReader>,
-    /// winit doesn't expose the **Insert** key (the NVDA/Orca reader
-    /// modifier) as a [`Modifiers`](winit::event::Modifiers) bit, so
-    /// press/release is tracked here for the `Insert + <key>` command layer.
-    screen_reader_modifier_down: bool,
-    live_region_last: std::collections::HashMap<String, String>,
-
-    /// Tracked to detect the open→close transition and restore focus.
-    focus_trap_active: bool,
-    focus_before_trap: Option<NodeId>,
-
-    /// Kept separate from the live [`Self::theme`] so disabling high
-    /// contrast restores it exactly.
-    base_theme: Theme,
-    a11y: crate::a11y::A11ySettings,
-    text_scale: f32,
-    /// Composes on top of the per-output device scale
-    /// ([`Theme::with_ui_scale`]) so the result stays crisp at any
-    /// fractional scale.
-    ui_scale: f32,
+    accessibility: AccessibilityRuntime,
 
     /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
     /// frame so a steady desired state issues one `set_fullscreen` call —
@@ -934,12 +1001,8 @@ pub struct App {
     /// To distinguish app-driven from compositor-driven transitions.
     fullscreen_active: bool,
 
-    autosave: Option<crate::persist::Autosave>,
     pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
-    /// When present the live document is one record's, named by the root
-    /// widget via [`crate::widget::Widget::record_intent`].
-    records: Option<crate::record::RecordSet>,
-    room_index: Option<crate::state::DocumentReplica>,
+    persistence: PersistenceRuntime,
 
     actions: ActionRuntime,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
@@ -947,16 +1010,9 @@ pub struct App {
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_viewport_width: f64,
     history_focus_pending: bool,
-    /// Last app-owned continuation projection sent to the local shell.
-    last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
+    continuation: ContinuationRuntime,
     last_published_playback: Option<Vec<media::handoff::PlaybackReport>>,
     last_playback_publish: Option<Instant>,
-    pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
-    /// Generic view restoration waits until the first layout has built the
-    /// focus order. App-specific projections still apply before first sync.
-    pending_continuation_view: Option<crate::view::View>,
-    semantic_tree: crate::a11y_tree::SemanticTree,
-
     profiler: Option<crate::profiling::FrameProfiler>,
 
     /// Wins over the automatic env/package-id/binary-name resolution.
@@ -1024,6 +1080,7 @@ struct AppConstructionInputs {
     configured_theme: ConstructionValue<Theme>,
     text_renderer: ConstructionValue<TextRenderer>,
     palette_source: PaletteSource,
+    watch_system_settings: bool,
     debug_mode: fn() -> bool,
     theme_store_stamp: fn() -> Option<std::time::SystemTime>,
     local_author: ConstructionValue<crate::permissions::UserId>,
@@ -1041,6 +1098,34 @@ struct AppConstructionInputs {
 }
 
 impl AppConstructionInputs {
+    fn native_component(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+    ) -> Self {
+        Self::component_with_services(
+            inputs,
+            binding,
+            Self::production(CollaborationManager::for_record(&binding.checkout.id)),
+        )
+    }
+
+    fn component_with_services(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        mut services: Self,
+    ) -> Self {
+        // Keep the explicit presentation and canonical author. Only the native
+        // runner supplies process services; the application factory stays pure.
+        services.configured_theme = ConstructionValue::Ready(inputs.theme);
+        services.text_renderer = ConstructionValue::Ready(inputs.text_renderer);
+        services.palette_source = PaletteSource::Host;
+        services.local_author = ConstructionValue::Ready(binding.author.clone());
+        let mut presence = services.presence_ctx.resolve();
+        presence.add_own_identity(&binding.author.0);
+        services.presence_ctx = ConstructionValue::Ready(presence);
+        services
+    }
+
     fn component(
         inputs: crate::application::ComponentRunnerInputs,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -1052,6 +1137,7 @@ impl AppConstructionInputs {
             configured_theme: ConstructionValue::Ready(inputs.theme),
             text_renderer: ConstructionValue::Ready(inputs.text_renderer),
             palette_source: PaletteSource::Host,
+            watch_system_settings: false,
             local_author: ConstructionValue::Ready(binding.author.clone()),
             presence_ctx: ConstructionValue::Ready(presence),
             surface_id: ConstructionValue::Ready(format!(
@@ -1081,6 +1167,7 @@ impl AppConstructionInputs {
                 renderer: TextRenderer::new,
                 field: crate::widget::SearchField::new,
             },
+            watch_system_settings: true,
             debug_mode: || cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             theme_store_stamp: || {
                 settings_store::settings_path()
@@ -1120,6 +1207,7 @@ impl AppConstructionInputs {
                 renderer: crate::font_catalog::fixture_renderer,
                 field: || crate::widget::SearchField::with_language("en_US"),
             },
+            watch_system_settings: true,
             debug_mode: || false,
             theme_store_stamp: || None,
             local_author: ConstructionValue::Lazy(|| {
@@ -1149,15 +1237,45 @@ impl App {
     /// # Errors
     /// Returns the original component recovery owners when mounting is refused.
     pub fn from_component(
-        mut component: crate::application::AppComponent,
+        component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
     ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, AppConstructionInputs::component)
+    }
+
+    /// Mount a standalone native component with the process's existing system
+    /// services, including record-scoped collaboration and accessibility.
+    /// Presentation, identity, storage and authority still belong to the host.
+    /// # Errors
+    /// Preserves the component's recovery owners on mount or route mismatch.
+    pub fn from_component_with_native_services(
+        component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, AppConstructionInputs::native_component)
+    }
+
+    fn from_component_using(
+        mut component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+        construction: fn(
+            crate::application::ComponentRunnerInputs,
+            &crate::bound_dispatch::CallbackBinding,
+        ) -> AppConstructionInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
         let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
         let handle = scope.handle();
         if let Err(error) = component.mount(move |_| handle.wake()) {
             return Err(component.setup_error(error));
         }
-        let inputs = AppConstructionInputs::component(inputs, &component.callback_binding());
+        let binding = component.callback_binding();
+        let inputs = construction(inputs, &binding);
+        if let Some(route) = inputs.collab_manager.primary_route()
+            && !binding.matches_broker_route(Some(route))
+        {
+            return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
+        }
         let root = Box::new(crate::widget::BoundAppWidget { component });
         Ok(Self::from_scoped_parts_with_inputs(
             scope,
@@ -1167,9 +1285,28 @@ impl App {
         ))
     }
 
+    pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
+        let theme = Theme::configured().with_a11y(
+            &crate::a11y::A11ySettings {
+                high_contrast: Self::high_contrast_env_enabled(),
+                reduce_motion: Self::reduce_motion_env_enabled(),
+                ..Default::default()
+            },
+            Self::text_scale_env().unwrap_or(1.0),
+            Self::ui_scale_env().unwrap_or(1.0),
+        );
+        let mut text_renderer = TextRenderer::new();
+        text_renderer.set_text_scale(theme.text_scale);
+        crate::application::ComponentRunnerInputs {
+            theme,
+            text_renderer,
+        }
+    }
+
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.actions.bound_record_sync = None;
         self.component_close_reports
             .extend(self.root_widget.close_components());
         self.component_close_reports
@@ -1179,7 +1316,7 @@ impl App {
     }
     fn close_native_content(&mut self) {
         self.close_components();
-        self.root_widget.unmount_native_views();
+        crate::widget::unmount_native_views(self.root_widget.as_mut());
     }
 
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
@@ -1424,11 +1561,12 @@ impl App {
             root_widget,
             text_renderer: inputs.text_renderer.resolve(),
             palette_source: inputs.palette_source,
+            watch_system_settings: inputs.watch_system_settings,
             layout: LayoutRuntime::new(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             component_close_reports: vec![],
             close_admission: crate::close_admission::Admission::default(),
-            nav_gestures: crate::gesture::NavGestureRecognizer::new(),
+            input: InputRuntime::new(),
             needs_sync: true,
             theme: configured_theme.clone(),
             debug_mode: (inputs.debug_mode)(),
@@ -1439,9 +1577,6 @@ impl App {
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
             last_theme_store_check: Instant::now(),
-            modifiers: winit::event::Modifiers::default(),
-            interaction: crate::interaction::InteractionEnvironment::default(),
-            platform: crate::platform::PlatformConventions::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
             collab_manager: inputs.collab_manager,
@@ -1458,36 +1593,20 @@ impl App {
             last_view_presence: None,
             presence_broadcast_sink: None,
             frame_tick: None,
-            current_cursor: CursorIcon::Default,
-            tooltip_host: crate::widget::TooltipHost::new(),
-            // Auto-enable if the shell mirrored TILO_A11Y_* into this sandbox.
-            screen_reader: (inputs.screen_reader)(),
-            screen_reader_modifier_down: false,
-            live_region_last: std::collections::HashMap::new(),
-            focus_trap_active: false,
-            focus_before_trap: None,
-            base_theme: configured_theme,
-            a11y: crate::a11y::A11ySettings::default(),
-            text_scale: 1.0,
-            ui_scale: 1.0,
+            accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
             fullscreen_requested: false,
             fullscreen_active: false,
-            autosave: None,
             legacy_persistence: crate::launch::LegacyPersistencePolicy::Host,
-            records: None,
-            room_index: None,
+            persistence: PersistenceRuntime::new(),
             actions: ActionRuntime::new(),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
             history_layout: None,
             history_viewport_width: 1000.0,
             history_focus_pending: false,
-            last_published_continuation: None,
+            continuation: ContinuationRuntime::new((inputs.pending_continuation_restore)()),
             last_published_playback: None,
             last_playback_publish: None,
-            pending_continuation_restore: (inputs.pending_continuation_restore)(),
-            pending_continuation_view: None,
-            semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: (inputs.profiler)(),
             window_title: None,
             window_app_id: None,
@@ -1500,18 +1619,18 @@ impl App {
             floating_host_messages: Vec::new(),
         };
 
-        app.a11y.high_contrast = (inputs.high_contrast)();
-        app.a11y.reduce_motion = match app.palette_source {
-            PaletteSource::Host => app.base_theme.reduce_motion,
+        app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
+        app.accessibility.a11y.reduce_motion = match app.palette_source {
+            PaletteSource::Host => app.accessibility.base_theme.reduce_motion,
             PaletteSource::Owned { .. } => (inputs.reduce_motion)(),
         };
-        app.a11y.screen_reader = app.screen_reader.is_some();
-        app.text_scale = match app.palette_source {
+        app.accessibility.a11y.screen_reader = app.accessibility.screen_reader.is_some();
+        app.accessibility.text_scale = match app.palette_source {
             PaletteSource::Host => app.text_renderer.text_scale(),
             PaletteSource::Owned { .. } => (inputs.text_scale)(),
         };
-        app.ui_scale = match app.palette_source {
-            PaletteSource::Host => app.base_theme.ui_scale,
+        app.accessibility.ui_scale = match app.palette_source {
+            PaletteSource::Host => app.accessibility.base_theme.ui_scale,
             PaletteSource::Owned { .. } => (inputs.ui_scale)(),
         };
         app.rebuild_theme();
@@ -1538,24 +1657,28 @@ impl App {
     fn rebuild_theme(&mut self) {
         self.theme = match self.palette_source {
             PaletteSource::Host => {
-                self.text_renderer.set_text_scale(self.text_scale);
-                self.text_scale = self.text_renderer.text_scale();
-                let base = if self.a11y.high_contrast {
+                self.text_renderer
+                    .set_text_scale(self.accessibility.text_scale);
+                self.accessibility.text_scale = self.text_renderer.text_scale();
+                let base = if self.accessibility.a11y.high_contrast {
                     Theme::high_contrast()
                 } else {
-                    self.base_theme.clone()
+                    self.accessibility.base_theme.clone()
                 };
                 let theme = base
-                    .with_component_scales(self.text_scale, self.ui_scale)
-                    .with_reduce_motion(self.a11y.reduce_motion);
-                self.ui_scale = theme.ui_scale;
+                    .with_component_scales(
+                        self.accessibility.text_scale,
+                        self.accessibility.ui_scale,
+                    )
+                    .with_reduce_motion(self.accessibility.a11y.reduce_motion);
+                self.accessibility.ui_scale = theme.ui_scale;
                 theme
             }
-            PaletteSource::Owned { .. } => {
-                self.base_theme
-                    .clone()
-                    .with_a11y(&self.a11y, self.text_scale, self.ui_scale)
-            }
+            PaletteSource::Owned { .. } => self.accessibility.base_theme.clone().with_a11y(
+                &self.accessibility.a11y,
+                self.accessibility.text_scale,
+                self.accessibility.ui_scale,
+            ),
         };
         // Deliver motion policy before the event loop consults
         // `needs_animation_frame`. This lets custom roots settle their own
@@ -2165,7 +2288,11 @@ impl App {
             .with_native_presentation(|root, _, _, _| root.control_action_bindings())
             .unwrap_or_default();
         for binding in bindings {
-            for path in self.semantic_tree.control_paths(&binding.control_id) {
+            for path in self
+                .accessibility
+                .semantic_tree
+                .control_paths(&binding.control_id)
+            {
                 let Some(semantic_id) = path.last() else {
                     continue;
                 };
@@ -2177,6 +2304,7 @@ impl App {
                 );
                 let semantic_address = address.resource == format!("ui:{encoded_node_id}")
                     && self
+                        .accessibility
                         .semantic_tree
                         .action(semantic_id, &address.action)
                         .is_some();
@@ -2188,7 +2316,7 @@ impl App {
                 if !matches_address {
                     continue;
                 }
-                let Some(node) = self.semantic_tree.node(semantic_id) else {
+                let Some(node) = self.accessibility.semantic_tree.node(semantic_id) else {
                     continue;
                 };
                 routes.push(ActionUiRoute {
@@ -3235,7 +3363,7 @@ impl App {
     /// focus itself or start playing media.
     fn publish_continuation_metadata(&mut self) {
         self.apply_pending_continuation_restore();
-        if !self.collab_manager.is_connected() || self.pending_continuation_view.is_some() {
+        if !self.collab_manager.is_connected() || self.continuation.pending_view.is_some() {
             return;
         }
         let semantic = self.root_widget.continuable().and_then(|continuable| {
@@ -3243,17 +3371,17 @@ impl App {
         });
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
         let metadata = compose_structural_continuation_metadata(view, semantic);
-        if metadata == self.last_published_continuation {
+        if metadata == self.continuation.last_published {
             return;
         }
         if let Some(request) = continuation_publication(
             crate::collaboration::local_app_id(),
             metadata.as_ref(),
-            self.last_published_continuation.is_some(),
+            self.continuation.last_published.is_some(),
         ) {
             self.collab_manager.send(request);
         }
-        self.last_published_continuation = metadata;
+        self.continuation.last_published = metadata;
     }
 
     /// Publish private source descriptors over the authenticated local app
@@ -3289,13 +3417,13 @@ impl App {
     }
 
     fn apply_pending_continuation_restore(&mut self) {
-        if let Some(metadata) = self.pending_continuation_restore.take() {
+        if let Some(metadata) = self.continuation.pending_restore.take() {
             if metadata.schema_version == STRUCTURAL_CONTINUATION_SCHEMA {
                 if let Ok(envelope) =
                     postcard::from_bytes::<StructuralContinuationEnvelope>(&metadata.bytes)
                     && valid_structural_envelope(&envelope)
                 {
-                    self.pending_continuation_view = Some(envelope.presentation.into_view());
+                    self.continuation.pending_view = Some(envelope.presentation.into_view());
                     if let Some(semantic) = envelope.semantic {
                         let root = self.state.root.clone();
                         let metadata = crate::collaboration::ContinuationMetadata {
@@ -3317,7 +3445,7 @@ impl App {
             if metadata.schema_version == GENERIC_VIEW_CONTINUATION_SCHEMA {
                 if let Ok(view) = postcard::from_bytes::<PortableContinuationView>(&metadata.bytes)
                 {
-                    self.pending_continuation_view = Some(view.into_view());
+                    self.continuation.pending_view = Some(view.into_view());
                 }
                 return;
             }
@@ -4522,7 +4650,7 @@ impl App {
             return false;
         };
         let root = self.state.root.clone();
-        let consumed = palette.handle_key(event, &self.modifiers, &mut self.state.doc, &root);
+        let consumed = palette.handle_key(event, &self.input.modifiers, &mut self.state.doc, &root);
         // An operation row may have fired. Document mutations go through the
         // deterministic executor; effects/views route to the owning widget.
         let pending = self
@@ -4714,32 +4842,32 @@ impl App {
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
     pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
-        let mut s = self.a11y;
-        s.screen_reader = self.screen_reader.is_some();
+        let mut s = self.accessibility.a11y;
+        s.screen_reader = self.accessibility.screen_reader.is_some();
         s
     }
 
     pub fn text_scale(&self) -> f32 {
-        self.text_scale
+        self.accessibility.text_scale
     }
 
     /// Layout grows to fit so text never clips; the value is clamped to a
     /// sane range by the theme.
     pub fn set_text_scale(&mut self, factor: f32) {
         let _entry = self.enter_wake_scope();
-        self.text_scale = factor;
+        self.accessibility.text_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
     }
 
     pub fn ui_scale(&self) -> f32 {
-        self.ui_scale
+        self.accessibility.ui_scale
     }
 
     pub fn set_ui_scale(&mut self, factor: f32) {
         let _entry = self.enter_wake_scope();
-        self.ui_scale = factor;
+        self.accessibility.ui_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -4752,47 +4880,47 @@ impl App {
         environment: crate::interaction::InteractionEnvironment,
     ) {
         let _entry = self.enter_wake_scope();
-        if self.interaction == environment {
+        if self.input.interaction == environment {
             return;
         }
-        self.interaction = environment;
+        self.input.interaction = environment;
         self.root_widget.set_interaction_environment(environment);
         self.invalidate_widget_resource_cache();
         self.layout.layout_dirty = true;
     }
 
     pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
-        self.interaction
+        self.input.interaction
     }
 
     /// Override platform HIG conventions for a native shell or deterministic
     /// cross-platform test. Ordinary apps use the host default.
     pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         let _entry = self.enter_wake_scope();
-        if self.platform == conventions {
+        if self.input.platform == conventions {
             return;
         }
-        self.platform = conventions;
+        self.input.platform = conventions;
         self.root_widget.set_platform_conventions(conventions);
         self.invalidate_widget_resource_cache();
         self.layout.layout_dirty = true;
     }
 
     pub fn platform_conventions(&self) -> crate::platform::PlatformConventions {
-        self.platform
+        self.input.platform
     }
 
     pub fn high_contrast(&self) -> bool {
-        self.a11y.high_contrast
+        self.accessibility.a11y.high_contrast
     }
 
     /// Off restores the captured base theme, not a hard-coded default.
     pub fn set_high_contrast(&mut self, on: bool) {
         let _entry = self.enter_wake_scope();
-        if self.a11y.high_contrast == on {
+        if self.accessibility.a11y.high_contrast == on {
             return;
         }
-        self.a11y.high_contrast = on;
+        self.accessibility.a11y.high_contrast = on;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -4800,20 +4928,20 @@ impl App {
 
     pub fn toggle_high_contrast(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
-        self.set_high_contrast(!self.a11y.high_contrast);
-        self.a11y.high_contrast
+        self.set_high_contrast(!self.accessibility.a11y.high_contrast);
+        self.accessibility.a11y.high_contrast
     }
 
     pub fn reduce_motion(&self) -> bool {
-        self.a11y.reduce_motion
+        self.accessibility.a11y.reduce_motion
     }
 
     pub fn set_reduce_motion(&mut self, on: bool) {
         let _entry = self.enter_wake_scope();
-        if self.a11y.reduce_motion == on {
+        if self.accessibility.a11y.reduce_motion == on {
             return;
         }
-        self.a11y.reduce_motion = on;
+        self.accessibility.a11y.reduce_motion = on;
         self.rebuild_theme();
     }
 
@@ -4821,7 +4949,7 @@ impl App {
     /// theme doesn't discard them.
     pub fn set_theme(&mut self, theme: Theme) {
         let _entry = self.enter_wake_scope();
-        self.base_theme = theme;
+        self.accessibility.base_theme = theme;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -4831,24 +4959,24 @@ impl App {
     /// site to a no-op.
     pub fn set_screen_reader_enabled(&mut self, enabled: bool) {
         let _entry = self.enter_wake_scope();
-        match (enabled, self.screen_reader.is_some()) {
+        match (enabled, self.accessibility.screen_reader.is_some()) {
             (true, false) => {
-                self.screen_reader = Some(Self::configured_screen_reader());
+                self.accessibility.screen_reader = Some(Self::configured_screen_reader());
                 self.announce_current_focus();
             }
             (false, true) => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.stop();
                 }
-                self.screen_reader = None;
-                self.live_region_last.clear();
+                self.accessibility.screen_reader = None;
+                self.accessibility.live_region_last.clear();
             }
             _ => {}
         }
     }
 
     pub fn screen_reader_enabled(&self) -> bool {
-        self.screen_reader.is_some()
+        self.accessibility.screen_reader.is_some()
     }
 
     /// Installs a caller-provided reader (e.g. over a test `NullSpeaker` so
@@ -4856,12 +4984,12 @@ impl App {
     #[doc(hidden)]
     pub fn set_screen_reader(&mut self, reader: Option<crate::screen_reader::ScreenReader>) {
         let _entry = self.enter_wake_scope();
-        self.screen_reader = reader;
+        self.accessibility.screen_reader = reader;
     }
 
     #[doc(hidden)]
     pub fn screen_reader(&self) -> Option<&crate::screen_reader::ScreenReader> {
-        self.screen_reader.as_ref()
+        self.accessibility.screen_reader.as_ref()
     }
 
     fn announce_current_focus(&mut self) {
@@ -4870,7 +4998,7 @@ impl App {
             .inspect_node(id, |widget| widget.accessibility())
             .ok()
             .flatten();
-        if let (Some(node), Some(sr)) = (node, self.screen_reader.as_mut()) {
+        if let (Some(node), Some(sr)) = (node, self.accessibility.screen_reader.as_mut()) {
             sr.announce_focus(&node);
         }
     }
@@ -4896,7 +5024,7 @@ impl App {
         use winit::event::ElementState;
         use winit::keyboard::{Key, NamedKey};
 
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return false;
         }
         let WindowEvent::KeyboardInput { event: ke, .. } = event else {
@@ -4904,21 +5032,21 @@ impl App {
         };
 
         if let Key::Named(NamedKey::Insert) = ke.logical_key {
-            self.screen_reader_modifier_down = ke.state == ElementState::Pressed;
+            self.accessibility.screen_reader_modifier_down = ke.state == ElementState::Pressed;
             return false;
         }
 
-        if ke.state != ElementState::Pressed || !self.screen_reader_modifier_down {
+        if ke.state != ElementState::Pressed || !self.accessibility.screen_reader_modifier_down {
             return false;
         }
 
         // Handled before the named-key arm since winit delivers H/F as
         // character keys, not named keys.
         if let Key::Character(ref c) = ke.logical_key {
-            let shift = self.modifiers.state().shift_key();
+            let shift = self.input.modifiers.state().shift_key();
             match c.to_ascii_lowercase().as_str() {
                 "h" => {
-                    if let Some(sr) = self.screen_reader.as_mut() {
+                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                         if shift {
                             sr.read_prev_heading(self.root_widget.as_ref());
                         } else {
@@ -4928,7 +5056,7 @@ impl App {
                     return true;
                 }
                 "f" => {
-                    if let Some(sr) = self.screen_reader.as_mut() {
+                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                         if shift {
                             sr.read_prev_control(self.root_widget.as_ref());
                         } else {
@@ -4946,19 +5074,19 @@ impl App {
         };
         match named {
             NamedKey::ArrowDown => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_all(self.root_widget.as_ref());
                 }
                 true
             }
             NamedKey::ArrowRight => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_next(self.root_widget.as_ref());
                 }
                 true
             }
             NamedKey::ArrowLeft => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_prev(self.root_widget.as_ref());
                 }
                 true
@@ -4968,7 +5096,7 @@ impl App {
                 true
             }
             NamedKey::Escape => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.stop();
                 }
                 true
@@ -5043,24 +5171,24 @@ impl App {
             return false;
         };
         let mut changed = false;
-        if intent.base_theme.name != self.base_theme.name {
-            self.base_theme = intent.base_theme;
+        if intent.base_theme.name != self.accessibility.base_theme.name {
+            self.accessibility.base_theme = intent.base_theme;
             changed = true;
         }
-        if intent.high_contrast != self.a11y.high_contrast {
-            self.a11y.high_contrast = intent.high_contrast;
+        if intent.high_contrast != self.accessibility.a11y.high_contrast {
+            self.accessibility.a11y.high_contrast = intent.high_contrast;
             changed = true;
         }
-        if intent.reduce_motion != self.a11y.reduce_motion {
-            self.a11y.reduce_motion = intent.reduce_motion;
+        if intent.reduce_motion != self.accessibility.a11y.reduce_motion {
+            self.accessibility.a11y.reduce_motion = intent.reduce_motion;
             changed = true;
         }
-        if (intent.text_scale - self.text_scale).abs() > f32::EPSILON {
-            self.text_scale = intent.text_scale;
+        if (intent.text_scale - self.accessibility.text_scale).abs() > f32::EPSILON {
+            self.accessibility.text_scale = intent.text_scale;
             changed = true;
         }
-        if (intent.ui_scale - self.ui_scale).abs() > f32::EPSILON {
-            self.ui_scale = intent.ui_scale;
+        if (intent.ui_scale - self.accessibility.ui_scale).abs() > f32::EPSILON {
+            self.accessibility.ui_scale = intent.ui_scale;
             changed = true;
         }
         if changed {
@@ -5088,8 +5216,8 @@ impl App {
         stamp: impl FnOnce() -> Option<std::time::SystemTime>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
-        // Prepared components retain the caller's presentation and local services.
-        if matches!(self.palette_source, PaletteSource::Host) {
+        // Only an explicitly native service host watches process settings.
+        if !self.watch_system_settings {
             return false;
         }
         if now.saturating_duration_since(self.last_theme_store_check) < Duration::from_millis(750) {
@@ -5109,17 +5237,17 @@ impl App {
     }
 
     fn apply_configured_theme(&mut self) {
-        self.base_theme = Theme::configured();
+        self.accessibility.base_theme = Theme::configured();
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
         let configured_reader = Self::persisted_accessibility_bool("screen_reader")
             || Self::screen_reader_env_enabled();
         self.set_screen_reader_enabled(configured_reader);
-        if let Some(reader) = self.screen_reader.as_mut() {
+        if let Some(reader) = self.accessibility.screen_reader.as_mut() {
             Self::configure_screen_reader(reader);
         }
-        self.a11y.screen_reader = self.screen_reader.is_some();
+        self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
 
     /// The smallest-area matching rect wins, so a nested child beats its
@@ -5150,7 +5278,7 @@ impl App {
     /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
     /// beats its enclosing toolbar.
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
-        if !self.interaction.supports_hover() {
+        if !self.input.interaction.supports_hover() {
             return None;
         }
         let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
@@ -5329,20 +5457,25 @@ impl App {
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
         if self.collab_manager.is_connected() {
-            let (delta, heads) = self.state.pending_outbound_delta();
-            if !delta.is_empty() {
-                tracing::debug!(
-                    target: "tilo.state",
-                    event = "document_send",
-                    kind = "incremental",
-                    bytes = delta.len(),
-                    heads = heads.len(),
-                    "queueing document mutation"
-                );
-                if self.collab_manager.send(
-                    crate::collaboration::CollabRequest::document_incremental(delta),
-                ) {
-                    self.state.advance_outbound(heads);
+            match self.pending_primary_document_delta() {
+                Ok((delta, heads)) if !delta.is_empty() => {
+                    tracing::debug!(
+                        target: "tilo.state",
+                        event = "document_send",
+                        kind = "incremental",
+                        bytes = delta.len(),
+                        heads = heads.len(),
+                        "queueing document mutation"
+                    );
+                    if self.collab_manager.send(
+                        crate::collaboration::CollabRequest::document_incremental(delta),
+                    ) {
+                        self.advance_primary_document(heads);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "collab: primary document is unavailable");
                 }
             }
         }
@@ -5354,13 +5487,13 @@ impl App {
     /// can never be merged into the index (or vice versa).
     fn broadcast_room_index_delta(&mut self) {
         let connected = self.room_collab_manager.as_ref().map_or_else(
-            || self.records.is_some() && self.collab_manager.is_connected(),
+            || self.persistence.records.is_some() && self.collab_manager.is_connected(),
             CollaborationManager::is_connected,
         );
         if !connected {
             return;
         }
-        let Some(room) = self.room_index.as_mut() else {
+        let Some(room) = self.persistence.room_index.as_mut() else {
             return;
         };
         let (delta, heads) = room.pending_outbound_delta();
@@ -5375,7 +5508,7 @@ impl App {
             {
                 room.advance_outbound(heads);
             }
-        } else if self.records.is_some() && self.collab_manager.is_connected() {
+        } else if self.persistence.records.is_some() && self.collab_manager.is_connected() {
             // Before the first record checkout the primary manager is the
             // room route. It becomes `room_collab_manager` at that checkout.
             // Do not advance this cursor for ordinary (non-record) apps.
@@ -5511,19 +5644,20 @@ impl App {
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) {
-        if self.records.is_some() && self.room_collab_manager.is_none() {
+        if self.persistence.records.is_some() && self.room_collab_manager.is_none() {
             let _ = self.apply_room_index_document_envelope(envelope, decrypted_payload);
             return;
         }
         let applied = match collab_types::DocumentMutation::decode(
             decrypted_payload.unwrap_or(&envelope.payload),
         ) {
-            Ok(collab_types::DocumentMutation::Snapshot(data)) => {
-                self.state.merge_snapshot(&data).is_ok()
-            }
-            Ok(collab_types::DocumentMutation::Incremental(data)) => {
-                self.state.load_incremental(&data).is_ok()
-            }
+            Ok(mutation) => match self.apply_primary_document(mutation) {
+                Ok(changed) => changed,
+                Err(error) => {
+                    tracing::warn!(%error, "collab: primary document mutation refused");
+                    false
+                }
+            },
             Err(error) => {
                 tracing::warn!(%error, "collab: broker delivered an untyped signed document op");
                 false
@@ -5544,7 +5678,7 @@ impl App {
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) -> bool {
-        let Some(room) = self.room_index.as_mut() else {
+        let Some(room) = self.persistence.room_index.as_mut() else {
             return false;
         };
         let applied = match collab_types::DocumentMutation::decode(
@@ -5562,7 +5696,10 @@ impl App {
             }
         };
         if applied
-            && let (Some(records), Some(room)) = (self.records.as_mut(), self.room_index.as_ref())
+            && let (Some(records), Some(room)) = (
+                self.persistence.records.as_mut(),
+                self.persistence.room_index.as_ref(),
+            )
         {
             records.discover_room(room.document());
             self.invalidate_widget_resource_cache();
@@ -5606,9 +5743,10 @@ impl App {
                     }
                 }
                 CollabEvent::DocumentSnapshotRequested { .. } => {
-                    if let (Some(manager), Some(room)) =
-                        (self.room_collab_manager.as_mut(), self.room_index.as_mut())
-                    {
+                    if let (Some(manager), Some(room)) = (
+                        self.room_collab_manager.as_mut(),
+                        self.persistence.room_index.as_mut(),
+                    ) {
                         let snapshot = room.document_mut().save();
                         let _ = manager.send(
                             crate::collaboration::CollabRequest::document_snapshot(snapshot),
@@ -5635,13 +5773,13 @@ impl App {
         // widget/document authority, and it always runs on the App owner
         // thread.
         self.pump_action_directory_requests();
-        for request in self.root_widget.take_collab_requests() {
+        for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collab_manager.send(request);
         }
         let events = self.collab_manager.poll();
         for event in events {
             any = true;
-            self.root_widget.handle_collab_event(&event);
+            crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
             match event {
                 CollabEvent::Context { collaborators, .. } => {
                     self.apply_collab_context(collaborators);
@@ -5651,10 +5789,16 @@ impl App {
                     None => self.unfollow(),
                 },
                 CollabEvent::DocumentSnapshotRequested { .. } => {
-                    let data = self.state.save();
-                    let _ = self
-                        .collab_manager
-                        .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                    match self.primary_document_snapshot() {
+                        Ok(data) => {
+                            let _ = self
+                                .collab_manager
+                                .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "collab: primary snapshot refused");
+                        }
+                    }
                 }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     self.presence_ctx
@@ -5874,7 +6018,7 @@ impl App {
     )]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
         let _entry = self.enter_wake_scope();
-        self.root_widget.handle_collab_event(&event);
+        crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
         match event {
             CollabEvent::RemotePresenceUpdate {
                 user_id,
@@ -6056,10 +6200,10 @@ impl App {
             })
             .unwrap_or_default();
         self.focusable_order = order;
-        match (self.focus_trap_active, trap_active) {
+        match (self.accessibility.focus_trap_active, trap_active) {
             (false, true) => {
                 // Modal just opened: remember prior focus, move into the trap.
-                self.focus_before_trap = self.focused_node;
+                self.accessibility.focus_before_trap = self.focused_node;
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
                 } else {
@@ -6071,6 +6215,7 @@ impl App {
             (true, false) => {
                 // Modal closed: restore only if that element still exists.
                 let restore = self
+                    .accessibility
                     .focus_before_trap
                     .take()
                     .filter(|id| self.focusable_order.contains(id));
@@ -6088,7 +6233,7 @@ impl App {
             }
             (false, false) => {}
         }
-        self.focus_trap_active = trap_active;
+        self.accessibility.focus_trap_active = trap_active;
     }
 
     /// The decode lives on [`crate::presence::PresenceCtx`] so the
@@ -6135,7 +6280,7 @@ impl App {
             RemotePresenceEffect::InteractionAdvanced => {
                 if let Some(interaction) = interaction
                     && let Some(text) = self.presence_ctx.interaction_announcement(&interaction)
-                    && let Some(reader) = self.screen_reader.as_mut()
+                    && let Some(reader) = self.accessibility.screen_reader.as_mut()
                 {
                     let assertive = matches!(
                         interaction.phase,
@@ -6300,12 +6445,14 @@ impl App {
             self.focused_node = new_id;
             if let Some(node) = new_id {
                 let _ = self.mutate_node(node, |widget| widget.set_focus(true));
-                if self.screen_reader.is_some() {
+                if self.accessibility.screen_reader.is_some() {
                     let access = self
                         .inspect_node(node, |widget| widget.accessibility())
                         .ok()
                         .flatten();
-                    if let (Some(access), Some(reader)) = (access, self.screen_reader.as_mut()) {
+                    if let (Some(access), Some(reader)) =
+                        (access, self.accessibility.screen_reader.as_mut())
+                    {
                         reader.announce_focus(&access);
                     }
                 }
@@ -6353,7 +6500,7 @@ impl App {
     }
 
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
-        self.screen_reader.as_ref()?;
+        self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
         let node = self
             .inspect_node(id, |widget| widget.accessibility())
@@ -6371,7 +6518,7 @@ impl App {
         if self.focused_node != Some(pre_id) {
             return;
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         let Some(node) = self
@@ -6385,13 +6532,13 @@ impl App {
         if now.is_empty() || now == pre_state {
             return;
         }
-        if let Some(sr) = self.screen_reader.as_mut() {
+        if let Some(sr) = self.accessibility.screen_reader.as_mut() {
             sr.announce_value_change(now);
         }
     }
 
     fn text_review_snapshot(&self) -> Option<(NodeId, usize, String)> {
-        self.screen_reader.as_ref()?;
+        self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
         let (caret, text) = self
             .inspect_node(id, |widget| widget.text_review())
@@ -6409,7 +6556,7 @@ impl App {
         if self.focused_node != Some(pre_id) {
             return;
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         let Some((now_caret, now_text)) = self
@@ -6434,11 +6581,11 @@ impl App {
                         .get(..now_caret)
                         .and_then(|s| s.chars().next_back())
                 });
-            if let (Some(ch), Some(sr)) = (ch, self.screen_reader.as_mut()) {
+            if let (Some(ch), Some(sr)) = (ch, self.accessibility.screen_reader.as_mut()) {
                 sr.echo_char(ch);
             }
         } else if let Some(word) = word_at(&now_text, now_caret)
-            && let Some(sr) = self.screen_reader.as_mut()
+            && let Some(sr) = self.accessibility.screen_reader.as_mut()
         {
             sr.echo_word(&word);
         }
@@ -6458,7 +6605,7 @@ impl App {
             }
             w.for_each_child(&mut |child| visit(child, out));
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         // A live region without an accessible name can't be tracked stably
@@ -6470,8 +6617,10 @@ impl App {
         let mut to_announce: Vec<(crate::a11y::Politeness, String)> = Vec::new();
         for (key, politeness, text) in seen {
             current_keys.insert(key.clone());
-            let changed = self.live_region_last.get(&key) != Some(&text);
-            self.live_region_last.insert(key, text.clone());
+            let changed = self.accessibility.live_region_last.get(&key) != Some(&text);
+            self.accessibility
+                .live_region_last
+                .insert(key, text.clone());
             // Clearing a region to empty updates the snapshot silently.
             if changed && !text.is_empty() {
                 to_announce.push((politeness, text));
@@ -6479,10 +6628,11 @@ impl App {
         }
         // Drop snapshots for regions that left the tree, so a region that
         // reappears with the same text announces afresh.
-        self.live_region_last
+        self.accessibility
+            .live_region_last
             .retain(|k, _| current_keys.contains(k));
 
-        if let Some(sr) = self.screen_reader.as_mut() {
+        if let Some(sr) = self.accessibility.screen_reader.as_mut() {
             for (politeness, text) in to_announce {
                 let (priority, interrupt) = match politeness {
                     // Assertive cuts in; polite is queued at notification
@@ -6543,7 +6693,7 @@ impl App {
     /// pointer click-through — gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
-        modal_rect.is_none() || self.focus_trap_active
+        modal_rect.is_none() || self.accessibility.focus_trap_active
     }
 
     /// Tab normally belongs to the host's focus order. A focused editor-like
@@ -6570,7 +6720,7 @@ impl App {
             if event.state == winit::event::ElementState::Pressed
                 && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
         {
-            return self.focus_tab(self.modifiers.state().shift_key());
+            return self.focus_tab(self.input.modifiers.state().shift_key());
         }
         false
     }
@@ -6863,7 +7013,7 @@ impl App {
         )
         .unwrap_or_default();
         let mut tree = std::mem::replace(
-            &mut self.semantic_tree,
+            &mut self.accessibility.semantic_tree,
             crate::a11y_tree::SemanticTree::new(),
         );
         let delta = self
@@ -6879,11 +7029,31 @@ impl App {
                     &components,
                 )
             });
-        self.semantic_tree = tree;
+        self.accessibility.semantic_tree = tree;
         delta
     }
     pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
-        &self.semantic_tree
+        &self.accessibility.semantic_tree
+    }
+
+    fn invoke_bound_semantic_action(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        arg: Option<&str>,
+    ) -> Result<bool, String> {
+        let actor = self.local_author.0.clone();
+        match self.invoke_bound_target(target, arg, &actor, false, false, None, None, None) {
+            Ok(_) => Ok(true),
+            Err(tilo_actions::DoorError::ConfirmationRequired) => {
+                self.open_action_palette();
+                Ok(self
+                    .actions
+                    .action_palette
+                    .as_mut()
+                    .is_some_and(|palette| palette.activate_bound(target)))
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     /// A [`Verb`](crate::a11y_tree::SemanticActionKind::Verb) routes through
@@ -6909,23 +7079,11 @@ impl App {
 
         let _entry = self.enter_wake_scope();
         // Cloned so the mutation below is free to borrow doc/registry/transport.
-        let Some(action) = self.semantic_tree.action(id, name).cloned() else {
+        let Some(action) = self.accessibility.semantic_tree.action(id, name).cloned() else {
             return Ok(false);
         };
-        if let Some(target) = self.semantic_tree.bound_target(id, name) {
-            let actor = self.local_author.0.clone();
-            match self.invoke_bound_target(&target, arg, &actor, false, false, None, None, None) {
-                Ok(_) => return Ok(true),
-                Err(tilo_actions::DoorError::ConfirmationRequired) => {
-                    self.open_action_palette();
-                    return Ok(self
-                        .actions
-                        .action_palette
-                        .as_mut()
-                        .is_some_and(|palette| palette.activate_bound(&target)));
-                }
-                Err(error) => return Err(error.to_string()),
-            }
+        if let Some(target) = self.accessibility.semantic_tree.bound_target(id, name) {
+            return self.invoke_bound_semantic_action(&target, arg);
         }
         match action.kind {
             SemanticActionKind::App(encoded) => {
@@ -6938,7 +7096,11 @@ impl App {
             }
             SemanticActionKind::AppPrompted { .. } => {
                 let arg = arg.unwrap_or("");
-                let Some(encoded) = self.semantic_tree.build_prompted(id, name, arg) else {
+                let Some(encoded) = self
+                    .accessibility
+                    .semantic_tree
+                    .build_prompted(id, name, arg)
+                else {
                     return Ok(false);
                 };
                 if self.is_history_encoded_local(&encoded) {
@@ -6955,7 +7117,7 @@ impl App {
                     other => other,
                 };
                 let Some((taffy_raw, semantic_target, bounds)) =
-                    self.semantic_tree.node(id).and_then(|n| {
+                    self.accessibility.semantic_tree.node(id).and_then(|n| {
                         n.widget_taffy_id
                             .map(|taffy| (taffy, n.semantic_target.clone(), n.bounds))
                     })
@@ -7051,7 +7213,7 @@ impl App {
         self.layout.node_map.clear();
         self.build_history_presentation();
         self.update_focusable_order();
-        if let Some(view) = self.pending_continuation_view.take() {
+        if let Some(view) = self.continuation.pending_view.take() {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         }
         if self.autofocus_first
@@ -7128,7 +7290,7 @@ impl App {
 
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
-        if self.autofocus_on_structure_change && !self.focus_trap_active {
+        if self.autofocus_on_structure_change && !self.accessibility.focus_trap_active {
             if focus_reset {
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
@@ -7171,7 +7333,7 @@ impl App {
     /// ```
     #[must_use]
     pub fn with_autosave(mut self, autosave: crate::persist::Autosave) -> Self {
-        self.autosave = Some(autosave);
+        self.persistence.autosave = Some(autosave);
         self
     }
 
@@ -7223,17 +7385,18 @@ impl App {
         // Discovery is metadata-only: it must not create an empty record
         // replica or join a collaboration route for every indexed document.
         records.discover_room(&room_index);
-        self.records = Some(records);
-        self.room_index = Some(crate::state::DocumentReplica::new(room_index));
+        self.persistence.records = Some(records);
+        self.persistence.room_index = Some(crate::state::DocumentReplica::new(room_index));
         self
     }
 
     pub fn records(&self) -> Option<&crate::record::RecordSet> {
-        self.records.as_ref()
+        self.persistence.records.as_ref()
     }
 
     pub fn room_index(&self) -> Option<&automerge::AutoCommit> {
-        self.room_index
+        self.persistence
+            .room_index
             .as_ref()
             .map(crate::state::DocumentReplica::document)
     }
@@ -7243,13 +7406,14 @@ impl App {
     /// under the previous record's name.
     pub fn record_tick(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
-        let Some(set) = self.records.as_mut() else {
+        let Some(set) = self.persistence.records.as_mut() else {
             return false;
         };
         let switched = crate::record::tick(
             set,
             &mut self.state,
-            self.room_index
+            self.persistence
+                .room_index
                 .as_mut()
                 .map(crate::state::DocumentReplica::document_mut),
             &*self.root_widget,
@@ -7297,17 +7461,18 @@ impl App {
     /// instead of the live document — sending the live doc to both would put
     /// a record's content in the room index.
     fn autosave_tick(&mut self) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        match self.records.as_mut() {
+        match self.persistence.records.as_mut() {
             Some(set) => {
                 set.tick(&mut self.state.doc);
-                if let (Some(saver), Some(room)) =
-                    (self.autosave.as_mut(), self.room_index.as_mut())
-                {
+                if let (Some(saver), Some(room)) = (
+                    self.persistence.autosave.as_mut(),
+                    self.persistence.room_index.as_mut(),
+                ) {
                     saver.request(room.document_mut());
                 }
             }
             None => {
-                if let Some(saver) = self.autosave.as_mut() {
+                if let Some(saver) = self.persistence.autosave.as_mut() {
                     saver.request(&mut self.state.doc);
                 }
             }
@@ -7357,15 +7522,18 @@ impl App {
             }
             return;
         }
-        if let Some(set) = self.records.as_mut() {
+        if let Some(set) = self.persistence.records.as_mut() {
             set.flush(&mut self.state.doc);
-            if let (Some(saver), Some(room)) = (self.autosave.as_mut(), self.room_index.as_mut()) {
+            if let (Some(saver), Some(room)) = (
+                self.persistence.autosave.as_mut(),
+                self.persistence.room_index.as_mut(),
+            ) {
                 saver.request(room.document_mut());
                 saver.flush();
             }
             return;
         }
-        if let Some(saver) = self.autosave.as_mut() {
+        if let Some(saver) = self.persistence.autosave.as_mut() {
             saver.request(&mut self.state.doc);
             saver.flush();
         }
@@ -7374,7 +7542,7 @@ impl App {
     /// Lets a caller check [`crate::persist::Autosave::last_error`] rather
     /// than assuming the disk accepted the writes.
     pub fn autosave(&self) -> Option<&crate::persist::Autosave> {
-        self.autosave.as_ref()
+        self.persistence.autosave.as_ref()
     }
 
     pub fn run(self) {
@@ -7816,7 +7984,7 @@ fn draw_frame_content(
     // frame, so clipping out a static region would just paint background
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| std::time::Instant::now());
-    app.root_widget.native_view_frame_start();
+    crate::widget::native_view_frame_start(app.root_widget.as_mut());
     if app.history_layout.is_none_or(|layout| layout.app_visible) {
         app.root_widget.draw_with_presence(
             scene,
@@ -7843,7 +8011,11 @@ fn draw_frame_content(
     if app.history_chrome_enabled {
         let context = crate::standalone_history::HistoryReadContext {
             document: &app.state.doc,
-            active_record: app.records.as_ref().and_then(|records| records.active()),
+            active_record: app
+                .persistence
+                .records
+                .as_ref()
+                .and_then(|records| records.active()),
             document_identity: app.state.document_identity(),
             permissions: &app.permission_ctx,
         };
@@ -7891,31 +8063,47 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
-    app.tooltip_host.tick(Instant::now());
-    if let Some((text, anchor)) = app
-        .tooltip_host
-        .visible()
-        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
-    {
-        let win_w = f64::from(width) / f64::from(scale_factor);
-        let win_h = f64::from(height) / f64::from(scale_factor);
-        let viewport = KurboRect::new(0.0, 0.0, win_w, win_h);
-        crate::widget::tooltip::draw_hover_tooltip(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            anchor,
-            &text,
-            viewport,
-        );
-    }
+    draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
 
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
     }
     let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
     (transform, window_rect, t_draw_us)
+}
+
+fn draw_visible_tooltip(
+    app: &mut App,
+    scene: &mut Scene,
+    transform: Affine,
+    width: u32,
+    height: u32,
+    scale_factor: f32,
+) {
+    app.input.tooltip_host.tick(Instant::now());
+    let Some((text, anchor)) = app
+        .input
+        .tooltip_host
+        .visible()
+        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
+    else {
+        return;
+    };
+    let viewport = KurboRect::new(
+        0.0,
+        0.0,
+        f64::from(width) / f64::from(scale_factor),
+        f64::from(height) / f64::from(scale_factor),
+    );
+    crate::widget::tooltip::draw_hover_tooltip(
+        scene,
+        transform,
+        &mut app.text_renderer,
+        &app.theme,
+        anchor,
+        &text,
+        viewport,
+    );
 }
 
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
@@ -8080,7 +8268,7 @@ fn run_layout_pass(
                         Some(&app.focusable_order),
                     )
                 };
-                if app.focus_trap_active && app.focused_node.is_none() {
+                if app.accessibility.focus_trap_active && app.focused_node.is_none() {
                     app.set_focused_node(app.focusable_order.first().copied());
                 }
             }
@@ -8134,7 +8322,7 @@ fn run_layout_pass(
     if (structure_rebuilt || recomposed)
         && let Some(host) = native_host
     {
-        app.root_widget.mount_native_views(host);
+        crate::widget::mount_native_views(app.root_widget.as_mut(), host);
     }
     app.layout.last_layout_logical = Some(logical);
     app.layout.layout_dirty = false;
@@ -8972,7 +9160,7 @@ impl AppHandler {
         app.root_widget.handle_event(
             &event,
             scale,
-            &app.modifiers,
+            &app.input.modifiers,
             &mut app.state.doc,
             &app.state.root,
             &mut handled,
@@ -9107,9 +9295,10 @@ impl AppHandler {
                     (progress.pending, palette.take_search_announcement())
                 });
         needs_followup_redraw |= search_pending;
-        if let (Some(reader), Some(announcement)) =
-            (app.screen_reader.as_mut(), search_announcement)
-        {
+        if let (Some(reader), Some(announcement)) = (
+            app.accessibility.screen_reader.as_mut(),
+            search_announcement,
+        ) {
             reader.announce(announcement, tts::Priority::Notification, false);
         }
 
@@ -9203,7 +9392,10 @@ impl AppHandler {
             height,
             scale_factor,
             structure_rebuilt,
-            Some(&crate::widget::NativeViewHost::live(window, app.platform)),
+            Some(&crate::widget::NativeViewHost::live(
+                window,
+                app.input.platform,
+            )),
         ) else {
             return;
         };
@@ -9231,8 +9423,8 @@ impl AppHandler {
         damage_regions.clear();
         full_redraw_required |= app.debug_mode
             || app.actions.action_palette.is_some()
-            || app.tooltip_host.needs_frame()
-            || app.tooltip_host.visible().is_some()
+            || app.input.tooltip_host.needs_frame()
+            || app.input.tooltip_host.visible().is_some()
             || !app.presence_ctx.remote_cursors.is_empty()
             || app
                 .profiler
@@ -9464,10 +9656,12 @@ impl AppHandler {
             None
         } else {
             match &event {
-                WindowEvent::Touch(_) => Some(app.interaction.with_touch_modality()),
+                WindowEvent::Touch(_) => Some(app.input.interaction.with_touch_modality()),
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => Some(app.interaction.with_pointer_modality()),
+                | WindowEvent::MouseWheel { .. } => {
+                    Some(app.input.interaction.with_pointer_modality())
+                }
                 WindowEvent::KeyboardInput {
                     event:
                         winit::event::KeyEvent {
@@ -9475,7 +9669,7 @@ impl AppHandler {
                             ..
                         },
                     ..
-                } => Some(app.interaction.with_keyboard_modality()),
+                } => Some(app.input.interaction.with_keyboard_modality()),
                 _ => None,
             }
         };
@@ -9562,7 +9756,10 @@ impl AppHandler {
                     },
                     ..
                 } if (c.as_str() == "k" || c.as_str() == "K")
-                    && app.platform.command_modifier_down(app.modifiers.state())
+                    && app
+                        .input
+                        .platform
+                        .command_modifier_down(app.input.modifiers.state())
             );
             if !is_ctrl_k
                 && matches!(event, WindowEvent::KeyboardInput { .. })
@@ -9618,7 +9815,10 @@ impl AppHandler {
         }
 
         if !handled
-            && app.platform.command_modifier_down(app.modifiers.state())
+            && app
+                .input
+                .platform
+                .command_modifier_down(app.input.modifiers.state())
             && let WindowEvent::KeyboardInput {
                 event:
                     winit::event::KeyEvent {
@@ -9629,7 +9829,7 @@ impl AppHandler {
                 ..
             } = event
         {
-            let shift = app.modifiers.state().shift_key();
+            let shift = app.input.modifiers.state().shift_key();
             let history_request = crate::undo::shortcut(c, true, shift);
             if let Some(request) = history_request {
                 if app.root_widget.handle_local_undo_request(request) {
@@ -9715,7 +9915,7 @@ impl AppHandler {
             };
             if let (Some(d), true, true) = (
                 dir,
-                app.modifiers.state().alt_key(),
+                app.input.modifiers.state().alt_key(),
                 app.keyboard_nav_allowed(modal_rect),
             ) {
                 app.navigate_focus(d);
@@ -9740,10 +9940,11 @@ impl AppHandler {
                             (f64::from(*x), f64::from(*y), false)
                         }
                     };
-                    app.nav_gestures
+                    app.input
+                        .nav_gestures
                         .on_scroll(dx, dy, map_phase(*phase), precise)
                 }
-                WindowEvent::PanGesture { delta, phase, .. } => app.nav_gestures.on_scroll(
+                WindowEvent::PanGesture { delta, phase, .. } => app.input.nav_gestures.on_scroll(
                     f64::from(delta.x),
                     f64::from(delta.y),
                     map_phase(*phase),
@@ -9751,7 +9952,7 @@ impl AppHandler {
                 ),
                 WindowEvent::Touch(t) => {
                     let width = f64::from(window.inner_size().width);
-                    app.nav_gestures.on_touch(
+                    app.input.nav_gestures.on_touch(
                         t.id,
                         t.location.x,
                         t.location.y,
@@ -9852,8 +10053,11 @@ impl AppHandler {
             } = event
         {
             use crate::a11y::Action;
-            let ctrl = app.platform.command_modifier_down(app.modifiers.state());
-            let shift = app.modifiers.state().shift_key();
+            let ctrl = app
+                .input
+                .platform
+                .command_modifier_down(app.input.modifiers.state());
+            let shift = app.input.modifiers.state().shift_key();
             // (action to repeat, how many times)
             let (action, times) = match named {
                 winit::keyboard::NamedKey::ArrowLeft if ctrl => {
@@ -9970,14 +10174,14 @@ impl AppHandler {
             let scale = window.scale_factor();
             let logical = Point::new(position.x / scale, position.y / scale);
             let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
-            if app.current_cursor != desired {
-                app.current_cursor = desired;
+            if app.input.current_cursor != desired {
+                app.input.current_cursor = desired;
                 window.set_cursor(desired);
             }
             // `on_pointer` keeps the dwell running over the same
             // region and restarts it on a new one.
             let target = app.tooltip_target_at(logical);
-            if app.tooltip_host.on_pointer(target, Instant::now()) {
+            if app.input.tooltip_host.on_pointer(target, Instant::now()) {
                 window.request_redraw();
             }
         }
@@ -9991,7 +10195,7 @@ impl AppHandler {
                 | WindowEvent::KeyboardInput { .. }
                 | WindowEvent::Touch(_)
                 | WindowEvent::CursorLeft { .. }
-        ) && app.tooltip_host.dismiss()
+        ) && app.input.tooltip_host.dismiss()
         {
             window.request_redraw();
         }
@@ -10190,12 +10394,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             &window,
             self.a11y_proxy.clone(),
         ));
-        self.app
-            .root_widget
-            .mount_native_views(&crate::widget::NativeViewHost::live(
-                &window,
-                self.app.platform,
-            ));
+        crate::widget::mount_native_views(
+            self.app.root_widget.as_mut(),
+            &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
+        );
         // Windows otherwise exposes an empty white client area while GPU
         // pipelines compile. Prepare those before revealing the window; the
         // normal visible-window redraw path still submits its first frame.
@@ -10295,7 +10497,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         }
                     }
                 }
-                WindowEvent::ModifiersChanged(modifiers) => self.app.modifiers = modifiers,
+                WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
                 other => {
                     let handled = self.app.root_widget.handle_audience_presentation_event(
                         &other,
@@ -10351,7 +10553,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         }
                     }
                 }
-                WindowEvent::ModifiersChanged(modifiers) => self.app.modifiers = modifiers,
+                WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
                 other => self.dispatch_floating_event(&window, desktop_rect, other),
             }
             return;
@@ -10368,7 +10570,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         if let WindowEvent::Touch(touch) = &event {
             self.app
-                .set_interaction_environment(self.app.interaction.with_touch_modality());
+                .set_interaction_environment(self.app.input.interaction.with_touch_modality());
             let pointer_events = self.touch_pointer.events(touch);
             self.dispatching_touch_pointer = true;
             for pointer_event in pointer_events {
@@ -10418,18 +10620,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             WindowEvent::ScaleFactorChanged { .. } => {
                 // The render path reads `window.scale_factor()` each frame,
                 // so we just need to invalidate layout and redraw.
-                self.app
-                    .root_widget
-                    .mount_native_views(&crate::widget::NativeViewHost::live(
-                        &window,
-                        self.app.platform,
-                    ));
+                crate::widget::mount_native_views(
+                    self.app.root_widget.as_mut(),
+                    &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
+                );
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, &window),
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.app.modifiers = modifiers;
+                self.app.input.modifiers = modifiers;
             }
             other => self.handle_other_window_event(&window, other),
         }
@@ -10600,7 +10800,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion — requested independently of the animation pump.
-        let tooltip_pending = app.tooltip_host.needs_frame();
+        let tooltip_pending = app.input.tooltip_host.needs_frame();
         if tooltip_pending {
             window.request_redraw();
         }
@@ -11896,7 +12096,10 @@ mod focus_trap_tests {
     fn closed_modal_does_not_trap_focus() {
         let (mut app, _open) = host_app();
         app.init_layout();
-        assert!(!app.focus_trap_active, "no trap while the modal is closed");
+        assert!(
+            !app.accessibility.focus_trap_active,
+            "no trap while the modal is closed"
+        );
         assert_eq!(
             app.focusable_order.len(),
             2,
@@ -11913,7 +12116,10 @@ mod focus_trap_tests {
         open.set(true);
         app.refresh_focus_order();
 
-        assert!(app.focus_trap_active, "an open modal traps focus");
+        assert!(
+            app.accessibility.focus_trap_active,
+            "an open modal traps focus"
+        );
         assert_eq!(
             app.focusable_order.len(),
             2,
@@ -11932,7 +12138,7 @@ mod focus_trap_tests {
         app.init_layout();
         open.set(true);
         app.refresh_focus_order();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
         let modal_set: std::collections::HashSet<_> = app.focusable_order.iter().copied().collect();
         let first = app.focusable_order[0];
@@ -11977,7 +12183,7 @@ mod focus_trap_tests {
         // switch off the App's own Tab/arrow navigation.
         let (mut app, _open) = host_app();
         app.init_layout();
-        assert!(!app.focus_trap_active);
+        assert!(!app.accessibility.focus_trap_active);
         assert!(
             app.keyboard_nav_allowed(None),
             "with no modal, Tab runs normally"
@@ -11997,13 +12203,13 @@ mod focus_trap_tests {
 
         open.set(true);
         app.refresh_focus_order();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_ne!(app.focused_node, Some(outer), "focus moved into the modal");
 
         open.set(false);
         app.refresh_focus_order();
         assert!(
-            !app.focus_trap_active,
+            !app.accessibility.focus_trap_active,
             "trap released when the modal closes"
         );
         assert_eq!(
@@ -13530,15 +13736,15 @@ mod view_presence_tests {
         // Model launcher delivery before first layout, which is the real
         // continuation order. The view waits until focus/layout nodes exist.
         let mut receiver = App::new(State::new(), Box::new(ViewRoot::new()));
-        receiver.pending_continuation_restore = Some(metadata);
+        receiver.continuation.pending_restore = Some(metadata);
         receiver.apply_pending_continuation_restore();
-        assert!(receiver.pending_continuation_view.is_some());
+        assert!(receiver.continuation.pending_view.is_some());
         receiver.init_layout();
 
         let restored = <App as FreezeThaw>::capture_view(&receiver);
         assert_eq!(restored.scroll, vec![48.0, 12.0]);
         assert_eq!(restored.view_mode.as_deref(), Some("grid"));
-        assert!(receiver.pending_continuation_view.is_none());
+        assert!(receiver.continuation.pending_view.is_none());
     }
 
     #[test]
@@ -13660,9 +13866,9 @@ mod view_presence_tests {
         )
         .unwrap();
         let mut receiver = App::new(State::new(), Box::new(ViewRoot::new()));
-        receiver.pending_continuation_restore = Some(metadata);
+        receiver.continuation.pending_restore = Some(metadata);
         receiver.apply_pending_continuation_restore();
-        assert!(receiver.pending_continuation_view.is_some());
+        assert!(receiver.continuation.pending_view.is_some());
         receiver.init_layout();
         let restored = <App as FreezeThaw>::capture_view(&receiver);
         assert_eq!(restored.scroll, vec![64.0]);
@@ -16787,6 +16993,8 @@ mod bound_component_tests {
         }
     }
 
+    include!("app/bound_record_sync_tests.rs");
+
     #[test]
     fn task4_bound_publication_preserves_contracts_and_directed_owner() {
         let mut fixture = ActionFixture::broker();
@@ -16921,7 +17129,11 @@ mod bound_component_tests {
     fn task4_semantic_and_palette_targets_keep_equal_id_lifetimes() {
         let mut fixture = ActionFixture::new();
         fixture.app.refresh_semantic_tree();
-        let targets = fixture.app.semantic_tree.bound_actions_for_test();
+        let targets = fixture
+            .app
+            .accessibility
+            .semantic_tree
+            .bound_actions_for_test();
         let (id, _) = targets
             .iter()
             .find(|(_, target)| {
@@ -17971,6 +18183,83 @@ mod bound_component_tests {
                 .is_err()
         );
     }
+    fn assert_bound_broker_route_refused(
+        fixture: &mut ActionFixture,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        alias: &str,
+        revision: &str,
+        witness: Option<crate::collaboration::PrimaryRouteWitness>,
+    ) {
+        fixture.app.actions.bound_broker_route_for_test = witness;
+        let resources = fixture.app.publication_resources();
+        assert!(resources.iter().all(|resource| {
+            !resource
+                .id
+                .as_str()
+                .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX)
+        }));
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(alias, "follow-up")
+                .is_none()
+        );
+        assert_ne!(fixture.app.action_directory_revision(), revision);
+        let next_id = fixture.app.actions.next_broker_request_id;
+        let mut sent = false;
+        let error = fixture
+            .app
+            .invoke_bound_target_with_broker(
+                target,
+                None,
+                "fixture-user",
+                true,
+                false,
+                None,
+                None,
+                None,
+                Some(&mut |_| sent = true),
+            )
+            .unwrap_err();
+        assert_eq!(
+            crate::bound_dispatch::door_error_code(&error),
+            "bound_broker_route_unavailable"
+        );
+        assert!(!sent);
+        assert_eq!(fixture.app.actions.next_broker_request_id, next_id);
+        fixture.app.invoke_published_action(
+            50,
+            alias.to_owned(),
+            "follow-up".into(),
+            None,
+            "fixture-user",
+            None,
+        );
+        assert!(
+            fixture
+                .records
+                .read(&target.binding.checkout.id, |doc| doc
+                    .get(ROOT, "follow-up")
+                    .unwrap()
+                    .is_none())
+                .unwrap()
+        );
+        // Local component View actions do not need this manager's broker route.
+        fixture
+            .app
+            .invoke_bound_target(
+                &fixture.target(1, "view"),
+                None,
+                "fixture-user",
+                true,
+                false,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+    }
+
     #[test]
     fn task4_bound_broker_route_refuses_wrong_app_workspace_record_and_missing_witness() {
         let mut fixture = ActionFixture::broker();
@@ -18001,74 +18290,7 @@ mod bound_component_tests {
             Some(wrong_record),
             None,
         ] {
-            fixture.app.actions.bound_broker_route_for_test = witness;
-            let resources = fixture.app.publication_resources();
-            assert!(resources.iter().all(|resource| {
-                !resource
-                    .id
-                    .as_str()
-                    .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX)
-            }));
-            assert!(
-                fixture
-                    .app
-                    .resolve_publication_resource(&alias, "follow-up")
-                    .is_none()
-            );
-            assert_ne!(fixture.app.action_directory_revision(), revision);
-            let next_id = fixture.app.actions.next_broker_request_id;
-            let mut sent = false;
-            let error = fixture
-                .app
-                .invoke_bound_target_with_broker(
-                    &target,
-                    None,
-                    "fixture-user",
-                    true,
-                    false,
-                    None,
-                    None,
-                    None,
-                    Some(&mut |_| sent = true),
-                )
-                .unwrap_err();
-            assert_eq!(
-                crate::bound_dispatch::door_error_code(&error),
-                "bound_broker_route_unavailable"
-            );
-            assert!(!sent);
-            assert_eq!(fixture.app.actions.next_broker_request_id, next_id);
-            fixture.app.invoke_published_action(
-                50,
-                alias.clone(),
-                "follow-up".into(),
-                None,
-                "fixture-user",
-                None,
-            );
-            assert!(
-                fixture
-                    .records
-                    .read(&target.binding.checkout.id, |doc| doc
-                        .get(ROOT, "follow-up")
-                        .unwrap()
-                        .is_none())
-                    .unwrap()
-            );
-            // Local component View actions do not need this manager's broker route.
-            fixture
-                .app
-                .invoke_bound_target(
-                    &fixture.target(1, "view"),
-                    None,
-                    "fixture-user",
-                    true,
-                    false,
-                    None,
-                    None,
-                    None,
-                )
-                .unwrap();
+            assert_bound_broker_route_refused(&mut fixture, &target, &alias, &revision, witness);
         }
         let mut replacement = matching;
         replacement.epoch = uuid::Uuid::new_v4();
@@ -18142,6 +18364,47 @@ mod prepared_runner_tests {
     }
 
     #[test]
+    fn prepared_native_services_keep_explicit_presentation_and_watch_system_updates() {
+        fn services(
+            inputs: crate::application::ComponentRunnerInputs,
+            binding: &crate::bound_dispatch::CallbackBinding,
+        ) -> AppConstructionInputs {
+            let mut services = AppConstructionInputs::controlled();
+            services.debug_mode = || true;
+            let mut presence = PresenceCtx::empty();
+            presence.set_own_identity(["announced-handle"]);
+            services.presence_ctx = ConstructionValue::Ready(presence);
+            AppConstructionInputs::component_with_services(inputs, binding, services)
+        }
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 11);
+        let mut app =
+            App::from_component_using(component, presentation_inputs(2.0), services).unwrap();
+        assert_eq!(app.local_author(), &author());
+        assert!(app.presence_ctx.is_own_identity(&author().0));
+        assert!(app.presence_ctx.is_own_identity("announced-handle"));
+        assert!(app.debug_mode);
+        assert!(app.watch_system_settings);
+        assert_presentation(&app.theme, 1.5, 1.25);
+        let due = app.last_theme_store_check + Duration::from_millis(750);
+        assert!(app.reconcile_configured_theme_with(
+            due,
+            || Some(std::time::SystemTime::UNIX_EPOCH),
+            |app| {
+                app.accessibility.base_theme = Theme::light();
+            },
+        ));
+        assert_eq!(app.theme.name, Theme::light().name);
+        assert_eq!(app.theme.text_scale, 1.5);
+        assert_eq!(app.theme.ui_scale, 1.25);
+        assert!(app.theme.reduce_motion);
+        draw_prepared_component_test_frame(&mut app);
+        app.close_components();
+        assert_eq!(app.component_close_reports().len(), 1);
+        assert!(app.component_close_reports()[0].record_error.is_none());
+    }
+
+    #[test]
     fn prepared_native_due_theme_poll_preserves_explicit_inputs_without_discovery() {
         let host = ProbeHost::new();
         let component = editable_component(&host, 11);
@@ -18158,9 +18421,9 @@ mod prepared_runner_tests {
             },
             |app| {
                 applies.set(applies.get() + 1);
-                app.base_theme = Theme::light();
+                app.accessibility.base_theme = Theme::light();
                 // This controlled stand-in never creates a narrator or reads settings.
-                app.a11y.screen_reader = true;
+                app.accessibility.a11y.screen_reader = true;
             },
         );
         draw_prepared_component_test_frame(&mut app);
@@ -18172,9 +18435,9 @@ mod prepared_runner_tests {
         assert_eq!(applies.get(), 0);
         assert!(!changed);
         assert!(app.theme_store_stamp.is_none());
-        assert!(app.screen_reader.is_none());
-        assert!(!app.a11y.screen_reader);
-        assert_presentation(&app.base_theme, 2.0, 1.25);
+        assert!(app.accessibility.screen_reader.is_none());
+        assert!(!app.accessibility.a11y.screen_reader);
+        assert_presentation(&app.accessibility.base_theme, 2.0, 1.25);
         let observation = observed.borrow();
         let (theme, renderer_scale) = observation.draws.last().unwrap();
         assert_eq!(*renderer_scale, 1.5);
@@ -18207,7 +18470,7 @@ mod prepared_runner_tests {
                 },
                 |app| {
                     applies.set(applies.get() + 1);
-                    app.base_theme = Theme::light();
+                    app.accessibility.base_theme = Theme::light();
                 },
             );
             assert_eq!(changed, expected_changed);
@@ -18215,7 +18478,7 @@ mod prepared_runner_tests {
             assert_eq!(applies.get(), expected_applies);
             assert_eq!(app.layout.layout_dirty, expected_changed);
             assert_eq!(app.layout.structure_dirty, expected_changed);
-            assert!(app.screen_reader.is_none());
+            assert!(app.accessibility.screen_reader.is_none());
         }
         assert!(app.theme_store_stamp.is_none());
         assert_eq!(app.theme.name, Theme::light().name);
@@ -18298,7 +18561,7 @@ mod prepared_runner_tests {
         let component = editable_component(&host, 11);
         let binding = component.callback_binding();
         let mut app = App::from_component(component, runner_inputs()).unwrap();
-        assert!(app.autosave.is_none() && app.records.is_none());
+        assert!(app.persistence.autosave.is_none() && app.persistence.records.is_none());
         assert_saved_body(&host, &binding, "initialized");
         edit_bound_record(&mut app, &binding);
         app.autosave_tick().unwrap();
@@ -18744,6 +19007,7 @@ mod prepared_runner_tests {
     fn activate_palette_action(app: &mut App, action: &str) {
         app.refresh_semantic_tree();
         let target = app
+            .accessibility
             .semantic_tree
             .bound_actions_for_test()
             .into_iter()
@@ -19891,7 +20155,7 @@ mod viewport_composition_tests {
             .unwrap();
         for width in [920, 600, 1200] {
             frame(&mut app, width);
-            assert!(app.focus_trap_active);
+            assert!(app.accessibility.focus_trap_active);
             let focused = app.focused_node.expect("modal editor remains focused");
             assert!(app.focusable_order.contains(&focused));
             assert_eq!(
@@ -19925,8 +20189,8 @@ mod viewport_composition_tests {
         let oscillate = root.oscillate.clone();
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
-        let host = crate::widget::NativeViewHost::headless(app.platform, 1.0);
-        app.root_widget.mount_native_views(&host);
+        let host = crate::widget::NativeViewHost::headless(app.input.platform, 1.0);
+        crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
         for width in [1200, 920] {
             let mounts = calls
                 .borrow()
@@ -20000,13 +20264,13 @@ mod viewport_composition_tests {
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
         app.init_layout();
         frame(&mut app, 1200);
-        assert!(!app.focus_trap_active);
+        assert!(!app.accessibility.focus_trap_active);
         let outside = app.focusable_order[0];
         app.set_focused_node(Some(outside));
         app.mutate_node(outside, |widget| widget.set_state("5:b:1"))
             .unwrap();
         frame(&mut app, 920);
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         let focused = app.focused_node.expect("modal owns focus");
         assert!(app.focusable_order.contains(&focused));
         assert!(
@@ -20059,3 +20323,7 @@ mod card_composition_tests;
 #[cfg(test)]
 #[path = "app/form_composition_tests.rs"]
 mod form_composition_tests;
+
+#[cfg(test)]
+#[path = "app/notes_rich_controls_tests.rs"]
+mod notes_rich_controls_tests;

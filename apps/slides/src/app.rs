@@ -36,8 +36,8 @@ use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
-    ColorPicker, DEFAULT_BREAKPOINT, FlapState, NumberInput, PageSidebar, PageSidebarEvent,
-    SplitLayout, TextInput, Widget,
+    AudiencePresentationProvider, ColorPicker, DEFAULT_BREAKPOINT, FlapState, NumberInput,
+    PageSidebar, PageSidebarEvent, SplitLayout, TextInput, Widget,
 };
 
 use crate::actions;
@@ -5655,7 +5655,89 @@ impl SlidesApp {
     }
 }
 
+impl AudiencePresentationProvider for SlidesApp {
+    fn audience_presentation_request(&self) -> Option<ui::fullscreen::AudiencePresentationRequest> {
+        (self.mode == Mode::Present)
+            .then(|| ui::fullscreen::AudiencePresentationRequest::new(self.presentation_target))
+    }
+
+    fn on_audience_presentation_changed(&mut self, active: bool) {
+        self.presentation.set_external_audience(active);
+    }
+
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> bool {
+        if self.mode != Mode::Present {
+            return false;
+        }
+        let frame = PresentationFrame::new(
+            rect,
+            &self.deck,
+            self.cur_slide,
+            self.deck_rev,
+            &self.images,
+        );
+        self.presentation
+            .draw_audience(scene, transform, text_renderer, theme, &frame);
+        true
+    }
+
+    fn handle_audience_presentation_event(
+        &mut self,
+        event: &WindowEvent,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if self.mode != Mode::Present {
+            return false;
+        }
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        ..
+                    },
+                ..
+            } => {
+                let mut handled = false;
+                self.on_key_present(logical_key, &mut handled);
+                handled
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.next_slide(1);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn on_audience_presentation_closed(&mut self) {
+        self.exit_present();
+    }
+}
+
 impl Widget for SlidesApp {
+    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
+        Some(self)
+    }
+
+    fn audience_presentation_provider_mut(
+        &mut self,
+    ) -> Option<&mut dyn AudiencePresentationProvider> {
+        Some(self)
+    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SLIDES_OPERATION_TYPE]
     }
@@ -6068,77 +6150,6 @@ impl Widget for SlidesApp {
         if !active && self.mode == Mode::Present && !self.presentation.has_external_audience() {
             self.exit_present();
         }
-    }
-
-    fn audience_presentation_request(&self) -> Option<ui::fullscreen::AudiencePresentationRequest> {
-        (self.mode == Mode::Present)
-            .then(|| ui::fullscreen::AudiencePresentationRequest::new(self.presentation_target))
-    }
-
-    fn on_audience_presentation_changed(&mut self, active: bool) {
-        self.presentation.set_external_audience(active);
-    }
-
-    fn draw_audience_presentation(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) -> bool {
-        if self.mode != Mode::Present {
-            return false;
-        }
-        let frame = PresentationFrame::new(
-            rect,
-            &self.deck,
-            self.cur_slide,
-            self.deck_rev,
-            &self.images,
-        );
-        self.presentation
-            .draw_audience(scene, transform, text_renderer, theme, &frame);
-        true
-    }
-
-    fn handle_audience_presentation_event(
-        &mut self,
-        event: &WindowEvent,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> bool {
-        if self.mode != Mode::Present {
-            return false;
-        }
-        match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state: ElementState::Pressed,
-                        logical_key,
-                        ..
-                    },
-                ..
-            } => {
-                let mut handled = false;
-                self.on_key_present(logical_key, &mut handled);
-                handled
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.next_slide(1);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn on_audience_presentation_closed(&mut self) {
-        self.exit_present();
     }
 
     fn draw_with_presence(
@@ -8354,10 +8365,10 @@ mod tests {
 
         let mut app = presenting_app();
         assert_eq!(
-            Widget::audience_presentation_request(&app),
+            AudiencePresentationProvider::audience_presentation_request(&app),
             Some(AudiencePresentationRequest::new(FullscreenTarget::Largest))
         );
-        Widget::on_audience_presentation_changed(&mut app, true);
+        AudiencePresentationProvider::on_audience_presentation_changed(&mut app, true);
         assert!(app.presentation.has_external_audience());
         assert_eq!(
             Widget::fullscreen_intent(&app),
@@ -8370,7 +8381,7 @@ mod tests {
             Mode::Present,
             "the host's intentional presenter unfullscreen must not end the talk"
         );
-        Widget::on_audience_presentation_changed(&mut app, false);
+        AudiencePresentationProvider::on_audience_presentation_changed(&mut app, false);
         assert_eq!(
             Widget::fullscreen_intent(&app),
             Some(true),
