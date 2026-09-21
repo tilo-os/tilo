@@ -104,6 +104,12 @@ enum RepoCmd {
     Enable { name: String },
     /// Keep a repository configured but stop querying it.
     Disable { name: String },
+    /// Select stable releases or explicitly include development builds.
+    Channel {
+        name: String,
+        #[arg(value_parser = ["stable", "development"])]
+        channel: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -134,8 +140,12 @@ fn repo(cmd: RepoCmd) -> ExitCode {
                 } else {
                     "disabled"
                 };
+                let channel = match registry.channel {
+                    pkg::version::ReleaseChannel::Stable => "stable",
+                    pkg::version::ReleaseChannel::Development => "development",
+                };
                 println!(
-                    "{}  {}  ({state}, key pinned)",
+                    "{}  {}  ({state}, {channel}, key pinned)",
                     registry.name, registry.base_url
                 );
             }
@@ -165,6 +175,18 @@ fn repo(cmd: RepoCmd) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             format!("enabled repository '{name}'")
+        }
+        RepoCmd::Channel { name, channel } => {
+            let Some(registry) = registries.registries.iter_mut().find(|r| r.name == name) else {
+                eprintln!("registry '{name}' is not configured");
+                return ExitCode::FAILURE;
+            };
+            registry.channel = if channel == "development" {
+                pkg::version::ReleaseChannel::Development
+            } else {
+                pkg::version::ReleaseChannel::Stable
+            };
+            format!("selected {channel} releases for '{name}'")
         }
         RepoCmd::Disable { name } => {
             if let Err(e) = config::set_registry_enabled(&mut registries, &name, false) {

@@ -23,11 +23,18 @@ class ClippyTargetIsolationTests(unittest.TestCase):
             git('init', '-q')
             git('config', 'user.name', 'Fixture')
             git('config', 'user.email', 'fixture@example.invalid')
-            (root / 'lib.rs').write_text('base\n')
-            git('add', 'lib.rs', 'tools/ci/clippy-diff.sh', 'tools/ci/compiler_inputs.py')
+            (root / 'Cargo.toml').write_text('[package]\nname = "fixture"\nversion = "0.1.0"\n')
+            source_name = 'old.rs' if mode == 'rename' else 'lib.rs'
+            initial_source = 'common\nbase\n' if mode == 'rename' else 'base\n'
+            (root / source_name).write_text(initial_source)
+            git('add', 'Cargo.toml', source_name, 'tools/ci/clippy-diff.sh', 'tools/ci/compiler_inputs.py')
             git('commit', '-qm', 'base')
             base = git('rev-parse', 'HEAD')
-            (root / 'lib.rs').write_text('head\n')
+            if mode == 'rename':
+                git('mv', 'old.rs', 'new.rs')
+                (root / 'new.rs').write_text('common\nhead\n')
+            else:
+                (root / 'lib.rs').write_text('head\n')
             git('commit', '-qam', 'head')
             (root / 'target').mkdir()
             sentinel = root / 'target/keep-existing-artifact'
@@ -38,7 +45,10 @@ class ClippyTargetIsolationTests(unittest.TestCase):
             cargo.write_text('''#!/usr/bin/env python3
 import json,os,pathlib,sys
 if sys.argv[1] == 'metadata':
- print(json.dumps({'workspace_members':[], 'packages':[{'name':'fixture', 'id':'fixture'}]})); sys.exit(0)
+ manifest=pathlib.Path(sys.argv[sys.argv.index('--manifest-path')+1]).resolve() if '--manifest-path' in sys.argv else pathlib.Path.cwd()/'Cargo.toml'
+ tree=manifest.parent
+ name='renamed-fixture' if os.environ['MODE']=='package_rename' and str(tree)==os.environ['FIXTURE_ROOT'] else 'fixture'
+ print(json.dumps({'workspace_members':[], 'packages':[{'name':name, 'id':name, 'manifest_path':str(manifest)}]})); sys.exit(0)
 assert sys.argv[1] == 'clippy'
 cwd=pathlib.Path.cwd()
 with open(os.environ['CALLS'],'a') as f:
@@ -50,6 +60,13 @@ if is_head and os.environ['MODE']=='retry' and not os.environ.get('SCCACHE_RECAC
  sys.exit(2)
 if is_head and os.environ['MODE']=='introduced':
  print(json.dumps({'reason':'compiler-message','message':{'level':'warning','code':{'code':'clippy::fixture'},'message':'new warning','spans':[{'is_primary':True,'file_name':'lib.rs','line_start':1,'column_start':1,'text':[{'text':'head'}]}]}}))
+if os.environ['MODE']=='edited_warning':
+ source='head' if is_head else 'base'
+ print(json.dumps({'reason':'compiler-message','message':{'level':'warning','code':{'code':'clippy::fixture'},'message':'existing warning','spans':[{'is_primary':True,'file_name':'lib.rs','line_start':1,'column_start':1,'text':[{'text':source}]}]}}))
+if os.environ['MODE']=='rename':
+ file_name='nested/../new.rs' if is_head else 'old.rs'
+ source='head' if is_head else 'base'
+ print(json.dumps({'reason':'compiler-message','message':{'level':'warning','code':{'code':'clippy::fixture'},'message':'existing warning','spans':[{'is_primary':True,'file_name':file_name,'line_start':1,'column_start':1,'text':[{'text':source}]}]}}))
 ''')
             cargo.chmod(0o755)
             rustc = fake_bin / 'rustc'
@@ -60,7 +77,8 @@ if is_head and os.environ['MODE']=='introduced':
                        CALLS=str(calls), FIXTURE_ROOT=str(root), MODE=mode,
                        CARGO_TARGET_DIR=str(Path(tmp) / 'must-not-be-used'))
             env.pop('SCCACHE_RECACHE', None)
-            result = subprocess.run(['bash', str(root / 'tools/ci/clippy-diff.sh'), base, '-p', 'fixture'],
+            requested_package = 'renamed-fixture' if mode == 'package_rename' else 'fixture'
+            result = subprocess.run(['bash', str(root / 'tools/ci/clippy-diff.sh'), base, '-p', requested_package],
                                     cwd=root, env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 1 if mode == 'introduced' else 0, result.stderr)
             records = [json.loads(line) for line in calls.read_text().splitlines()]
@@ -81,6 +99,8 @@ if is_head and os.environ['MODE']=='introduced':
                 self.assertIn('Cargo invocation failed; target coverage incomplete', head_receipt['unknown'])
             base_calls = [r for r in records if r['cwd'] != str(root)]
             self.assertEqual(len(base_calls), 1)
+            if mode == 'package_rename':
+                self.assertIn('fixture', base_calls[0]['args'])
             self.assertFalse(Path(base_calls[0]['cwd']).exists())
             self.assertEqual(len(records), 3 if mode == 'retry' else 2)
             if mode == 'retry':
@@ -96,6 +116,15 @@ if is_head and os.environ['MODE']=='introduced':
 
     def test_cache_bypassing_retry_keeps_head_target(self):
         self.exercise('retry')
+
+    def test_renamed_warning_site_keeps_its_baseline(self):
+        self.exercise('rename')
+
+    def test_edited_warning_site_keeps_its_baseline(self):
+        self.exercise('edited_warning')
+
+    def test_renamed_package_uses_old_package_as_its_baseline(self):
+        self.exercise('package_rename')
 
 
 if __name__ == '__main__':

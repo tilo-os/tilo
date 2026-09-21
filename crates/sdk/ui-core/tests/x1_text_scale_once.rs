@@ -3,7 +3,7 @@
 //! Theme typography already carries the accessibility text scale and the
 //! legacy size-based `TextRenderer` APIs multiply by the renderer's scale
 //! again, so a widget that hands them a theme size paints 4× glyphs at 200 %.
-//! `ui::text_metrics::renderer_type_size` divides once; this test pins the
+//! `tilo_ui::text_metrics::renderer_type_size` divides once; this test pins the
 //! migrated widgets to that contract two ways:
 //!
 //! - through the shared `FrameHarness` (theme *and* renderer scaled, as the
@@ -19,11 +19,11 @@
 
 use std::path::PathBuf;
 
-use ui::State;
-use ui::headless::{FrameHarness, InspectionNode};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{
+use tilo_ui::State;
+use tilo_ui::headless::{FrameHarness, InspectionNode};
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{
     Avatar, Breadcrumb, Chip, ChipLead, ChipStyle, Column, Element, ShortcutRecorder,
 };
 use vello::Scene;
@@ -263,9 +263,9 @@ fn immediate_mode_painters_encode_glyphs_at_the_text_scale_once() {
             "status_bubble::draw_pill",
             Box::new(|scene, tr, theme| {
                 let size =
-                    ui::text_metrics::renderer_type_size(tr, theme.tokens.typography.scale.sm);
-                let (w, h) = ui::status_bubble::pill_size("Syncing", tr, size, 0.0);
-                ui::status_bubble::draw_pill(
+                    tilo_ui::text_metrics::renderer_type_size(tr, theme.tokens.typography.scale.sm);
+                let (w, h) = tilo_ui::status_bubble::pill_size("Syncing", tr, size, 0.0);
+                tilo_ui::status_bubble::draw_pill(
                     scene,
                     Affine::IDENTITY,
                     tr,
@@ -312,11 +312,14 @@ fn renderer_type_size_is_the_size_only_twin_of_renderer_input_style() {
         .scale
         .base;
     let via_style = tr
-        .renderer_input_style(&ui::text_render::TextStyle::new(resolved))
+        .renderer_input_style(&tilo_ui::text_render::TextStyle::new(resolved))
         .size;
     assert_eq!(
-        ui::text_metrics::renderer_type_size(&tr, resolved),
+        tilo_ui::text_metrics::renderer_type_size(&tr, resolved),
         via_style
     );
-    assert_eq!(ui::text_metrics::renderer_type_size(&tr, resolved), 14.0);
+    assert_eq!(
+        tilo_ui::text_metrics::renderer_type_size(&tr, resolved),
+        14.0
+    );
 }

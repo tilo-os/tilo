@@ -13,7 +13,7 @@
 //!
 //! Nothing here is hand-authored feed data. The example builds a document that
 //! two identities edit — one forks, edits under its own actor and merges back,
-//! the way a peer's sync arrives — and then asks [`ui::HistorySource`] what
+//! the way a peer's sync arrives — and then asks [`tilo_ui::HistorySource`] what
 //! happened. Every row's author, timestamp, op class and summary is derived
 //! from the automerge changes those edits produced.
 
@@ -22,11 +22,13 @@ use std::path::Path;
 
 use automerge::{ActorId, AutoCommit, AutomergeError, ROOT};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::text_render::TextRenderer;
-use ui::widget::{ActivityTimeline, Column, HistoryScrubber};
-use ui::{App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Theme, Widget};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::permissions::PermissionContext;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::widget::{ActivityTimeline, Column, HistoryScrubber};
+use tilo_ui::{
+    App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Theme, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
@@ -124,14 +126,14 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
     reason = "live activity timeline construction always allocates a wake scope"
 )]
 pub fn run(args: &[String]) {
-    let _detached = ui::wake::WakeScope::enter_detached();
+    let _detached = tilo_ui::wake::WakeScope::enter_detached();
     let shot = args
         .iter()
         .position(|a| a == "--shots")
         .and_then(|i| args.get(i.saturating_add(1)))
         .cloned();
-    let wake_scope = shot.is_none().then(ui::wake::WakeScope::new);
-    let _wake_entry = wake_scope.as_ref().map(ui::wake::WakeScope::enter);
+    let wake_scope = shot.is_none().then(tilo_ui::wake::WakeScope::new);
+    let _wake_entry = wake_scope.as_ref().map(tilo_ui::wake::WakeScope::enter);
 
     let mut doc = match collaborated_document() {
         Ok(doc) => doc,
