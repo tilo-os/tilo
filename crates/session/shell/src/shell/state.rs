@@ -11293,7 +11293,7 @@ mod agent_membership {
         );
         assert!(ws.allows(
             &ws.actor_for_person(&"remote-editor".to_string()),
-            &ResourceRef::App("dev.tilo.notes".into()),
+            &ResourceRef::App("so.tilo.notes".into()),
             Verb::Write,
         ));
     }
@@ -11346,7 +11346,7 @@ mod agent_membership {
             &"ada".to_string(),
             CapOverride::grant(
                 Subject::agent("scribe"),
-                Scope::App("dev.tilo.word-processor".into()),
+                Scope::App("so.tilo.word-processor".into()),
                 Verb::Write,
             ),
         )
@@ -11478,7 +11478,7 @@ mod peer_window_merge_tests {
 
     use super::*;
 
-    const APP: &str = "dev.tilo.word-processor";
+    const APP: &str = "so.tilo.word-processor";
 
     /// Somebody else's tab, as the room document delivers it.
     fn remote_tab(id: u64, surface: u64) -> ReplicatedTab {
@@ -11593,7 +11593,7 @@ mod peer_window_merge_tests {
         let mut rep_tab = remote_tab(7, 4242);
         rep_tab.title = "Terminal".into();
         rep_tab.tile = Some(TileContent::Foreign {
-            app_id: "dev.tilo.terminal".into(),
+            app_id: "so.tilo.terminal".into(),
             surface_id: 4242,
         });
         let rep = ReplicatedGroup {
@@ -11604,7 +11604,7 @@ mod peer_window_merge_tests {
         let mut changed = false;
         let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
         match &merged.tabs[0].tile {
-            TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "dev.tilo.terminal"),
+            TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "so.tilo.terminal"),
             other => panic!("expected the new app, got {other:?}"),
         }
         assert!(changed);
@@ -11827,7 +11827,7 @@ mod peer_window_merge_tests {
                 group: 0,
                 tab: 0,
             },
-            crate::shell::personal_continuity::LaunchIntent::app("dev.tilo.browser").unwrap(),
+            crate::shell::personal_continuity::LaunchIntent::app("so.tilo.browser").unwrap(),
             None,
             crate::shell::personal_continuity::ContinuityStamp { counter: 1, device },
         );
@@ -11855,7 +11855,7 @@ mod peer_window_merge_tests {
                 group: 0,
                 tab: 0,
             },
-            crate::shell::personal_continuity::LaunchIntent::app("dev.tilo.browser").unwrap(),
+            crate::shell::personal_continuity::LaunchIntent::app("so.tilo.browser").unwrap(),
             None,
             crate::shell::personal_continuity::ContinuityStamp {
                 counter: 1,
@@ -11910,14 +11910,14 @@ mod peer_window_merge_tests {
             "Laptop",
             &crate::shell::personal_continuity::WorkspaceContinuation {
                 room,
-                apps: vec![make(0, "dev.tilo.browser")],
+                apps: vec![make(0, "so.tilo.browser")],
             },
         );
         tree.materialize_continuation_workspace(
             "Laptop",
             &crate::shell::personal_continuity::WorkspaceContinuation {
                 room,
-                apps: vec![make(1, "dev.tilo.music")],
+                apps: vec![make(1, "so.tilo.music")],
             },
         );
         let workspace = tree
@@ -11940,7 +11940,7 @@ mod peer_window_merge_tests {
             .unwrap();
         assert!(matches!(
             &moved.tile,
-            TileContent::PeerWindow { app_id, .. } if app_id == "dev.tilo.music"
+            TileContent::PeerWindow { app_id, .. } if app_id == "so.tilo.music"
         ));
     }
 
@@ -12021,7 +12021,7 @@ mod peer_window_merge_tests {
         let app = AppInstanceState::new(
             id,
             placement,
-            LaunchIntent::app("dev.tilo.browser").unwrap(),
+            LaunchIntent::app("so.tilo.browser").unwrap(),
             None,
             stamp,
         );
@@ -12045,7 +12045,7 @@ mod peer_window_merge_tests {
             .expect("the newer app offer remains in the same logical tab");
         assert!(matches!(
             &replacement.tile,
-            TileContent::PeerWindow { app_id, .. } if app_id == "dev.tilo.browser"
+            TileContent::PeerWindow { app_id, .. } if app_id == "so.tilo.browser"
         ));
     }
 

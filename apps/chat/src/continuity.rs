@@ -66,7 +66,7 @@ impl ChatRealtimeContinuity {
         self.next_request = self.next_request.saturating_add(1);
         ui::collaboration::CollabRequest::RealtimeCommand {
             request_id: self.next_request,
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             command,
         }
     }

@@ -1474,7 +1474,7 @@ fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
 /// doesn't exist yet, so preserving one leftover never clobbers another.
 fn stale_sibling(dir: &Path) -> PathBuf {
     // Append rather than replace the extension: package ids contain dots
-    // (`dev.tilo.maps`), so `with_extension` would eat the last id segment.
+    // (`so.tilo.maps`), so `with_extension` would eat the last id segment.
     let mut base = dir.as_os_str().to_owned();
     base.push(".stale");
     let mut candidate = PathBuf::from(&base);
@@ -1709,9 +1709,9 @@ mod tests {
         let path = PathBuf::from(path);
         let canonical = std::env::var_os("TILO_CANONICAL_TEST_MODE").is_some();
         let mut store = if canonical {
-            DocStore::open_canonical_at("dev.tilo.test", &path)
+            DocStore::open_canonical_at("so.tilo.test", &path)
         } else {
-            DocStore::open_in("dev.tilo.test", path)
+            DocStore::open_in("so.tilo.test", path)
         }
         .unwrap();
         let mut doc = store.new_document();
@@ -1756,9 +1756,9 @@ mod tests {
                     let document = fs::read(tmp.path().join(DOCUMENT_FILE)).unwrap();
                     let open = || {
                         if second_canonical {
-                            DocStore::open_canonical_at("dev.tilo.test", tmp.path())
+                            DocStore::open_canonical_at("so.tilo.test", tmp.path())
                         } else {
-                            DocStore::open_in("dev.tilo.test", tmp.path().to_path_buf())
+                            DocStore::open_in("so.tilo.test", tmp.path().to_path_buf())
                         }
                     };
                     let result = open();
@@ -1787,7 +1787,7 @@ mod tests {
         let obligation = fs::canonicalize(tmp.path()).unwrap().join("profile");
         let faults = std::sync::Arc::new(TestFaults::default());
         *faults.sync_failure.lock().unwrap() = Some(obligation.clone());
-        let result = DocStore::open_canonical_with("dev.tilo.test", &path, |store| {
+        let result = DocStore::open_canonical_with("so.tilo.test", &path, |store| {
             store.faults = faults.clone();
         });
         assert!(result.is_err());
@@ -1795,7 +1795,7 @@ mod tests {
         assert!(faults.sync_visits.lock().unwrap().contains(&obligation));
         *faults.sync_failure.lock().unwrap() = None;
         faults.sync_visits.lock().unwrap().clear();
-        let store = DocStore::open_canonical_with("dev.tilo.test", &path, |store| {
+        let store = DocStore::open_canonical_with("so.tilo.test", &path, |store| {
             store.faults = faults.clone();
         })
         .unwrap();
@@ -1825,7 +1825,7 @@ mod tests {
             Some("visible")
         );
         drop(store);
-        let mut reopen = DocStore::open_canonical_at("dev.tilo.test", &path).unwrap();
+        let mut reopen = DocStore::open_canonical_at("so.tilo.test", &path).unwrap();
         let loaded = reopen.load_canonical().unwrap().unwrap();
         reopen.accept_canonical(loaded).unwrap();
     }
@@ -1835,7 +1835,7 @@ mod tests {
         for replace_gate in [false, true] {
             let tmp = TempDir::new().unwrap();
             let path = tmp.path().join("record");
-            let store = DocStore::open_canonical_at("dev.tilo.test", &path).unwrap();
+            let store = DocStore::open_canonical_at("so.tilo.test", &path).unwrap();
             if replace_gate {
                 fs::remove_file(path.join(CANONICAL_GATE)).unwrap();
                 fs::write(path.join(CANONICAL_GATE), b"replacement").unwrap();
@@ -1876,7 +1876,7 @@ mod tests {
     #[test]
     fn canonical_empty_corrupt_and_changed_sources_are_never_published() {
         let tmp = TempDir::new().unwrap();
-        let mut store = DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap();
+        let mut store = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
         assert!(store.load_canonical().unwrap().is_none());
         for bytes in [b"".as_slice(), b"not automerge".as_slice()] {
             fs::write(store.document_path(), bytes).unwrap();
@@ -2045,7 +2045,7 @@ mod tests {
     #[test]
     fn canonical_schema_checks_all_live_values_without_mutation() {
         let tmp = TempDir::new().unwrap();
-        let mut store = DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap();
+        let mut store = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
         assert_malformed_schemas_are_rejected(&mut store);
         assert_supported_schemas_are_nonmutating(&mut store);
         assert_schema_conflicts_are_checked(&mut store);
@@ -2054,7 +2054,7 @@ mod tests {
     #[test]
     fn canonical_prefix_repair_sync_failure_leaves_visible_bytes_unacknowledged() {
         let tmp = TempDir::new().unwrap();
-        let mut store = DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap();
+        let mut store = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
         let mut doc = store.new_canonical_document().unwrap();
         doc.put(ROOT, "body", "prefix").unwrap();
         let torn = with_partial_tail(&mut doc);
@@ -2074,7 +2074,7 @@ mod tests {
     #[test]
     fn canonical_recovery_waits_for_acceptance_and_is_bound_to_its_store() {
         let tmp = TempDir::new().unwrap();
-        let mut store = DocStore::open_canonical_at("dev.tilo.test", tmp.path()).unwrap();
+        let mut store = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
         let mut doc = store.new_canonical_document().unwrap();
         doc.put(ROOT, "body", "prefix").unwrap();
         let heads = doc.get_heads();
@@ -2090,7 +2090,7 @@ mod tests {
             Some("prefix")
         );
         let other = TempDir::new().unwrap();
-        let mut wrong = DocStore::open_canonical_at("dev.tilo.test", other.path()).unwrap();
+        let mut wrong = DocStore::open_canonical_at("so.tilo.test", other.path()).unwrap();
         assert!(matches!(
             wrong.accept_canonical(loaded),
             Err(StoreError::SourceChanged { .. })
@@ -2106,7 +2106,7 @@ mod tests {
         // The canonical protocol reserves this gate before touching actor or document.
         let gate_path = tmp.path().join("canonical.lock");
         let gate = acquire_writer_lock(&gate_path).unwrap();
-        let result = DocStore::open_in("dev.tilo.test", tmp.path().to_path_buf());
+        let result = DocStore::open_in("so.tilo.test", tmp.path().to_path_buf());
         assert!(
             result.is_err(),
             "a legacy opener must respect the canonical gate"
@@ -2114,7 +2114,7 @@ mod tests {
         assert!(!tmp.path().join(ACTOR_FILE).exists());
         assert!(!tmp.path().join(DOCUMENT_FILE).exists());
         drop(gate);
-        assert!(DocStore::open_in("dev.tilo.test", tmp.path().to_path_buf()).is_ok());
+        assert!(DocStore::open_in("so.tilo.test", tmp.path().to_path_buf()).is_ok());
     }
 
     fn text_of(doc: &AutoCommit, key: &str) -> Option<String> {
@@ -2135,11 +2135,11 @@ mod tests {
     #[serial_test::serial]
     fn path_is_derived_from_the_package_id() {
         let tmp = scratch_home();
-        let store = DocStore::open_for("dev.tilo.ebook").unwrap();
-        assert_eq!(store.dir(), tmp.path().join("dev.tilo.ebook"));
+        let store = DocStore::open_for("so.tilo.ebook").unwrap();
+        assert_eq!(store.dir(), tmp.path().join("so.tilo.ebook"));
         assert_eq!(
             store.document_path(),
-            tmp.path().join("dev.tilo.ebook").join(DOCUMENT_FILE)
+            tmp.path().join("so.tilo.ebook").join(DOCUMENT_FILE)
         );
     }
 
@@ -2147,10 +2147,10 @@ mod tests {
     #[serial_test::serial]
     fn open_reads_the_launcher_package_id() {
         let tmp = scratch_home();
-        unsafe { std::env::set_var("TILO_PACKAGE_ID", "dev.tilo.monitor") };
+        unsafe { std::env::set_var("TILO_PACKAGE_ID", "so.tilo.monitor") };
         let store = DocStore::open().unwrap();
-        assert_eq!(store.package_id(), "dev.tilo.monitor");
-        assert_eq!(store.dir(), tmp.path().join("dev.tilo.monitor"));
+        assert_eq!(store.package_id(), "so.tilo.monitor");
+        assert_eq!(store.dir(), tmp.path().join("so.tilo.monitor"));
         unsafe { std::env::remove_var("TILO_PACKAGE_ID") };
     }
 
@@ -2158,7 +2158,7 @@ mod tests {
     #[serial_test::serial]
     fn legacy_package_migration_is_claimed_by_one_room_and_resume_is_stable() {
         let tmp = scratch_home();
-        let package = "dev.tilo.legacy-claim";
+        let package = "so.tilo.legacy-claim";
         let legacy = DocStore::legacy_package_document_path(package).unwrap();
         fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         fs::write(&legacy, b"legacy source remains intact").unwrap();
@@ -2180,7 +2180,7 @@ mod tests {
     #[serial_test::serial]
     fn concurrent_legacy_migration_claims_have_one_winner() {
         let _tmp = scratch_home();
-        let package = "dev.tilo.concurrent-claim";
+        let package = "so.tilo.concurrent-claim";
         fs::create_dir_all(cli::standalone_state_dir(package)).unwrap();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let mut threads = Vec::new();
@@ -2203,7 +2203,7 @@ mod tests {
     #[serial_test::serial]
     fn torn_legacy_claim_recovers_without_granting_two_rooms() {
         let _tmp = scratch_home();
-        let package = "dev.tilo.torn-claim";
+        let package = "so.tilo.torn-claim";
         let root = cli::standalone_state_dir(package);
         fs::create_dir_all(&root).unwrap();
         // Shape left by the old create-then-write implementation if it died
@@ -2222,10 +2222,10 @@ mod tests {
     fn package_id_cannot_escape_the_data_root() {
         let _tmp = scratch_home();
         for bad in [
-            "../dev.tilo.mail",
+            "../so.tilo.mail",
             "../../etc",
             "/etc/shadow",
-            "dev.tilo.mail/../dev.tilo.chat",
+            "so.tilo.mail/../so.tilo.chat",
             "a/b",
             "..",
             ".",
@@ -2245,7 +2245,7 @@ mod tests {
     #[serial_test::serial]
     fn round_trip_preserves_content() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.tilo.roundtrip").unwrap();
+        let mut store = DocStore::open_for("so.tilo.roundtrip").unwrap();
         assert!(store.load().unwrap().is_none(), "nothing saved yet");
 
         let mut doc = store.new_document();
@@ -2256,7 +2256,7 @@ mod tests {
         store.save(&mut doc).unwrap();
         drop((store, doc));
 
-        let mut reopened = DocStore::open_for("dev.tilo.roundtrip").unwrap();
+        let mut reopened = DocStore::open_for("so.tilo.roundtrip").unwrap();
         let loaded = reopened.load().unwrap().expect("document is on disk");
         assert_eq!(text_of(&loaded, "title").as_deref(), Some("Moby Dick"));
         let notes = loaded.get(&ROOT, "notes").unwrap().unwrap().1;
@@ -2272,7 +2272,7 @@ mod tests {
     #[serial_test::serial]
     fn round_trip_merges_with_a_replica_that_diverged_before_the_save() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.tilo.merge").unwrap();
+        let mut store = DocStore::open_for("so.tilo.merge").unwrap();
 
         let mut doc = store.new_document();
         let list = doc.put_object(&ROOT, "contacts", ObjType::Map).unwrap();
@@ -2290,7 +2290,7 @@ mod tests {
         store.save(&mut doc).unwrap();
         drop((store, doc));
 
-        let mut reopened = DocStore::open_for("dev.tilo.merge").unwrap();
+        let mut reopened = DocStore::open_for("so.tilo.merge").unwrap();
         let mut restored = reopened.load().unwrap().expect("saved document");
 
         // Actor identity survives the restart: same automerge actor, not a fresh one per launch.
@@ -2331,7 +2331,7 @@ mod tests {
     #[serial_test::serial]
     fn append_is_incremental_and_loads_back() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.tilo.append").unwrap();
+        let mut store = DocStore::open_for("so.tilo.append").unwrap();
         let mut doc = store.new_document();
         let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         doc.splice_text(&body, 0, 0, "hello").unwrap();
@@ -2351,7 +2351,7 @@ mod tests {
         assert_eq!(store.append(&mut doc).unwrap(), 0);
         drop((store, doc));
 
-        let mut reopened = DocStore::open_for("dev.tilo.append").unwrap();
+        let mut reopened = DocStore::open_for("so.tilo.append").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
         assert_eq!(loaded.text(&body).unwrap(), "hello world");
@@ -2363,7 +2363,7 @@ mod tests {
     #[serial_test::serial]
     fn a_torn_append_loses_only_the_torn_change() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.tilo.torn").unwrap();
+        let mut store = DocStore::open_for("so.tilo.torn").unwrap();
         let mut doc = store.new_document();
         let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         doc.splice_text(&body, 0, 0, "committed").unwrap();
@@ -2377,7 +2377,7 @@ mod tests {
         fs::write(store.document_path(), &bytes[..bytes.len() - 3]).unwrap();
         drop((store, doc));
 
-        let mut reopened = DocStore::open_for("dev.tilo.torn").unwrap();
+        let mut reopened = DocStore::open_for("so.tilo.torn").unwrap();
         let loaded = reopened
             .load()
             .expect("a torn tail must not fail the load")
@@ -2397,7 +2397,7 @@ mod tests {
     #[serial_test::serial]
     fn an_interrupted_full_save_leaves_the_previous_document_intact() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.tilo.atomic").unwrap();
+        let mut store = DocStore::open_for("so.tilo.atomic").unwrap();
         let mut doc = store.new_document();
         doc.put(&ROOT, "v", ScalarValue::Str("first".into()))
             .unwrap();
@@ -2408,7 +2408,7 @@ mod tests {
         fs::write(&tmp_path, b"\x85\x6f\x4a\x83truncated garbage").unwrap();
         drop((store, doc));
 
-        let mut reopened = DocStore::open_for("dev.tilo.atomic").unwrap();
+        let mut reopened = DocStore::open_for("so.tilo.atomic").unwrap();
         let loaded = reopened.load().unwrap().expect("previous document");
         assert_eq!(text_of(&loaded, "v").as_deref(), Some("first"));
     }
@@ -2417,9 +2417,9 @@ mod tests {
     #[serial_test::serial]
     fn a_second_instance_gets_a_distinct_actor() {
         let _tmp = scratch_home();
-        let first = DocStore::open_for("dev.tilo.twice").unwrap();
+        let first = DocStore::open_for("so.tilo.twice").unwrap();
         assert!(first.is_exclusive_writer());
-        let second = DocStore::open_for("dev.tilo.twice").unwrap();
+        let second = DocStore::open_for("so.tilo.twice").unwrap();
         assert!(
             !second.is_exclusive_writer(),
             "the second live store must not claim the writer lock"
@@ -2460,21 +2460,21 @@ mod tests {
         fs::write(&legacy, old.save()).unwrap();
 
         // State the new store already has.
-        let mut store = DocStore::open_for("dev.tilo.migrate").unwrap();
+        let mut store = DocStore::open_for("so.tilo.migrate").unwrap();
         let mut doc = store.new_document();
         doc.put(&ROOT, "from_new", ScalarValue::Str("yes".into()))
             .unwrap();
         store.save(&mut doc).unwrap();
 
         assert!(store.migrate_from(&legacy).unwrap());
-        let mut reopened = DocStore::open_for("dev.tilo.migrate").unwrap();
+        let mut reopened = DocStore::open_for("so.tilo.migrate").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         assert_eq!(text_of(&loaded, "from_legacy").as_deref(), Some("yes"));
         assert_eq!(text_of(&loaded, "from_new").as_deref(), Some("yes"));
 
         // Idempotent: a second run changes nothing and loses nothing.
         assert!(store.migrate_from(&legacy).unwrap());
-        let mut again = DocStore::open_for("dev.tilo.migrate").unwrap();
+        let mut again = DocStore::open_for("so.tilo.migrate").unwrap();
         let loaded = again.load().unwrap().unwrap();
         assert_eq!(text_of(&loaded, "from_legacy").as_deref(), Some("yes"));
         assert_eq!(text_of(&loaded, "from_new").as_deref(), Some("yes"));
@@ -2484,7 +2484,7 @@ mod tests {
     #[serial_test::serial]
     fn migration_of_a_missing_file_is_a_no_op() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.tilo.nomigrate").unwrap();
+        let mut store = DocStore::open_for("so.tilo.nomigrate").unwrap();
         assert!(!store.migrate_from(Path::new("/nonexistent/nope")).unwrap());
     }
 
@@ -2495,12 +2495,12 @@ mod tests {
     #[serial_test::serial]
     fn a_new_document_carries_the_schema_version() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.tilo.stamped").unwrap();
+        let mut store = DocStore::open_for("so.tilo.stamped").unwrap();
         let mut doc = store.new_document();
         assert_eq!(schema_version_of(&doc), SCHEMA_VERSION);
         store.save(&mut doc).unwrap();
 
-        let mut reopened = DocStore::open_for("dev.tilo.stamped").unwrap();
+        let mut reopened = DocStore::open_for("so.tilo.stamped").unwrap();
         let loaded = reopened.load().unwrap().expect("saved document");
         assert!(
             loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
@@ -2513,7 +2513,7 @@ mod tests {
     #[serial_test::serial]
     fn app_owned_schema_migration_is_durable_and_runs_once() {
         let _tmp = scratch_home();
-        let package = "dev.tilo.schema-migration";
+        let package = "so.tilo.schema-migration";
         let mut old_store = DocStore::open_for(package).unwrap();
         let mut old = old_store.new_document();
         old.put(ROOT, "legacy", "value").unwrap();
@@ -2548,7 +2548,7 @@ mod tests {
     #[serial_test::serial]
     fn app_owned_schema_refuses_a_newer_layout() {
         let _tmp = scratch_home();
-        let package = "dev.tilo.schema-refusal";
+        let package = "so.tilo.schema-refusal";
         let mut newer = DocStore::open_for(package).unwrap().with_schema_version(3);
         let mut doc = newer.new_document();
         newer.save(&mut doc).unwrap();
@@ -2572,7 +2572,7 @@ mod tests {
     #[serial_test::serial]
     fn a_document_written_before_versioning_opens_and_is_stamped_on_save() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.tilo.unversioned").unwrap();
+        let mut store = DocStore::open_for("so.tilo.unversioned").unwrap();
 
         // Written the way the crate used to: a bare AutoCommit, no stamp.
         let mut old = AutoCommit::new();
@@ -2597,7 +2597,7 @@ mod tests {
         );
         store.save(&mut doc).unwrap();
 
-        let mut reopened = DocStore::open_for("dev.tilo.unversioned").unwrap();
+        let mut reopened = DocStore::open_for("so.tilo.unversioned").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         assert!(
             loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
@@ -2614,7 +2614,7 @@ mod tests {
     #[serial_test::serial]
     fn a_newer_document_is_refused_and_never_written_over() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.tilo.future").unwrap();
+        let mut store = DocStore::open_for("so.tilo.future").unwrap();
 
         let mut future = AutoCommit::new();
         future
@@ -2683,7 +2683,7 @@ mod tests {
     #[serial_test::serial]
     fn opening_twice_against_an_existing_dir_keeps_persistence_enabled() {
         let _tmp = scratch_home();
-        let pkg = "dev.tilo.persist-twice";
+        let pkg = "so.tilo.persist-twice";
 
         let dir = cli::standalone_state_dir(pkg);
         fs::create_dir_all(&dir).unwrap();
@@ -2739,7 +2739,7 @@ mod tests {
     #[serial_test::serial]
     fn opening_when_the_state_path_is_a_stale_empty_file_recovers_persistence() {
         let _tmp = scratch_home();
-        let pkg = "dev.tilo.stale-empty";
+        let pkg = "so.tilo.stale-empty";
         let path = cli::standalone_state_dir(pkg);
 
         fs::write(&path, b"").unwrap();
@@ -2777,7 +2777,7 @@ mod tests {
     #[serial_test::serial]
     fn opening_when_the_state_path_is_a_nonempty_file_preserves_and_migrates_it() {
         let _tmp = scratch_home();
-        let pkg = "dev.tilo.stale-doc";
+        let pkg = "so.tilo.stale-doc";
         let path = cli::standalone_state_dir(pkg);
 
         // The old layout wrote a real Automerge document straight to the path.
@@ -2839,7 +2839,7 @@ mod tests {
             std::env::remove_var("TILO_PACKAGE_ID");
         }
 
-        let result = DocStore::open_for("dev.tilo.blocked");
+        let result = DocStore::open_for("so.tilo.blocked");
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
 
         match result {

@@ -442,7 +442,10 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        #[allow(clippy::too_many_arguments)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "the test widget implements the fixed Widget event-handler signature"
+        )]
         fn handle_event(
             &mut self,
             _e: &WindowEvent,
@@ -641,7 +644,7 @@ mod tests {
         }
 
         let src = BrowserStub {
-            session: "tabs=[example.com, tilo.dev]; active=1".into(),
+            session: "tabs=[example.com, tilo.so]; active=1".into(),
         };
         let frozen = src.freeze();
 
@@ -650,7 +653,7 @@ mod tests {
         };
         dst.thaw(&frozen).expect("thaw the browser stub");
         assert_eq!(
-            dst.session, "tabs=[example.com, tilo.dev]; active=1",
+            dst.session, "tabs=[example.com, tilo.so]; active=1",
             "the non-CRDT state round-tripped through the serialize_state hook"
         );
 

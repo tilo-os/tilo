@@ -138,7 +138,7 @@ enum Cmd {
         #[arg(long, default_value_t = 10_000)]
         max_snapshot_entries: usize,
     },
-    /// Networked, keyless collection of exact first-party qpkg bytes.
+    /// Networked, keyless collection of exact first-party tapp bytes.
     CollectFirstParty {
         #[arg(long)]
         publisher_pubkey: String,
@@ -1020,6 +1020,10 @@ fn load_signing_key(
     Ok(key)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the review command keeps all moderation subcommands visible in one CLI dispatcher"
+)]
 fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
     let moderation = ModerationService::new(storage.clone());
     match command {
@@ -1036,7 +1040,11 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
                         "{}\t{:?}\t{}\t{}",
                         item.submission_id,
                         item.change.action,
-                        item.change.entry.name,
+                        item.change
+                            .entry
+                            .name
+                            .resolve("en")
+                            .unwrap_or(&item.change.entry.package_id),
                         item.change.entry.publisher_pubkey_hex
                     );
                 }
@@ -1062,7 +1070,12 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
                     "{}: {:?} {} ({})",
                     pending.submission_id,
                     pending.change.action,
-                    pending.change.entry.name,
+                    pending
+                        .change
+                        .entry
+                        .name
+                        .resolve("en")
+                        .unwrap_or(&pending.change.entry.package_id),
                     pending.change.entry.publisher_pubkey_hex
                 );
                 for version in inspection {
@@ -1335,26 +1348,29 @@ mod tests {
 
     fn publisher_entry(key: &ed25519_dalek::SigningKey) -> RegistryEntry {
         let mut entry = RegistryEntry {
-            package_id: "dev.tilo.concurrent".into(),
+            package_id: "so.tilo.concurrent".into(),
             name: "Concurrent".into(),
             description: "publisher removal regression".into(),
+            tagline: "Test concurrent publication".into(),
+            images: registry_types::LocalizedImages::default(),
+            supported_languages: vec!["en".into()],
             categories: Vec::new(),
-            icon_url: None,
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
             versions: vec![RegistryVersion {
                 version: "1.0.0".into(),
-                qpkg_url: "https://packages.test/concurrent.qpkg".into(),
-                qpkg_root_hash_hex: "ab".repeat(32),
-                qpkg_size_bytes: 1,
+                tapp_url: "https://apps.tilo.so/artifacts/concurrent.tapp".into(),
+                tapp_root_hash_hex: "ab".repeat(32),
+                tapp_size_bytes: 1,
                 released_at_unix: 1,
-                qpkg_blake3_hex: Some("cd".repeat(32)),
-                target: Some(RegistryTarget {
+                tapp_blake3_hex: "cd".repeat(32),
+                target: RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
-                }),
+                },
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),
@@ -1424,7 +1440,7 @@ mod tests {
         writer.publish(&first).unwrap();
         drop(writer);
         let removal_error = remover.join().unwrap().to_string();
-        assert!(removal_error.contains("public package dev.tilo.concurrent"));
+        assert!(removal_error.contains("public package so.tilo.concurrent"));
         registry_types::verify_snapshot(&first, &owner_hex, first.issued_at_unix).unwrap();
         assert!(
             storage
@@ -1436,12 +1452,12 @@ mod tests {
 
         // Revocation becomes legal only after both live storage and the
         // published pointer no longer reference the publisher.
-        storage.delete_entry("dev.tilo.concurrent").unwrap();
+        storage.delete_entry("so.tilo.concurrent").unwrap();
         assert!(
             cmd_remove_publisher(&storage, &publisher_hex)
                 .unwrap_err()
                 .to_string()
-                .contains("public package dev.tilo.concurrent")
+                .contains("public package so.tilo.concurrent")
         );
         let writer = storage.lock_snapshot().unwrap();
         let second =

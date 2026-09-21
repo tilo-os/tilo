@@ -97,7 +97,7 @@ pub use store::Store;
 /// capability vocabulary because that's what the compositor's permissions
 /// panel renders and revokes; one subject for the whole runtime, not per
 /// session, so trusting a directory stays trusted for the next shell too.
-pub const RUNTIME_APP_ID: &str = "dev.tilo.ush";
+pub const RUNTIME_APP_ID: &str = "so.tilo.ush";
 
 /// Where the guest can see the runtime's own binary and its command shims:
 /// a `tmpfs` the supervisor populates, first on `PATH`, not guest-writable.
@@ -109,4 +109,60 @@ pub const GUEST_BROKER_SOCK: &str = "/run/ush/broker.sock";
 /// Names the runtime answers to from inside a guest, dispatched on `argv[0]`.
 /// These are symlinks to the runtime binary rather than shell builtins, so
 /// they behave identically under `bash`, `fish`, a script, or `xargs`.
-pub const GUEST_COMMANDS: &[&str] = &["pkg", "perm", "scan", "guard", "quarantine", "restart"];
+pub const GUEST_COMMANDS: &[&str] = &[
+    "pkg",
+    "perm",
+    "scan",
+    "guard",
+    "quarantine",
+    "restart",
+    // These are deliberately host-brokered. Running the image copies directly
+    // inside the guest would update the shell layer instead of the user's apps,
+    // and its private /run cannot reach systemd for image updates.
+    "tilo",
+    "app",
+    "store",
+    "system",
+];
+
+/// Whether a command shim belongs in a guest built from `base`.
+pub fn guest_command_available(base: &std::path::Path, command: &str) -> bool {
+    match command {
+        // `system` is an argv0 convenience alias for `tilo system`, not a
+        // generic name for any machine with the `tilo` client installed.  Do
+        // not put it on a guest's PATH unless this is actually a Tilo system
+        // image with the deployment provider behind the client.
+        "system" => system_provider_available(base),
+        "tilo" => base.join("usr/bin/tilo").is_file(),
+        "app" | "store" => base.join("usr/bin/app").is_file(),
+        _ => true,
+    }
+}
+
+fn system_provider_available(base: &std::path::Path) -> bool {
+    base.join("usr/bin/tilo").is_file() && base.join("usr/libexec/tilo-deployment").is_file()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_system_shim_requires_the_tilo_system_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("tilo"), "").unwrap();
+
+        assert!(guest_command_available(dir.path(), "tilo"));
+        assert!(
+            !guest_command_available(dir.path(), "system"),
+            "a client binary alone must not expose the system alias"
+        );
+
+        let provider = dir.path().join("usr/libexec/tilo-deployment");
+        std::fs::create_dir_all(provider.parent().unwrap()).unwrap();
+        std::fs::write(provider, "").unwrap();
+        assert!(guest_command_available(dir.path(), "system"));
+    }
+}

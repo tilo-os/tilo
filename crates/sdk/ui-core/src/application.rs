@@ -1271,10 +1271,10 @@ mod bound_lifetime_tests {
     fn actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry() {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let records = owners.open("so.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
+            app_id: "so.tilo.mount-probe",
             title: "Mount probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
@@ -1353,10 +1353,10 @@ mod bound_lifetime_tests {
     fn task4_component_loan_checks_captured_registry_and_lifetime_before_delivery() {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let records = owners.open("so.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
+            app_id: "so.tilo.mount-probe",
             title: "Mount probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),

@@ -580,6 +580,22 @@ pub trait AudiencePresentationProvider {
     fn on_audience_presentation_closed(&mut self) {}
 }
 
+/// Optional OS-fullscreen capability for roots and forwarding containers.
+pub trait FullscreenProvider {
+    /// `None` means no opinion; otherwise this is a level-triggered intent.
+    fn fullscreen_intent(&self) -> Option<bool> {
+        None
+    }
+
+    /// Select the output and mirrored-vs-distinct presentation mode.
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        crate::fullscreen::FullscreenRequest::mirror(crate::fullscreen::FullscreenTarget::Largest)
+    }
+
+    /// Report an actual OS fullscreen transition, including compositor exits.
+    fn on_fullscreen_changed(&mut self, _active: bool) {}
+}
+
 pub trait Widget {
     /// Concrete identity for host-side frame maps that must distinguish a
     /// wrapper from its first field even when they share a data address.
@@ -806,6 +822,16 @@ pub trait Widget {
     fn audience_presentation_provider_mut(
         &mut self,
     ) -> Option<&mut dyn AudiencePresentationProvider> {
+        None
+    }
+
+    /// Expose OS fullscreen behavior only for widgets that own or forward it.
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::fullscreen_provider`].
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
         None
     }
 
@@ -1398,27 +1424,6 @@ pub trait Widget {
     fn take_focus_reset(&mut self) -> bool {
         false
     }
-
-    // --- Fullscreen / presentation contract ---
-    /// `None` (default) is "no opinion". **Level-triggered, not
-    /// edge-triggered**: the App only calls `set_fullscreen` when this
-    /// differs from the live window state. Only the root widget is
-    /// consulted.
-    fn fullscreen_intent(&self) -> Option<bool> {
-        None
-    }
-
-    /// Used when [`Self::fullscreen_intent`] resolves `Some(true)` — which
-    /// output to target and whether the fullscreen surface mirrors the
-    /// window or shows a distinct view. Default: largest output, mirroring.
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        crate::fullscreen::FullscreenRequest::mirror(crate::fullscreen::FullscreenTarget::Largest)
-    }
-
-    /// Edge-triggered: fires when the *actual* OS-fullscreen state changed,
-    /// so a compositor-initiated exit (global keybind, lost grant) can be
-    /// reacted to even though the app never asked. Root widget only.
-    fn on_fullscreen_changed(&mut self, _active: bool) {}
 
     /// Which **record** (see [`crate::record`]) this widget's document
     /// should be, so opening a second file checks out a different document
@@ -2110,6 +2115,37 @@ impl<T: Widget + ?Sized> AudiencePresentationWidgetExt for T {
     fn on_audience_presentation_closed(&mut self) {
         if let Some(provider) = self.audience_presentation_provider_mut() {
             provider.on_audience_presentation_closed();
+        }
+    }
+}
+
+/// Ergonomic host API for optional fullscreen support.
+pub trait FullscreenWidgetExt {
+    fn fullscreen_intent(&self) -> Option<bool>;
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest;
+    fn on_fullscreen_changed(&mut self, active: bool);
+}
+
+impl<T: Widget + ?Sized> FullscreenWidgetExt for T {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        self.fullscreen_provider()
+            .and_then(FullscreenProvider::fullscreen_intent)
+    }
+
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        self.fullscreen_provider().map_or_else(
+            || {
+                crate::fullscreen::FullscreenRequest::mirror(
+                    crate::fullscreen::FullscreenTarget::Largest,
+                )
+            },
+            FullscreenProvider::fullscreen_params,
+        )
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        if let Some(provider) = self.fullscreen_provider_mut() {
+            provider.on_fullscreen_changed(active);
         }
     }
 }

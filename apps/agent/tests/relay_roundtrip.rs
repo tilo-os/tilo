@@ -29,7 +29,7 @@ use uuid::Uuid;
 mod typed_peer;
 use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
-const APP: &str = "dev.tilo.word-processor";
+const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 
 /// The capability an inviter issues an agent for the app it was invited
@@ -558,7 +558,7 @@ fn connect_files_and_word_processor(
     send(
         &mut files_peer,
         &CollabRequest::Hello {
-            app_id: "dev.tilo.file-explorer".into(),
+            app_id: "so.tilo.file-explorer".into(),
             cluster_id: room,
             record: None,
             handle: Some("files".into()),

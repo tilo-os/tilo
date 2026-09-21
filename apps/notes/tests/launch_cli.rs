@@ -34,7 +34,7 @@ fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_js
     command.current_dir(host);
     command
         .env("TILO_NOTES_ROOT", root)
-        .env("TILO_PACKAGE_ID", "dev.tilo.notes")
+        .env("TILO_PACKAGE_ID", "so.tilo.notes")
         .arg("--headless-drive")
         .arg(serde_json::json!({"actions": [], "dump": dump}).to_string());
     if let Some(target) = target {
@@ -68,7 +68,7 @@ fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_js
         std::fs::read_to_string(stderr).unwrap()
     );
     assert!(
-        !host.join("dev.tilo.notes/state.automerge").exists(),
+        !host.join("so.tilo.notes/state.automerge").exists(),
         "widget-owned notebook must not open a substitute host document"
     );
     serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap()

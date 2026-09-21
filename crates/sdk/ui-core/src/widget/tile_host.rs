@@ -8,7 +8,8 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
 use crate::widget::{
     AudiencePresentationProvider, AudiencePresentationWidgetExt, Continuable,
-    FloatingSurfaceProvider, FloatingSurfaceWidgetExt, Widget,
+    FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt,
+    Widget,
 };
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;
@@ -1111,6 +1112,30 @@ impl crate::widget::Collaborative for TileHost {
     }
 }
 
+impl FullscreenProvider for TileHost {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        match &self.content {
+            TileContent::App(app) => app.fullscreen_intent(),
+            _ => None,
+        }
+    }
+
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        match &self.content {
+            TileContent::App(app) => app.fullscreen_params(),
+            _ => crate::fullscreen::FullscreenRequest::mirror(
+                crate::fullscreen::FullscreenTarget::Largest,
+            ),
+        }
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_fullscreen_changed(active);
+        }
+    }
+}
+
 impl Widget for TileHost {
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         if let Some(error) = &self.record_error {
@@ -1206,6 +1231,14 @@ impl Widget for TileHost {
         .then_some(self)
     }
 
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
+
     fn continuable(&self) -> Option<&dyn Continuable> {
         Some(self)
     }
@@ -1223,25 +1256,6 @@ impl Widget for TileHost {
         match &mut self.content {
             TileContent::App(app) => app.take_focus_reset(),
             _ => false,
-        }
-    }
-    fn fullscreen_intent(&self) -> Option<bool> {
-        match &self.content {
-            TileContent::App(app) => app.fullscreen_intent(),
-            _ => None,
-        }
-    }
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        match &self.content {
-            TileContent::App(app) => app.fullscreen_params(),
-            _ => crate::fullscreen::FullscreenRequest::mirror(
-                crate::fullscreen::FullscreenTarget::Largest,
-            ),
-        }
-    }
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        if let TileContent::App(app) = &mut self.content {
-            app.on_fullscreen_changed(active);
         }
     }
     fn view_state(&self) -> Option<crate::view::ViewContribution> {
@@ -2592,7 +2606,7 @@ mod tests {
 
     fn canonical_store(root: &std::path::Path) -> RecordStore {
         let mut owners = crate::record::RecordOwners::new(root.to_path_buf());
-        owners.open("dev.tilo.tile-host-test", "room").unwrap()
+        owners.open("so.tilo.tile-host-test", "room").unwrap()
     }
 
     fn inspection_has_semantic(node: &crate::headless::InspectionNode, name: &str) -> bool {
@@ -2625,12 +2639,12 @@ mod tests {
         }
         let record_dir = app_state::DocStore::room_record_dir_at(
             &root,
-            "dev.tilo.tile-host-test",
+            "so.tilo.tile-host-test",
             "room",
             &checkout.id.storage_key(),
         )
         .unwrap();
-        let path = app_state::DocStore::open_canonical_at("dev.tilo.tile-host-test", &record_dir)
+        let path = app_state::DocStore::open_canonical_at("so.tilo.tile-host-test", &record_dir)
             .unwrap()
             .document_path()
             .to_path_buf();
@@ -2675,7 +2689,7 @@ mod tests {
     }
     static DECLARED_HISTORY: crate::history_mode::HistoryDefinition =
         crate::history_mode::HistoryDefinition {
-            app_id: "dev.tilo.tile-host-test",
+            app_id: "so.tilo.tile-host-test",
             scopes: &[crate::history_mode::HistoryScopeDefinition {
                 key: "body",
                 title: "Body",
@@ -2692,7 +2706,7 @@ mod tests {
         };
     static EXISTING_HISTORY: crate::history_mode::HistoryDefinition =
         crate::history_mode::HistoryDefinition {
-            app_id: "dev.tilo.tile-host-test",
+            app_id: "so.tilo.tile-host-test",
             scopes: &[crate::history_mode::HistoryScopeDefinition {
                 key: "external",
                 title: "External",
@@ -2849,7 +2863,7 @@ mod tests {
                 .unwrap();
             let path = app_state::DocStore::room_record_dir_at(
                 &root,
-                "dev.tilo.tile-host-test",
+                "so.tilo.tile-host-test",
                 "room",
                 &a.id.storage_key(),
             )

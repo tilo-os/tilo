@@ -187,7 +187,7 @@ pub const JIT_POLICY_PATH_ENV: &str = "TILO_JIT_ENTITLED_FILE";
 /// tier emits machine code it then executes; anything else almost
 /// certainly wants a write-then-flip JIT, which the strict profile
 /// already allows.
-pub const BUILTIN_JIT_ENTITLED: &[&str] = &["dev.tilo.browser"];
+pub const BUILTIN_JIT_ENTITLED: &[&str] = &["so.tilo.browser"];
 
 /// Whether the image lets `package_id` run without write-xor-execute.
 ///
@@ -220,7 +220,7 @@ pub struct ProfileDecision {
 /// Decide the syscall profile for one launch.
 ///
 /// The manifest names a profile and the **image** decides whether this package
-/// may have it. A `.qpkg` carries its own manifest, so "the package asked for
+/// may have it. A `.tapp` carries its own manifest, so "the package asked for
 /// it" is not an authority — it is the applicant filling in their own permit,
 /// and write-xor-execute was the one protection a package could switch off by
 /// writing a string about itself. Runtime hardening is already decided this
@@ -667,12 +667,12 @@ mod tests {
     }
 
     /// A package cannot lift write-xor-execute off itself by saying so: a
-    /// `.qpkg` carries its own manifest, so naming `tilo-jit` is the applicant
+    /// `.tapp` carries its own manifest, so naming `tilo-jit` is the applicant
     /// filling in their own permit.
     #[test]
     #[serial_test::serial(process_env)]
     fn a_package_the_image_does_not_entitle_gets_the_strict_profile() {
-        let _policy = JitPolicy::listing("dev.tilo.browser\n");
+        let _policy = JitPolicy::listing("so.tilo.browser\n");
 
         let decision = resolve_profile("tilo-jit", "com.example.evil");
 
@@ -697,7 +697,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     #[cfg(target_os = "linux")]
     fn an_unentitled_request_is_refused_by_the_running_filter() {
-        let _policy = JitPolicy::listing("dev.tilo.browser\n");
+        let _policy = JitPolicy::listing("so.tilo.browser\n");
 
         let applied = resolve_profile("tilo-jit", "com.example.evil").applied;
         assert!(
@@ -718,9 +718,9 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn the_package_the_image_entitles_still_gets_what_it_asked_for() {
-        let _policy = JitPolicy::listing("dev.tilo.browser\n");
+        let _policy = JitPolicy::listing("so.tilo.browser\n");
 
-        let decision = resolve_profile("tilo-jit", "dev.tilo.browser");
+        let decision = resolve_profile("tilo-jit", "so.tilo.browser");
 
         assert_eq!(decision.applied, SeccompProfile::TiloJit);
         assert!(!decision.refused);
@@ -730,9 +730,9 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn entitlement_without_a_request_changes_nothing() {
-        let _policy = JitPolicy::listing("dev.tilo.browser\n");
+        let _policy = JitPolicy::listing("so.tilo.browser\n");
 
-        let decision = resolve_profile("tilo-default", "dev.tilo.browser");
+        let decision = resolve_profile("tilo-default", "so.tilo.browser");
 
         assert_eq!(
             decision.applied,
@@ -746,9 +746,9 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn a_misspelt_profile_resolves_strict_for_everyone() {
-        let _policy = JitPolicy::listing("dev.tilo.browser\n");
+        let _policy = JitPolicy::listing("so.tilo.browser\n");
 
-        for id in ["dev.tilo.browser", "com.example.evil"] {
+        for id in ["so.tilo.browser", "com.example.evil"] {
             for name in ["tilo-jitt", "TILO-JIT", "", "anything"] {
                 let decision = resolve_profile(name, id);
                 assert_eq!(
@@ -772,7 +772,7 @@ mod tests {
         let _policy = JitPolicy::listing("# nobody\n");
 
         assert_eq!(
-            resolve_profile("tilo-jit", "dev.tilo.browser").applied,
+            resolve_profile("tilo-jit", "so.tilo.browser").applied,
             SeccompProfile::TiloDefault,
             "the image's own file decides; the fallback must not add to it"
         );
@@ -786,7 +786,7 @@ mod tests {
         let _policy = JitPolicy::missing();
 
         assert_eq!(
-            resolve_profile("tilo-jit", "dev.tilo.browser").applied,
+            resolve_profile("tilo-jit", "so.tilo.browser").applied,
             SeccompProfile::TiloJit,
             "fallback list lost the browser"
         );
@@ -801,7 +801,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn the_manifest_accessor_consults_the_entitlement_policy() {
-        let _policy = JitPolicy::listing("dev.tilo.browser\n");
+        let _policy = JitPolicy::listing("so.tilo.browser\n");
         let sandbox = crate::manifest::Sandbox {
             seccomp: "tilo-jit".to_string(),
             ..crate::manifest::Sandbox::default()
@@ -813,7 +813,7 @@ mod tests {
             "the manifest accessor must not hand out what the image refused"
         );
         assert_eq!(
-            sandbox.seccomp_profile("dev.tilo.browser"),
+            sandbox.seccomp_profile("so.tilo.browser"),
             SeccompProfile::TiloJit
         );
     }

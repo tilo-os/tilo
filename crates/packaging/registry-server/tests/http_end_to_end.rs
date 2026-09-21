@@ -99,7 +99,7 @@ fn signed_report(key: &SigningKey, request_id: &str, now: u64) -> SignedModerati
         now.saturating_add(300),
         ModerationActorRole::Reporter,
         ModerationMutation::FileReport {
-            package_id: "dev.tilo.editor".into(),
+            package_id: "so.tilo.editor".into(),
             category: "security".into(),
             summary: "Unexpected outbound connection during offline editing".into(),
             evidence_digest_hex: "ab".repeat(32),
@@ -120,7 +120,7 @@ async fn moderation_http_is_signed_idempotent_authorized_and_verifiable() {
         .send()
         .await
         .unwrap();
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -284,26 +284,29 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
 
 fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
     RegistryEntry {
-        package_id: "dev.tilo.editor".into(),
+        package_id: "so.tilo.editor".into(),
         name: "Editor".into(),
         description: "CRDT-native text editor".into(),
+        tagline: "Edit together".into(),
+        images: registry_types::LocalizedImages::default(),
+        supported_languages: vec!["en".into()],
         categories: vec!["Productivity".into()],
-        icon_url: None,
         source_url: None,
         homepage: None,
         publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
         versions: vec![RegistryVersion {
             version: "2026.06".into(),
-            qpkg_url: "https://apps.tilo.dev/editor/2026.06.qpkg".into(),
-            qpkg_root_hash_hex: "cd".repeat(32),
-            qpkg_size_bytes: 1024,
+            tapp_url: "https://apps.tilo.so/artifacts/editor/2026.06.tapp".into(),
+            tapp_root_hash_hex: "cd".repeat(32),
+            tapp_size_bytes: 1024,
             released_at_unix: 1_800_000_000,
-            qpkg_blake3_hex: Some("ef".repeat(32)),
-            target: Some(registry_types::RegistryTarget {
+            tapp_blake3_hex: "ef".repeat(32),
+            target: registry_types::RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
                 architecture: "x86_64".into(),
                 isa: "x86_64-v3".into(),
                 runtime: None,
-            }),
+            },
         }],
         updated_at_unix: updated_at,
         signature_hex: String::new(),
@@ -430,7 +433,7 @@ async fn signed_post_stays_private_until_approval() {
 
     // GET /entries/<id> returns the same row.
     let single: SignedRegistrySnapshot = client
-        .get(url(h.addr, "/entries/dev.tilo.editor"))
+        .get(url(h.addr, "/entries/so.tilo.editor"))
         .send()
         .await
         .expect("get single")
@@ -455,7 +458,7 @@ async fn add_then_update_bumps_stored_entry() {
         .expect("v1")
         .error_for_status()
         .expect("v1 accepted");
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     // updated_at bumped, description changed.
     let mut entry_v2 = sample_entry(&h.publisher, 200);
@@ -470,7 +473,7 @@ async fn add_then_update_bumps_stored_entry() {
     assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
 
     let still_v1: SignedRegistrySnapshot = client
-        .get(url(h.addr, "/entries/dev.tilo.editor"))
+        .get(url(h.addr, "/entries/so.tilo.editor"))
         .send()
         .await
         .expect("get still-public v1")
@@ -478,19 +481,25 @@ async fn add_then_update_bumps_stored_entry() {
         .await
         .expect("decode still-public v1");
     assert_eq!(still_v1.entries[0].updated_at_unix, 100);
-    assert_ne!(still_v1.entries[0].description, "improved editor");
+    assert_ne!(
+        still_v1.entries[0].description.resolve("en"),
+        Some("improved editor")
+    );
 
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     let stored: SignedRegistrySnapshot = client
-        .get(url(h.addr, "/entries/dev.tilo.editor"))
+        .get(url(h.addr, "/entries/so.tilo.editor"))
         .send()
         .await
         .expect("get")
         .json()
         .await
         .expect("decode");
-    assert_eq!(stored.entries[0].description, "improved editor");
+    assert_eq!(
+        stored.entries[0].description.resolve("en"),
+        Some("improved editor")
+    );
     assert_eq!(stored.entries[0].updated_at_unix, 200);
 }
 
@@ -508,7 +517,7 @@ async fn update_rejects_when_updated_at_not_strictly_greater() {
         .expect("v1")
         .error_for_status()
         .expect("v1 accepted");
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     // Same timestamp — server must reject with 409.
     let v_same = sample_entry(&h.publisher, 100);
@@ -543,7 +552,7 @@ async fn delete_keeps_entry_public_until_approval() {
         .expect("add")
         .error_for_status()
         .expect("add accepted");
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     let delete = client
         .post(url(h.addr, "/entries"))
@@ -558,16 +567,16 @@ async fn delete_keeps_entry_public_until_approval() {
     assert_eq!(delete.status(), reqwest::StatusCode::ACCEPTED);
 
     let before = client
-        .get(url(h.addr, "/entries/dev.tilo.editor"))
+        .get(url(h.addr, "/entries/so.tilo.editor"))
         .send()
         .await
         .expect("get before approval");
     assert_eq!(before.status(), reqwest::StatusCode::OK);
 
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     let resp = client
-        .get(url(h.addr, "/entries/dev.tilo.editor"))
+        .get(url(h.addr, "/entries/so.tilo.editor"))
         .send()
         .await
         .expect("get");

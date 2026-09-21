@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# Host downloads opt into the narrowly elevated raw-media writer. The qpkg
+# Host downloads opt into the narrowly elevated raw-media writer. The tapp
 # deliberately omits this feature because its sandbox has no raw-device portal.
 host-media-writer = []
 # Flatpak cannot safely elevate a binary from inside its mutable mount
