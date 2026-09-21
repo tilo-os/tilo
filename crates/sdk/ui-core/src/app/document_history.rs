@@ -571,6 +571,7 @@ impl App {
         }
         if binding.is_none()
             && self
+                .persistence
                 .records
                 .as_ref()
                 .is_some_and(|records| records.active().is_none())
@@ -581,6 +582,7 @@ impl App {
             || HistoryTarget::Legacy {
                 app_id: crate::collaboration::local_app_id(),
                 record: self
+                    .persistence
                     .records
                     .as_ref()
                     .and_then(|records| records.active())
