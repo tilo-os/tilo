@@ -584,6 +584,27 @@ def create_or_adopt_worker(context, manifest):
     existing=adopt_worker(context,manifest)
     if existing is not None:
         return existing
+
+
+def persist_creator_create_intent(operation_dir, operation, manifest):
+    value={'schema':1,'purpose':'tilo-supervised-creator-create-intent','operation':operation,
+           'manifest_sha256':canonical_sha256(manifest),'manifest':manifest}
+    write_private(Path(operation_dir)/'creator-create-intent.json',
+                  (json.dumps(value,indent=2,sort_keys=True)+'\n').encode())
+    return value
+
+
+def load_creator_create_intent(operation_dir, operation):
+    value=json.loads((Path(operation_dir)/'creator-create-intent.json').read_text())
+    if (set(value)!={'schema','purpose','operation','manifest_sha256','manifest'}
+            or value['schema']!=1 or value['purpose']!='tilo-supervised-creator-create-intent'
+            or value['operation']!=operation or value['manifest_sha256']!=canonical_sha256(value['manifest'])):
+        raise ValueError('creator create intent differs from its deterministic manifest')
+    manifest=value['manifest']
+    if (not isinstance(manifest,dict) or manifest.get('metadata',{}).get('name')!='tilo-disk-'+operation
+            or manifest.get('metadata',{}).get('namespace')!='kata-system'):
+        raise ValueError('creator create intent has an invalid target')
+    return value
     try:
         return create_worker(context,manifest)
     except ValueError:
@@ -2357,6 +2378,16 @@ def resume_pending_creator(args, nodes):
     return disk,matches[0],vm_node,expires_at
 
 
+def resume_creator_create_intent(args, nodes):
+    intent=load_creator_create_intent(args.operation_dir,args.acceptance_id)
+    disk=adopt_worker(args.context,intent['manifest'])
+    if disk is None:
+        raise ValueError('deterministic creator create intent has no live Pod to adopt')
+    write_private(args.operation_dir/'worker-bindings.json',
+      (json.dumps({'creator':disk},indent=2,sort_keys=True)+'\n').encode())
+    return resume_pending_creator(args,nodes)
+
+
 def verifier_manifest(args, node, checkpoint):
     return disk_manifest('tilo-verify-'+args.acceptance_id,node,deadline=7200,
                          operation=args.acceptance_id,expires_at=checkpoint['expires_at'])
@@ -2590,14 +2621,20 @@ def main():
         nodes=api_json(args.context,'get','nodes','-l','kubernetes.io/arch=arm64','--request-timeout=20s')
         if args.resume and (args.operation_dir/'creator-checkpoint.json').exists():
             checkpoint,creation,identity,disk,disk_node,vm_node=resume_creator(args,nodes)
+        elif args.resume and not (args.operation_dir/'worker-bindings.json').is_file() \
+                and (args.operation_dir/'creator-create-intent.json').is_file():
+            disk,disk_node,vm_node,expires_at=resume_creator_create_intent(args,nodes)
+            pending_creator=True
         elif args.resume:
             disk,disk_node,vm_node,expires_at=resume_pending_creator(args,nodes)
             pending_creator=True
         else:
             disk_node,vm_node=select_nodes(nodes,args.disk_node,args.vm_node)
             expires_at=int(time.time())+PAUSE_TTL_SECONDS
-            disk=create_worker(args.context,disk_manifest('tilo-disk-'+args.acceptance_id,disk_node,
-              operation=args.acceptance_id,expires_at=expires_at))
+            creator_manifest=disk_manifest('tilo-disk-'+args.acceptance_id,disk_node,
+              operation=args.acceptance_id,expires_at=expires_at)
+            persist_creator_create_intent(args.operation_dir,args.acceptance_id,creator_manifest)
+            disk=create_or_adopt_worker(args.context,creator_manifest)
             write_private(args.operation_dir/'worker-bindings.json',
                           (json.dumps({'creator':disk},indent=2,sort_keys=True)+'\n').encode())
     if args.resume and not pending_creator:
