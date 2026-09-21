@@ -64,6 +64,7 @@ pub(super) struct FileController {
     confirmation: uuid::Uuid,
     pub restore: FileRestoreSession,
     pub message: String,
+    activity_recovery_message: Option<String>,
     pub preview_changed: bool,
     pub presentation_invalidated: bool,
     pub review_changed: bool,
@@ -99,6 +100,7 @@ impl FileController {
             confirmation: uuid::Uuid::new_v4(),
             restore: FileRestoreSession::default(),
             message: "Loading file history".into(),
+            activity_recovery_message: None,
             preview_changed: false,
             presentation_invalidated: false,
             review_changed: false,
@@ -209,6 +211,7 @@ impl FileController {
         self.after = None;
         self.before = None;
         self.preview_changed = true;
+        self.activity_recovery_message = None;
         self.message = "Loading immutable version".into();
         self.run(
             Reply::Selection(Err(Error::Unavailable)),
@@ -220,6 +223,7 @@ impl FileController {
         self.review_operation = Some(operation);
         self.review = None;
         self.review_changed = true;
+        self.activity_recovery_message = None;
         self.message = "Checking current file permissions and frontier".into();
         self.run(
             Reply::Review(operation, Err(Outcome::Unavailable)),
@@ -240,6 +244,7 @@ impl FileController {
         let Some((review, operation)) = self.review.take() else {
             return;
         };
+        self.activity_recovery_message = None;
         self.confirmation = uuid::Uuid::new_v4();
         self.review_changed = true;
         let Ok(request) = self.restore.prepare(review, operation) else {
@@ -336,17 +341,28 @@ impl FileController {
                 self.scope = Some(scope);
                 self.versions = versions;
                 self.current_revision = current_revision;
-                if self.after.is_none() {
+                // Activity polling is ambient status. Keep an admitted restore
+                // outcome visible, and after a transient read failure restore the
+                // exact operational message that failure temporarily displaced.
+                if let Some(message) = self.activity_recovery_message.take() {
+                    self.message = message;
+                } else if self.after.is_none() && self.restore.outcome.is_none() {
                     self.message = format!("{} immutable versions", self.versions.len());
                 }
             }
             Ok(_) => {
+                self.activity_recovery_message = None;
                 self.hide();
                 self.message = "File binding changed; reopen History for the current file".into();
             }
             Err(error) => {
                 if error == Error::NotVisible {
+                    self.activity_recovery_message = None;
                     self.hide();
+                } else if self.activity_recovery_message.is_none()
+                    && (self.after.is_some() || self.restore.outcome.is_some())
+                {
+                    self.activity_recovery_message = Some(self.message.clone());
                 }
                 self.message = read_message(error).into();
             }
@@ -367,6 +383,7 @@ impl FileController {
                     continue;
                 }
                 if self.restore.receive(request, outcome.clone()) {
+                    self.activity_recovery_message = None;
                     self.message = outcome_message(&outcome);
                     if matches!(outcome, Outcome::NotVisible) {
                         self.hide();
@@ -375,6 +392,7 @@ impl FileController {
                     self.refreshing = false;
                     self.next_poll = crate::clock::Instant::now();
                 } else {
+                    self.activity_recovery_message = None;
                     self.message =
                         "Invalid backend result; the exact request remains unresolved".into();
                 }
@@ -393,6 +411,7 @@ impl FileController {
                             after.scope.record_id,
                         ) && Some(after.version.id) == self.key.selection =>
                     {
+                        self.activity_recovery_message = None;
                         self.scope = Some(after.scope);
                         self.after = Some(after);
                         self.before = before;
@@ -400,10 +419,12 @@ impl FileController {
                         self.message = "Historical version".into();
                     }
                     Ok(_) => {
+                        self.activity_recovery_message = None;
                         self.hide();
                         self.message = "History response belongs to another file".into();
                     }
                     Err(error) => {
+                        self.activity_recovery_message = None;
                         self.after = None;
                         self.before = None;
                         if error == Error::NotVisible {
@@ -428,14 +449,17 @@ impl FileController {
                             {
                                 continue;
                             }
+                            self.activity_recovery_message = None;
                             self.review = Some((review, operation));
                             self.message="Restore creates a new file revision and preserves existing history".into();
                         }
                         Ok(_) => {
+                            self.activity_recovery_message = None;
                             self.hide();
                             self.message = "Review belongs to another file or mount".into();
                         }
                         Err(outcome) => {
+                            self.activity_recovery_message = None;
                             if matches!(outcome, Outcome::NotVisible) {
                                 self.hide();
                             }
@@ -676,6 +700,125 @@ mod tests {
             transport: Arc::new(Transport),
         })
     }
+
+    #[test]
+    fn activity_refresh_does_not_hide_an_uncertain_restore_outcome() {
+        let mut initial = controller();
+        initial.active = false;
+        let initial_key = initial.key;
+        initial
+            .tx
+            .send(Completion {
+                key: initial_key,
+                reply: Reply::Activity(Err(Error::Unavailable)),
+            })
+            .unwrap();
+        initial.drain();
+        initial
+            .tx
+            .send(Completion {
+                key: initial_key,
+                reply: Reply::Activity(Ok((scope(), vec![], None))),
+            })
+            .unwrap();
+        initial.drain();
+        assert_eq!(initial.message, "0 immutable versions");
+
+        let mut controller = controller();
+        controller.active = false;
+        let request = controller
+            .restore
+            .prepare(
+                Review {
+                    schema_version: 1,
+                    workspace_id: scope().workspace_id,
+                    mount_lifetime: scope().mount_lifetime,
+                    record_id: scope().record_id,
+                    frontier: scope().frontier,
+                },
+                Operation::Restore {
+                    version_id: FileVersionId(uuid::Uuid::from_u128(8)),
+                },
+            )
+            .unwrap();
+        let key = controller.key;
+        controller
+            .tx
+            .send(Completion {
+                key,
+                reply: Reply::Outcome(request, Outcome::Unavailable),
+            })
+            .unwrap();
+        controller
+            .tx
+            .send(Completion {
+                key,
+                reply: Reply::Activity(Ok((scope(), vec![], None))),
+            })
+            .unwrap();
+
+        controller.drain();
+
+        assert_eq!(controller.restore.request, Some(request));
+        assert_eq!(controller.restore.outcome, Some(Outcome::Unavailable));
+        assert_eq!(controller.message, outcome_message(&Outcome::Unavailable));
+
+        controller
+            .tx
+            .send(Completion {
+                key,
+                reply: Reply::Activity(Err(Error::Unavailable)),
+            })
+            .unwrap();
+        controller.drain();
+        assert_eq!(controller.message, read_message(Error::Unavailable));
+
+        controller
+            .tx
+            .send(Completion {
+                key,
+                reply: Reply::Activity(Ok((scope(), vec![], None))),
+            })
+            .unwrap();
+        controller.drain();
+        assert_eq!(controller.message, outcome_message(&Outcome::Unavailable));
+
+        controller
+            .tx
+            .send(Completion {
+                key,
+                reply: Reply::Activity(Err(Error::Unavailable)),
+            })
+            .unwrap();
+        controller.drain();
+        let mut foreign = request;
+        foreign.intent_id = uuid::Uuid::new_v4();
+        controller
+            .tx
+            .send(Completion {
+                key,
+                reply: Reply::Outcome(foreign, Outcome::Unavailable),
+            })
+            .unwrap();
+        controller.drain();
+        assert_eq!(
+            controller.message,
+            "Invalid backend result; the exact request remains unresolved"
+        );
+        controller
+            .tx
+            .send(Completion {
+                key,
+                reply: Reply::Activity(Ok((scope(), vec![], None))),
+            })
+            .unwrap();
+        controller.drain();
+        assert_eq!(
+            controller.message,
+            "Invalid backend result; the exact request remains unresolved"
+        );
+    }
+
     fn scope() -> Scope {
         Scope {
             workspace_id: uuid::Uuid::from_u128(1),
