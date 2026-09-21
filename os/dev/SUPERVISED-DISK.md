@@ -165,6 +165,18 @@ install, removes the medium, cold-boots the encrypted target, completes OOBE,
 and reaches the desktop. Workers are retained until the browser follow-up and
 evidence collection finish; their active deadlines bound cleanup.
 
+The creator-to-verifier boundary is resumable. Once `creation.json` and the raw
+identity are durable, the controller deletes its local registry-auth snapshot
+and writes a typed `creator-checkpoint.json` containing the complete selected
+creator node document and exact worker identity. A controller, network, or WSL
+failure while provisioning the verifier writes `paused-creator.json` and leaves
+that exact creator emptyDir available for `--resume`; resume never provisions a
+second creator. Creator/install failures remain terminal and delete their
+worker. Creator Pods carry an operation owner and absolute expiry label and
+have a 12-hour active deadline. The pause receipt records a credential-free
+cleanup command; it validates the checkpoint, Pod UID, ownership labels, and
+expiry before deleting anything.
+
 Run it from a clean Linux checkout at the exact helper commit:
 
 ```sh
@@ -178,6 +190,11 @@ python3 os/dev/run-supervised-install-lane.py \
   --acceptance-id FRESH_DNS_SAFE_ID \
   --registry-secret forgejo-pull-secret
 ```
+
+To resume, repeat the same pinned arguments and add `--resume`. If the retained
+media is no longer wanted, run the `cleanup_command` array recorded in
+`paused-creator.json` after its expiry. `--cleanup-paused` deliberately rejects
+early cleanup and Pods whose live UID or ownership labels differ.
 
 The operation directory retains mode-0600 worker bindings, creation, source-layer and
 verification receipts, raw identity, conversion/cycle evidence and the final
