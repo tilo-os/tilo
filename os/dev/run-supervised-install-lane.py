@@ -55,6 +55,10 @@ class CreatorControllerFailure(ValueError):
     """The creator controller ran and failed before producing remote evidence."""
 
 
+class CreatorJobFailed(ValueError):
+    """The exact detached creator wrote a terminal failure record."""
+
+
 def kubectl_transport_error(stderr):
     """Whether kubectl's bounded, nonzero response is safe to resume."""
     text = stderr.lower()
@@ -1298,8 +1302,33 @@ finally:os.close(fd)
     return True
 
 
+def persist_creator_failure_log(args, stderr):
+    marker = 'TILO_CREATOR_JOB_FAILURE_LOG '
+    rows = [row.removeprefix(marker) for row in stderr.splitlines()
+            if row.startswith(marker)]
+    if not rows:
+        return False
+    if len(rows) != 1:
+        raise ValueError('creator failure log marker is ambiguous')
+    try:
+        log = base64.b64decode(rows[0], validate=True)
+    except ValueError as error:
+        raise ValueError('creator failure log marker is not base64') from error
+    if len(log) > 256 * 1024:
+        raise ValueError('creator failure log exceeds its bound')
+    receipt = json.loads((args.operation_dir/'creator-job.json').read_text())
+    if (receipt.get('schema') != 1 or receipt.get('purpose') != 'tilo-supervised-creator-job-launch'
+            or not isinstance(receipt.get('binding'), dict)):
+        raise ValueError('creator failure log has no bound launch receipt')
+    document = {'schema':1,'purpose':'tilo-supervised-creator-job-failure-log',
+                'binding':receipt['binding'],'log_base64':base64.b64encode(log).decode()}
+    write_private(args.operation_dir/'creator-job.failure.json',
+                  (json.dumps(document,indent=2,sort_keys=True)+'\n').encode())
+    return True
+
+
 def controller(root, args, disk, agent, inspect_only, evidence_name='creator-environment.json',
-               registry_auth_bytes=None):
+               registry_auth_bytes=None, retry_failed=False):
     argv = ['python3', str(root/'os/dev/create-supervised-kata-disk.py'),
       '--context',args.context,'--namespace',disk['namespace'],'--pod',disk['pod'],
       '--pod-uid',disk['pod_uid'],'--node',disk['node'],'--node-uid',disk['node_uid'],
@@ -1312,6 +1341,8 @@ def controller(root, args, disk, agent, inspect_only, evidence_name='creator-env
     else:
         argv += ['--creation-receipt',str(args.operation_dir/'creation.json'),
                  '--creator-job-receipt',str(args.operation_dir/'creator-job.json')]
+        if retry_failed:
+            argv.append('--retry-failed-creator-job')
         if registry_auth_bytes is not None:
             argv.append('--registry-auth-stdin')
     try:
@@ -1323,6 +1354,8 @@ def controller(root, args, disk, agent, inspect_only, evidence_name='creator-env
         stderr=result.stderr if isinstance(result.stderr,str) else result.stderr.decode(errors='replace')
         if result.returncode==75 and stderr.strip().endswith('TILO_CREATOR_CONTROLLER_TRANSPORT'):
             raise ControllerTransportError('creator controller reported transport loss')
+        if not inspect_only and persist_creator_failure_log(args, stderr):
+            raise CreatorJobFailed('detached creator job failed')
         if not inspect_only and collect_creator_failure(args, disk):
             raise ValueError(f'creator controller failed (exit {result.returncode})')
         write_creator_controller_failure(args, disk, result.returncode, stderr)
@@ -1354,9 +1387,10 @@ test "$(stat -c '%u:%g:%a:%F' /work/disk-output)" = '0:0:700:directory'
 
 
 def create_on_worker(root, args, disk, agent, evidence_name='creator-environment.json',
-                     registry_auth_bytes=None):
+                     registry_auth_bytes=None, retry_failed=False):
     controller(root, args, disk, agent, True, evidence_name)
-    controller(root, args, disk, agent, False, evidence_name, registry_auth_bytes)
+    controller(root, args, disk, agent, False, evidence_name,
+               registry_auth_bytes=registry_auth_bytes, retry_failed=retry_failed)
 
 
 def verify_disk(context, disk, values, auth, operation=None):
@@ -3046,7 +3080,8 @@ def main():
                                           helpers,public,installer_bootc)
             with timer.stage('create_install'):
                 agent=host_agent(args.context,disk['node'])
-                create_on_worker(root,args,disk,agent,registry_auth_bytes=auth_bytes)
+                create_on_worker(root,args,disk,agent,registry_auth_bytes=auth_bytes,
+                                 retry_failed=pending_creator)
                 creation=(args.operation_dir/'creation.json').read_bytes()
             with timer.stage('freeze_identity'):
                 freeze_raw(args.context,disk)
@@ -3073,6 +3108,12 @@ def main():
               (json.dumps({'schema':1,'purpose':'tilo-supervised-creator-recovery',
                            'acceptance_id':args.acceptance_id,'creator':disk,
                            'state':'input-reconciliation-refused'},indent=2,sort_keys=True)+'\n').encode())
+            raise
+        except CreatorJobFailed:
+            write_private(args.operation_dir/'creator-recovery.json',
+              (json.dumps({'schema':1,'purpose':'tilo-supervised-creator-recovery',
+                           'acceptance_id':args.acceptance_id,'creator':disk,
+                           'state':'job-failed'},indent=2,sort_keys=True)+'\n').encode())
             raise
         except BaseException:
             delete_worker(args.context,disk)
