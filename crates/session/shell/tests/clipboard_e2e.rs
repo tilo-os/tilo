@@ -3487,6 +3487,12 @@ fn drag_file_row_onto_client(
     const STEPS: u32 = 12;
     compositor.pointer_move(row.0, row.1);
     compositor.pointer_button(true);
+    // Cross the file row's drag threshold while still inside the row. The
+    // client can be close enough vertically that interpolating straight to
+    // it otherwise leaves the row on the very first motion event.
+    compositor.pointer_move(row.0 + 8.0, row.1);
+    target.pump();
+    std::thread::sleep(Duration::from_millis(30));
     for i in 1..=STEPS {
         let t = f64::from(i) / f64::from(STEPS);
         compositor.pointer_move(
