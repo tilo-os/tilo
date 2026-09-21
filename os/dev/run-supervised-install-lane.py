@@ -337,7 +337,9 @@ def disk_manifest(name, node, image=DISK_IMAGE, deadline=43200, *, operation=Non
         'resources':{kind:{'cpu':'2','memory':'8Gi','ephemeral-storage':'136Gi'} for kind in ('requests','limits')},
         'volumeMounts':[{'name':'work','mountPath':'/work'},{'name':'tmp','mountPath':'/tmp'}]}],
        'volumes':[{'name':'work','emptyDir':{'sizeLimit':'128Gi'}},
-                  {'name':'tmp','emptyDir':{'sizeLimit':'2Gi'}}]}}
+                  # Registry credentials for the detached creator exist only
+                  # below /tmp and therefore disappear with the Kata guest.
+                  {'name':'tmp','emptyDir':{'medium':'Memory','sizeLimit':'64Mi'}}]}}
 
 
 def vm_manifest(name, node, image=VM_IMAGE):
@@ -833,7 +835,7 @@ def controller(root, args, disk, agent, inspect_only, evidence_name='creator-env
       '--host-agent',agent['metadata']['name'],'--guest-image',DISK_IMAGE,
       '--pins',str(args.host_pins),'--disk-args',str(args.disk_args),
       '--evidence',str(args.operation_dir/evidence_name),
-      '--helper-revision',args.helper_revision]
+      '--helper-revision',args.helper_revision,'--operation',args.acceptance_id]
     if inspect_only:
         argv.append('--inspect-only')
     else:
@@ -872,7 +874,6 @@ test "$(stat -c '%u:%g:%a:%F' /work/disk-output)" = '0:0:700:directory'
 
 def create_on_worker(root, args, disk, agent, evidence_name='creator-environment.json'):
     controller(root, args, disk, agent, True, evidence_name)
-    prepare_disk_output(args.context, disk)
     controller(root, args, disk, agent, False, evidence_name)
 
 
