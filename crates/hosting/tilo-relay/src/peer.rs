@@ -246,9 +246,13 @@ where
                     }
                     let mut ticket = None;
                     let reply = {
-                        let operation =
-                            handle_envelope(&peer, env, &session, &mut subscribed, &mut ticket);
-                        tokio::pin!(operation);
+                        let mut operation = Box::pin(handle_envelope(
+                            &peer,
+                            env,
+                            &session,
+                            &mut subscribed,
+                            &mut ticket,
+                        ));
                         loop {
                             tokio::select! {
                                 biased;
