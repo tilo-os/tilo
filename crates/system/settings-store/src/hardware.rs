@@ -777,6 +777,10 @@ pub enum ShortcutAction {
     NextStrip,
     PreviousWorkspace,
     NextWorkspace,
+    ToggleMaximize,
+    DetachTab,
+    AttachTabLeft,
+    AttachTabRight,
     MoveGroupLeft,
     MoveGroupRight,
     ResizeNarrower,
@@ -832,6 +836,61 @@ impl QuickSettingsControl {
 #[serde(default)]
 pub struct QuickSettingsConfig {
     pub controls: Vec<QuickSettingsControl>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TopBarWidget {
+    Clock,
+    SystemMonitor,
+    Calendar,
+}
+
+impl TopBarWidget {
+    pub const ALL: [Self; 3] = [Self::Clock, Self::SystemMonitor, Self::Calendar];
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TopBarWidgetsConfig {
+    pub widgets: Vec<TopBarWidget>,
+}
+
+impl Default for TopBarWidgetsConfig {
+    fn default() -> Self {
+        Self {
+            widgets: TopBarWidget::ALL.to_vec(),
+        }
+    }
+}
+
+impl TopBarWidgetsConfig {
+    #[must_use]
+    pub fn normalised(mut self) -> Self {
+        let mut seen = BTreeSet::new();
+        self.widgets.retain(|widget| seen.insert(*widget));
+        if self.widgets.is_empty() {
+            self.widgets.push(TopBarWidget::Clock);
+        }
+        self
+    }
+
+    pub fn load() -> Self {
+        serde_json::from_value::<Self>(serde_json::Value::Object(super::load_section(
+            "top_bar_widgets",
+        )))
+        .unwrap_or_default()
+        .normalised()
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let value =
+            serde_json::to_value(self.clone().normalised()).map_err(std::io::Error::other)?;
+        super::update_section(
+            "top_bar_widgets",
+            value.as_object().cloned().unwrap_or_default(),
+        )
+    }
 }
 
 impl Default for QuickSettingsConfig {
@@ -943,6 +1002,24 @@ mod quick_settings_tests {
     }
 }
 
+#[cfg(test)]
+mod top_bar_widgets_tests {
+    use super::{TopBarWidget, TopBarWidgetsConfig};
+
+    #[test]
+    fn top_bar_widgets_deduplicate_and_never_become_empty() {
+        let config = TopBarWidgetsConfig {
+            widgets: vec![TopBarWidget::Calendar, TopBarWidget::Calendar],
+        }
+        .normalised();
+        assert_eq!(config.widgets, vec![TopBarWidget::Calendar]);
+        assert_eq!(
+            TopBarWidgetsConfig { widgets: vec![] }.normalised().widgets,
+            vec![TopBarWidget::Clock]
+        );
+    }
+}
+
 impl DesktopControlsConfig {
     pub fn load() -> Self {
         serde_json::from_value(serde_json::Value::Object(super::load_section(
@@ -1032,6 +1109,8 @@ impl KeyChord {
             "right" => "Right",
             "up" => "Up",
             "down" => "Down",
+            "pageup" => "Page Up",
+            "pagedown" => "Page Down",
             "tab" => "Tab",
             "enter" => "Enter",
             "escape" => "Escape",
@@ -1110,8 +1189,12 @@ impl Default for ShortcutConfig {
             (ShortcutAction::NextTab, ctrl_chord("tab")),
             (ShortcutAction::PreviousStrip, super_shift_chord("up")),
             (ShortcutAction::NextStrip, super_shift_chord("down")),
-            (ShortcutAction::PreviousWorkspace, super_chord("up")),
-            (ShortcutAction::NextWorkspace, super_chord("down")),
+            (ShortcutAction::PreviousWorkspace, super_chord("pageup")),
+            (ShortcutAction::NextWorkspace, super_chord("pagedown")),
+            (ShortcutAction::ToggleMaximize, super_chord("up")),
+            (ShortcutAction::DetachTab, super_shift_chord("enter")),
+            (ShortcutAction::AttachTabLeft, super_chord("[")),
+            (ShortcutAction::AttachTabRight, super_chord("]")),
             (ShortcutAction::MoveGroupLeft, super_shift_chord("left")),
             (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
@@ -1402,6 +1485,35 @@ mod tests {
     fn shortcut_parser_normalises_and_rejects_plain_letters() {
         assert_eq!(KeyChord::parse("meta + K").unwrap().display(), "Super+k");
         assert!(KeyChord::parse("k").is_err());
+    }
+    #[test]
+    fn window_management_defaults_are_coherent_and_conflict_free() {
+        let cfg = ShortcutConfig::default();
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::ToggleMaximize].display(),
+            "Super+Up"
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::PreviousWorkspace].display(),
+            "Super+Page Up"
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::NextWorkspace].display(),
+            "Super+Page Down"
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::DetachTab].display(),
+            "Super+Shift+Enter"
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::AttachTabLeft].display(),
+            "Super+["
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::AttachTabRight].display(),
+            "Super+]"
+        );
+        assert!(cfg.validate().is_ok());
     }
     #[test]
     fn shortcut_conflicts_are_rejected_without_overwriting() {
