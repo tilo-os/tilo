@@ -271,7 +271,10 @@ def installer_bootc_archive(root, expected_sha256):
                 'bootc_version': installer_bootc_helper.BOOTC_VERSION,
                 'source_tag': installer_bootc_helper.SOURCE_TAG,
                 'source_commit': installer_bootc_helper.SOURCE_COMMIT,
+                'source_cargo_lock_sha256': installer_bootc_helper.SOURCE_CARGO_LOCK_SHA256,
                 'patch_sha256': installer_bootc_helper.PATCH_SHA256,
+                'rust_toolchain': installer_bootc_helper.RUST_TOOLCHAIN,
+                'build_image': installer_bootc_helper.BUILD_IMAGE,
                 'binary_sha256': expected_sha256,
                 'build_target': installer_bootc_helper.TARGETS['aarch64'],
                 'build_command': installer_bootc_helper.BUILD_COMMAND}

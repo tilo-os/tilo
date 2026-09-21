@@ -27,18 +27,22 @@ for package in aws-lc-rs aws-lc-sys; do
   fi
 done
 
+# Upstream bootc 1.16.10 itself links libcrypto. The development-only,
+# installer-only helper is never copied into Tilo; its artifact verifier and
+# installed-disk audit enforce that boundary.
 manifest_hits="$(find "$repo/os" "$repo/.forgejo" -type f \
     \( -name 'Containerfile*' -o -name '*.yml' -o -name '*.yaml' \) -print0 \
   | xargs -0 -r rg -n -i '\b(openssl(-devel)?|sbsigntools)\b' \
   | grep -Ev '(^|:)[0-9]+:[[:space:]]*#|rpm -q|microdnf remove|dnf remove|libssl|libcrypto' \
   | grep -Ev '^.*/os/Containerfile:[0-9]+:RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \\$' \
+  | grep -Ev '^.*/\.forgejo/workflows/development-installer-bootc-helper\.yml:[0-9]+:        run: dnf install -y libzstd-devel ostree-devel openssl-devel && dnf clean all$' \
   | grep -Ev ': *&& (! )?printf '"'"'%s\\n'"'"' "\$installed" \| (awk '"'"'/\^\([[:alnum:]_|-]+\)\$/'"'"'|grep -Eq '"'"'\^\([[:alnum:]_|-]+\)\$'"'"') *\\?$' \
   || true)"
 if [ -n "$manifest_hits" ]; then
   printf '%s\n' "$manifest_hits" >&2
   bad 'a build manifest or workflow actively installs OpenSSL/sbsigntools'
 else
-  ok 'all build manifests and workflows avoid OpenSSL/sbsigntools installs'
+  ok 'runtime manifests and workflows avoid OpenSSL/sbsigntools outside the isolated upstream bootc builder'
 fi
 
 trust_tool_bind="$(grep -Fxc \

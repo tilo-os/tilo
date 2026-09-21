@@ -111,9 +111,12 @@ class LaneAdmission(unittest.TestCase):
               'architecture':'aarch64','bootc_version':lane.installer_bootc_helper.BOOTC_VERSION,
               'source_tag':lane.installer_bootc_helper.SOURCE_TAG,
               'source_commit':lane.installer_bootc_helper.SOURCE_COMMIT,
+              'source_cargo_lock_sha256':lane.installer_bootc_helper.SOURCE_CARGO_LOCK_SHA256,
               'patch_sha256':lane.installer_bootc_helper.PATCH_SHA256,
               'binary_sha256':digest,'binary_build_id':(b'b'*20).hex(),
               'rustc_version':'rustc 1.91.0','cargo_version':'cargo 1.91.0',
+              'rust_toolchain':lane.installer_bootc_helper.RUST_TOOLCHAIN,
+              'build_image':lane.installer_bootc_helper.BUILD_IMAGE,
               'build_target':lane.installer_bootc_helper.TARGETS['aarch64'],
               'build_command':lane.installer_bootc_helper.BUILD_COMMAND}
             (root/'receipt.json').write_text(json.dumps(receipt))
