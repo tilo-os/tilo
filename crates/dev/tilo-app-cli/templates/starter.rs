@@ -1,10 +1,8 @@
-use ui::LocalState;
-use ui::tokens::TextRole;
-use ui::widget::resource_actions::ActionForm;
-use ui::widget::{
-    Button, Checkbox, Dropdown, NumberInput, Slider, Text, TextInput, Widget, labeled_check,
-    labeled_field,
+use ui::prelude::{
+    ActionForm, Button, Checkbox, Dropdown, LocalState, NumberInput, Slider, Text, TextInput,
+    Widget, labeled_check, labeled_field, resource_actions,
 };
+use ui::tokens::TextRole;
 
 /// A complete local form → action/resource → retained output loop.
 ///
@@ -81,5 +79,5 @@ pub fn app_root() -> Box<dyn Widget> {
         greeting,
         reset,
     ]);
-    ui::widget::resource_actions::form(root, form)
+    resource_actions::form(root, form)
 }
