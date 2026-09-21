@@ -7133,7 +7133,7 @@ impl App {
             let _ = self.open_action_palette_at(&address);
             return true;
         }
-        let actor = crate::collaboration::local_user_id().0;
+        let actor = self.local_author.0.clone();
         if self
             .invoke_resource_action(&address, argument, &actor, false, false, None, None, None)
             .is_ok()
