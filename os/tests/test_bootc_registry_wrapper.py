@@ -96,6 +96,28 @@ class RegistryWarmupTests(unittest.TestCase):
             self.assertTrue(wrapper.warm(SOURCE,DIGEST,sleep=sleep))
         self.assertEqual(inspect.call_count,3)
         self.assertEqual([call.args for call in sleep.call_args_list],[(2,),(5,)])
+
+    def test_prepared_target_requires_recursive_root_and_esp_mounts(self):
+        argv=[wrapper.INSTALLER_BOOTC,'install','to-filesystem',
+              '--root-mount-spec=','/target']
+        valid=('40 1 0:40 / /target rw - btrfs /dev/loop0p2 rw\n'
+               '41 40 0:41 / /target/boot rw - vfat /dev/loop0p1 rw\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            mountinfo=Path(tmp)/'mountinfo'
+            mountinfo.write_text(valid)
+            self.assertIsNone(wrapper.require_install_target(argv,mountinfo))
+            for content in (
+                    valid.splitlines()[0]+'\n',
+                    valid.replace(' - vfat ', ' - btrfs '),
+                    valid.replace('0:41', '0:40'),
+                    valid+valid.splitlines()[1]+'\n'):
+                with self.subTest(content=content):
+                    mountinfo.write_text(content)
+                    with self.assertRaisesRegex(ValueError,'recursively visible|ambiguous'):
+                        wrapper.require_install_target(argv,mountinfo)
+            mountinfo.write_text(valid)
+            with self.assertRaisesRegex(ValueError,'prepared target exactly'):
+                wrapper.require_install_target(argv[:-1]+['/other'],mountinfo)
         with patch.object(wrapper,'inspect_digest',return_value=False) as inspect, \
                 patch.object(wrapper.time,'sleep') as sleep:
             self.assertFalse(wrapper.warm(SOURCE,DIGEST,sleep=sleep))

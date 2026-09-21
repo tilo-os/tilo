@@ -197,6 +197,30 @@ def require_bound_source(source, expected):
         raise ValueError('private source store config identity mismatch')
 
 
+def require_install_target(argv, mountinfo=Path('/proc/self/mountinfo')):
+    """Fail closed unless bootc sees both prepared filesystems recursively."""
+    if argv[1:3] != ['install', 'to-filesystem']:
+        return
+    if (argv[-1:] != ['/target'] or argv.count('--root-mount-spec=') != 1):
+        raise ValueError('to-filesystem command must use the prepared target exactly')
+    observed = {}
+    for raw in mountinfo.read_text().splitlines():
+        fields = raw.split(' - ')
+        left = fields[0].split() if len(fields) == 2 else []
+        right = fields[1].split() if len(fields) == 2 else []
+        if len(left) < 6 or len(right) < 3:
+            raise ValueError('install target mount inventory is malformed')
+        target = left[4]
+        if target in ('/target', '/target/boot'):
+            if target in observed:
+                raise ValueError('install target mount inventory is ambiguous')
+            observed[target] = (left[2], right[0])
+    expected = {'/target': 'btrfs', '/target/boot': 'vfat'}
+    if ({target: identity[1] for target, identity in observed.items()} != expected
+            or observed['/target'][0] == observed['/target/boot'][0]):
+        raise ValueError('prepared root and ESP are not recursively visible')
+
+
 def inspect_digest(source, expected, *, timeout=20):
     match = SOURCE.fullmatch(source)
     if match is None or match.group(1) != expected:
@@ -230,6 +254,7 @@ def run_bootc(source, expected, argv, *, heartbeat_interval=30):
     if not argv or argv[0] != INSTALLER_BOOTC or heartbeat_interval <= 0:
         raise ValueError('invalid supervised bootc command')
     require_bound_source(source, expected)
+    require_install_target(argv)
     if not warm(source, expected):
         return 75
 

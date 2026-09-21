@@ -66,6 +66,19 @@ the inner PID 1 namespace and the filesystem is read-only before bootc starts.
 This keeps a later helper from creating an empty database directory that would
 disable bootc's direct block-device probing for guest-local loop partitions.
 
+The creator owns partitioning rather than asking `bootc install to-disk` to do
+it.  It attaches only the held new regular file, creates a 1 GiB ESP and one
+remaining Btrfs root with Tilo type
+`7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab`, and materializes only those two loop
+partition nodes from their exact sysfs identities.  Both nodes are removed
+before the loop device is detached.  The root and ESP are mounted in the
+creator's private mount namespace and passed to `bootc install to-filesystem`.
+An explicitly empty `--root-mount-spec=` preserves the signed
+`root=tilo-auto` command line; adding a filesystem UUID would change the UKI
+and bypass Tilo's boot-ESP-bound root discovery.  The independent verifier
+recreates and removes the same bounded device nodes before mounting the copied
+disk read-only.
+
 The supervised creator also requires a native installer-only bootc artifact at
 `/work/installer-bootc-helper/{bootc,receipt.json}` and an independently
 reviewed `installer_bootc_sha256` in `verified-disk-inputs.json`. The receipt is
