@@ -2307,25 +2307,27 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let store = frame_builder.chrome().records().clone();
+        let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
+        if store.open_record(&checkout).is_err() {
+            store
+                .create_record(&checkout)
+                .expect("capture fixture creates its Notes record");
+        }
         frame_builder
             .host_mut()
             .group_at_for_tests(strip_id, 0)
-            .and_then(|group| group.active_host_mut())
-            .expect("target Notes host")
-            .replace_content(ui::widget::TileContent::App(Box::new(
-                crate::shell::notes_app::NotesApp::with_seed(long_note),
-            )));
-        // The tree initially focuses the last group, so explicitly expose the
-        // target for one ordinary layout/paint pass before proving that its
-        // semantic canvas remains capturable while wholly offscreen.
-        assert!(
-            frame_builder
-                .host_mut()
-                .group_row_mut_for_tests(strip_id)
-                .expect("live strip row")
-                .scroll_group_into_view(target_group),
-            "the target group must require scrolling into view"
-        );
+            .expect("target Notes group")
+            .bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
+        store
+            .with(&checkout.id, |doc| {
+                let mut body =
+                    crate::shell::crdt_text::CrdtTextBody::new(crate::shell::notes_app::BODY_KEY);
+                body.sync(doc, &automerge::ROOT);
+                let end = body.clamp(usize::MAX);
+                body.splice(doc, &automerge::ROOT, 0..end, &long_note);
+            })
+            .expect("capture fixture writes the canonical Notes record");
         frame_builder.relayout();
         let _ = frame_builder.paint();
         assert!(
