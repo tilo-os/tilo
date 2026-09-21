@@ -2764,7 +2764,10 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.call.join("c_huddle");
         render_frame(&mut app, 1200.0, 800.0);
-        Widget::set_floating_surface_bounds(&mut app, Rect::new(0.0, 0.0, 1600.0, 900.0));
+        ui::widget::FloatingSurfaceWidgetExt::set_floating_surface_bounds(
+            &mut app,
+            Rect::new(0.0, 0.0, 1600.0, 900.0),
+        );
 
         let handle = app
             .hits
@@ -2797,7 +2800,7 @@ mod tests {
             "the transfer frame preserves the live surface geometry"
         );
         assert!(
-            Widget::take_floating_surface_request(&mut app).is_some(),
+            ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app).is_some(),
             "the compositor receives the one-shot adoption request"
         );
 
@@ -2812,7 +2815,7 @@ mod tests {
         );
         let prepared_content = app.call_video_rect();
         let prepared_window = app.huddle_panel().inflate(8.0, 8.0);
-        Widget::on_floating_surface_host_message(
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut app,
             &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
                 id: "chat-call:c_huddle".into(),
@@ -2826,7 +2829,7 @@ mod tests {
         assert!(!app.call.placement.is_desktop_adopted());
         let mut scene = Scene::new();
         let mut text_renderer = TextRenderer::new();
-        Widget::draw_floating_surfaces(
+        ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
             &mut app,
             &mut scene,
             Affine::IDENTITY,
@@ -2836,7 +2839,7 @@ mod tests {
         );
         assert!(!scene.encoding().is_empty());
 
-        Widget::on_floating_surface_host_message(
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut app,
             &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
                 id: "chat-call:c_huddle".into(),
@@ -2850,7 +2853,7 @@ mod tests {
             0
         );
         let mut scene = Scene::new();
-        Widget::draw_floating_surfaces(
+        ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
             &mut app,
             &mut scene,
             Affine::IDENTITY,
@@ -2874,11 +2877,12 @@ mod tests {
         );
         assert!(app.call.placement.is_return_pending());
         let final_shell_rect = app.call_video_rect();
-        let presentations = Widget::floating_surface_presentations(&app);
+        let presentations =
+            ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&app);
         assert_eq!(presentations.len(), 1);
         assert!(presentations[0].returning_to_app);
 
-        Widget::on_floating_surface_host_message(
+        ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut app,
             &ui::floating_surface::FloatingSurfaceHostMessage::Suspended {
                 id: "chat-call:c_huddle".into(),
@@ -2955,10 +2959,11 @@ mod tests {
         for reveal in [1.0_f32, 0.75, 0.5, 0.25, 0.0] {
             app.call_chrome_motion.pin_for_visual_review(reveal);
             render_frame(&mut app, 1200.0, 800.0);
-            let presentation = Widget::floating_surface_presentations(&app)
-                .into_iter()
-                .next()
-                .expect("the detached call publishes its animated native bounds");
+            let presentation =
+                ui::widget::FloatingSurfaceWidgetExt::floating_surface_presentations(&app)
+                    .into_iter()
+                    .next()
+                    .expect("the detached call publishes its animated native bounds");
             assert_eq!(presentation.content_rect, stable_content);
             assert_eq!(
                 presentation.window_rect,

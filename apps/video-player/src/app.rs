@@ -4270,7 +4270,8 @@ mod tests {
             .unwrap();
         app.apply_layout(&taffy, root, Point::ZERO);
         app.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
-        let request = Widget::take_floating_surface_request(&mut app).expect("PiP request");
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("PiP request");
         assert_eq!(request.id, "video-player.current-video");
         assert_eq!(
             request.role,
