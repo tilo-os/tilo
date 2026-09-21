@@ -333,7 +333,10 @@ use crate::render_thread::{FrameOutcome, RenderRequest, RenderThreadHandle, spaw
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{AudiencePresentationWidgetExt as _, FloatingSurfaceWidgetExt as _, Widget};
+use crate::widget::{
+    AudiencePresentationWidgetExt as _, FloatingSurfaceWidgetExt as _, FullscreenWidgetExt as _,
+    Widget,
+};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use taffy::{AvailableSpace, NodeId, TaffyTree};
@@ -1010,7 +1013,7 @@ pub struct App {
 
     accessibility: AccessibilityRuntime,
 
-    /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
+    /// Compared against [`crate::widget::FullscreenProvider::fullscreen_intent`] each
     /// frame so a steady desired state issues one `set_fullscreen` call —
     /// see [`fullscreen_request_decision`].
     fullscreen_requested: bool,
@@ -12573,7 +12576,26 @@ mod fullscreen_tests {
         }
     }
 
+    impl crate::widget::FullscreenProvider for FsRoot {
+        fn fullscreen_intent(&self) -> Option<bool> {
+            self.want
+        }
+
+        fn on_fullscreen_changed(&mut self, active: bool) {
+            self.changes.borrow_mut().push(active);
+        }
+    }
+
     impl Widget for FsRoot {
+        fn fullscreen_provider(&self) -> Option<&dyn crate::widget::FullscreenProvider> {
+            Some(self)
+        }
+
+        fn fullscreen_provider_mut(
+            &mut self,
+        ) -> Option<&mut dyn crate::widget::FullscreenProvider> {
+            Some(self)
+        }
         fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
@@ -12613,12 +12635,6 @@ mod fullscreen_tests {
         }
         fn get_rect(&self) -> Rect {
             self.rect
-        }
-        fn fullscreen_intent(&self) -> Option<bool> {
-            self.want
-        }
-        fn on_fullscreen_changed(&mut self, active: bool) {
-            self.changes.borrow_mut().push(active);
         }
     }
 
