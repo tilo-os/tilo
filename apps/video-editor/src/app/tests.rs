@@ -10570,7 +10570,6 @@ fn a_disabled_export_button_offers_no_pointer() {
         !app.export_is_offered(),
         "a render in flight disables Export"
     );
-    render(&mut app);
     let l = app
         .with_dialog_layout(|app, tr, theme| app.export_layout(tr, theme))
         .expect("rendered dialog layout");
