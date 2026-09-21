@@ -929,6 +929,35 @@ impl CollaborationRuntime {
     }
 }
 
+/// Host-owned presence publication, follow, and frame-pump state.
+struct PresenceRuntime {
+    broadcast_scope: Option<PresenceKey>,
+    pointer_space: Option<crate::presence::PointerSpace>,
+    followed_peer: Option<String>,
+    last_pointer_broadcast: Option<Instant>,
+    last_focus: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    last_location: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    last_view: Option<crate::view::ViewSubset>,
+    broadcast_sink: Option<PresenceBroadcastSink>,
+    frame_tick: Option<FrameTick>,
+}
+
+impl PresenceRuntime {
+    fn new() -> Self {
+        Self {
+            broadcast_scope: None,
+            pointer_space: None,
+            followed_peer: None,
+            last_pointer_broadcast: None,
+            last_focus: None,
+            last_location: None,
+            last_view: None,
+            broadcast_sink: None,
+            frame_tick: None,
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -977,29 +1006,7 @@ pub struct App {
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
 
-    /// `None` disables outbound broadcast (headless tests, `quick-ui`
-    /// examples).
-    presence_broadcast_scope: Option<PresenceKey>,
-    /// `None` is the ordinary case; the shell sets
-    /// [`crate::presence::PointerSpace::Desktop`] for its own chrome, whose
-    /// window *is* the desktop other surfaces resolve against. Set rather
-    /// than guessed — a wrong guess publishes a position in the wrong space
-    /// with nothing to detect it from outside.
-    pointer_space: Option<crate::presence::PointerSpace>,
-    /// The peer "followed" via a clicked presence indicator; `None` = not
-    /// following.
-    followed_peer: Option<String>,
-    last_pointer_broadcast: Option<Instant>,
-    /// Diffed against, to avoid re-sending unchanged presence every frame.
-    last_focus_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    last_location_presence: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    last_view_presence: Option<crate::view::ViewSubset>,
-    /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
-    /// send. Invoked after the throttle gate.
-    presence_broadcast_sink: Option<PresenceBroadcastSink>,
-    /// Lets the shell drain `NeighbourMsg::PresenceMoved` into
-    /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
-    frame_tick: Option<FrameTick>,
+    presence: PresenceRuntime,
 
     accessibility: AccessibilityRuntime,
 
@@ -1594,15 +1601,7 @@ impl App {
             ),
             presence_ctx: inputs.presence_ctx.resolve(),
             permission_ctx: PermissionContext::permissive(),
-            presence_broadcast_scope: None,
-            pointer_space: None,
-            followed_peer: None,
-            last_pointer_broadcast: None,
-            last_focus_presence: None,
-            last_location_presence: None,
-            last_view_presence: None,
-            presence_broadcast_sink: None,
-            frame_tick: None,
+            presence: PresenceRuntime::new(),
             accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
             fullscreen_requested: false,
             fullscreen_active: false,
@@ -5337,26 +5336,26 @@ impl App {
     where
         F: FnMut(&mut PresenceCtx) -> bool + Send + Sync + 'static,
     {
-        self.frame_tick = Some(Box::new(tick));
+        self.presence.frame_tick = Some(Box::new(tick));
     }
 
     pub fn set_presence_broadcast_sink<F>(&mut self, sink: F)
     where
         F: Fn(&PresenceKey, &PresencePayload) + Send + Sync + 'static,
     {
-        self.presence_broadcast_sink = Some(Box::new(sink));
+        self.presence.broadcast_sink = Some(Box::new(sink));
     }
 
     pub fn clear_presence_broadcast_sink(&mut self) {
-        self.presence_broadcast_sink = None;
+        self.presence.broadcast_sink = None;
     }
 
     pub fn set_pointer_space(&mut self, space: crate::presence::PointerSpace) {
-        self.pointer_space = Some(space);
+        self.presence.pointer_space = Some(space);
     }
 
     fn local_pointer_key(&self) -> PresenceKey {
-        match self.pointer_space.clone() {
+        match self.presence.pointer_space.clone() {
             Some(space) => PresenceKey::Pointer { space },
             None => PresenceKey::local_surface_pointer(),
         }
@@ -5366,9 +5365,9 @@ impl App {
     /// pointer is in — see [`Self::set_pointer_space`].
     pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
         let _entry = self.enter_wake_scope();
-        self.presence_broadcast_scope.clone_from(&key);
+        self.presence.broadcast_scope.clone_from(&key);
         // Reset the throttle so a new scope's first move fires immediately.
-        self.last_pointer_broadcast = None;
+        self.presence.last_pointer_broadcast = None;
         // Arrival remains ephemeral presence only. Document catch-up is a
         // broker-directed request with one selected snapshot responder.
         if let Some(k) = key {
@@ -5383,7 +5382,7 @@ impl App {
     }
 
     pub fn presence_broadcast_scope(&self) -> Option<&PresenceKey> {
-        self.presence_broadcast_scope.as_ref()
+        self.presence.broadcast_scope.as_ref()
     }
 
     pub fn presence_ctx(&self) -> &PresenceCtx {
@@ -5394,15 +5393,15 @@ impl App {
     }
 
     pub fn set_followed_peer(&mut self, user_id: Option<String>) {
-        self.followed_peer = user_id;
+        self.presence.followed_peer = user_id;
     }
 
     pub fn followed_peer(&self) -> Option<&str> {
-        self.followed_peer.as_deref()
+        self.presence.followed_peer.as_deref()
     }
 
     pub fn followed_peer_target(&self) -> Option<[f32; 2]> {
-        let id = self.followed_peer.as_deref()?;
+        let id = self.presence.followed_peer.as_deref()?;
         self.presence_ctx.peer_pointer(id)
     }
 
@@ -5414,7 +5413,7 @@ impl App {
     ) -> bool {
         let _entry = self.enter_wake_scope();
         if let Some(uid) = self.presence_ctx.hit_test_offscreen_mist(viewport, point) {
-            self.followed_peer = Some(uid);
+            self.presence.followed_peer = Some(uid);
             true
         } else {
             false
@@ -5450,7 +5449,7 @@ impl App {
         let _entry = self.enter_wake_scope();
         // Fan out to the optional out-of-band sink first (the shell's Iroh
         // bridge) so a slow socket never delays the network path.
-        if let Some(sink) = self.presence_broadcast_sink.as_ref() {
+        if let Some(sink) = self.presence.broadcast_sink.as_ref() {
             sink(&key, &payload);
         }
         self.collaboration
@@ -5562,7 +5561,7 @@ impl App {
                 .ok()
                 .flatten()
         });
-        if current != self.last_focus_presence {
+        if current != self.presence.last_focus {
             // When the caret advances forward under the same scope, publish
             // `Typing` for the inserted run so peers light up a fading
             // highlighter. Backspace/left-arrow and scope changes don't
@@ -5570,7 +5569,7 @@ impl App {
             if let (
                 Some((new_key, PresencePayload::Caret { pos: new_pos })),
                 Some((old_key, PresencePayload::Caret { pos: old_pos })),
-            ) = (&current, &self.last_focus_presence)
+            ) = (&current, &self.presence.last_focus)
                 && new_key == old_key
                 && new_pos > old_pos
             {
@@ -5585,7 +5584,7 @@ impl App {
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
             }
-            self.last_focus_presence = current;
+            self.presence.last_focus = current;
         }
     }
 
@@ -5593,11 +5592,11 @@ impl App {
     /// focus.
     fn broadcast_location_presence(&mut self) {
         let current = self.root_widget.presence_payload();
-        if current != self.last_location_presence {
+        if current != self.presence.last_location {
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
             }
-            self.last_location_presence = current;
+            self.presence.last_location = current;
         }
     }
 
@@ -5607,12 +5606,12 @@ impl App {
     /// inert paired payload; the receiver recognises the key and decodes the
     /// subset instead.
     fn broadcast_view_presence(&mut self) {
-        if !self.collaboration.manager.is_connected() && self.presence_broadcast_sink.is_none() {
+        if !self.collaboration.manager.is_connected() && self.presence.broadcast_sink.is_none() {
             return;
         }
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
         let subset = crate::view::ViewSubset::from_view(&view);
-        if self.last_view_presence.as_ref() == Some(&subset) {
+        if self.presence.last_view.as_ref() == Some(&subset) {
             return;
         }
         self.broadcast_presence(
@@ -5622,7 +5621,7 @@ impl App {
             // with the routing key intact.
             crate::collaboration::PresencePayload::Arrived,
         );
-        self.last_view_presence = Some(subset);
+        self.presence.last_view = Some(subset);
     }
 
     /// Following a peer who hasn't published a View yet latches the intent
@@ -5630,17 +5629,17 @@ impl App {
     /// View arrives.
     pub fn follow(&mut self, peer_id: impl Into<String>) {
         let _entry = self.enter_wake_scope();
-        self.followed_peer = Some(peer_id.into());
+        self.presence.followed_peer = Some(peer_id.into());
         self.apply_follow();
     }
 
     pub fn unfollow(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.followed_peer = None;
+        self.presence.followed_peer = None;
     }
 
     fn apply_follow(&mut self) {
-        let Some(id) = self.followed_peer.clone() else {
+        let Some(id) = self.presence.followed_peer.clone() else {
             return;
         };
         let Some(view) = self
@@ -7486,7 +7485,7 @@ impl App {
                 self.layout.layout_dirty = true;
                 // Presence announces the location; document catch-up is an
                 // independently directed broker request on the new route.
-                if let Some(scope) = self.presence_broadcast_scope.clone() {
+                if let Some(scope) = self.presence.broadcast_scope.clone() {
                     self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
                 }
                 let _ = self
@@ -9740,16 +9739,16 @@ impl AppHandler {
         }
         // `CursorMoved` is measured in this window's own content,
         // never the desktop — see the `pointer_space` field.
-        if app.presence_broadcast_scope.is_some() {
+        if app.presence.broadcast_scope.is_some() {
             match &event {
                 WindowEvent::CursorMoved { position, .. } => {
                     let now = Instant::now();
                     if pointer_broadcast_allowed(
-                        app.last_pointer_broadcast,
+                        app.presence.last_pointer_broadcast,
                         now,
                         Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
                     ) {
-                        app.last_pointer_broadcast = Some(now);
+                        app.presence.last_pointer_broadcast = Some(now);
                         let where_it_is = app.local_pointer_key();
                         #[allow(
                             clippy::cast_possible_truncation,
@@ -9767,7 +9766,7 @@ impl AppHandler {
                 WindowEvent::CursorLeft { .. } => {
                     let where_it_was = app.local_pointer_key();
                     app.broadcast_presence(where_it_was, PresencePayload::Left);
-                    app.last_pointer_broadcast = None;
+                    app.presence.last_pointer_broadcast = None;
                 }
                 _ => {}
             }
@@ -10867,7 +10866,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // A background pump can run while its visible projection is stable.
         // Redrawing only on a changed snapshot avoids full-scene GPU work on
         // every otherwise-idle collaboration wake.
-        if let Some(tick) = app.frame_tick.as_mut()
+        if let Some(tick) = app.presence.frame_tick.as_mut()
             && tick(&mut app.presence_ctx)
         {
             window.request_redraw();
@@ -11097,10 +11096,10 @@ mod pointer_broadcast_tests {
         let state = State::new();
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(state, root);
-        app.last_pointer_broadcast = Some(Instant::now());
+        app.presence.last_pointer_broadcast = Some(Instant::now());
         app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: "home".into() }));
         assert!(
-            app.last_pointer_broadcast.is_none(),
+            app.presence.last_pointer_broadcast.is_none(),
             "scope change must clear the throttle so the next move broadcasts immediately"
         );
         assert_eq!(
