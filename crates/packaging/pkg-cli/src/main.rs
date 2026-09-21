@@ -177,6 +177,10 @@ enum Command {
         /// Publisher identity JSON that signed the qpkg and signs this entry.
         #[arg(long)]
         identity: PathBuf,
+        /// Target architecture (`x86_64` or `aarch64`); inferred when the
+        /// package manifest declares exactly one architecture.
+        #[arg(long)]
+        arch: Option<String>,
         /// Wrap the entry in the signed mutation shape accepted by POST /entries.
         #[arg(long)]
         action: Option<RegistryAction>,
@@ -226,10 +230,18 @@ fn main() -> Result<()> {
         Command::Entry {
             url,
             identity,
+            arch,
             action,
             previous_entry,
             file,
-        } => cmd_entry(&file, &url, &identity, action, previous_entry.as_deref()),
+        } => cmd_entry(
+            &file,
+            &url,
+            &identity,
+            arch.as_deref(),
+            action,
+            previous_entry.as_deref(),
+        ),
     }
 }
 
@@ -752,22 +764,15 @@ fn registry_entry_for(
     qpkg_bytes: &[u8],
     url: &str,
     signer: &SigningKey,
+    arch: Option<pkg::manifest::Arch>,
     previous: Option<&registry_types::RegistryEntry>,
 ) -> Result<registry_types::RegistryEntry> {
     let publisher = SigningIdentity::from_signing_key(signer.clone());
     // Use the same trust-boundary path as `publish`: this verifies every
     // signed blob, materialized payload limits and payload shape before any
     // registry metadata is signed.
-    let (built, package_id) = app_registry::build_entry(
-        qpkg_bytes,
-        &publisher,
-        Some(pkg::manifest::Arch::X86_64),
-        None,
-    )
-    .map_err(|error| anyhow!("verify qpkg for registry entry: {error}"))?;
-    if built.arch != pkg::manifest::Arch::X86_64 {
-        bail!("the public registry currently supports only x86_64 packages");
-    }
+    let (built, package_id) = app_registry::build_entry(qpkg_bytes, &publisher, arch, None)
+        .map_err(|error| anyhow!("verify qpkg for registry entry: {error}"))?;
     let meta = app_registry::qpkg::load(qpkg_bytes).map_err(|e| anyhow!("load qpkg: {e}"))?;
     let package = &meta.manifest.package;
     let now = std::env::var("SOURCE_DATE_EPOCH")
@@ -806,8 +811,9 @@ fn registry_entry_for(
         {
             if !same_artifact(existing, &version) {
                 bail!(
-                    "version {} for target x86_64 already exists with different package bytes or metadata",
-                    version.version
+                    "version {} for target {} already exists with different package bytes or metadata",
+                    version.version,
+                    app_registry::index::arch_wire(built.arch),
                 );
             }
             return Ok(previous.clone());
@@ -840,7 +846,7 @@ fn same_version_identity(
     left: &registry_types::RegistryVersion,
     right: &registry_types::RegistryVersion,
 ) -> bool {
-    left.version == right.version
+    pkg::version::compare(&left.version, &right.version).is_eq()
         && left
             .target
             .as_ref()
@@ -865,39 +871,36 @@ fn compare_registry_versions(
     left: &registry_types::RegistryVersion,
     right: &registry_types::RegistryVersion,
 ) -> std::cmp::Ordering {
-    let semantic = numeric_version_key(&right.version).cmp(&numeric_version_key(&left.version));
-    semantic
-        .then_with(|| right.version.cmp(&left.version))
-        .then_with(|| {
-            left.target
-                .as_ref()
-                .map(|target| target.architecture.as_str())
-                .cmp(
-                    &right
-                        .target
-                        .as_ref()
-                        .map(|target| target.architecture.as_str()),
-                )
-        })
-        .then_with(|| left.qpkg_root_hash_hex.cmp(&right.qpkg_root_hash_hex))
-}
-
-fn numeric_version_key(version: &str) -> Option<Vec<u64>> {
-    version
-        .split('.')
-        .map(|component| component.parse::<u64>().ok())
-        .collect()
+    let semantic = pkg::version::compare(&right.version, &left.version);
+    semantic.then_with(|| {
+        left.target
+            .as_ref()
+            .map(|target| target.architecture.as_str())
+            .cmp(
+                &right
+                    .target
+                    .as_ref()
+                    .map(|target| target.architecture.as_str()),
+            )
+    })
 }
 
 fn cmd_entry(
     file: &Path,
     url: &str,
     identity: &Path,
+    arch: Option<&str>,
     action: Option<RegistryAction>,
     previous_entry: Option<&Path>,
 ) -> Result<()> {
     let qpkg_bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
     let signer = load_signing_key(identity)?;
+    let arch = match arch {
+        None => None,
+        Some("x86_64") => Some(pkg::manifest::Arch::X86_64),
+        Some("aarch64") => Some(pkg::manifest::Arch::AArch64),
+        Some(other) => bail!("unknown --arch {other:?} (expected x86_64 or aarch64)"),
+    };
     if matches!(action, Some(RegistryAction::Update)) && previous_entry.is_none() {
         bail!("--previous-entry is required with --action update");
     }
@@ -913,7 +916,7 @@ fn cmd_entry(
             anyhow::Ok(entry)
         })
         .transpose()?;
-    let entry = registry_entry_for(&qpkg_bytes, url, &signer, previous.as_ref())?;
+    let entry = registry_entry_for(&qpkg_bytes, url, &signer, arch, previous.as_ref())?;
     let output = action.map_or_else(
         || serde_json::to_value(&entry),
         |action| {
@@ -933,4 +936,37 @@ fn cmd_entry(
     let version = entry.versions.first().map_or("?", |v| v.version.as_str());
     eprintln!("entry: {}@{version} -> {url}", entry.package_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod version_identity_tests {
+    use super::*;
+
+    fn version(value: &str) -> registry_types::RegistryVersion {
+        registry_types::RegistryVersion {
+            version: value.into(),
+            qpkg_url: String::new(),
+            qpkg_root_hash_hex: String::new(),
+            qpkg_size_bytes: 0,
+            released_at_unix: 0,
+            qpkg_blake3_hex: None,
+            target: None,
+        }
+    }
+
+    #[test]
+    fn source_hash_cannot_create_a_second_artifact_at_the_same_precedence() {
+        assert!(same_version_identity(
+            &version("0.1.1-dev.10+g111"),
+            &version("0.1.1-dev.10+g222")
+        ));
+        assert!(!same_version_identity(
+            &version("0.1.1-dev.10+g111"),
+            &version("0.1.1-dev.11+g000")
+        ));
+        assert!(
+            compare_registry_versions(&version("0.1.1-dev.10+g111"), &version("0.1.1-dev.9+gzzz"))
+                .is_lt()
+        );
+    }
 }

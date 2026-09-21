@@ -2,17 +2,17 @@
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use ui::application::{
+use tilo_ui::application::{
     AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
 };
-use ui::application_view::InstanceViewStore;
-use ui::launch::LaunchError;
-use ui::local_state::LocalState;
-use ui::permissions::{Actor, PermissionContext, PermissionScope, UserId, Verb};
-use ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
-use ui::view::ViewContribution;
-use ui::wake::WakeHandle;
-use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+use tilo_ui::application_view::InstanceViewStore;
+use tilo_ui::launch::LaunchError;
+use tilo_ui::local_state::LocalState;
+use tilo_ui::permissions::{Actor, PermissionContext, PermissionScope, UserId, Verb};
+use tilo_ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
+use tilo_ui::view::ViewContribution;
+use tilo_ui::wake::WakeHandle;
+use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 pub const APP: &str = "dev.tilo.application-probe";
 pub const DEVICE: &str = "D";
@@ -32,8 +32,8 @@ thread_local! {
 
 #[derive(Default)]
 pub struct PresentationObservations {
-    pub layouts: Vec<ui::Theme>,
-    pub draws: Vec<(ui::Theme, f32)>,
+    pub layouts: Vec<tilo_ui::Theme>,
+    pub draws: Vec<(tilo_ui::Theme, f32)>,
     pub motion: Vec<bool>,
     pub local_draws: Vec<String>,
     pub local_resource_reads: Vec<String>,
@@ -44,13 +44,13 @@ pub fn observe_presentation() -> Rc<RefCell<PresentationObservations>> {
     observations
 }
 /// An effective snapshot with intentionally distinct type and runner factors.
-pub fn presentation_inputs(theme_scale: f32) -> ui::application::ComponentRunnerInputs {
+pub fn presentation_inputs(theme_scale: f32) -> tilo_ui::application::ComponentRunnerInputs {
     configure_presentation(runner_inputs(), theme_scale)
 }
 pub fn configure_presentation(
-    mut inputs: ui::application::ComponentRunnerInputs,
+    mut inputs: tilo_ui::application::ComponentRunnerInputs,
     theme_scale: f32,
-) -> ui::application::ComponentRunnerInputs {
+) -> tilo_ui::application::ComponentRunnerInputs {
     inputs.theme.name = "explicit presentation".into();
     inputs.theme.tokens.font_size_base = 19.0;
     inputs.theme.accent_primary = inputs.theme.status_success;
@@ -65,14 +65,14 @@ pub fn configure_presentation(
     inputs.text_renderer.set_text_scale(1.5);
     inputs
 }
-pub fn assert_presentation(theme: &ui::Theme, scale: f32, ui_scale: f32) {
+pub fn assert_presentation(theme: &tilo_ui::Theme, scale: f32, ui_scale: f32) {
     assert_eq!(theme.text_scale, scale);
     assert_eq!(theme.ui_scale, ui_scale);
     assert_eq!(theme.name, "explicit presentation");
     assert!(theme.reduce_motion);
     assert_eq!(theme.accent_primary, theme.status_success);
     assert!((theme.tokens.font_size_base - 19.0 * ui_scale * scale).abs() < 0.0001);
-    let base = ui::Theme::dark();
+    let base = tilo_ui::Theme::dark();
     assert!(
         (theme.tokens.typography.scale.sm - base.tokens.typography.scale.sm * ui_scale * scale)
             .abs()
@@ -123,15 +123,15 @@ impl ProbeProvider {
             .push((method, WakeHandle::new().is_active()));
         self.local.writer().try_set(true);
     }
-    fn hit() -> ui::search::SearchResult {
-        ui::search::SearchResult::for_action(
+    fn hit() -> tilo_ui::search::SearchResult {
+        tilo_ui::search::SearchResult::for_action(
             "Probe",
             "Probe",
             tilo_actions::ActionAddress::new("probe:shared", "edit"),
         )
     }
 }
-impl ui::search::SearchProvider for ProbeProvider {
+impl tilo_ui::search::SearchProvider for ProbeProvider {
     fn name(&self) -> &'static str {
         self.observe("name");
         "Probe"
@@ -140,33 +140,33 @@ impl ui::search::SearchProvider for ProbeProvider {
         self.observe("generation");
         Some(4)
     }
-    fn action_directory_cursor_is_current(&self, _: &ui::search::SearchCursor) -> bool {
+    fn action_directory_cursor_is_current(&self, _: &tilo_ui::search::SearchCursor) -> bool {
         self.observe("cursor");
         true
     }
-    fn search(&self, _: &str) -> Vec<ui::search::SearchResult> {
+    fn search(&self, _: &str) -> Vec<tilo_ui::search::SearchResult> {
         self.observe("search");
         vec![Self::hit()]
     }
-    fn search_limited(&self, _: &str, limit: usize) -> Vec<ui::search::SearchResult> {
+    fn search_limited(&self, _: &str, limit: usize) -> Vec<tilo_ui::search::SearchResult> {
         self.observe("limited");
         if limit > 0 { vec![Self::hit()] } else { vec![] }
     }
     fn search_page(
         &self,
         _: &str,
-        _: Option<&ui::search::SearchCursor>,
+        _: Option<&tilo_ui::search::SearchCursor>,
         work: usize,
         limit: usize,
-    ) -> ui::search::SearchPage {
+    ) -> tilo_ui::search::SearchPage {
         self.observe("page");
-        ui::search::SearchPage {
+        tilo_ui::search::SearchPage {
             results: if work > 0 && limit > 0 {
                 vec![Self::hit()]
             } else {
                 vec![]
             },
-            next: Some(ui::search::SearchCursor::default()),
+            next: Some(tilo_ui::search::SearchCursor::default()),
             inspected: work.min(limit).min(1),
         }
     }
@@ -224,7 +224,7 @@ pub fn provenance() -> tilo_actions::ActionContext {
 pub fn denied_scope() -> PermissionScope {
     PermissionScope::workspace(Verb::Write)
 }
-pub fn definition(create: ui::application::ComponentFactory) -> ApplicationDefinition {
+pub fn definition(create: tilo_ui::application::ComponentFactory) -> ApplicationDefinition {
     ApplicationDefinition {
         app_id: APP,
         title: "Probe",
@@ -244,20 +244,20 @@ pub fn runner_probe_definition() -> &'static ApplicationDefinition {
     static DEFINITION: std::sync::OnceLock<ApplicationDefinition> = std::sync::OnceLock::new();
     DEFINITION.get_or_init(|| definition(action_probe_factory))
 }
-pub fn runner_inputs() -> ui::application::ComponentRunnerInputs {
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+pub fn runner_inputs() -> tilo_ui::application::ComponentRunnerInputs {
+    let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
         "en-US",
     );
-    ui::application::ComponentRunnerInputs {
-        theme: ui::Theme::dark(),
-        text_renderer: ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
+    tilo_ui::application::ComponentRunnerInputs {
+        theme: tilo_ui::Theme::dark(),
+        text_renderer: tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
     }
 }
 pub fn runner_permissions() -> Rc<RefCell<PermissionContext>> {
     Rc::new(RefCell::new(
         PermissionContext::from_capabilities(
-            Actor::person(Some(ui::permissions::Role::Owner), "probe-author"),
+            Actor::person(Some(tilo_ui::permissions::Role::Owner), "probe-author"),
             vec![],
         )
         .at_unix_time(100),
@@ -674,16 +674,16 @@ impl Widget for ProbeRoot {
         _: &[u8],
         _: &mut AutoCommit,
         _: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
         if !self.local_resource_operation_handlers().contains(&type_id) {
             return Ok(None);
         }
         if type_id == "probe.pending" {
             self.operations.borrow_mut().push("pending".into());
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            return Ok(Some(tilo_ui::widget::ResourceOperationStart::Accepted));
         }
         self.operations.borrow_mut().push(format!("{kind:?}"));
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
     }
@@ -704,13 +704,14 @@ impl Widget for ProbeRoot {
             message: None,
         })
     }
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+    fn search_providers(&self) -> Vec<Box<dyn tilo_ui::search::SearchProvider>> {
         PROVIDERS.with_borrow(|providers| {
             providers.as_ref().map_or_else(Vec::new, |observations| {
                 vec![Box::new(ProbeProvider {
                     observations: observations.clone(),
                     local: LocalState::new(false),
-                }) as Box<dyn ui::search::SearchProvider>]
+                })
+                    as Box<dyn tilo_ui::search::SearchProvider>]
             })
         })
     }
@@ -721,7 +722,7 @@ impl Widget for ProbeRoot {
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
-        theme: &ui::Theme,
+        theme: &tilo_ui::Theme,
         map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         PRESENTATION.with_borrow(|slot| {
@@ -760,9 +761,9 @@ impl Widget for ProbeRoot {
         &mut self,
         _: &mut vello::Scene,
         _: vello::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        _: &ui::PresenceCtx,
+        text: &mut tilo_ui::TextRenderer,
+        theme: &tilo_ui::Theme,
+        _: &tilo_ui::PresenceCtx,
     ) {
         PRESENTATION.with_borrow(|slot| {
             if let Some(observations) = slot {

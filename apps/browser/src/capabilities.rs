@@ -455,7 +455,7 @@ mod tests {
             .start_resource_operation(
                 ui::tilo_actions::InvocationId::new(),
                 ui::tilo_actions::OperationKind::Effect,
-                "qos.ui.control.invoke",
+                "tilo.ui.control.invoke",
                 &serde_json::to_vec("browser.download.cancel.7").unwrap(),
                 &automerge::AutoCommit::new(),
                 &automerge::ROOT,
@@ -587,7 +587,7 @@ mod tests {
             .start_resource_operation(
                 ui::tilo_actions::InvocationId::new(),
                 ui::tilo_actions::OperationKind::Effect,
-                "qos.ui.control.invoke",
+                "tilo.ui.control.invoke",
                 &serde_json::to_vec("browser.download.retry.41").unwrap(),
                 &automerge::AutoCommit::new(),
                 &automerge::ROOT,

@@ -88,7 +88,7 @@ impl CheckControl for Toggle {}
 /// lifecycle.
 ///
 /// ```
-/// use ui::widget::{TextInput, labeled_field};
+/// use tilo_ui::widget::{TextInput, labeled_field};
 ///
 /// let email = labeled_field(
 ///     "account-email-label",
@@ -115,7 +115,7 @@ where
 /// control's accessibility node.
 ///
 /// ```
-/// use ui::widget::{Checkbox, labeled_check};
+/// use tilo_ui::widget::{Checkbox, labeled_check};
 ///
 /// let remember = labeled_check(
 ///     "account-remember-label",

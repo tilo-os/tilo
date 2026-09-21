@@ -10,10 +10,10 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
-use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Widget;
+use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -93,7 +93,7 @@ fn cell_render_receives_text_renderer_and_rect() {
     t.apply_layout(&taffy, root, Point::ZERO);
 
     let mut tr = TextRenderer::new();
-    let presence = ui::presence::PresenceCtx::default();
+    let presence = tilo_ui::presence::PresenceCtx::default();
     let mut scene = Scene::new();
     Widget::draw(
         &mut t,

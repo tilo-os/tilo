@@ -17,6 +17,15 @@
 #[cfg(unix)]
 use std::os::fd::OwnedFd;
 
+/// Owned descriptor for a Linux DMA-BUF plane.
+#[cfg(unix)]
+pub type DmabufHandle = OwnedFd;
+
+/// Uninhabited placeholder on platforms that cannot receive Linux DMA-BUFs.
+#[cfg(not(unix))]
+#[derive(Debug)]
+pub enum DmabufHandle {}
+
 /// Linear (untiled) layout — the only modifier a plain
 /// `VK_EXT_external_memory_dma_buf` import can interpret.
 pub const DRM_FORMAT_MOD_LINEAR: u64 = 0;
@@ -131,16 +140,14 @@ impl Default for Colorimetry {
 /// it and how wide a row is. Several planes may name the *same* buffer at
 /// different offsets (the usual single-fd NV12 export) or each carry its own.
 #[derive(Debug)]
-#[cfg(unix)]
 pub struct DmabufPlane {
-    pub fd: OwnedFd,
+    pub fd: DmabufHandle,
     pub offset: u32,
     pub stride: u32,
 }
 
 /// A decoded picture living in GPU memory, described well enough to import.
 #[derive(Debug)]
-#[cfg(unix)]
 pub struct DmabufImage {
     pub planes: Vec<DmabufPlane>,
     pub fourcc: u32,
@@ -150,7 +157,6 @@ pub struct DmabufImage {
     pub colorimetry: Colorimetry,
 }
 
-#[cfg(unix)]
 impl DmabufImage {
     /// Whether the layout is one a plain external-memory import can read:
     /// linear, or a producer that declined to state a modifier.
@@ -210,15 +216,25 @@ fn same_file(a: &DmabufPlane, b: &DmabufPlane) -> bool {
     }
 }
 
+#[cfg(not(unix))]
+fn same_file(_a: &DmabufPlane, _b: &DmabufPlane) -> bool {
+    false
+}
+
 /// The number of bytes a dmabuf holds, from `lseek(fd, 0, SEEK_END)`. dmabufs
 /// implement seek precisely so an importer can size the allocation it needs
 /// when the producer only described plane offsets. `None` when the fd does
 /// not support seeking.
 #[cfg(unix)]
-pub fn dmabuf_size(fd: &OwnedFd) -> Option<u64> {
+pub fn dmabuf_size(fd: &DmabufHandle) -> Option<u64> {
     use std::io::{Seek, SeekFrom};
     let mut file = std::fs::File::from(fd.try_clone().ok()?);
     file.seek(SeekFrom::End(0)).ok()
+}
+
+#[cfg(not(unix))]
+pub fn dmabuf_size(_fd: &DmabufHandle) -> Option<u64> {
+    None
 }
 
 #[cfg(test)]

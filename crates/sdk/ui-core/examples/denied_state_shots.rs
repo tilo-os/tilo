@@ -22,12 +22,12 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::{PermissionContext, PermissionScope, Verb};
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{Button, Checkbox, Toggle, Widget};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::permissions::{PermissionContext, PermissionScope, Verb};
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{Button, Checkbox, Toggle, Widget};
 
 const WIDTH: u32 = 760;
 const HEIGHT: u32 = 300;
@@ -42,14 +42,17 @@ fn locked() -> PermissionScope {
 
 /// A context that grants nothing at all.
 fn denying() -> PermissionContext {
-    PermissionContext::from_capabilities(ui::permissions::Actor::person(None, "nobody"), vec![])
+    PermissionContext::from_capabilities(
+        tilo_ui::permissions::Actor::person(None, "nobody"),
+        vec![],
+    )
 }
 
 fn stamp(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     theme: &Theme,
-    state: &mut ui::State,
+    state: &mut tilo_ui::State,
     widget: &mut dyn Widget,
     origin: Point,
     permissions: &PermissionContext,
@@ -85,7 +88,7 @@ fn stamp(
 }
 
 fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
-    let mut state = ui::State::new();
+    let mut state = tilo_ui::State::new();
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     let c = &theme.tokens.colors;
@@ -167,7 +170,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
 }
 
 pub fn run(_args: &[String]) {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
     let dir = std::env::var("DENIED_SHOTS_OUT").unwrap_or_else(|_| "/tmp/denied_shots".to_string());
     if let Err(error) = std::fs::create_dir_all(&dir) {
         crate::registry::fatal(format_args!("cannot create {dir}: {error}"));

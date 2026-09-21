@@ -58,7 +58,7 @@ jobs:
           UPDATE_SNAPSHOTS: "1"
           UPDATE_TYPOGRAPHY_BASELINES: "1"
         run: |
-          cargo test --locked -p ui --test it \
+          cargo test --locked -p tilo-ui --test it \
             typography_visual_regression::multilingual_gallery_matches_scale_matrix -- --exact
           cargo test --locked -p ebook reader_matches
           cargo test --locked -p shell --test it e2e_shell_flows::
