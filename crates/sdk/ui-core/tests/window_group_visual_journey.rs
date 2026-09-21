@@ -26,10 +26,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{AppKind, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{AppKind, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -205,7 +205,7 @@ fn window_group_visual_journey_distinguishes_all_states() {
 /// This is the invariant the journey test relies on — without it, its
 /// pixel-hash comparisons are meaningless. Compared with
 /// [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality:
-/// see the `ui::offscreen` module docs for why GPU rasterisation isn't
+/// see the `tilo_ui::offscreen` module docs for why GPU rasterisation isn't
 /// bit-identical between runs.
 #[test]
 fn window_group_fresh_render_is_deterministic() {

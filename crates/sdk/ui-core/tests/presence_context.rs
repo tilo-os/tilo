@@ -8,8 +8,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::permissions::UserId;
-use ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
+use tilo_ui::permissions::UserId;
+use tilo_ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
 
 #[test]
 fn presence_key_widget_path_equality_and_hash() {
@@ -132,7 +132,7 @@ fn selection_for_returns_range() {
     assert_eq!(sel.end, 9);
 }
 
-use ui::theme::Theme;
+use tilo_ui::theme::Theme;
 use vello::Scene;
 
 #[test]
@@ -174,10 +174,10 @@ fn draw_peer_selection_emits_scene_content() {
 
 #[test]
 fn text_input_renders_peer_caret_when_presence_ctx_has_caret() {
-    use ui::permissions::PermissionContext;
-    use ui::text_render::TextRenderer;
-    use ui::widget::TextInput;
-    use ui::widget::Widget;
+    use tilo_ui::permissions::PermissionContext;
+    use tilo_ui::text_render::TextRenderer;
+    use tilo_ui::widget::TextInput;
+    use tilo_ui::widget::Widget;
     use vello::kurbo::Affine;
 
     let mut input = TextInput::new(vec![PathSegment::Field("body".into())]);
