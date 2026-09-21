@@ -1,6 +1,7 @@
 //! Opt-in real typed SDK dispatch; no model and no private app hooks.
 mod pixels;
 use super::*;
+use shell::shell::state::WorkspaceExt as _;
 use std::path::Path;
 use tilo_actions::InvocationUpdate;
 use ui::collaboration::{CollabRequest, CollaborationManager};
@@ -58,10 +59,17 @@ pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
                         Ok((id, update)) if update.is_terminal() => {
                             finished = Some(json!({"id":id,"update":update}))
                         }
-                        Ok((id, _)) => manager.send(CollabRequest::PublishedInvocationStatus {
-                            request_id: sequence,
-                            id,
-                        }),
+                        Ok((id, _)) => {
+                            if !manager.send(CollabRequest::PublishedInvocationStatus {
+                                request_id: sequence,
+                                id,
+                            }) {
+                                return Err(
+                                    "SDK connection closed while requesting invocation status"
+                                        .into(),
+                                );
+                            }
+                        }
                     }
                 }
             }
