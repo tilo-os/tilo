@@ -844,5 +844,33 @@ class DetachedVmCycle(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'verifier release'):
             lane.vm_handoff_document('run1','verifier-release-intent',vm,identity)
 
+    def test_create_intent_and_local_cycle_receipt_bind_exact_state(self):
+        vm_node=node('vm',kvm=True)
+        manifest=lane.vm_manifest('tilo-vm-run1',vm_node)
+        identity={'size':64*1024**3,'sha256':'b'*64}
+        binding=self.binding(); binding['args_sha256']='1'*64
+        status=self.status('succeeded',binding,process=self.process(),returncode=0,
+                           log_bytes=1,log_truncated=False)
+        with tempfile.TemporaryDirectory() as directory:
+            lane.persist_vm_create_intent(directory,'run1',manifest)
+            self.assertEqual(lane.load_vm_create_intent(directory,'run1',manifest)['manifest'],manifest)
+            with self.assertRaisesRegex(ValueError,'deterministic manifest'):
+                lane.load_vm_create_intent(directory,'run1',dict(manifest,metadata=dict(manifest['metadata'],name='other')))
+            lane.write_private(Path(directory)/'vm-cycle-binding.json',
+                (json.dumps({'schema':1,'purpose':'tilo-supervised-vm-cycle-binding',
+                             'binding':binding,'job_path':'/work/run1-job','cycle':'run1-prepared-alongside'})+'\n').encode())
+            lane.write_private(Path(directory)/'vm-cycle-receipt.json',
+                (json.dumps({'schema':1,'purpose':'tilo-supervised-vm-cycle-receipt',
+                             'binding':binding,'status':status})+'\n').encode())
+            lane.validate_local_cycle_receipts(directory,'run1','run1-prepared-alongside',binding,'/work/run1-job')
+            tampered=json.loads((Path(directory)/'vm-cycle-receipt.json').read_text()); tampered['status']['returncode']=1
+            (Path(directory)/'vm-cycle-receipt.json').write_text(json.dumps(tampered))
+            with self.assertRaisesRegex(ValueError,'local VM cycle receipt|process identity'):
+                lane.validate_local_cycle_receipts(directory,'run1','run1-prepared-alongside',binding,'/work/run1-job')
+
+    def test_remote_status_contract_binds_request_result_and_completed_evidence(self):
+        self.assertIn("process.get('request_sha256')!=hashlib.sha256(request).hexdigest()", lane.VM_CYCLE_STATUS)
+        self.assertIn("if completed():", lane.VM_CYCLE_STATUS)
+
 
 if __name__=='__main__':unittest.main()

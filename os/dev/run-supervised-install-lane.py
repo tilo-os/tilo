@@ -580,6 +580,21 @@ def create_worker(context, manifest):
     return binding(pod, node, manifest)
 
 
+def create_or_adopt_worker(context, manifest):
+    existing=adopt_worker(context,manifest)
+    if existing is not None:
+        return existing
+    try:
+        return create_worker(context,manifest)
+    except ValueError:
+        # A controller restart can race the original create after the API has
+        # accepted the Pod.  Adopt only the exact deterministic manifest.
+        existing=adopt_worker(context,manifest)
+        if existing is None:
+            raise
+        return existing
+
+
 def stream_file(context, namespace, pod, container, destination, content):
     script = 'umask 077; d=${1%/*}; mkdir -p "$d"; t="$1.tmp.$$"; trap \'rm -f "$t"\' EXIT; cat >"$t"; test -s "$t"; mv "$t" "$1"'
     command(kubectl(context, '-n', namespace, 'exec', '-i', pod, '-c', container,
@@ -1664,7 +1679,11 @@ def state(binding,name,process,**extra):
 try:
  request=read_private(request_path,4*1024*1024); value=json.loads(request); binding=value['binding']
  process=process_identity(request); state(binding,'running',process)
- environment=os.environ.copy(); environment.update(value['environment'])
+ environment=dict(value['environment'])
+ if (not environment or any(not isinstance(k,str) or not isinstance(v,str)
+                            for k,v in environment.items()) or 'PATH' not in environment
+         or 'LC_ALL' not in environment):
+  raise ValueError('cycle job environment is not minimal')
  child=subprocess.Popen(['bash','-ceu',value['script'],'tilo-cycle'],stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,env=environment)
  count=log_path.stat().st_size if log_path.exists() else 0
@@ -1735,10 +1754,23 @@ except BaseException: print('TILO_CYCLE_STATUS_INVALID'); raise SystemExit(2)
 if value.get('binding')!=expected or hashlib.sha256(source).hexdigest()!=expected.get('job_sha256'):
  print('TILO_CYCLE_STATUS_INVALID'); raise SystemExit(2)
 process=value.get('process')
+if process and process.get('request_sha256')!=hashlib.sha256(request).hexdigest():
+ print('TILO_CYCLE_STATUS_INVALID'); raise SystemExit(2)
+def completed():
+ try:
+  evidence=pathlib.Path('/work')/(expected['cycle']+'-evidence')
+  if (evidence/'verdict.txt').read_text()!='PASS\n' or (evidence/'exit-status.txt').read_text()!='0\n': return False
+  json.loads((pathlib.Path('/work')/'verified/conversion-info.json').read_text())
+  if len((pathlib.Path('/work')/'verified/conversion.sha256').read_text().splitlines())!=2: return False
+  return True
+ except BaseException: return False
 if value.get('state')=='running':
  try:
   proc=pathlib.Path('/proc')/str(process['pid']); start=(proc/'stat').read_text().split()[21]; argv=(proc/'cmdline').read_bytes(); cgroup=(proc/'cgroup').read_bytes()
- except (FileNotFoundError,IndexError): print('TILO_CYCLE_PROCESS_GONE'); raise SystemExit(3)
+ except (FileNotFoundError,IndexError):
+  if completed():
+   value=dict(value,state='succeeded',returncode=0); print(json.dumps(value,sort_keys=True)); raise SystemExit(0)
+  print('TILO_CYCLE_PROCESS_GONE'); raise SystemExit(3)
  if (start!=process['start'] or hashlib.sha256(argv).hexdigest()!=process['argv_sha256'] or hashlib.sha256(cgroup).hexdigest()!=process['cgroup_sha256']):
   print('TILO_CYCLE_PROCESS_CHANGED'); raise SystemExit(4)
 print(json.dumps(value,sort_keys=True))'''
@@ -1779,6 +1811,8 @@ def validate_cycle_status(value, binding_value):
             or not isinstance(process['start'],str) or not process['start'].isdigit()
             or any(not isinstance(process[key],str) or not re.fullmatch(r'[0-9a-f]{64}',process[key]) for key in ('argv_sha256','cgroup_sha256','request_sha256'))
             or type(value['returncode']) is not int
+            or (value['state']=='succeeded' and value['returncode']!=0)
+            or (value['state']=='failed' and value['returncode']==0)
             or type(value['log_bytes']) is not int or not 0<=value['log_bytes']<=256*1024
             or type(value['log_truncated']) is not bool): raise ValueError('VM cycle process identity is invalid')
 
@@ -1845,6 +1879,25 @@ def persist_vm_handoff(operation_dir, operation, state, vm, identity, verifier=N
     return value
 
 
+def persist_vm_create_intent(operation_dir, operation, manifest):
+    value={'schema':1,'purpose':'tilo-supervised-vm-create-intent','operation':operation,
+           'manifest_sha256':canonical_sha256(manifest),'manifest':manifest}
+    write_private(Path(operation_dir)/'vm-create-intent.json',
+                  (json.dumps(value,indent=2,sort_keys=True)+'\n').encode())
+    return value
+
+
+def load_vm_create_intent(operation_dir, operation, manifest=None):
+    value=json.loads((Path(operation_dir)/'vm-create-intent.json').read_text())
+    if (set(value)!={'schema','purpose','operation','manifest_sha256','manifest'}
+            or value['schema']!=1 or value['purpose']!='tilo-supervised-vm-create-intent'
+            or value['operation']!=operation
+            or value['manifest_sha256']!=canonical_sha256(value['manifest'])
+            or (manifest is not None and value['manifest']!=manifest)):
+        raise ValueError('VM create intent differs from the deterministic manifest')
+    return value
+
+
 def load_vm_handoff(operation_dir, operation, state=None, expected_vm=None, expected_identity=None):
     value=json.loads((Path(operation_dir)/'vm-handoff.json').read_text())
     required={'schema','purpose','operation','state','vm','raw_media'}
@@ -1881,7 +1934,9 @@ python3 -c 'import hashlib,json,os; p="/work/verified/installer.raw"; h=hashlib.
 chmod 0400 "$MEDIA_IDENTITY.tmp"; mv -f -- "$MEDIA_IDENTITY.tmp" "$MEDIA_IDENTITY"
 test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$MEDIA_IDENTITY")" = "$MEDIA_SHA256"
 '''
-    environment={'MEDIA_BYTES':str(expected['size']),'MEDIA_SHA256':expected['sha256'],'MEDIA_IDENTITY':output}
+    environment={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                 'LC_ALL':'C','MEDIA_BYTES':str(expected['size']),'MEDIA_SHA256':expected['sha256'],
+                 'MEDIA_IDENTITY':output}
     python_sha=command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu','--',
                                 'sha256sum','/usr/bin/python3'),timeout=30).split()[0]
     if not re.fullmatch(r'[0-9a-f]{64}',python_sha): raise ValueError('media identity helper is invalid')
@@ -1910,6 +1965,61 @@ test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"
     return result
 
 
+def remote_media_present(context, vm):
+    script=r'''import json,os,stat,sys
+p=sys.argv[1]
+try: i=os.lstat(p)
+except FileNotFoundError: print(json.dumps({'present':False})); raise SystemExit(0)
+if (not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1
+        or stat.S_IMODE(i.st_mode) not in (0o400,0o600) or i.st_size<=0): raise SystemExit(2)
+print(json.dumps({'present':True,'size':i.st_size}))'''
+    value=json.loads(command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu','--',
+      'python3','-c',script,'/work/verified/installer.raw'),timeout=30))
+    if set(value)=={'present'} and value['present'] is False: return False
+    if set(value)!={'present','size'} or value['present'] is not True or type(value['size']) is not int:
+        raise ValueError('remote media destination identity is invalid')
+    return True
+
+
+def load_media_ready_receipt(operation_dir, operation, identity, expected_worker=None):
+    value=json.loads((Path(operation_dir)/'media-ready-receipt.json').read_text())
+    required={'schema','purpose','binding','status','identity'}
+    if (set(value)!=required or value['schema']!=1
+            or value['purpose']!='tilo-supervised-media-ready'
+            or value['identity']!=identity):
+        raise ValueError('media-ready receipt is invalid')
+    binding_value=value['binding']
+    if (not isinstance(binding_value,dict) or not isinstance(value['status'],dict)
+            or binding_value.get('disk')!=identity
+            or (expected_worker is not None and binding_value.get('vm')!=expected_worker)
+            or value['status'].get('state')!='succeeded'):
+        raise ValueError('media-ready receipt is not a completed exact result')
+    validate_cycle_status(value['status'],binding_value)
+    return value
+
+
+def validate_local_cycle_receipts(operation_dir, operation, cycle, binding_value, job_path):
+    operation_dir=Path(operation_dir)
+    binding_path=operation_dir/'vm-cycle-binding.json'
+    receipt_path=operation_dir/'vm-cycle-receipt.json'
+    if binding_path.is_file():
+        value=json.loads(binding_path.read_text())
+        if (set(value)!={'schema','purpose','binding','job_path','cycle'}
+                or value['schema']!=1 or value['purpose']!='tilo-supervised-vm-cycle-binding'
+                or value['binding']!=binding_value or value['job_path']!=job_path
+                or value['cycle']!=cycle):
+            raise ValueError('local VM cycle binding differs from the admitted job')
+    if receipt_path.is_file():
+        value=json.loads(receipt_path.read_text())
+        if (set(value)!={'schema','purpose','binding','status'} or value['schema']!=1
+                or value['purpose']!='tilo-supervised-vm-cycle-receipt'
+                or value['binding']!=binding_value):
+            raise ValueError('local VM cycle receipt differs from the admitted job')
+        validate_cycle_status(value['status'],binding_value)
+        if value['status']['state']!='succeeded':
+            raise ValueError('local VM cycle receipt is not successful')
+
+
 def convert_and_cycle(context, vm, identity, acceptance_id, operation_dir=None):
     fixed = '\n'.join(f'{digest}  {path}' for path,digest in FIRMWARE.items())
     script = r'''set -euo pipefail
@@ -1930,7 +2040,8 @@ grep -Fxq PASS "$EVIDENCE/verdict.txt"
 grep -Fxq 0 "$EVIDENCE/exit-status.txt"
 '''
     cycle = acceptance_id + '-prepared-alongside'
-    environment={'MEDIA_BYTES':str(identity['size']),'MEDIA_SHA256':identity['sha256'],
+    environment={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      'LC_ALL':'C','MEDIA_BYTES':str(identity['size']),'MEDIA_SHA256':identity['sha256'],
       'FIRMWARE_ROWS':fixed,'TILO_VM_ARCH':'aarch64','TILO_ACCEL':'kvm','TILO_DISTROBOX':'',
       'TILO_MEM':'4096','TILO_SMP':'2','TILO_SECBOOT':'0','TILO_SECBOOT_KEYS':'none',
       'TILO_PROFILE_ENCODER':'/usr/local/bin/tilo-imager-profile',
@@ -1949,6 +2060,8 @@ grep -Fxq 0 "$EVIDENCE/exit-status.txt"
       'args_sha256':canonical_sha256({'command':['bash','-ceu','tilo-cycle'],'environment':environment}),
       'job_sha256':hashlib.sha256(VM_CYCLE_JOB.encode()).hexdigest()}
     job_path='/work/'+cycle+'-job'
+    if operation_dir is not None:
+        validate_local_cycle_receipts(operation_dir,acceptance_id,cycle,binding_value,job_path)
     payload={'binding':binding_value,'binding_sha256':canonical_sha256(binding_value),
              'environment':environment,'script':script}
     launch=command(kubectl(context,'-n',vm['namespace'],'exec','-i',vm['pod'],'-c','qemu','--',
@@ -2079,7 +2192,12 @@ def collect_cycle_archive(context, vm, cycle, destination, limit=512*1024*1024):
                 output.write(chunk);digest.update(chunk)
             output.flush();os.fsync(output.fileno())
         selector.close()
-        if process.wait()!=0:raise ValueError('cycle evidence export failed')
+        try:
+            if process.wait(timeout=max(1,deadline-time.monotonic()))!=0:
+                raise ValueError('cycle evidence export failed')
+        except subprocess.TimeoutExpired as error:
+            process.kill(); process.wait()
+            raise ValueError('cycle evidence export exceeded deadline') from error
         with tarfile.open(temporary,'r:') as archive:
             names=set()
             for member in archive:
@@ -2097,7 +2215,11 @@ def collect_cycle_archive(context, vm, cycle, destination, limit=512*1024*1024):
                       '15-tour-start.png','19-reboot-greeter.png','20-reboot-login.png',
                       '17-browser-open.png','18-browser-offline.png',
                       'browser-offline-fixture.txt','browser-offline-fixture.html'}
-            if not required.issubset(names):
+            allowed={''}
+            for name in required:
+                parts=Path(name).parts
+                allowed.update('/'.join(parts[:index]) for index in range(1,len(parts)))
+            if not required.issubset(names) or not names.issubset(allowed):
                 raise ValueError('cycle evidence archive lacks cold-boot, desktop or Browser proof')
         os.replace(temporary,destination)
     finally:
@@ -2111,6 +2233,23 @@ def collect_cycle_archive(context, vm, cycle, destination, limit=512*1024*1024):
 def delete_worker(context,worker):
     command(kubectl(context,'-n',worker['namespace'],'delete','pod',worker['pod'],
                     '--wait=true','--timeout=2m'),timeout=150)
+
+
+def release_exact_worker(context, worker):
+    pod=optional_api_json(context,'-n',worker['namespace'],'get','pod',worker['pod'],
+                          '--request-timeout=15s')
+    if pod is None:
+        return
+    if pod.get('metadata',{}).get('uid')!=worker['pod_uid']:
+        raise ValueError('release target worker UID changed')
+    if pod.get('metadata',{}).get('deletionTimestamp'):
+        command(kubectl(context,'-n',worker['namespace'],'wait','--for=delete',
+                        '--timeout=2m','pod/'+worker['pod']),timeout=150)
+        return
+    delete_worker(context,worker)
+    if optional_api_json(context,'-n',worker['namespace'],'get','pod',worker['pod'],
+                         '--request-timeout=15s') is not None:
+        raise ValueError('release target worker remained after deletion')
 
 
 def cleanup_paused_creator(context, operation_dir, now=None):
@@ -2482,6 +2621,14 @@ def main():
         checkpoint=establish_creator_checkpoint(
           args,disk,disk_node,creation,identity,expires_at)
     resumed_handoff=None
+    vm_manifest_value=vm_manifest('tilo-vm-'+args.acceptance_id,vm_node)
+    if args.resume and not (args.operation_dir/'vm-handoff.json').is_file() \
+            and (args.operation_dir/'vm-create-intent.json').is_file():
+        vm_manifest_value=load_vm_create_intent(args.operation_dir,args.acceptance_id)['manifest']
+        vm=adopt_worker(args.context,vm_manifest_value)
+        if vm is None:
+            raise ValueError('deterministic VM create intent has no live Pod to adopt')
+        persist_vm_handoff(args.operation_dir,args.acceptance_id,'vm-created',vm,identity)
     if args.resume and (args.operation_dir/'vm-handoff.json').is_file():
         resumed_handoff=load_vm_handoff(args.operation_dir,args.acceptance_id,
                                         expected_identity=identity)
@@ -2521,7 +2668,8 @@ def main():
             finalization_verification_sha256=hashlib.sha256(finalized_bytes).hexdigest()
     with timer.stage('vm_transfer'):
         if resumed_handoff is None:
-            vm=create_worker(args.context,vm_manifest('tilo-vm-'+args.acceptance_id,vm_node))
+            persist_vm_create_intent(args.operation_dir,args.acceptance_id,vm_manifest_value)
+            vm=create_or_adopt_worker(args.context,vm_manifest_value)
             persist_vm_handoff(args.operation_dir,args.acceptance_id,'vm-created',vm,identity)
             write_private(args.operation_dir/'worker-bindings.json',
                           (json.dumps({'creator':disk,'verifier':verifier,'vm':vm},indent=2,sort_keys=True)+'\n').encode())
@@ -2532,18 +2680,26 @@ def main():
             preflight_vm(args.context,vm)
         if resumed_handoff is None or resumed_handoff['state']=='vm-created':
             require_same_worker(args.context,verifier);require_same_worker(args.context,vm)
-            sparse_transfer(args.context,verifier,vm,target_container='qemu',
-                            target_directory='/work/verified',target_name='installer.raw',
-                            operation=args.acceptance_id,identity=identity)
-            detached_media_identity(args.context,vm,identity,args.acceptance_id,args.operation_dir)
+            if remote_media_present(args.context,vm):
+                # A controller can die after the copy commits but before its
+                # receipt.  Rehash the exact destination and adopt it; never
+                # start a second writer over an existing target.
+                detached_media_identity(args.context,vm,identity,args.acceptance_id,args.operation_dir)
+            else:
+                sparse_transfer(args.context,verifier,vm,target_container='qemu',
+                                target_directory='/work/verified',target_name='installer.raw',
+                                operation=args.acceptance_id,identity=identity)
+                detached_media_identity(args.context,vm,identity,args.acceptance_id,args.operation_dir)
             persist_vm_handoff(args.operation_dir,args.acceptance_id,'media-ready',vm,identity)
             resumed_handoff=load_vm_handoff(args.operation_dir,args.acceptance_id,
                                              expected_identity=identity)
+        else:
+            current_worker=cycle_worker_identity(args.context,vm)
+            load_media_ready_receipt(args.operation_dir,args.acceptance_id,identity,current_worker)
+            detached_media_identity(args.context,vm,identity,args.acceptance_id,args.operation_dir)
         if resumed_handoff['state'] in {'media-ready','verifier-release-intent'}:
             persist_vm_handoff(args.operation_dir,args.acceptance_id,'verifier-release-intent',vm,identity,verifier)
-            delete_worker(args.context,verifier)
-            if optional_same_worker(args.context,verifier) is not None:
-                raise ValueError('verifier remained after its release')
+            release_exact_worker(args.context,verifier)
             persist_vm_handoff(args.operation_dir,args.acceptance_id,'verifier-released',vm,identity,verifier)
     with timer.stage('conversion_cycle'):
         require_same_worker(args.context,vm)
