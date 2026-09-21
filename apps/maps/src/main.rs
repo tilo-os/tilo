@@ -1,3 +1,10 @@
+#![allow(
+    clippy::manual_clamp,
+    clippy::manual_midpoint,
+    clippy::needless_pass_by_value,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Maps — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:

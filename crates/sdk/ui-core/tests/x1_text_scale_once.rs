@@ -1,3 +1,11 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::type_complexity,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! X1 regression: text is scaled exactly once.
 //!
 //! Theme typography already carries the accessibility text scale and the

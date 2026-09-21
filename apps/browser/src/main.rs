@@ -1,3 +1,9 @@
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::redundant_field_names,
+    clippy::too_many_lines,
+    reason = "migration stack lint debt is scoped to this target"
+)]
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
 // because a fault there can affect the session or every app.

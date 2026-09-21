@@ -1,3 +1,14 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::drop_non_drop,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::unreadable_literal,
+    clippy::unwrap_used,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Real native shared History qualification fixture. --plan emits measured
 //! `FrameHarness` coordinates for the same retained tile at an800x600 viewport.
 //! Native mode uses the ordinary scoped factory and shared scheduled input.
