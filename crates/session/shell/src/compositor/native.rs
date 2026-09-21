@@ -3508,6 +3508,7 @@ fn active_physical_gamepad_binding(
         .find(|group| group.id == group_id)?;
     let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
     let app_id = match &tab.tile {
+        TileContent::WorkspaceActivity => return None,
         TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => kind.app_id(),
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
