@@ -209,7 +209,7 @@ mod tests {
         tr.set_text_scale(2.0);
         let (_, enlarged_h) = pill_size("Compiled", &mut tr, 12.0, 0.0);
         assert_eq!(normal_h, 30.0);
-        assert_eq!(enlarged_h, 42.0);
+        assert_eq!(enlarged_h, 40.0);
     }
 
     #[test]

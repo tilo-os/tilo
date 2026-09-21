@@ -65,7 +65,7 @@ const TOP_BUTTON_W: f64 = TOP_BAR_H;
 /// Neighbouring buttons in a group keep one `s1`: the smallest token step,
 /// so two lifted faces never read as one bar (HIG §7 "nothing touches").
 const TOP_BUTTON_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
-const MIN_REGION: f64 = 12.0;
+const MIN_REGION: f64 = crate::tokens::Spacing::BASE.s3 as f64;
 
 /// Height of one line of `size`-px text exactly as the renderer paints it.
 /// The line box is `line_height × size` (1.25 by default) and carries the
@@ -1274,9 +1274,9 @@ impl CaptureStudio {
         bounds: Rect,
         occupied: &[Rect],
     ) -> RegionChrome {
-        const HEIGHT: f64 = 24.0;
-        const GAP: f64 = 6.0;
-        const REMOVE_WIDTH: f64 = 24.0;
+        const HEIGHT: f64 = crate::tokens::Spacing::BASE.s6 as f64;
+        const GAP: f64 = crate::tokens::Metrics::BASE.icon_label_gap as f64;
+        const REMOVE_WIDTH: f64 = crate::tokens::Spacing::BASE.s6 as f64;
         let total_width = metadata_width + GAP + REMOVE_WIDTH;
         let clamp_x = |x: f64| x.clamp(bounds.x0, (bounds.x1 - total_width).max(bounds.x0));
         let clamp_y = |y: f64| y.clamp(bounds.y0, (bounds.y1 - HEIGHT).max(bounds.y0));

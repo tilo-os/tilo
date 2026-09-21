@@ -592,7 +592,7 @@ impl RichTextLine {
             colors.semantic.warning,
             colors.text_dim,
             colors.semantic.danger,
-            colors.neutral[7],
+            colors.text_dim,
         ]
         .map(|color| Some([color.r(), color.g(), color.b()]));
         self.refresh_attributes();
@@ -1133,7 +1133,7 @@ fn transient_color(theme: &Theme, role: TransientColorRole) -> vello::peniko::Co
         TransientColorRole::Number => colors.semantic.warning,
         TransientColorRole::Comment => colors.text_dim,
         TransientColorRole::Macro => colors.semantic.danger,
-        TransientColorRole::Operator => colors.neutral[7],
+        TransientColorRole::Operator => colors.text_dim,
     }
 }
 
