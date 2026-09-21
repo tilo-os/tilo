@@ -1499,6 +1499,10 @@ pub struct ShellOverlayHost {
         std::sync::mpsc::Sender<SessionActionResult>,
         std::sync::mpsc::Receiver<SessionActionResult>,
     ),
+    /// The compositor power service is the single suspend actuator: unlike a
+    /// generic `systemctl suspend` worker, it coordinates the lock frame and
+    /// reports an eventual logind failure back through `PowerSignal`.
+    power_bridge: Option<tilo_power_mgmt::PowerBridge>,
     /// Portal session-operation inhibitors shared with the backend serving
     /// `org.freedesktop.portal.Inhibit`. A logout/user switch must consult
     /// this exact registry before any irreversible OS action is spawned.
@@ -2873,6 +2877,7 @@ impl ShellOverlayHost {
             qs_selected_display_mirror: false,
             power_menu: PowerMenu::default(),
             session_action_channel: std::sync::mpsc::channel(),
+            power_bridge: None,
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
@@ -3787,6 +3792,10 @@ impl ShellOverlayHost {
     /// Headless and screenshot hosts keep an empty private registry.
     pub fn set_session_inhibitors(&mut self, registry: tilo_power_mgmt::InhibitRegistry) {
         self.session_inhibitors = registry;
+    }
+
+    pub fn set_power_bridge(&mut self, bridge: tilo_power_mgmt::PowerBridge) {
+        self.power_bridge = Some(bridge);
     }
 
     /// Whether peer-sync palette entries are registered.
@@ -11634,6 +11643,17 @@ impl ShellOverlayHost {
                 true
             }
             PowerMenuClick::Execute(action) => {
+                if action == os_actions::SessionAction::Suspend {
+                    if let Some(bridge) = &self.power_bridge {
+                        bridge.request_suspend();
+                    } else {
+                        let _ = self.session_action_channel.0.send(SessionActionResult {
+                            action,
+                            result: Err("power service is unavailable".into()),
+                        });
+                    }
+                    return true;
+                }
                 let inhibit_scope = match action {
                     os_actions::SessionAction::Logout => {
                         Some(tilo_power_mgmt::inhibit::INHIBIT_LOGOUT)
@@ -22860,6 +22880,38 @@ mod palette_dispatch_tests {
 
         // SAFETY: paired with the serialized set above.
         unsafe { std::env::remove_var("TILO_SESSION_LOGOUT_REQUEST") };
+    }
+
+    #[test]
+    fn suspend_power_action_uses_the_coordinated_power_service() {
+        let (mut host, _chrome) = host_with_chrome();
+        let bridge = tilo_power_mgmt::PowerBridge::new();
+        host.set_power_bridge(bridge.clone());
+
+        assert!(
+            host.apply_power_menu_outcome(PowerMenuClick::Execute(
+                os_actions::SessionAction::Suspend
+            ))
+        );
+        assert_eq!(
+            bridge.drain_commands(),
+            vec![tilo_power_mgmt::PowerCommand::Suspend]
+        );
+        assert!(host.session_action_channel.1.try_recv().is_err());
+    }
+
+    #[test]
+    fn suspend_without_the_power_service_reports_failure() {
+        let (mut host, chrome) = host_with_chrome();
+
+        assert!(
+            host.apply_power_menu_outcome(PowerMenuClick::Execute(
+                os_actions::SessionAction::Suspend
+            ))
+        );
+        assert!(host.drain_session_action_results());
+        assert_eq!(chrome.borrow().notifications().len(), 1);
+        assert!(chrome.borrow().notifications()[0].body.contains("suspend"));
     }
 
     #[test]
