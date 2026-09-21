@@ -948,7 +948,7 @@ impl NavShell {
         }
     }
 
-    /// Driven from the draw path, never `update` (which `ui::App` never
+    /// Driven from the draw path, never `update` (which `tilo_ui::App` never
     /// calls), so the slides play and settle to no frames at rest
     /// (HIG §5).
     fn self_tick(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {

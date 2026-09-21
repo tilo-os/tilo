@@ -648,7 +648,7 @@ struct Parked {
 
 /// The records one app process has open, and which is live. Owns
 /// per-record persistence and parking — not collaboration: routing a
-/// record's deltas is the toolkit's business (`ui::App` re-announces its
+/// record's deltas is the toolkit's business (`tilo_ui::App` re-announces its
 /// channel on checkout), since a channel is a property of the connection.
 pub struct RecordSet {
     package_id: String,
@@ -2074,7 +2074,7 @@ impl std::fmt::Debug for RecordStore {
 }
 
 /// Run one record tick: if the widget tree names a record other than the
-/// live one, park it and check the named one out. `ui::App` calls this
+/// live one, park it and check the named one out. `tilo_ui::App` calls this
 /// once per frame, before `sync`, so a widget that opened a file last
 /// frame is editing that file's document by the time it next reads state.
 /// The return value is the caller's cue to re-announce its collaboration

@@ -971,6 +971,7 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
     app.rebuild_structure();
     let exported = named(&mut app, "replaceable editor");
     let old_node = app
+        .layout
         .node_map
         .keys()
         .copied()
@@ -994,6 +995,7 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
     app.root_widget.sync(&mut app.state.doc, &ROOT);
     app.rebuild_structure();
     let new_node = app
+        .layout
         .node_map
         .keys()
         .copied()

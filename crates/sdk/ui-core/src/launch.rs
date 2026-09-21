@@ -1270,7 +1270,7 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
         environment_scale.as_deref(),
     ));
     // Screenshot review must use the same motion policy as a real app.  The
-    // headless harness does not construct `ui::App`, where this environment
+    // headless harness does not construct `tilo_ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.
     theme.with_reduce_motion(shot_motion_reduced())
 }
@@ -1311,7 +1311,7 @@ pub fn shot_text_scale(cli: Option<f32>, environment: Option<&str>) -> f32 {
 
 /// Read the user motion preference for the headless screenshot path.
 ///
-/// Keep this deliberately in lockstep with `ui::App`'s startup gate: a test
+/// Keep this deliberately in lockstep with `tilo_ui::App`'s startup gate: a test
 /// image should not claim reduced-motion support while a launched app animates
 /// (or vice versa).
 fn shot_motion_reduced() -> bool {

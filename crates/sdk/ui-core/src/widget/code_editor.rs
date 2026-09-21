@@ -9,7 +9,7 @@
 //! [`Theme`]), and **soft-tab / indent** handling.
 //!
 //! ```no_run
-//! use ui::widget::code_editor::{CodeEditor, Language};
+//! use tilo_ui::widget::code_editor::{CodeEditor, Language};
 //! let mut editor = CodeEditor::local()
 //!     .with_language(Language::Rust)
 //!     .with_tab_width(4);

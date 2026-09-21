@@ -26,17 +26,17 @@ use std::time::{Duration, SystemTime};
 use collab_types::{ChannelId, Role, generate_keypair};
 use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
-use ui::State;
-use ui::a11y::{Action, Role as AccessRole};
-use ui::clipboard::{ClipboardBackend, ClipboardTarget, install_clipboard_backend};
-use ui::headless::{FrameHarness, SemanticExpectation};
-use ui::theme::Theme;
-use ui::widget::identity_flow::{
+use tilo_ui::State;
+use tilo_ui::a11y::{Action, Role as AccessRole};
+use tilo_ui::clipboard::{ClipboardBackend, ClipboardTarget, install_clipboard_backend};
+use tilo_ui::headless::{FrameHarness, SemanticExpectation};
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::identity_flow::{
     IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityStore, MemoryIdentityStore,
     configure_invite_broker, mint_invite,
 };
-use ui::winit::dpi::PhysicalPosition;
-use ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+use tilo_ui::winit::dpi::PhysicalPosition;
+use tilo_ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 use vello::kurbo::Rect;
 
 const VIEWPORT: (u32, u32) = (1280, 800);

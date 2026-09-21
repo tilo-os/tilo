@@ -7498,8 +7498,8 @@ impl App {
     /// previous session left plus its writer:
     ///
     /// ```ignore
-    /// let (state, autosave) = ui::persist::open("dev.tilo.my-app");
-    /// ui::App::from_factory(state, my_app::app_root)
+    /// let (state, autosave) = tilo_ui::persist::open("dev.tilo.my-app");
+    /// tilo_ui::App::from_factory(state, my_app::app_root)
     ///     .with_autosave(autosave)
     ///     .run();
     /// ```
@@ -10298,7 +10298,7 @@ impl AppHandler {
             return;
         }
         let __prof_input = app.profiler.as_ref().map(|_| std::time::Instant::now());
-        // RUST_LOG=ui::app=debug: pointer-move spam is intentionally
+        // RUST_LOG=tilo_ui::app=debug: pointer-move spam is intentionally
         // not throttled here — when the bug is "no clicks work", you
         // want to see whether moves arrive at all.
         match &event {

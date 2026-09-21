@@ -342,11 +342,11 @@ fn earliest_bracket(
 /// Embed it and wire the two `Widget` methods:
 ///
 /// ```ignore
-/// struct MyToolbar { undo: ui::UndoAccess, /* … */ }
+/// struct MyToolbar { undo: tilo_ui::UndoAccess, /* … */ }
 ///
 /// impl Widget for MyToolbar {
-///     fn set_undo_status(&mut self, s: &mut dyn FnMut() -> ui::UndoStatus) { self.undo.publish(&s()); }
-///     fn take_undo_request(&mut self) -> Option<ui::UndoRequest> { self.undo.take_request() }
+///     fn set_undo_status(&mut self, s: &mut dyn FnMut() -> tilo_ui::UndoStatus) { self.undo.publish(&s()); }
+///     fn take_undo_request(&mut self) -> Option<tilo_ui::UndoRequest> { self.undo.take_request() }
 /// }
 /// ```
 ///

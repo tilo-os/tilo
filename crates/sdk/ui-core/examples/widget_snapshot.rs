@@ -600,7 +600,7 @@ pub fn run(_args: &[String]) {
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark)
-        .with_text_scale(ui::launch::shot_text_scale(None, text_scale.as_deref()))
+        .with_text_scale(tilo_ui::launch::shot_text_scale(None, text_scale.as_deref()))
         .with_reduce_motion(true);
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
