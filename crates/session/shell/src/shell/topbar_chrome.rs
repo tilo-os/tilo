@@ -4300,9 +4300,11 @@ mod tests {
         bar.handle_left_click(&mut handled);
         assert!(handled);
         assert!(
-            chrome.borrow().overlays.room_activity,
+            crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
+                .is_some(),
             "the explicit chevron label points to the activity detail route"
         );
+        assert!(!chrome.borrow().overlays.room_activity);
     }
 
     fn press_named_key(bar: &mut TopBarChrome, key: winit::keyboard::NamedKey) -> bool {

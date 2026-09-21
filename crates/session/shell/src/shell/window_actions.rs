@@ -149,9 +149,10 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
             TileContent::AppPlaceholder { kind, label } | TileContent::Stub { kind, label } => {
                 (kind.clone(), label.clone(), group.id)
             }
-            // Neither can be duplicated: a live client's surface, or a
-            // window belonging to somebody else's machine.
-            TileContent::Foreign { .. }
+            // None can be duplicated: the workspace recap, a live client's
+            // surface, or a window belonging to somebody else's machine.
+            TileContent::WorkspaceActivity
+            | TileContent::Foreign { .. }
             | TileContent::PeerWindow { .. }
             | TileContent::LocalApp { .. } => {
                 return Err(DuplicateError::ForeignWindow);
