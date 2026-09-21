@@ -375,7 +375,7 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn both_tabs_come_back_with_their_own_content_after_a_restart() {
-        const PACKAGE: &str = "so.tilo.test-tab-documents";
+        const PACKAGE: &str = crate::shell::SHELL_RECORDS_PACKAGE;
 
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`; no other thread reads
