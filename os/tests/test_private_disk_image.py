@@ -68,6 +68,31 @@ class LoopPartitionNodeTests(unittest.TestCase):
                 self.assertTrue(all(path.exists() for path in nodes))
             self.assertFalse(any(self.devices.iterdir()))
 
+    def test_post_creation_lstat_failure_removes_exact_owned_node(self):
+        identities = {}
+        original = Path.lstat
+        fail_once = {'value': True}
+        def mknod(path, mode, device):
+            path.touch(mode=0o600)
+            identities[str(path)] = device
+        def lstat(path):
+            info = original(path)
+            device = identities.get(str(path))
+            if device is None:
+                return info
+            if fail_once['value']:
+                fail_once['value'] = False
+                raise OSError('post-mknod inspection failed')
+            return SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_uid=0, st_gid=0,
+                st_rdev=device, st_nlink=1, st_dev=info.st_dev, st_ino=info.st_ino)
+        with patch.object(disk.os, 'mknod', side_effect=mknod), \
+                patch.object(Path, 'lstat', lstat), \
+                self.assertRaisesRegex(OSError, 'post-mknod inspection failed'):
+            with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
+                    sys_class=self.sys_class, sleep=lambda _: None):
+                pass
+        self.assertFalse((self.devices / 'loop0p1').exists())
+
     def _block_nodes(self, identities):
         original = Path.lstat
         def lstat(path):

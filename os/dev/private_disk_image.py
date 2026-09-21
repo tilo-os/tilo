@@ -19,6 +19,22 @@ def _identity(info):
     return info.st_dev, info.st_ino
 
 
+def _validated_loop_node(node, expected_device):
+    info = node.lstat()
+    if (not stat.S_ISBLK(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_uid != 0 or info.st_gid != 0
+            or info.st_rdev != expected_device or info.st_nlink != 1):
+        raise ValueError('loop partition node differs from kernel identity')
+    return info
+
+
+def _remove_owned_loop_node(node, expected_device, identity=None):
+    info = _validated_loop_node(node, expected_device)
+    if identity is not None and (info.st_dev, info.st_ino) != identity:
+        raise ValueError('loop partition node changed before cleanup')
+    node.unlink()
+
+
 def _directory(path):
     """Walk from / using held descriptors and reject redirected ancestry."""
     descriptor = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -94,29 +110,27 @@ def loop_partition_nodes(loop, partition_numbers=(1, 2), *, devices=Path('/dev')
             expected_device = os.makedev(major, minor)
             owned = False
             try:
-                info = node.lstat()
-            except FileNotFoundError:
-                os.mknod(node, stat.S_IFBLK | 0o600, expected_device)
-                owned = True
-                info = node.lstat()
-            if (not stat.S_ISBLK(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
-                    or info.st_uid != 0 or info.st_gid != 0
-                    or info.st_rdev != expected_device or info.st_nlink != 1):
-                raise ValueError('loop partition node differs from kernel identity')
+                try:
+                    info = _validated_loop_node(node, expected_device)
+                except FileNotFoundError:
+                    os.mknod(node, stat.S_IFBLK | 0o600, expected_device)
+                    owned = True
+                    info = _validated_loop_node(node, expected_device)
+            except BaseException:
+                if owned:
+                    _remove_owned_loop_node(node, expected_device)
+                raise
             held.append((node, info.st_dev, info.st_ino, info.st_rdev, owned))
         yield [devices / name for name, _ in sorted(expected.items(), key=lambda item: item[1])]
     finally:
         cleanup_error = None
         for node, device, inode, raw_device, owned in reversed(held):
             try:
-                info = node.lstat()
-                if ((info.st_dev, info.st_ino, info.st_rdev) != (device, inode, raw_device)
-                        or not stat.S_ISBLK(info.st_mode)
-                        or stat.S_IMODE(info.st_mode) != 0o600
-                        or info.st_uid != 0 or info.st_gid != 0 or info.st_nlink != 1):
+                info = _validated_loop_node(node, raw_device)
+                if (info.st_dev, info.st_ino) != (device, inode):
                     raise ValueError('loop partition node changed before cleanup')
                 if owned:
-                    node.unlink()
+                    _remove_owned_loop_node(node, raw_device, (device, inode))
             except BaseException as error:
                 cleanup_error = cleanup_error or error
         if cleanup_error is not None:
