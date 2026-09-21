@@ -67,6 +67,15 @@ digest reference. Bootc resolves that running container's exact local manifest
 digest and enters its private mount namespace; the explicit canonical target
 reference remains the installed system's upgrade origin.
 
+Nested Podman receives a temporary `fuse-overlayfs` copy-on-write view of the
+creator's verified rootful image store. The parent store is only the lower
+layer; all lock and metadata writes go to a root-owned private upper layer.
+Before bootc starts, the wrapper requires the container metadata, Podman image
+identity, raw manifest digest and config architecture to agree with the exact
+immutable source. The view is unmounted and deleted before the source hold can
+be released or the created disk retained; no shared read-write store fallback
+is allowed.
+
 Root/native architecture/user-namespace/remote-container/EFI/TPM checks and all
 source, signature, boot-prediction and cleanup checks remain enforced. Success
 means disk creation only. Installed-byte verification and VM boot remain

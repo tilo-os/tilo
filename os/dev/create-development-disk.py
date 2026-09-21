@@ -13,13 +13,14 @@ the runner must enforce the no-passthrough boundary outside this program.
 import argparse
 import base64
 import hashlib
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import importlib.util
 import json
 import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -51,6 +52,76 @@ TRANSIENT_REGISTRY_TLS_ERROR = (
 
 
 DIAGNOSTIC_STREAM_LIMIT = 256 * 1024
+
+
+def _private_directory(path):
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError(f'{path} is not a root-owned private directory')
+
+
+@contextmanager
+def private_source_store_view(lower=Path('/var/lib/containers'), scratch=Path('/work')):
+    """Give nested Podman a writable COW view without mutating its parent store."""
+    lower_info = lower.lstat()
+    if (not stat.S_ISDIR(lower_info.st_mode) or lower_info.st_uid != 0
+            or lower_info.st_gid != 0 or stat.S_IMODE(lower_info.st_mode) & 0o022):
+        raise ValueError('source container store is not a protected root-owned directory')
+    _private_directory(scratch)
+    root = Path(tempfile.mkdtemp(prefix='tilo-source-store-', dir=scratch))
+    os.chmod(root, 0o700)
+    upper, work, merged = (root / name for name in ('upper', 'work', 'merged'))
+    for path in (upper, work, merged):
+        path.mkdir(mode=0o700)
+        _private_directory(path)
+    process = None
+    mounted = False
+    cleanup_error = None
+    try:
+        process = subprocess.Popen(
+            ['/usr/bin/fuse-overlayfs', '-f', '-o',
+             f'lowerdir={lower},upperdir={upper},workdir={work}', str(merged)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
+        for _ in range(100):
+            if process.poll() is not None:
+                raise ValueError('private source store view exited before mounting')
+            result = subprocess.run(
+                ['/usr/bin/findmnt', '-n', '-o', 'FSTYPE', '-T', str(merged)],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
+            if result.returncode == 0 and result.stdout.strip() == b'fuse.fuse-overlayfs':
+                mounted = True
+                break
+            time.sleep(0.1)
+        if not mounted:
+            raise ValueError('private source store view did not mount')
+        yield merged
+    finally:
+        if mounted:
+            result = subprocess.run(
+                ['/usr/bin/fusermount3', '-u', str(merged)], stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
+            if result.returncode:
+                cleanup_error = ValueError('private source store view did not unmount')
+        if process is not None:
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+                cleanup_error = cleanup_error or ValueError(
+                    'private source store view did not stop after unmount')
+        try:
+            shutil.rmtree(root)
+        except OSError as error:
+            cleanup_error = cleanup_error or error
+        if root.exists():
+            cleanup_error = cleanup_error or ValueError('private source store view survived cleanup')
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 def _bounded_stream(data):
@@ -321,18 +392,20 @@ def _create_verified_disk(args):
             # Only a newly allocated file is bound, never the guest root. The
             # operator must provision this VM without device passthrough;
             # privileged Podman still has access to the VM's own devices.
-            bootc_install([*run, '--privileged', '--network=host',
-                '--tmpfs', '/run/udev:ro,nosuid,nodev,noexec,mode=0755', *auth_args,
-                '--volume', f'{path}:/output/disk.raw:rw',
-                '--volume', f'{wrapper}:/run/tilo-bootc-registry-wrapper.py:ro',
-                '--entrypoint=/usr/bin/python3', args.source,
-                '/run/tilo-bootc-registry-wrapper.py', 'docker://' + args.source,
-                source_match.group(1), '--', '/usr/bin/bootc', 'install', 'to-disk',
-                '--via-loopback', '--generic-image',
-                '--composefs-backend', '--bootloader=systemd', '--filesystem=btrfs',
-                '--target-imgref=' + args.target,
-                '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'], disk,
-                args.output.with_name('bootc-install.failure.json'))
+            with private_source_store_view() as source_store:
+                bootc_install([*run, '--privileged', '--network=host',
+                    '--tmpfs', '/run/udev:ro,nosuid,nodev,noexec,mode=0755', *auth_args,
+                    '--volume', f'{source_store}:/var/lib/containers:rw',
+                    '--volume', f'{path}:/output/disk.raw:rw',
+                    '--volume', f'{wrapper}:/run/tilo-bootc-registry-wrapper.py:ro',
+                    '--entrypoint=/usr/bin/python3', args.source,
+                    '/run/tilo-bootc-registry-wrapper.py', 'docker://' + args.source,
+                    source_match.group(1), '--', '/usr/bin/bootc', 'install', 'to-disk',
+                    '--via-loopback', '--generic-image',
+                    '--composefs-backend', '--bootloader=systemd', '--filesystem=btrfs',
+                    '--target-imgref=' + args.target,
+                    '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'], disk,
+                    args.output.with_name('bootc-install.failure.json'))
             disk.validate()
             if media:
                 media_receipt = materialize_created_media(disk, verified, args)

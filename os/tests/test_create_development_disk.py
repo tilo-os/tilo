@@ -337,6 +337,55 @@ class BootcHelpTests(unittest.TestCase):
 
 
 
+class PrivateSourceStoreTests(unittest.TestCase):
+    class Lower:
+        def __str__(self): return '/lower/containers'
+        def lstat(self):
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0)
+
+    class Process:
+        def __init__(self): self.killed=False
+        def poll(self): return None
+        def wait(self,timeout=None): return 0
+        def kill(self): self.killed=True
+
+    def test_mounts_private_fuse_cow_view_and_removes_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch=Path(tmp);process=self.Process();calls=[]
+            def invoke(argv,**kwargs):
+                calls.append(argv)
+                if argv[0]=='/usr/bin/findmnt':
+                    return SimpleNamespace(returncode=0,stdout=b'fuse.fuse-overlayfs\n')
+                return SimpleNamespace(returncode=0,stdout=b'')
+            with patch.object(disk_creator,'_private_directory'), \
+                    patch.object(disk_creator.subprocess,'Popen',return_value=process) as popen, \
+                    patch.object(disk_creator.subprocess,'run',side_effect=invoke):
+                with disk_creator.private_source_store_view(self.Lower(),scratch) as view:
+                    root=view.parent
+                    self.assertTrue(view.is_dir())
+                    self.assertEqual(view.stat().st_mode & 0o777,0o700)
+                self.assertFalse(root.exists())
+            argv=popen.call_args.args[0]
+            self.assertEqual(argv[0:3],['/usr/bin/fuse-overlayfs','-f','-o'])
+            self.assertIn('lowerdir=/lower/containers',argv[3])
+            self.assertEqual(calls[-1][0:2],['/usr/bin/fusermount3','-u'])
+
+    def test_unmount_failure_is_fatal_and_still_removes_private_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch=Path(tmp);process=self.Process()
+            def invoke(argv,**kwargs):
+                if argv[0]=='/usr/bin/findmnt':
+                    return SimpleNamespace(returncode=0,stdout=b'fuse.fuse-overlayfs\n')
+                return SimpleNamespace(returncode=1,stdout=b'')
+            with patch.object(disk_creator,'_private_directory'), \
+                    patch.object(disk_creator.subprocess,'Popen',return_value=process), \
+                    patch.object(disk_creator.subprocess,'run',side_effect=invoke), \
+                    self.assertRaisesRegex(ValueError,'did not unmount'):
+                with disk_creator.private_source_store_view(self.Lower(),scratch) as view:
+                    root=view.parent
+            self.assertFalse(root.exists())
+
+
 class CreationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -369,6 +418,14 @@ class CreationTests(unittest.TestCase):
                     if getattr(self, 'fail_unmount', False):
                         raise ValueError('unmount failed')
 
+        @contextmanager
+        def source_store():
+            events.append('store-mounted')
+            try:
+                yield Path('/private/source-store')
+            finally:
+                events.append('store-unmounted')
+
         class Disk:
             def __init__(inner, path, size):
                 inner.keep = False
@@ -397,6 +454,9 @@ class CreationTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         patcher = patch.object(disk_creator.source, 'verified_source', verified)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch.object(disk_creator, 'private_source_store_view', source_store)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.verify = patch.object(disk_creator.prediction, 'verify_prediction', return_value={'verified': True})
@@ -432,12 +492,14 @@ class CreationTests(unittest.TestCase):
         self.assertIn('--target-imgref=' + self.args.target, argv)
         self.assertIn('--entrypoint=/usr/bin/python3', argv)
         self.assertIn('/run/tilo-bootc-registry-wrapper.py', argv)
+        self.assertIn('/private/source-store:/var/lib/containers:rw', argv)
         self.assertEqual(argv[argv.index('--') + 1], '/usr/bin/bootc')
         self.assertNotIn('--skip-fetch-check', argv)
         self.assertFalse(receipt['installable'])
         self.assertFalse(receipt['installed_bytes_verified'])
         self.assertEqual(receipt['file_identity']['inode'], self.path.stat().st_ino)
         self.assertLess(self.events.index('unmounted'), self.events.index('retained'))
+        self.assertLess(self.events.index('store-unmounted'), self.events.index('unmounted'))
         self.assertEqual(self.predict.call_args.args[-1], '259.8')
 
     def test_installer_failure_removes_output_and_unmounts(self):
