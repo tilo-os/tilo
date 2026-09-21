@@ -2643,6 +2643,10 @@ pub(crate) mod control_result_probe {
                 });
         }
     }
+    #[allow(
+        clippy::struct_excessive_bools,
+        reason = "independent test switches exercise acceptance, confirmation, typing, and persistence"
+    )]
     pub(crate) struct Probe {
         observed: Observed,
         accepted: bool,
@@ -2880,7 +2884,7 @@ pub(crate) mod control_result_probe {
         fn app_kind(&self) -> AppKind {
             AppKind::Editor
         }
-        fn app_title(&self) -> &str {
+        fn app_title(&self) -> &'static str {
             "Control result probe"
         }
         fn app_icon(&self) -> IconDescriptor {
