@@ -590,6 +590,23 @@ pub trait FullscreenProvider {
     fn on_fullscreen_changed(&mut self, _active: bool) {}
 }
 
+/// Optional full-document/canvas capture capability.
+pub trait CompleteContentProvider {
+    /// Semantic canvas size available without resizing the live widget.
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
+
+    /// Paint the complete semantic content without mutating live view state.
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut vello::Scene,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool;
+}
+
 pub trait Widget {
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
@@ -715,6 +732,16 @@ pub trait Widget {
         None
     }
 
+    /// Expose full-content capture only for widgets that can reproduce it.
+    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::complete_content_provider`].
+    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
+        None
+    }
+
     /// Receive host-selected platform conventions. The default propagates to
     /// retained children, keeping target-OS branches out of app code.
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
@@ -804,30 +831,6 @@ pub trait Widget {
         presence: &PresenceCtx,
     );
 
-    /// Semantic canvas size this widget can render for a complete-content
-    /// capture without resizing or scrolling its live presentation. `None`
-    /// means the ordinary window surface is authoritative. Apps opt in only
-    /// when they can reproduce the complete page/document/canvas from their
-    /// own model; the shell never guesses by stitching visible pixels.
-    fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
-        None
-    }
-
-    /// Paint the complete semantic content into `bounds`, in the same desktop
-    /// coordinate space as [`Widget::get_rect`]. Called only after
-    /// [`Widget::complete_content_size`] returned a usable size. Implementors
-    /// must leave live layout, scroll position, focus and pointer state intact.
-    fn draw_complete_content(
-        &mut self,
-        _scene: &mut Scene,
-        _bounds: vello::kurbo::Rect,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) -> bool {
-        false
-    }
     // This is the widget system's event-dispatch contract, implemented by
     // ~90 widgets; every parameter is independently meaningful (the raw
     // event, scaling, modifiers, CRDT handle+path, two out-params, and the
@@ -2009,6 +2012,49 @@ impl<T: Widget + ?Sized> FullscreenWidgetExt for T {
         if let Some(provider) = self.fullscreen_provider_mut() {
             provider.on_fullscreen_changed(active);
         }
+    }
+}
+
+/// Ergonomic host API for optional complete-content capture.
+pub trait CompleteContentWidgetExt {
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut vello::Scene,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool;
+}
+
+impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
+        self.complete_content_provider()
+            .and_then(CompleteContentProvider::complete_content_size)
+    }
+
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut vello::Scene,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool {
+        self.complete_content_provider_mut()
+            .is_some_and(|provider| {
+                provider.draw_complete_content(
+                    scene,
+                    bounds,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                )
+            })
     }
 }
 
