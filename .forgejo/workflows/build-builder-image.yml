@@ -485,6 +485,9 @@ jobs:
           ./os/dev/install-cached-cosign.sh
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends software-properties-common
+            sudo -n add-apt-repository --yes universe
+            sudo -n apt-get update
             sudo -n apt-get install -y --no-install-recommends awscli podman skopeo
           else
             sudo -n dnf install -y awscli podman skopeo
