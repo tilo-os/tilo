@@ -148,7 +148,7 @@ class LaneAdmission(unittest.TestCase):
                   'helpers':hashlib.sha256(inputs[0]).hexdigest(),
                   'public':hashlib.sha256(inputs[1]).hexdigest(),
                   'installer':hashlib.sha256(inputs[2]).hexdigest()}
-        worker={'namespace':'kata-system','pod':'tilo-disk-run1'}
+        worker={'namespace':'kata-system','pod':'tilo-disk-run1','pod_uid':'pod-uid','node_uid':'node-uid'}
         with patch.object(lane,'command',return_value=json.dumps(expected)):
             self.assertTrue(lane.creator_inputs_ready('ctx',worker,*inputs))
         with patch.object(lane,'command',return_value='{}'):
@@ -166,15 +166,17 @@ class LaneAdmission(unittest.TestCase):
                 lane.command(['kubectl','--context','ctx','get','pods'],timeout=30)
 
     def test_pending_input_status_refuses_active_or_invalid_state(self):
-        worker={'namespace':'kata-system','pod':'tilo-disk-run1'}
+        worker={'namespace':'kata-system','pod':'tilo-disk-run1','pod_uid':'pod-uid','node_uid':'node-uid'}
         with patch.object(lane,'command',return_value=json.dumps({'state':'active'})):
             with self.assertRaises(lane.CreatorInputReconciliationError):
                 lane.creator_input_status('ctx',worker)
         with patch.object(lane,'command',return_value=json.dumps({'state':'invalid'})):
             with self.assertRaises(lane.CreatorInputReconciliationError):
                 lane.creator_input_status('ctx',worker)
-        with patch.object(lane,'command',return_value=json.dumps({'state':'missing'})):
+        with patch.object(lane,'command',return_value=json.dumps({'state':'missing'})) as command:
             self.assertIsNone(lane.creator_input_status('ctx',worker))
+        argv=command.call_args.args[0]
+        self.assertEqual(argv[-3:],['pod-uid','node-uid','run1'])
 
     def test_remote_creator_input_scripts_compile(self):
         compile(lane.REMOTE_CREATOR_INPUT_STATUS, '<creator-input-status>', 'exec')
@@ -232,12 +234,39 @@ class LaneAdmission(unittest.TestCase):
             reset_script=lane.REMOTE_CREATOR_FAILED_JOB_RESET.replace(
                 "pathlib.Path('/work')",f"pathlib.Path({str(root)!r})")
             result=lane.subprocess.run([sys.executable,'-c',reset_script,'pod-uid',
-                                        'node-uid','run1'],capture_output=True,text=True)
+                                        'node-uid','run1',hashlib.sha256(b'').hexdigest()],
+                                       capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertFalse(job.exists())
             result=lane.subprocess.run([sys.executable,'-c',status_script,'pod-uid',
                                         'node-uid','run1'],capture_output=True,text=True)
             self.assertEqual(json.loads(result.stdout)['state'],'ready')
+
+    @unittest.skipUnless(os.name!='nt','private receipt mode semantics require Linux')
+    def test_nonempty_failed_creator_requires_matching_local_log_receipt(self):
+        worker={'namespace':'kata-system','pod':'tilo-disk-run1','pod_uid':'pod-uid','node_uid':'node-uid'}
+        binding={'operation':'run1','pod_uid':'pod-uid','node_uid':'node-uid',
+                 'output':'/work/disk-output/disk.raw'}
+        log=b'creator failure\n'; digest=hashlib.sha256(log).hexdigest()
+        status={'state':'retryable-failed','receipt':{'schema':1,'purpose':'tilo-supervised-creator-inputs',
+                 'helpers':'a'*64,'public':'b'*64,'installer':'c'*64},'receipt_sha256':'d'*64,
+                'job_binding':binding,'job_log_sha256':digest,'job_log_bytes':len(log)}
+        with tempfile.TemporaryDirectory() as directory:
+            args_path=Path(directory)/'creator-job.failure.json'
+            with patch.object(lane,'command',return_value=json.dumps(status)):
+                with self.assertRaises(lane.CreatorInputReconciliationError):
+                    lane.creator_input_status('ctx',worker,'run1',directory)
+            receipt={'schema':1,'purpose':'tilo-supervised-creator-job-failure',
+                     'acceptance_id':'run1','binding':binding,'log_sha256':digest,
+                     'log_base64':base64.b64encode(log).decode()}
+            args_path.write_text(json.dumps(receipt)); args_path.chmod(0o600)
+            with patch.object(lane,'command',return_value=json.dumps(status)):
+                self.assertEqual(lane.creator_input_status('ctx',worker,'run1',directory)['state'],
+                                 'retryable-failed')
+            changed=dict(status); changed['job_log_sha256']='e'*64
+            with patch.object(lane,'command',return_value=json.dumps(changed)):
+                with self.assertRaises(lane.CreatorInputReconciliationError):
+                    lane.creator_input_status('ctx',worker,'run1',directory)
 
     def test_pending_input_delta_transfers_only_changed_component(self):
         inputs=(b'helpers-new',b'public-same',b'installer-same')
