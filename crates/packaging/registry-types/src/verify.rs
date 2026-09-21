@@ -14,6 +14,8 @@ use crate::entry::RegistryEntry;
 /// Structured failure modes for [`verify_change_request`].
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VerifyError {
+    #[error("invalid registry metadata: {0}")]
+    InvalidMetadata(String),
     /// The publisher's pubkey (as declared in the entry) is not in the owner's allowlist.
     #[error("publisher pubkey not in allowlist")]
     PublisherNotAllowed,
@@ -42,6 +44,9 @@ pub enum VerifyError {
 /// [`verify_change_request`]'s domain; a caller walking a big index
 /// only needs "keep or drop".
 pub fn verify_entry_signature(entry: &RegistryEntry) -> bool {
+    if entry.validate().is_err() {
+        return false;
+    }
     let Some(pk) = parse_verifying_key_opt(&entry.publisher_pubkey_hex) else {
         return false;
     };
@@ -75,6 +80,9 @@ pub fn verify_change_request(
     req: &EntryChangeRequest,
     publisher_pubkey_allowlist: &[[u8; 32]],
 ) -> Result<(), VerifyError> {
+    req.entry
+        .validate()
+        .map_err(|error| VerifyError::InvalidMetadata(error.to_string()))?;
     let declared = decode_pubkey_hex(&req.entry.publisher_pubkey_hex)?;
     if !publisher_pubkey_allowlist.iter().any(|k| k == &declared) {
         return Err(VerifyError::PublisherNotAllowed);
@@ -152,22 +160,29 @@ mod tests {
         let key = SigningKey::generate(&mut OsRng);
         let pk_hex = hex::encode(key.verifying_key().to_bytes());
         let entry = RegistryEntry {
-            package_id: "dev.tilo.editor".into(),
+            package_id: "so.tilo.editor".into(),
             name: "Editor".into(),
             description: "CRDT-native text editor".into(),
+            tagline: "Edit together".into(),
+            images: crate::LocalizedImages::default(),
+            supported_languages: vec!["en".into()],
             categories: vec!["Productivity".into()],
-            icon_url: None,
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: pk_hex,
             versions: vec![RegistryVersion {
                 version: "2026.06".into(),
-                qpkg_url: "https://apps.tilo.dev/editor/2026.06.qpkg".into(),
-                qpkg_root_hash_hex: "cd".repeat(32),
-                qpkg_size_bytes: 1024,
+                tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
+                tapp_root_hash_hex: "cd".repeat(32),
+                tapp_size_bytes: 1024,
                 released_at_unix: 100,
-                qpkg_blake3_hex: None,
-                target: None,
+                tapp_blake3_hex: "ef".repeat(32),
+                target: crate::entry::RegistryTarget {
+                    platform: crate::entry::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                },
             }],
             updated_at_unix: 200,
             signature_hex: String::new(),

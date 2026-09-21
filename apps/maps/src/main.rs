@@ -68,7 +68,7 @@ pub fn main() {
     maps::net::ensure_crypto_provider();
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.maps", maps::app_root)
+        &LaunchSpec::new("so.tilo.maps", maps::app_root)
             .shot_root(shot_root)
             .shot_handler(shot_handler)
             .allowed_flags(&[

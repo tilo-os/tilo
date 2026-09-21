@@ -90,7 +90,7 @@ expected_source_uri=""
 if [ -n "$expected_source" ]; then
   [[ "$expected_source" =~ ^[0-9a-f]{40}$ ]] \
     || die "TILO_EXPECTED_OS_SOURCE_REVISION must be a full lowercase Git commit"
-  expected_source_uri="git+ssh://code.podesta.ai/qos/tilo@$expected_source"
+  expected_source_uri="git+ssh://code.podesta.ai/qos/qos@$expected_source"
 fi
 generation="$(printf '%s' "$provenance" | jq -er \
   --arg digest "sha256:$digest" --argjson children "$children" \

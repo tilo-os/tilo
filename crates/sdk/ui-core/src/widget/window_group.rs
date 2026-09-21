@@ -2005,7 +2005,7 @@ mod tests {
         );
     }
 
-    /// A card reading `dev.tilo.file-explorer` is the failure this guards:
+    /// A card reading `so.tilo.file-explorer` is the failure this guards:
     /// the person asked for Files, and a package id is not an answer.
     #[test]
     fn the_card_takes_the_apps_name_from_its_tab() {

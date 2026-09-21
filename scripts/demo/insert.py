@@ -841,7 +841,7 @@ def main() -> int:
         return None
 
     tools = {var: path for var, name in (
-        ("TILO_CATALOGUE_BIN", "tilo-catalogue"),
+        ("TILO_APP_BIN", "app"),
         ("TILO_INSTALL_BIN", "tilo-install"),
         ("TILO_LAUNCHER_BIN", "tilo-launcher"),
     ) if (path := tool(name))}

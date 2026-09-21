@@ -136,8 +136,8 @@ AGENT_ACTION_EFFECT = "room_activity"
 # registry that feeds the palette, so the demo drives the production
 # launch path rather than a test entry point.
 APPLICATIONS = "applications"
-FILES_APP = "dev.tilo.file-explorer"
-WORD_PROCESSOR = "dev.tilo.word-processor"
+FILES_APP = "so.tilo.file-explorer"
+WORD_PROCESSOR = "so.tilo.word-processor"
 
 # Machine state, deliberately *not* isolated per session: without these
 # two a session enumerates zero applications and every launch fails with
@@ -3063,7 +3063,7 @@ def stage_home(path: str) -> str:
 
 
 class Registry:
-    """A signed registry on loopback, serving one real `.qpkg`.
+    """A signed registry on loopback, serving one real `.tapp`.
 
     The `serve-test-registry` example packs a real binary into a real
     package, signs it, and writes the `registries.toml` the catalogue
@@ -3446,7 +3446,7 @@ def beat_three(quinten: Session, agent: Session, host_ws: dict,
     # And the scope is a real boundary rather than a label: the grant
     # named one app, so it must not answer for another.
     claim("and still may not write to a different app",
-          may_write("dev.tilo.terminal"), False)
+          may_write("so.tilo.terminal"), False)
     note("a capability is a verb on a scope; the scope here is one app")
 
     step("and the session it drives is admitted to the room as itself")
@@ -3694,7 +3694,7 @@ def beat_five(quinten: Session, registry, shots: str) -> dict | None:
          f"one of them")
     if registry is None:
         gap("no local registry was served, so the fetch could not be filmed: "
-            "build it with `cargo build -p app-catalogue --bins --examples` "
+            "build it with `cargo build -p app-cli --bins --examples` "
             "and `cargo build -p tilo-install --bin tilo-install`")
         return None
     note(f"a registry at {registry.base_url} offers it")
@@ -4903,7 +4903,7 @@ def main() -> int:
         return None
 
     tools = {var: path for var, name in (
-        ("TILO_CATALOGUE_BIN", "tilo-catalogue"),
+        ("TILO_APP_BIN", "app"),
         ("TILO_INSTALL_BIN", "tilo-install"),
         ("TILO_LAUNCHER_BIN", "tilo-launcher"),
     ) if (path := tool(name))}
@@ -4950,7 +4950,7 @@ def main() -> int:
           f"{len(entries) - (1 if WORD_PROCESSOR in entries else 0)} for quinten")
     for var, path in sorted(tools.items()):
         print(f"  {var:20} {path}")
-    for var in ("TILO_CATALOGUE_BIN", "TILO_INSTALL_BIN", "TILO_LAUNCHER_BIN"):
+    for var in ("TILO_APP_BIN", "TILO_INSTALL_BIN", "TILO_LAUNCHER_BIN"):
         if var not in tools:
             print(f"  {var:20} MISSING — beat 5 cannot fetch anything")
 

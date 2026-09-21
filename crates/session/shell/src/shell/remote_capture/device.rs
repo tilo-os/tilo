@@ -447,7 +447,7 @@ mod tests {
         RemoteCaptureRequest {
             version: REMOTE_CAPTURE_PROTOCOL_VERSION,
             request_id: [3; 16],
-            app_id: "dev.tilo.Camera".into(),
+            app_id: "so.tilo.Camera".into(),
             workspace_id: "room-a".into(),
             app_label: "Camera".into(),
             profile,
@@ -481,24 +481,17 @@ mod tests {
         assert!(!registry.accept_chunk(
             &device("other"),
             &target,
-            "dev.tilo.Camera",
+            "so.tilo.Camera",
             "room-a",
             &chunk,
             now
         ));
-        assert!(!registry.accept_chunk(&source, &target, "dev.tilo.Other", "room-a", &chunk, now));
-        assert!(!registry.accept_chunk(&source, &target, "dev.tilo.Camera", "room-b", &chunk, now));
+        assert!(!registry.accept_chunk(&source, &target, "so.tilo.Other", "room-a", &chunk, now));
+        assert!(!registry.accept_chunk(&source, &target, "so.tilo.Camera", "room-b", &chunk, now));
         let mut forged = chunk.clone();
         forged.grant = RemoteCaptureGrant([9; 32]);
-        assert!(!registry.accept_chunk(
-            &source,
-            &target,
-            "dev.tilo.Camera",
-            "room-a",
-            &forged,
-            now
-        ));
-        assert!(registry.accept_chunk(&source, &target, "dev.tilo.Camera", "room-a", &chunk, now));
+        assert!(!registry.accept_chunk(&source, &target, "so.tilo.Camera", "room-a", &forged, now));
+        assert!(registry.accept_chunk(&source, &target, "so.tilo.Camera", "room-a", &chunk, now));
         assert_eq!(
             registry.phase(session_id),
             Some(RemoteCapturePhase::Streaming)
@@ -550,8 +543,8 @@ mod tests {
             end_of_unit: true,
             payload: vec![0; 2],
         };
-        assert!(registry.accept_chunk(&source, &target, "dev.tilo.Camera", "room-a", &audio, now));
-        assert!(!registry.accept_chunk(&source, &target, "dev.tilo.Camera", "room-a", &audio, now));
+        assert!(registry.accept_chunk(&source, &target, "so.tilo.Camera", "room-a", &audio, now));
+        assert!(!registry.accept_chunk(&source, &target, "so.tilo.Camera", "room-a", &audio, now));
     }
 
     #[test]
@@ -577,7 +570,7 @@ mod tests {
                 now,
             )
             .unwrap();
-        assert_eq!(registry.revoke_app("dev.tilo.Camera", "room-a"), 1);
+        assert_eq!(registry.revoke_app("so.tilo.Camera", "room-a"), 1);
         let (session_id, _) = registry
             .grant(&request(RemoteCaptureKind::Microphone), source, target, now)
             .unwrap();

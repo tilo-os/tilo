@@ -568,9 +568,9 @@ impl CameraApp {
             initialized: false,
             actions: ui::ActionHost::new(),
             search_provider: crate::search::CameraSearchProvider::new(),
-            photos_handoff: Self::media_handoff_emitter("dev.tilo.photos", "Photos"),
+            photos_handoff: Self::media_handoff_emitter("so.tilo.photos", "Photos"),
             photos_browse: Self::photos_browse_emitter(),
-            video_handoff: Self::media_handoff_emitter("dev.tilo.video-player", "Video Player"),
+            video_handoff: Self::media_handoff_emitter("so.tilo.video-player", "Video Player"),
         }
     }
 
@@ -8124,7 +8124,7 @@ mod tests {
     fn portal_selected_image_decodes_a_real_qr_without_media_indexing() {
         // Rasterize a real QR to a PNG on disk, then prove the scanner decodes
         // it through the production code path — no camera involved.
-        let payload = "https://tilo.example/scanned-from-a-saved-photo";
+        let payload = "https://example.test/scanned-from-a-saved-photo";
         let m = crate::scan::encode(payload).expect("encode");
         let (scale, quiet) = (8usize, 4usize);
         let dim = (m.size + quiet * 2) * scale;

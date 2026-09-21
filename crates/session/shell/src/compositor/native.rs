@@ -8053,7 +8053,7 @@ mod tests {
             &services,
             false,
             launcher::services::ServiceLaunchContext {
-                app_id: "dev.tilo.socket-contract-test",
+                app_id: "so.tilo.socket-contract-test",
                 workspace_id: Some("socket-contract-workspace"),
             },
         )
@@ -9123,7 +9123,7 @@ mod tests {
             Some(crate::shell::chrome_state::SearchResourceScope {
                 peer_id: 0x42,
                 cluster_id: "room:design".into(),
-                app_id: "dev.tilo.reader".into(),
+                app_id: "so.tilo.reader".into(),
                 resource: "book:architecture/chapter:7".into(),
                 label: "Rendering and state".into(),
             });
@@ -9136,7 +9136,7 @@ mod tests {
         let scope = &state.chrome_state_json()["search_resource_scope"];
         assert_eq!(scope["peer_id"], 0x42);
         assert_eq!(scope["cluster_id"], "room:design");
-        assert_eq!(scope["app_id"], "dev.tilo.reader");
+        assert_eq!(scope["app_id"], "so.tilo.reader");
         assert_eq!(scope["resource"], "book:architecture/chapter:7");
         assert_eq!(scope["label"], "Rendering and state");
     }
@@ -10022,21 +10022,21 @@ mod external_floating_security_tests {
     fn authenticated_app_region_is_translated_and_clipped_to_its_surface() {
         let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
         let source = FloatingSource::AppRegion {
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             region: Rect::new(720.0, 20.0, 880.0, 220.0),
         };
-        let translated = translate_external_source(source, "dev.tilo.chat", app).unwrap();
+        let translated = translate_external_source(source, "so.tilo.chat", app).unwrap();
         let FloatingSource::AppRegion { region, .. } = translated else {
             panic!("app region must remain an app region");
         };
         assert_eq!(region, Rect::new(1020.0, 100.0, 1100.0, 300.0));
 
         let semantic = FloatingSource::AppElement {
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             element_id: "call:shared-screen".into(),
             region: Rect::new(40.0, 30.0, 440.0, 280.0),
         };
-        let translated = translate_external_source(semantic, "dev.tilo.chat", app).unwrap();
+        let translated = translate_external_source(semantic, "so.tilo.chat", app).unwrap();
         let FloatingSource::AppElement {
             app_id,
             element_id,
@@ -10045,7 +10045,7 @@ mod external_floating_security_tests {
         else {
             panic!("semantic app element must retain its identity");
         };
-        assert_eq!(app_id, "dev.tilo.chat");
+        assert_eq!(app_id, "so.tilo.chat");
         assert_eq!(element_id, "call:shared-screen");
         assert_eq!(region, Rect::new(340.0, 110.0, 740.0, 360.0));
     }
@@ -10066,10 +10066,10 @@ mod external_floating_security_tests {
         assert!(
             translate_external_source(
                 FloatingSource::AppRegion {
-                    app_id: "dev.tilo.mail".into(),
+                    app_id: "so.tilo.mail".into(),
                     region: Rect::new(0.0, 0.0, 200.0, 120.0),
                 },
-                "dev.tilo.chat",
+                "so.tilo.chat",
                 app,
             )
             .is_err()
@@ -10077,7 +10077,7 @@ mod external_floating_security_tests {
         assert!(
             translate_external_source(
                 FloatingSource::Surface { surface_id: 42 },
-                "dev.tilo.chat",
+                "so.tilo.chat",
                 app,
             )
             .is_err()
@@ -10087,21 +10087,21 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_native_surface_accepts_local_source_but_not_spoofed_identity() {
         let source = FloatingSource::AppRegion {
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             region: Rect::new(420.0, 80.0, 780.0, 300.0),
         };
-        assert!(validate_app_owned_source(&source, "dev.tilo.chat").is_ok());
+        assert!(validate_app_owned_source(&source, "so.tilo.chat").is_ok());
         assert_eq!(
             app_owned_source_region(
                 &source,
-                "dev.tilo.chat",
+                "so.tilo.chat",
                 vello::kurbo::Size::new(1_000.0, 700.0)
             ),
             Some(Rect::new(420.0, 80.0, 780.0, 300.0))
         );
-        assert!(validate_app_owned_source(&source, "dev.tilo.maps").is_err());
+        assert!(validate_app_owned_source(&source, "so.tilo.maps").is_err());
         assert!(
-            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "dev.tilo.chat")
+            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "so.tilo.chat")
                 .is_err()
         );
     }
@@ -10109,7 +10109,7 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_transfer_keeps_visible_soft_chrome_at_the_parent_edge() {
         let source = FloatingSource::AppElement {
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             element_id: "active-call".into(),
             // A live drag has already carried most of the content beyond the
             // primary window. Its final visible strip is still a valid source
@@ -10120,7 +10120,7 @@ mod external_floating_security_tests {
         let visible = app_owned_transfer_region(
             &source,
             Some(presentation),
-            "dev.tilo.chat",
+            "so.tilo.chat",
             vello::kurbo::Size::new(1_200.0, 700.0),
         )
         .expect("the visible decorated edge becomes the warm-up proxy");
@@ -10130,7 +10130,7 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_transfer_prefers_decoration_over_content_only_source() {
         let source = FloatingSource::AppRegion {
-            app_id: "dev.tilo.maps".into(),
+            app_id: "so.tilo.maps".into(),
             region: Rect::new(720.0, 120.0, 1_080.0, 276.0),
         };
         let window = Rect::new(712.0, 112.0, 1_088.0, 284.0);
@@ -10138,7 +10138,7 @@ mod external_floating_security_tests {
             app_owned_transfer_region(
                 &source,
                 Some(window),
-                "dev.tilo.maps",
+                "so.tilo.maps",
                 vello::kurbo::Size::new(1_280.0, 720.0),
             ),
             Some(window),

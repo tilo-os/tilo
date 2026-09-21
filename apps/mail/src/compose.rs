@@ -2700,11 +2700,11 @@ mod tests {
             .as_mut()
             .unwrap()
             .input
-            .set_text("https://tilo.example/docs");
+            .set_text("https://example.test/docs");
         w.confirm_prompt();
         let html = w.editor.to_html();
         assert!(
-            html.contains("href=\"https://tilo.example/docs\""),
+            html.contains("href=\"https://example.test/docs\""),
             "got: {html}"
         );
         assert!(

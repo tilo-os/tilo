@@ -149,7 +149,7 @@ pub fn note_placement_for_launch(
 }
 
 /// [`note_placement_for_launch`] for a launch whose window identities
-/// cannot be derived from its id — a `.qpkg`'s wayland app-id follows
+/// cannot be derived from its id — a `.tapp`'s wayland app-id follows
 /// its package id by convention, but a host app's cannot, so the caller
 /// that read the `.desktop`/Flatpak id passes it in instead.
 pub fn note_placement_for_launch_identities(
@@ -405,7 +405,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.tilo.seamfixture",
+            "so.tilo.seamfixture",
             "seamfixture",
             9101,
             Some(&view),
@@ -433,7 +433,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.tilo.nextseamfixture",
+            "so.tilo.nextseamfixture",
             "nextseamfixture",
             9102,
             Some(&view),
@@ -463,7 +463,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.tilo.besidefixture",
+            "so.tilo.besidefixture",
             "besidefixture",
             9103,
             Some(&view),
@@ -491,7 +491,7 @@ mod tests {
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
-            "dev.tilo.tabbedfixture",
+            "so.tilo.tabbedfixture",
             "tabbedfixture",
             9104,
             Some(&view),

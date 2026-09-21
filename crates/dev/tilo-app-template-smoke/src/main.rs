@@ -2,7 +2,7 @@
 
 fn main() {
     ui::launch::run_or_exit(&ui::launch::LaunchSpec::new(
-        "dev.tilo.template-smoke",
+        "so.tilo.template-smoke",
         tilo_app_template_smoke::starter::app_root,
     ));
 }

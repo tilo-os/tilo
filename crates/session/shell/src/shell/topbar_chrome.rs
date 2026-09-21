@@ -5274,7 +5274,7 @@ mod tests {
                 id: tab_id,
                 title: "Draft".into(),
                 tile: TileContent::Foreign {
-                    app_id: "dev.tilo.editor".into(),
+                    app_id: "so.tilo.editor".into(),
                     surface_id: 42,
                 },
             }],

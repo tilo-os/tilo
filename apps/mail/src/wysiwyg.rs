@@ -1307,10 +1307,10 @@ mod tests {
             ed.insert_char(ch);
         }
         ed.select_all();
-        ed.set_link("https://tilo.example");
+        ed.set_link("https://example.test");
         let html = ed.to_html();
         assert!(
-            html.contains("<a href=\"https://tilo.example\">"),
+            html.contains("<a href=\"https://example.test\">"),
             "got: {html}"
         );
     }

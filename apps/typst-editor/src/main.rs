@@ -64,7 +64,7 @@ pub fn main() {
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.typst-editor", typst_editor::app_root)
+    LaunchSpec::new("so.tilo.typst-editor", typst_editor::app_root)
         .history(&typst_editor::framework_history::HISTORY)
         .configure_app(|app| app.set_window_title(Some("Typst".into())))
         .shot_handler(shot_handler)

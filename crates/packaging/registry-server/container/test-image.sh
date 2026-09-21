@@ -80,7 +80,7 @@ docker run --rm \
   --owner-pubkey "$owner_pubkey" \
   --name "Tilo registry image smoke test" \
   --description "ephemeral" \
-  --base-url https://registry.tilo.dev
+  --base-url https://apps.tilo.so
 
 docker run --detach --name "$container" \
   --read-only \

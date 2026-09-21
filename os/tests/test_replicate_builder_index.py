@@ -90,7 +90,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                 stdout=json.dumps(
                     {
                         "Account": "125650147312",
-                        "Arn": "arn:aws:sts::125650147312:assumed-role/podesta-burst-usw2-qos-builder-replication/run",
+                        "Arn": "arn:aws:sts::125650147312:assumed-role/podesta-burst-usw2-tilo-builder-replication/run",
                     }
                 ),
             )
@@ -122,7 +122,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                 target = MODULE.replicate(
                     source,
                     "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder",
-                    "arn:aws:iam::125650147312:role/podesta-burst-usw2-qos-builder-replication",
+                    "arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication",
                     "us-west-2",
                     "tilo-builder-replication",
                     ROOT / "keys/cosign.pub",
@@ -138,7 +138,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             for aws_environment in self.aws_environments:
                 self.assertNotIn("AWS_ACCESS_KEY_ID", aws_environment)
                 self.assertNotIn("AWS_SECRET_ACCESS_KEY", aws_environment)
-                self.assertEqual(aws_environment["AWS_ROLE_ARN"].rsplit("/", 1)[1], "podesta-burst-usw2-qos-builder-replication")
+                self.assertEqual(aws_environment["AWS_ROLE_ARN"].rsplit("/", 1)[1], "podesta-burst-usw2-tilo-builder-replication")
                 self.assertFalse(Path(aws_environment["AWS_WEB_IDENTITY_TOKEN_FILE"]).exists())
             receipt = output.read_text()
             self.assertIn("source=" + MODULE.SOURCE_REPOSITORY + "@" + self.digest, receipt)
@@ -155,7 +155,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                     MODULE.replicate(
                         source,
                         "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder",
-                        "arn:aws:iam::125650147312:role/podesta-burst-usw2-qos-builder-replication",
+                        "arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication",
                         "us-west-2",
                         "tilo-builder-replication",
                         ROOT / "keys/cosign.pub",
@@ -215,7 +215,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                         MODULE.replicate(
                             source,
                             "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
-                            "arn:aws:iam::125650147312:role/podesta-burst-usw2-qos-builder-replication",
+                            "arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication",
                             "us-west-2",
                             "tilo-builder-replication",
                             None,
@@ -254,7 +254,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                         MODULE.replicate(
                             source,
                             "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
-                            "arn:aws:iam::125650147312:role/podesta-burst-usw2-qos-builder-replication",
+                            "arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication",
                             "us-west-2",
                             "tilo-builder-replication",
                             None,
@@ -323,7 +323,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                         target = MODULE.replicate(
                             source,
                             "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
-                            "arn:aws:iam::125650147312:role/podesta-burst-usw2-qos-builder-replication",
+                            "arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication",
                             "us-west-2",
                             "tilo-builder-replication",
                             None,
@@ -335,7 +335,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                             MODULE.replicate(
                                 source,
                                 "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
-                                "arn:aws:iam::125650147312:role/podesta-burst-usw2-qos-builder-replication",
+                                "arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication",
                                 "us-west-2",
                                 "tilo-builder-replication",
                                 None,
@@ -343,7 +343,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                             )
                 self.assertFalse(any(call[:2] == ("skopeo", "copy") for call in self.calls))
 
-    def test_generic_mapping_preserves_external_index_without_claiming_qos_signature(self):
+    def test_generic_mapping_preserves_external_index_without_claiming_tilo_signature(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "python-index.txt"
             output = Path(temporary) / "replication.txt"
@@ -360,7 +360,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                 target = MODULE.replicate(
                     source,
                     "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
-                    "arn:aws:iam::125650147312:role/podesta-burst-usw2-qos-builder-replication",
+                    "arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication",
                     "us-west-2",
                     "tilo-builder-replication",
                     None,
@@ -410,7 +410,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                 target = MODULE.replicate(
                     source,
                     "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-registry-server",
-                    "arn:aws:iam::125650147312:role/podesta-burst-usw2-qos-builder-replication",
+                    "arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication",
                     "us-west-2",
                     "tilo-builder-replication",
                     ROOT / "keys/cosign.pub",
@@ -499,7 +499,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                     MODULE.replicate(
                         source,
                         "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
-                        "arn:aws:iam::125650147312:role/podesta-burst-usw2-qos-builder-replication",
+                        "arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication",
                         "us-west-2",
                         "tilo-builder-replication",
                         None,

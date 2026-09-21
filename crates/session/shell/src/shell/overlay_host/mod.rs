@@ -299,7 +299,7 @@ mod device_fabric_ui_tests {
                     local_can_control: false,
                 }],
                 local_media: vec![FabricMediaView {
-                    session_id: "dev.tilo.video:7".into(),
+                    session_id: "so.tilo.video:7".into(),
                     title: "Shared film".into(),
                     playing: true,
                     has_video: true,
@@ -488,7 +488,7 @@ mod device_fabric_ui_tests {
         let actions = actions.borrow();
         assert!(actions.contains(&DeviceFabricUiAction::RouteLocalAudio { node_id: 41 }));
         assert!(actions.contains(&DeviceFabricUiAction::HandoffMedia {
-            session_id: "dev.tilo.video:7".into(),
+            session_id: "so.tilo.video:7".into(),
             target: remote,
         }));
         assert!(actions.contains(&DeviceFabricUiAction::Place {
@@ -506,7 +506,7 @@ mod device_fabric_ui_tests {
         view.media_handoffs = vec![
             crate::shell::device_fabric_runtime::MediaHandoffStatusView {
                 request_id: [7; 16],
-                session_id: "dev.tilo.video:7".into(),
+                session_id: "so.tilo.video:7".into(),
                 title: "Shared film".into(),
                 target: remote,
                 target_label: "Travel laptop".into(),
@@ -694,7 +694,7 @@ mod device_fabric_ui_tests {
             forwarding_id: [7; 16],
             controller_label: "Arcade controller".into(),
             source_label: "Travel laptop".into(),
-            app_id: "dev.tilo.game".into(),
+            app_id: "so.tilo.game".into(),
         }];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
@@ -13735,7 +13735,7 @@ impl ShellOverlayHost {
                     st.overlays.quick_settings = false;
                     st.bump();
                 }
-                (self.app_launcher)(chrome, "dev.tilo.settings", "Settings");
+                (self.app_launcher)(chrome, "so.tilo.settings", "Settings");
                 // A missing Settings package is already reported by the
                 // ordinary launcher as an actionable failure notification.
                 // Workspace settings controls sharing, members and room
@@ -25779,7 +25779,7 @@ mod palette_dispatch_tests {
     #[serial_test::serial(launch_events)]
     fn clean_launch_exit_retires_its_pending_open_notice() {
         let (mut host, chrome) = host_with_launch_polling();
-        let package_id = "dev.tilo.exit-before-window-fixture";
+        let package_id = "so.tilo.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,
             crate::compositor::tab_binding::Placement::NewGroup,
@@ -25919,7 +25919,7 @@ mod palette_dispatch_tests {
             Some(crate::shell::chrome_state::SearchResourceScope {
                 peer_id: 9,
                 cluster_id: "room".into(),
-                app_id: "dev.tilo.reader".into(),
+                app_id: "so.tilo.reader".into(),
                 resource: "book:42".into(),
                 label: "Book of Tilo".into(),
             });
@@ -26379,7 +26379,7 @@ mod palette_dispatch_tests {
         drop(state);
         assert_eq!(
             launches.borrow().as_slice(),
-            &[("dev.tilo.settings".into(), "Settings".into())],
+            &[("so.tilo.settings".into(), "Settings".into())],
             "the app-launch service receives the exact Personal Settings identity"
         );
     }
@@ -26792,7 +26792,7 @@ mod palette_dispatch_tests {
                 "Loading…",
             ))
         };
-        crate::shell::catalogue::note_pending_notice("dev.tilo.retirefixture", notice);
+        crate::shell::catalogue::note_pending_notice("so.tilo.retirefixture", notice);
 
         assert!(
             !h.retire_notices_for_opened_windows(),
@@ -26818,7 +26818,7 @@ mod palette_dispatch_tests {
             crate::compositor::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
-                Some("dev.tilo.retirefixture".to_string()),
+                Some("so.tilo.retirefixture".to_string()),
             );
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
@@ -26874,7 +26874,7 @@ mod palette_dispatch_tests {
                 "Loading…",
             ))
         };
-        crate::shell::catalogue::note_pending_notice("dev.tilo.retirefixture", notice);
+        crate::shell::catalogue::note_pending_notice("so.tilo.retirefixture", notice);
 
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
@@ -26884,7 +26884,7 @@ mod palette_dispatch_tests {
             crate::compositor::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
-                Some("dev.tilo.retirefixture".to_string()),
+                Some("so.tilo.retirefixture".to_string()),
             );
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
@@ -28761,7 +28761,7 @@ mod overlay_event_absorb_tests {
             Some(crate::shell::chrome_state::SearchResourceScope {
                 peer_id: 7,
                 cluster_id: "room:test".into(),
-                app_id: "dev.tilo.reader".into(),
+                app_id: "so.tilo.reader".into(),
                 resource: "book:42".into(),
                 label: "Book of Tilo".into(),
             });
@@ -31548,7 +31548,7 @@ mod tests {
         use crate::shell::chrome_state::SearchScope;
 
         let tmp = tempfile::tempdir().unwrap();
-        install_gui_fixture(tmp.path(), "dev.tilo.zzyzx", "Zzyzx");
+        install_gui_fixture(tmp.path(), "so.tilo.zzyzx", "Zzyzx");
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         crate::shell::launcher::invalidate_app_cache();
@@ -31604,7 +31604,7 @@ mod tests {
                     .collect::<Vec<_>>()
             )
         });
-        assert_eq!(hit.id, "dev.tilo.zzyzx");
+        assert_eq!(hit.id, "so.tilo.zzyzx");
         assert_eq!(hit.title, "Open Zzyzx");
 
         // SAFETY: guarded by the `process_env` serial group.

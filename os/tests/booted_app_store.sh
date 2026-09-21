@@ -107,7 +107,7 @@ $(on "tilo-runtime-bundle verify /usr/lib/tilo-runtime/$RUNTIME_VERSION 2>&1" | 
 fi
 
 # --- 4. the package manager is usable on the running system ------------------
-for t in tilo-install tilo-pkg; do
+for t in tilo-install tilo-app-package; do
   if on "command -v $t" >/dev/null 2>&1; then
     ok "$t is on PATH"
   else

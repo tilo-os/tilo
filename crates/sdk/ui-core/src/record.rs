@@ -2224,7 +2224,7 @@ mod tests {
     fn save_status_older_ack_keeps_newer_pending_edit_saving() {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(temp.path().join("state"));
-        let store = owners.open("dev.tilo.test", "status-room").unwrap();
+        let store = owners.open("so.tilo.test", "status-room").unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         let mut reservation = store.reserve_record(&checkout).unwrap();
         reservation
@@ -2309,7 +2309,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
         let mut owners = RecordOwners::new(root);
-        let store = owners.open("dev.tilo.test", "room-a").unwrap();
+        let store = owners.open("so.tilo.test", "room-a").unwrap();
         let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         let mut token = store.reserve_record(&want).unwrap();
         let generation = token.generation;
@@ -2335,7 +2335,7 @@ mod tests {
             assert_eq!(reserved.generation, generation);
             assert!(std::sync::Arc::ptr_eq(&owner, &reserved.store));
         }
-        assert!(app_state::DocStore::open_canonical_at("dev.tilo.test", owner.dir()).is_err());
+        assert!(app_state::DocStore::open_canonical_at("so.tilo.test", owner.dir()).is_err());
         token
             .initialize(|doc| {
                 assert!(doc.get(ROOT, "discard").unwrap().is_none());
@@ -2376,8 +2376,8 @@ mod tests {
     fn canonical_repeated_handles_do_not_duplicate_writes_or_rebase_history() {
         let tmp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(tmp.path().join("state"));
-        let store = owners.open("dev.tilo.test", "room-a").unwrap();
-        let second = owners.open("dev.tilo.test", "room-a").unwrap();
+        let store = owners.open("so.tilo.test", "room-a").unwrap();
+        let second = owners.open("so.tilo.test", "room-a").unwrap();
         let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         store
             .reserve_record(&want)
@@ -2604,7 +2604,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temporary state directory");
         // SAFETY: serialised by this module's persistent-record tests.
         unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
-        let package = "dev.tilo.room-discovery";
+        let package = "so.tilo.room-discovery";
         let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
         let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
@@ -3020,7 +3020,7 @@ mod tests {
         );
 
         {
-            let mut set = RecordSet::open("dev.tilo.test-records").with_home(room_id);
+            let mut set = RecordSet::open("so.tilo.test-records").with_home(room_id);
             let mut state = State::new();
             let mut room = AutoCommit::new();
             // `a` is adopted: content exists before the record is named,
@@ -3033,7 +3033,7 @@ mod tests {
         }
 
         // A fresh process: same package, same record ids, nothing else shared.
-        let mut set = RecordSet::open("dev.tilo.test-records").with_home(room_id);
+        let mut set = RecordSet::open("so.tilo.test-records").with_home(room_id);
         let mut state = State::new();
         let mut room = AutoCommit::new();
         set.checkout(&mut state, Some(&mut room), &a);
@@ -3051,7 +3051,7 @@ mod tests {
 
         let dir = tmp
             .path()
-            .join("dev.tilo.test-records")
+            .join("so.tilo.test-records")
             .join(app_state::ROOMS_DIR)
             .join(room_id)
             .join(app_state::RECORDS_DIR);
@@ -3082,7 +3082,7 @@ mod tests {
         let record = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
 
         for (room, body) in [(a, "private to a"), (b, "private to b")] {
-            let mut set = RecordSet::open("dev.tilo.scoped-records").with_home(room);
+            let mut set = RecordSet::open("so.tilo.scoped-records").with_home(room);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &record));
             put_text(&mut state.doc, "body", body);
@@ -3090,7 +3090,7 @@ mod tests {
         }
 
         for (room, expected) in [(a, "private to a"), (b, "private to b")] {
-            let mut set = RecordSet::open("dev.tilo.scoped-records").with_home(room);
+            let mut set = RecordSet::open("so.tilo.scoped-records").with_home(room);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &record));
             assert_eq!(text(&state.doc, "body").as_deref(), Some(expected));

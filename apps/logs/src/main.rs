@@ -77,7 +77,7 @@ fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
 }
 
 fn launch_spec_base(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.logs", root)
+    LaunchSpec::new("so.tilo.logs", root)
         .shot_root(shot_root)
         .allowed_flags(&[
             "--detail",
@@ -95,7 +95,7 @@ mod launch_tests {
     use ui::history_mode::{HistoryDefinition, HistoryPresentation, HistoryScopeDefinition};
 
     static FOREIGN_HISTORY: HistoryDefinition = HistoryDefinition {
-        app_id: "dev.tilo.foreign",
+        app_id: "so.tilo.foreign",
         scopes: &[HistoryScopeDefinition {
             key: "foreign",
             title: "Foreign",

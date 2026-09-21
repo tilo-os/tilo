@@ -3,10 +3,10 @@
 
 set -euo pipefail
 
-index=${1:?usage: reuse_prior_app_collection.sh INDEX PLAN QPKG_DIR ARCH URL SHA256}
-collection_plan=${2:?usage: reuse_prior_app_collection.sh INDEX PLAN QPKG_DIR ARCH URL SHA256}
-qpkg_dir=${3:?usage: reuse_prior_app_collection.sh INDEX PLAN QPKG_DIR ARCH URL SHA256}
-arch=${4:?usage: reuse_prior_app_collection.sh INDEX PLAN QPKG_DIR ARCH URL SHA256}
+index=${1:?usage: reuse_prior_app_collection.sh INDEX PLAN TAPP_DIR ARCH URL SHA256}
+collection_plan=${2:?usage: reuse_prior_app_collection.sh INDEX PLAN TAPP_DIR ARCH URL SHA256}
+tapp_dir=${3:?usage: reuse_prior_app_collection.sh INDEX PLAN TAPP_DIR ARCH URL SHA256}
+arch=${4:?usage: reuse_prior_app_collection.sh INDEX PLAN TAPP_DIR ARCH URL SHA256}
 prior_url=${5:-}
 prior_sha=${6:-}
 temp_root=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
@@ -70,7 +70,7 @@ cleanup() { rm -rf -- "$state"; }
 trap cleanup EXIT
 prior="$state/collection.tar.gz"
 prior_dir="$state/extracted"
-mkdir -p "$prior_dir" "$qpkg_dir"
+mkdir -p "$prior_dir" "$tapp_dir"
 
 curl --fail --silent --show-error --retry 3 --retry-all-errors \
   --proto '=https' --proto-redir '=https' \
@@ -79,8 +79,8 @@ curl --fail --silent --show-error --retry 3 --retry-all-errors \
 printf '%s  %s\n' "$prior_sha" "$prior" | sha256sum --check --strict
 
 while IFS= read -r member; do
-  if [[ $member == qpkg/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS \
-        || $member =~ ^qpkg/[A-Za-z0-9][A-Za-z0-9._+-]*\.qpkg$ \
+  if [[ $member == tapp/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS \
+        || $member =~ ^tapp/[A-Za-z0-9][A-Za-z0-9._+-]*\.tapp$ \
         || $member =~ ^runtime(/[A-Za-z0-9][A-Za-z0-9._+-]*)+/?$ ]]; then
     continue
   fi
@@ -89,11 +89,11 @@ while IFS= read -r member; do
 done < <(tar -tzf "$prior")
 tar --extract --gzip --file "$prior" --directory "$prior_dir" \
   --no-same-owner --no-same-permissions
-[[ -d $prior_dir/qpkg && -d $prior_dir/runtime/tilo-runtime ]] || {
-  printf 'prior app collection is missing qpkg or runtime content\n' >&2
+[[ -d $prior_dir/tapp && -d $prior_dir/runtime/tilo-runtime ]] || {
+  printf 'prior app collection is missing tapp or runtime content\n' >&2
   exit 1
 }
-if find "$prior_dir/qpkg" "$prior_dir/runtime" -type l -o \( ! -type f ! -type d \) | grep -q .; then
+if find "$prior_dir/tapp" "$prior_dir/runtime" -type l -o \( ! -type f ! -type d \) | grep -q .; then
   printf 'prior app collection contains links or special files\n' >&2
   exit 1
 fi
@@ -114,11 +114,11 @@ if [[ -z $new_root || ${new_root,,} != ${prior_root,,} ]]; then
 fi
 
 shopt -s nullglob
-prior_qpkgs=("$prior_dir"/qpkg/*.qpkg)
-(( ${#prior_qpkgs[@]} > 0 )) || {
-  printf 'prior app collection contains no qpkgs\n' >&2
+prior_tapps=("$prior_dir"/tapp/*.tapp)
+(( ${#prior_tapps[@]} > 0 )) || {
+  printf 'prior app collection contains no tapps\n' >&2
   exit 1
 }
 python3 "$(dirname "$0")/apps/dev_app_versions.py" --plan "$collection_plan" \
   --built-index "$index" --prior-index "$prior_dir/index.json"
-cp "${prior_qpkgs[@]}" "$qpkg_dir/"
+cp "${prior_tapps[@]}" "$tapp_dir/"

@@ -32,7 +32,7 @@ use ui::launch::LaunchSpec;
 use ui::launch::{LaunchArgs, LaunchError};
 use ui::widget::Widget;
 
-const APP_ID: &str = "dev.tilo.settings";
+const APP_ID: &str = "so.tilo.settings";
 
 fn root() -> Box<dyn Widget> {
     Box::new(settings::SettingsApp::new())

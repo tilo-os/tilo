@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 
 use ed25519_dalek::SigningKey;
 use registry_server::{PublisherAllowlist, PublisherRow, ServerIdentity, Storage};
-use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
+use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion, sign_entry};
 
 fn wait_for_registry_lock_waiter(pid: u32) {
     let pid = pid.to_string();
@@ -71,22 +71,29 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         })
         .unwrap();
     let mut entry = RegistryEntry {
-        package_id: "dev.tilo.test".into(),
+        package_id: "so.tilo.test".into(),
         name: "Test".into(),
         description: "Test app".into(),
+        tagline: "Test on Tilo OS".into(),
+        images: registry_types::LocalizedImages::default(),
+        supported_languages: vec!["en".into()],
         categories: vec!["Test".into()],
-        icon_url: None,
         source_url: None,
         homepage: None,
         publisher_pubkey_hex: publisher_hex,
         versions: vec![RegistryVersion {
             version: "1".into(),
-            qpkg_url: "https://registry.test/test.qpkg".into(),
-            qpkg_root_hash_hex: "ab".repeat(32),
-            qpkg_size_bytes: 1,
+            tapp_url: "https://apps.tilo.so/artifacts/test-x86_64.tapp".into(),
+            tapp_root_hash_hex: "ab".repeat(32),
+            tapp_size_bytes: 1,
             released_at_unix: 1,
-            qpkg_blake3_hex: None,
-            target: None,
+            tapp_blake3_hex: "cd".repeat(32),
+            target: RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
+            },
         }],
         updated_at_unix: 1,
         signature_hex: String::new(),
@@ -170,10 +177,12 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
     );
     let rolled_back = storage.load_snapshot().unwrap().unwrap();
     assert_eq!(rolled_back.sequence, 3);
-    assert_eq!(rolled_back.entries[0].name, "Test");
+    assert_eq!(rolled_back.entries[0].name.resolve("en"), Some("Test"));
     assert_eq!(
-        storage.load_snapshot_sequence(2).unwrap().unwrap().entries[0].name,
-        "Changed"
+        storage.load_snapshot_sequence(2).unwrap().unwrap().entries[0]
+            .name
+            .resolve("en"),
+        Some("Changed")
     );
 
     std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o644)).unwrap();
