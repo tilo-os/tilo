@@ -240,7 +240,7 @@ fn native_document_edit_has_writer_provenance() {
     assert_eq!(context.action_label, "Edit document");
     assert_eq!(
         context.app.as_ref().map(|app| app.id.as_str()),
-        Some("org.tilo.Writer")
+        Some("org.qos.Writer")
     );
     assert_eq!(
         context
@@ -687,6 +687,8 @@ fn scrolling_retains_overlap_but_discards_transient_block_previews() {
     });
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
+    state.commit_action(None, None);
+    wp.refresh_blocks(&mut state.doc);
     let retained_id = wp.blocks[100].id.clone();
     let retained_text = wp.blocks[100].text.as_ptr();
     for focus in [60, 80, 70, 48] {
@@ -3567,6 +3569,46 @@ fn multi_block_typing_dispatches_one_replace_selection_action() {
 
 #[test]
 fn shared_clipboard_preserves_rich_paste_and_plain_paste_semantics() {
+    const CHILD: &str = "TILO_WRITER_CLIPBOARD_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "widget::tests::shared_clipboard_preserves_rich_paste_and_plain_paste_semantics",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated clipboard test failed:
+{}
+{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    #[derive(Default)]
+    struct TestClipboard(std::sync::Mutex<Option<String>>);
+    impl ui::clipboard::ClipboardBackend for TestClipboard {
+        fn set_text(&self, _: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+            *self.0.lock().unwrap() = Some(text.to_string());
+            true
+        }
+
+        fn text(&self, _: ui::clipboard::ClipboardTarget) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+
+        fn name(&self) -> &'static str {
+            "writer-clipboard-test"
+        }
+    }
+    assert!(ui::clipboard::clipboard_backend().is_none());
+    ui::clipboard::install_clipboard_backend(std::sync::Arc::new(TestClipboard::default()));
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
@@ -4956,10 +4998,10 @@ fn template_menu_pointer_selection_and_dismissal_use_the_overlay() {
     let (mut state, mut wp) = bound();
     pipeline_draw(&mut wp, &mut state, 1200, 700);
     wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
-    let report = Point::new(
-        wp.toolbar.first().unwrap().1.x0 + 10.0,
-        wp.rect.y0 + wp.toolbar_height(wp.rect.width()) + 6.0 + 28.0 * 2.0 + 10.0,
-    );
+    let report = wp
+        .template_picker
+        .item_center(crate::Template::Report)
+        .expect("Report has a measured menu row");
     left_click(&mut wp, &mut state, report);
     assert!(!wp.template_picker.is_open());
     assert_eq!(
@@ -5249,7 +5291,10 @@ fn recovery_reuses_fresh_complete_views_and_falls_back_for_stale_or_partial_view
         wp.set_recovery_dir(dir.clone());
         wp.inner.insert_str(&mut state.doc, "Unicode café recovery");
         wp.refresh_blocks(&mut state.doc);
-        if case == "stale" {
+        if case == "fresh" {
+            state.commit_action(None, None);
+            wp.refresh_blocks(&mut state.doc);
+        } else if case == "stale" {
             wp.inner.insert_str(&mut state.doc, " latest pending edit");
         } else if case == "partial" {
             with_doc(&mut state, |dm| {

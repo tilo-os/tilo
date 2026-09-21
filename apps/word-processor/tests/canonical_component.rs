@@ -57,7 +57,8 @@ fn harness() -> (
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
     let checkout = component.record().clone();
-    let font_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts");
+    let font_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/sdk/ui-core/assets/fonts");
     let fonts = ui::font_catalog::FontCatalog::product(&font_root, "en-US")
         .load_bytes(|name| std::fs::read(font_root.join(name)).ok())
         .unwrap();
