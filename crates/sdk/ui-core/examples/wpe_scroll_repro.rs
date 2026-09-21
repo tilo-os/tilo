@@ -12,8 +12,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ui::webview::wpe::WpeEngine;
-use ui::webview::{WebViewCommand, WebViewEngine};
+use tilo_ui::webview::wpe::WpeEngine;
+use tilo_ui::webview::{WebViewCommand, WebViewEngine};
 
 const W: u32 = 1000;
 const H: u32 = 700;

@@ -10,11 +10,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
-    name = "tilo-dev",
+    name = "tilo-app",
     version,
     about = "Create and work on Tilo apps",
     long_about = "The short path from an app idea to a running Tilo window.\n\n\
-                  Run `tilo-dev new` for an interactive setup, or provide a name \
+                  Run `tilo-app new` for an interactive setup, or provide a name \
                   and flags for a reproducible, non-interactive scaffold. Then \
                   use `add`, `locale`, `check`, `scenario`, `dev`, `test`, `run`, `shot`, `inspect`, and `package` from anywhere inside the app. Use `ui` to construct validated serialized screens."
 )]
@@ -576,8 +576,8 @@ fn main() -> ExitCode {
         Command::Doctor(args) => run_doctor(args),
         Command::Check(args) => run_check(args),
         Command::Certify(args) => run_certify(args),
-        Command::Run(args) => run_app_task(args, tilo_dev::AppTask::Run),
-        Command::Test(args) => run_app_task(args, tilo_dev::AppTask::Test),
+        Command::Run(args) => run_app_task(args, tilo_app_cli::AppTask::Run),
+        Command::Test(args) => run_app_task(args, tilo_app_cli::AppTask::Test),
         Command::Dev(args) => run_dev(args),
         Command::Shot(args) => run_shot(args),
         Command::Inspect(args) => run_inspect(args),
@@ -587,7 +587,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("tilo-dev: {error:#}");
+            eprintln!("tilo-app: {error:#}");
             ExitCode::FAILURE
         }
     }
@@ -603,7 +603,7 @@ fn run_scenario(args: ScenarioArgs) -> Result<()> {
             audit,
         } => {
             let start = app.map_or_else(std::env::current_dir, Ok)?;
-            let plan = tilo_dev::plan_scenario_suite(&tilo_dev::ScenarioRunRequest {
+            let plan = tilo_app_cli::plan_scenario_suite(&tilo_app_cli::ScenarioRunRequest {
                 start,
                 name,
                 viewport,
@@ -615,7 +615,7 @@ fn run_scenario(args: ScenarioArgs) -> Result<()> {
     }
 }
 
-fn execute_scenario_plan(plan: &tilo_dev::ScenarioSuitePlan) -> Result<()> {
+fn execute_scenario_plan(plan: &tilo_app_cli::ScenarioSuitePlan) -> Result<()> {
     let outcome = plan.execute()?;
     for name in &outcome.passed {
         println!("✓ {name}");
@@ -645,7 +645,7 @@ fn run_locale(args: LocaleArgs) -> Result<()> {
             dry_run,
         } => {
             let start = app.map_or_else(std::env::current_dir, Ok)?;
-            let outcome = tilo_dev::sync_locale_catalogs(&tilo_dev::LocaleSyncRequest {
+            let outcome = tilo_app_cli::sync_locale_catalogs(&tilo_app_cli::LocaleSyncRequest {
                 start,
                 locale,
                 prune,
@@ -687,7 +687,7 @@ fn run_locale(args: LocaleArgs) -> Result<()> {
 fn run_add(args: AddArgs) -> Result<()> {
     let Some(command) = args.command else {
         let start = std::env::current_dir()?;
-        let outcome = tilo_dev::add_app_artifact_interactive(&start)?;
+        let outcome = tilo_app_cli::add_app_artifact_interactive(&start)?;
         print_add_outcome(&outcome);
         return Ok(());
     };
@@ -699,14 +699,14 @@ fn run_add(args: AddArgs) -> Result<()> {
             link_from,
             options,
         } => (
-            tilo_dev::AddArtifact::Screen {
+            tilo_app_cli::AddArtifact::Screen {
                 name,
                 title,
                 template: match template {
-                    ScreenTemplateArg::Blank => tilo_dev::ScreenTemplate::Blank,
-                    ScreenTemplateArg::Form => tilo_dev::ScreenTemplate::Form,
-                    ScreenTemplateArg::Settings => tilo_dev::ScreenTemplate::Settings,
-                    ScreenTemplateArg::EmptyState => tilo_dev::ScreenTemplate::EmptyState,
+                    ScreenTemplateArg::Blank => tilo_app_cli::ScreenTemplate::Blank,
+                    ScreenTemplateArg::Form => tilo_app_cli::ScreenTemplate::Form,
+                    ScreenTemplateArg::Settings => tilo_app_cli::ScreenTemplate::Settings,
+                    ScreenTemplateArg::EmptyState => tilo_app_cli::ScreenTemplate::EmptyState,
                 },
                 link_from,
             },
@@ -716,9 +716,12 @@ fn run_add(args: AddArgs) -> Result<()> {
             name,
             screen,
             options,
-        } => (tilo_dev::AddArtifact::Scenario { name, screen }, options),
+        } => (
+            tilo_app_cli::AddArtifact::Scenario { name, screen },
+            options,
+        ),
         AddCommand::Locale { locale, options } => {
-            (tilo_dev::AddArtifact::Locale { locale }, options)
+            (tilo_app_cli::AddArtifact::Locale { locale }, options)
         }
         AddCommand::Component {
             name,
@@ -731,20 +734,20 @@ fn run_add(args: AddArgs) -> Result<()> {
             options,
         } => {
             let template = match template {
-                ComponentTemplateArg::Display => tilo_dev::ComponentTemplate::Display,
-                ComponentTemplateArg::Form => tilo_dev::ComponentTemplate::Form,
-                ComponentTemplateArg::Tree => tilo_dev::ComponentTemplate::Tree,
-                ComponentTemplateArg::List => tilo_dev::ComponentTemplate::List,
-                ComponentTemplateArg::Table => tilo_dev::ComponentTemplate::Table,
-                ComponentTemplateArg::Text => tilo_dev::ComponentTemplate::Text,
+                ComponentTemplateArg::Display => tilo_app_cli::ComponentTemplate::Display,
+                ComponentTemplateArg::Form => tilo_app_cli::ComponentTemplate::Form,
+                ComponentTemplateArg::Tree => tilo_app_cli::ComponentTemplate::Tree,
+                ComponentTemplateArg::List => tilo_app_cli::ComponentTemplate::List,
+                ComponentTemplateArg::Table => tilo_app_cli::ComponentTemplate::Table,
+                ComponentTemplateArg::Text => tilo_app_cli::ComponentTemplate::Text,
             };
             let artifact = if let Some(screen) = mount {
                 let mut mount = match template {
-                    tilo_dev::ComponentTemplate::Display => {
-                        tilo_dev::ComponentMount::display(screen, &name)
+                    tilo_app_cli::ComponentTemplate::Display => {
+                        tilo_app_cli::ComponentMount::display(screen, &name)
                     }
-                    tilo_dev::ComponentTemplate::Form => {
-                        tilo_dev::ComponentMount::form(screen, &name)
+                    tilo_app_cli::ComponentTemplate::Form => {
+                        tilo_app_cli::ComponentMount::form(screen, &name)
                     }
                     _ => anyhow::bail!(
                         "--mount supports --template display and --template form; tree, list, table, and text templates must be constructed from Rust"
@@ -756,19 +759,19 @@ fn run_add(args: AddArgs) -> Result<()> {
                 if let Some(props) = props {
                     mount.props = props;
                 }
-                tilo_dev::AddArtifact::GraphComponent {
+                tilo_app_cli::AddArtifact::GraphComponent {
                     name,
                     template,
                     mount,
                 }
             } else {
-                tilo_dev::AddArtifact::Component { name, template }
+                tilo_app_cli::AddArtifact::Component { name, template }
             };
             (artifact, options)
         }
     };
     let start = options.app.map_or_else(std::env::current_dir, Ok)?;
-    let outcome = tilo_dev::add_app_artifact(tilo_dev::AddRequest {
+    let outcome = tilo_app_cli::add_app_artifact(tilo_app_cli::AddRequest {
         start,
         artifact,
         force: options.force,
@@ -778,7 +781,7 @@ fn run_add(args: AddArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_add_outcome(outcome: &tilo_dev::AddOutcome) {
+fn print_add_outcome(outcome: &tilo_app_cli::AddOutcome) {
     for path in &outcome.files {
         let updating = outcome.updated.contains(path);
         let verb = match (outcome.dry_run, updating) {
@@ -798,16 +801,16 @@ fn print_add_outcome(outcome: &tilo_dev::AddOutcome) {
 fn run_ui(args: UiArgs) -> Result<()> {
     match args.command {
         UiCommand::Edit { file, builder } => {
-            let _ = tilo_dev::load_ui_graph(&file)?;
-            tilo_dev::ui_builder_plan(&file, builder)?.execute()?;
+            let _ = tilo_app_cli::load_ui_graph(&file)?;
+            tilo_app_cli::ui_builder_plan(&file, builder)?.execute()?;
         }
         UiCommand::Init { file, title, force } => {
-            tilo_dev::init_ui_graph(&file, &title, force)?;
+            tilo_app_cli::init_ui_graph(&file, &title, force)?;
             println!("Created {}", file.display());
         }
-        UiCommand::Tree { file } => print!("{}", tilo_dev::ui_graph_tree(&file)?),
+        UiCommand::Tree { file } => print!("{}", tilo_app_cli::ui_graph_tree(&file)?),
         UiCommand::Validate { file } => {
-            let document = tilo_dev::load_ui_graph(&file)?;
+            let document = tilo_app_cli::load_ui_graph(&file)?;
             println!(
                 "Valid UI graph: {} nodes (version {})",
                 document.nodes().len(),
@@ -815,7 +818,7 @@ fn run_ui(args: UiArgs) -> Result<()> {
             );
         }
         UiCommand::Format { file } => {
-            tilo_dev::format_ui_graph(&file)?;
+            tilo_app_cli::format_ui_graph(&file)?;
             println!("Formatted {}", file.display());
         }
         UiCommand::Insert {
@@ -825,9 +828,9 @@ fn run_ui(args: UiArgs) -> Result<()> {
             source,
         } => {
             let node = read_ui_node(source)?;
-            tilo_dev::edit_ui_graph(
+            tilo_app_cli::edit_ui_graph(
                 &file,
-                tilo_dev::UiGraphEdit::Insert {
+                tilo_app_cli::UiGraphEdit::Insert {
                     parent,
                     index,
                     node,
@@ -844,7 +847,7 @@ fn run_ui(args: UiArgs) -> Result<()> {
             props,
         } => run_ui_component(
             &file,
-            tilo_dev::UiComponentInsert {
+            tilo_app_cli::UiComponentInsert {
                 name,
                 id,
                 parent,
@@ -853,12 +856,12 @@ fn run_ui(args: UiArgs) -> Result<()> {
             },
         )?,
         UiCommand::Remove { file, id } => {
-            tilo_dev::edit_ui_graph(&file, tilo_dev::UiGraphEdit::Remove { id })?;
+            tilo_app_cli::edit_ui_graph(&file, tilo_app_cli::UiGraphEdit::Remove { id })?;
             println!("Updated {}", file.display());
         }
         UiCommand::Replace { file, id, source } => {
             let node = read_ui_node(source)?;
-            tilo_dev::edit_ui_graph(&file, tilo_dev::UiGraphEdit::Replace { id, node })?;
+            tilo_app_cli::edit_ui_graph(&file, tilo_app_cli::UiGraphEdit::Replace { id, node })?;
             println!("Updated {}", file.display());
         }
         UiCommand::Move {
@@ -867,7 +870,10 @@ fn run_ui(args: UiArgs) -> Result<()> {
             parent,
             index,
         } => {
-            tilo_dev::edit_ui_graph(&file, tilo_dev::UiGraphEdit::Move { id, parent, index })?;
+            tilo_app_cli::edit_ui_graph(
+                &file,
+                tilo_app_cli::UiGraphEdit::Move { id, parent, index },
+            )?;
             println!("Updated {}", file.display());
         }
         UiCommand::Set {
@@ -877,15 +883,15 @@ fn run_ui(args: UiArgs) -> Result<()> {
             edit,
         } => {
             let graph_edit = match (edit.value, edit.unset) {
-                (Some(source), false) => tilo_dev::UiGraphEdit::SetProperty {
+                (Some(source), false) => tilo_app_cli::UiGraphEdit::SetProperty {
                     id,
                     property,
                     value: parse_ui_property_value(source),
                 },
-                (None, true) => tilo_dev::UiGraphEdit::UnsetProperty { id, property },
+                (None, true) => tilo_app_cli::UiGraphEdit::UnsetProperty { id, property },
                 _ => anyhow::bail!("choose exactly one of --value or --unset"),
             };
-            tilo_dev::edit_ui_graph(&file, graph_edit)?;
+            tilo_app_cli::edit_ui_graph(&file, graph_edit)?;
             println!("Updated {}", file.display());
         }
         UiCommand::Apply { file, edits } => run_ui_apply(&file, &edits)?,
@@ -893,8 +899,8 @@ fn run_ui(args: UiArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_ui_component(file: &Path, request: tilo_dev::UiComponentInsert) -> Result<()> {
-    let id = tilo_dev::insert_ui_component(file, request)?;
+fn run_ui_component(file: &Path, request: tilo_app_cli::UiComponentInsert) -> Result<()> {
+    let id = tilo_app_cli::insert_ui_component(file, request)?;
     println!("Inserted {id} in {}", file.display());
     Ok(())
 }
@@ -902,9 +908,9 @@ fn run_ui_component(file: &Path, request: tilo_dev::UiComponentInsert) -> Result
 fn run_ui_apply(file: &Path, edits: &Path) -> Result<()> {
     let source = std::fs::read_to_string(edits)
         .with_context(|| format!("reading UI graph edits {}", edits.display()))?;
-    let edits = tilo_dev::parse_ui_graph_edits(&source)?;
+    let edits = tilo_app_cli::parse_ui_graph_edits(&source)?;
     let count = edits.len();
-    tilo_dev::edit_ui_graph_batch(file, edits)?;
+    tilo_app_cli::edit_ui_graph_batch(file, edits)?;
     println!("Applied {count} edits to {}", file.display());
     Ok(())
 }
@@ -921,14 +927,14 @@ fn read_ui_node(source: NodeSourceArgs) -> Result<tilo_ui_graph::UiNode> {
             .with_context(|| format!("reading UI node {}", path.display()))?,
         _ => anyhow::bail!("provide exactly one of --node or --node-file"),
     };
-    tilo_dev::parse_ui_node(&source)
+    tilo_app_cli::parse_ui_node(&source)
 }
 
 fn run_package(args: PackageArgs) -> Result<()> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_dev::package_app(
+    tilo_app_cli::package_app(
         &path,
-        &tilo_dev::PackageRequest {
+        &tilo_app_cli::PackageRequest {
             output: args.output,
             identity: args.identity,
             profile: args.profile,
@@ -943,9 +949,9 @@ fn run_package(args: PackageArgs) -> Result<()> {
 
 fn run_dev(args: DevArgs) -> Result<()> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_dev::dev_app(
+    tilo_app_cli::dev_app(
         &path,
-        &tilo_dev::DevRequest {
+        &tilo_app_cli::DevRequest {
             forwarded: args.forwarded,
             watch_ui: !args.app_only,
             debounce: Duration::from_millis(args.debounce_ms.get()),
@@ -955,9 +961,9 @@ fn run_dev(args: DevArgs) -> Result<()> {
 
 fn run_shot(args: ShotArgs) -> Result<()> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_dev::plan_app_shot(
+    tilo_app_cli::plan_app_shot(
         &path,
-        tilo_dev::ShotRequest {
+        tilo_app_cli::ShotRequest {
             output: args.output,
             viewport: args.viewport,
             scenario: args.scenario,
@@ -969,9 +975,9 @@ fn run_shot(args: ShotArgs) -> Result<()> {
 
 fn run_inspect(args: InspectArgs) -> Result<()> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_dev::plan_app_inspection(
+    tilo_app_cli::plan_app_inspection(
         &path,
-        tilo_dev::InspectRequest {
+        tilo_app_cli::InspectRequest {
             output: args.output,
             viewport: args.viewport,
             actions: args.actions,
@@ -1002,14 +1008,14 @@ fn parse_viewport(raw: &str) -> std::result::Result<(u32, u32), String> {
     Ok((width, height))
 }
 
-fn run_app_task(args: AppTaskArgs, task: tilo_dev::AppTask) -> Result<()> {
+fn run_app_task(args: AppTaskArgs, task: tilo_app_cli::AppTask) -> Result<()> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    tilo_dev::plan_app_task(&path, task, &args.forwarded)?.execute()
+    tilo_app_cli::plan_app_task(&path, task, &args.forwarded)?.execute()
 }
 
 fn run_doctor(args: DoctorArgs) -> Result<()> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
-    let report = tilo_dev::doctor_app(&path)?;
+    let report = tilo_app_cli::doctor_app(&path)?;
     println!("{}", report.summary());
     if !report.is_ready() {
         anyhow::bail!("app checks failed");
@@ -1020,18 +1026,18 @@ fn run_doctor(args: DoctorArgs) -> Result<()> {
 fn run_check(args: CheckArgs) -> Result<()> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     println!("[check] app structure");
-    let report = tilo_dev::doctor_app(&path)?;
+    let report = tilo_app_cli::doctor_app(&path)?;
     println!("{}", report.summary());
     if !report.is_ready() {
         anyhow::bail!("app checks failed");
     }
 
     let format_mode = if args.fix {
-        tilo_dev::AppFormatMode::Apply
+        tilo_app_cli::AppFormatMode::Apply
     } else {
-        tilo_dev::AppFormatMode::Check
+        tilo_app_cli::AppFormatMode::Check
     };
-    let quality = tilo_dev::plan_app_quality(&path, &args.forwarded, format_mode)?;
+    let quality = tilo_app_cli::plan_app_quality(&path, &args.forwarded, format_mode)?;
     if args.fix {
         println!("[check] Rust formatting (applying fixes)");
     } else {
@@ -1048,7 +1054,7 @@ fn run_check(args: CheckArgs) -> Result<()> {
 
     if !args.no_scenarios {
         println!("[check] isolated accessibility-audited scenarios");
-        let plan = tilo_dev::plan_scenario_suite(&tilo_dev::ScenarioRunRequest {
+        let plan = tilo_app_cli::plan_scenario_suite(&tilo_app_cli::ScenarioRunRequest {
             start: path,
             name: None,
             viewport: args.viewport,
@@ -1062,9 +1068,9 @@ fn run_check(args: CheckArgs) -> Result<()> {
 }
 
 fn certify_one(path: &Path) -> Result<()> {
-    tilo_dev::plan_app_task(
+    tilo_app_cli::plan_app_task(
         path,
-        tilo_dev::AppTask::Run,
+        tilo_app_cli::AppTask::Run,
         &[OsString::from("--native-audit")],
     )?
     .execute()
@@ -1385,32 +1391,32 @@ fn responsive_acceptance_runs(app_root: &Path) -> Vec<ResponsiveAcceptanceRun> {
 
 fn run_new(args: NewArgs) -> Result<()> {
     let start_dev = args.dev;
-    let request = tilo_dev::NewAppRequest {
+    let request = tilo_app_cli::NewAppRequest {
         name: args.name,
         app_id: args.id,
         title: args.title,
         template: args.template.map(|template| match template {
-            TemplateArg::Starter => tilo_dev::Template::Starter,
-            TemplateArg::Data => tilo_dev::Template::Data,
-            TemplateArg::List => tilo_dev::Template::List,
-            TemplateArg::Tree => tilo_dev::Template::Tree,
-            TemplateArg::Graph => tilo_dev::Template::Graph,
-            TemplateArg::Async => tilo_dev::Template::Async,
-            TemplateArg::Document => tilo_dev::Template::Document,
-            TemplateArg::Qr => tilo_dev::Template::Qr,
-            TemplateArg::Workspace => tilo_dev::Template::Workspace,
+            TemplateArg::Starter => tilo_app_cli::Template::Starter,
+            TemplateArg::Data => tilo_app_cli::Template::Data,
+            TemplateArg::List => tilo_app_cli::Template::List,
+            TemplateArg::Tree => tilo_app_cli::Template::Tree,
+            TemplateArg::Graph => tilo_app_cli::Template::Graph,
+            TemplateArg::Async => tilo_app_cli::Template::Async,
+            TemplateArg::Document => tilo_app_cli::Template::Document,
+            TemplateArg::Qr => tilo_app_cli::Template::Qr,
+            TemplateArg::Workspace => tilo_app_cli::Template::Workspace,
         }),
         directory: args.directory,
         ui_path: args.ui_path,
         dry_run: args.dry_run,
     };
-    let outcome = tilo_dev::create_app_interactive(request)?;
+    let outcome = tilo_app_cli::create_app_interactive(request)?;
     if start_dev {
         println!("{}", outcome.headline());
         println!("\nStarting live development; press Ctrl-C to stop.");
-        tilo_dev::dev_app(
+        tilo_app_cli::dev_app(
             &outcome.destination,
-            &tilo_dev::DevRequest {
+            &tilo_app_cli::DevRequest {
                 forwarded: Vec::new(),
                 watch_ui: true,
                 debounce: Duration::from_millis(150),
@@ -1428,7 +1434,7 @@ mod tests {
 
     #[test]
     fn new_exposes_the_sparse_list_template() {
-        let cli = Cli::try_parse_from(["tilo-dev", "new", "activity-feed", "--template", "list"])
+        let cli = Cli::try_parse_from(["tilo-app", "new", "activity-feed", "--template", "list"])
             .expect("list template command");
         let Command::New(args) = cli.command else {
             panic!("expected new command");
@@ -1438,7 +1444,7 @@ mod tests {
 
     #[test]
     fn new_exposes_the_typed_async_template() {
-        let cli = Cli::try_parse_from(["tilo-dev", "new", "repo-scan", "--template", "async"])
+        let cli = Cli::try_parse_from(["tilo-app", "new", "repo-scan", "--template", "async"])
             .expect("async template command");
         let Command::New(args) = cli.command else {
             panic!("expected new command");
@@ -1448,7 +1454,7 @@ mod tests {
 
     #[test]
     fn new_exposes_the_durable_document_template() {
-        let cli = Cli::try_parse_from(["tilo-dev", "new", "notes", "--template", "document"])
+        let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--template", "document"])
             .expect("document template command");
         let Command::New(args) = cli.command else {
             panic!("expected new command");
@@ -1458,7 +1464,7 @@ mod tests {
 
     #[test]
     fn new_exposes_the_accessible_qr_template() {
-        let cli = Cli::try_parse_from(["tilo-dev", "new", "qr-code", "--template", "qr"])
+        let cli = Cli::try_parse_from(["tilo-app", "new", "qr-code", "--template", "qr"])
             .expect("QR template command");
         let Command::New(args) = cli.command else {
             panic!("expected new command");
@@ -1469,7 +1475,7 @@ mod tests {
     #[test]
     fn new_exposes_the_professional_workspace_template() {
         let cli = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "new",
             "project-studio",
             "--template",
@@ -1484,7 +1490,7 @@ mod tests {
 
     #[test]
     fn new_can_enter_dev_but_cannot_dev_a_dry_run() {
-        let cli = Cli::try_parse_from(["tilo-dev", "new", "notes", "--dev"])
+        let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--dev"])
             .expect("create-and-develop command");
         let Command::New(args) = cli.command else {
             panic!("expected new command");
@@ -1492,13 +1498,13 @@ mod tests {
         assert!(args.dev);
         assert!(!args.dry_run);
 
-        assert!(Cli::try_parse_from(["tilo-dev", "new", "notes", "--dev", "--dry-run"]).is_err());
+        assert!(Cli::try_parse_from(["tilo-app", "new", "notes", "--dev", "--dry-run"]).is_err());
     }
 
     #[test]
     fn add_commands_expose_safe_repeatable_generation_options() {
         let screen = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "add",
             "screen",
             "account-settings",
@@ -1535,7 +1541,7 @@ mod tests {
         assert!(!options.force);
 
         let component = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "add",
             "component",
             "profile-card",
@@ -1564,7 +1570,7 @@ mod tests {
         assert!(options.dry_run);
 
         let tree_component = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "add",
             "component",
             "project-tree",
@@ -1582,7 +1588,7 @@ mod tests {
             })
         ));
 
-        let locale = Cli::try_parse_from(["tilo-dev", "add", "locale", "de-DE", "--force"])
+        let locale = Cli::try_parse_from(["tilo-app", "add", "locale", "de-DE", "--force"])
             .expect("locale command");
         let Command::Add(AddArgs {
             command: Some(AddCommand::Locale { locale, options }),
@@ -1593,7 +1599,7 @@ mod tests {
         assert_eq!(locale, "de-DE");
         assert!(options.force);
 
-        let wizard = Cli::try_parse_from(["tilo-dev", "add"]).expect("add wizard command");
+        let wizard = Cli::try_parse_from(["tilo-app", "add"]).expect("add wizard command");
         let Command::Add(AddArgs { command: None }) = wizard.command else {
             panic!("expected interactive add command");
         };
@@ -1602,7 +1608,7 @@ mod tests {
     #[test]
     fn add_component_mount_options_are_explicit_and_scoped() {
         let mounted = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "add",
             "component",
             "activity-card",
@@ -1633,7 +1639,7 @@ mod tests {
         ));
         assert!(
             Cli::try_parse_from([
-                "tilo-dev",
+                "tilo-app",
                 "add",
                 "component",
                 "activity-card",
@@ -1647,7 +1653,7 @@ mod tests {
     #[test]
     fn add_command_exposes_the_reusable_list_template() {
         let cli = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "add",
             "component",
             "activity-list",
@@ -1670,7 +1676,7 @@ mod tests {
     #[test]
     fn add_command_exposes_the_reusable_table_template() {
         let cli = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "add",
             "component",
             "results-table",
@@ -1693,7 +1699,7 @@ mod tests {
     #[test]
     fn add_command_exposes_the_advanced_text_template() {
         let cli = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "add",
             "component",
             "article-body",
@@ -1716,7 +1722,7 @@ mod tests {
     #[test]
     fn locale_sync_exposes_preservation_and_explicit_repair_options() {
         let cli = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "locale",
             "sync",
             "de-DE",
@@ -1750,7 +1756,7 @@ mod tests {
     #[test]
     fn run_and_test_accept_a_descendant_path_and_forwarded_arguments() {
         let run = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "run",
             "apps/demo/src",
             "--",
@@ -1768,7 +1774,7 @@ mod tests {
         );
 
         let test =
-            Cli::try_parse_from(["tilo-dev", "test", "--", "--nocapture"]).expect("test CLI");
+            Cli::try_parse_from(["tilo-app", "test", "--", "--nocapture"]).expect("test CLI");
         let Command::Test(test) = test.command else {
             panic!("expected test command");
         };
@@ -1778,7 +1784,7 @@ mod tests {
 
     #[test]
     fn certify_accepts_one_app_or_a_workspace_root() {
-        let app = Cli::try_parse_from(["tilo-dev", "certify", "apps/demo/src"])
+        let app = Cli::try_parse_from(["tilo-app", "certify", "apps/demo/src"])
             .expect("single-app certification CLI");
         let Command::Certify(app) = app.command else {
             panic!("expected certify command");
@@ -1788,7 +1794,7 @@ mod tests {
         assert!(app.responsive_artifacts.is_none());
 
         let workspace = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "certify",
             ".",
             "--workspace",
@@ -1808,7 +1814,7 @@ mod tests {
 
         assert!(
             Cli::try_parse_from([
-                "tilo-dev",
+                "tilo-app",
                 "certify",
                 "apps/demo",
                 "--responsive-artifacts",
@@ -1894,7 +1900,7 @@ mod tests {
     #[test]
     fn shot_and_inspect_expose_direct_artifact_workflows() {
         let shot = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "shot",
             "apps/demo/src",
             "--output",
@@ -1921,7 +1927,7 @@ mod tests {
         );
 
         let inspect = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "inspect",
             "apps/demo/src/lib.rs",
             "--viewport",
@@ -1948,13 +1954,13 @@ mod tests {
         assert!(inspect.audit);
         assert_eq!(inspect.audit_report, Some(PathBuf::from("audit.json")));
 
-        assert!(Cli::try_parse_from(["tilo-dev", "inspect", "--viewport", "1280x0"]).is_err());
+        assert!(Cli::try_parse_from(["tilo-app", "inspect", "--viewport", "1280x0"]).is_err());
     }
 
     #[test]
     fn scenario_run_selects_a_case_and_viewport() {
         let cli = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "scenario",
             "run",
             "empty-state",
@@ -1990,7 +1996,7 @@ mod tests {
     #[test]
     fn check_composes_tests_audited_scenarios_and_artifacts() {
         let cli = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "check",
             "apps/demo/src",
             "--viewport",
@@ -2016,7 +2022,7 @@ mod tests {
     #[test]
     fn dev_exposes_a_bounded_restart_loop() {
         let cli = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "dev",
             "apps/demo/src",
             "--debounce-ms",
@@ -2037,13 +2043,13 @@ mod tests {
             dev.forwarded,
             [OsString::from("--document"), OsString::from("sample.qdoc")]
         );
-        assert!(Cli::try_parse_from(["tilo-dev", "dev", "--debounce-ms", "0"]).is_err());
+        assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
     }
 
     #[test]
     fn package_exposes_reproducible_build_and_signing_options() {
         let cli = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "package",
             "apps/demo/src",
             "--output",
@@ -2072,7 +2078,7 @@ mod tests {
         assert!(package.no_default_features);
         assert!(package.force);
 
-        let defaults = Cli::try_parse_from(["tilo-dev", "package"]).expect("package defaults");
+        let defaults = Cli::try_parse_from(["tilo-app", "package"]).expect("package defaults");
         let Command::Package(defaults) = defaults.command else {
             panic!("expected package command");
         };
@@ -2083,7 +2089,7 @@ mod tests {
     #[test]
     fn ui_builder_commands_require_unambiguous_node_sources() {
         let edit = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "ui",
             "edit",
             "ui/main.json",
@@ -2101,7 +2107,7 @@ mod tests {
         assert_eq!(builder, Some(OsString::from("/opt/tilo-ui-builder")));
 
         let insert = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "ui",
             "insert",
             "ui/main.json",
@@ -2131,7 +2137,7 @@ mod tests {
         assert!(source.node_file.is_none());
 
         let component = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "ui",
             "component",
             "ui/main.json",
@@ -2162,12 +2168,12 @@ mod tests {
         assert!(props.contains("Ada"));
 
         assert!(
-            Cli::try_parse_from(["tilo-dev", "ui", "replace", "ui/main.json", "--id", "body",])
+            Cli::try_parse_from(["tilo-app", "ui", "replace", "ui/main.json", "--id", "body",])
                 .is_err()
         );
         assert!(
             Cli::try_parse_from([
-                "tilo-dev",
+                "tilo-app",
                 "ui",
                 "insert",
                 "ui/main.json",
@@ -2187,7 +2193,7 @@ mod tests {
     #[test]
     fn ui_set_accepts_one_typed_property_edit() {
         let set = Cli::try_parse_from([
-            "tilo-dev",
+            "tilo-app",
             "ui",
             "set",
             "ui/main.json",
@@ -2214,7 +2220,7 @@ mod tests {
 
         assert!(
             Cli::try_parse_from([
-                "tilo-dev",
+                "tilo-app",
                 "ui",
                 "set",
                 "ui/main.json",
@@ -2227,7 +2233,7 @@ mod tests {
         );
         assert!(
             Cli::try_parse_from([
-                "tilo-dev",
+                "tilo-app",
                 "ui",
                 "set",
                 "ui/main.json",
@@ -2252,7 +2258,7 @@ mod tests {
         );
 
         let apply =
-            Cli::try_parse_from(["tilo-dev", "ui", "apply", "ui/main.json", "ui/edits.json"])
+            Cli::try_parse_from(["tilo-app", "ui", "apply", "ui/main.json", "ui/edits.json"])
                 .expect("UI batch command");
         assert!(matches!(
             apply.command,
@@ -2268,7 +2274,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir");
         let graph = temp.path().join("main.json");
         let edits = temp.path().join("edits.json");
-        tilo_dev::init_ui_graph(&graph, "Projects", false).unwrap();
+        tilo_app_cli::init_ui_graph(&graph, "Projects", false).unwrap();
         std::fs::write(
             &edits,
             r#"[
@@ -2286,7 +2292,7 @@ mod tests {
         })
         .expect("apply batch through CLI handler");
 
-        let document = tilo_dev::load_ui_graph(&graph).unwrap();
+        let document = tilo_app_cli::load_ui_graph(&graph).unwrap();
         assert!(document.node("open").is_some());
         assert!(
             std::fs::read_to_string(graph)

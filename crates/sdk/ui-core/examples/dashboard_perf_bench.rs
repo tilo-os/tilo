@@ -45,14 +45,14 @@ use std::time::Instant;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use ui::i18n::I18nManager;
-use ui::offscreen::{OffscreenRenderTiming, OffscreenRenderer};
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::toggle_group::Segment;
-use ui::widget::{
+use tilo_ui::i18n::I18nManager;
+use tilo_ui::offscreen::{OffscreenRenderTiming, OffscreenRenderer};
+use tilo_ui::permissions::PermissionContext;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::toggle_group::Segment;
+use tilo_ui::widget::{
     Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
     ToggleGroup, Widget,
 };
@@ -334,11 +334,11 @@ struct BenchRun {
     allocations: Option<crate::AllocationSnapshot>,
     allocation_breakdown: Option<AllocationBreakdown>,
     render_timings: Option<Vec<OffscreenRenderTiming>>,
-    sparse_submission_accounting: ui::offscreen::SparseSubmissionAccounting,
+    sparse_submission_accounting: tilo_ui::offscreen::SparseSubmissionAccounting,
     canonical_segment_order_attempt_accounting:
-        ui::offscreen::CanonicalSegmentOrderAttemptAccounting,
-    area_ppt8_attempt_accounting: ui::offscreen::AreaPpt8AttemptAccounting,
-    clip_single_group_attempt_accounting: ui::offscreen::ClipSingleGroupAttemptAccounting,
+        tilo_ui::offscreen::CanonicalSegmentOrderAttemptAccounting,
+    area_ppt8_attempt_accounting: tilo_ui::offscreen::AreaPpt8AttemptAccounting,
+    clip_single_group_attempt_accounting: tilo_ui::offscreen::ClipSingleGroupAttemptAccounting,
     resources_before: ResourceSnapshot,
     resources_after: ResourceSnapshot,
 }

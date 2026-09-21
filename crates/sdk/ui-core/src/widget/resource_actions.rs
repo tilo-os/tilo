@@ -11,9 +11,9 @@ use crate::automerge::{AutoCommit, ObjId};
 use crate::kurbo::{Affine, Point, Rect};
 use crate::taffy::{NodeId, TaffyTree};
 use crate::tilo_actions::{
-    ActionContract, ActionFailure, ActionOutput, ActionParam, ActionSpec, DiscoveryScope,
-    EncodedAction, ExecutionMode, InvocationId, InvocationUpdate, OperationKind, Resource,
-    ResultSpec,
+    ActionBinding, ActionBindingError, ActionContract, ActionFailure, ActionOutput, ActionParam,
+    ActionSpec, DiscoveryScope, EncodedAction, ExecutionMode, InvocationId, InvocationUpdate,
+    OperationKind, ParamType, Resource, ResultSpec,
 };
 use crate::vello::Scene;
 use crate::widget::{ResourceOperationStart, TaffyTreeExt, Widget};
@@ -94,6 +94,242 @@ pub fn typed_resource(
     );
     action.contract.discovery = DiscoveryScope::Launchable;
     Resource::new(format!("{kind}:root"), kind, label).with_action(action)
+}
+
+/// A value that can connect a [`LocalState`](crate::LocalState) field directly
+/// to a typed resource action.
+pub trait ActionValue: Clone + Send + Sync + 'static {
+    fn param_type() -> ParamType;
+    fn into_json(self) -> serde_json::Value;
+
+    /// Decode a validated action argument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` does not have this action value's type.
+    fn from_json(value: &serde_json::Value) -> Result<Self, String>;
+}
+
+impl ActionValue for String {
+    fn param_type() -> ParamType {
+        ParamType::Text
+    }
+
+    fn into_json(self) -> serde_json::Value {
+        serde_json::Value::String(self)
+    }
+
+    fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        value
+            .as_str()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| "expected text".into())
+    }
+}
+
+impl ActionValue for bool {
+    fn param_type() -> ParamType {
+        ParamType::Boolean
+    }
+
+    fn into_json(self) -> serde_json::Value {
+        serde_json::Value::Bool(self)
+    }
+
+    fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        value.as_bool().ok_or_else(|| "expected boolean".into())
+    }
+}
+
+impl ActionValue for f64 {
+    fn param_type() -> ParamType {
+        ParamType::Number
+    }
+
+    fn into_json(self) -> serde_json::Value {
+        serde_json::Number::from_f64(self)
+            .map_or(serde_json::Value::Null, serde_json::Value::Number)
+    }
+
+    fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        value.as_f64().ok_or_else(|| "expected number".into())
+    }
+}
+
+impl ActionValue for i64 {
+    fn param_type() -> ParamType {
+        ParamType::Integer
+    }
+
+    fn into_json(self) -> serde_json::Value {
+        serde_json::Value::Number(self.into())
+    }
+
+    fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        value.as_i64().ok_or_else(|| "expected integer".into())
+    }
+}
+
+type FieldReader = std::sync::Arc<dyn Fn() -> serde_json::Value + Send + Sync>;
+type FieldWriter = std::sync::Arc<dyn Fn(&serde_json::Value) -> Result<(), String> + Send + Sync>;
+
+#[derive(Clone)]
+struct FormField {
+    param: ActionParam,
+    initial: serde_json::Value,
+    read: FieldReader,
+    write: FieldWriter,
+}
+
+/// One action whose arguments and live UI state are declared together.
+///
+/// This is intentionally an app-framework abstraction: controls, action
+/// discovery, external invocation, and local state all share one declaration.
+#[derive(Clone)]
+pub struct ActionForm {
+    kind: String,
+    label: String,
+    action_id: String,
+    action_label: String,
+    fields: Vec<FormField>,
+}
+
+impl ActionForm {
+    pub fn new(
+        kind: impl Into<String>,
+        label: impl Into<String>,
+        action_id: impl Into<String>,
+        action_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: kind.into(),
+            label: label.into(),
+            action_id: action_id.into(),
+            action_label: action_label.into(),
+            fields: Vec::new(),
+        }
+    }
+
+    /// Add a required action argument backed by live local state.
+    #[must_use]
+    pub fn field<T: ActionValue>(
+        mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        state: &crate::LocalState<T>,
+    ) -> Self {
+        let name = name.into();
+        let state_for_read = state.clone();
+        let state_for_write = state.clone();
+        self.fields.push(FormField {
+            param: ActionParam::required_owned(name, T::param_type(), description.into()),
+            initial: state.get().into_json(),
+            read: std::sync::Arc::new(move || state_for_read.get().into_json()),
+            write: std::sync::Arc::new(move |value| {
+                state_for_write.set(T::from_json(value)?);
+                Ok(())
+            }),
+        });
+        self
+    }
+
+    pub fn resource(&self) -> Resource {
+        typed_resource(
+            &self.kind,
+            &self.label,
+            &self.action_id,
+            &self.action_label,
+            self.fields
+                .iter()
+                .map(|field| field.param.clone())
+                .collect(),
+        )
+    }
+
+    /// Bind one control's typed output while filling every other argument
+    /// from its current live state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the field is absent, has another action type, or
+    /// the generated binding does not match the exported action.
+    pub fn binding<T: ActionValue>(&self, name: &str) -> Result<ActionBinding<T>, String> {
+        let field = self
+            .fields
+            .iter()
+            .find(|field| field.param.name == name)
+            .ok_or_else(|| format!("action form has no `{name}` field"))?;
+        if field.param.ty != T::param_type() {
+            return Err(format!(
+                "action form field `{name}` is {}, not {}",
+                field.param.ty.label(),
+                T::param_type().label()
+            ));
+        }
+        let resource = self.resource();
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.id == self.action_id)
+            .ok_or_else(|| format!("generated action `{}` is missing", self.action_id))?;
+        let fields = self.fields.clone();
+        let name = name.to_owned();
+        ActionBinding::new(&resource, action, move |value: T| {
+            let mut arguments = fields
+                .iter()
+                .map(|field| (field.param.name.to_string(), (field.read)()))
+                .collect::<serde_json::Map<_, _>>();
+            arguments.insert(name.clone(), value.into_json());
+            arguments
+        })
+        .map_err(|error: ActionBindingError| error.to_string())
+    }
+
+    /// A button binding that restores the values captured when the form was
+    /// declared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the generated initial values violate the
+    /// generated action contract.
+    pub fn reset_binding(&self) -> Result<ActionBinding<()>, String> {
+        ActionBinding::static_json_for(
+            &self.resource(),
+            &self.action_id,
+            self.fields
+                .iter()
+                .map(|field| (field.param.name.to_string(), field.initial.clone()))
+                .collect(),
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn apply(&self, payload: &[u8]) -> Result<ActionOutput, String> {
+        let arguments: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let resource = self.resource();
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.id == self.action_id)
+            .ok_or_else(|| format!("generated action `{}` is missing", self.action_id))?;
+        action
+            .build_json(&arguments)
+            .map_err(|error| error.to_string())?;
+        for field in &self.fields {
+            let value = arguments
+                .get(field.param.name.as_ref())
+                .ok_or_else(|| format!("missing `{}`", field.param.name))?;
+            (field.write)(value)?;
+        }
+        Ok(ActionOutput::default())
+    }
+}
+
+/// Mount a connected action form around its visible controls.
+pub fn form(root: Box<dyn Widget>, form: ActionForm) -> Box<dyn Widget> {
+    let resource = form.resource();
+    immediate(root, resource, move |payload| form.apply(payload))
 }
 
 type Immediate = Box<dyn FnMut(&[u8]) -> Result<ActionOutput, String>>;
@@ -423,5 +659,56 @@ impl Widget for ResourceActionHost {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_form_connects_controls_discovery_and_external_invocation() {
+        let name = crate::LocalState::new(String::from("Ada"));
+        let enabled = crate::LocalState::new(true);
+        let form = ActionForm::new("profile", "Profile", "save", "Save")
+            .field("name", "Display name", &name)
+            .field("enabled", "Enabled", &enabled);
+
+        let invocation = form
+            .binding::<String>("name")
+            .expect("text binding")
+            .invoke(String::from("Grace"))
+            .expect("valid invocation");
+        assert_eq!(invocation.arguments["name"], "Grace");
+        assert_eq!(invocation.arguments["enabled"], true);
+
+        form.apply(br#"{"name":"Lin","enabled":false}"#)
+            .expect("valid external invocation");
+        assert_eq!(name.get(), "Lin");
+        assert!(!enabled.get());
+
+        name.set(String::from("Changed"));
+        let reset = form
+            .reset_binding()
+            .expect("reset binding")
+            .invoke(())
+            .expect("reset invocation");
+        assert_eq!(reset.arguments["name"], "Ada");
+        assert_eq!(reset.arguments["enabled"], true);
+    }
+
+    #[test]
+    fn action_form_rejects_wrong_control_types_before_mounting() {
+        let value = crate::LocalState::new(String::new());
+        let form = ActionForm::new("profile", "Profile", "save", "Save").field(
+            "name",
+            "Display name",
+            &value,
+        );
+        let error = form
+            .binding::<bool>("name")
+            .err()
+            .expect("wrong field type must fail");
+        assert!(error.contains("text, not boolean"));
     }
 }

@@ -487,6 +487,7 @@ class WorkflowGuardTests(unittest.TestCase):
 
     def test_first_build_and_verified_ancestor(self):
         env = self.env()
+        self.assertTrue(guard.prevalidate(env))
         self.assertTrue(guard.validate(env))
         previous = proof({'desired': desired('b')}, {'id': 123})
         env.update(BASELINE_SHA='b' * 40, BASELINE_RECEIPT_SHA256=core.receipt_key(previous),
