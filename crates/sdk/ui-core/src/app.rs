@@ -961,6 +961,40 @@ impl PresenceRuntime {
     }
 }
 
+/// Stable focus projection used to delimit undo/redo history entries.
+struct HistoryRuntime {
+    stable_focus_idx: Option<usize>,
+    stable_metadata: Option<String>,
+}
+
+impl HistoryRuntime {
+    fn new() -> Self {
+        Self {
+            stable_focus_idx: None,
+            stable_metadata: None,
+        }
+    }
+}
+
+/// Host window identity and fullscreen reconciliation state.
+struct WindowRuntime {
+    fullscreen_requested: bool,
+    fullscreen_active: bool,
+    title: Option<String>,
+    app_id: Option<String>,
+}
+
+impl WindowRuntime {
+    fn new() -> Self {
+        Self {
+            fullscreen_requested: false,
+            fullscreen_active: false,
+            title: None,
+            app_id: None,
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -1001,9 +1035,7 @@ pub struct App {
     last_theme_store_check: Instant,
     input: InputRuntime,
 
-    // Stable state for Undo/Redo tracking
-    last_stable_focus_idx: Option<usize>,
-    last_stable_metadata: Option<String>,
+    history: HistoryRuntime,
 
     collaboration: CollaborationRuntime,
     pub presence_ctx: PresenceCtx,
@@ -1013,12 +1045,7 @@ pub struct App {
 
     accessibility: AccessibilityRuntime,
 
-    /// Compared against [`crate::widget::FullscreenProvider::fullscreen_intent`] each
-    /// frame so a steady desired state issues one `set_fullscreen` call —
-    /// see [`fullscreen_request_decision`].
-    fullscreen_requested: bool,
-    /// To distinguish app-driven from compositor-driven transitions.
-    fullscreen_active: bool,
+    window: WindowRuntime,
 
     pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
     persistence: PersistenceRuntime,
@@ -1033,12 +1060,6 @@ pub struct App {
     last_published_playback: Option<Vec<media::handoff::PlaybackReport>>,
     last_playback_publish: Option<Instant>,
     profiler: Option<crate::profiling::FrameProfiler>,
-
-    /// Wins over the automatic env/package-id/binary-name resolution.
-    window_title: Option<String>,
-    /// Wins over `TILO_PACKAGE_ID`/binary-name resolution for the Wayland
-    /// `xdg_toplevel.app_id`. System surfaces use this as a stable identity.
-    window_app_id: Option<String>,
 
     /// Optional app → shell lifecycle channel for detachable surfaces. It is
     /// discovered from the launcher-provided service fd and absent outside a
@@ -1596,8 +1617,7 @@ impl App {
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
             last_theme_store_check: Instant::now(),
-            last_stable_focus_idx: None,
-            last_stable_metadata: None,
+            history: HistoryRuntime::new(),
             collaboration: CollaborationRuntime::new(
                 inputs.collab_manager,
                 inputs.local_author.resolve(),
@@ -1606,8 +1626,7 @@ impl App {
             permission_ctx: PermissionContext::permissive(),
             presence: PresenceRuntime::new(),
             accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
-            fullscreen_requested: false,
-            fullscreen_active: false,
+            window: WindowRuntime::new(),
             legacy_persistence: crate::launch::LegacyPersistencePolicy::Host,
             persistence: PersistenceRuntime::new(),
             actions: ActionRuntime::new(),
@@ -1620,8 +1639,6 @@ impl App {
             last_published_playback: None,
             last_playback_publish: None,
             profiler: (inputs.profiler)(),
-            window_title: None,
-            window_app_id: None,
             floating_surface_client: (inputs.floating_surface_client)(),
             last_floating_presentations: std::collections::HashMap::new(),
             last_active_floating_ids: std::collections::HashSet::new(),
@@ -5149,7 +5166,8 @@ impl App {
         let mut changed = false;
 
         let want = self.root_widget.fullscreen_intent();
-        if let Some(new_state) = fullscreen_request_decision(self.fullscreen_requested, want) {
+        if let Some(new_state) = fullscreen_request_decision(self.window.fullscreen_requested, want)
+        {
             if new_state {
                 // An empty monitor list falls back to `Borderless(None)`,
                 // still a full-output surface.
@@ -5174,7 +5192,7 @@ impl App {
             } else {
                 window.set_fullscreen(None);
             }
-            self.fullscreen_requested = new_state;
+            self.window.fullscreen_requested = new_state;
             changed = true;
         }
 
@@ -5187,10 +5205,10 @@ impl App {
     /// Split from [`Self::reconcile_fullscreen`] so the App→root notification
     /// wiring is unit-testable without a live winit window.
     fn note_actual_fullscreen(&mut self, actual: bool) -> bool {
-        if actual == self.fullscreen_active {
+        if actual == self.window.fullscreen_active {
             return false;
         }
-        self.fullscreen_active = actual;
+        self.window.fullscreen_active = actual;
         self.root_widget.on_fullscreen_changed(actual);
         self.needs_sync = true;
         self.layout.layout_dirty = true;
@@ -6346,14 +6364,14 @@ impl App {
                 self.set_focused_node(Some(id));
                 if let Some(metadata) = entry.widget_metadata {
                     let _ = self.mutate_node(id, |widget| widget.set_state(&metadata));
-                    self.last_stable_metadata = Some(metadata);
+                    self.history.stable_metadata = Some(metadata);
                 }
-                self.last_stable_focus_idx = Some(idx);
+                self.history.stable_focus_idx = Some(idx);
             }
         } else {
             self.set_focused_node(None);
-            self.last_stable_focus_idx = None;
-            self.last_stable_metadata = None;
+            self.history.stable_focus_idx = None;
+            self.history.stable_metadata = None;
         }
         self.layout.layout_dirty = true;
         self.needs_sync = true;
@@ -6453,15 +6471,15 @@ impl App {
         // not the CRDT — `changed` lets those skip persisting/syncing.
         let context = self.root_widget.take_commit_context();
         let changed = self.state.commit_action_authored_with_context(
-            self.last_stable_focus_idx,
-            self.last_stable_metadata.clone(),
+            self.history.stable_focus_idx,
+            self.history.stable_metadata.clone(),
             Some(self.collaboration.local_author.clone()),
             context,
         );
-        self.last_stable_focus_idx = self
+        self.history.stable_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.last_stable_metadata = self.focused_node.and_then(|id| {
+        self.history.stable_metadata = self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| widget.get_state())
                 .ok()
                 .flatten()
@@ -7265,10 +7283,10 @@ impl App {
         {
             self.set_focused_node(Some(first));
         }
-        self.last_stable_focus_idx = self
+        self.history.stable_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.last_stable_metadata = self.focused_node.and_then(|id| {
+        self.history.stable_metadata = self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| widget.get_state())
                 .ok()
                 .flatten()
@@ -7391,26 +7409,26 @@ impl App {
     /// Takes effect when the window is created, so set before [`App::run`].
     #[must_use]
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
-        self.window_title = Some(title.into());
+        self.window.title = Some(title.into());
         self
     }
 
     /// Set the stable Wayland application id announced by this window.
     #[must_use]
     pub fn with_window_app_id(mut self, app_id: impl Into<String>) -> Self {
-        self.window_app_id = Some(app_id.into());
+        self.window.app_id = Some(app_id.into());
         self
     }
 
     /// `None` clears the override and restores automatic resolution.
     pub fn set_window_title(&mut self, title: Option<String>) {
-        self.window_title = title;
+        self.window.title = title;
     }
 
     /// Precedence: explicit override → `TILO_APP_NAME` → package id → binary
     /// name → generic default.
     pub fn resolved_window_title(&self) -> String {
-        resolve_window_title(self.window_title.as_deref())
+        resolve_window_title(self.window.title.as_deref())
     }
 
     /// `records` owns per-record documents and persistence; `room_index` is
@@ -8655,7 +8673,7 @@ impl AppHandler {
             use winit::platform::wayland::WindowAttributesExtWayland;
             let package_id = std::env::var("TILO_PACKAGE_ID").ok();
             let app_id = resolve_app_id(
-                self.app.window_app_id.as_deref().or(package_id.as_deref()),
+                self.app.window.app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()
                     .ok()
                     .and_then(|path| {
@@ -10388,7 +10406,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
-        let title = resolve_window_title(self.app.window_title.as_deref());
+        let title = resolve_window_title(self.app.window.title.as_deref());
         let icon = crate::window_icon::resolve();
         let window_attributes = Window::default_attributes()
             .with_title(title)
@@ -10406,7 +10424,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             use winit::platform::wayland::WindowAttributesExtWayland;
             let package_id = std::env::var("TILO_PACKAGE_ID").ok();
             let app_id = resolve_app_id(
-                self.app.window_app_id.as_deref().or(package_id.as_deref()),
+                self.app.window.app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()
                     .ok()
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
@@ -12662,7 +12680,7 @@ mod fullscreen_tests {
         assert!(app.note_actual_fullscreen(false));
 
         assert_eq!(*changes.borrow(), vec![true, false]);
-        assert!(!app.fullscreen_active);
+        assert!(!app.window.fullscreen_active);
     }
 
     #[test]
