@@ -11,6 +11,14 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Stroke};
 use vello::peniko::{Color, Fill};
 
+/// Cursor ink comes from the shared dark desktop theme rather than bypassing
+/// the design-token contract.  Keeping the pair here also makes the hardware
+/// plane, software fallback, and captured pointer use identical colours.
+fn palette() -> (Color, Color) {
+    let colors = &ui::theme::Theme::dark().tokens.colors;
+    (colors.text_primary, colors.surfaces.base)
+}
+
 /// Largest legacy KMS cursor plane supported by every backend we target.
 pub const PLANE_SIZE: u32 = 64;
 const DESIGN_SIZE: f64 = 24.0;
@@ -82,8 +90,9 @@ fn draw_vector(scene: &mut Scene, shape: CursorShape, transform: Affine, inverse
     // Scale stroke back into design space so its final physical width stays
     // close to two pixels at all supported accessibility sizes.
     let stroke = Stroke::new(2.0 * inverse_scale);
-    scene.fill(Fill::NonZero, transform, Color::WHITE, None, &path);
-    scene.stroke(&stroke, transform, Color::BLACK, None, &path);
+    let (fill, outline) = palette();
+    scene.fill(Fill::NonZero, transform, fill, None, &path);
+    scene.stroke(&stroke, transform, outline, None, &path);
 }
 
 fn rasterise(shape: CursorShape, size: u32) -> CursorBitmap {
@@ -121,15 +130,16 @@ fn rasterise_cpu(shape: CursorShape, size: u32) -> Vec<u8> {
         })
         .collect::<Vec<_>>();
     let stroke_radius = (f64::from(SUPERSAMPLE) * 0.85).max(1.0);
+    let (fill, outline) = palette();
     for y in 0..size {
         for x in 0..size {
             let point = (f64::from(x) + 0.5, f64::from(y) + 0.5);
             let inside = point_in_polygon(point, &outline);
             let edge_distance = polygon_distance(point, &outline);
             let (color, alpha) = if edge_distance <= stroke_radius {
-                ([0_u8, 0, 0], 255_u8)
+                ([outline.r(), outline.g(), outline.b()], outline.a())
             } else if inside {
-                ([255_u8, 255, 255], 255_u8)
+                ([fill.r(), fill.g(), fill.b()], fill.a())
             } else {
                 ([0_u8, 0, 0], 0_u8)
             };
