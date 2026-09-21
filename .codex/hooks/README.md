@@ -19,8 +19,12 @@ They contain no credentials. A later matching invocation can recover a crashed
 watcher only after obtaining its released kernel lock, only before delivery began,
 and for at most three attempts. It retains the original discovery timestamp.
 Elapsed time alone never permits takeover. Crashes during delivery remain
-ambiguous and need inspection; they are not retried automatically. Corrupt or
-completed receipts also cannot trigger automatic duplicate messages.
+ambiguous and need inspection; they are not retried automatically. Corrupt
+receipts also cannot trigger automatic retries, and reported receipts suppress
+duplicates during their retention period.
+Reported receipts and their locks are removed after seven days; active,
+interrupted, failed-delivery and delivery-ambiguous receipts are retained for
+recovery or inspection.
 
 ## Installation scope
 
