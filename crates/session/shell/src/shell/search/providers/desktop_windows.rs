@@ -338,14 +338,18 @@ mod tests {
             .iter()
             .map(|action| action.resource.id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(ids, ["tab.close:100:1", "tab.close:200:3"]);
-        assert!(actions.iter().all(|action| {
+        assert_eq!(
+            ids,
+            ["tab.close:100:1", "tab.close:200:3", "group.close:200"]
+        );
+        assert!(actions[..2].iter().all(|action| {
             action.title.contains("Profilfehler")
                 && action
                     .subtitle
                     .as_deref()
                     .is_some_and(|text| text.contains("group"))
         }));
+        assert_eq!(actions[2].title, "Close this window group");
     }
 
     #[test]

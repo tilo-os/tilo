@@ -2202,7 +2202,10 @@ fn spawn_isolated_x11_probe(
 
 #[test]
 #[ignore = "starts installed Electron with a compositor-minted token in a private Xwayland session; opt in for compatibility review"]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the end-to-end Electron launch keeps compositor setup, Xwayland mapping, focus, placement, and cleanup in one auditable lifecycle"
+)]
 fn installed_electron_client_maps_focuses_and_places_through_private_xwayland() {
     let compositor = Compositor::start_host_desktop();
     // Keep one ordinary native Wayland client alive throughout the Electron
@@ -3424,13 +3427,13 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
     active
 }
 
-/// Narrow the demo group with the seam-drag gesture so a client stays
-/// visible while the Files tab is focused (the demo group is laid out at
-/// full output width). Split out of the drag-and-drop tests below to keep
-/// each one short.
+/// Narrow the demo group with the explicit Shift-resize gesture so both the
+/// Files row and client stay visible. An ordinary resize intentionally grows
+/// into the infinite horizontal strip and must not squeeze its neighbour.
 fn narrow_demo_group_for_files(compositor: &Compositor) {
     const NARROW_BY: f64 = 1100.0;
     let seam = compositor.named_center("group_resize_handle[0]");
+    compositor.modifiers(false, true, false, false);
     compositor.pointer_move(seam.0, seam.1);
     compositor.pointer_button(true);
     for i in 1..=10 {
@@ -3438,6 +3441,7 @@ fn narrow_demo_group_for_files(compositor: &Compositor) {
         std::thread::sleep(Duration::from_millis(30));
     }
     compositor.pointer_button(false);
+    compositor.modifiers(false, false, false, false);
     std::thread::sleep(Duration::from_millis(800));
     compositor.snapshot(Path::new("/tmp/tilo-dnd-e2e-after-resize.png"));
     assert!(

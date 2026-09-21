@@ -23521,6 +23521,20 @@ mod palette_dispatch_tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn missing_personal_settings_reports_launch_failure_without_opening_workspace_settings() {
+        struct AppsDataDirGuard;
+
+        impl Drop for AppsDataDirGuard {
+            fn drop(&mut self) {
+                // SAFETY: the test holds the process_env serial lock for the
+                // guard's full lifetime.
+                unsafe {
+                    std::env::remove_var("TILO_APPS_DATA_DIR");
+                }
+                crate::shell::launcher::invalidate_app_cache();
+                crate::shell::launcher::clear_pending_placements();
+            }
+        }
+
         let tmp = tempfile::tempdir().unwrap();
         // An empty registry makes the personal Settings package genuinely
         // unavailable; the ordinary launcher owns wording and notification
@@ -23529,6 +23543,7 @@ mod palette_dispatch_tests {
         unsafe {
             std::env::set_var("TILO_APPS_DATA_DIR", tmp.path());
         }
+        let _apps_data_dir = AppsDataDirGuard;
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
 
@@ -23554,13 +23569,6 @@ mod palette_dispatch_tests {
             "the ordinary launch failure must remain visible to the user"
         );
         drop(state);
-
-        // SAFETY: restore the process-wide override before releasing the serial lock.
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-        }
-        crate::shell::launcher::invalidate_app_cache();
-        crate::shell::launcher::clear_pending_placements();
     }
 
     #[test]
@@ -28894,7 +28902,19 @@ mod resync_strips_tests {
 
     #[test]
     fn restored_opening_tab_swaps_to_live_surface_when_first_frame_arrives() {
-        const SURFACE: u64 = 0x5a17;
+        struct ForeignSurfaceGuard(u64);
+
+        impl Drop for ForeignSurfaceGuard {
+            fn drop(&mut self) {
+                crate::compositor::foreign::store().forget(self.0);
+            }
+        }
+
+        // The frame store is process-wide and ordinary Rust tests run in
+        // parallel. A process-unique notification token makes a suitable
+        // synthetic surface id without colliding with another fixture.
+        let surface = crate::shell::notification::Notification::new("fixture", "fixture").id;
+        let _surface = ForeignSurfaceGuard(surface);
         let (mut tree, strip_id, group_id) = one_group_seed();
         let tab_id = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
         tree.workspaces[0].strips[0].window_groups[0].tabs[0] = Tab {
@@ -28913,29 +28933,28 @@ mod resync_strips_tests {
             let mut live = state.tree_mut();
             live.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
                 app_id: "dev.tilo.terminal".into(),
-                surface_id: SURFACE,
+                surface_id: surface,
             };
             live.external_revision = live.external_revision.wrapping_add(1);
         }
         assert!(host.take_structure_dirty());
         assert_eq!(host.active_tile_rect(group_id), Some(Rect::ZERO));
         assert_eq!(
-            host.opening_foreign_frames.get(&SURFACE),
+            host.opening_foreign_frames.get(&surface),
             Some(&0),
             "the retained opening card must remember the frame generation it is waiting on"
         );
 
-        crate::compositor::foreign::store().publish_rgba(SURFACE, &[0, 0, 0, 255], 1, 1);
+        crate::compositor::foreign::store().publish_rgba(surface, &[0, 0, 0, 255], 1, 1);
         assert!(
             host.take_structure_dirty(),
             "the first frame must retry the card-to-surface projection without a tree revision"
         );
         assert!(
-            !host.opening_foreign_frames.contains_key(&SURFACE),
+            !host.opening_foreign_frames.contains_key(&surface),
             "the one-shot waiter is retired once the live surface is installed"
         );
         let _ = strip_id;
-        crate::compositor::foreign::store().forget(SURFACE);
     }
 
     #[test]

@@ -821,6 +821,14 @@ pub(crate) fn launch_installed_app(
     package_id: &str,
     display_name: &str,
 ) -> Result<(), ActionError> {
+    // An activation already accepted for this package owns the single launch
+    // worker and opening card. Check that transaction before consulting the
+    // registry: the package can disappear while its queued worker is still
+    // resolving, but a repeated click must not turn that existing launch into
+    // an unrelated "not installed" error.
+    if catalogue::pending_notice(package_id).is_some() {
+        return Ok(());
+    }
     let app = launcher::installed_apps()
         .map_err(|error| ActionError::Refused(error.user_message()))?
         .into_iter()
@@ -1213,6 +1221,7 @@ mod tests {
             "a second activation must not create another worker or opening card"
         );
         assert_eq!(catalogue::take_pending_notice(package_id), Some(notice));
+        chrome.borrow_mut().dismiss_notification(notice);
     }
 
     #[test]

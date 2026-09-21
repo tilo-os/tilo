@@ -842,7 +842,7 @@ fn system_bundle_tree_is_root_owned(
 #[cfg(all(test, unix))]
 mod system_bundle_tree_policy_tests {
     use super::*;
-    use std::os::unix::fs::{MetadataExt, symlink};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
     fn manifest_for(path: &str) -> runtime_bundle::BundleManifest {
         runtime_bundle::BundleManifest {
@@ -868,6 +868,20 @@ mod system_bundle_tree_policy_tests {
         let temp = tempfile::tempdir().expect("temporary root");
         let deployment = temp.path().join("deployment/usr/lib/tilo-runtime/test");
         std::fs::create_dir_all(&deployment).expect("deployment tree");
+        // tempfile deliberately creates a private 0700 parent, whereas the
+        // real rpm-ostree deployment is rooted below traversable, immutable
+        // root-owned directories. Model that production ancestry exactly.
+        for directory in [
+            temp.path(),
+            &temp.path().join("deployment"),
+            &temp.path().join("deployment/usr"),
+            &temp.path().join("deployment/usr/lib"),
+            &temp.path().join("deployment/usr/lib/tilo-runtime"),
+            &deployment,
+        ] {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755))
+                .expect("immutable deployment directory permissions");
+        }
         std::fs::write(deployment.join("bundle.toml"), "manifest").expect("manifest");
         std::fs::write(deployment.join("payload"), b"x").expect("payload");
         symlink(temp.path().join("deployment/usr"), temp.path().join("usr"))
