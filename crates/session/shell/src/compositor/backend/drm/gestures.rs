@@ -12,7 +12,7 @@
 //! | Gesture                  | Same as                    |
 //! |--------------------------|----------------------------|
 //! | 3-finger swipe up / down | Super+ArrowUp / `ArrowDown` — switch workspace |
-//! | 3-finger swipe left/right| Super+ArrowLeft / `ArrowRight` — step along the strip |
+//! | 3-finger swipe left/right| Directly pan the active strip |
 //! | 4-finger swipe up / down | Super+Tab — open / close the overview |
 //! | 3+-finger pinch in / out | open / close the overview |
 //!
@@ -35,12 +35,16 @@ pub const PINCH_IN_SCALE: f64 = 0.8;
 pub const PINCH_OUT_SCALE: f64 = 1.25;
 
 /// What the shell should do about a gesture. Every variant maps onto an existing chrome operation; none is a new interaction.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum GestureAction {
     /// `chrome_state::switch_workspace` — `-1` is up the wheel, `+1` down.
     SwitchWorkspace(i32),
-    /// `ShellOverlayHost::step_focus_along_strip` — `-1` is the window to the left, the same step the Super+Left/Right chord and a horizontal scroll make; a swipe is a third way to ask for it, not a fourth definition of it.
-    StepAlongStrip(i32),
+    /// Total signed direct-pan travel since gesture begin. Positive travel
+    /// moves toward later groups; every update is emitted after axis lock.
+    StripPanUpdate { travel: f64, began: bool },
+    /// The direct-pan stream ended or was cancelled. The row decides whether
+    /// an elastic overpull needs to settle back to its legal boundary.
+    StripPanEnd { cancelled: bool },
     /// Open the workspace overview (what `Super+Tab` toggles on).
     ShowOverview,
     /// Close it.
@@ -80,6 +84,9 @@ pub struct GestureTracker {
     delta: (f64, f64),
     /// Set once this gesture has produced an action.
     fired: bool,
+    /// Once horizontal motion wins arbitration, keep the strip attached to
+    /// the fingers through reversals and momentary diagonal jitter.
+    strip_pan_engaged: bool,
 }
 
 impl GestureTracker {
@@ -89,6 +96,7 @@ impl GestureTracker {
             fingers: None,
             delta: (0.0, 0.0),
             fired: false,
+            strip_pan_engaged: false,
         }
     }
 
@@ -114,6 +122,7 @@ impl GestureTracker {
         self.fingers = Some(fingers);
         self.delta = (0.0, 0.0);
         self.fired = false;
+        self.strip_pan_engaged = false;
     }
 
     /// Feed one swipe update. Returns the action at the moment the threshold is crossed, and `None` for every update after it.
@@ -124,21 +133,49 @@ impl GestureTracker {
         }
         self.delta.0 += dx;
         self.delta.1 += dy;
+        let (raw_dx, raw_dy) = self.delta;
+        let (raw_ax, raw_ay) = (raw_dx.abs(), raw_dy.abs());
+        // Horizontal strip navigation is direct manipulation rather than a
+        // thresholded one-shot focus command. Axis-lock after a tiny movement
+        // so the first visible frame carries the complete finger travel; once
+        // locked, reversals remain on the same surface.
+        if fingers == 3
+            && (self.strip_pan_engaged || (raw_ax >= 8.0 && raw_ax >= raw_ay * AXIS_DOMINANCE))
+        {
+            let began = !self.strip_pan_engaged;
+            self.strip_pan_engaged = true;
+            let travel = if self.config.natural_scroll {
+                raw_dx
+            } else {
+                -raw_dx
+            };
+            return Some(GestureAction::StripPanUpdate { travel, began });
+        }
         let action = swipe_action(fingers, self.delta, &self.config)?;
         self.fired = true;
         Some(action)
     }
 
-    pub fn swipe_end(&mut self) {
+    pub fn swipe_end(&mut self) -> Option<GestureAction> {
+        self.swipe_end_with_cancel(false)
+    }
+
+    pub fn swipe_end_with_cancel(&mut self, cancelled: bool) -> Option<GestureAction> {
+        let action = self
+            .strip_pan_engaged
+            .then_some(GestureAction::StripPanEnd { cancelled });
         self.fingers = None;
         self.delta = (0.0, 0.0);
         self.fired = false;
+        self.strip_pan_engaged = false;
+        action
     }
 
     pub fn pinch_begin(&mut self, fingers: u32) {
         self.fingers = Some(fingers);
         self.delta = (0.0, 0.0);
         self.fired = false;
+        self.strip_pan_engaged = false;
     }
 
     /// Feed one pinch update. `scale` is absolute against the gesture's begin, so the thresholds are absolute too.
@@ -153,7 +190,7 @@ impl GestureTracker {
     }
 
     pub fn pinch_end(&mut self) {
-        self.swipe_end();
+        let _ = self.swipe_end();
     }
 }
 
@@ -184,11 +221,6 @@ pub fn swipe_action(
                 }
             }
         });
-    }
-    // Horizontal: the tab dimension of the active group, three fingers only — a four-finger horizontal swipe has no second axis to mean anything on.
-    if ax >= t && ax >= ay * AXIS_DOMINANCE && fingers == 3 {
-        let dir = if dx < 0.0 { 1 } else { -1 };
-        return Some(GestureAction::StepAlongStrip(dir));
     }
     None
 }
@@ -251,15 +283,57 @@ mod tests {
     }
 
     #[test]
-    fn a_three_finger_swipe_sideways_travels_along_the_strip() {
-        // Swiping left (dx negative) travels forward along the strip: the fingers move the way the content does, the same sense a two-finger horizontal scroll already has.
+    fn threshold_resolver_leaves_horizontal_motion_to_the_streaming_tracker() {
+        assert_eq!(swipe_action(3, (-150.0, 0.0), &cfg()), None);
+        assert_eq!(swipe_action(3, (150.0, 0.0), &cfg()), None);
+    }
+
+    #[test]
+    fn horizontal_three_finger_motion_streams_total_travel_and_reverses() {
+        let mut tracker = GestureTracker::new(cfg());
+        tracker.swipe_begin(3);
+        assert_eq!(tracker.swipe_update(-4.0, 0.0), None);
         assert_eq!(
-            swipe_action(3, (-150.0, 0.0), &cfg()),
-            Some(GestureAction::StepAlongStrip(1))
+            tracker.swipe_update(-8.0, 1.0),
+            Some(GestureAction::StripPanUpdate {
+                travel: 12.0,
+                began: true,
+            })
         );
         assert_eq!(
-            swipe_action(3, (150.0, 0.0), &cfg()),
-            Some(GestureAction::StepAlongStrip(-1))
+            tracker.swipe_update(-20.0, 40.0),
+            Some(GestureAction::StripPanUpdate {
+                travel: 32.0,
+                began: false,
+            })
+        );
+        assert_eq!(
+            tracker.swipe_update(24.0, 0.0),
+            Some(GestureAction::StripPanUpdate {
+                travel: 8.0,
+                began: false,
+            })
+        );
+        assert_eq!(
+            tracker.swipe_end(),
+            Some(GestureAction::StripPanEnd { cancelled: false })
+        );
+    }
+
+    #[test]
+    fn natural_scroll_reverses_direct_strip_travel() {
+        let mut tracker = GestureTracker::new(natural());
+        tracker.swipe_begin(3);
+        assert_eq!(
+            tracker.swipe_update(-16.0, 0.0),
+            Some(GestureAction::StripPanUpdate {
+                travel: -16.0,
+                began: true,
+            })
+        );
+        assert_eq!(
+            tracker.swipe_end_with_cancel(true),
+            Some(GestureAction::StripPanEnd { cancelled: true })
         );
     }
 
@@ -286,10 +360,6 @@ mod tests {
         assert_eq!(
             swipe_action(3, (0.0, -150.0), &natural()),
             Some(GestureAction::SwitchWorkspace(1))
-        );
-        assert_eq!(
-            swipe_action(3, (-150.0, 0.0), &natural()),
-            Some(GestureAction::StepAlongStrip(-1))
         );
         assert_eq!(
             swipe_action(4, (0.0, 150.0), &natural()),
