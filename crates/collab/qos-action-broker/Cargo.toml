@@ -9,7 +9,6 @@ test-support = []
 [dependencies]
 parking_lot.workspace = true
 automerge.workspace = true
-atomic-file = { path = "../../system/atomic-file" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 capnp-rpc.workspace = true
 futures = { workspace = true, default-features = true }
@@ -41,6 +40,5 @@ tempfile.workspace = true
 qos-session-peer = { path = "../../hosting/qos-session-peer" }
 word-processor = { path = "../../../apps/word-processor" }
 ed25519-dalek.workspace = true
-rand_core = { workspace = true, features = ["getrandom"] }
 [lints]
 workspace = true

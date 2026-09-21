@@ -8,6 +8,10 @@ publish.workspace = true
 description = "Tilo host + relay daemon: authenticated iroh transport for workspace CRDT ops, pins WorkspaceDirectory, store-and-forwards for offline peers."
 license = "MIT OR Apache-2.0"
 
+[package.metadata.cargo-machete]
+# This feature-only edge selects JS entropy for transitive WASM cryptography.
+ignored = ["getrandom"]
+
 [lib]
 name = "tilo_relay"
 path = "src/lib.rs"

@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+[package.metadata.cargo-machete]
+# This feature-only edge selects JS entropy for transitive WASM cryptography.
+ignored = ["getrandom"]
+
 [lib]
 name = "tilo_user_identity"
 path = "src/lib.rs"

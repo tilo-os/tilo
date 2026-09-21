@@ -7,7 +7,6 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 [dependencies]
-hex.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay" }
 uuid.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }

@@ -229,7 +229,6 @@ tilo-relay = { path = "../../hosting/tilo-relay" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 capnp.workspace = true
 capnp-rpc.workspace = true
-tokio-util.workspace = true
 futures = { workspace = true, default-features = true }
 # The shell re-serialises signed op envelopes and presence keys onto
 # the capnp wire; `postcard` matches what apps and the ui toolkit
@@ -250,7 +249,6 @@ tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
 qos-action-broker = { path = "../../collab/qos-action-broker", features = ["test-support"] }
-qos-session-peer = { path = "../../hosting/qos-session-peer" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 # Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
 # `src/network/protocol.rs`. `qos-collab-types` already uses this for

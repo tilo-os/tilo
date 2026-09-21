@@ -16,7 +16,6 @@ hex.workspace = true
 blake3.workspace = true
 ed25519-dalek.workspace = true
 web-time = { version = "1", features = ["serde"] }
-rand.workspace = true
 collab-types = { path = "../collab-types" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 

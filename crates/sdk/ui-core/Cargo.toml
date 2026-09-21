@@ -10,7 +10,9 @@ autoexamples = false
 
 [package.metadata.cargo-machete]
 # build.rs probes optional system libraries through pkg-config.
-ignored = ["pkg-config"]
+# getrandom selects the JS entropy backend for transitive WASM cryptography.
+# wgpu-hal enables Metal feedback hooks consumed through vello::wgpu::hal.
+ignored = ["pkg-config", "getrandom", "wgpu-hal"]
 
 [features]
 test-support = []
