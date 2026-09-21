@@ -3441,7 +3441,13 @@ impl RoomActivityPane {
             self.brief_offset = 0;
         }
         let mut shown = 0usize;
-        for index in self.brief_offset..self.digest.briefs.len() {
+        for (index, brief) in self
+            .digest
+            .briefs
+            .iter()
+            .enumerate()
+            .skip(self.brief_offset)
+        {
             let expansion = if self.expanded_brief == Some(index) {
                 self.brief_expansion_started
                     .filter(|(animated, _)| *animated == index)
@@ -3456,7 +3462,6 @@ impl RoomActivityPane {
             } else {
                 0.0
             };
-            let brief = &self.digest.briefs[index];
             let expanded = self.expanded_brief == Some(index);
             // Outcome, who/when, and affected context must all be scannable
             // without opening the card.
