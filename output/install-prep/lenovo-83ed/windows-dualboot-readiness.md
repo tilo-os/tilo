@@ -8,7 +8,7 @@ The internal drive is a healthy 1,024,209,543,168-byte Samsung NVMe disk using G
 
 | Partition | Offset | Size | Role | Action |
 | --- | ---: | ---: | --- | --- |
-| 1 | 1,048,576 | 272,629,760 bytes (260 MiB) | FAT32 EFI System Partition (`SYSTEM_DRV`) | Preserve and reuse for boot entries; do not format |
+| 1 | 1,048,576 | 272,629,760 bytes (260 MiB) | FAT32 Windows EFI System Partition (`SYSTEM_DRV`) | Preserve as Windows-only; do not modify or format |
 | 2 | 273,678,336 | 134,217,728 bytes (128 MiB) | Microsoft Reserved Partition | Preserve |
 | 3 | 407,896,064 | 1,021,704,142,848 bytes (951.54 GiB) | Windows `C:` NTFS | Shrink from its end in Windows |
 | 4 | 1,022,112,038,912 | 2,097,152,000 bytes (1.953 GiB) | Windows Recovery (`WINRE_DRV`) | Preserve in place |
@@ -22,10 +22,10 @@ The installed ReAgent configuration points to partition 4 at the exact offset sh
 Current `C:` usage is about 904.38 GiB used and 47.18 GiB free. The proposed target is:
 
 - Windows `C:`: **800 GiB** (858,993,459,200 bytes)
-- New unallocated Tilo region: **151.54 GiB** (162,710,683,648 bytes)
+- New unallocated Tilo region: **151.54 GiB** (162,710,683,648 bytes), divided into a dedicated exact 2 GiB Tilo ESP and about 149.54 GiB for the Tilo root
 - Existing ESP, MSR, and WinRE: unchanged
 
-This split provides substantially more than the 64 GiB media/image baseline while leaving most of the disk to Windows. It is not currently achievable: at least 104.38 GiB must be removed from `C:` merely to fit, and about 144.38 GiB must be removed to leave Windows 40 GiB free after shrinking.
+This split provides substantially more than the 64 GiB media/image baseline while leaving most of the disk to Windows. The existing 260 MiB Windows ESP is too small for, and excluded by, the current guided-installer contract; Tilo gets its own exact 2 GiB ESP with at least 1 GiB free. The split is not currently achievable: at least 104.38 GiB must be removed from `C:` merely to fit, and about 144.38 GiB must be removed to leave Windows 40 GiB free after shrinking.
 
 An elevated audit on 2026-09-20 found Windows' supported shrink limit was only 307,191,808 bytes (292.96 MiB), even with about 92 GiB free at that time. That is the safe maximum verified by Windows, and it is insufficient. The cause is an immovable allocation near the NTFS tail, not the partition table. Cleanup alone is not proof that the partition can shrink: rerun `Get-PartitionSupportedSize` after cleanup and require `SizeMin` at or below 858,993,459,200 bytes.
 
@@ -65,6 +65,6 @@ Internal installation is ready to proceed only when all of these are true:
 4. `reagentc /info` reports WinRE enabled on partition 4.
 5. BitLocker recovery access is independently confirmed, then protection is suspended for the installation reboot window.
 6. `powercfg /a` still reports hibernation and Fast Startup unavailable.
-7. The installer selects only the newly unallocated 151.54 GiB region and preserves partitions 1, 2, 3, and 4.
+7. The installer selects only the newly unallocated 151.54 GiB region, creates its exact 2 GiB ESP plus Tilo root there, and preserves partitions 1, 2, 3, and 4.
 
 At present, item 2 is the hard partitioning blocker and item 1 is its likely prerequisite.
