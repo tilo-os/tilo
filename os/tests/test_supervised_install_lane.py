@@ -164,6 +164,32 @@ class LaneAdmission(unittest.TestCase):
             with self.assertRaises(lane.ControllerTransportError):
                 lane.command(['kubectl','--context','ctx','get','pods'],timeout=30)
 
+    def test_pending_input_status_refuses_active_or_invalid_state(self):
+        worker={'namespace':'kata-system','pod':'tilo-disk-run1'}
+        with patch.object(lane,'command',return_value=json.dumps({'state':'active'})):
+            with self.assertRaises(lane.CreatorInputReconciliationError):
+                lane.creator_input_status('ctx',worker)
+        with patch.object(lane,'command',return_value=json.dumps({'state':'invalid'})):
+            with self.assertRaises(lane.CreatorInputReconciliationError):
+                lane.creator_input_status('ctx',worker)
+        with patch.object(lane,'command',return_value=json.dumps({'state':'missing'})):
+            self.assertIsNone(lane.creator_input_status('ctx',worker))
+
+    def test_pending_input_delta_transfers_only_changed_component(self):
+        inputs=(b'helpers-new',b'public-same',b'installer-same')
+        components=lane.creator_input_components(*inputs)
+        receipt={name:hashlib.sha256(content).hexdigest() for name,(_,content) in components.items()}
+        receipt['helpers']=hashlib.sha256(b'helpers-old').hexdigest()
+        status={'receipt':receipt,'receipt_sha256':'a'*64}
+        with patch.object(lane,'command') as command:
+            self.assertTrue(lane.stream_creator_input_delta('ctx','kata-system','pod','disk',
+                                                             *inputs,status))
+        argv,payload=command.call_args.args[:2]
+        with tarfile.open(fileobj=io.BytesIO(payload),mode='r:') as archive:
+            self.assertEqual([member.name for member in archive.getmembers()],['helpers.tar'])
+        self.assertEqual(argv[-2:],['1','helpers'])
+        self.assertIn('mv -T "$receipt" /work/.creator-inputs.json',argv[argv.index('-ceu')+1])
+
     def test_gui_evidence_requires_desktop_and_rendered_local_browser_page(self):
         html='<!doctype html><h1>Tilo browser offline ready</h1>\n'
         good={'oobe_intro':'Create your local identity',
