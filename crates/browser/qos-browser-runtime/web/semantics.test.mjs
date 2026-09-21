@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {semanticBridge} from './semantics.mjs';
 import {createKeyboardForwarder,modifierSnapshot,semanticKeyboardRoute} from './host-core.mjs';
 class Element {
-  constructor(tag){this.localName=tag;this.dataset={};this.attributes=new Map();this.children=[];this.tabIndex=-1;this.value='';this.selectionStart=0;this.selectionEnd=0;this.scrollTop=0;this.scrollLeft=0;this.listeners=new Map();this.style={cssText:''};}
+  constructor(tag){this.localName=tag;this.dataset={};this.attributes=new Map();this.children=[];this.tabIndex=-1;this.value='';this.selectionStart=0;this.selectionEnd=0;this.selectionDirection='none';this.scrollTop=0;this.scrollLeft=0;this.listeners=new Map();this.style={cssText:''};}
   setAttribute(name,value){this.attributes.set(name,String(value));}
   removeAttribute(name){this.attributes.delete(name);}
   getAttribute(name){return this.attributes.get(name)??null;}
@@ -11,7 +11,7 @@ class Element {
   replaceWith(next){const parent=this.parentNode;parent.children[parent.children.indexOf(this)]=next;next.parentNode=parent;this.parentNode=null;if(document.activeElement===this)document.activeElement=document.body;}
   addEventListener(name,listener){const listeners=this.listeners.get(name)??[];listeners.push(listener);this.listeners.set(name,listeners);}
   dispatchEvent(event){event.target??=this;event.currentTarget=this;for(const listener of this.listeners.get(event.type)??[])listener(event);if(event.bubbles&&!event.cancelBubble)this.parentNode?.dispatchEvent(event);return !event.defaultPrevented;}
-  setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
+  setSelectionRange(start,end,direction='none'){this.selectionStart=start;this.selectionEnd=end;this.selectionDirection=direction;}
   append(...children){for(const child of children){child.remove();this.children.push(child);child.parentNode=this;}}
   contains(node){return node===this||this.children.some(child=>child.contains(node));}
   focus(options){this.focusOptions=options;if(document.activeElement!==this)document.activeElement?.blur?.();document.activeElement=this;this.dispatchEvent(event('focus'));}
@@ -71,6 +71,40 @@ test('editable input immediately updates the canonical value and selection in gr
     ['value','A👨‍👩‍👧‍👦中\nB',0,0],
     ['selection','',1,4],
   ]);
+});
+
+test('semantic selection preserves native forward, backward, and collapsed directions in canonical graphemes',()=>{
+  const calls=[];const root=new Element('div');
+  const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{});
+  bridge.update(snapshot({role:'TextInput',name:'Title',action_target:'title',value:'Ae\u0301👋B',state:{focusable:true},text_selection:{anchor:0,focus:0}}));
+  const editor=root.children[0];document.activeElement=editor;
+  editor.setSelectionRange(1,5,'forward');editor.dispatchEvent(event('select'));
+  editor.setSelectionRange(1,5,'backward');editor.dispatchEvent(event('select'));
+  editor.setSelectionRange(5,5,'none');editor.dispatchEvent(event('select'));
+  assert.deepEqual(calls.map(call=>call.slice(2)),[
+    ['selection','',1,3],
+    ['selection','',3,1],
+    ['selection','',3,3],
+  ]);
+});
+
+test('canonical backward grapheme selection restores the ordered native range, direction, scroll, and focus',()=>{
+  const calls=[];const root=new Element('div');const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{});
+  bridge.update(snapshot({role:'MultilineTextInput',name:'Message composer',action_target:'chat.composer',value:'one\ntwo',state:{focusable:true,multiline:true,focused:true},text_selection:{anchor:0,focus:0}}));
+  const editor=root.children[0];document.activeElement=editor;editor.scrollLeft=7;editor.scrollTop=42;
+  bridge.update(snapshot({role:'MultilineTextInput',name:'Message composer',action_target:'chat.composer',value:'Ae\u0301👋B',state:{focusable:true,multiline:true,focused:true},text_selection:{anchor:3,focus:1}}));
+  assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[1,5,'backward']);
+  assert.deepEqual([editor.scrollLeft,editor.scrollTop],[7,42]);
+  assert.equal(document.activeElement,editor);
+  assert.deepEqual(calls,[]);
+});
+
+test('composition cancellation restores canonical backward selection direction',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{});
+  bridge.update(snapshot({role:'TextInput',name:'Title',action_target:'title',value:'Ae\u0301👋B',state:{focusable:true},text_selection:{anchor:3,focus:1}}));
+  const editor=root.children[0];editor.dispatchEvent(event('compositionstart'));
+  editor.setSelectionRange(0,6,'forward');editor.dispatchEvent(event('compositioncancel'));
+  assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[1,5,'backward']);
 });
 
 test('semantic editor forwards canonical history keys once and releases modifiers',()=>{

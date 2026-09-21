@@ -76,7 +76,17 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
   }
   function selection(element){
     const value=element.value;
-    return [graphemeIndex(value,element.selectionStart??0),graphemeIndex(value,element.selectionEnd??0)];
+    const start=graphemeIndex(value,element.selectionStart??0),end=graphemeIndex(value,element.selectionEnd??0);
+    return element.selectionDirection==='backward'?[end,start]:[start,end];
+  }
+  function setCanonicalSelection(element,canonicalSelection){
+    if(!canonicalSelection)return;
+    const [anchor,focus]=canonicalSelection;
+    const anchorOffset=domOffset(element.value,anchor),focusOffset=domOffset(element.value,focus);
+    element.setSelectionRange?.(
+      Math.min(anchorOffset,focusOffset),Math.max(anchorOffset,focusOffset),
+      anchor===focus?'none':anchor<focus?'forward':'backward',
+    );
   }
   function dispatchSelection(element){
     if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return false;}
@@ -88,7 +98,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
   function restoreCanonical(element){
     const state=element.qosState;
     const scroll=[element.scrollLeft,element.scrollTop];element.value=state.canonicalValue;
-    if(state.canonicalSelection)element.setSelectionRange?.(domOffset(element.value,state.canonicalSelection[0]),domOffset(element.value,state.canonicalSelection[1]));
+    setCanonicalSelection(element,state.canonicalSelection);
     [element.scrollLeft,element.scrollTop]=scroll;
   }
   function dispatchValue(element){
@@ -130,7 +140,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     const offset=domOffset(value,focus);
     element.value=`${value.slice(0,offset)}${recovery.text}${value.slice(offset)}`;
     const caret=focus+graphemeIndex(recovery.text,recovery.text.length);
-    element.setSelectionRange?.(domOffset(element.value,caret),domOffset(element.value,caret));
+    setCanonicalSelection(element,[caret,caret]);
     if(!dispatchValue(element))return false;
     clearRecovery(recovery);return true;
   }
@@ -290,7 +300,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
           const scroll=[element.scrollLeft,element.scrollTop];
           if(element.value!==value)element.value=value;
           if(state.canonicalSelection){
-            element.setSelectionRange?.(domOffset(value,state.canonicalSelection[0]),domOffset(value,state.canonicalSelection[1]));
+            setCanonicalSelection(element,state.canonicalSelection);
             state.lastSelection=[...state.canonicalSelection];
           }
           [element.scrollLeft,element.scrollTop]=scroll;
