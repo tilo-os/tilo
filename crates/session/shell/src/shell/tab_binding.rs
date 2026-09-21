@@ -180,6 +180,97 @@ pub fn open_hosted_app(
     tab_id
 }
 
+/// Open or focus the one personal workspace-activity window in the active
+/// workspace. The tab is device-local, but otherwise uses the ordinary tiled
+/// window model so close, resize, tab/group reorder and persistence need no
+/// activity-specific implementations.
+pub fn open_workspace_activity(tree: &mut WorkspaceTree) -> TabId {
+    let active_workspace = tree.active;
+    let existing = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == active_workspace)
+        .and_then(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip.window_groups.iter().find_map(|group| {
+                    group.tabs.iter().find_map(|tab| {
+                        matches!(tab.tile, TileContent::WorkspaceActivity)
+                            .then_some((strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        });
+    if let Some((strip, group, tab)) = existing {
+        if let Some(workspace) = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == active_workspace)
+            && let Some(group_state) = workspace
+                .strips
+                .iter_mut()
+                .find(|candidate| candidate.id == strip)
+                .and_then(|strip_state| {
+                    strip_state
+                        .window_groups
+                        .iter_mut()
+                        .find(|candidate| candidate.id == group)
+                })
+        {
+            group_state.active_tab = tab;
+        }
+        tree.active_strip.insert(active_workspace, strip);
+        tree.set_active_group(strip, group);
+        return tab;
+    }
+
+    let tab = Tab {
+        id: next_id(),
+        title: "While you were away".to_string(),
+        tile: TileContent::WorkspaceActivity,
+    };
+    let tab_id = place_tab(tree, tab, Placement::NewGroup);
+    // The local cache intentionally retains the window; room projection
+    // filters the typed tile before any collaborative document write.
+    tree.flush_to_disk();
+    tab_id
+}
+
+pub fn active_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, GroupId, TabId)> {
+    tree.active_workspace().and_then(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                (group.active_tab != 0).then_some(())?;
+                group.tabs.iter().find_map(|tab| {
+                    (tab.id == group.active_tab
+                        && matches!(tab.tile, TileContent::WorkspaceActivity))
+                    .then_some((strip.id, group.id, tab.id))
+                })
+            })
+        })
+    })
+}
+
+/// The workspace-activity tab only owns keyboard input when its ordinary
+/// tiled group is the workspace's focused group. A selected tab in another
+/// visible group may still paint and receive pointer input, but must not
+/// steal keystrokes from the focused window.
+pub fn focused_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, GroupId, TabId)> {
+    let workspace = tree.active_workspace()?;
+    let strip_id = tree.active_strip.get(&workspace.id).copied()?;
+    let group_id = tree.active_group_for(strip_id)?;
+    let group = workspace
+        .strips
+        .iter()
+        .find(|strip| strip.id == strip_id)?
+        .window_groups
+        .iter()
+        .find(|group| group.id == group_id)?;
+    let tab = group.tabs.iter().find(|tab| {
+        tab.id == group.active_tab && matches!(tab.tile, TileContent::WorkspaceActivity)
+    })?;
+    Some((strip_id, group_id, tab.id))
+}
+
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
 /// Placement and tree decide where a window lands, not what's inside it, so both foreign and
 /// hosted-app opens route through here. Returns `new_tab`'s id even when it can't be spliced (no active workspace).
@@ -760,6 +851,49 @@ mod tests {
         tree.active_strip.insert(tree.active, strip_id);
         tree.set_active_group(strip_id, group_id);
         (strip_id, group_id)
+    }
+
+    #[test]
+    fn workspace_activity_is_one_focusable_tiled_window_per_workspace() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.persist_path = None;
+        let groups_before = tree
+            .active_workspace()
+            .expect("active workspace")
+            .strips
+            .iter()
+            .map(|strip| strip.window_groups.len())
+            .sum::<usize>();
+
+        let first = open_workspace_activity(&mut tree);
+        let first_location = active_workspace_activity_tab(&tree).expect("window is active");
+        assert_eq!(first_location.2, first);
+        assert_eq!(
+            tree.active_workspace()
+                .expect("active workspace")
+                .strips
+                .iter()
+                .map(|strip| strip.window_groups.len())
+                .sum::<usize>(),
+            groups_before + 1,
+            "the recap is a normal window group"
+        );
+
+        let second = open_workspace_activity(&mut tree);
+        assert_eq!(second, first, "reopening focuses the existing singleton");
+        assert_eq!(active_workspace_activity_tab(&tree), Some(first_location));
+        assert_eq!(focused_workspace_activity_tab(&tree), Some(first_location));
+        assert_eq!(
+            tree.active_workspace()
+                .expect("active workspace")
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .filter(|tab| matches!(tab.tile, TileContent::WorkspaceActivity))
+                .count(),
+            1
+        );
     }
 
     #[test]

@@ -1550,7 +1550,7 @@ impl ShellDriver {
                 let _ = tree.apply_changes(&changes);
             }
         }
-        self.with_chrome(|st| st.overlays.room_activity = true);
+        self.with_chrome(|st| st.open_room_activity(None));
         self.fb.host_mut().force_room_activity_settled();
     }
 
@@ -1629,6 +1629,10 @@ impl ShellDriver {
                     );
                 }
             }
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .prepare_away_recap_for_shots(&mut tree);
             drop(tree);
             drop(state);
         }
@@ -1696,10 +1700,7 @@ impl ShellDriver {
                 );
             }
         }
-        self.with_chrome(|state| {
-            state.overlays.room_activity = true;
-            state.bump();
-        });
+        self.with_chrome(|state| state.open_room_activity(None));
         self.fb
             .host_mut()
             .room_activity_mut()
@@ -1716,6 +1717,13 @@ impl ShellDriver {
             .expand_work_session_for_shots(0);
         let _ = self.fb.paint();
         expanded
+    }
+
+    pub fn focus_first_room_activity_work_session_for_shots(&mut self) -> bool {
+        self.fb
+            .host_mut()
+            .room_activity_mut()
+            .focus_first_work_session_for_shots()
     }
 
     pub fn correct_automatic_work_session_for_shots(&mut self) -> bool {
