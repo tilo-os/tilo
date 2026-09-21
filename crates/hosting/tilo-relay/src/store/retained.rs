@@ -770,6 +770,7 @@ impl WorkspaceStore {
 
 #[cfg(test)]
 pub(super) mod tests {
+    use super::super::bounded::{Step, WorkLimit};
     use super::*;
 
     fn message(checkpoint: bool, value: u8) -> Vec<u8> {
@@ -1206,11 +1207,25 @@ pub(super) mod tests {
             hex::encode([9; 32])
         ));
         let active = current(&lineage).unwrap().unwrap();
-        // Real filesystem failure after the replacement generation is staged,
-        // before CURRENT can be atomically committed. No production failpoint.
-        let blocker = lineage.join(format!(".CURRENT.{}.tmp", std::process::id()));
-        fs::create_dir(&blocker).unwrap();
-        assert!(store.retain_checkpoint(&[9; 32], &new).is_err());
+        // Drive the real retention operation through staging so the injected
+        // failure can target only CURRENT publication, before its rename.
+        let mut build = store.start_retain(&[9; 32], None, new.clone()).unwrap();
+        for _ in 0..20_000 {
+            if matches!(build.phase, RetainPhase::Commit) {
+                break;
+            }
+            assert!(matches!(
+                build.step(WorkLimit::default()).unwrap(),
+                Step::More
+            ));
+        }
+        assert!(matches!(build.phase, RetainPhase::Commit));
+        let failed = atomic_file::test_support::with_failure(
+            atomic_file::test_support::Checkpoint::BeforePublish,
+            || build.step(WorkLimit::default()),
+        );
+        assert!(failed.is_err());
+        drop(build);
         drop(store);
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
         assert_eq!(
@@ -1218,7 +1233,6 @@ pub(super) mod tests {
             vec![old, tail, uncovered.clone()]
         );
         assert_eq!(current(&lineage).unwrap().unwrap(), active);
-        fs::remove_dir(blocker).unwrap();
         store.retain_checkpoint(&[9; 32], &new).unwrap();
         assert_eq!(
             store.load_retained().unwrap(),

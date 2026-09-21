@@ -112,19 +112,51 @@ fn copy_tree(from: &Path, to: &Path) {
 fn captured_shell_store_selection_replays_exact_current_pairs() {
     let tmp = tempfile::tempdir().unwrap();
     let authority = binding();
-    let mut store = WorkspaceStore::open(
-        tmp.path(),
-        crate::room_workspace_id(authority.room()).unwrap(),
-        true,
-    )
-    .unwrap();
+    let [current_workspace, legacy_workspace] =
+        crate::room_workspace_ids(authority.room()).unwrap();
+    assert_ne!(current_workspace, legacy_workspace);
+    let mut store = WorkspaceStore::open(tmp.path(), legacy_workspace, true).unwrap();
     store.bind_shell_authority(authority).unwrap();
     // Trusted test-store import of the public authenticated-ingress capture.
     copy_tree(&fixture().join("retained"), &store.root.join("retained"));
-    let peer = admit_frames(
+    let frames = replay_frames(&store);
+    assert!(frames.iter().all(|frame| matches!(
+        frame,
+        Envelope::Delta { workspace_id, .. } if *workspace_id == legacy_workspace
+    )));
+    let versions = frames
+        .iter()
+        .filter_map(|frame| {
+            let Envelope::Delta { delta, .. } = frame else {
+                return None;
+            };
+            let (_, body, _) = parts(CoeditPayload::decode(delta).unwrap());
+            let message: NeighbourMsg = postcard::from_bytes(&body).unwrap();
+            let NeighbourMsg::AppDocument { envelope, .. } = message else {
+                return None;
+            };
+            Some(
+                collab_types::DocumentMutation::decode_versioned(&envelope.payload)
+                    .unwrap()
+                    .version,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !versions.is_empty(),
+        "fixture contained no document mutations"
+    );
+    assert!(
+        versions
+            .iter()
+            .all(|version| *version == collab_types::DocumentWireVersion::QosV1),
+        "captured fixture changed durable wire versions: {versions:?}"
+    );
+    let peer = admit_frames_with_origin(
         &metadata(),
         &fixture().join("initial-peer.postcard"),
-        replay_frames(&store),
+        frames,
+        true,
     );
     let record = "tab:8b11000000000004";
     let receipt = peer
@@ -365,7 +397,10 @@ fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is
     use super::replay::*;
     let tmp = tempfile::tempdir().unwrap();
     let authority = binding();
-    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let [current_workspace, legacy_workspace] =
+        crate::room_workspace_ids(authority.room()).unwrap();
+    assert_ne!(current_workspace, legacy_workspace);
+    let id = legacy_workspace;
     let mut store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
     store.bind_shell_authority(authority.clone()).unwrap();
     copy_tree(&fixture().join("retained"), &store.root.join("retained"));
@@ -380,8 +415,8 @@ fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is
         .start_replay_capture(ReplayId(rand::random()), [2; 32])
         .unwrap();
     let mut interrupted = false;
-    for _ in 0..20000 {
-        let _ = store
+    for _ in 0..20_000 {
+        match store
             .capture_replay_step(
                 &mut build,
                 WorkLimit {
@@ -389,21 +424,48 @@ fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is
                     ..Default::default()
                 },
             )
-            .unwrap();
+            .unwrap()
+        {
+            Step::More => {}
+            Step::Done(_) => panic!("capture finished before the retirement interruption"),
+        }
         if fs::read_dir(&active).unwrap().count() == 0 {
             interrupted = true;
             break;
         }
     }
-    assert!(interrupted);
+    assert!(interrupted, "capture never began exact legacy retirement");
+    let remaining_before_reopen = fs::read_dir(store.root.join("retained/v2"))
+        .unwrap()
+        .map(|lineage| {
+            retained::current(&lineage.unwrap().path())
+                .unwrap()
+                .map(|active| fs::read_dir(active).unwrap().count())
+                .unwrap_or(0)
+        })
+        .sum::<usize>();
+    assert!(
+        remaining_before_reopen > 0,
+        "fixture did not interrupt retirement between exact inputs"
+    );
+    let selected = retained::current(&store.root.join(super::shell_selection::DIRECTORY))
+        .unwrap()
+        .expect("retirement began before selected proof publication");
     drop(build);
     drop(store);
     let mut reopened = WorkspaceStore::open(tmp.path(), id, true).unwrap();
     reopened.bind_shell_authority(authority).unwrap();
-    let peer = admit_frames(
+    assert_eq!(
+        retained::current(&reopened.root.join(super::shell_selection::DIRECTORY))
+            .unwrap()
+            .unwrap(),
+        selected
+    );
+    let peer = admit_frames_with_origin(
         &metadata(),
         &fixture().join("initial-peer.postcard"),
         replay_frames(&reopened),
+        true,
     );
     assert_eq!(
         peer.durable_coverage("dev.qos.notes", "tab:8b11000000000004")
@@ -413,6 +475,7 @@ fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is
             .sequence,
         7
     );
+    assert_eq!(retained::current(&room).unwrap().unwrap(), active);
     let mut remaining = 0;
     for lineage in fs::read_dir(reopened.root.join("retained/v2")).unwrap() {
         if let Some(active) = retained::current(&lineage.unwrap().path()).unwrap() {
@@ -421,7 +484,7 @@ fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is
     }
     assert_eq!(
         remaining, 0,
-        "restart must finish proven retirement even after old room proof originals were unlinked"
+        "restart must finish proven retirement after old originals were unlinked"
     );
 }
 
