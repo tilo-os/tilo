@@ -11327,17 +11327,10 @@ mod screen_reader_tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _ni: NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
@@ -11488,17 +11481,10 @@ mod screen_reader_tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _ni: NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
@@ -11732,17 +11718,10 @@ mod focus_trap_tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _ni: NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
@@ -11818,17 +11797,10 @@ mod focus_trap_tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _ni: NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
@@ -12182,21 +12154,10 @@ mod low_vision_tests {
             _p: &crate::presence::PresenceCtx,
         ) {
         }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "implementation must match the shared Widget event signature"
-        )]
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut automerge::AutoCommit,
-            _r: &automerge::ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _n: NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
@@ -13353,21 +13314,10 @@ mod view_presence_tests {
             _p: &PresenceCtx,
         ) {
         }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "implementation must match the shared Widget event signature"
-        )]
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut AutoCommit,
-            _p: &ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<taffy::NodeId>,
-            _ni: taffy::NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -14090,17 +14040,10 @@ mod semantic_tree_app_tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _ni: NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {
