@@ -1,7 +1,7 @@
 //! Package-primary custody preserves the native Chat document and wire address.
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
-use ui::portable_storage::{PortableStorage, StorageKey};
-use ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
+use tilo_ui::portable_storage::{PortableStorage, StorageKey};
+use tilo_ui::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
 
 #[test]
 fn primary_owner_is_shared_and_keeps_recordless_wire_identity() {
@@ -29,7 +29,7 @@ fn primary_owner_is_shared_and_keeps_recordless_wire_identity() {
     let heads = a.read(&checkout.id, |doc| doc.base_heads()).unwrap();
     assert_eq!(b.read(&checkout.id, |doc| doc.base_heads()).unwrap(), heads);
     assert!(
-        a.read(&checkout.id, ui::record::identity)
+        a.read(&checkout.id, tilo_ui::record::identity)
             .unwrap()
             .is_none()
     );
@@ -85,7 +85,7 @@ fn primary_admission_rejects_stamped_records_and_wire_parse_rejects_internal_key
         u64::from(app_state::SCHEMA_VERSION),
     )
     .unwrap();
-    ui::record::init_scoped(
+    tilo_ui::record::init_scoped(
         &mut doc,
         &RecordId::for_tab(7),
         &checkout.kind,
@@ -108,7 +108,7 @@ fn primary_admission_rejects_stamped_records_and_wire_parse_rejects_internal_key
         .unwrap();
     assert!(matches!(
         store.try_open_record(&checkout),
-        Err(ui::record::RecordOpenError::IdentityMismatch)
+        Err(tilo_ui::record::RecordOpenError::IdentityMismatch)
     ));
 }
 

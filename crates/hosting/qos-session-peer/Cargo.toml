@@ -28,7 +28,7 @@ atomic-file = { path = "../../system/atomic-file" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-relay = { path = "../tilo-relay" }
-ui = { path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 qos-desktop = { path = "../../session/qos-desktop" }
 notes = { path = "../../../apps/notes" }
 calculator = { path = "../../../apps/calculator" }

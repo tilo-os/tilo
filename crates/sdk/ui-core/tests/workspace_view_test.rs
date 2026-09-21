@@ -8,7 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::widget::{WorkspaceSwitchDirection, WorkspaceView};
+use tilo_ui::widget::{WorkspaceSwitchDirection, WorkspaceView};
 
 #[test]
 fn workspace_view_switch_up_down_sets_slide_target() {

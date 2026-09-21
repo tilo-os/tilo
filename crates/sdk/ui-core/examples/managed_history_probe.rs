@@ -4,7 +4,7 @@
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::{cell::RefCell, collections::HashMap};
 use taffy::{NodeId, TaffyTree};
-use ui::{State, history_mode::*, widget::*};
+use tilo_ui::{State, history_mode::*, widget::*};
 use vello::{
     Scene,
     kurbo::{Affine, Point, Rect},
@@ -67,8 +67,8 @@ impl HistoryPreview for Preview {
     fn layout(
         &mut self,
         rect: Rect,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
+        _: &mut tilo_ui::TextRenderer,
+        _: &tilo_ui::Theme,
     ) -> Result<(), String> {
         self.rect = rect;
         Ok(())
@@ -77,8 +77,8 @@ impl HistoryPreview for Preview {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
+        text: &mut tilo_ui::TextRenderer,
+        theme: &tilo_ui::Theme,
     ) {
         PREVIEW.with_borrow_mut(|value| *value = self.observation.clone());
         text.draw_text(
@@ -134,7 +134,7 @@ impl Widget for Note {
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
-        theme: &ui::Theme,
+        theme: &tilo_ui::Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.0.build_layout(tree, theme, nodes);
@@ -156,9 +156,9 @@ impl Widget for Note {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
+        text: &mut tilo_ui::TextRenderer,
+        theme: &tilo_ui::Theme,
+        presence: &tilo_ui::presence::PresenceCtx,
     ) {
         self.0.draw(scene, transform, text, theme, presence);
     }
@@ -189,16 +189,16 @@ impl Widget for Note {
 }
 fn fixture() -> (
     tempfile::TempDir,
-    ui::RecordStore,
-    ui::record::RecordCheckout,
+    tilo_ui::RecordStore,
+    tilo_ui::record::RecordCheckout,
     Box<dyn Widget>,
 ) {
     let directory = tempfile::tempdir().unwrap();
-    let mut owners = ui::record::RecordOwners::new(directory.path().to_path_buf());
+    let mut owners = tilo_ui::record::RecordOwners::new(directory.path().to_path_buf());
     let store = owners.open(APP, "native-probe").unwrap();
-    let checkout = ui::record::RecordCheckout::new(
-        ui::RecordId::for_tab(70001),
-        ui::record::RecordKind::new("note"),
+    let checkout = tilo_ui::record::RecordCheckout::new(
+        tilo_ui::RecordId::for_tab(70001),
+        tilo_ui::record::RecordKind::new("note"),
     );
     store
         .reserve_record(&checkout)
@@ -215,7 +215,7 @@ fn fixture() -> (
                 doc,
                 None,
                 None,
-                Some(ui::collaboration::local_user_id()),
+                Some(tilo_ui::collaboration::local_user_id()),
                 Some("Edit notebook".into()),
             );
         })
@@ -236,16 +236,16 @@ fn fixture() -> (
     (directory, store, checkout, Box::new(tile))
 }
 fn main() {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
     let (_directory, store, checkout, root) = fixture();
     if std::env::args().any(|arg| arg == "--plan") {
-        let mut driver = ui::headless::FrameHarness::new(State::new(), root, (800, 600));
+        let mut driver = tilo_ui::headless::FrameHarness::new(State::new(), root, (800, 600));
         let mut steps = vec![serde_json::json!({"kind":"hover","x":1.0,"y":1.0})];
         let scale = std::env::var("HISTORY_PROBE_SCALE")
             .ok()
             .and_then(|value| value.parse::<f64>().ok())
             .unwrap_or(2.0);
-        let mut click = |driver: &mut ui::headless::FrameHarness, rect: Rect| {
+        let mut click = |driver: &mut tilo_ui::headless::FrameHarness, rect: Rect| {
             let p = rect.center();
             steps.push(serde_json::json!({"kind":"click", "x":p.x*scale,"y":p.y*scale}));
             driver.click_at(p.x, p.y);
@@ -280,7 +280,7 @@ fn main() {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({"name":"managed native History review and restore", "interval_us":4000000, "warmup_steps":1, "steps":steps})).unwrap());
         return;
     }
-    let mut app = ui::App::from_factory(State::new(), move || root)
+    let mut app = tilo_ui::App::from_factory(State::new(), move || root)
         .with_window_title("Managed History qualification");
     app.set_native_input_probe(move || store.read_history(&checkout.id, |doc, history| serde_json::json!({"body":body(doc),"heads":doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>(),"pending_ops":doc.pending_ops(),"committed_change_count":committed_change_count(doc),"undo_revision":history.revision(),"last_drawn_preview":PREVIEW.with_borrow(Clone::clone)})).unwrap());
     app.run();

@@ -1,8 +1,8 @@
 // Included by app test modules. Required local hooks: fixture(),
 // verify_restored(), malformed_fixture(), and the app-supplied test_root().
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
-use ui::history_mode::restore::*;
-use ui::history_mode::*;
+use tilo_ui::history_mode::restore::*;
+use tilo_ui::history_mode::*;
 
 #[test]
 fn actual_root_declares_framework_history() {
@@ -29,7 +29,7 @@ fn preview(
             "temporary",
             "fixture",
             def.app_id,
-            ui::RecordId::for_tab(55),
+            tilo_ui::RecordId::for_tab(55),
         ),
         doc,
     )
@@ -37,7 +37,9 @@ fn preview(
     controller
         .select(
             doc,
-            &[ui::history_source::entry_id_from_hash(&hash.to_string())],
+            &[tilo_ui::history_source::entry_id_from_hash(
+                &hash.to_string(),
+            )],
         )
         .unwrap();
     controller.select_compare_side(side).unwrap();
@@ -69,21 +71,21 @@ fn selected_content_is_immutable_navigable_and_restorable() {
     );
     assert!(!p.accessibility().pages.is_empty());
     let pages = p.accessibility().pages;
-    let mut tr = ui::TextRenderer::new();
+    let mut tr = tilo_ui::TextRenderer::new();
     for width in [360.0, 1000.0] {
         for (page, _) in &pages {
             assert!(p.navigate(PreviewNavigation::SelectPage(page.clone())));
             p.layout(
                 vello::kurbo::Rect::new(0., 0., width, 600.),
                 &mut tr,
-                &ui::Theme::dark(),
+                &tilo_ui::Theme::dark(),
             )
             .unwrap();
             p.draw(
                 &mut vello::Scene::new(),
                 vello::kurbo::Affine::IDENTITY,
                 &mut tr,
-                &ui::Theme::dark(),
+                &tilo_ui::Theme::dark(),
             );
             assert!(p.navigate(PreviewNavigation::Scroll { dx: 0., dy: -80. }));
         }
@@ -111,8 +113,8 @@ fn selected_content_is_immutable_navigable_and_restorable() {
     );
 }
 
-fn managed_driver(doc: AutoCommit, selected: automerge::ChangeHash) -> ui::headless::Driver {
-    let state = ui::State::from_doc(doc);
+fn managed_driver(doc: AutoCommit, selected: automerge::ChangeHash) -> tilo_ui::headless::Driver {
+    let state = tilo_ui::State::from_doc(doc);
     let def = definition();
     let registration = HistoryRegistration::new(
         def,
@@ -122,12 +124,12 @@ fn managed_driver(doc: AutoCommit, selected: automerge::ChangeHash) -> ui::headl
                 "temporary",
                 "fixture",
                 def.app_id,
-                ui::RecordId::for_tab(55),
+                tilo_ui::RecordId::for_tab(55),
             ),
         }],
     )
     .unwrap();
-    let mut driver = ui::headless::Driver::from_managed_root(
+    let mut driver = tilo_ui::headless::Driver::from_managed_root(
         state,
         ManagedRoot::new(test_root(), registration),
         (1000, 750),
@@ -138,10 +140,10 @@ fn managed_driver(doc: AutoCommit, selected: automerge::ChangeHash) -> ui::headl
     driver
 }
 
-fn select_version(driver: &mut ui::headless::Driver, selected: automerge::ChangeHash) {
+fn select_version(driver: &mut tilo_ui::headless::Driver, selected: automerge::ChangeHash) {
     let target = format!(
         "timeline-entry:{}",
-        ui::widget::history_group::hex16(&ui::history_source::entry_id_from_hash(
+        tilo_ui::widget::history_group::hex16(&tilo_ui::history_source::entry_id_from_hash(
             &selected.to_string()
         ))
     );
@@ -149,7 +151,7 @@ fn select_version(driver: &mut ui::headless::Driver, selected: automerge::Change
         .perform_semantic_named(
             "activity_timeline",
             Some(&target),
-            &ui::a11y::Action::Activate,
+            &tilo_ui::a11y::Action::Activate,
         )
         .unwrap();
 }
@@ -186,8 +188,8 @@ fn shared_host_restores_one_boundary_and_rejects_revoked_or_stale_review() {
         let mut d = managed_driver(doc, selected);
         d.click_named("history-restore").unwrap();
         if revoked {
-            d.set_permission_ctx(ui::permissions::PermissionContext::from_capabilities(
-                ui::permissions::Actor::person(None, "revoked"),
+            d.set_permission_ctx(tilo_ui::permissions::PermissionContext::from_capabilities(
+                tilo_ui::permissions::Actor::person(None, "revoked"),
                 vec![],
             ));
         } else {
@@ -226,7 +228,7 @@ fn malformed_content_is_rejected_without_writes() {
 fn normal_autosave_fresh_reopen_retains_graph_and_restored_content() {
     let def = definition();
     if let Ok(stage) = std::env::var("QOS_SLICE4_STAGE") {
-        let (mut state, mut saver) = ui::persist::try_open(def.app_id).unwrap();
+        let (mut state, mut saver) = tilo_ui::persist::try_open(def.app_id).unwrap();
         if stage == "write" {
             let (mut doc, selected, _) = fixture();
             state.doc.merge(&mut doc).unwrap();
@@ -342,7 +344,7 @@ fn pending_live_edits_survive_preview_and_refuse_restore() {
     dead_code,
     reason = "the shared conformance include offers pagination assertions that not every app adapter calls"
 )]
-fn assert_page_round_trip(driver: &mut ui::headless::Driver, first: &str, second: &str) {
+fn assert_page_round_trip(driver: &mut tilo_ui::headless::Driver, first: &str, second: &str) {
     for width in [390, 1000] {
         driver.resize((width, 750)).unwrap();
         driver.click_named("history-next-page").unwrap();

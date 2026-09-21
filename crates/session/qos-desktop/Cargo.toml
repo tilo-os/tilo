@@ -21,7 +21,7 @@ collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
 desktop-policy = { path = "../../system/desktop-policy" }
-ui = { path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [dev-dependencies]
 vello_encoding.workspace = true

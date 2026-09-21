@@ -26,13 +26,13 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use ui::State;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::UserId;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{Row, UndoButton, Widget};
+use tilo_ui::State;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::permissions::UserId;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{Row, UndoButton, Widget};
 
 const WIDTH: u32 = 300;
 const HEIGHT: u32 = 64;
@@ -179,7 +179,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
 }
 
 pub fn run(_args: &[String]) {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
     let dir =
         std::env::var("UNDO_SHOTS_OUT").unwrap_or_else(|_| "/tmp/undo_controls_shots".to_string());
     if let Err(error) = std::fs::create_dir_all(&dir) {

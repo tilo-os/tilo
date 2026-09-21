@@ -19,8 +19,9 @@ thin = ["dep:runtime-dylib"]
 # simulated engine and do not start an iroh endpoint or ScreenCast portal.
 default = ["live-media"]
 # Voice, camera, and screen sharing use iroh QUIC, GStreamer capture/playback,
-# `tilo-callstream`, and the ScreenCast portal. The feature is off by default;
-# enable it with `--features live-media`.
+# `tilo-callstream`, and the ScreenCast portal. This is a default feature for
+# the shipped app; disable default features only for explicitly media-free
+# builds and hermetic tests.
 live-media = [
     "dep:gstreamer",
     "dep:gstreamer-app",

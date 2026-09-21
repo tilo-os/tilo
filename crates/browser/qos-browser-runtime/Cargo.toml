@@ -15,7 +15,7 @@ web-time = { version = "1", features = ["serde"] }
 ed25519-dalek.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
-ui = { path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 qos-desktop = { path = "../../session/qos-desktop" }
 notes = { path = "../../../apps/notes" }
 calculator = { path = "../../../apps/calculator" }

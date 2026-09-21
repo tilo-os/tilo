@@ -22,7 +22,7 @@ tokio-util.workspace = true
 capnp.workspace = true
 runtime-collab = { path = "../../runtime/runtime-collab" }
 qos-desktop = { path = "../../session/qos-desktop" }
-ui = { path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 collab-types = { path = "../collab-types" }
 channel-crypto = { path = "../channel-crypto" }
 tilo-actions = { path = "../actions" }

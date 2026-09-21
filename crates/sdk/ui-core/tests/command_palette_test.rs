@@ -11,12 +11,12 @@
 )]
 
 use std::sync::{Arc, Mutex};
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
-use ui::widget::command_palette::{CommandEntry, CommandPalette};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Widget;
+use tilo_ui::widget::command_palette::{CommandEntry, CommandPalette};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
@@ -57,7 +57,7 @@ const CANVAS_H: u32 = 420;
 const PALETTE_INSET: f64 = 20.0;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
-    ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
+    tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
 }
 
 fn dump(name: &str, rgba: &[u8]) {
@@ -118,10 +118,10 @@ fn command_palette_panel_edge_registers_in_both_themes() {
         let delta = (luminance_of(edge) - luminance_of(inside)).abs();
         eprintln!("command-palette/{name}: edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
         assert!(
-            delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+            delta >= tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA,
             "{name}: palette edge {edge:?} does not register against its fill {inside:?} \
              (Δlum={delta:.4} < {})",
-            ui::tokens::colors::HAIRLINE_MIN_DELTA
+            tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA
         );
     }
 }

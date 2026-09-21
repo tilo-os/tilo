@@ -125,7 +125,7 @@ uuid = { workspace = true, features = ["js"] }
 chat = { path = "../../../apps/chat", default-features = false }
 word-processor = { path = "../../../apps/word-processor" }
 qdoc = { path = "../../doc/qdoc" }
-ui = { path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
 qos-browser-runtime = { path = "../../browser/qos-browser-runtime" }
 web-time = { version = "1", features = ["serde"] }

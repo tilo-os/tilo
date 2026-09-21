@@ -10,16 +10,9 @@ license.workspace = true
 # Tilo runtime collaboration-broker client. Connects to the session broker
 # over the Unix-socket Cap'n Proto channel passed in as TILO_SVC_COLLAB_FD.
 
-[package.metadata.cargo-machete]
-# Invoked by build.rs to compile the Cap'n Proto schema.
-ignored = ["capnpc"]
-
 [lib]
 name = "runtime_collab"
 path = "src/lib.rs"
-
-[build-dependencies]
-capnpc.workspace = true
 
 [dependencies]
 runtime-portal = { path = "../runtime-portal" }

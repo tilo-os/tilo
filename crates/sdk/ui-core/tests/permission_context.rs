@@ -8,11 +8,11 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::permissions::{
+use tilo_ui::permissions::{
     Actor, AppKind, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef,
     Role, Scope, Subject, UserId, Verb,
 };
-use ui::widget::Widget as _;
+use tilo_ui::widget::Widget as _;
 
 /// A viewer in the room: role only, no individual capabilities.
 fn viewer_ctx(user: &str) -> PermissionContext {
@@ -117,7 +117,7 @@ fn an_explicitly_denied_role_cannot_be_rescued_by_a_grant() {
 }
 
 struct NoOpWidget;
-impl ui::widget::Widget for NoOpWidget {
+impl tilo_ui::widget::Widget for NoOpWidget {
     fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     #[allow(
         clippy::unimplemented,
@@ -127,8 +127,8 @@ impl ui::widget::Widget for NoOpWidget {
     fn build_layout(
         &mut self,
         _t: &mut taffy::TaffyTree<()>,
-        _th: &ui::theme::Theme,
-        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
+        _th: &tilo_ui::theme::Theme,
+        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui::widget::Widget>,
     ) -> taffy::NodeId {
         unimplemented!()
     }
@@ -143,9 +143,9 @@ impl ui::widget::Widget for NoOpWidget {
         &mut self,
         _s: &mut vello::Scene,
         _tr: vello::kurbo::Affine,
-        _txt: &mut ui::text_render::TextRenderer,
-        _th: &ui::theme::Theme,
-        _presence: &ui::presence::PresenceCtx,
+        _txt: &mut tilo_ui::text_render::TextRenderer,
+        _th: &tilo_ui::theme::Theme,
+        _presence: &tilo_ui::presence::PresenceCtx,
     ) {
     }
     fn handle_event(
@@ -182,9 +182,9 @@ fn draw_with_presence_default_delegates_to_draw() {
     // `draw_with_presence` implementation exists and forwards to `draw`.
     let mut w = NoOpWidget;
     let mut scene = vello::Scene::new();
-    let mut tr = ui::text_render::TextRenderer::new();
-    let theme = ui::theme::Theme::dark();
-    let presence = ui::presence::PresenceCtx::empty();
+    let mut tr = tilo_ui::text_render::TextRenderer::new();
+    let theme = tilo_ui::theme::Theme::dark();
+    let presence = tilo_ui::presence::PresenceCtx::empty();
     let perms = PermissionContext::permissive();
     w.draw_with_presence(
         &mut scene,
@@ -196,14 +196,14 @@ fn draw_with_presence_default_delegates_to_draw() {
     );
 }
 
-use ui::permissions::PermissionScope as PS;
+use tilo_ui::permissions::PermissionScope as PS;
 
 struct GatedButton {
     clicked: bool,
     scope: PS,
 }
 
-impl ui::widget::Widget for GatedButton {
+impl tilo_ui::widget::Widget for GatedButton {
     fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     #[allow(
         clippy::unimplemented,
@@ -213,8 +213,8 @@ impl ui::widget::Widget for GatedButton {
     fn build_layout(
         &mut self,
         _t: &mut taffy::TaffyTree<()>,
-        _th: &ui::theme::Theme,
-        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
+        _th: &tilo_ui::theme::Theme,
+        _m: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui::widget::Widget>,
     ) -> taffy::NodeId {
         unimplemented!()
     }
@@ -229,9 +229,9 @@ impl ui::widget::Widget for GatedButton {
         &mut self,
         _s: &mut vello::Scene,
         _tr: vello::kurbo::Affine,
-        _txt: &mut ui::text_render::TextRenderer,
-        _th: &ui::theme::Theme,
-        _presence: &ui::presence::PresenceCtx,
+        _txt: &mut tilo_ui::text_render::TextRenderer,
+        _th: &tilo_ui::theme::Theme,
+        _presence: &tilo_ui::presence::PresenceCtx,
     ) {
     }
     fn handle_event(
@@ -267,7 +267,7 @@ fn gated_widget_rejected_by_framework_helper() {
         scope: PermissionScope::app_kind(AppKind::Terminal, Verb::Write),
     };
     let mut fired = false;
-    let allowed = ui::app::dispatch_gated_event(&ctx, &w, || {
+    let allowed = tilo_ui::app::dispatch_gated_event(&ctx, &w, || {
         fired = true;
     });
     assert!(!allowed);
@@ -282,7 +282,7 @@ fn gated_widget_allowed_when_role_grants_edit() {
         scope: PermissionScope::app_kind(AppKind::Terminal, Verb::Write),
     };
     let mut fired = false;
-    let allowed = ui::app::dispatch_gated_event(&ctx, &w, || {
+    let allowed = tilo_ui::app::dispatch_gated_event(&ctx, &w, || {
         fired = true;
     });
     assert!(allowed);

@@ -19,13 +19,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use ui::State;
-use ui::headless::{FrameHarness, InspectionNode};
-use ui::icons::Icon;
-use ui::search::{SearchGroup, SearchResult};
-use ui::theme::Theme;
-use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use ui::widget::{
+use tilo_ui::State;
+use tilo_ui::headless::{FrameHarness, InspectionNode};
+use tilo_ui::icons::Icon;
+use tilo_ui::search::{SearchGroup, SearchResult};
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui::widget::{
     Alternative, Banner, Button, Card, Chart, Column, ConflictBanner, ConflictKind, ConflictPicker,
     Container, Element, IconGrid, IconGridItem, Row, SearchResultsView, Series, StatTile, Text,
     TreeNode, TreeView, Trend,
@@ -53,7 +53,7 @@ const ICON_GLYPH: f64 = 40.0;
 // The production formulas the widgets size their bands from — one line of
 // type as the renderer lays it out, and a pinned floor grown by content plus
 // padding — so the expectations below cannot drift from the widgets.
-use ui::widget::data_table::{text_band as band, type_line_height as line};
+use tilo_ui::widget::data_table::{text_band as band, type_line_height as line};
 
 fn out_dir() -> PathBuf {
     let tag = std::env::var("F3_FIXTURE_TAG").unwrap_or_else(|_| "current".into());
