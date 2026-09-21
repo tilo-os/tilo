@@ -2298,6 +2298,8 @@ mod tests {
         tree.set_active_group(strip_id, 70_002);
 
         let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
+        let store = frame_builder.chrome().records().clone();
+        crate::shell::tab_documents::create_scratch_tab_record(&store, target_tab).unwrap();
         let _ = frame_builder.paint();
         let long_note = (1..=72)
             .map(|line| {

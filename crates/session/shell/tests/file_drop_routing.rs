@@ -343,7 +343,7 @@ fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
     // it advertises via `xdg_toplevel::set_app_id`), not the display label.
     let editor_key = AppKind::Other("Editor".into()).app_id();
     assert_eq!(
-        editor_key, "org.tilo.Editor",
+        editor_key, "org.nirios.Editor",
         "the Editor app-id must be a real reverse-DNS app-id, not the \
          display label 'Editor'"
     );
