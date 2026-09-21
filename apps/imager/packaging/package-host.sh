@@ -10,7 +10,7 @@ require_native_packages="${TILO_REQUIRE_NATIVE_PACKAGES:-0}"
 version="${TILO_VERSION:-0.1.0}"
 version="${version#imager-v}"
 version="${version#v}"
-release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
+release_repository="${TILO_RELEASE_REPOSITORY:-qos/releases}"
 release_server="${GITHUB_SERVER_URL:-https://code.podesta.ai}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
@@ -265,7 +265,7 @@ case "$host" in
     cp apps/imager/packaging/linux/tilo-imager "$appdir/usr/bin/tilo-imager"
     cp apps/imager/packaging/linux/tilo-imager.desktop \
       "$appdir/usr/share/applications/org.tilo.Imager.desktop"
-    sed "s|https://code.podesta.ai/tilo/releases|$release_page|g" \
+    sed "s|https://code.podesta.ai/qos/releases|$release_page|g" \
       apps/imager/packaging/linux/org.tilo.Imager.metainfo.xml \
       >"$appdir/usr/share/metainfo/org.tilo.Imager.appdata.xml"
     cp apps/imager/packaging/linux/AppRun "$appdir/AppRun"

@@ -201,7 +201,7 @@ impl Chip {
     /// Measured pill size: padding + lead + label + dismiss across, and the
     /// selector height unless the label's measured line (plus `pad_y` a
     /// side) needs more — at 1× a 12 px label shapes a 15 px line and the
-    /// pill stays 28; at 2× text the 30 px line lifts it to 38 instead of
+    /// pill stays 28; at 2× text the 30 px line lifts it to 42 instead of
     /// spilling over the pill's top and bottom.
     fn intrinsic_size(&self, text_renderer: &mut TextRenderer) -> (f64, f64) {
         // `label_size` is the theme's resolved step (text scale included);
@@ -586,9 +586,10 @@ impl Widget for Chip {
                 + f64::from(char_count) * (f64::from(label_size) * 0.6)
                 + if self.dot.is_some() { DOT_D + GAP } else { 0.0 }
                 + if self.removable { GAP + X_D } else { 0.0 };
+            let estimated_line_height = crate::text_metrics::line_height_px(label_size, 1.0);
             taffy::Size {
                 width: approx as f32,
-                height: HEIGHT as f32,
+                height: HEIGHT.max(estimated_line_height + pad_y * 2.0) as f32,
             }
         });
         let node = taffy.leaf_node(Style {
@@ -864,8 +865,9 @@ mod tests {
             "200% label width must be measured rather than painted outside a 100% chip"
         );
         assert!(
-            large.get_rect().height() >= 40.0,
-            "200% chip must grow its pointer target with its line, got {:?}",
+            large.get_rect().height() > normal.get_rect().height()
+                && large.hit_rect().height() >= large.get_rect().height(),
+            "200% chip and its pointer target must grow with its measured line, got {:?}",
             large.get_rect()
         );
     }

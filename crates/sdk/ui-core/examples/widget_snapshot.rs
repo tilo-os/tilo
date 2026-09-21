@@ -22,16 +22,16 @@ use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
 
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::popover_widget::PopoverSide;
-use ui::widget::resizable_split::SplitOrientation;
-use ui::widget::toggle_group::Segment;
-use ui::widget::toolbar::Orientation as ToolbarOrientation;
-use ui::widget::tree_view::TreeNode;
-use ui::widget::{
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::popover_widget::PopoverSide;
+use tilo_ui::widget::resizable_split::SplitOrientation;
+use tilo_ui::widget::toggle_group::Segment;
+use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
+use tilo_ui::widget::tree_view::TreeNode;
+use tilo_ui::widget::{
     Avatar, Badge, Breadcrumb, ColorPicker, DatePicker, ImageViewer, ModalDialog, PopoverWidget,
     ProgressBar, ResizableSplit, Spinner, TimePicker, ToggleGroup, Toolbar, TreeView, VideoPlayer,
     Widget,
@@ -600,7 +600,10 @@ pub fn run(_args: &[String]) {
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark)
-        .with_text_scale(ui::launch::shot_text_scale(None, text_scale.as_deref()))
+        .with_text_scale(tilo_ui::launch::shot_text_scale(
+            None,
+            text_scale.as_deref(),
+        ))
         .with_reduce_motion(true);
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();

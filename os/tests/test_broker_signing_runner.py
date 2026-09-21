@@ -1,5 +1,6 @@
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -13,7 +14,8 @@ import broker_signing_runner as b
 
 
 def binding():
-    return {'schema': 1, 'namespace': 'test', 'pod': 'runner', 'container': 'dind', 'pod_uid': 'uid',
+    return {'schema': 1, 'cluster': 'aws-us-west-2', 'namespace': 'test',
+        'pod': 'runner', 'container': 'dind', 'pod_uid': 'uid',
         'container_id': 'containerd://abc', 'image': 'image:fixture', 'image_id': 'sha256:abc',
         'restart_count': 0, 'pod_spec_sha256': 'a'*64, 'context_sha256': 'b'*64,
         'endpoint': '/var/lib/tilo-signing-bridge/signing-spool-endpoint.py',
@@ -22,6 +24,10 @@ def binding():
 
 class BrokerTests(unittest.TestCase):
     def test_strict_identity_command_allowlist(self):
+        unpinned = binding()
+        unpinned.pop('cluster')
+        with self.assertRaisesRegex(ValueError, 'pinned broker target'):
+            b.BrokerRunner(unpinned)
         runner = b.BrokerRunner(binding())
         client = b.transport.Transport(b.CONTEXT, binding(), runner)
         valid = client.exec_prefix() + ['docker', 'exec', '-i', 'c'*64, '/usr/bin/python3',
@@ -34,20 +40,21 @@ class BrokerTests(unittest.TestCase):
 
     def test_public_input_and_transient_token_stream_with_bound_failure(self):
         events = []
-        token_issued = False
+        token_commands = []
         def process(argv, sink, limit, source=None, timeout=120):
-            nonlocal token_issued
             self.assertGreater(timeout, 0)
             self.assertLessEqual(timeout, 30)
             self.assertNotIn('k8s-aws-v1.fixture', str(argv))
             if 'aws' in argv:
-                token_issued = True
-                sink.write(b'{"status":{"token":"k8s-aws-v1.fixture"}}')
+                token_commands.append(argv)
+                sink.write(json.dumps({'status': {'token': 'k8s-aws-v1.' + argv[argv.index('--region') + 1]}}).encode())
                 return 42
             header = json.loads(source.readline())
             self.assertIn('--context=admin@tupo-production', argv)
             data = source.read()
             events.append((header,data))
+            self.assertEqual(set(header['auth']), {'aws-us-west-2'})
+            self.assertEqual(header['target'], 'aws-us-west-2')
             self.assertEqual(header['container'], 'dind')
             self.assertEqual(header['input_bytes'], len(data))
             sink.write(b'public reply')
@@ -63,9 +70,11 @@ class BrokerTests(unittest.TestCase):
                 self.assert_token()
                 return super().read(*args)
             def assert_token(self):
-                if not token_issued:
+                if len(token_commands) != 1:
                     raise AssertionError('seekable input was staged before token acquisition')
         runner(argv, output, 65536, source=SeekableSource(data), timeout=30)
+        self.assertEqual({(x[x.index('--region') + 1], x[x.index('--cluster-name') + 1]) for x in token_commands},
+                         {('us-west-2', 'podesta-burst-usw2')})
         self.assertEqual(events[0][1], data)
         self.assertEqual(output.getvalue(), b'public reply')
         with patch.object(b, 'MAX_STREAM', 10), self.assertRaises(ValueError):
@@ -74,9 +83,11 @@ class BrokerTests(unittest.TestCase):
         runner.process = failed
         with self.assertRaises(ValueError): runner(argv, io.BytesIO(), 10)
 
-    def bridge(self, data, *, fail=False, limit=4096, nested=False):
+    def bridge(self, data, *, fail=False, limit=4096, nested=False, profiles=None,
+               target='aws-us-west-2'):
         """Exercise actual embedded EOF wrapper and stream drain protocol."""
-        header = {'token':'fixture','pod':'runner','namespace':'test','uid':'uid','container':'dind',
+        header = {'auth':{'aws-us-west-2':'k8s-aws-v1.west'}, 'target':target,
+            'pod':'runner','namespace':'test','uid':'uid','container':'dind',
             'operation':'exec','command':['/usr/bin/python3','-c','import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())'],
             'input_bytes':len(data),'limit':limit,'timeout':5}
         if nested:
@@ -108,14 +119,32 @@ class BrokerTests(unittest.TestCase):
             def read_channel(self,n): result,self.status=self.status,b'';return result
             def close(self): self.opened=False
         def stream(*args,**kwargs): captured.update(kwargs);return WS()
-        api=types.SimpleNamespace(read_namespaced_pod=lambda *args,**kw:types.SimpleNamespace(metadata=types.SimpleNamespace(uid='uid')),
-                                  connect_get_namespaced_pod_exec=None)
+        def api(target):
+            pod=types.SimpleNamespace(metadata=types.SimpleNamespace(uid='uid', labels={
+                    'app.kubernetes.io/managed-by':'sandbox-broker', 'podesta.ai/workload':'forgejo-ci',
+                    'podesta.ai/cluster':target}), status=types.SimpleNamespace(phase='Running'),
+                    spec=types.SimpleNamespace(containers=[types.SimpleNamespace(name='runner'),types.SimpleNamespace(name='dind')]))
+            return types.SimpleNamespace(read_namespaced_pod=lambda *args,**kw:pod,
+                                         connect_get_namespaced_pod_exec=None)
+        class Configuration:
+            def __init__(self): self.api_key={};self.target=None
+        def load(path, *, client_configuration):
+            client_configuration.target=next(name for name,target in b.TARGETS.items() if target['kubeconfig']==path)
+        def incluster(*, client_configuration): client_configuration.target='on-prem'
         kube=types.ModuleType('kubernetes')
-        kube.client=types.SimpleNamespace(Configuration=lambda:types.SimpleNamespace(api_key={}),ApiClient=lambda cfg:None,CoreV1Api=lambda a:api)
-        kube.config=types.SimpleNamespace(load_kube_config=lambda *a,**k:None)
+        kube.client=types.SimpleNamespace(Configuration=Configuration,ApiClient=lambda cfg:cfg,CoreV1Api=lambda cfg:api(cfg.target))
+        kube.config=types.SimpleNamespace(load_kube_config=load, load_incluster_config=incluster)
+        exceptions=types.ModuleType('kubernetes.client.exceptions')
+        exceptions.ApiException=type('ApiException',(Exception,),{})
         streaming=types.ModuleType('kubernetes.stream');streaming.stream=stream
         output=io.BytesIO()
-        with patch.dict(sys.modules,{'kubernetes':kube,'kubernetes.stream':streaming}), \
+        if profiles is None:
+            profiles=[{'name':'aws-us-west-2','ci_enabled':True,
+                       'kubeconfig':'/etc/sandbox-broker/clusters/eks-us-west-2.yaml'}]
+        profiles=json.dumps(profiles)
+        with patch.dict(sys.modules,{'kubernetes':kube,'kubernetes.client.exceptions':exceptions,
+                                     'kubernetes.stream':streaming}), \
+             patch.dict(os.environ, {'BROKER_CLUSTER_TARGETS':profiles}), \
              patch.object(sys,'stdin',types.SimpleNamespace(buffer=io.BytesIO(json.dumps(header).encode()+b'\n'+data))), \
              patch.object(sys,'stdout',types.SimpleNamespace(buffer=output)):
             exec(b.BRIDGE,{})
@@ -136,6 +165,16 @@ class BrokerTests(unittest.TestCase):
     def test_remote_failure_and_output_bound_rejected(self):
         with self.assertRaises(ValueError): self.bridge(b'public',fail=True)
         with self.assertRaises(ValueError): self.bridge(b'public',limit=1)
+
+    def test_bridge_rejects_unknown_disabled_and_mismatched_pinned_targets(self):
+        with self.assertRaises(ValueError):
+            self.bridge(b'', profiles=[{'name':'unknown','ci_enabled':True}])
+        with self.assertRaises(ValueError):
+            self.bridge(b'', profiles=[{'name':'aws-us-west-2','ci_enabled':False,
+                                        'kubeconfig':b.TARGETS['aws-us-west-2']['kubeconfig']}])
+
+        with self.assertRaises(ValueError):
+            self.bridge(b'', target='aws-eu-central-1')
 
 
 

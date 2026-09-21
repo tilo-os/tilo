@@ -349,6 +349,42 @@ class CanaryIdentity(unittest.TestCase):
                         BUILD.index('name: Retain only successful cold acceptance'))
         self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh warm'),
                         BUILD.index('name: Retain only successful warm acceptance'))
+        replication = BUILD.split('name: Replicate the promoted builder beside Oregon runners', 1)[1]
+        self.assertIn("if: github.ref == 'refs/heads/main'", replication)
+        self.assertIn('replicate-builder-index.py', replication)
+        self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
+        self.assertIn('podesta-burst-usw2-qos-builder-replication', replication)
+
+    def test_main_promotion_installs_pinned_aws_cli_without_distro_package(self):
+        tools = step_block(BUILD, 'Install publication tools')
+        self.assertIn('curl unzip podman skopeo', tools)
+        self.assertNotRegex(tools, r'install .*\bawscli\b')
+        self.assertIn('bash ./os/dev/install-aws-cli.sh', tools)
+
+    def test_aws_cli_rejects_corrupt_download_before_extraction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            # A successful transfer containing invalid bytes must never execute.
+            scripts = {
+                'curl': '#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\nprintf corrupt > "$2"\n',
+                'unzip': '#!/bin/sh\ntouch "$RUNNER_TEMP/extracted"\nexit 99\n',
+            }
+            for name, body in scripts.items():
+                path = bin_dir / name
+                path.write_text(body)
+                path.chmod(0o755)
+            result = subprocess.run(
+                ['bash', str(ROOT / 'os/dev/install-aws-cli.sh')],
+                env={**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
+                     'RUNNER_TEMP': directory, 'GITHUB_PATH': str(root / 'path')},
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / 'extracted').exists())
+            self.assertFalse((root / 'path').exists())
+            self.assertEqual(list(root.glob('aws-cli-download.*')), [])
 
     def test_reuse_never_reaches_signing_or_promotion(self):
         signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]

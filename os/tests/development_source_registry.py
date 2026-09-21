@@ -53,7 +53,7 @@ def main():
             listener.bind(('127.0.0.1', 0))
             port = listener.getsockname()[1]
         target = f'127.0.0.1:{port}/tilo-development/os:fixture'
-        registry_name = 'tilo-dev-fixture-' + uuid.uuid4().hex
+        registry_name = 'tilo-app-fixture-' + uuid.uuid4().hex
         images = []
         try:
             run('podman', 'run', '--detach', '--name', registry_name, '--network=host',
@@ -69,12 +69,8 @@ def main():
                 raise RuntimeError('disposable registry did not become ready')
             key = root / 'cosign'
             run('cosign', 'generate-key-pair', '--output-key-prefix', str(key), env=env)
-            pcr_certificate = root / 'pcr.crt'
-            run('/usr/local/bin/tilo-crypto', 'generate-secure-boot-cert',
-                'Tilo Disposable PCR Fixture', str(root / 'pcr.key'), str(pcr_certificate))
-            run('/usr/local/bin/tilo-crypto', 'rsa-public-key',
+            run('/usr/local/bin/tilo-crypto', 'generate-tpm-authority-key',
                 str(root / 'pcr.key'), str(root / 'pcr.pub'))
-            pcr_certificate.unlink()
             run('/usr/local/bin/tilo-crypto', 'generate-secure-boot-cert',
                 'Tilo Disposable Fixture', str(root / 'efi.key'), str(root / 'efi.crt'))
             (root / 'owner.pub').write_text('ab' * 32 + '\n')

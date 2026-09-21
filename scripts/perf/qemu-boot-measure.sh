@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # Leave empty to run QEMU and its tools on the host. Set this when the tools
-# live in a development distrobox, for example `TILO_DISTROBOX=tilo-dev`.
+# live in a development distrobox, for example `TILO_DISTROBOX=tilo-app`.
 DISTROBOX="${TILO_DISTROBOX:-}"
 run_in_env() {
     if [ -n "$DISTROBOX" ]; then

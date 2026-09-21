@@ -15,12 +15,12 @@
 
 use std::collections::HashMap;
 
-use ui::State;
-use ui::headless::FrameHarness;
-use ui::presence::PathSegment;
-use ui::theme::Theme;
-use ui::widget::toggle_group::Segment;
-use ui::widget::{
+use tilo_ui::State;
+use tilo_ui::headless::FrameHarness;
+use tilo_ui::presence::PathSegment;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::toggle_group::Segment;
+use tilo_ui::widget::{
     Button, Checkbox, Chip, Container, Dropdown, NumberInput, Row, SearchField, TextInput, Toggle,
     ToggleGroup, Widget,
 };
