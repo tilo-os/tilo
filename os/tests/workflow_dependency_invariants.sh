@@ -75,9 +75,11 @@ if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' 
    && grep -Fq "cancel-in-progress: false" "$rpm_snapshot_workflow" \
    && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
      "$rpm_snapshot_workflow" \
-   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
      "$rpm_snapshot_workflow" \
-   && grep -Fq 'git checkout --detach FETCH_HEAD' "$rpm_snapshot_workflow"; then
+   && grep -Fq 'git checkout --detach origin/main' "$rpm_snapshot_workflow" \
+   && grep -Fq 'git push --force-with-lease="refs/heads/$branch:$remote_tip"' "$rpm_snapshot_workflow" \
+   && grep -Fq 'python3 os/dev/open-rpm-snapshot-pr.py' "$rpm_snapshot_workflow"; then
   printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
 else
   printf 'RPM snapshot refreshes may be cancelled indefinitely or publish stale pins\n' >&2
