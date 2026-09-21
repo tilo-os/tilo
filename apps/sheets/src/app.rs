@@ -52,9 +52,9 @@ use crate::settings::{DocSettings, EffectiveLocale, GlobalSettings};
 /// [`ChromeMetrics`]); these floors reproduce the classic density exactly at
 /// 1× and only give way when larger text needs the room.
 const MENUBAR_H: f64 = 44.0;
-const MENU_BUTTON_H: f64 = 30.0;
-const FORMULA_FIELD_H: f64 = 26.0;
-const TAB_H: f64 = 28.0;
+const MENU_BUTTON_H: f64 = 32.0;
+const FORMULA_FIELD_H: f64 = 32.0;
+const TAB_H: f64 = 32.0;
 const SETTING_CHIP_H: f64 = 26.0;
 const MENU_ROW_H: f64 = 30.0;
 const NAME_BOX_W: f64 = 92.0;
@@ -525,9 +525,10 @@ impl ChromeMetrics {
         self.label_w(label) + 2.0 * self.s3
     }
 
-    /// Menu-bar buttons: the `sm` line box plus `s3`, never below 30 px.
+    /// Menu-bar buttons: the `sm` line box plus `s3`, never below the
+    /// text-scaled fine-pointer target.
     fn menu_button_h(&self) -> f64 {
-        (self.lh_sm + self.s3).max(MENU_BUTTON_H)
+        (self.lh_sm + self.s3).max(MENU_BUTTON_H * self.scale)
     }
 
     /// Menu bar: a button plus `s3`, never below 44 px.
@@ -536,9 +537,9 @@ impl ChromeMetrics {
     }
 
     /// Name box + formula field: the `base` line box plus `s2`, never below
-    /// 26 px.
+    /// the text-scaled fine-pointer target.
     fn formula_field_h(&self) -> f64 {
-        (self.lh_base + self.s2).max(FORMULA_FIELD_H)
+        (self.lh_base + self.s2).max(FORMULA_FIELD_H * self.scale)
     }
 
     /// Formula bar: the field plus `s1` above and below.
@@ -557,9 +558,10 @@ impl ChromeMetrics {
         self.fx_w + 2.0 * self.s2
     }
 
-    /// Sheet tabs: the `sm` line box plus `s3`, never below 28 px.
+    /// Sheet tabs: the `sm` line box plus `s3`, never below the text-scaled
+    /// fine-pointer target.
     fn tab_h(&self) -> f64 {
-        (self.lh_sm + self.s3).max(TAB_H)
+        (self.lh_sm + self.s3).max(TAB_H * self.scale)
     }
 
     /// Sheet-tab strip: a tab plus `s1` above and the underline inset below.
@@ -3716,13 +3718,14 @@ impl SheetsApp {
         let bh = m.menu_button_h();
         let by = self.menubar_rect.y0 + (self.menubar_rect.height() - bh) / 2.0;
         let mut x = self.menubar_rect.x0 + m.s2;
-        let compact_toolbar = MENU_BAR_BUTTONS
-            .iter()
-            .map(|(label, opens, _)| {
-                m.menu_button_w(&Self::menu_button_label(label, opens.is_some())) + m.s2
-            })
-            .sum::<f64>()
-            > r.width() - 2.0 * m.s2;
+        let compact_toolbar = (m.scale > 1.0 && r.width() < 720.0)
+            || MENU_BAR_BUTTONS
+                .iter()
+                .map(|(label, opens, _)| {
+                    m.menu_button_w(&Self::menu_button_label(label, opens.is_some())) + m.s2
+                })
+                .sum::<f64>()
+                > r.width() - 2.0 * m.s2;
         for (index, (label, opens, item)) in MENU_BAR_BUTTONS.into_iter().enumerate() {
             if compact_toolbar && index >= 2 {
                 if index == 2 {
@@ -7906,6 +7909,8 @@ mod tests {
         let theme = Theme::dark().with_text_scale(text_scale);
         let mut tr = TextRenderer::new();
         tr.set_text_scale(theme.text_scale);
+        app.text_scale = f64::from(theme.text_scale);
+        app.grid.set_text_scale(app.text_scale);
         app.refresh_chrome_metrics(&mut tr, &theme);
         (app, tr)
     }
@@ -7926,10 +7931,10 @@ mod tests {
         let (app, _tr) = measured_app(1280.0, 720.0, 1.0);
         assert!((app.menubar_rect.height() - 44.0).abs() < 0.01, "menu bar");
         assert!(
-            (app.formula_rect.height() - 34.0).abs() < 0.01,
+            (app.formula_rect.height() - 40.0).abs() < 0.01,
             "formula bar"
         );
-        assert!((app.tabs_rect.height() - 34.0).abs() < 0.01, "tab strip");
+        assert!((app.tabs_rect.height() - 38.0).abs() < 0.01, "tab strip");
         let g = app.grid.metrics();
         assert!((g.col_header_h() - 28.0).abs() < 0.01, "column header");
         assert!((g.default_row_h() - 26.0).abs() < 0.01, "default row");
@@ -8849,9 +8854,7 @@ mod tests {
     /// fine-pointer contract, and prove the same surfaces expand at 2× type.
     #[test]
     fn chrome_targets_meet_the_pointer_minimum_and_scale_with_type() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.relayout();
+        let (app, _tr) = measured_app(560.0, 720.0, 1.0);
         let minimum = f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target());
         assert!(
             app.menu_buttons
@@ -8866,9 +8869,7 @@ mod tests {
                 .all(|(rect, _)| rect.height() >= minimum)
         );
 
-        app.text_scale = 2.0;
-        app.grid.set_text_scale(2.0);
-        app.relayout();
+        let (app, _tr) = measured_app(560.0, 720.0, 2.0);
         assert!(
             app.menu_buttons
                 .iter()
@@ -10066,11 +10067,7 @@ mod tests {
 
     #[test]
     fn narrow_large_text_collapses_secondary_toolbar_actions_without_clipping() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.text_scale = 2.0;
-        app.grid.set_text_scale(2.0);
-        app.relayout();
+        let (mut app, _tr) = measured_app(560.0, 720.0, 2.0);
         let labels: Vec<&str> = app
             .menu_buttons
             .iter()
