@@ -74,9 +74,20 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
     let origin = metadata["fixture_origin"].as_str().unwrap();
+    let mut last_readiness = serde_json::Value::Null;
     loop {
-        assert!(Instant::now() < deadline, "native peer never subscribed");
+        assert!(
+            Instant::now() < deadline,
+            "native peer never subscribed; last readiness: {last_readiness}"
+        );
         let (code, status) = request(origin, "/status", None, None).await;
+        last_readiness = serde_json::json!({
+            "http_code": code,
+            "native_peer": status["native_peer"],
+            "actions": status["actions"],
+            "error": status["error"],
+            "action_error": status["action_error"],
+        });
         if code == 200 && status["native_peer"] == "subscribed" && status["actions"] == "ready" {
             break;
         }
