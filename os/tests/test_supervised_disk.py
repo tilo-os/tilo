@@ -1,9 +1,12 @@
 """Admission checks only; no installer or remote Kubernetes operations."""
+import base64
 import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 import sys
 import tempfile
@@ -162,17 +165,23 @@ class ControllerAdmission(unittest.TestCase):
             calls=[]
             def checked(argv,payload=None):
                 if controller.HOST_INSPECT in argv:return json.dumps(self.host)
-                if controller.GUEST_RUN in argv:
-                    calls.append('executed');return '{"disk_created":true}'
+                if controller.GUEST_LAUNCH in argv:
+                    calls.append('executed')
+                    binding=json.loads(payload)['binding']
+                    return json.dumps({'schema':1,'purpose':'tilo-supervised-creator-job',
+                                       'state':'launched','binding':binding,'launched_at':1})
                 kind,name=argv[argv.index('get')+1:argv.index('get')+3]
                 if kind=='node':return json.dumps({'metadata':{'uid':'node-uid'}})
                 if name=='agent':return json.dumps({'metadata':{'labels':{'name':'kata-deploy'}},'spec':{'nodeName':self.node,'hostPID':True}})
                 pod=copy.deepcopy(self.pod)
                 if calls:pod['status']['containerStatuses'][0]['restartCount']=1
                 return json.dumps(pod)
-            argv=['controller','--context','fixture','--namespace','kata-system','--pod','probe','--pod-uid',self.uid,'--node',self.node,'--node-uid','node-uid','--host-agent','agent','--guest-image',self.image,'--pins',str(root/'pins'),'--disk-args',str(root/'args'),'--evidence',str(root/'evidence'),'--creation-receipt',str(root/'creation.json'),'--helper-revision','a'*40]
+            argv=['controller','--context','fixture','--namespace','kata-system','--pod','probe','--pod-uid',self.uid,'--node',self.node,'--node-uid','node-uid','--host-agent','agent','--guest-image',self.image,'--pins',str(root/'pins'),'--disk-args',str(root/'args'),'--evidence',str(root/'evidence'),'--creation-receipt',str(root/'creation.json'),'--helper-revision','a'*40,'--operation','run1']
             output=io.StringIO()
-            with patch.object(controller,'checked',checked),patch.object(controller,'helper_bundle',return_value=(b'zip','b'*64)),patch.object(sys,'argv',argv),patch.object(sys,'stdout',output):
+            with patch.object(controller,'checked',checked),patch.object(controller,'helper_bundle',return_value=(b'zip','b'*64)), \
+                    patch.object(controller,'poll_creator_job',return_value={'creation_sha256':'a'*64}), \
+                    patch.object(controller,'remote_creator_receipt',return_value=b'{"purpose":"tilo-development-unaccepted-test-disk","disk_created":true}'), \
+                    patch.object(sys,'argv',argv),patch.object(sys,'stdout',output):
                 with self.assertRaisesRegex(ValueError,'continuously ready'):controller.main()
             self.assertEqual(calls,['executed']);self.assertEqual(output.getvalue(),'')
 
@@ -194,6 +203,75 @@ class ControllerAdmission(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777,0o600)
             with self.assertRaisesRegex(ValueError,'completed creation'):
                 controller.persist_receipt(path,'{"disk_created":false}')
+
+
+class DetachedCreatorJob(unittest.TestCase):
+    def binding(self):
+        return controller.creator_job_binding(
+            'run1', 'pod-uid', 'node-uid', 'c'*64,
+            'registry.test/tools@sha256:'+'a'*64,
+            {'output':'/work/disk-output/disk.raw'}, {'kernel_sha256':'b'*64},
+            'd'*40, 'e'*64)[0]
+
+    def status(self, state, **extra):
+        value={'schema':1,'purpose':'tilo-supervised-creator-job','state':state,
+               'binding':self.binding()}
+        value.update(extra); return value
+
+    def process(self):
+        return {'pid':7,'start':'123','argv_sha256':'a'*64,
+                'cgroup_sha256':'b'*64,'request_sha256':'c'*64}
+
+    def test_poll_reconnects_after_transport_loss_then_accepts_bound_success(self):
+        running=self.status('running',process=self.process(),log_bytes=0,log_truncated=False)
+        success=self.status('succeeded',process=self.process(),log_bytes=12,log_truncated=False,
+                            creation_sha256='d'*64)
+        pauses=[]
+        with patch.object(controller,'remote_creator_status',side_effect=[
+                controller.ControllerTransportError('relay reset'),running,success]):
+            actual=controller.poll_creator_job(['kubectl'],'ns','pod','disk',self.binding(),
+                                                clock=lambda:0,wall_clock=lambda:10,
+                                                sleep=lambda delay:pauses.append(delay))
+        self.assertEqual(actual,success)
+        self.assertEqual(pauses,[2,10])
+
+    def test_orphaned_launch_and_dead_pid_fail_closed(self):
+        launched=self.status('launched',launched_at=1)
+        with patch.object(controller,'remote_creator_status',return_value=launched):
+            with self.assertRaisesRegex(ValueError,'did not establish'):
+                controller.poll_creator_job(['kubectl'],'ns','pod','disk',self.binding(),
+                                            clock=lambda:0,wall_clock=lambda:62,sleep=lambda _:None)
+        result=SimpleNamespace(returncode=3,stdout='TILO_CREATOR_PROCESS_GONE\n',stderr='')
+        with patch.object(controller.subprocess,'run',return_value=result):
+            with self.assertRaisesRegex(ValueError,'process vanished'):
+                controller.remote_creator_status(['kubectl'],'ns','pod','disk',self.binding())
+
+    def test_credentials_are_memory_only_and_terminal_cleanup_is_in_job(self):
+        self.assertIn("credential=pathlib.Path('/tmp')", controller.GUEST_LAUNCH)
+        self.assertIn("row[4]=='/tmp'", controller.GUEST_LAUNCH)
+        self.assertIn("auth.unlink();auth.parent.rmdir();auth=None", controller.GUEST_JOB)
+        self.assertIn("try:auth.unlink()", controller.GUEST_JOB)
+        self.assertNotIn('registry_auth', controller.GUEST_JOB)
+
+    @unittest.skipUnless(hasattr(os, 'O_NOFOLLOW') and Path('/proc/self').exists()
+                         and os.geteuid() == 0,
+                         'requires the root-owned Linux Kata file contract')
+    def test_guest_job_cleans_credential_after_terminal_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job=Path(directory)/'job';job.mkdir(mode=0o700)
+            credentials=Path(directory)/'credentials';credentials.mkdir(mode=0o700)
+            auth=credentials/'registry-auth.json';auth.write_bytes(b'{"auths":{"registry":"secret"}}');auth.chmod(0o600)
+            request={'binding':self.binding(),'observation':{},'args':{},'helpers':base64.b64encode(b'not a zip').decode(),
+                     'helper_revision':'d'*40,'helper_bundle_sha256':'e'*64}
+            path=job/'request.json';path.write_text(json.dumps(request));path.chmod(0o600)
+            completed=subprocess.run([sys.executable,'-c',controller.GUEST_JOB,str(job),str(auth)],
+                                     capture_output=True,timeout=15)
+            self.assertEqual(completed.returncode,0)
+            self.assertFalse(auth.exists())
+            self.assertFalse(credentials.exists())
+            status=json.loads((job/'status.json').read_text())
+            self.assertEqual(status['state'],'failed')
+            controller.validate_creator_job_status(status,self.binding())
 
 
 if __name__ == '__main__':unittest.main()
