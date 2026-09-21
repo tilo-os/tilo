@@ -459,7 +459,7 @@ fn find_synthetic_path(
 /// Reverse of the App's `taffy::NodeId -> *mut dyn Widget` map, so the walk can
 /// look up a stable id for any `&dyn Widget` it meets.
 struct WidgetNodeMap {
-    nodes: HashMap<*const (), Vec<(TaffyNodeId, *const dyn Widget)>>,
+    nodes: HashMap<*const (), Vec<(TaffyNodeId, &'static str)>>,
     aliases: std::collections::HashSet<*const ()>,
 }
 
@@ -472,9 +472,17 @@ impl WidgetNodeMap {
         // the registered trait object owns this layout id; the wrapper gets
         // a structural id. For unaliased addresses retain the original rule,
         // independent of possible compiler duplication of trait vtables.
-        entries.iter().find_map(|&(id, registered)| {
-            (!self.aliases.contains(&address) || std::ptr::eq(pointer, registered)).then_some(id)
-        })
+        if !self.aliases.contains(&address) {
+            return entries.first().map(|(id, _)| *id);
+        }
+        let concrete = widget.concrete_type_name();
+        let mut matches = entries
+            .iter()
+            .filter(|(_, registered_type)| *registered_type == concrete);
+        let (id, _) = matches.next()?;
+        // Multiple nodes with the same address and concrete type are not
+        // uniquely addressable. Keep them unavailable instead of retargeting.
+        matches.next().is_none().then_some(*id)
     }
 }
 
@@ -507,11 +515,14 @@ fn reverse_node_map<S: BuildHasher, const BOUND: bool>(
         collect::<BOUND>(*root, &mut seen, &mut result.aliases);
     }
     for (&taffy_id, &pointer) in node_map {
+        // SAFETY: callers provide the live node map for the duration of this
+        // tree build; reading the concrete identity does not retain a borrow.
+        let concrete = unsafe { (&*pointer).concrete_type_name() };
         result
             .nodes
             .entry(pointer.cast::<()>())
             .or_default()
-            .push((taffy_id, pointer));
+            .push((taffy_id, concrete));
     }
     result
 }
