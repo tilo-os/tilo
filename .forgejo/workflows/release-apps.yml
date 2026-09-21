@@ -783,15 +783,36 @@ jobs:
           TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
             tools/upload_immutable_packages.sh "$upload_manifest"
 
-          # Submit every newly built immutable tapp to the signed registry.
-          # The request is signed by the same identity as the package; retries
-          # are idempotent and the registry's collector/publisher jobs perform
-          # independent verification before advancing the public snapshot.
+          # Product artwork is immutable alongside its tapp release.  The
+          # metadata builder always emits an accessible owned icon, and adds
+          # checked-in app screenshots where available, so a store card can
+          # never become a blank patch of UI again.
           registry_url=${TILO_REGISTRY_URL%/}
           [[ $registry_url == https://* && $registry_url != *'.svc.cluster.local'* ]] || {
             printf 'TILO_REGISTRY_URL must be a public HTTPS origin\n' >&2
             exit 1
           }
+          registry_metadata="$RUNNER_TEMP/tilo-registry-metadata"
+          registry_media="$RUNNER_TEMP/tilo-registry-media"
+          registry_apps=$(for index in release/*/index.json; do jq -r '.apps[].name' "$index"; done | sort -u | xargs)
+          [[ -n $registry_apps ]] || { printf 'no apps selected for registry metadata\n' >&2; exit 1; }
+          python3 -I tools/ci/python.py tools/apps/registry_metadata.py build \
+            --apps "$registry_apps" \
+            --media-base "$registry_url/artifacts/$owner/generic/tilo-app-metadata/$VERSION" \
+            --output "$registry_metadata" --media-output "$registry_media"
+          registry_media_uploads="$RUNNER_TEMP/tilo-registry-media-uploads.tsv"
+          : > "$registry_media_uploads"
+          while IFS= read -r media; do
+            printf '%s\t%s\n' "$registry_media/$media" \
+              "$package_api/tilo-app-metadata/$VERSION/$media" >> "$registry_media_uploads"
+          done < <(find "$registry_media" -maxdepth 1 -type f -printf '%f\n' | sort)
+          TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
+            tools/upload_immutable_packages.sh "$registry_media_uploads"
+
+          # Submit every newly built immutable tapp to the signed registry.
+          # The request is signed by the same identity as the package; retries
+          # are idempotent and the registry's collector/publisher jobs perform
+          # independent verification before advancing the public snapshot.
           [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]] || {
             printf 'TAPP_PUBLISHER_IDENTITY is required for registry publication\n' >&2
             exit 1
@@ -860,9 +881,11 @@ jobs:
               while IFS=$'\t' read -r planned_id name file arch artifact_root; do
                 [[ $planned_id == "$id" ]] || continue
                 tapp="$artifact_root/tapp/$file"
+                metadata="$registry_metadata/$name.json"
+                test -f "$metadata"
                 tapp_url="$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file"
                 args=(entry --arch "$arch" --identity "$registry_identity" \
-                  --action "$action" --url "$tapp_url")
+                  --metadata "$metadata" --action "$action" --url "$tapp_url")
                 [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
                 "$registry_cli" "${args[@]}" "$tapp" > "$request"
                 jq -e --arg id "$id" '.entry | select(.package_id == $id)' \
