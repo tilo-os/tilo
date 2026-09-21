@@ -545,8 +545,8 @@ impl Step {
 }
 
 // ---------------------------------------------------------------------------
-// Install options — the structured config that ALSO serialises to a
-// headless / unattended install file.
+// Install options — the host-side draft whose validated, non-secret subset
+// serialises to the installation-media preconfiguration profile.
 // ---------------------------------------------------------------------------
 
 /// Whether a USB target is a throwaway live stick or a real, persistent
@@ -638,8 +638,9 @@ impl Filesystem {
 pub struct UserAccount {
     pub full_name: String,
     pub username: String,
-    /// Held in the model only so the headless config can carry it; the UI
-    /// shows it masked and the real writer would hash it.
+    /// Held only for the current host-side UI session. It is deliberately
+    /// excluded from the installation-media profile and must be entered on
+    /// the target device.
     pub password: String,
     pub is_admin: bool,
     pub autologin: bool,
@@ -657,9 +658,10 @@ impl Default for UserAccount {
     }
 }
 
-/// The complete, structured set of install options. Producing the same
-/// struct from the UI or from a file means an interactive install and a
-/// HEADLESS / unattended install share one source of truth.
+/// The complete host-side customization draft. [`InstallProfile::to_media_profile_json`]
+/// emits only its validated, non-secret preferences; target selection,
+/// destructive consent, credentials, and recovery acknowledgement stay local
+/// to the device being installed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstallProfile {
     pub mode: InstallMode,
@@ -671,7 +673,7 @@ pub struct InstallProfile {
     #[serde(default, alias = "layout")]
     pub filesystem: Filesystem,
     pub encrypt: bool,
-    /// Passphrase for full-disk encryption (only meaningful when `encrypt`).
+    /// Host-session draft value only; never serialized into installation media.
     pub encryption_passphrase: String,
     /// Persistence overlay size in MB, for `InstallMode::Persistent`.
     pub persist_mb: u64,
