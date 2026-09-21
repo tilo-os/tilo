@@ -20,6 +20,7 @@ class SelectorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text("[workspace]\n")
         def package(name: str, rel: str, deps: list[str] | None = None) -> dict:
             directory = self.root / rel
             return {
@@ -41,6 +42,39 @@ class SelectorTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_native_dependency_selection_tracks_declared_build_and_observer_inputs(self):
+        (self.root / "Cargo.toml").write_text(
+            '[patch.crates-io]\nopenh264-sys2 = { path = "vendor/openh264-sys2" }\n')
+        # No vendor payload or fixture exists: declaration still selects the job,
+        # whose production command must fail rather than convert absence to skip.
+        for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
+                     "vendor/openh264-sys2/build.rs", "os/tests/test_openh264_source_order.py",
+                     ".forgejo/workflows/check.yml", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py"):
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
+                self.assertTrue(plan["native_dependencies_required"])
+        self.assertFalse(ci_select.native_dependencies_required(self.root, ["apps/calculator/src/actions.rs"]))
+        self.assertFalse(ci_select.native_dependencies_required(self.root, ["DEVELOPMENT.md"]))
+        self.assertTrue(ci_select.native_dependencies_required(self.root, [], force_full=True))
+
+    def test_native_contract_bootstrap_does_not_break_other_dependencies_or_full_runs(self):
+        for changes in (["Cargo.lock"], ["Cargo.toml"], ["rust-toolchain.toml"],
+                        [".forgejo/workflows/check.yml", "tools/ci/affected_packages.py",
+                         "os/tests/test_openh264_source_order.py"], ["tools/ci/workspace_graph.py"], []):
+            with self.subTest(changes=changes):
+                self.assertFalse(ci_select.native_dependencies_required(self.root, changes))
+                self.assertFalse(ci_select.native_dependencies_required(self.root, changes, force_full=True))
+        # Removing the declaration together with native files cannot hide the check.
+        self.assertTrue(ci_select.native_dependencies_required(self.root, ["vendor/openh264-sys2/build.rs"]))
+
+    def test_unreadable_native_declaration_fails_selection(self):
+        (self.root / "Cargo.toml").write_text("[malformed")
+        with self.assertRaises(ValueError):
+            ci_select.native_dependencies_required(self.root, ["Cargo.lock"])
+        (self.root / "Cargo.toml").unlink()
+        with self.assertRaises(FileNotFoundError):
+            ci_select.native_dependencies_required(self.root, ["Cargo.lock"])
 
     def test_reverse_dependency_closure(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
@@ -79,6 +113,7 @@ class SelectorTests(unittest.TestCase):
             "DEVELOPMENT.md",
             "docs/ci-performance.md",
             "docs/ci-emergency-relief.md",
+            "docs/headless-testing.md",
             "docs/designs/ci.md",
         ]
         for path in prose:
@@ -181,7 +216,7 @@ class SelectorTests(unittest.TestCase):
                 self.assertTrue(ci_select.ALWAYS_PACKAGES.issubset(plan["selected"]))
 
     def test_audited_developer_docs_omit_only_rust(self) -> None:
-        paths = ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md"]
+        paths = ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md", "docs/headless-testing.md"]
         for changes in [[path] for path in paths] + [paths + ["docs/designs/ci.md"]]:
             with self.subTest(changes=changes):
                 plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
@@ -189,8 +224,24 @@ class SelectorTests(unittest.TestCase):
                 self.assertEqual(plan["selected_count"], 0)
                 self.assertEqual(plan["matrix"], {"include": []})
 
+    def test_headless_guide_and_agent_instructions_need_no_native_jobs(self) -> None:
+        changes = ["AGENTS.md", "docs/headless-testing.md"]
+        for name in changes:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("Developer test commands.\n")
+        plan = ci_select.make_plan(
+            self.metadata, self.root, changes, 2, allow_security_skip=True)
+        self.assertFalse(plan["rust_required"])
+        self.assertFalse(plan["security_required"])
+        self.assertEqual(plan["matrix"], {"include": []})
+        (self.root / changes[1]).unlink()
+        deleted = ci_select.make_plan(
+            self.metadata, self.root, changes, 2, allow_security_skip=True)
+        self.assertTrue(deleted["security_required"])
+
     def test_developer_docs_do_not_mask_mixed_changes_or_full_override(self) -> None:
-        for doc in ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md"]:
+        for doc in ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md", "docs/headless-testing.md"]:
             for extra, force in [(None, True), ("leaf/src/lib.rs", False),
                                  ("Cargo.lock", False), ("docs/packaging.md", False)]:
                 with self.subTest(doc=doc, extra=extra, force=force):
@@ -250,6 +301,40 @@ class SelectorTests(unittest.TestCase):
         plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
         self.assertTrue(plan["full"])
         self.assertEqual(plan["selected_count"], plan["workspace_count"])
+        self.assertEqual(plan["shard_count"], 1)  # small workspace stays cheap
+
+    def test_global_inputs_balance_large_workspaces_without_losing_coverage(self):
+        # Enough genuine package targets/dependencies to exceed the budget,
+        # with uneven costs so this exercises the production balancer.
+        for index in range(100):
+            name = f"app-{index:03}"
+            self.metadata["packages"].append({
+                "name": name,
+                "manifest_path": str(self.root / "apps" / name / "Cargo.toml"),
+                "targets": [{"name": name}] * (1 + index % 5),
+                "dependencies": [{"name": f"external-{i}"} for i in range(index % 30)],
+            })
+        for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "crates/unmapped/src/lib.rs"):
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(self.metadata, self.root, [path], 99)
+                rows = plan["matrix"]["include"]
+                self.assertEqual(plan["shard_count"], 2)
+                self.assertEqual(len(rows), 2)
+                self.assertEqual({row["arch"] for row in rows}, {"x86_64"})
+                self.assertEqual({row["runner"] for row in rows}, {ci_select.NATIVE_RUNNERS["x86_64"]})
+                for field in ("packages", "test_packages"):
+                    names = [name for row in rows for name in row[field].split()[1::2]]
+                    self.assertEqual(sorted(names), plan["selected"])
+                    self.assertEqual(len(names), len(set(names)))
+                self.assertEqual(sum(row["estimated_cost"] for row in rows), plan["estimated_cost"])
+                self.assertLess(max(row["estimated_cost"] for row in rows), plan["estimated_cost"] * .6)
+                reversed_metadata = {"packages": list(reversed(self.metadata["packages"]))}
+                self.assertEqual(plan, ci_select.make_plan(reversed_metadata, self.root, [path], 99))
+        single = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 1)
+        self.assertEqual(single["shard_count"], 1)
+        # A normal narrow edit does not fan out just because the workspace grew.
+        narrow = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 99)
+        self.assertEqual(narrow["shard_count"], 1)
 
     def test_explicit_full_selects_every_package_even_without_changes(self) -> None:
         for changes in ([], ["docs/development-signing.md"]):

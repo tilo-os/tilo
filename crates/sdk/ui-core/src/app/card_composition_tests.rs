@@ -35,8 +35,17 @@ fn fixture() -> App {
 }
 
 fn layout(app: &mut App, width: u32) {
-    app.layout_dirty = true;
-    run_layout_pass(app, app.root_node.unwrap(), width, 1600, 1.0, false, None).unwrap();
+    app.layout.layout_dirty = true;
+    run_layout_pass(
+        app,
+        app.layout.root_node.unwrap(),
+        width,
+        1600,
+        1.0,
+        false,
+        None,
+    )
+    .unwrap();
 }
 
 fn controls(app: &App) -> Vec<(String, KurboRect)> {

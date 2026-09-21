@@ -408,10 +408,7 @@ impl TabBar {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate-mode paint inputs are independently load-bearing"
-    )]
+    #[allow(clippy::too_many_arguments)]
     fn draw_pill_inner(
         &self,
         scene: &mut Scene,
@@ -527,10 +524,7 @@ impl TabBar {
     /// accent dot only; unpinned pills add the (elided) title text. Split out
     /// of `draw_pill_inner` to keep it inside the `too_many_lines` budget.
     // Every parameter is state `draw_pill_inner` already resolved once per pill.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "resolved pill paint state stays explicit and avoids hidden refetching"
-    )]
+    #[allow(clippy::too_many_arguments)]
     fn draw_pill_body(
         &self,
         scene: &mut Scene,
@@ -813,10 +807,7 @@ impl TabBar {
     /// so they slide out of the pill's right edge as it opens. Split out of
     /// `draw_pill_inner` to keep it inside the `too_many_lines` budget.
     // Every parameter is state `draw_pill_inner` already resolved once per pill.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "resolved action-chip geometry and paint state are independently required"
-    )]
+    #[allow(clippy::too_many_arguments)]
     fn draw_pill_action_chips(
         &self,
         scene: &mut Scene,
@@ -1243,17 +1234,6 @@ impl TabBar {
         if self.tabs.iter().any(|t| t.id == id) {
             self.active_id = id;
         }
-    }
-
-    /// Select a tab as an explicit navigation action and publish the same
-    /// one-shot activation edge as pointer, keyboard, or accessibility input.
-    pub fn activate(&mut self, id: u64) -> bool {
-        if !self.tabs.iter().any(|tab| tab.id == id) {
-            return false;
-        }
-        self.active_id = id;
-        self.pending_activation = Some(id);
-        true
     }
 
     /// Drain the tab selected by pointer, keyboard, or accessibility input.
@@ -1929,10 +1909,7 @@ fn fit_pill_widths(natural: &[f64], pinned: &[bool], avail: f64) -> Vec<f64> {
 /// zone has opened to `effective` px. A pinned pill never gets chips.
 // Every parameter (widths/insets, plus the rect and reveal they're applied
 // to) is independently load-bearing for this geometry.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "chip geometry requires the rect, reveal state, widths, and insets"
-)]
+#[allow(clippy::too_many_arguments)]
 fn chip_rects(
     r: Rect,
     effective: f64,
@@ -2443,10 +2420,7 @@ impl TabBar {
     /// out of `draw` to keep that dispatcher inside the `too_many_lines` budget.
     // Every parameter here is state `draw` already resolved once per frame — no
     // hidden refetching.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "frame-resolved pill paint state remains explicit at the drawing boundary"
-    )]
+    #[allow(clippy::too_many_arguments)]
     fn draw_pills(
         &self,
         scene: &mut Scene,
@@ -5160,16 +5134,6 @@ mod tests {
             None,
             "a programmatic insert is not a click"
         );
-    }
-
-    #[test]
-    fn explicit_navigation_publishes_one_activation_edge() {
-        let mut b = bar();
-        assert!(b.activate(3));
-        assert_eq!(b.active_id(), 3);
-        assert_eq!(b.take_activation(), Some(3));
-        assert_eq!(b.take_activation(), None);
-        assert!(!b.activate(999));
     }
 
     /// The shape a window group imposes on its tab strip. `MAX_CONTENT` (used by

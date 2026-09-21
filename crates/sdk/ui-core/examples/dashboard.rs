@@ -21,13 +21,13 @@
 
 use std::fmt::Write as _;
 
-use ui::i18n::I18nManager;
-use ui::widget::toggle_group::Segment;
-use ui::widget::{
+use tilo_ui::i18n::I18nManager;
+use tilo_ui::widget::toggle_group::Segment;
+use tilo_ui::widget::{
     Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
     ToggleGroup, Widget,
 };
-use ui::{App, State};
+use tilo_ui::{App, State};
 
 fn leak_label(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
@@ -85,7 +85,7 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
 }
 
 pub fn run(_args: &[String]) {
-    let wake_scope = ui::wake::WakeScope::new();
+    let wake_scope = tilo_ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
     I18nManager::init("en-US");
     let mut ftl = String::new();

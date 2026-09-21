@@ -1,0 +1,36 @@
+# syntax=docker/dockerfile:1.7
+
+# Keep the compiler and runtime roots immutable. The workflow also selects one
+# platform explicitly, so a future upstream manifest change cannot alter these
+# bytes or silently turn this into a multi-architecture release.
+FROM docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
+
+WORKDIR /workspace
+COPY . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/workspace/target,sharing=locked \
+    cargo build --locked --release -p registry-server --bin tilo-registry-server \
+    && install -D -m 0755 target/release/tilo-registry-server /out/tilo-registry-server \
+    && install -d -m 0750 -o 65532 -g 65532 /out/state
+
+FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
+
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="Tilo app registry server" \
+      org.opencontainers.image.description="Signed Tilo application catalogue and moderation service" \
+      org.opencontainers.image.source="https://code.sandbox.example/qos/qos" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}"
+
+COPY --from=builder --chown=65532:65532 /out/tilo-registry-server /usr/local/bin/tilo-registry-server
+# rustls-native-certs is intentionally patched to Tilo's single immutable
+# trust path. Populate that path explicitly instead of depending on the
+# runtime base image's distro-specific certificate layout.
+COPY --from=builder --chown=65532:65532 /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
+COPY --from=builder --chown=65532:65532 /out/state/ /var/lib/tilo-registry/
+
+USER 65532:65532
+EXPOSE 8443
+
+ENTRYPOINT ["/usr/local/bin/tilo-registry-server"]
+CMD ["--data-dir", "/var/lib/tilo-registry", "serve", "--bind", "0.0.0.0", "--port", "8443"]

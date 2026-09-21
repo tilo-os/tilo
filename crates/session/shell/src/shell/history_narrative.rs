@@ -152,7 +152,7 @@ fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String>
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
-                    reason = "model sizes are non-negative catalogue values and the supported models are far below u64::MAX bytes"
+                    reason = "Model inventory sizes are nonnegative decimal byte estimates used only for bounded model selection."
                 )]
                 Some((value * multiplier) as u64)
             });
