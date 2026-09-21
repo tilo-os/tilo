@@ -2615,10 +2615,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "winit requires the complete per-window event dispatch at this callback boundary"
-    )]
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -2631,53 +2627,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .as_ref()
             .is_some_and(|audience| audience.window.id() == window_id)
         {
-            let audience_window = self
-                .audience_presentation
-                .as_ref()
-                .map(|audience| audience.window.clone());
-            let Some(audience_window) = audience_window else {
-                return;
-            };
-            match event {
-                WindowEvent::CloseRequested => {
-                    // Closing the audience is an explicit stop, unlike a
-                    // temporary hotplug reconciliation which retains the
-                    // presentation and falls back to the primary output.
-                    self.app.root_widget.on_audience_presentation_closed();
-                    self.close_audience_presentation();
-                    if let Some(primary) = self.window.as_ref() {
-                        primary.request_redraw();
-                    }
-                }
-                WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                    audience_window.request_redraw();
-                }
-                WindowEvent::RedrawRequested => {
-                    if !self.handle_audience_redraw() {
-                        self.close_audience_presentation();
-                        if let Some(primary) = self.window.as_ref() {
-                            primary.request_redraw();
-                        }
-                    }
-                }
-                WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
-                other => {
-                    let handled = self.app.root_widget.handle_audience_presentation_event(
-                        &other,
-                        &mut self.app.state.doc,
-                        &self.app.state.root,
-                    );
-                    if handled {
-                        self.app.commit_action();
-                        self.app.needs_sync = true;
-                        self.app.layout.layout_dirty = true;
-                        if let Some(primary) = self.window.as_ref() {
-                            primary.request_redraw();
-                        }
-                        audience_window.request_redraw();
-                    }
-                }
-            }
+            self.handle_audience_window_event(event);
             return;
         }
         if let Some(index) = self
@@ -2685,116 +2635,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .iter()
             .position(|surface| surface.window.id() == window_id)
         {
-            let Some(surface) = self.floating_windows.get(index) else {
-                return;
-            };
-            let window = surface.window.clone();
-            let desktop_rect = surface.desktop_rect;
-            let surface_id = surface.id.clone();
-            match event {
-                WindowEvent::CloseRequested => {
-                    if let Some(client) = self.app.floating.client.as_mut() {
-                        let _ = client.send(
-                            &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss {
-                                id: surface_id.clone(),
-                            },
-                        );
-                    }
-                    self.close_native_floating_window(&surface_id);
-                }
-                WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                    window.request_redraw();
-                }
-                WindowEvent::RedrawRequested => {
-                    if !self.handle_floating_redraw(index) {
-                        let id = self
-                            .floating_windows
-                            .get(index)
-                            .map(|surface| surface.id.clone());
-                        if let Some(id) = id {
-                            self.close_native_floating_window(&id);
-                        }
-                    }
-                }
-                WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
-                other => self.dispatch_floating_event(&window, desktop_rect, other),
-            }
+            self.handle_native_floating_window_event(index, event);
             return;
         }
         let Some(window) = self.window.clone() else {
             return;
         };
-        if window.id() != window_id {
-            return;
-        }
-        // No-op when no AT is attached.
-        if let Some(adapter) = self.a11y_adapter.as_mut() {
-            adapter.process_event(&window, &event);
-        }
-        if let WindowEvent::Touch(touch) = &event {
-            self.app
-                .set_interaction_environment(self.app.input.interaction.with_touch_modality());
-            let pointer_events = self.touch_pointer.events(touch);
-            self.dispatching_touch_pointer = true;
-            for pointer_event in pointer_events {
-                let pointer_event = match pointer_event {
-                    crate::interaction::TouchPointerEvent::Move(position) => {
-                        WindowEvent::CursorMoved {
-                            device_id: touch.device_id,
-                            position,
-                        }
-                    }
-                    crate::interaction::TouchPointerEvent::Press => WindowEvent::MouseInput {
-                        device_id: touch.device_id,
-                        state: ElementState::Pressed,
-                        button: MouseButton::Left,
-                    },
-                    crate::interaction::TouchPointerEvent::Release => WindowEvent::MouseInput {
-                        device_id: touch.device_id,
-                        state: ElementState::Released,
-                        button: MouseButton::Left,
-                    },
-                    crate::interaction::TouchPointerEvent::Scroll { delta, phase } => {
-                        WindowEvent::MouseWheel {
-                            device_id: touch.device_id,
-                            delta: winit::event::MouseScrollDelta::PixelDelta(delta),
-                            phase,
-                        }
-                    }
-                };
-                self.handle_other_window_event(&window, pointer_event);
-            }
-            self.dispatching_touch_pointer = false;
-        }
-        match event {
-            WindowEvent::CloseRequested => {
-                if self.app.admit_native_close_request() {
-                    event_loop.exit();
-                } else {
-                    window.request_redraw();
-                }
-            }
-            WindowEvent::Resized(_size) => {
-                // Handled lazily on the worker via the next `RenderRequest`'s
-                // dimensions; main only needs to drive a redraw.
-                self.app.layout.layout_dirty = true;
-                window.request_redraw();
-            }
-            WindowEvent::ScaleFactorChanged { .. } => {
-                // The render path reads `window.scale_factor()` each frame,
-                // so we just need to invalidate layout and redraw.
-                crate::widget::mount_native_views(
-                    self.app.root_widget.as_mut(),
-                    &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
-                );
-                self.app.layout.layout_dirty = true;
-                window.request_redraw();
-            }
-            WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, &window),
-            WindowEvent::ModifiersChanged(modifiers) => {
-                self.app.input.modifiers = modifiers;
-            }
-            other => self.handle_other_window_event(&window, other),
+        if window.id() == window_id {
+            self.handle_primary_window_event(event_loop, &window, event);
         }
     }
 
@@ -2819,6 +2667,162 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 }
 
 impl AppHandler {
+    fn handle_audience_window_event(&mut self, event: WindowEvent) {
+        let Some(audience_window) = self
+            .audience_presentation
+            .as_ref()
+            .map(|audience| audience.window.clone())
+        else {
+            return;
+        };
+        match event {
+            WindowEvent::CloseRequested => {
+                self.app.root_widget.on_audience_presentation_closed();
+                self.close_audience_presentation();
+                if let Some(primary) = self.window.as_ref() {
+                    primary.request_redraw();
+                }
+            }
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                audience_window.request_redraw();
+            }
+            WindowEvent::RedrawRequested => {
+                if !self.handle_audience_redraw() {
+                    self.close_audience_presentation();
+                    if let Some(primary) = self.window.as_ref() {
+                        primary.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
+            other => {
+                let handled = self.app.root_widget.handle_audience_presentation_event(
+                    &other,
+                    &mut self.app.state.doc,
+                    &self.app.state.root,
+                );
+                if handled {
+                    self.app.commit_action();
+                    self.app.needs_sync = true;
+                    self.app.layout.layout_dirty = true;
+                    if let Some(primary) = self.window.as_ref() {
+                        primary.request_redraw();
+                    }
+                    audience_window.request_redraw();
+                }
+            }
+        }
+    }
+
+    fn handle_native_floating_window_event(&mut self, index: usize, event: WindowEvent) {
+        let Some(surface) = self.floating_windows.get(index) else {
+            return;
+        };
+        let window = surface.window.clone();
+        let desktop_rect = surface.desktop_rect;
+        let surface_id = surface.id.clone();
+        match event {
+            WindowEvent::CloseRequested => {
+                if let Some(client) = self.app.floating.client.as_mut() {
+                    let _ = client.send(
+                        &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss {
+                            id: surface_id.clone(),
+                        },
+                    );
+                }
+                self.close_native_floating_window(&surface_id);
+            }
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                window.request_redraw();
+            }
+            WindowEvent::RedrawRequested => {
+                if !self.handle_floating_redraw(index)
+                    && let Some(id) = self
+                        .floating_windows
+                        .get(index)
+                        .map(|surface| surface.id.clone())
+                {
+                    self.close_native_floating_window(&id);
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
+            other => self.dispatch_floating_event(&window, desktop_rect, other),
+        }
+    }
+
+    fn handle_primary_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Arc<Window>,
+        event: WindowEvent,
+    ) {
+        if let Some(adapter) = self.a11y_adapter.as_mut() {
+            adapter.process_event(window, &event);
+        }
+        self.dispatch_touch_pointer_events(window, &event);
+        match event {
+            WindowEvent::CloseRequested => {
+                if self.app.admit_native_close_request() {
+                    event_loop.exit();
+                } else {
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::Resized(_) => {
+                self.app.layout.layout_dirty = true;
+                window.request_redraw();
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                crate::widget::mount_native_views(
+                    self.app.root_widget.as_mut(),
+                    &crate::widget::NativeViewHost::live(window, self.app.input.platform),
+                );
+                self.app.layout.layout_dirty = true;
+                window.request_redraw();
+            }
+            WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, window),
+            WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
+            other => self.handle_other_window_event(window, other),
+        }
+    }
+
+    fn dispatch_touch_pointer_events(&mut self, window: &Arc<Window>, event: &WindowEvent) {
+        let WindowEvent::Touch(touch) = event else {
+            return;
+        };
+        self.app
+            .set_interaction_environment(self.app.input.interaction.with_touch_modality());
+        let pointer_events = self.touch_pointer.events(touch);
+        self.dispatching_touch_pointer = true;
+        for pointer_event in pointer_events {
+            let pointer_event = match pointer_event {
+                crate::interaction::TouchPointerEvent::Move(position) => WindowEvent::CursorMoved {
+                    device_id: touch.device_id,
+                    position,
+                },
+                crate::interaction::TouchPointerEvent::Press => WindowEvent::MouseInput {
+                    device_id: touch.device_id,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                crate::interaction::TouchPointerEvent::Release => WindowEvent::MouseInput {
+                    device_id: touch.device_id,
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+                crate::interaction::TouchPointerEvent::Scroll { delta, phase } => {
+                    WindowEvent::MouseWheel {
+                        device_id: touch.device_id,
+                        delta: winit::event::MouseScrollDelta::PixelDelta(delta),
+                        phase,
+                    }
+                }
+            };
+            self.handle_other_window_event(window, pointer_event);
+        }
+        self.dispatching_touch_pointer = false;
+    }
+
     fn pump_idle_host_integrations(
         &mut self,
         event_loop: &ActiveEventLoop,
