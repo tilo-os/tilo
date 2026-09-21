@@ -147,6 +147,34 @@ fn transform_from_label(label: &str) -> Option<OutputTransform> {
         .map(|(_, transform)| *transform)
 }
 
+/// Best pair of timings which address the same pixel extent. The compositor
+/// duplicates the viewport in software, so connector refresh rates may differ
+/// (common for a nominal 60 Hz USB-C monitor reporting 59.94 Hz).
+fn best_mirror_modes(
+    source: &DisplayOutput,
+    target: &DisplayOutput,
+) -> Option<(OutputMode, OutputMode)> {
+    let (width, height) = source
+        .modes
+        .iter()
+        .filter(|source_mode| {
+            target.modes.iter().any(|target_mode| {
+                target_mode.width == source_mode.width && target_mode.height == source_mode.height
+            })
+        })
+        .map(|mode| (mode.width, mode.height))
+        .max_by_key(|&(width, height)| (u64::from(width) * u64::from(height), width, height))?;
+    let best_for = |output: &DisplayOutput| {
+        output
+            .modes
+            .iter()
+            .filter(|mode| mode.width == width && mode.height == height)
+            .copied()
+            .max_by_key(|mode| mode.refresh_mhz)
+    };
+    Some((best_for(source)?, best_for(target)?))
+}
+
 /// One real display output, derived from a DRM connector.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(
@@ -1954,9 +1982,9 @@ impl DisplayPane {
         }
     }
 
-    /// Mirroring is one viewport sampled by two sinks. Pick the best mode
-    /// both advertise and stage it on both connectors; merely sharing an
-    /// origin with unrelated modes is not mirroring.
+    /// Mirroring is one viewport sampled by two sinks. Pick the best pixel
+    /// extent both advertise, then each sink's best refresh for that extent.
+    /// Merely sharing an origin with unrelated extents is not mirroring.
     fn apply_mirror_pairs(
         connected: &[DisplayOutput],
         next: &mut DisplayConfig,
@@ -1982,28 +2010,17 @@ impl DisplayPane {
             let Some(sink) = connected.iter().find(|output| output.connector == target) else {
                 continue;
             };
-            let common = source
-                .modes
-                .iter()
-                .filter(|mode| sink.modes.contains(mode))
-                .copied()
-                .max_by_key(|mode| {
-                    (
-                        u64::from(mode.width) * u64::from(mode.height),
-                        mode.refresh_mhz,
-                    )
-                });
-            if let Some(mode) = common {
+            if let Some((source_mode, sink_mode)) = best_mirror_modes(source, sink) {
                 if let Some(config) = next.outputs.get_mut(&connector)
-                    && config.mode != Some(mode)
+                    && config.mode != Some(source_mode)
                 {
-                    config.mode = Some(mode);
+                    config.mode = Some(source_mode);
                     *changed = true;
                 }
                 if let Some(config) = next.outputs.get_mut(&target)
-                    && config.mode != Some(mode)
+                    && config.mode != Some(sink_mode)
                 {
-                    config.mode = Some(mode);
+                    config.mode = Some(sink_mode);
                     *changed = true;
                 }
             }
@@ -2362,6 +2379,114 @@ mod tests {
         assert_eq!(pane.outputs()[1].label, "HDMI-A-1");
     }
 
+    fn display_with_modes(
+        connector: &str,
+        label: &str,
+        builtin: bool,
+        modes: Vec<OutputMode>,
+    ) -> DisplayOutput {
+        DisplayOutput {
+            label: label.into(),
+            connected: true,
+            builtin,
+            connector: connector.into(),
+            connector_label: connector.into(),
+            current_mode: modes.first().copied(),
+            modes,
+            hdr: false,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            vrr: false,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profiles: Vec::new(),
+            color_profile_labels: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn mirror_negotiation_allows_usb_c_monitor_refresh_to_differ() {
+        let full_hd_60 = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let full_hd_5994 = OutputMode {
+            refresh_mhz: 59_940,
+            ..full_hd_60
+        };
+        let panel = display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]);
+        let usb_c = display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]);
+
+        assert_eq!(
+            best_mirror_modes(&usb_c, &panel),
+            Some((full_hd_5994, full_hd_60)),
+            "software mirroring needs a shared extent, not identical connector clocks"
+        );
+    }
+
+    #[test]
+    fn settings_switches_usb_c_display_between_mirror_and_extend() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new("display-mirror-extend");
+        let full_hd_60 = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let full_hd_5994 = OutputMode {
+            refresh_mhz: 59_940,
+            ..full_hd_60
+        };
+        let outputs = vec![
+            display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]),
+            display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]),
+        ];
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(outputs);
+        pane.output_config.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                mode: Some(full_hd_60),
+                ..Default::default()
+            },
+        );
+        pane.output_config.outputs.insert(
+            "DP-1".into(),
+            OutputConfig {
+                x: 1920,
+                mode: Some(full_hd_5994),
+                ..Default::default()
+            },
+        );
+
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(
+            &root,
+            output_key("DP-1", "mirror"),
+            "Mirror Built-in display",
+        );
+        pane.sync(&mut doc, &root);
+        let mirrored = pane.pending_candidate.clone().expect("mirror plan staged");
+        assert_eq!(mirrored.outputs["DP-1"].mirror_of.as_deref(), Some("eDP-1"));
+        assert_eq!(mirrored.outputs["DP-1"].mode, Some(full_hd_5994));
+        assert_eq!(mirrored.outputs["eDP-1"].mode, Some(full_hd_60));
+
+        // Simulate Keep, then select Extend. The saved independent origin was
+        // never overwritten by mirroring and becomes active again.
+        pane.output_config = mirrored;
+        pane.pending_candidate = None;
+        let _ = doc.put(&root, output_key("DP-1", "mirror"), "Extend workspace");
+        pane.sync(&mut doc, &root);
+        let extended = pane.pending_candidate.as_ref().expect("extend plan staged");
+        assert_eq!(extended.outputs["DP-1"].mirror_of, None);
+        assert_eq!(extended.outputs["DP-1"].x, 1920);
+        assert_eq!(extended.outputs["DP-1"].y, 0);
+    }
+
     /// The compositor's writeback connector and other virtual connectors are
     /// not displays a user plugs into, so they are filtered from the list.
     #[test]
@@ -2371,6 +2496,7 @@ mod tests {
         assert!(!is_virtual_connector("card0-eDP-1"));
         assert!(!is_virtual_connector("card0-HDMI-A-1"));
         assert!(!is_virtual_connector("card0-DP-2"));
+        assert!(!is_virtual_connector("card0-USB-1"));
     }
 
     /// Only connected outputs become rows; a laptop's dozen idle DP ports are
