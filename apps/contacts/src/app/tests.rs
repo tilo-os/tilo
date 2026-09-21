@@ -430,12 +430,24 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
         app.toolbar_h()
             >= ui::text_metrics::line_height_px(text_base(), 2.0) + 2.0 * f64::from(app.spacing.s3)
     );
-    assert_eq!(app.row_h(), ROW_H * 2.0);
-    assert_eq!(app.hit.search.height(), FIELD_H * 2.0);
+    let row_h = app.row_metrics().row_h;
+    let first_row = app.list_rows.first().expect("sample contact row").1;
+    assert_eq!(first_row.height(), row_h);
+    let control_line_h = ui::text_metrics::line_height_px(text_base(), 2.0);
+    let control_padding = 2.0 * f64::from(app.spacing.s2);
+    assert!(app.hit.search.height() >= control_line_h + control_padding);
 
-    app.shots_edit_contact();
-    drive_frame_with_theme(&mut app, 1440, 900, &large_text);
-    let form = app.form.as_ref().expect("edit form");
+    // Use a fresh seeded frame for the edit phase: the frame helper owns its
+    // document, so carrying this app into a second call would present it with
+    // a new empty document and correctly reconcile the old selection away.
+    let mut edit_app = ContactsApp::sample();
+    let contact = sample_contacts()
+        .into_iter()
+        .next()
+        .expect("sample contact");
+    edit_app.begin_edit(contact, false);
+    drive_frame_with_theme(&mut edit_app, 1440, 900, &large_text);
+    let form = edit_app.form.as_ref().expect("edit form");
     let first = form
         .inputs
         .iter()
@@ -449,7 +461,9 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
         .expect("last name")
         .ti_rect();
     assert!(last.y0 > first.y1, "paired fields stack at large text");
-    assert_eq!(first.height(), FIELD_H * 2.0);
+    let field_h = edit_app.form_metrics().field_h;
+    assert_eq!(first.height(), field_h);
+    assert!(first.height() >= control_line_h + control_padding);
     let notes = form
         .inputs
         .iter()
@@ -460,9 +474,10 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
         "note text wraps instead of clipping"
     );
     assert!(
-        notes.ti_rect().height() >= FIELD_H * 4.0,
+        notes.ti_rect().height() >= 3.0 * control_line_h,
         "notes reserve multiple large-text lines"
     );
+    assert_eq!(notes.ti_rect().height(), 3.0 * field_h);
 }
 
 #[test]

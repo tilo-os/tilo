@@ -342,6 +342,7 @@ fn resource_detail_excerpt(value: &str) -> String {
 /// large-text layout may choose one catalogue list instead of availability
 /// shelves, but that must not turn an untouched catalogue into “Search
 /// results” for sighted or screen-reader users.
+#[cfg(test)]
 fn catalogue_region_heading(grouped_by_availability: bool, query: &str) -> &'static str {
     if grouped_by_availability {
         "Browse apps"
@@ -1578,6 +1579,7 @@ impl StoreApp {
     /// Store canvas resolves to three editorial tiles: enough room for real
     /// artwork, a reason-to-care and an action rail, without the sparse
     /// 2+1 shelves that made a catalogue look unfinished.
+    #[cfg(test)]
     fn catalogue_card_min_width(&self) -> f64 {
         if self.desktop_browse_layout() {
             348.0

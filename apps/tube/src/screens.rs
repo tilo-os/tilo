@@ -31,9 +31,7 @@ use crate::contrast::SelectedStyle;
 /// `docs/superpowers/audits/2026-09-16-ui-alignment-review/a8-media.md` T3).
 /// Pill vertical padding (14 px label → 40 px capsule with its 22 px line).
 const PILL_PAD_Y: f32 = 9.0;
-/// Video-card metadata: line gap and avatar/text gap.
-const CARD_META_GAP: f32 = 3.0;
-const CARD_META_LINE_GAP: f32 = 5.0;
+/// Video-card body and avatar/text gaps.
 const CARD_BODY_GAP: f32 = 9.0;
 const CARD_AVATAR_GAP: f32 = 10.0;
 /// Card grid gutter; the section heading's icon/title gap.
