@@ -9,7 +9,7 @@
 //! shell-level Ctrl+K drive the same [`SearchRegistry`] across every app.
 //!
 //! ```
-//! use ui::search::{SearchRegistry, SearchResult};
+//! use tilo_ui::search::{SearchRegistry, SearchResult};
 //!
 //! let mut registry = SearchRegistry::new();
 //! registry.register_fn("Contacts", |q: &str| {

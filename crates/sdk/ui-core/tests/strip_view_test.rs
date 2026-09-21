@@ -9,7 +9,7 @@
 )]
 
 use std::time::Duration;
-use ui::widget::{STRIP_COOLDOWN_MS, StripView};
+use tilo_ui::widget::{STRIP_COOLDOWN_MS, StripView};
 
 #[test]
 fn wheel_paginate_cooldown_blocks_second_call() {

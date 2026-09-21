@@ -50,7 +50,7 @@ jobs:
       # need an idle software Vulkan renderer, not merely serialization with
       # one another; the isolated tail below retains full daily coverage.
       GOLDEN_FILTER: >-
-        (package(ui) and test(typography_visual_regression::)) or
+        (package(tilo-ui) and test(typography_visual_regression::)) or
         (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
         (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
     steps:
@@ -129,13 +129,13 @@ jobs:
       # Source-level protocol checks prevent an app from opting out, but only
       # the laid-out production root can prove that visible effect controls
       # resolve to live resources/actions (and that no stale or legacy binding
-      # remains). tilo-dev builds the graphical apps as one Cargo graph, then
+      # remains). tilo-app builds the graphical apps as one Cargo graph, then
       # runs every binary's deterministic --native-audit entry point.
       - name: Certify every production app action surface
         run: >-
           bash tools/ci/measure.sh "nightly native app certification" --
-          bash scripts/ci-run.sh "tilo-dev certify --workspace" --
-          cargo run --locked -p tilo-dev -- certify --workspace
+          bash scripts/ci-run.sh "tilo-app certify --workspace" --
+          cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace
 
       # `cargo check --all-targets` type-checks examples but neither links nor
       # runs their test harnesses. Reuse the test-profile artifacts above to do

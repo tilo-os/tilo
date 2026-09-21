@@ -9,7 +9,7 @@
 //!
 //! Naming is retroactive (click `[Name]`, or shift-click a run to name it).
 //! The widget has no document, so naming only fires [`NameGroupCallback`];
-//! the host persists it through `ui::history_source::groups`.
+//! the host persists it through `tilo_ui::history_source::groups`.
 //!
 //! The filter chip strip's grouping is computed over the *unfiltered*
 //! history, so toggling a chip narrows the list without re-chunking it under
@@ -462,7 +462,7 @@ impl ActivityTimeline {
     }
 
     /// The widget has no document; the host reads names
-    /// (`ui::history_source::groups`) and pushes them here.
+    /// (`tilo_ui::history_source::groups`) and pushes them here.
     pub fn set_named_ranges(&mut self, named: Vec<NamedRange>) {
         if self.named != named {
             self.named = named;
@@ -1188,6 +1188,9 @@ impl ActivityTimeline {
     /// targets never overlap each other. Hit-testing and accessibility read
     /// this rect; painting reads the original.
     fn hit_rect_within(&self, painted: Rect, within: Rect) -> Rect {
+        if painted.is_zero_area() {
+            return Rect::ZERO;
+        }
         let target = self.min_pointer_target.max(painted.height());
         let mut y0 = painted.y0 - (target - painted.height()) / 2.0;
         let mut y1 = y0 + target;
@@ -5515,7 +5518,9 @@ mod group_tests {
     /// is still the 28 / 20 px pill; only the target grew.
     #[test]
     fn chip_targets_meet_the_minimum_pointer_target_and_never_overlap() {
-        let mut t = ActivityTimeline::with_entries(typing_run(20));
+        let mut t = ActivityTimeline::with_entries(typing_run(20))
+            .on_revert(|_| {})
+            .on_name_group(|_| {});
         t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
         t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
         let theme = Theme::dark();

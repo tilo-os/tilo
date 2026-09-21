@@ -17,11 +17,11 @@ impl App {
     }
 
     fn invalidate_close_presentation(&mut self) {
-        self.action_palette = None;
+        self.actions.action_palette = None;
         self.bindings.clear();
-        self.node_map.clear();
-        self.structure_dirty = true;
-        self.layout_dirty = true;
+        self.layout.node_map.clear();
+        self.layout.structure_dirty = true;
+        self.layout.layout_dirty = true;
     }
     /// Refusal keeps every live owner and wake scope available for editing.
     pub fn request_close(&mut self) -> bool {
@@ -183,8 +183,9 @@ impl App {
             self.platform,
         );
         self.invalidate_close_presentation();
-        let before: std::collections::HashSet<_> = self.local_invocations.keys().copied().collect();
-        let broker_request = self.next_broker_request_id;
+        let before: std::collections::HashSet<_> =
+            self.actions.local_invocations.keys().copied().collect();
+        let broker_request = self.actions.next_broker_request_id;
         let connected = self.collab_manager.is_connected();
         let actor = self.local_author.0.clone();
         // Do not supply an invocation or claim broker admission. This is the
@@ -205,11 +206,12 @@ impl App {
             }
             Ok(crate::widget::ResourceOperationStart::Accepted) => {
                 self.close_admission.save_local = self
+                    .actions
                     .local_invocations
                     .iter()
                     .find(|(id, (address, _))| !before.contains(*id) && *address == document.save)
                     .map(|(id, _)| *id);
-                if connected && self.next_broker_request_id != broker_request {
+                if connected && self.actions.next_broker_request_id != broker_request {
                     self.close_admission.save_broker_request = broker_request;
                 }
                 if self.close_admission.save_local.is_none()
@@ -348,7 +350,7 @@ impl App {
         if self.close_admission.dialog.is_none() {
             return false;
         }
-        if self.structure_dirty || self.node_map.is_empty() {
+        if self.layout.structure_dirty || self.layout.node_map.is_empty() {
             self.rebuild_structure();
         }
         if let winit::event::WindowEvent::ModifiersChanged(modifiers) = event {
@@ -392,7 +394,7 @@ impl App {
         }
         if !handled
             && let (Some(dialog), Some(root)) =
-                (self.close_admission.dialog.as_mut(), self.root_node)
+                (self.close_admission.dialog.as_mut(), self.layout.root_node)
         {
             let mut focus = None;
             dialog.handle_event(
@@ -404,7 +406,7 @@ impl App {
                 &mut handled,
                 &mut focus,
                 root,
-                &self.taffy,
+                &self.layout.taffy,
             );
             if let Some(focus) = focus {
                 self.set_focused_node(Some(focus));
@@ -415,17 +417,17 @@ impl App {
     }
 
     pub(super) fn layout_close_dialog(&mut self, logical: (f64, f64)) {
-        let Some(root) = self.root_node else {
+        let Some(root) = self.layout.root_node else {
             return;
         };
-        let _ = self.taffy.compute_layout_with_measure(
+        let _ = self.layout.taffy.compute_layout_with_measure(
             root,
             taffy::Size {
                 width: taffy::AvailableSpace::Definite(logical.0 as f32),
                 height: taffy::AvailableSpace::Definite(logical.1 as f32),
             },
             |known, available, node, _, _| {
-                if let Some(ptr) = self.node_map.get(&node) {
+                if let Some(ptr) = self.layout.node_map.get(&node) {
                     // SAFETY: the exclusive host owns this newly built dialog
                     // map; changing or dismissing it clears the map first.
                     unsafe { (**ptr).measure(known, available, &mut self.text_renderer) }
@@ -435,11 +437,11 @@ impl App {
             },
         );
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
-            dialog.apply_layout(&self.taffy, root, vello::kurbo::Point::ORIGIN);
+            dialog.apply_layout(&self.layout.taffy, root, vello::kurbo::Point::ORIGIN);
         }
         self.update_focusable_order();
-        self.structure_dirty = false;
-        self.layout_dirty = false;
+        self.layout.structure_dirty = false;
+        self.layout.layout_dirty = false;
     }
 }
 
@@ -912,8 +914,8 @@ mod tests {
         app.init_layout();
         let modal = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
         let admitted = modal as *const dyn Widget as *const () as usize;
-        let root = app.root_node.unwrap();
-        assert_eq!(app.node_map[&root] as *mut () as usize, admitted);
+        let root = app.layout.root_node.unwrap();
+        assert_eq!(app.layout.node_map[&root] as *mut () as usize, admitted);
         // Move the entire initialized App into a different allocation. Compare
         // real tree addresses to the map before dereferencing a single map entry.
         let mut moved = Box::new(app);
@@ -929,6 +931,7 @@ mod tests {
         addresses(actual, &mut actual_addresses);
         assert!(
             moved
+                .layout
                 .node_map
                 .values()
                 .all(|ptr| actual_addresses.contains(&(*ptr as *mut () as usize)))
