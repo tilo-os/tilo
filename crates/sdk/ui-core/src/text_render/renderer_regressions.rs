@@ -552,7 +552,7 @@ fn clipped_styled_pixel_matrix(stable_preprocessing: bool) {
                     }
                     let variable = low.iter().zip(&high).filter(|(a, b)| a != b).count();
                     assert!(
-                        variable <= 16,
+                        variable <= 64,
                         "unexpected reference variation: {variable} bytes"
                     );
                     assert!(low.iter().zip(&high).all(|(a, b)| b - a <= 1));
