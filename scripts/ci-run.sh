@@ -30,13 +30,16 @@ stop_heartbeat() {
 
 cleanup() {
     stop_heartbeat
-    rm -f "$log" "/tmp/ci-run-distilled.$$"
+    rm -f "$log" "$log.memory-before" "/tmp/ci-run-distilled.$$"
 }
 trap cleanup EXIT
 
 echo "==> ${label}: $*"
 start=$(date +%s)
 progress_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci/process_progress.py"
+memory_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci/cgroup_memory.py"
+# Capture before running the command; only print memory evidence on failure.
+python3 "$memory_script" > "$log.memory-before" 2>/dev/null || true
 # Forgejo's runner terminates a step after 15 minutes without output. Cargo can
 # legitimately be silent that long while linking a large workspace target, so
 # emit one compact progress line per minute until the command exits.
@@ -79,6 +82,9 @@ if [ "$rc" -eq 0 ]; then
     [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "- **${label}** — passed in ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
     exit 0
 fi
+
+# Best-effort evidence only: never replace the command's captured exit status.
+python3 "$memory_script" "$log.memory-before" 2>/dev/null || echo 'CI_CGROUP_MEMORY=unavailable'
 
 # ---- failed: distil the reason ------------------------------------------
 # rustc diagnostics, build-script failures, panics and the test harness's own
