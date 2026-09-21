@@ -518,7 +518,7 @@ class CreationTests(unittest.TestCase):
             self.assertIn('REGISTRY_AUTH_FILE=/run/ostree/auth.json', argv)
             self.assertNotIn('/run/tilo-registry-auth.json', str(argv))
             self.assertEqual(argv[argv.index('--tmpfs'):argv.index('--tmpfs') + 2],
-                             ['--tmpfs', '/run/udev:rw,nosuid,nodev,noexec'])
+                             ['--tmpfs', '/run/udev:ro,nosuid,nodev,noexec,mode=0755'])
             self.assertNotIn('test-secret', str(argv))
             observed.append(snapshot)
         self.inspect_install = inspect
