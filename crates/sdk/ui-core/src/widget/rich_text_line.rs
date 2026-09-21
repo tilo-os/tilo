@@ -22,7 +22,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
@@ -144,6 +143,8 @@ pub struct RichTextLine {
     transient_colors: Vec<TransientColorSpan>,
     /// Formatting-only edits must notify the owning document just like typing.
     dirty: RichTextDirty,
+    accent_rgb: Option<[u8; 3]>,
+    transient_rgb: [Option<[u8; 3]>; 8],
     /// Drained once `handle_event` observes a text-input edit.
     pending_marks: Vec<Mark>,
     /// Snapshot used to detect splice direction + length so `marks` stays
@@ -179,6 +180,8 @@ impl RichTextLine {
             marks: Vec::new(),
             transient_colors: Vec::new(),
             dirty: RichTextDirty::default(),
+            accent_rgb: None,
+            transient_rgb: [None; 8],
             pending_marks: Vec::new(),
             prev_text: String::new(),
             prev_cursor: 0,
@@ -798,20 +801,6 @@ impl Widget for RichTextLine {
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
-    }
-
-    fn measure(
-        &mut self,
-        known: Size<Option<f32>>,
-        available: Size<taffy::AvailableSpace>,
-        text_renderer: &mut TextRenderer,
-    ) -> Size<f32> {
-        self.refresh_attributes();
-        self.inner.measure(known, available, text_renderer)
-    }
-
-    fn layout_needs_measure(&self) -> bool {
-        self.inner.layout_needs_measure()
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

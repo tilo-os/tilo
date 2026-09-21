@@ -11,8 +11,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    AppKind, AppWidget, ContextMenu, Continuable, IconDescriptor, MenuItem, TabDescriptor,
-    TaffyTreeExt, Widget, WindowCloseAdmission,
+    AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, IconDescriptor,
+    MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1477,35 +1477,11 @@ impl Widget for BrowserTabs {
         }
         self.active_mut().take_control_invocation()
     }
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.tabs
-            .iter_mut()
-            .find_map(|tab| tab.widget.take_floating_surface_request())
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
     }
-    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
-        self.active_mut().take_capture_studio_request()
-    }
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        self.tabs
-            .iter_mut()
-            .flat_map(|tab| tab.widget.take_floating_surface_source_updates())
-            .collect()
-    }
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.tabs
-            .iter()
-            .flat_map(|tab| tab.widget.active_floating_surface_ids())
-            .collect()
-    }
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &ui::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        for tab in &mut self.tabs {
-            tab.widget.on_floating_surface_host_message(message);
-        }
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
     }
     fn modal_capture(&self) -> Option<Rect> {
         if let Some(panel) = self.exit_panel.as_ref() {
@@ -1574,6 +1550,46 @@ impl Continuable for BrowserTabs {
             .restore_continuation_metadata(metadata, state, root)
     }
 }
+
+impl FloatingSurfaceProvider for BrowserTabs {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.tabs.iter_mut().find_map(|tab| {
+            FloatingSurfaceProvider::take_floating_surface_request(&mut *tab.widget)
+        })
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
+        FloatingSurfaceProvider::take_capture_studio_request(self.active_mut())
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.tabs
+            .iter_mut()
+            .flat_map(|tab| {
+                FloatingSurfaceProvider::take_floating_surface_source_updates(&mut *tab.widget)
+            })
+            .collect()
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.tabs
+            .iter()
+            .flat_map(|tab| FloatingSurfaceProvider::active_floating_surface_ids(&*tab.widget))
+            .collect()
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &ui::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        for tab in &mut self.tabs {
+            FloatingSurfaceProvider::on_floating_surface_host_message(&mut *tab.widget, message);
+        }
+    }
+}
+
 impl Drop for BrowserTabs {
     fn drop(&mut self) {
         if self.session_initialized

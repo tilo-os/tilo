@@ -37,7 +37,7 @@ use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     AudiencePresentationProvider, ColorPicker, DEFAULT_BREAKPOINT, FlapState, NumberInput,
-    PageSidebar, PageSidebarEvent, SplitLayout, TextInput, Widget,
+    PageSidebar, PageSidebarEvent, Scrollable, SplitLayout, TextInput, Widget,
 };
 
 use crate::actions;

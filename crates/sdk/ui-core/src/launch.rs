@@ -1063,7 +1063,7 @@ fn dispatch_definition_with_native(
     }
     if args.shots.is_some() || args.responsive_matrix.is_some() || args.native_audit {
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(args));
-        let driver = Box::new(FrameHarness::from_component(
+        let mut driver = Box::new(FrameHarness::from_component(
             component,
             viewport,
             prepared.runner_inputs,

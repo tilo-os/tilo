@@ -164,7 +164,7 @@ fn send_widget_then_host_fallback(app: &mut App, event: &WindowEvent) -> bool {
     app.root_widget.handle_event(
         event,
         1.0,
-        &app.modifiers,
+        &app.input.modifiers,
         &mut app.state.doc,
         &app.state.root,
         &mut handled,

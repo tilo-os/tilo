@@ -216,7 +216,7 @@ pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
     scenario: Option<&str>,
-    theme: Theme,
+    text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !crate::capture::supports(scenario) {
         return Err(format!(
