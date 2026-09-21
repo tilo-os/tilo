@@ -733,7 +733,13 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
             web_time::SystemTime::now(),
         )
     };
-    let opened = admit(&browser, &event).unwrap().unwrap();
+    let admitted = |state: &qos_peer_state::StatePeer, event: &EnvelopeV2| match admit(state, event)
+        .unwrap()
+    {
+        qos_browser_runtime::committed_desktop::Admission::Ready { candidate, .. } => candidate,
+        _ => panic!("committed desktop is ready"),
+    };
+    let opened = admitted(&browser, &event);
     let new_row = owner
         .peer()
         .rows()
@@ -760,11 +766,11 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
             .unwrap()
     );
     assert_eq!(
-        admit(&opened, &event).unwrap().unwrap().durable().unwrap(),
+        admitted(&opened, &event).durable().unwrap(),
         opened.durable().unwrap(),
         "ordinary duplicate admission is idempotent"
     );
-    for field in 0..5 {
+    for field in 0..6 {
         let mut wrong = delivery.clone();
         let mut root = source_user;
         match field {
@@ -772,7 +778,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
             1 => wrong.target = [91; 32],
             2 => wrong.room = uuid::Uuid::new_v4(),
             3 => root = [91; 32],
-            _ => {
+            4 => {
                 let tilo_relay::peer_actions::ActionMessage::CommittedDesktop { packets, .. } =
                     &mut wrong.message
                 else {
@@ -785,6 +791,16 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
                 let end = bytes.len() - 1;
                 bytes[end] ^= 1;
                 *last = hex::encode(bytes);
+            }
+            _ => {
+                let tilo_relay::peer_actions::ActionMessage::CommittedDesktop {
+                    opened: Some(opened),
+                    ..
+                } = &mut wrong.message
+                else {
+                    panic!()
+                };
+                opened.tab = u64::MAX.to_string();
             }
         }
         assert!(
@@ -814,15 +830,11 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
         },
     );
     let (_, close_delivery) = owner.commit_desktop_command_with_delivery(&close).unwrap();
-    let closed = admit(
-        &opened,
-        &EnvelopeV2::Delivered {
-            action: close_delivery.unwrap(),
-            source_user,
-        },
-    )
-    .unwrap()
-    .unwrap();
+    let closed_event = EnvelopeV2::Delivered {
+        action: close_delivery.unwrap(),
+        source_user,
+    };
+    let closed = admitted(&opened, &closed_event);
     assert_eq!(
         closed.admitted_room().unwrap().clone().get_heads(),
         owner.peer().admitted_room().unwrap().clone().get_heads()
@@ -838,4 +850,204 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
         closed.document(&new_row.app_id, &new_row.record_id),
         owner.peer().document(&new_row.app_id, &new_row.record_id)
     );
+}
+
+#[test]
+fn committed_desktop_defers_exact_launch_notice_until_missing_retained_record_arrives() {
+    use qos_peer_state::{NeighbourMsg, TransportOrigin};
+    use tilo_relay::transport_v2::EnvelopeV2;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&root.path().join("deferred-direct")).unwrap();
+    let mut browser = owner.peer().clone();
+    let source = owner.peer().authority().device_public_key;
+    let source_user = owner.peer().authority().user_public_key;
+    let strip = tree(&owner).workspaces[0].strips[0].id.0;
+
+    let first = request(
+        &owner,
+        DesktopCommand::OpenTab {
+            app: "dev.qos.notes".into(),
+            placement: TabPlacement::NewGroup { strip, after: None },
+        },
+    );
+    let first_publication = owner.outgoing().len();
+    owner.commit_desktop_command(&first).unwrap();
+    let mut withheld = None;
+    for bytes in &owner.outgoing()[first_publication..] {
+        let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
+        if matches!(message, NeighbourMsg::AppDocument { .. }) {
+            assert!(withheld.replace(message).is_none());
+        } else {
+            browser
+                .receive_from(
+                    TransportOrigin::RetainedRelayDelta(source),
+                    message,
+                    web_time::SystemTime::now(),
+                )
+                .unwrap();
+        }
+    }
+    let withheld = withheld.expect("first launch has one retained record prerequisite");
+    assert_eq!(
+        browser.admitted_room().unwrap().clone().get_heads(),
+        owner.peer().admitted_room().unwrap().clone().get_heads(),
+        "the browser can know the current command-source topology while its record is still missing"
+    );
+
+    let second = request(
+        &owner,
+        DesktopCommand::OpenTab {
+            app: "dev.qos.calculator".into(),
+            placement: TabPlacement::NewGroup { strip, after: None },
+        },
+    );
+    let expected_invocation = match &second.operation {
+        CommitOperation::DesktopCommand { invocation, .. } => *invocation,
+        _ => unreachable!(),
+    };
+    let (_, delivery) = owner.commit_desktop_command_with_delivery(&second).unwrap();
+    let delivery = delivery.expect("second launch has direct committed delivery");
+    let target = delivery.target;
+    let expected_opened = match &delivery.message {
+        tilo_relay::peer_actions::ActionMessage::CommittedDesktop {
+            opened: Some(opened),
+            ..
+        } => opened.clone(),
+        _ => panic!("launch carries its exact opened route"),
+    };
+    let event = EnvelopeV2::Delivered {
+        action: delivery,
+        source_user,
+    };
+
+    let deferred = qos_browser_runtime::committed_desktop::admit(
+        &browser,
+        &event,
+        target,
+        web_time::SystemTime::now(),
+    )
+    .unwrap();
+    let qos_browser_runtime::committed_desktop::Admission::AwaitingRetainedState(deferred_notice) =
+        deferred
+    else {
+        panic!("validated launch must retain its exact notice while awaiting ordinary state")
+    };
+    assert_eq!(deferred_notice.invocation.0, expected_invocation);
+    assert_eq!(deferred_notice.room.to_string(), browser.room());
+    assert_eq!(deferred_notice.opened, expected_opened);
+
+    browser
+        .receive_from(
+            TransportOrigin::RetainedRelayDelta(source),
+            withheld,
+            web_time::SystemTime::now(),
+        )
+        .unwrap();
+    let ready = qos_browser_runtime::committed_desktop::admit(
+        &browser,
+        &event,
+        target,
+        web_time::SystemTime::now(),
+    )
+    .unwrap();
+    let qos_browser_runtime::committed_desktop::Admission::Ready {
+        candidate,
+        notice: ready_notice,
+    } = ready
+    else {
+        panic!("the same delivery becomes admissible after its missing retained prerequisite")
+    };
+    assert_eq!(ready_notice.unwrap(), deferred_notice);
+    let mut admitted = qos_desktop::WorkspaceTree::default();
+    qos_desktop::projection::RoomProjection::apply_admitted_room(
+        &mut admitted,
+        qos_desktop::RoomId::parse(candidate.room()).unwrap(),
+        candidate.admitted_room().unwrap(),
+    )
+    .unwrap();
+    assert!(
+        admitted
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .any(|candidate_strip| {
+                candidate_strip.id.0.to_string() == expected_opened.strip
+                    && candidate_strip.window_groups.iter().any(|group| {
+                        group.id.to_string() == expected_opened.group
+                            && group
+                                .tabs
+                                .iter()
+                                .any(|tab| tab.id.to_string() == expected_opened.tab)
+                    })
+            })
+    );
+}
+
+#[test]
+fn committed_desktop_emits_exact_launch_notice_when_retained_state_arrives_first() {
+    use qos_peer_state::{NeighbourMsg, TransportOrigin};
+    use tilo_relay::transport_v2::EnvelopeV2;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&root.path().join("retained-first")).unwrap();
+    let mut browser = owner.peer().clone();
+    let source = owner.peer().authority().device_public_key;
+    let source_user = owner.peer().authority().user_public_key;
+    let strip = tree(&owner).workspaces[0].strips[0].id.0;
+    let opening = request(
+        &owner,
+        DesktopCommand::OpenTab {
+            app: "dev.qos.notes".into(),
+            placement: TabPlacement::NewGroup { strip, after: None },
+        },
+    );
+    let invocation = match &opening.operation {
+        CommitOperation::DesktopCommand { invocation, .. } => *invocation,
+        _ => unreachable!(),
+    };
+    let publication = owner.outgoing().len();
+    let (_, delivery) = owner
+        .commit_desktop_command_with_delivery(&opening)
+        .unwrap();
+    let delivery = delivery.expect("launch has direct committed delivery");
+    let target = delivery.target;
+    let expected_opened = match &delivery.message {
+        tilo_relay::peer_actions::ActionMessage::CommittedDesktop {
+            opened: Some(opened),
+            ..
+        } => opened.clone(),
+        _ => panic!("launch carries its exact opened route"),
+    };
+    for bytes in &owner.outgoing()[publication..] {
+        let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
+        browser
+            .receive_from(
+                TransportOrigin::RetainedRelayDelta(source),
+                message,
+                web_time::SystemTime::now(),
+            )
+            .unwrap();
+    }
+    let event = EnvelopeV2::Delivered {
+        action: delivery,
+        source_user,
+    };
+    let admitted = qos_browser_runtime::committed_desktop::admit(
+        &browser,
+        &event,
+        target,
+        web_time::SystemTime::now(),
+    )
+    .unwrap();
+    let qos_browser_runtime::committed_desktop::Admission::Ready {
+        notice: Some(notice),
+        ..
+    } = admitted
+    else {
+        panic!("the private delivery retains its live launch notice after retained admission")
+    };
+    assert_eq!(notice.invocation.0, invocation);
+    assert_eq!(notice.room.to_string(), browser.room());
+    assert_eq!(notice.opened, expected_opened);
 }

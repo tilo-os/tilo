@@ -438,34 +438,41 @@ async fn connect_owner(
                             mark_failure(peer.id, error);
                             continue;
                         }
-                        let candidate = crate::committed_desktop::admit(
+                        let admission = crate::committed_desktop::admit(
                             &peer.state.borrow(),
                             &event,
                             peer._key.verifying_key().to_bytes(),
                             SystemTime::now(),
                         );
-                        match candidate {
-                            Ok(Some(candidate)) => {
+                        let emit_notice =
+                            |notice: &crate::committed_desktop::CommittedDesktopNotice| {
+                                let value = serde_json::json!({"committedDesktop":{"invocation":notice.invocation,"room":notice.room,"opened":notice.opened}}).to_string();
+                                let _ = peer
+                                    .callback
+                                    .call1(&JsValue::NULL, &JsValue::from_str(&value));
+                            };
+                        match admission {
+                            Ok(crate::committed_desktop::Admission::Ready {
+                                candidate,
+                                notice,
+                            }) => {
                                 peer.last_peer_contact.set(Some(js_sys::Date::now()));
                                 if let Err(e) = install_candidate(&peer, candidate) {
                                     *peer.admission_failure.borrow_mut() = Some(e.clone());
                                     report(&peer, "incomplete", Some(e));
-                                } else if let tilo_relay::transport_v2::EnvelopeV2::Delivered {
-                                    action,
-                                    ..
-                                } = &event
-                                {
-                                    if let tilo_relay::peer_actions::ActionMessage::CommittedDesktop { invocation, opened, .. } = &action.message {
-                                        let notice = serde_json::json!({"committedDesktop":{"invocation":invocation,"room":action.room,"opened":opened}}).to_string();
-                                        let _ = peer.callback.call1(&JsValue::NULL, &JsValue::from_str(&notice));
-                                    }
+                                } else if let Some(notice) = notice {
+                                    emit_notice(&notice);
                                 }
                             }
-                            // This is a best-effort copy; ordinary retained state
-                            // supplies missing prerequisites without speculative UI.
-                            Ok(None) => (),
+                            Ok(crate::committed_desktop::Admission::AwaitingRetainedState(
+                                notice,
+                            )) => {
+                                peer.last_peer_contact.set(Some(js_sys::Date::now()));
+                                emit_notice(&notice);
+                            }
+                            Ok(crate::committed_desktop::Admission::Ignored) => (),
                             Err(error) => web_sys::console::debug_1(&JsValue::from_str(&format!(
-                                "Committed desktop awaiting retained state: {error}"
+                                "Committed desktop direct admission rejected: {error}"
                             ))),
                         }
                         continue;
