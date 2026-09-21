@@ -8729,7 +8729,10 @@ impl WordProcessorWidget {
         if !matches!(logical_key, Key::Named(NamedKey::Backspace)) {
             self.last_autocorrection = None;
         }
-        let text_block = (!self.inner.has_selection()
+        let cached_revision_current = self.materialized_heads == state.base_heads()
+            && self.materialized_pending_ops == state.pending_ops();
+        let text_block = (cached_revision_current
+            && !self.inner.has_selection()
             && matches!(self.inner.region(), Region::Body)
             && (text.is_some()
                 || (matches!(logical_key, Key::Named(NamedKey::Backspace))
