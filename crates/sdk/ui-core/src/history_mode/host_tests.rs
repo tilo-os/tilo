@@ -113,6 +113,50 @@ pub(super) fn registration() -> HistoryRegistration {
     )
     .unwrap()
 }
+
+#[test]
+fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
+    fn addresses(widget: &dyn Widget, output: &mut Vec<*const ()>) {
+        output.push(std::ptr::from_ref(widget).cast());
+        widget.for_each_child(&mut |child| addresses(child, output));
+    }
+
+    let mut state = State::new();
+    state.doc.put(ROOT, "body", "existing document").unwrap();
+    state.commit_action(None, None);
+    let mut live = Column::new().push(Box::new(Button::new("live", "Send", None)));
+    let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
+    history.set_width(900.0);
+    assert!(history.request_open());
+    history.refresh(&state.doc);
+    let mut tree = taffy::TaffyTree::new();
+    let mut nodes = std::collections::HashMap::new();
+    history.build_composition(&mut live, &mut tree, &Theme::dark(), &mut nodes);
+    assert!(!nodes.is_empty());
+    assert!(!history.needs_refresh(&state.doc, 900.0));
+    let mut admitted = Vec::new();
+    addresses(&history, &mut admitted);
+
+    // An external open can run during update, after the runner's capture pass.
+    // Its first control capture then occurs with the prior frame still admitted.
+    assert!(history.capture_pending_controls(&mut live, &state.doc, uuid::Uuid::new_v4()));
+    assert!(
+        history.needs_refresh(&state.doc, 900.0),
+        "control capture must schedule recomposition before replacing mapped controls"
+    );
+    let mut retained = Vec::new();
+    addresses(&history, &mut retained);
+    assert_eq!(admitted, retained, "admitted controls must remain alive");
+
+    nodes.clear();
+    tree = taffy::TaffyTree::new();
+    history.refresh(&state.doc);
+    history.build_composition(&mut live, &mut tree, &Theme::dark(), &mut nodes);
+    assert!(!nodes.is_empty());
+    assert!(!history.needs_refresh(&state.doc, 900.0));
+    assert!(history.captures_input());
+}
+
 #[test]
 fn managed_history_button_opens_real_activity_without_invoking_live_effects() {
     let effects = Rc::new(Cell::new(0));

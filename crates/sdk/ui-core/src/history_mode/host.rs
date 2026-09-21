@@ -407,7 +407,7 @@ impl HistoryHost {
             self.pending_control_recovery = waiting;
             // The failed entry traversal could not observe direct-take output.
             // Its uncertainty remains visible even after sealed queues recover.
-            self.rebuild_toolbar();
+            self.toolbar_dirty = true;
             return true;
         }
         if let Some(domain) = &self.control_domain {
@@ -563,7 +563,9 @@ impl HistoryHost {
             };
             self.pending_controls.capture(origin, invocation, witness);
         }
-        self.rebuild_toolbar();
+        // Capture can run with the preceding frame's raw maps still admitted.
+        // Replace controls only when the runner has discarded those maps.
+        self.toolbar_dirty = true;
         true
     }
     pub(crate) fn capture_embedded_pending_controls(
