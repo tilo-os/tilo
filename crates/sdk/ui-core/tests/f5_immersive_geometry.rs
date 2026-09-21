@@ -25,14 +25,14 @@ use accesskit::Role;
 use vello::Scene;
 use vello::kurbo::Affine;
 
-use ui::State;
-use ui::headless::FrameHarness;
-use ui::icons::Icon;
-use ui::offscreen::OffscreenRenderer;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::video_player::PlayerSetting;
-use ui::widget::{CaptureMode, CaptureStudio, ScreenshotMarkup, VideoPlayer, Widget};
+use tilo_ui::State;
+use tilo_ui::headless::FrameHarness;
+use tilo_ui::icons::Icon;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::video_player::PlayerSetting;
+use tilo_ui::widget::{CaptureMode, CaptureStudio, ScreenshotMarkup, VideoPlayer, Widget};
 
 /// HIG §9.6: minimum pointer target.
 const MIN_TARGET: f64 = 32.0;
@@ -62,14 +62,16 @@ fn capture_rgba(w: u32, h: u32) -> Arc<[u8]> {
 }
 
 #[test]
-fn video_player_controls_are_reachable_targets_on_one_centre_line() {
+fn video_player_controls_are_reachable_targets_on_their_control_rows() {
     let dir = out_dir();
     for (theme_name, theme, viewport, min_controls) in [
         ("dark", Theme::dark(), (960_u32, 540_u32), 7_usize),
         ("light", Theme::light(), (960, 540), 7),
         // 2× type through the owned-palette convention (the theme carries
         // the scale): the time label yields before any control does.
-        ("dark-2x", Theme::dark().with_text_scale(2.0), (960, 540), 7),
+        // Large text puts every setting under the gear, so the promoted
+        // setting no longer appears as a separate seventh bar target.
+        ("dark-2x", Theme::dark().with_text_scale(2.0), (960, 540), 6),
         // Narrow and 2×: the setting icons fold into the gear and the label
         // goes entirely, but every control that remains is still a target.
         (
@@ -86,6 +88,7 @@ fn video_player_controls_are_reachable_targets_on_one_centre_line() {
         engine.open(media::Source::Remote {
             url: "https://x/v.mp4".into(),
         });
+        let large_text = theme.text_scale > 1.25;
         let mut player = VideoPlayer::new().with_engine(engine);
         player.set_setting(PlayerSetting::toggle(
             "captions",
@@ -117,17 +120,18 @@ fn video_player_controls_are_reachable_targets_on_one_centre_line() {
                     .map(|b| (node.label().unwrap_or_default().to_string(), b))
             })
             .collect();
-        // Play/pause, seek, mute, volume, the promoted setting, the gear and
-        // fullscreen: the bar's whole control set, every one observed.
+        // Play/pause, seek, mute, volume, the gear, fullscreen, and at 1x the
+        // promoted setting: the bar's whole visible control set is observed.
         assert!(
             controls.len() >= min_controls,
             "{theme_name}: expected at least {min_controls} of the bar's controls in the \
              accessibility tree, got {controls:?}"
         );
-        let mid_y = {
-            let (_, first) = &controls[0];
-            (first.y0 + first.y1) / 2.0
-        };
+        let (_, first_bar_control) = controls
+            .iter()
+            .find(|(name, _)| name != "Playback position")
+            .expect("the bar retains at least one transport control");
+        let mid_y = (first_bar_control.y0 + first_bar_control.y1) / 2.0;
         for (name, b) in &controls {
             let (w, h) = (b.x1 - b.x0, b.y1 - b.y0);
             assert!(
@@ -135,6 +139,13 @@ fn video_player_controls_are_reachable_targets_on_one_centre_line() {
                 "{theme_name}: {name} bounds {b:?} are under the {MIN_TARGET}px minimum target"
             );
             let cy = (b.y0 + b.y1) / 2.0;
+            if large_text && name == "Playback position" {
+                assert!(
+                    cy < mid_y,
+                    "{theme_name}: the large-text timeline centre {cy} must sit above the bar row {mid_y}"
+                );
+                continue;
+            }
             assert!(
                 (cy - mid_y).abs() < 1e-6,
                 "{theme_name}: {name} centre {cy} is off the shared centre line {mid_y}"
@@ -149,7 +160,7 @@ fn video_player_controls_are_reachable_targets_on_one_centre_line() {
 /// band-bound tag can be seen, not only asserted.
 #[test]
 fn presence_pills_and_edge_tags_render_at_one_and_two_x() {
-    use ui::presence::{PeerCursor, draw_peer_presence};
+    use tilo_ui::presence::{PeerCursor, draw_peer_presence};
     use vello::peniko::Color;
     let dir = out_dir();
     let theme = Theme::dark();

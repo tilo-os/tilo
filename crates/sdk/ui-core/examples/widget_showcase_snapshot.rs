@@ -12,16 +12,16 @@ use std::sync::Arc;
 use automerge::AutoCommit;
 use chrono::NaiveDate;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use ui::i18n::I18nManager;
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::popover_widget::PopoverSide;
-use ui::widget::toggle_group::Segment;
-use ui::widget::toolbar::Orientation as ToolbarOrientation;
-use ui::widget::tree_view::TreeNode;
-use ui::widget::{
+use tilo_ui::i18n::I18nManager;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::popover_widget::PopoverSide;
+use tilo_ui::widget::toggle_group::Segment;
+use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
+use tilo_ui::widget::tree_view::TreeNode;
+use tilo_ui::widget::{
     Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ModalDialog, PopoverWidget,
     ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar,
     TreeView, Widget,
@@ -61,7 +61,7 @@ impl Widget for LabelTile {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // taffy 0.10's `new_leaf` always inserts and returns `Ok` for a
-        // fresh tree; see `ui::widget::TaffyTreeExt`'s doc comment (not
+        // fresh tree; see `tilo_ui::widget::TaffyTreeExt`'s doc comment (not
         // usable here — it's `pub(crate)` and this is an example binary).
         #[allow(
             clippy::unwrap_used,
@@ -275,12 +275,14 @@ fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
                 .push(caption("row_basics"))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(ui::widget::Button::new("btn", "btn_save", None)))
-                        .push(Box::new(ui::widget::Toggle::new("tog", "toggle_1")))
-                        .push(Box::new(ui::widget::Checkbox::new("chk", "check_1")))
-                        .push(Box::new(ui::widget::Slider::new("sld", "slider_1")))
+                        .push(Box::new(tilo_ui::widget::Button::new(
+                            "btn", "btn_save", None,
+                        )))
+                        .push(Box::new(tilo_ui::widget::Toggle::new("tog", "toggle_1")))
+                        .push(Box::new(tilo_ui::widget::Checkbox::new("chk", "check_1")))
+                        .push(Box::new(tilo_ui::widget::Slider::new("sld", "slider_1")))
                         .push(Box::new(
-                            ui::widget::TextInput::new(vec![])
+                            tilo_ui::widget::TextInput::new(vec![])
                                 .with_id("txt")
                                 .with_on_change_path("text_1"),
                         )),

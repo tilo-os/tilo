@@ -1,7 +1,7 @@
 //! Explicit owners use only fresh per-test roots; no launch environment or user state.
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc};
-use ui::record::{
+use tilo_ui::record::{
     self, RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOpenOutcome, RecordOwners,
     RecordSaveStatus, RecordStore,
 };
