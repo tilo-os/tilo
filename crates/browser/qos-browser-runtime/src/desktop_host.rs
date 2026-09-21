@@ -358,6 +358,8 @@ struct LocalView {
     active: WorkspaceId,
     strips: HashMap<WorkspaceId, StripId>,
     groups: HashMap<StripId, GroupId>,
+    #[serde(default)]
+    group_order: HashMap<StripId, Vec<GroupId>>,
     tabs: Vec<(GroupId, TabId, WindowWidth, bool)>,
 }
 impl LocalView {
@@ -366,6 +368,17 @@ impl LocalView {
             active: tree.active,
             strips: tree.active_strip.clone(),
             groups: tree.active_group.clone(),
+            group_order: tree
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .map(|strip| {
+                    (
+                        strip.id,
+                        strip.window_groups.iter().map(|group| group.id).collect(),
+                    )
+                })
+                .collect(),
             tabs: tree
                 .workspaces
                 .iter()
@@ -394,6 +407,35 @@ impl LocalView {
                     .filter(|id| s.window_groups.iter().any(|g| g.id == **id))
                 {
                     tree.active_group.insert(s.id, *id);
+                } else if let Some(closed) = self.groups.get(&s.id)
+                    && !tree
+                        .active_group
+                        .get(&s.id)
+                        .is_some_and(|id| s.window_groups.iter().any(|group| group.id == *id))
+                {
+                    // An admitted close removes the local selection along
+                    // with its group. Continue through the group order that
+                    // was visible before that patch: right first, then left.
+                    // Older saved views did not record this order, but their
+                    // tab rows still enumerate groups in the same order.
+                    let mut order = self.group_order.get(&s.id).cloned().unwrap_or_default();
+                    if order.is_empty() {
+                        for (group, ..) in &self.tabs {
+                            if !order.contains(group) {
+                                order.push(*group);
+                            }
+                        }
+                    }
+                    tree.active_group.remove(&s.id);
+                    if let Some(index) = order.iter().position(|group| group == closed) {
+                        let successor = order[index + 1..]
+                            .iter()
+                            .chain(order[..index].iter().rev())
+                            .find(|id| s.window_groups.iter().any(|group| group.id == **id));
+                        if let Some(successor) = successor {
+                            tree.active_group.insert(s.id, *successor);
+                        }
+                    }
                 }
                 for g in &mut s.window_groups {
                     if let Some((_, tab, width, maximized)) =
@@ -894,7 +936,7 @@ impl DesktopRoot {
                 .iter()
                 .map(|(app, definition)| json!({"id":app,"label":definition.title}))
                 .collect::<Vec<_>>();
-            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
+            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,"closeInactive":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
             if *snapshot != next {
                 *snapshot = next;
                 changed = true;
@@ -936,7 +978,7 @@ impl DesktopRoot {
             changed = true;
         }
         let available = self.activity_snapshot().is_ok();
-        let capabilities = json!({"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,
+        let capabilities = json!({"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,"closeInactive":true,
             "workspaceSelect":!self.handle.tree.borrow().workspaces.is_empty(),"workspaceHistory":available,"workspaceReplay":available});
         let activity = self.activity.as_ref().filter(|_| available).map(|activity| json!({
             "workspace":activity.workspace.0.to_string(), "view":activity.pane.view(),
@@ -973,10 +1015,29 @@ impl DesktopRoot {
             return Err("Stale desktop surface".into());
         }
         if let Command::Close { route, .. } = &command {
-            if self.active_route().as_ref() != Some(route) {
-                return Err("Application is no longer active".into());
+            let (workspace_id, strip, group, tab) = route.ids()?;
+            let tree = self.handle.tree.borrow();
+            let workspace = tree
+                .active_workspace()
+                .filter(|workspace| workspace.id == workspace_id)
+                .ok_or("Workspace is no longer active")?;
+            let group_exists = workspace
+                .strips
+                .iter()
+                .find(|candidate| candidate.id == strip)
+                .and_then(|candidate| {
+                    candidate
+                        .window_groups
+                        .iter()
+                        .find(|candidate| candidate.id == group)
+                })
+                .is_some_and(|candidate| {
+                    candidate.tabs.iter().any(|candidate| candidate.id == tab)
+                });
+            if !group_exists {
+                return Err("Application is no longer available".into());
             }
-            let (_, strip, group, tab) = route.ids()?;
+            drop(tree);
             let location = qos_desktop::session_commands::TabLocation {
                 strip: strip.0,
                 group,
@@ -985,7 +1046,7 @@ impl DesktopRoot {
             if let Some((invocation, _)) = self.handle.session_requests.borrow().iter().find(|(_, bound)| matches!(&bound.command, qos_desktop::session_commands::DesktopCommand::CloseTab { location: pending } if pending == &location)) {
                 return Ok((false, Some(invocation.to_string())));
             }
-            let resources = self.resources(doc);
+            let resources = self.resources_for_close(doc, Some(location));
             let address = tilo_actions::ActionAddress::new("desktop:requests", "close-tab");
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .map_err(|error| error.to_string())?;
@@ -1312,32 +1373,11 @@ impl DesktopRoot {
         changed |= self.dirty;
         changed
     }
-}
-
-impl Widget for DesktopRoot {
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = self.resources(doc);
-        let mut views = tilo_actions::Resource::new(
-            activity::view_actions::RESOURCE_ID,
-            "desktop",
-            "Workspace views",
-        );
-        for descriptor in activity::view_actions::workspace_view_descriptors(
-            &self.handle.tree.borrow(),
-            self.activity_snapshot().is_ok(),
-        ) {
-            views = views.with_action(descriptor.action());
-        }
-        resources.push(views);
-        resources
-    }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "qos.desktop.request",
-            activity::view_actions::OPERATION_TYPE,
-        ]
-    }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources_for_close(
+        &self,
+        _doc: &AutoCommit,
+        close_target: Option<qos_desktop::session_commands::TabLocation>,
+    ) -> Vec<tilo_actions::Resource> {
         use qos_desktop::session_commands::*;
         use tilo_actions::{
             ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
@@ -1365,6 +1405,13 @@ impl Widget for DesktopRoot {
                 actions.push(action);
             }
         };
+        if let Some(location) = close_target {
+            add(
+                "close-tab".into(),
+                "Close application".into(),
+                DesktopCommand::CloseTab { location },
+            );
+        }
         let strip = tree
             .active_strip
             .get(&workspace.id)
@@ -1397,11 +1444,13 @@ impl Widget for DesktopRoot {
                         group: group.id,
                         tab: tab.id,
                     };
-                    add(
-                        "close-tab".into(),
-                        format!("Close {}", tab.title),
-                        DesktopCommand::CloseTab { location },
-                    );
+                    if close_target.is_none() {
+                        add(
+                            "close-tab".into(),
+                            format!("Close {}", tab.title),
+                            DesktopCommand::CloseTab { location },
+                        );
+                    }
                     let index = group
                         .tabs
                         .iter()
@@ -1602,6 +1651,35 @@ impl Widget for DesktopRoot {
         }
         vec![resource]
     }
+}
+
+impl Widget for DesktopRoot {
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = self.resources(doc);
+        let mut views = tilo_actions::Resource::new(
+            activity::view_actions::RESOURCE_ID,
+            "desktop",
+            "Workspace views",
+        );
+        for descriptor in activity::view_actions::workspace_view_descriptors(
+            &self.handle.tree.borrow(),
+            self.activity_snapshot().is_ok(),
+        ) {
+            views = views.with_action(descriptor.action());
+        }
+        resources.push(views);
+        resources
+    }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "qos.desktop.request",
+            activity::view_actions::OPERATION_TYPE,
+        ]
+    }
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.resources_for_close(doc, None)
+    }
+
     fn invoke_resource_operation_v2(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -2726,6 +2804,206 @@ mod tests {
         fixture_with_topology(|_| {})
     }
 
+    #[test]
+    fn local_view_recovery_selects_the_right_group_after_the_active_group_closes() {
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs
+                .into_iter()
+                .enumerate()
+                .map(|(index, tab)| WindowGroup {
+                    id: 3 + index as u64,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                })
+                .collect();
+            tree.active_group.insert(strip.id, 4);
+        });
+        handle
+            .tree
+            .borrow_mut()
+            .active_strip
+            .insert(WorkspaceId(1), StripId(2));
+        let before = LocalView::from_tree(&handle.tree.borrow());
+        let mut admitted = handle.tree.borrow().clone();
+        let location = {
+            let strip = &admitted.workspaces[0].strips[0];
+            qos_desktop::session_commands::TabLocation {
+                strip: strip.id.0,
+                group: strip.window_groups[1].id,
+                tab: strip.window_groups[1].tabs[0].id,
+            }
+        };
+        qos_desktop::session_commands::apply_command(
+            &mut admitted.workspaces[0],
+            &qos_desktop::session_commands::DesktopCommand::CloseTab { location },
+            &mut || Ok(0),
+            &mut |_, _| panic!("close cannot create a record"),
+        )
+        .unwrap();
+        admitted.active_group.clear();
+
+        before.apply(&mut admitted);
+
+        assert_eq!(
+            admitted.active_group.get(&StripId(2)),
+            Some(&5),
+            "closing the middle visible window selects its immediate right neighbour"
+        );
+        drop(root);
+    }
+
+    #[test]
+    fn local_view_recovery_follows_visible_group_order_for_close_and_keeps_inactive_selection() {
+        for (active_index, close_index, expected_group) in [
+            (0, 0, Some(4)),
+            (1, 1, Some(5)),
+            (3, 3, Some(5)),
+            (2, 0, Some(5)),
+            (1, 3, Some(4)),
+        ] {
+            let (_root, handle, _) = fixture_with_topology(|tree| {
+                let strip = &mut tree.workspaces[0].strips[0];
+                let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+                strip.window_groups = tabs
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, tab)| WindowGroup {
+                        id: 3 + index as u64,
+                        active_tab: tab.id,
+                        tabs: vec![tab],
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                    })
+                    .collect();
+                tree.active_group.insert(strip.id, 3 + active_index as u64);
+            });
+            handle
+                .tree
+                .borrow_mut()
+                .active_strip
+                .insert(WorkspaceId(1), StripId(2));
+            let before = LocalView::from_tree(&handle.tree.borrow());
+            let mut admitted = handle.tree.borrow().clone();
+            let location = {
+                let strip = &admitted.workspaces[0].strips[0];
+                qos_desktop::session_commands::TabLocation {
+                    strip: strip.id.0,
+                    group: strip.window_groups[close_index].id,
+                    tab: strip.window_groups[close_index].tabs[0].id,
+                }
+            };
+            qos_desktop::session_commands::apply_command(
+                &mut admitted.workspaces[0],
+                &qos_desktop::session_commands::DesktopCommand::CloseTab { location },
+                &mut || Ok(0),
+                &mut |_, _| panic!("close cannot create a record"),
+            )
+            .unwrap();
+            admitted.active_group.clear();
+
+            before.apply(&mut admitted);
+
+            assert_eq!(
+                admitted.active_group.get(&StripId(2)),
+                expected_group.as_ref(),
+                "active group {active_index}, close {close_index}"
+            );
+            assert_eq!(
+                active_route(&admitted).map(|route| route.group),
+                expected_group.map(|group| group.to_string()),
+                "the recovered route must select the same visible neighbour"
+            );
+        }
+    }
+
+    #[test]
+    fn local_view_recovery_leaves_an_empty_workspace_without_an_active_group() {
+        let (_root, handle, _) = fixture_with_topology(|tree| {
+            let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+            group.tabs.truncate(1);
+            group.active_tab = group.tabs[0].id;
+        });
+        handle
+            .tree
+            .borrow_mut()
+            .active_strip
+            .insert(WorkspaceId(1), StripId(2));
+        let before = LocalView::from_tree(&handle.tree.borrow());
+        let mut admitted = handle.tree.borrow().clone();
+        let location = {
+            let strip = &admitted.workspaces[0].strips[0];
+            qos_desktop::session_commands::TabLocation {
+                strip: strip.id.0,
+                group: strip.window_groups[0].id,
+                tab: strip.window_groups[0].tabs[0].id,
+            }
+        };
+        qos_desktop::session_commands::apply_command(
+            &mut admitted.workspaces[0],
+            &qos_desktop::session_commands::DesktopCommand::CloseTab { location },
+            &mut || Ok(0),
+            &mut |_, _| panic!("close cannot create a record"),
+        )
+        .unwrap();
+        admitted.active_group.clear();
+
+        before.apply(&mut admitted);
+
+        assert!(admitted.active_group.is_empty());
+        assert!(active_route(&admitted).is_none());
+    }
+
+    #[test]
+    fn local_view_recovery_keeps_a_valid_admitted_group_selection() {
+        let (_root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs
+                .into_iter()
+                .enumerate()
+                .map(|(index, tab)| WindowGroup {
+                    id: 3 + index as u64,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                })
+                .collect();
+            tree.active_group.insert(strip.id, 4);
+        });
+        handle
+            .tree
+            .borrow_mut()
+            .active_strip
+            .insert(WorkspaceId(1), StripId(2));
+        let before = LocalView::from_tree(&handle.tree.borrow());
+        let mut admitted = handle.tree.borrow().clone();
+        let location = {
+            let strip = &admitted.workspaces[0].strips[0];
+            qos_desktop::session_commands::TabLocation {
+                strip: strip.id.0,
+                group: strip.window_groups[1].id,
+                tab: strip.window_groups[1].tabs[0].id,
+            }
+        };
+        qos_desktop::session_commands::apply_command(
+            &mut admitted.workspaces[0],
+            &qos_desktop::session_commands::DesktopCommand::CloseTab { location },
+            &mut || Ok(0),
+            &mut |_, _| panic!("close cannot create a record"),
+        )
+        .unwrap();
+        admitted.active_group.insert(StripId(2), 3);
+
+        before.apply(&mut admitted);
+
+        assert_eq!(admitted.active_group.get(&StripId(2)), Some(&3));
+    }
+
     fn assert_external_frame_idle(frame: &mut ui::headless::FrameHarness, context: &str) {
         let output = frame.frame_output();
         assert!(
@@ -3575,6 +3853,140 @@ mod tests {
             serde_json::to_string(&*handle.tree.borrow()).unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn external_close_of_an_inactive_route_queues_its_exact_tab_without_selecting_it() {
+        use crate::desktop_navigation::{Command, Route};
+        use qos_desktop::session_commands::DesktopCommand;
+        let (mut root, handle, _) = fixture_with_topology(|tree| {
+            let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+            let tab = group.tabs.remove(1);
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .push(WindowGroup {
+                    id: 4,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            tree.active_group.insert(StripId(2), 3);
+        });
+        let before = root.active_route().expect("active route");
+        let target = Route {
+            workspace: "1".into(),
+            strip: "2".into(),
+            group: "4".into(),
+            tab: handle.tree.borrow().workspaces[0].strips[0].window_groups[1].tabs[0]
+                .id
+                .to_string(),
+        };
+
+        let invocation = root
+            .navigate(
+                Command::Close {
+                    generation: handle.generation.clone(),
+                    route: target.clone(),
+                },
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .expect("inactive close is accepted")
+            .1
+            .expect("close invocation");
+
+        assert_eq!(root.active_route(), Some(before));
+        let requests = handle.session_requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0.to_string(), invocation);
+        assert!(matches!(
+            &requests[0].1.command,
+            DesktopCommand::CloseTab { location }
+                if location.strip == 2 && location.group == 4 && location.tab.to_string() == target.tab
+        ));
+        drop(requests);
+
+        assert_eq!(
+            root.navigate(
+                Command::Close {
+                    generation: handle.generation.clone(),
+                    route: target.clone(),
+                },
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .expect("duplicate inactive close is accepted")
+            .1
+            .as_deref(),
+            Some(invocation.as_str())
+        );
+        assert_eq!(handle.session_requests.borrow().len(), 1);
+
+        let mut foreign = target;
+        foreign.workspace = "2".into();
+        assert!(
+            root.navigate(
+                Command::Close {
+                    generation: handle.generation.clone(),
+                    route: foreign,
+                },
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert_eq!(handle.session_requests.borrow().len(), 1);
+    }
+    #[test]
+    fn external_close_uses_its_target_when_the_active_strip_is_empty() {
+        use crate::desktop_navigation::{Command, Route};
+        use qos_desktop::session_commands::DesktopCommand;
+        let (mut root, handle, _) = fixture_with_topology(|tree| {
+            let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+            let tab = group.tabs.remove(1);
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .push(WindowGroup {
+                    id: 4,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            tree.workspaces[0].strips.push(Strip {
+                id: StripId(5),
+                name: "Empty".into(),
+                window_groups: vec![],
+            });
+            tree.active_strip.insert(WorkspaceId(1), StripId(5));
+        });
+        let target = Route {
+            workspace: "1".into(),
+            strip: "2".into(),
+            group: "4".into(),
+            tab: handle.tree.borrow().workspaces[0].strips[0].window_groups[1].tabs[0]
+                .id
+                .to_string(),
+        };
+        assert_eq!(root.active_route(), None);
+
+        root.navigate(
+            Command::Close {
+                generation: handle.generation.clone(),
+                route: target.clone(),
+            },
+            &AutoCommit::new(),
+            &automerge::ROOT,
+        )
+        .expect("target close is available without an active group");
+
+        assert_eq!(root.active_route(), None);
+        assert!(matches!(
+            &handle.session_requests.borrow()[0].1.command,
+            DesktopCommand::CloseTab { location }
+                if location.strip == 2 && location.group == 4 && location.tab.to_string() == target.tab
+        ));
     }
     #[test]
     fn workspace_navigation_document_history_interlock_preserves_exact_owner() {

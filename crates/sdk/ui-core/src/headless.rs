@@ -482,6 +482,7 @@ pub struct FrameHarness {
     viewport: (u32, u32),
     last_layout_viewport: Option<(u32, u32)>,
     input_scale: f64,
+    host_pointer_position: Option<winit::dpi::PhysicalPosition<f64>>,
     /// Records this driver has open, when the app under test uses them —
     /// without this a record-aware app would be driven against its room
     /// index instead of the record it checked out, testing something the
@@ -1094,6 +1095,7 @@ impl FrameHarness {
             viewport,
             last_layout_viewport: None,
             input_scale: 1.0,
+            host_pointer_position: None,
             focused: None,
             focus_trap_active: false,
             active_input_instance: None,

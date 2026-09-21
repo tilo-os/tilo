@@ -99,6 +99,183 @@ fn global_search_owns_ime_and_restores_document_focus() {
     );
 }
 #[test]
+fn outside_press_dismisses_search_without_activating_a_result() {
+    for scale in [1.0, 2.0] {
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            let mut f = frame();
+            f.set_input_scale(scale).unwrap();
+            f.perform_semantic_named("document", None, &crate::a11y::Action::Focus)
+                .unwrap();
+            f.replace_global_search_data(data());
+            f.open_global_search_all("Trip").unwrap();
+            let before = f.state.doc.get_heads();
+            f.send_host_event(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(2.0 * scale, 2.0 * scale),
+            });
+            assert_eq!(
+                f.global_search_query(),
+                Some("Trip"),
+                "hover does not dismiss"
+            );
+            f.send_host_event(&WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button,
+            });
+            assert_eq!(f.global_search_query(), None);
+            assert!(f.take_global_search_intent().is_none());
+            assert_eq!(f.state.doc.get_heads(), before);
+            assert!(
+                f.inspection()
+                    .keyboard_focus_owner
+                    .unwrap()
+                    .contains("TextInput")
+            );
+        }
+    }
+}
+
+#[test]
+fn stationary_pointer_press_uses_position_seen_before_keyboard_open() {
+    for scale in [1.0, 2.0] {
+        for (position, inside) in [
+            (Point::new(2.0, 2.0), false),
+            (Point::new(400.0, 26.0), true),
+        ] {
+            let mut f = frame();
+            f.set_input_scale(scale).unwrap();
+            f.send_host_event(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(position.x * scale, position.y * scale),
+            });
+            f.replace_global_search_data(data());
+            f.open_global_search_all("Trip").unwrap();
+            assert_eq!(
+                f.system_search
+                    .overlay
+                    .as_ref()
+                    .unwrap()
+                    .get_rect()
+                    .contains(position),
+                inside,
+                "fixture position must exercise the intended side of the search card"
+            );
+
+            f.send_host_event(&WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            });
+            assert_eq!(
+                f.global_search_query().is_some(),
+                inside,
+                "the press must use the last pointer position without a post-open move"
+            );
+        }
+    }
+}
+
+#[test]
+fn touch_completion_does_not_replace_the_stationary_mouse_position() {
+    let mut f = frame();
+    let mouse = Point::new(400.0, 26.0);
+    f.send_host_event(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(mouse.x, mouse.y),
+    });
+    for phase in [
+        winit::event::TouchPhase::Started,
+        winit::event::TouchPhase::Ended,
+    ] {
+        f.send_host_event(&WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(100.0, 100.0),
+            force: None,
+            id: 7,
+        }));
+    }
+
+    f.replace_global_search_data(data());
+    f.open_global_search_all("Trip").unwrap();
+    assert!(
+        f.system_search
+            .overlay
+            .as_ref()
+            .unwrap()
+            .get_rect()
+            .contains(mouse)
+    );
+    f.send_host_event(&WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    });
+    assert_eq!(f.global_search_query(), Some("Trip"));
+}
+
+#[test]
+fn touch_hover_clear_does_not_replace_a_stationary_mouse_press() {
+    let mut f = frame();
+    let mouse = Point::new(400.0, 26.0);
+    f.send_host_event(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(mouse.x, mouse.y),
+    });
+    f.replace_global_search_data(data());
+    f.open_global_search_all("Trip").unwrap();
+    let rect = f.system_search.overlay.as_ref().unwrap().get_rect();
+    assert!(rect.contains(mouse));
+    let touch = Point::new(rect.x0 + 2.0, rect.y0 + 2.0);
+    for phase in [
+        winit::event::TouchPhase::Started,
+        winit::event::TouchPhase::Ended,
+    ] {
+        f.send_host_event(&WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(touch.x, touch.y),
+            force: None,
+            id: 8,
+        }));
+    }
+    assert_eq!(f.global_search_query(), Some("Trip"));
+
+    f.send_host_event(&WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    });
+    assert_eq!(f.global_search_query(), Some("Trip"));
+}
+
+#[test]
+fn presses_inside_search_header_and_footer_keep_search_open() {
+    let mut f = frame();
+    f.set_input_scale(2.0).unwrap();
+    f.replace_global_search_data(data());
+    f.open_global_search_all("Trip").unwrap();
+    let rect = f.system_search.overlay.as_ref().unwrap().get_rect();
+    for position in [
+        Point::new(rect.x0 + 2.0, rect.y0 + 2.0),
+        Point::new(rect.x0 + 2.0, rect.y1 - 2.0),
+    ] {
+        f.send_host_event(&WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(position.x * 2.0, position.y * 2.0),
+        });
+        f.send_host_event(&WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        assert_eq!(f.global_search_query(), Some("Trip"));
+        assert!(f.take_global_search_intent().is_none());
+    }
+}
+
+#[test]
 fn keyboard_semantic_and_scaled_pointer_produce_same_inert_target() {
     for mode in 0..3 {
         let mut f = frame();
@@ -661,7 +838,9 @@ fn search_captures_host_and_direct_pointer_before_history_observation() {
                 !history_captures(&f),
                 "background History received pointer (embedded={embedded}, direct={direct})"
             );
-            assert_eq!(f.global_search_query(), Some("Trip"));
+            assert_eq!(f.global_search_query(), None);
+            assert!(f.take_global_search_intent().is_none());
+            f.open_global_search_all("Trip").unwrap();
             let row = f
                 .system_search
                 .overlay
