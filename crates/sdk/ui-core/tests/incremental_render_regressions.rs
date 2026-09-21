@@ -31,15 +31,15 @@ use std::time::Duration;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use ui::Widget;
-use ui::i18n::I18nManager;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::toggle_group::Segment;
-use ui::widget::{
+use tilo_ui::Widget;
+use tilo_ui::i18n::I18nManager;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::permissions::PermissionContext;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::toggle_group::Segment;
+use tilo_ui::widget::{
     Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
     ToggleGroup,
 };
