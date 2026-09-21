@@ -30,7 +30,10 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::video_player::{PlayerSetting, PlayerSettingEvent};
-use ui::widget::{ActionEmitter, Button, ButtonFace, FloatingSurfaceProvider, VideoPlayer, Widget};
+use ui::widget::{
+    ActionEmitter, Button, ButtonFace, FloatingSurfaceProvider, FullscreenProvider, VideoPlayer,
+    Widget,
+};
 
 use crate::actions::PlayerOperation;
 use crate::collab::{CollabPlayback, Role};
@@ -2916,7 +2919,28 @@ impl FloatingSurfaceProvider for PlayerApp {
     }
 }
 
+impl FullscreenProvider for PlayerApp {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        FullscreenProvider::fullscreen_intent(&self.player)
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        FullscreenProvider::fullscreen_params(&self.player)
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        FullscreenProvider::on_fullscreen_changed(&mut self.player, active);
+    }
+}
+
 impl Widget for PlayerApp {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
     fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
         Some(self)
     }
@@ -3816,18 +3840,6 @@ impl Widget for PlayerApp {
         // A follower must keep syncing even with no local input so it applies
         // the host's incoming transport.
         self.collab.is_some()
-    }
-
-    fn fullscreen_intent(&self) -> Option<bool> {
-        self.player.fullscreen_intent()
-    }
-
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        self.player.fullscreen_params()
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        self.player.on_fullscreen_changed(active);
     }
 }
 
