@@ -249,9 +249,9 @@ jobs:
           esac
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio "$apt_qemu"
+            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio zstd "$apt_qemu"
           else
-            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm "$fedora_qemu"
+            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm zstd "$fedora_qemu"
           fi
 
       - name: Boot the packaged native kernel and verify module signatures
