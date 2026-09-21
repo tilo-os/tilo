@@ -832,99 +832,91 @@ impl RelayClient {
             // Keep the socket alive through the final queued Unsubscribe and
             // FIN even if the caller handed this client its only Endpoint.
             let _endpoint_keepalive = endpoint_keepalive;
-            let mut schedule = V2Schedule::default();
-            loop {
-                let event = if v2 {
-                    next_v2_event(
-                        &mut outbound_rx,
-                        &mut action_rx,
-                        &mut reader,
-                        &mut schedule,
-                        &inbound_tx,
-                    )
-                    .await
-                } else {
+            if v2 {
+                if run_v2_pump(
+                    &mut send,
+                    &mut reader,
+                    &mut outbound_rx,
+                    &mut action_rx,
+                    &inbound_tx,
+                    &action_inbound_tx,
+                )
+                .await
+                {
+                    let _ = send.finish();
+                    let _ =
+                        n0_future::time::timeout(std::time::Duration::from_secs(2), send.stopped())
+                            .await;
+                }
+            } else {
+                loop {
                     // Retain v1 scheduling and state-only behavior verbatim.
-                    tokio::select! {
+                    let event = tokio::select! {
                         biased;
                         state=outbound_rx.recv()=>ClientEvent::State(state),
                         inbound=reader.read_next()=>ClientEvent::Inbound(inbound),
-                    }
-                };
-                match event {
-                    ClientEvent::InboundStateFlushed(Ok(())) => {}
-                    ClientEvent::InboundStateFlushed(Err(())) => break,
-                    ClientEvent::State(Some(env)) => {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if crate::persistence::correlated_diagnostics()
-                            && let Envelope::Delta {
-                                workspace_id,
-                                authored_at_ns,
-                                ..
-                            } = &env
-                        {
-                            tracing::info!(
-                                phase = "client_delta_write",
-                                workspace_id,
-                                authored_at_ns
-                            );
-                        }
-                        let Ok(bytes) = crate::transport_v2::encode_state(&env, v2) else {
-                            break;
-                        };
-                        if send.write_all(&bytes).await.is_err() {
-                            break;
-                        }
-                    }
-                    ClientEvent::State(None) => {
-                        let _ = send.finish();
-                        let _ = n0_future::time::timeout(
-                            std::time::Duration::from_secs(2),
-                            send.stopped(),
-                        )
-                        .await;
-                        break;
-                    }
-                    ClientEvent::Action(Some(action)) => {
-                        let Ok(bytes) = crate::transport_v2::encode(&action) else {
-                            break;
-                        };
-                        if send.write_all(&bytes).await.is_err() {
-                            break;
-                        }
-                    }
-                    ClientEvent::Action(None) => break,
-                    ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(env)))) => {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if crate::persistence::correlated_diagnostics()
-                            && let Envelope::Delta {
-                                workspace_id,
-                                authored_at_ns,
-                                ..
-                            } = &env
-                        {
-                            tracing::info!(
-                                phase = "client_delta_read",
-                                workspace_id,
-                                authored_at_ns
-                            );
-                        }
-                        if v2 {
-                            if queue_inbound_state(&inbound_tx, &mut schedule, env).is_err() {
+                    };
+                    match event {
+                        ClientEvent::State(Some(env)) => {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if crate::persistence::correlated_diagnostics()
+                                && let Envelope::Delta {
+                                    workspace_id,
+                                    authored_at_ns,
+                                    ..
+                                } = &env
+                            {
+                                tracing::info!(
+                                    phase = "client_delta_write",
+                                    workspace_id,
+                                    authored_at_ns
+                                );
+                            }
+                            let Ok(bytes) = crate::transport_v2::encode_state(&env, false) else {
+                                break;
+                            };
+                            if send.write_all(&bytes).await.is_err() {
                                 break;
                             }
-                        } else if inbound_tx.send(env).await.is_err() {
+                        }
+                        ClientEvent::State(None) => {
+                            let _ = send.finish();
+                            let _ = n0_future::time::timeout(
+                                std::time::Duration::from_secs(2),
+                                send.stopped(),
+                            )
+                            .await;
                             break;
                         }
-                    }
-                    ClientEvent::Inbound(Ok(Some(action))) => {
-                        // Closing on bounded receiver overflow makes loss explicit;
-                        // the future journal owner can recover status on reconnect.
-                        if action_inbound_tx.try_send(action).is_err() {
-                            break;
+                        ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(env)))) => {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if crate::persistence::correlated_diagnostics()
+                                && let Envelope::Delta {
+                                    workspace_id,
+                                    authored_at_ns,
+                                    ..
+                                } = &env
+                            {
+                                tracing::info!(
+                                    phase = "client_delta_read",
+                                    workspace_id,
+                                    authored_at_ns
+                                );
+                            }
+                            if inbound_tx.send(env).await.is_err() {
+                                break;
+                            }
+                        }
+                        ClientEvent::Inbound(Ok(Some(action))) => {
+                            if action_inbound_tx.try_send(action).is_err() {
+                                break;
+                            }
+                        }
+                        ClientEvent::Inbound(Ok(None) | Err(_)) => break,
+                        ClientEvent::Action(_) => {
+                            unreachable!("v1 pump only selects state and inbound events")
                         }
                     }
-                    ClientEvent::Inbound(Ok(None) | Err(_)) => break,
                 }
             }
             pump_connection.close(0u32.into(), b"relay pump ended");
@@ -1075,44 +1067,209 @@ fn private_send_error<T>(error: tokio::sync::mpsc::error::TrySendError<T>) -> Cl
     }
 }
 
-/// Rotate the first ready lane after every event. Only capability activation
-/// waits for a finite prefix of already-queued state frames, keeping Subscribe
-/// before EnableActions without giving later state refills priority forever.
+/// Drive the v2 wire until either half ends. `true` requests a graceful send
+/// finish because the state producer closed; all other exits close the session.
+async fn run_v2_pump<R, W>(
+    send: &mut W,
+    reader: &mut SessionReader<R>,
+    states: &mut mpsc::Receiver<Envelope>,
+    actions: &mut mpsc::Receiver<EnvelopeV2>,
+    state_sink: &mpsc::Sender<Envelope>,
+    action_sink: &mpsc::Sender<EnvelopeV2>,
+) -> bool
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let writing = run_v2_writer(send, states, actions);
+    let reading = run_v2_reader(reader, state_sink, action_sink);
+    tokio::pin!(writing);
+    tokio::pin!(reading);
+    tokio::select! {
+        finish_send = &mut writing => finish_send,
+        () = &mut reading => false,
+    }
+}
+
+async fn run_v2_writer<W>(
+    send: &mut W,
+    states: &mut mpsc::Receiver<Envelope>,
+    actions: &mut mpsc::Receiver<EnvelopeV2>,
+) -> bool
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut schedule = V2WriteSchedule::default();
+    loop {
+        match next_v2_outbound_event(states, actions, &mut schedule).await {
+            ClientEvent::State(Some(env)) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if crate::persistence::correlated_diagnostics()
+                    && let Envelope::Delta {
+                        workspace_id,
+                        authored_at_ns,
+                        ..
+                    } = &env
+                {
+                    tracing::info!(phase = "client_delta_write", workspace_id, authored_at_ns);
+                }
+                let Ok(bytes) = crate::transport_v2::encode_state(&env, true) else {
+                    return false;
+                };
+                if tokio::io::AsyncWriteExt::write_all(send, &bytes)
+                    .await
+                    .is_err()
+                {
+                    return false;
+                }
+            }
+            ClientEvent::State(None) => return true,
+            ClientEvent::Action(Some(action)) => {
+                let Ok(bytes) = crate::transport_v2::encode(&action) else {
+                    return false;
+                };
+                if tokio::io::AsyncWriteExt::write_all(send, &bytes)
+                    .await
+                    .is_err()
+                {
+                    return false;
+                }
+            }
+            ClientEvent::Action(None) => return false,
+            ClientEvent::Inbound(_) => {
+                unreachable!("v2 writer only selects outbound events")
+            }
+        }
+    }
+}
+
+async fn run_v2_reader<R>(
+    reader: &mut SessionReader<R>,
+    state_sink: &mpsc::Sender<Envelope>,
+    action_sink: &mpsc::Sender<EnvelopeV2>,
+) where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut events_since_yield = 0usize;
+    loop {
+        cooperative_yield(&mut events_since_yield).await;
+        match reader.read_next().await {
+            Ok(Some(EnvelopeV2::State(env))) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if crate::persistence::correlated_diagnostics()
+                    && let Envelope::Delta {
+                        workspace_id,
+                        authored_at_ns,
+                        ..
+                    } = &env
+                {
+                    tracing::info!(phase = "client_delta_read", workspace_id, authored_at_ns);
+                }
+                // The bounded sink plus this one decoded frame is the complete
+                // inbound state allowance. Do not read the next wire frame
+                // until the application has accepted this exact frame.
+                if state_sink.send(env).await.is_err() {
+                    return;
+                }
+            }
+            Ok(Some(action)) => {
+                // Closing on bounded receiver overflow makes loss explicit;
+                // the future journal owner can recover status on reconnect.
+                if action_sink.try_send(action).is_err() {
+                    return;
+                }
+            }
+            Ok(None) | Err(_) => return,
+        }
+    }
+}
+
+async fn cooperative_yield(events_since_yield: &mut usize) {
+    use std::future::poll_fn;
+    use std::task::Poll;
+
+    if *events_since_yield == 32 {
+        *events_since_yield = 0;
+        let mut yielded = false;
+        poll_fn(|cx| {
+            if yielded {
+                Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+    *events_since_yield = events_since_yield.saturating_add(1);
+}
+
 #[derive(Default)]
-struct V2Schedule {
+struct V2WriteSchedule {
     next_lane: usize,
     events_since_yield: usize,
     pending_action: Option<EnvelopeV2>,
-    pending_inbound_state: Option<Envelope>,
     state_prefix: usize,
     actions_closed: bool,
 }
 
-fn queue_inbound_state(
-    sender: &mpsc::Sender<Envelope>,
-    schedule: &mut V2Schedule,
-    frame: Envelope,
-) -> Result<(), ()> {
-    // One decoded frame may wait beyond the application queue. The reader
-    // does not poll the wire again until this exact frame has been delivered.
-    if schedule.pending_inbound_state.is_some() {
-        return Err(());
-    }
-    match sender.try_send(frame) {
-        Ok(()) => Ok(()),
-        Err(mpsc::error::TrySendError::Full(frame)) => {
-            schedule.pending_inbound_state = Some(frame);
-            Ok(())
+async fn next_v2_outbound_event(
+    states: &mut mpsc::Receiver<Envelope>,
+    actions: &mut mpsc::Receiver<EnvelopeV2>,
+    schedule: &mut V2WriteSchedule,
+) -> ClientEvent {
+    use std::future::poll_fn;
+    use std::task::Poll;
+
+    cooperative_yield(&mut schedule.events_since_yield).await;
+    poll_fn(|cx| {
+        for offset in 0..2 {
+            let lane = (schedule.next_lane + offset) % 2;
+            match lane {
+                0 => {
+                    if let Poll::Ready(state) = poll_queued(states, cx) {
+                        schedule.state_prefix = schedule.state_prefix.saturating_sub(1);
+                        schedule.next_lane = 1;
+                        return Poll::Ready(ClientEvent::State(state));
+                    }
+                }
+                _ => {
+                    if schedule.pending_action.is_none() && !schedule.actions_closed {
+                        match poll_queued(actions, cx) {
+                            Poll::Ready(Some(action)) => {
+                                // Snapshot only the already-queued state prefix.
+                                // Later refills cannot extend this barrier.
+                                schedule.state_prefix =
+                                    if matches!(action, EnvelopeV2::EnableActions { .. }) {
+                                        states.len()
+                                    } else {
+                                        0
+                                    };
+                                schedule.pending_action = Some(action);
+                            }
+                            Poll::Ready(None) => schedule.actions_closed = true,
+                            Poll::Pending => {}
+                        }
+                    }
+                    if schedule.state_prefix == 0
+                        && let Some(action) = schedule.pending_action.take()
+                    {
+                        schedule.next_lane = 0;
+                        return Poll::Ready(ClientEvent::Action(Some(action)));
+                    }
+                }
+            }
         }
-        Err(mpsc::error::TrySendError::Closed(_)) => Err(()),
-    }
+        Poll::Pending
+    })
+    .await
 }
 
 enum ClientEvent {
     State(Option<Envelope>),
     Action(Option<EnvelopeV2>),
     Inbound(Result<Option<EnvelopeV2>, crate::transport::FrameError>),
-    InboundStateFlushed(Result<(), ()>),
 }
 
 // Poll buffered data before the receiver's cooperative-budget check. A Tokio
@@ -1130,104 +1287,371 @@ fn poll_queued<T>(
     }
 }
 
-async fn next_v2_event<R: tokio::io::AsyncRead + Unpin>(
-    states: &mut mpsc::Receiver<Envelope>,
-    actions: &mut mpsc::Receiver<EnvelopeV2>,
-    reader: &mut SessionReader<R>,
-    schedule: &mut V2Schedule,
-    state_sink: &mpsc::Sender<Envelope>,
-) -> ClientEvent {
-    use std::future::{Future, poll_fn};
-    use std::task::Poll;
-    // Lane rotation uses try_recv to defeat per-lane cooperative-budget bias.
-    // Bound the pump's own always-ready burst too, so the actual consumers of
-    // its bounded inbound queues get a chance to run on the same executor.
-    if schedule.events_since_yield == 32 {
-        schedule.events_since_yield = 0;
-        let mut yielded = false;
-        poll_fn(|cx| {
-            if yielded {
-                Poll::Ready(())
-            } else {
-                yielded = true;
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        })
-        .await;
-    }
-    schedule.events_since_yield = schedule.events_since_yield.saturating_add(1);
-    let inbound = reader.read_next();
-    tokio::pin!(inbound);
-    let capacity = state_sink.reserve();
-    tokio::pin!(capacity);
-    poll_fn(|cx| {
-        for offset in 0..3 {
-            let lane = (schedule.next_lane + offset) % 3;
-            match lane {
-                0 => {
-                    if let Poll::Ready(state) = poll_queued(states, cx) {
-                        schedule.state_prefix = schedule.state_prefix.saturating_sub(1);
-                        schedule.next_lane = 1;
-                        return Poll::Ready(ClientEvent::State(state));
-                    }
-                }
-                1 => {
-                    if schedule.pending_action.is_none() && !schedule.actions_closed {
-                        match poll_queued(actions, cx) {
-                            Poll::Ready(Some(action)) => {
-                                // This snapshots at most the bounded state queue
-                                // capacity. Later producer refills cannot extend it.
-                                schedule.state_prefix =
-                                    if matches!(action, EnvelopeV2::EnableActions { .. }) {
-                                        states.len()
-                                    } else {
-                                        0
-                                    };
-                                schedule.pending_action = Some(action);
-                            }
-                            Poll::Ready(None) => schedule.actions_closed = true,
-                            Poll::Pending => {}
-                        }
-                    }
-                    if schedule.state_prefix == 0 {
-                        if let Some(action) = schedule.pending_action.take() {
-                            schedule.next_lane = 2;
-                            return Poll::Ready(ClientEvent::Action(Some(action)));
-                        }
-                    }
-                }
-                _ => {
-                    if schedule.pending_inbound_state.is_some() {
-                        if let Poll::Ready(capacity) = capacity.as_mut().poll(cx) {
-                            let result = match capacity {
-                                Ok(permit) => match schedule.pending_inbound_state.take() {
-                                    Some(frame) => {
-                                        permit.send(frame);
-                                        Ok(())
-                                    }
-                                    None => Err(()),
-                                },
-                                Err(_) => Err(()),
-                            };
-                            schedule.next_lane = 0;
-                            return Poll::Ready(ClientEvent::InboundStateFlushed(result));
-                        }
-                    } else if let Poll::Ready(frame) = inbound.as_mut().poll(cx) {
-                        schedule.next_lane = 0;
-                        return Poll::Ready(ClientEvent::Inbound(frame));
-                    }
-                }
-            }
-        }
-        Poll::Pending
-    })
-    .await
-}
-
 #[cfg(test)]
 mod scheduling_tests {
     use super::*;
+
+    struct GatedWrite {
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+        release: tokio::sync::oneshot::Receiver<()>,
+        released: bool,
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl tokio::io::AsyncWrite for GatedWrite {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            use std::future::Future as _;
+            use std::task::Poll;
+
+            if let Some(started) = self.started.take() {
+                self.bytes.lock().unwrap().push(bytes[0]);
+                let _ = started.send(());
+                return Poll::Ready(Ok(1));
+            }
+            if !self.released {
+                match std::pin::Pin::new(&mut self.release).poll(cx) {
+                    Poll::Ready(Ok(())) => self.released = true,
+                    Poll::Ready(Err(_)) => {
+                        return Poll::Ready(Err(std::io::Error::other(
+                            "gated write release dropped",
+                        )));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            self.bytes.lock().unwrap().extend_from_slice(bytes);
+            Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    struct RefillingWrite {
+        states: mpsc::Sender<Envelope>,
+        expected_enable: Vec<u8>,
+        enable_seen: Option<tokio::sync::oneshot::Sender<()>>,
+        frames: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl tokio::io::AsyncWrite for RefillingWrite {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.frames.lock().unwrap().push(bytes.to_vec());
+            if bytes == self.expected_enable
+                && let Some(seen) = self.enable_seen.take()
+            {
+                let _ = seen.send(());
+            }
+            match self.states.try_send(Envelope::Ping) {
+                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    panic!("state producer closed while the writer was active")
+                }
+            }
+            std::task::Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    struct PendingRead {
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+        polls: Arc<std::sync::atomic::AtomicUsize>,
+        waker: Arc<Mutex<Option<std::task::Waker>>>,
+    }
+
+    impl tokio::io::AsyncRead for PendingRead {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            _buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.waker.lock().unwrap() = Some(cx.waker().clone());
+            if let Some(started) = self.started.take() {
+                let _ = started.send(());
+            }
+            std::task::Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn blocked_state_write_does_not_delay_inbound_private_response() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (state_tx, mut states) = mpsc::channel(256);
+        let (action_tx, mut actions) = mpsc::channel(32);
+        let (state_sink, _state_inbound) = mpsc::channel(256);
+        let (action_sink, mut action_inbound) = mpsc::channel(32);
+        state_tx.send(Envelope::Ping).await.unwrap();
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let writer = GatedWrite {
+            started: Some(started_tx),
+            release: release_rx,
+            released: false,
+            bytes: written.clone(),
+        };
+        let (mut relay_write, client_read) = tokio::io::duplex(4096);
+        let mut reader = SessionReader::new(client_read, true);
+        let pump = tokio::spawn(async move {
+            let mut writer = writer;
+            run_v2_pump(
+                &mut writer,
+                &mut reader,
+                &mut states,
+                &mut actions,
+                &state_sink,
+                &action_sink,
+            )
+            .await
+        });
+
+        started_rx.await.unwrap();
+        assert_eq!(written.lock().unwrap().len(), 1);
+        let response = EnvelopeV2::ActionsReady {
+            room: uuid::Uuid::from_u128(7),
+            capability: crate::transport_v2::ActionCapability::TransportOnly,
+        };
+        relay_write
+            .write_all(&crate::transport_v2::encode(&response).unwrap())
+            .await
+            .unwrap();
+        let observed =
+            tokio::time::timeout(std::time::Duration::from_secs(2), action_inbound.recv()).await;
+
+        let _ = release_tx.send(());
+        drop(state_tx);
+        drop(action_tx);
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(2), pump)
+            .await
+            .expect("released v2 pump did not finish")
+            .unwrap();
+        assert!(
+            finished,
+            "closed state producer must request a graceful FIN"
+        );
+        let bytes = written.lock().unwrap().clone();
+        let mut written_reader = SessionReader::new(std::io::Cursor::new(bytes), true);
+        assert_eq!(
+            written_reader.read_next().await.unwrap(),
+            Some(EnvelopeV2::State(Envelope::Ping))
+        );
+        assert_eq!(written_reader.read_next().await.unwrap(), None);
+        assert_eq!(
+            observed.expect("inbound private response stalled behind outbound state write"),
+            Some(response)
+        );
+    }
+
+    #[tokio::test]
+    async fn continuously_ready_writer_preserves_inbound_and_enable_prefix_progress() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (state_tx, mut states) = mpsc::channel(256);
+        let (action_tx, mut actions) = mpsc::channel(32);
+        let (state_sink, _state_inbound) = mpsc::channel(256);
+        let (action_sink, mut action_inbound) = mpsc::channel(32);
+        let room = Uuid::from_u128(9);
+        let workspace_id = crate::room_workspace_id(&room.to_string()).unwrap();
+        for _ in 0..255 {
+            state_tx.try_send(Envelope::Ping).unwrap();
+        }
+        state_tx
+            .try_send(Envelope::Subscribe { workspace_id })
+            .unwrap();
+        let enable = EnvelopeV2::EnableActions { room };
+        action_tx.try_send(enable.clone()).unwrap();
+
+        let (enable_seen_tx, enable_seen_rx) = tokio::sync::oneshot::channel();
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let writer = RefillingWrite {
+            states: state_tx,
+            expected_enable: crate::transport_v2::encode(&enable).unwrap(),
+            enable_seen: Some(enable_seen_tx),
+            frames: frames.clone(),
+        };
+        let (mut relay_write, client_read) = tokio::io::duplex(4096);
+        let mut reader = SessionReader::new(client_read, true);
+        let pump = tokio::spawn(async move {
+            let mut writer = writer;
+            run_v2_pump(
+                &mut writer,
+                &mut reader,
+                &mut states,
+                &mut actions,
+                &state_sink,
+                &action_sink,
+            )
+            .await
+        });
+
+        let response = EnvelopeV2::ActionsReady {
+            room,
+            capability: crate::transport_v2::ActionCapability::TransportOnly,
+        };
+        relay_write
+            .write_all(&crate::transport_v2::encode(&response).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), action_inbound.recv(),)
+                .await
+                .expect("continuously ready writer starved the inbound response"),
+            Some(response)
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), enable_seen_rx)
+            .await
+            .expect("continuous state refills extended the finite enable prefix")
+            .unwrap();
+
+        let encoded_subscribe =
+            crate::transport_v2::encode_state(&Envelope::Subscribe { workspace_id }, true).unwrap();
+        let encoded_enable = crate::transport_v2::encode(&enable).unwrap();
+        let frames = frames.lock().unwrap();
+        let subscribe_position = frames
+            .iter()
+            .position(|frame| frame == &encoded_subscribe)
+            .unwrap();
+        let enable_position = frames
+            .iter()
+            .position(|frame| frame == &encoded_enable)
+            .unwrap();
+        assert!(subscribe_position < enable_position);
+        drop(frames);
+
+        drop(relay_write);
+        assert!(
+            !tokio::time::timeout(std::time::Duration::from_secs(2), pump)
+                .await
+                .expect("reader EOF did not stop the shared pump")
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn reader_end_cancels_a_blocked_writer_without_detaching_it() {
+        let (state_tx, mut states) = mpsc::channel(256);
+        let (_action_tx, mut actions) = mpsc::channel(32);
+        let (state_sink, _state_inbound) = mpsc::channel(256);
+        let (action_sink, _action_inbound) = mpsc::channel(32);
+        state_tx.send(Envelope::Ping).await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let writer = GatedWrite {
+            started: Some(started_tx),
+            release: release_rx,
+            released: false,
+            bytes: Arc::new(Mutex::new(Vec::new())),
+        };
+        let (relay_write, client_read) = tokio::io::duplex(4096);
+        let mut reader = SessionReader::new(client_read, true);
+        let pump = tokio::spawn(async move {
+            let mut writer = writer;
+            run_v2_pump(
+                &mut writer,
+                &mut reader,
+                &mut states,
+                &mut actions,
+                &state_sink,
+                &action_sink,
+            )
+            .await
+        });
+
+        started_rx.await.unwrap();
+        drop(relay_write);
+        assert!(
+            !tokio::time::timeout(std::time::Duration::from_secs(2), pump)
+                .await
+                .expect("reader EOF did not stop the shared pump")
+                .unwrap()
+        );
+        assert!(
+            release_tx.send(()).is_err(),
+            "writer future survived after the shared pump returned"
+        );
+    }
+
+    #[tokio::test]
+    async fn writer_end_cancels_a_blocked_reader_without_detaching_it() {
+        let (state_tx, mut states) = mpsc::channel(256);
+        let (_action_tx, mut actions) = mpsc::channel(32);
+        let (state_sink, _state_inbound) = mpsc::channel(256);
+        let (action_sink, _action_inbound) = mpsc::channel(32);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let waker = Arc::new(Mutex::new(None));
+        let reader = PendingRead {
+            started: Some(started_tx),
+            polls: polls.clone(),
+            waker: waker.clone(),
+        };
+        let pump = tokio::spawn(async move {
+            let mut reader = SessionReader::new(reader, true);
+            let mut writer = tokio::io::sink();
+            run_v2_pump(
+                &mut writer,
+                &mut reader,
+                &mut states,
+                &mut actions,
+                &state_sink,
+                &action_sink,
+            )
+            .await
+        });
+
+        started_rx.await.unwrap();
+        drop(state_tx);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), pump)
+                .await
+                .expect("closed state producer did not stop the shared pump")
+                .unwrap()
+        );
+        let polls_after_return = polls.load(std::sync::atomic::Ordering::SeqCst);
+        waker.lock().unwrap().take().unwrap().wake();
+        tokio::task::yield_now().await;
+        assert_eq!(
+            polls.load(std::sync::atomic::Ordering::SeqCst),
+            polls_after_return,
+            "reader future was still scheduled after the shared pump returned"
+        );
+    }
+
     #[test]
     fn only_tls_no_application_protocol_allows_fallback() {
         use iroh::endpoint::{ConnectError, ConnectionError, TransportError, TransportErrorCode};
@@ -1279,133 +1703,81 @@ mod scheduling_tests {
         ));
     }
 
-    #[tokio::test]
-    async fn full_state_consumer_retains_one_frame_without_disconnect() {
-        let (sender, _receiver) = mpsc::channel(256);
-        for _ in 0..256 {
-            sender.try_send(Envelope::Pong).unwrap();
+    struct CountingRead {
+        inner: std::io::Cursor<Vec<u8>>,
+        count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl tokio::io::AsyncRead for CountingRead {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let before = buf.filled().len();
+            let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+            if result.is_ready() {
+                self.count.fetch_add(
+                    buf.filled().len() - before,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+            }
+            result
         }
-        let mut schedule = V2Schedule::default();
-        assert!(
-            queue_inbound_state(&sender, &mut schedule, Envelope::Ping).is_ok(),
-            "healthy state saturation disconnected instead of preserving one pending frame"
-        );
     }
 
     #[tokio::test]
-    async fn pending_state_backpressure_is_bounded_cancellation_safe_and_resumes_in_order() {
-        use std::future::{Future, poll_fn};
-        use std::task::Poll;
-        let (state_tx, mut states) = mpsc::channel(256);
-        let (action_tx, mut actions) = mpsc::channel(32);
-        let (incoming, mut sink) = mpsc::channel(256);
+    async fn full_state_consumer_holds_one_decoded_frame_and_resumes_in_order() {
         let frame = |id| Envelope::Ready {
             workspace_id: id,
             pending_deltas: 0,
         };
+        let first = crate::transport_v2::encode(&EnvelopeV2::State(frame(256))).unwrap();
+        let second = crate::transport_v2::encode(&EnvelopeV2::State(frame(257))).unwrap();
+        let first_len = first.len();
+        let wire = [first, second].concat();
+        let bytes_read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reader = CountingRead {
+            inner: std::io::Cursor::new(wire.clone()),
+            count: bytes_read.clone(),
+        };
+        let (incoming, mut sink) = mpsc::channel(256);
+        let (actions, _action_sink) = mpsc::channel(32);
         for id in 0..256 {
             incoming.try_send(frame(id)).unwrap();
         }
-        let mut schedule = V2Schedule::default();
-        queue_inbound_state(&incoming, &mut schedule, frame(256)).unwrap();
-        // No second overflow slot is permitted, even through a direct caller.
-        assert!(queue_inbound_state(&incoming, &mut schedule, frame(999)).is_err());
-        let bytes = crate::transport_v2::encode(&EnvelopeV2::State(frame(257))).unwrap();
-        let mut reader = SessionReader::new(std::io::Cursor::new(bytes), true);
-        for _ in 0..8 {
-            // Poll and cancel a real capacity wait. Neither the pending frame
-            // nor the next frame on the ordered wire can be consumed/lost.
-            let event = next_v2_event(
-                &mut states,
-                &mut actions,
-                &mut reader,
-                &mut schedule,
-                &incoming,
-            );
-            tokio::pin!(event);
-            poll_fn(|cx| {
-                assert!(event.as_mut().poll(cx).is_pending());
-                Poll::Ready(())
-            })
-            .await;
-        }
-        action_tx.try_send(action()).unwrap();
-        assert!(matches!(
-            next_v2_event(
-                &mut states,
-                &mut actions,
-                &mut reader,
-                &mut schedule,
-                &incoming
-            )
-            .await,
-            ClientEvent::Action(Some(_))
-        ));
-        state_tx.try_send(Envelope::Ping).unwrap();
-        assert!(matches!(
-            next_v2_event(
-                &mut states,
-                &mut actions,
-                &mut reader,
-                &mut schedule,
-                &incoming
-            )
-            .await,
-            ClientEvent::State(Some(Envelope::Ping))
-        ));
-        assert_eq!(sink.len(), 256);
-        assert_eq!(schedule.pending_inbound_state, Some(frame(256)));
-        assert_eq!(sink.recv().await, Some(frame(0)));
-        assert!(matches!(
-            next_v2_event(
-                &mut states,
-                &mut actions,
-                &mut reader,
-                &mut schedule,
-                &incoming
-            )
-            .await,
-            ClientEvent::InboundStateFlushed(Ok(()))
-        ));
-        assert!(schedule.pending_inbound_state.is_none());
-        for id in 1..=256 {
+        let task = tokio::spawn(async move {
+            let mut reader = SessionReader::new(reader, true);
+            run_v2_reader(&mut reader, &incoming, &actions).await;
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while bytes_read.load(std::sync::atomic::Ordering::SeqCst) < first_len {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reader never reached the full state sink");
+        assert_eq!(
+            bytes_read.load(std::sync::atomic::Ordering::SeqCst),
+            first_len,
+            "reader consumed a second frame while the first waited for state capacity"
+        );
+
+        for id in 0..=257 {
             assert_eq!(sink.recv().await, Some(frame(id)));
         }
-        match next_v2_event(
-            &mut states,
-            &mut actions,
-            &mut reader,
-            &mut schedule,
-            &incoming,
-        )
-        .await
-        {
-            ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(got)))) => assert_eq!(got, frame(257)),
-            _ => panic!("reader lost or reordered the frame following backpressure"),
-        }
-        for _ in 0..256 {
-            incoming.try_send(Envelope::Pong).unwrap();
-        }
-        queue_inbound_state(&incoming, &mut schedule, frame(258)).unwrap();
-        drop(sink);
-        assert!(matches!(
-            next_v2_event(
-                &mut states,
-                &mut actions,
-                &mut reader,
-                &mut schedule,
-                &incoming
-            )
-            .await,
-            ClientEvent::InboundStateFlushed(Err(()))
-        ));
+        task.await.unwrap();
+        assert_eq!(
+            bytes_read.load(std::sync::atomic::Ordering::SeqCst),
+            wire.len()
+        );
     }
 
     #[tokio::test]
     async fn always_ready_wire_yields_to_the_actual_bounded_state_consumer() {
-        let (_state_tx, mut states) = mpsc::channel(256);
-        let (_action_tx, mut actions) = mpsc::channel(32);
         let (incoming, mut consumed) = mpsc::channel(256);
+        let (actions, _action_sink) = mpsc::channel(32);
         let consumer = tokio::spawn(async move {
             let mut count = 0;
             while consumed.recv().await.is_some() {
@@ -1417,31 +1789,13 @@ mod scheduling_tests {
             .unwrap()
             .repeat(1024);
         let mut reader = SessionReader::new(std::io::Cursor::new(bytes), true);
-        let mut schedule = V2Schedule::default();
-        for _ in 0..1024 {
-            let ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(frame)))) = next_v2_event(
-                &mut states,
-                &mut actions,
-                &mut reader,
-                &mut schedule,
-                &incoming,
-            )
-            .await
-            else {
-                panic!("unexpected event")
-            };
-            assert!(
-                incoming.try_send(frame).is_ok(),
-                "always-ready reader starved the consumer and overflowed a healthy bounded channel"
-            );
-        }
+        run_v2_reader(&mut reader, &incoming, &actions).await;
         drop(incoming);
         assert_eq!(consumer.await.unwrap(), 1024);
     }
 
     #[tokio::test]
-    async fn sustained_ready_state_and_private_traffic_cannot_starve_the_reader() {
-        let (incoming, _sink) = mpsc::channel(256);
+    async fn sustained_ready_state_and_private_traffic_both_progress() {
         let (state_tx, mut states) = mpsc::channel(256);
         let (action_tx, mut actions) = mpsc::channel(32);
         for _ in 0..256 {
@@ -1450,24 +1804,13 @@ mod scheduling_tests {
         for _ in 0..32 {
             action_tx.try_send(action()).unwrap();
         }
-        let frame = crate::transport_v2::encode(&EnvelopeV2::State(Envelope::Pong)).unwrap();
-        let wire = frame.repeat(1024);
-        let mut reader = SessionReader::new(std::io::Cursor::new(wire), true);
-        let mut schedule = V2Schedule::default();
-        // Every lane remains ready for 1024 selections. Assert observable
+        let mut schedule = V2WriteSchedule::default();
+        // Both lanes remain ready for 1024 selections. Assert observable
         // progress per short window, not a probabilistic wall-clock timeout.
         for window in 0..128 {
-            let mut counts = [0; 3];
+            let mut counts = [0; 2];
             for _ in 0..8 {
-                match next_v2_event(
-                    &mut states,
-                    &mut actions,
-                    &mut reader,
-                    &mut schedule,
-                    &incoming,
-                )
-                .await
-                {
+                match next_v2_outbound_event(&mut states, &mut actions, &mut schedule).await {
                     ClientEvent::State(Some(Envelope::Ping)) => {
                         counts[0] += 1;
                         state_tx.try_send(Envelope::Ping).unwrap();
@@ -1476,9 +1819,6 @@ mod scheduling_tests {
                         assert_eq!(value, action());
                         counts[1] += 1;
                         action_tx.try_send(action()).unwrap();
-                    }
-                    ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(Envelope::Pong)))) => {
-                        counts[2] += 1
                     }
                     _ => panic!("live lane ended"),
                 }
@@ -1492,7 +1832,6 @@ mod scheduling_tests {
 
     #[tokio::test]
     async fn action_enable_waits_for_queued_subscribe_but_not_an_unbounded_flood() {
-        let (incoming, _sink) = mpsc::channel(256);
         let (state_tx, mut states) = mpsc::channel(256);
         let (action_tx, mut actions) = mpsc::channel(32);
         let room = Uuid::from_u128(1);
@@ -1506,22 +1845,11 @@ mod scheduling_tests {
         action_tx
             .try_send(EnvelopeV2::EnableActions { room })
             .unwrap();
-        let frame = crate::transport_v2::encode(&EnvelopeV2::State(Envelope::Pong)).unwrap();
-        let mut reader = SessionReader::new(std::io::Cursor::new(frame.repeat(1024)), true);
-        let mut schedule = V2Schedule::default();
+        let mut schedule = V2WriteSchedule::default();
         let mut subscribed = false;
         let mut enabled = false;
-        let mut received = 0;
         for _ in 0..1024 {
-            match next_v2_event(
-                &mut states,
-                &mut actions,
-                &mut reader,
-                &mut schedule,
-                &incoming,
-            )
-            .await
-            {
+            match next_v2_outbound_event(&mut states, &mut actions, &mut schedule).await {
                 ClientEvent::State(Some(env)) => {
                     if matches!(env, Envelope::Subscribe { .. }) {
                         subscribed = true;
@@ -1534,11 +1862,38 @@ mod scheduling_tests {
                     enabled = true;
                     break;
                 }
-                ClientEvent::Inbound(Ok(Some(_))) => received += 1,
                 _ => panic!("live lane ended"),
             }
         }
         assert!(enabled, "continuous state refills starved private enable");
-        assert!(received > 0, "subscription barrier starved the sole reader");
+    }
+
+    #[tokio::test]
+    async fn private_inbound_overflow_ends_the_shared_v2_pump() {
+        let frame = crate::transport_v2::encode(&action()).unwrap();
+        let mut reader = SessionReader::new(std::io::Cursor::new(frame), true);
+        let (state_tx, mut states) = mpsc::channel(256);
+        let (action_tx, mut actions) = mpsc::channel(32);
+        let (state_sink, _state_inbound) = mpsc::channel(256);
+        let (action_sink, _action_inbound) = mpsc::channel(32);
+        for _ in 0..32 {
+            action_sink.try_send(action()).unwrap();
+        }
+        let mut writer = tokio::io::sink();
+        assert!(
+            !run_v2_pump(
+                &mut writer,
+                &mut reader,
+                &mut states,
+                &mut actions,
+                &state_sink,
+                &action_sink,
+            )
+            .await,
+            "private overflow must close instead of dropping a response"
+        );
+        assert_eq!(action_sink.capacity(), 0);
+        drop(state_tx);
+        drop(action_tx);
     }
 }
