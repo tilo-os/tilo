@@ -87,7 +87,7 @@ slice; do not expand scope just to add it.
 Keep Photos rotation/crop as deterministic Document operations. Add a typed
 Effect that produces the currently addressed image's edited content. Render
 from a well-defined snapshot of its source and edit state; reject missing,
-stale or inaccessible inputs. Return exactly one canonical qos.content:<hash>
+stale or inaccessible inputs. Return exactly one canonical tilo.content:<hash>
 resource only after the corresponding immutable encoded bytes have been
 successfully stored and can be retrieved through the configured content
 provider. Do not return the original image hash as evidence of transformed
