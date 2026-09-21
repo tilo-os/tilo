@@ -5565,6 +5565,20 @@ pub fn run() {
     // Optional per-iteration timing (`TILO_LOOP_TIMING=1`): logs any tick over
     // 100ms non-sleeping work with a phase breakdown, so a stall is measured, not guessed.
     let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
+    let mut pump_checkpoint = Instant::now();
+    let mut pump_slowest = ("start", Duration::ZERO);
+    macro_rules! pump_checkpoint {
+        ($name:literal) => {{
+            if loop_timing {
+                let now = Instant::now();
+                let elapsed = now.saturating_duration_since(pump_checkpoint);
+                if elapsed > pump_slowest.1 {
+                    pump_slowest = ($name, elapsed);
+                }
+                pump_checkpoint = now;
+            }
+        }};
+    }
     // Frame-loop instrumentation (`TILO_FRAME_TRACE`/`TILO_FRAME_SUMMARY`), free
     // when neither is set. See `compositor::metrics`.
     let mut metrics = metrics::FrameRecorder::from_env();
@@ -6134,6 +6148,10 @@ pub fn run() {
         }
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
+        if loop_timing {
+            pump_checkpoint = Instant::now();
+            pump_slowest = ("pump-start", Duration::ZERO);
+        }
 
         // The power menu is shell UI only.  Its Lock row requests this
         // compositor-owned transition through ChromeState; drain the edge
@@ -6410,6 +6428,7 @@ pub fn run() {
             state.client_input.keyboard_focus(),
             state.text_input_active(),
         );
+        pump_checkpoint!("session-focus-and-surfaces");
         let floating_surfaces = state
             .floating_toplevels
             .iter()
@@ -6770,6 +6789,7 @@ pub fn run() {
                 }
             }
         }
+        pump_checkpoint!("device-fabric-and-network");
         // Keep the presence relay current, then fold in what peers sent. Pointer
         // is read level-triggered (covers every source: seat, remote peer, test
         // socket); room set is re-read each tick since a workspace can join a
@@ -6809,6 +6829,7 @@ pub fn run() {
         } else {
             false
         };
+        pump_checkpoint!("peer-presence");
         let mut apps_changed =
             frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         if desktop_continuation
@@ -6820,6 +6841,7 @@ pub fn run() {
         {
             tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to qOS");
         }
+        pump_checkpoint!("widget-pump");
         if take_deferred_peer_sync_activation(
             &mut deferred_peer_sync,
             frame_builder.host().onboarding_active(),
@@ -6886,6 +6908,12 @@ pub fn run() {
                 .checked_sub(t_input_done)
                 .unwrap_or_default(),
         );
+        if loop_timing && pump_slowest.1 > Duration::from_millis(100) {
+            eprintln!(
+                "SLOW-PUMP slowest={} elapsed={:?}",
+                pump_slowest.0, pump_slowest.1
+            );
+        }
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
         let content_changed = NativeRedrawReasons {
