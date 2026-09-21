@@ -2,8 +2,9 @@ name: Snapshot / RPM repository
 
 # Builds + pushes the digest-pinned frozen RPM repo that os/Containerfile
 # installs from (for cross-time-reproducible OS builds). CI publishes the image.
-# Manual dispatch runs when the base image or package set changes. It prints the
-# new RPMS_REF; commit that to os/rpms-snapshot.env and the OS build picks it up.
+# Manual dispatch runs when the base image or package set changes. A verified
+# RPMS_REF is proposed through a normal pull request so protected-main policy
+# and required checks remain authoritative.
 on:
   workflow_dispatch:
   push:
@@ -22,6 +23,7 @@ on:
       - os/dev/derive-rpm-package-set.py
       - keys/cosign.pub
       - os/dev/promote-native-index.py
+      - os/dev/open-rpm-snapshot-pr.py
       - os/dev/install-cached-cosign.sh
       - os/dev/configure-cosign-kms.sh
       - ".forgejo/actions/install-cosign/**"
@@ -51,6 +53,7 @@ env:
     os/dev/derive-rpm-package-set.py
     keys/cosign.pub
     os/dev/promote-native-index.py
+    os/dev/open-rpm-snapshot-pr.py
     os/dev/install-cached-cosign.sh
     os/dev/configure-cosign-kms.sh
     os/Containerfile.host
@@ -392,38 +395,48 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Commit the frozen snapshot pin to the dispatched branch
+      - name: Open a protected-branch promotion PR for the frozen snapshot pin
+        id: promotion
+        env:
+          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
           ref="$(cat rpms-index.txt)"
-          for attempt in 1 2 3 4 5; do
-            git fetch origin "${GITHUB_REF_NAME}"
-            if ! python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent; then
-              echo '::error::snapshot build inputs changed during native construction'
-              exit 1
-            fi
-            git checkout --detach FETCH_HEAD
-            printf '%s\n' \
-              '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
-              '# Updated by the snapshot-rpms workflow when the package set changes.' \
-              "RPMS_REF=$ref" > os/rpms-snapshot.env
-            if git diff --quiet -- os/rpms-snapshot.env; then
-              echo "Snapshot pin is already current"
-              exit 0
-            fi
-            git config user.name "Tilo CI"
-            git config user.email "ci@tilo.invalid"
-            git add os/rpms-snapshot.env
-            git commit -m "build(os): refresh native RPM snapshot index"
-            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
-              exit 0
-            fi
-            echo "Remote advanced during pin promotion; retrying ($attempt/5)"
-          done
-          echo '::error::snapshot pin promotion lost five consecutive branch races'
-          exit 1
+          digest="${ref##*@sha256:}"
+          [[ "$ref" == code.podesta.ai/qos/rpms@sha256:* && "$digest" =~ ^[0-9a-f]{64}$ ]] || {
+            echo '::error::promoted RPM reference is not the expected immutable registry digest'
+            exit 1
+          }
+          branch="automation/rpm-snapshot-${digest:0:16}"
+          git fetch --no-tags origin main
+          if ! python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent; then
+            echo '::error::snapshot build inputs changed during native construction'
+            exit 1
+          fi
+          git checkout --detach origin/main
+          printf '%s\n' \
+            '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
+            '# Updated by the snapshot-rpms workflow when the package set changes.' \
+            "RPMS_REF=$ref" > os/rpms-snapshot.env
+          if git diff --quiet -- os/rpms-snapshot.env; then
+            echo "Snapshot pin is already current"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "Tilo CI"
+          git config user.email "ci@tilo.invalid"
+          git add os/rpms-snapshot.env
+          git commit -m "build(os): refresh native RPM snapshot index"
+          remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/$branch:$remote_tip" origin "HEAD:refs/heads/$branch"
+          python3 os/dev/open-rpm-snapshot-pr.py \
+            --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
+            --branch "$branch" --digest "$digest"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch the full image build and boot test
+        if: steps.promotion.outputs.changed == 'true'
         env:
           FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
@@ -432,4 +445,4 @@ jobs:
             -H "Authorization: token ${FORGEJO_TOKEN}" \
             -H 'Content-Type: application/json' \
             "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/build-image.yml/dispatches" \
-            --data "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"with_browser\":\"1\"}}"
+            --data "{\"ref\":\"${{ steps.promotion.outputs.branch }}\",\"inputs\":{\"with_browser\":\"1\"}}"

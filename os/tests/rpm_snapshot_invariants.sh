@@ -98,10 +98,23 @@ has "$workflow" 'driver = "vfs"' \
   'snapshot promotion isolates Podman storage from the runner overlay'
 has "$workflow" 'rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' \
   'snapshot promotion preserves web-identity token cleanup when extending its exit trap'
-has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' \
+has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
   'snapshot pin updates reject build-input changes while allowing unrelated commits'
-has "$workflow" 'git checkout --detach FETCH_HEAD' \
+has "$workflow" 'git checkout --detach origin/main' \
   'snapshot promotion applies its pin on the current branch tip'
+has "$workflow" 'automation/rpm-snapshot-${digest:0:16}' \
+  'snapshot pins are proposed from a deterministic digest-bound automation branch'
+has "$workflow" 'python3 os/dev/open-rpm-snapshot-pr.py' \
+  'snapshot promotion preserves protected main through a normal pull request'
+has "$workflow" '--force-with-lease="refs/heads/$branch:$remote_tip"' \
+  'snapshot automation branch updates reject concurrent remote changes'
+if grep -Fq 'git push origin "HEAD:${GITHUB_REF_NAME}"' "$workflow"; then
+  bad 'snapshot promotion still pushes directly to the protected source branch'
+else
+  ok 'snapshot promotion never pushes directly to protected main'
+fi
+has "$workflow" '--data "{\"ref\":\"${{ steps.promotion.outputs.branch }}\"' \
+  'full image validation runs from the exact proposed snapshot pin'
 has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
 has "$workflow" '. os/dev/configure-cosign-kms.sh' \
