@@ -72,6 +72,21 @@ if ! bash "$HERE/containerfile_copy_invariants.sh"; then
   bad "os/Containerfile COPY payload or rootfs layer budget drifted"
 fi
 
+# Suspend must freeze sessions before the kernel freezer reaches processes
+# blocked on the userspace collaborative filesystem. Prove both halves of the
+# shipped contract here: the policy has the effective value and the production
+# image actually installs that exact file.
+sleep_policy=os/etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf
+if grep -Fqx 'FreezeUserSessions=yes' "$REPO/$sleep_policy" \
+   && containerfile_copy_contract "$REPO/os/Containerfile" rootfs |
+        awk -F '\t' -v source="$sleep_policy" \
+          '$1 == "context" && $2 == source && $3 == "/etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf" { found=1 }
+           END { exit !found }'; then
+  ok "Tilo sleep policy is installed with FreezeUserSessions=yes"
+else
+  bad "Tilo sleep policy is not installed with FreezeUserSessions=yes"
+fi
+
 if [ "$fails" -eq 0 ]; then
   printf '\nall Containerfile COPY sources resolve\n'
   exit 0
