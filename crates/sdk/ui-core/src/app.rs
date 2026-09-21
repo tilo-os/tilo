@@ -7369,7 +7369,7 @@ impl App {
     /// previous session left plus its writer:
     ///
     /// ```ignore
-    /// let (state, autosave) = ui::persist::open("dev.tilo.my-app");
+    /// let (state, autosave) = ui::persist::open("so.tilo.my-app");
     /// ui::App::from_factory(state, my_app::app_root)
     ///     .with_autosave(autosave)
     ///     .run();
@@ -8009,6 +8009,10 @@ fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboR
 /// tooltip into `scene`. Returns the transform and logical window rect the
 /// rest of the frame (legacy cursors, remote presence, debug outlines, HUD)
 /// draws with, plus the draw-pass duration for the perf log line.
+#[allow(
+    clippy::too_many_lines,
+    reason = "frame drawing is one ordered composition pass whose sequencing must remain explicit"
+)]
 fn draw_frame_content(
     app: &mut App,
     scene: &mut Scene,
@@ -10926,7 +10930,7 @@ mod window_title_tests {
         let t = resolve_title_from(
             Some("My Doc — Notes"),
             Some("Notes"),
-            Some("dev.tilo.notes"),
+            Some("so.tilo.notes"),
             Some("notes"),
         );
         assert_eq!(t, "My Doc — Notes");
@@ -10934,7 +10938,7 @@ mod window_title_tests {
 
     #[test]
     fn app_name_env_resolves_to_the_manifest_name() {
-        let t = resolve_title_from(None, Some("Notes"), Some("dev.tilo.notes"), Some("notes"));
+        let t = resolve_title_from(None, Some("Notes"), Some("so.tilo.notes"), Some("notes"));
         assert_eq!(t, "Notes");
         assert_ne!(t, "QuickUI App");
     }
@@ -10944,7 +10948,7 @@ mod window_title_tests {
         let t = resolve_title_from(
             None,
             None,
-            Some("dev.tilo.file-explorer"),
+            Some("so.tilo.file-explorer"),
             Some("file-explorer"),
         );
         assert_eq!(t, "File Explorer");
@@ -10960,7 +10964,7 @@ mod window_title_tests {
 
     #[test]
     fn blank_candidates_are_skipped_not_used() {
-        let t = resolve_title_from(Some("  "), Some(""), Some("dev.tilo.notes"), Some("notes"));
+        let t = resolve_title_from(Some("  "), Some(""), Some("so.tilo.notes"), Some("notes"));
         assert_eq!(t, "Notes");
     }
 
@@ -10974,8 +10978,8 @@ mod window_title_tests {
     #[test]
     fn the_app_id_is_never_the_generic_one_when_anything_identifies_the_app() {
         assert_eq!(
-            resolve_app_id(Some("dev.tilo.file-explorer"), Some("file-explorer")),
-            "dev.tilo.file-explorer",
+            resolve_app_id(Some("so.tilo.file-explorer"), Some("file-explorer")),
+            "so.tilo.file-explorer",
             "the package id is the identity everything else is keyed on"
         );
         assert_eq!(
@@ -11005,7 +11009,7 @@ mod window_title_tests {
         // SAFETY: guarded by the `process_env` serial group.
         unsafe {
             std::env::set_var("TILO_APP_NAME", "Weather");
-            std::env::set_var("TILO_PACKAGE_ID", "dev.tilo.weather");
+            std::env::set_var("TILO_PACKAGE_ID", "so.tilo.weather");
         }
         let resolved = resolve_window_title(None);
         // Restore before asserting so a failure doesn't leak env.
@@ -11031,7 +11035,7 @@ mod window_title_tests {
         // SAFETY: guarded by the `process_env` serial group.
         unsafe {
             std::env::remove_var("TILO_APP_NAME");
-            std::env::set_var("TILO_PACKAGE_ID", "dev.tilo.calculator");
+            std::env::set_var("TILO_PACKAGE_ID", "so.tilo.calculator");
         }
         let resolved = resolve_window_title(None);
         unsafe {
@@ -16665,11 +16669,11 @@ mod bound_component_tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut owners = crate::record::RecordOwners::new(root.clone());
-        let records = owners.open("dev.tilo.binding-probe", "A").unwrap();
+        let records = owners.open("so.tilo.binding-probe", "A").unwrap();
         let views =
             Rc::new(crate::application_view::InstanceViewStore::new(root, "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.binding-probe",
+            app_id: "so.tilo.binding-probe",
             title: "Probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: crate::record::RecordKind::new("probe"),
@@ -16948,7 +16952,7 @@ mod bound_component_tests {
             let mut owners = crate::record::RecordOwners::new(temp.path().into());
             let records = owners
                 .open(
-                    "dev.tilo.binding-probe",
+                    "so.tilo.binding-probe",
                     "00000000-0000-0000-0000-000000000004",
                 )
                 .unwrap();
@@ -16981,7 +16985,7 @@ mod bound_component_tests {
                 (12, strict_factory),
             ] {
                 let definition = ApplicationDefinition {
-                    app_id: "dev.tilo.binding-probe",
+                    app_id: "so.tilo.binding-probe",
                     title: "Probe",
                     icon: IconDescriptor::Glyph("P"),
                     record_kind: crate::record::RecordKind::new("probe"),
@@ -18318,6 +18322,10 @@ mod bound_component_tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one broker-route refusal test exercises every invalid witness against the same fixture"
+    )]
     fn task4_bound_broker_route_refuses_wrong_app_workspace_record_and_missing_witness() {
         let mut fixture = ActionFixture::broker();
         let target = fixture.target(1, "follow-up");
@@ -18336,7 +18344,7 @@ mod bound_component_tests {
             .unwrap();
         let revision = fixture.app.action_directory_revision();
         let mut wrong_app = matching.clone();
-        wrong_app.route.app_id = "dev.tilo.other".into();
+        wrong_app.route.app_id = "so.tilo.other".into();
         let mut wrong_workspace = matching.clone();
         wrong_workspace.route.cluster_id = uuid::Uuid::nil();
         let mut wrong_record = matching.clone();

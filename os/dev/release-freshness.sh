@@ -37,7 +37,7 @@ jq -S -n \
   --argjson issued "$issued" \
   --argjson expires "$expires" \
   '{
-    schema: "https://tilo.dev/security/release-freshness/v1",
+    schema: "https://tilo.sh/security/release-freshness/v1",
     repository: $repository,
     digest: $digest,
     generation: $generation,

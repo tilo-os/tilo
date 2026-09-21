@@ -1052,7 +1052,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
             );
 
             let save = mode == "save";
-            let caller = PortalCaller::new(WorkspaceId(1), "dev.tilo.word-processor");
+            let caller = PortalCaller::new(WorkspaceId(1), "so.tilo.word-processor");
             let opts = FilePickerOptions::new(
                 caller,
                 if save {

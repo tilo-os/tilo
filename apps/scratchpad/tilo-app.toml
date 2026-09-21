@@ -1,6 +1,6 @@
 # Scratchpad stores its note in the app's private data directory.
 [package]
-id = "dev.tilo.scratchpad"
+id = "so.tilo.scratchpad"
 name = "Scratchpad"
 category = "Office"
 version = "0.1.0"

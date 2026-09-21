@@ -16,8 +16,8 @@ selection keeps the Rust lane focused while nightly CI remains the full-workspac
 backstop.
 
 The trusted merge controller classifies changes using the deployed
-[admission code](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/admission.py)
-and [path policy](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json).
+[admission code](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/tilo-merge-controller/admission.py)
+and [path policy](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/tilo-merge-controller/policy.json).
 Ordinary product and documentation changes are routine; tools are classified by
 path, not by being tools. CI/policy, publication, signing and named security
 boundaries use the protected scope, as does an existing file's executable-mode
@@ -40,8 +40,8 @@ heavy-build and publication triggers.
 | Event | Routine feedback | Packaging and release behavior |
 | --- | --- | --- |
 | Task-branch push | Fast quality for that commit: changed-file formatting, lint-exception policy, repository policy, `cargo deny`, and `cargo machete` | No app publication or OS build |
-| Pull request to `main` | Fast quality plus affected reverse-dependency checks and applicable security contracts; the app workflow reports its dependency-selected plan | No qpkg publication and no full OS build |
-| Push to `main` | Fast quality and affected checks retain a result for that exact commit | Relevant app/package inputs publish the dependency-selected x86-64 app set, reuse unchanged collection members, and submit newly built qpkgs to the signed registry; OS publication remains off |
+| Pull request to `main` | Fast quality plus affected reverse-dependency checks and applicable security contracts; the app workflow reports its dependency-selected plan | No tapp publication and no full OS build |
+| Push to `main` | Fast quality and affected checks retain a result for that exact commit | Relevant app/package inputs publish the dependency-selected x86-64 app set, reuse unchanged collection members, and submit newly built tapps to the signed registry; OS publication remains off |
 | Nightly, tag, or explicit dispatch | Full-workspace and product-specific qualification according to the workflow | App and desktop release matrices expand only on their documented triggers; an OS version is published only by an OS tag or a `main` dispatch with `publish=true` |
 
 Do not interpret a skipped Rust row as missing CI. The aggregate accepts it only
@@ -51,7 +51,7 @@ exact head.
 
 | Product | Existing path | Remaining qualification or deferral |
 | --- | --- | --- |
-| Linux/qOS native apps | `release-apps.yml`: affected-app PR planning; continuous dependency-selected x86-64 packaging on `main`; explicit/tagged signed qpkg and runtime collection on x86-64 and ARM64 | Main compiles and packages selected app binaries and reuses immutable collection members; full-collection dependency features preserve the shared runtime ABI. ARM64 remains available for explicit/tagged releases while ordinary main packaging stays on the configured x86-64 lane. qOS ISA policy is explicit; this is not a universal Linux standalone installer. |
+| Linux/Tilo native apps | `release-apps.yml`: affected-app PR planning; continuous dependency-selected x86-64 packaging on `main`; explicit/tagged signed tapp and runtime collection on x86-64 and ARM64 | Main compiles and packages selected app binaries and reuses immutable collection members; full-collection dependency features preserve the shared runtime ABI. ARM64 remains available for explicit/tagged releases while ordinary main packaging stays on the configured x86-64 lane. Tilo ISA policy is explicit; this is not a universal Linux standalone installer. |
 | Whole desktop / Linux distributions | `package-desktop.yml`: Arch, Nix, Ubuntu 24.04, Debian 13, Fedora 44; architecture jobs run distro builds serially | PR contracts remain cheap; weekly/manual distribution builds and main payload publication remain. ARM requires the workflow's native capability gate. Distribution install tests do not establish bootable OS/device acceptance. |
 | Setup application, Linux | `release-imager.yml`: default explicit Linux x86 smoke; full native/tag lanes add ARM64, AppImage and release checks | Catalog, signing, installation and physical-media qualification remain distinct. |
 | Setup application, Windows | Existing x86-64/ARM64 jobs use `imager-windows-x86_64` / `imager-windows-aarch64`, MSVC targets, imager tests, package build and signature checks | Enabled for imager tags or explicit `full_native=true`, not ordinary pushes. Actual native host availability must be checked before dispatch. |
@@ -115,7 +115,7 @@ and its clean-machine consumer are defined and tested.
 
 Use separate Windows architecture/compiler/SDK/native-library cache identities.
 Reuse Cargo downloads and qualified compiler outputs; do not share writable target
-directories, reuse Linux qpkg runtime artifacts as Windows binaries, or set
+directories, reuse Linux tapp runtime artifacts as Windows binaries, or set
 `CARGO_TARGET_DIR`. The toolkit's dependency changes must invalidate affected
 apps. Coalesce future pending packaging requests while preserving the active build;
 keep cheap per-commit checks and deliberate OS releases independent.

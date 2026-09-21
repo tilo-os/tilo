@@ -865,7 +865,7 @@ fn managed_program_id(capsule_id: &str, program_id: &str) -> String {
 
 fn managed_app_id(capsule_id: &str, program_id: &str) -> String {
     format!(
-        "dev.tilo.windows.{}",
+        "so.tilo.windows.{}",
         identity_digest(capsule_id, program_id)
     )
 }

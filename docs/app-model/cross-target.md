@@ -1,4 +1,4 @@
-# Cross-target: same source → `.qpkg` and Flatpak
+# Cross-target: same source → `.tapp` and Flatpak
 
 Tilo apps are engineered to run on stock Linux desktops too. The `runtime`
 SDK's graceful-degradation contract is the mechanism; this document is
@@ -64,8 +64,8 @@ result.
 
 The same source ships as:
 
-- A `.qpkg` under `tilo-pkg pack --manifest manifest.toml --payload
-  payload/ --output my-app.qpkg`.
+- A `.tapp` under `tilo-app-package pack --manifest manifest.toml --payload
+  payload/ --output my-app.tapp`.
 - A Flatpak using the standard `org.flatpak.Builder` YAML. The Flatpak
   runs the same entrypoint binary, but the sandbox is Flatpak's rather
   than Tilo's, and no `TILO_SVC_*_FD` env vars are set.
@@ -112,13 +112,13 @@ $ ls target/release/my-example-hello
 
 # Tilo packaging
 $ cp target/release/my-example-hello payload/bin/
-$ tilo-pkg pack --manifest manifest.toml --payload payload --output my-app.qpkg
+$ tilo-app-package pack --manifest manifest.toml --payload payload --output my-app.tapp
 
 # Flatpak packaging (same binary)
 $ flatpak-builder --repo=my-repo build-dir my.example.hello.yml
 ```
 
-Both distribution channels serve the same binary. The `.qpkg` embeds a
+Both distribution channels serve the same binary. The `.tapp` embeds a
 Tilo manifest describing the Tilo-specific sandbox; the Flatpak embeds a
 Flatpak manifest describing its own sandbox. The binary itself is
 sandbox-agnostic — it uses `runtime` SDK calls and gracefully degrades
@@ -158,7 +158,7 @@ Cases where a feature flag might be justified:
 
 ## The single-manifest question
 
-Long-term, there is no reason a single `.qpkg` couldn't also be
+Long-term, there is no reason a single `.tapp` couldn't also be
 convertible to a `.flatpak` bundle by tooling — the payload is the same
 and both manifests describe overlapping sandboxes. That tooling doesn't
 exist yet. Today, publishing to both channels means two build steps and

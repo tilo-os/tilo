@@ -191,7 +191,7 @@ fn hex_prefix(bytes: &[u8], count: usize) -> String {
 
 fn nearby_action_locator(kind: &str, bytes: &[u8; 16]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"dev.tilo.files.nearby-action-locator.v1\0");
+    hasher.update(b"so.tilo.files.nearby-action-locator.v1\0");
     hasher.update(kind.as_bytes());
     hasher.update([0]);
     hasher.update(bytes);

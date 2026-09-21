@@ -115,7 +115,7 @@ impl TileStyle {
     }
 }
 
-const USER_AGENT: &str = "Tilo-Maps/0.1 (https://tilo.example; native maps app)";
+const USER_AGENT: &str = "Tilo-Maps/0.1 (https://example.test; native maps app)";
 
 /// A tile coordinate in the slippy-map scheme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

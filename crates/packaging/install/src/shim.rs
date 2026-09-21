@@ -233,7 +233,7 @@ mod tests {
         let bin_dir = tmp.path().join("bin");
         let commands = vec!["notes".to_string(), "notes-import".to_string()];
         let written = write_shims(&ShimInstall {
-            package_id: "dev.tilo.notes-cli",
+            package_id: "so.tilo.notes-cli",
             commands: &commands,
             shim_source: &shim,
             bin_dir: &bin_dir,
@@ -247,7 +247,7 @@ mod tests {
             assert!(bin_path.exists(), "shim {cmd} should exist");
             assert!(side_path.exists(), "sidecar {cmd}.tilo-shim should exist");
             let sidecar_text = fs::read_to_string(&side_path).unwrap();
-            assert!(sidecar_text.contains("dev.tilo.notes-cli"));
+            assert!(sidecar_text.contains("so.tilo.notes-cli"));
             assert!(sidecar_text.contains(cmd));
         }
     }
@@ -260,7 +260,7 @@ mod tests {
         let commands = vec!["notes".to_string()];
         let launcher = PathBuf::from("/tmp/dev/tilo-launcher");
         write_shims(&ShimInstall {
-            package_id: "dev.tilo.notes-cli",
+            package_id: "so.tilo.notes-cli",
             commands: &commands,
             shim_source: &shim,
             bin_dir: &bin_dir,
@@ -282,7 +282,7 @@ mod tests {
         let bin_dir = tmp.path().join("bin");
         let commands = vec!["notes".to_string()];
         write_shims(&ShimInstall {
-            package_id: "dev.tilo.notes-cli",
+            package_id: "so.tilo.notes-cli",
             commands: &commands,
             shim_source: &shim,
             bin_dir: &bin_dir,
@@ -309,7 +309,7 @@ mod tests {
         for name in bad_names {
             let commands = vec![name.clone()];
             let e = write_shims(&ShimInstall {
-                package_id: "dev.tilo.notes-cli",
+                package_id: "so.tilo.notes-cli",
                 commands: &commands,
                 shim_source: &shim,
                 bin_dir: &bin_dir,
@@ -327,7 +327,7 @@ mod tests {
         let bin_dir = tmp.path().join("bin");
         let commands = vec!["notes".to_string()];
         write_shims(&ShimInstall {
-            package_id: "dev.tilo.notes-cli",
+            package_id: "so.tilo.notes-cli",
             commands: &commands,
             shim_source: &shim,
             bin_dir: &bin_dir,
@@ -338,7 +338,7 @@ mod tests {
         // succeed and end with the second override baked in.
         let l2 = PathBuf::from("/tmp/other/tilo-launcher");
         write_shims(&ShimInstall {
-            package_id: "dev.tilo.notes-cli",
+            package_id: "so.tilo.notes-cli",
             commands: &commands,
             shim_source: &shim,
             bin_dir: &bin_dir,

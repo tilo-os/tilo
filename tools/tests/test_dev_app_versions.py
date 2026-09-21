@@ -66,7 +66,7 @@ class DevelopmentVersionTests(unittest.TestCase):
 
     def test_selected_identity_advances_but_unchanged_version_is_reused(self):
         def app(name):
-            return {'name': name, 'id': 'dev.tilo.' + name, 'package': name, 'version': '0.1.0', 'runtime': 'tilo-runtime/1.0.0'}
+            return {'name': name, 'id': 'so.tilo.' + name, 'package': name, 'version': '0.1.0', 'runtime': 'tilo-runtime/1.0.0'}
         plan = {'catalog': [app('calc'), app('clock')]}
         old = version_plan(plan, 9, 'a' * 40)
         new = version_plan({'catalog': [app('calc')]}, 10, 'b' * 40)

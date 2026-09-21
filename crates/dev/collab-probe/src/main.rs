@@ -34,7 +34,7 @@ use collab_types::{DocumentMutation, Ed25519PublicKey, OpClass, Signature, Signe
 /// Root key the probe reads and writes. One flat string is enough because the
 /// probe proves delivery, not a document model.
 const FIELD: &str = "text";
-const APP_ID: &str = "dev.tilo.collab-probe";
+const APP_ID: &str = "so.tilo.collab-probe";
 const RECORD_ID: &str = "";
 
 fn usage() -> ExitCode {

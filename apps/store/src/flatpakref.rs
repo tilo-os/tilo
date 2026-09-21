@@ -100,6 +100,8 @@ impl FlatpakRef {
             id: self.app_id,
             name: self.title,
             description: self.comment,
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec!["Opened file".to_string()],
             icon_url: None,
             screenshot_urls: Vec::new(),

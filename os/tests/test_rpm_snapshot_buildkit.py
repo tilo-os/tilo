@@ -12,7 +12,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "dev/verify-rpm-snapshot-buildkit
 SPEC = importlib.util.spec_from_file_location("snapshot_buildkit", SCRIPT)
 VERIFY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFY)
-REF = "code.example/qos/rpms@sha256:" + "a" * 64
+REF = "code.example/tilo/rpms@sha256:" + "a" * 64
 
 
 class BuildkitSnapshotTests(unittest.TestCase):
@@ -98,7 +98,7 @@ class BuildkitSnapshotTests(unittest.TestCase):
 
     def test_unpinned_snapshot_is_rejected_before_registry_access(self):
         with self.assertRaises(ValueError):
-            self.check({}, ref="code.example/qos/rpms:latest")
+            self.check({}, ref="code.example/tilo/rpms:latest")
         self.assertEqual(self.commands, [])
 
     def test_unknown_host_is_rejected(self):

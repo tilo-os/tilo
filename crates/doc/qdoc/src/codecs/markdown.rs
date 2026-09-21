@@ -1101,7 +1101,7 @@ mod tests {
 
     #[test]
     fn link_roundtrips_as_mark() {
-        let src = "See [the docs](https://tilo.dev/) now.\n";
+        let src = "See [the docs](https://tilo.so/) now.\n";
         let snap = import(src);
         let p = &snap.blocks[0];
         assert_eq!(p.kind, "paragraph");
@@ -1111,12 +1111,12 @@ mod tests {
             .iter()
             .find(|m| m.name == "link")
             .expect("link mark present");
-        assert_eq!(link.value, MarkValue::Str("https://tilo.dev/".into()));
+        assert_eq!(link.value, MarkValue::Str("https://tilo.so/".into()));
         // The mark covers exactly "the docs".
         assert_eq!((link.start, link.end), (4, 12));
 
         let out = export(src);
-        assert!(out.contains("[the docs](https://tilo.dev/)"), "got {out:?}");
+        assert!(out.contains("[the docs](https://tilo.so/)"), "got {out:?}");
         assert_eq!(export(&out), out);
     }
 

@@ -1087,7 +1087,7 @@ impl PlayerApp {
             title: self.title.clone(),
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppElement {
-                app_id: "dev.tilo.video-player".into(),
+                app_id: "so.tilo.video-player".into(),
                 element_id: "video_surface".into(),
                 region,
             },
@@ -4291,7 +4291,7 @@ mod tests {
         );
         assert_eq!(request.aspect_ratio, Some(16.0 / 9.0));
         assert!(
-            matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "dev.tilo.video-player" && element_id == "video_surface")
+            matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "so.tilo.video-player" && element_id == "video_surface")
         );
     }
 

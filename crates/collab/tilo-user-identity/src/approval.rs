@@ -16,9 +16,9 @@ use crate::canonical::{CanonicalError, signing_digest};
 use crate::{DeviceCert, verify_device_cert_at};
 
 /// Frozen domain tag for request signatures.
-pub const APPROVAL_REQUEST_TAG: &[u8] = b"qos-device-approval-request-v1\0";
+pub const APPROVAL_REQUEST_TAG: &[u8] = b"tilo-device-approval-request-v1\0";
 /// Frozen domain tag for response signatures.
-pub const APPROVAL_RESPONSE_TAG: &[u8] = b"qos-device-approval-response-v1\0";
+pub const APPROVAL_RESPONSE_TAG: &[u8] = b"tilo-device-approval-response-v1\0";
 /// Wire schema understood by this build.
 pub const APPROVAL_SCHEMA_VERSION: u16 = 1;
 /// Longest approval lifetime accepted by either peer.

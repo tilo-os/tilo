@@ -67,9 +67,9 @@ impl LaunchpadAction {
 
     pub(crate) const fn app_target(self) -> Option<(&'static str, &'static str)> {
         match self {
-            Self::Chat | Self::Meet => Some(("dev.tilo.chat", "Chat")),
-            Self::Notes => Some(("dev.tilo.notes", "Notes")),
-            Self::Tasks => Some(("dev.tilo.calendar", "Calendar")),
+            Self::Chat | Self::Meet => Some(("so.tilo.chat", "Chat")),
+            Self::Notes => Some(("so.tilo.notes", "Notes")),
+            Self::Tasks => Some(("so.tilo.calendar", "Calendar")),
             Self::Invite | Self::Activity => None,
         }
     }
@@ -681,16 +681,16 @@ mod tests {
     fn collaboration_cards_target_the_apps_that_own_those_features() {
         assert_eq!(
             LaunchpadAction::Chat.app_target(),
-            Some(("dev.tilo.chat", "Chat"))
+            Some(("so.tilo.chat", "Chat"))
         );
         assert_eq!(
             LaunchpadAction::Meet.app_target(),
-            Some(("dev.tilo.chat", "Chat")),
+            Some(("so.tilo.chat", "Chat")),
             "calls are a Chat feature, not a fabricated Meet package"
         );
         assert_eq!(
             LaunchpadAction::Tasks.app_target(),
-            Some(("dev.tilo.calendar", "Calendar")),
+            Some(("so.tilo.calendar", "Calendar")),
             "Calendar is the repo's existing task manager"
         );
     }

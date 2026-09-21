@@ -2005,7 +2005,7 @@ mod tests {
 
     fn canonical_store(root: &std::path::Path) -> RecordStore {
         let mut owners = crate::record::RecordOwners::new(root.to_path_buf());
-        owners.open("dev.tilo.tile-host-test", "room").unwrap()
+        owners.open("so.tilo.tile-host-test", "room").unwrap()
     }
 
     fn inspection_has_semantic(node: &crate::headless::InspectionNode, name: &str) -> bool {

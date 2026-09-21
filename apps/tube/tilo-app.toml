@@ -9,7 +9,7 @@
 
 
 [package]
-id       = "dev.tilo.tube"
+id       = "so.tilo.tube"
 name     = "Tube"
 category = "Multimedia"
 version  = "0.1.0"

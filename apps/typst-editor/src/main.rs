@@ -61,7 +61,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.typst-editor", typst_editor::app_root)
+        &LaunchSpec::new("so.tilo.typst-editor", typst_editor::app_root)
             .configure_app(|app| app.set_window_title(Some("Typst".into())))
             .shot_handler(shot_handler)
             .allowed_options(&["--theme"])
