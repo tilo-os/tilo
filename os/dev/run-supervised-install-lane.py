@@ -714,7 +714,7 @@ if marker_raw is not None:
    try:backup_info=backup.lstat()
    except OSError:result('invalid')
    if (not stat.S_ISDIR(backup_info.st_mode) or backup_info.st_uid or backup_info.st_gid
-       or backup_info.st_nlink!=1 or backup_info.st_mode&0o077):result('invalid')
+       or backup_info.st_mode&0o077):result('invalid')
   if not path.exists() and not backup.exists():result('invalid')
 receipt_sha256=hashlib.sha256(raw).hexdigest()
 if marker_value is not None and receipt_sha256!=marker_value['old_receipt_sha256']:
@@ -729,7 +729,7 @@ for name in names:
   if marker_value is None or name not in marker_value['changed']:result('invalid')
   continue
  if (not stat.S_ISDIR(info.st_mode) or info.st_uid or info.st_gid or
-     info.st_nlink!=1 or info.st_mode&0o077):result('invalid')
+     info.st_mode&0o077):result('invalid')
 result('reconcile' if marker_value is not None else 'ready',receipt=document,
        receipt_sha256=receipt_sha256,**({'marker':marker_value} if marker_value is not None else {}))'''
 
