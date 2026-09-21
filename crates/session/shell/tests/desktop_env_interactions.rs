@@ -196,10 +196,14 @@ fn laid_out_topbar_height(chrome: Chrome) -> f64 {
     bar.get_rect().height()
 }
 
-fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
+fn dispatch_with_modifiers(
+    host: &mut ShellOverlayHost,
+    layout: &Layout,
+    event: &WindowEvent,
+    modifiers: Modifiers,
+) {
     let mut doc = automerge::AutoCommit::new();
     let doc_root = automerge::ROOT.clone();
-    let modifiers = Modifiers::default();
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
     host.handle_event(
@@ -213,6 +217,10 @@ fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
         layout.child_node,
         &layout.taffy,
     );
+}
+
+fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
+    dispatch_with_modifiers(host, layout, event, Modifiers::default());
 }
 
 /// Hover a group's first tab and hold its chip-reveal curve past the end, so
@@ -288,6 +296,19 @@ fn release(host: &mut ShellOverlayHost, layout: &Layout) {
     );
 }
 
+fn press_with_modifiers(host: &mut ShellOverlayHost, layout: &Layout, modifiers: Modifiers) {
+    dispatch_with_modifiers(
+        host,
+        layout,
+        &WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        modifiers,
+    );
+}
+
 // 1. Horizontal window-group resize
 
 #[test]
@@ -320,7 +341,8 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
     let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-    // Drag the handle +40 px right: left neighbour grows, right shrinks.
+    // Drag the handle +40 px right: the left group grows into the infinite
+    // strip; the neighbour keeps its own width.
     cursor(&mut host, &layout, Point::new(cx, cy));
     press(&mut host, &layout);
     cursor(&mut host, &layout, Point::new(cx + 40.0, cy));
@@ -341,8 +363,8 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     );
     assert_approx_eq!(
         right.width.resolve(usable),
-        start_px - 40.0,
-        "right group must have shrunk by the same 40 px (no overlap, widths reflow)",
+        start_px,
+        "ordinary resize must not squeeze the adjacent group",
     );
     // What is *stored* is the share, not the pixels — the same tree on a
     // wider display gives the same proportions, not the same widths.
@@ -353,9 +375,45 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     );
 }
 
-/// A drag far past a neighbour's minimum must clamp: the shrinking group
-/// pins at the display's minimum and the growing one absorbs only the
-/// slack, preserving the pair sum, and the clamped widths persist.
+#[test]
+fn shift_resize_handle_redistributes_width_between_neighbours() {
+    use winit::keyboard::ModifiersState;
+
+    let (tree, strip_id, ids) = single_strip_tree(&[100, 200]);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let usable = usable_strip_px(&mut host, strip_id);
+    let start_px = WindowWidth::Normal.resolve(usable);
+    let handle_rect = host
+        .group_row_mut_for_tests(strip_id)
+        .expect("strip GroupRow")
+        .handle_at(0)
+        .expect("inter-group handle")
+        .get_rect();
+    let centre = handle_rect.center();
+
+    cursor(&mut host, &layout, centre);
+    press_with_modifiers(&mut host, &layout, Modifiers::from(ModifiersState::SHIFT));
+    cursor(&mut host, &layout, Point::new(centre.x + 40.0, centre.y));
+    release(&mut host, &layout);
+    host.tick_pending_width_harvest_for_tests();
+
+    let st = chrome.borrow();
+    let tree = st.tree();
+    let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
+    let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
+    let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
+    assert_approx_eq!(left.width.resolve(usable), start_px + 40.0);
+    assert_approx_eq!(right.width.resolve(usable), start_px - 40.0);
+    assert_approx_eq!(
+        left.width.resolve(usable) + right.width.resolve(usable),
+        start_px * 2.0,
+        "Shift-resize deliberately preserves the adjacent pair's total width",
+    );
+}
+
+/// A normal drag far past the resized group's maximum clamps that group
+/// without changing its neighbour, and the clamped width persists.
 #[test]
 #[allow(
     clippy::significant_drop_tightening,

@@ -1437,6 +1437,10 @@ impl GroupRow {
                     || self
                         .groups
                         .iter()
+                        .any(|g| g.resize_grab_hit(self.last_cursor))
+                    || self
+                        .groups
+                        .iter()
                         .any(super::window_group::WindowGroup::drag_in_flight)
                     || self
                         .handles
@@ -5066,6 +5070,72 @@ mod tests {
     }
 
     #[test]
+    fn lone_group_resize_grip_is_not_armed_as_a_group_reorder() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::WindowEvent;
+
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1]]);
+        let group_rect = row.groups[0].get_rect();
+        let grab = Point::new(group_rect.x1 - 2.0, group_rect.center().y);
+        let dev = unsafe { std::mem::zeroed() };
+        let modifiers = Modifiers::default();
+        let mut state = AutoCommit::new();
+        let path = automerge::ROOT.clone();
+        let mut focus = None;
+
+        dispatch_row(
+            &mut row,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(grab.x, grab.y),
+            },
+            modifiers,
+            &mut state,
+            &path,
+            &mut focus,
+            root,
+            &taffy,
+        );
+        assert!(dispatch_row(
+            &mut row,
+            &WindowEvent::MouseInput {
+                device_id: dev,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            modifiers,
+            &mut state,
+            &path,
+            &mut focus,
+            root,
+            &taffy,
+        ));
+        assert!(
+            row.groups[0].wants_pointer_capture(),
+            "the lone group's resize gesture must own pointer capture",
+        );
+
+        assert!(dispatch_row(
+            &mut row,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(grab.x - 80.0, grab.y),
+            },
+            modifiers,
+            &mut state,
+            &path,
+            &mut focus,
+            root,
+            &taffy,
+        ));
+        assert!(
+            row.groups[0].resolved_width_px() < group_rect.width(),
+            "dragging the lone trailing edge must resize rather than reorder the group",
+        );
+        assert!(!row.group_drag_active());
+    }
+
+    #[test]
     fn handle_pool_grows_on_split_into_new_group() {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Size as TSize};
@@ -5160,7 +5230,7 @@ mod tests {
 
     /// Build a two-group row fixture, hover its resize handle open, and
     /// press to start a drag — the shared prologue for
-    /// `drag_handle_resizes_both_neighbours_via_set_width`. Split out to
+    /// the resize-handle integration tests below. Split out to
     /// keep that under the line cap.
     #[allow(
         clippy::type_complexity,
@@ -5243,15 +5313,15 @@ mod tests {
     /// path the user's mouse drives, through to the shell-persisted
     /// width-change stamp.
     #[test]
-    fn drag_handle_resizes_both_neighbours_via_set_width() {
+    fn drag_handle_expands_strip_without_resizing_the_neighbour() {
         use winit::dpi::PhysicalPosition;
         use winit::event::WindowEvent;
 
         let (mut row, taffy, root, cx, cy, dev, modifiers, mut state, path, mut focus) =
             start_handle_drag();
 
-        // CursorMoved +50 px right → width pulse applied to both
-        // neighbours via `set_width`.
+        // CursorMoved +50 px right grows the left group and the infinite
+        // strip; the right group keeps its own width.
         dispatch_row(
             &mut row,
             &WindowEvent::CursorMoved {
@@ -5272,8 +5342,8 @@ mod tests {
         );
         assert_eq!(
             row.groups[1].resolved_width_px(),
-            750.0,
-            "right neighbour shrank by exactly dx",
+            800.0,
+            "ordinary resize must leave the right neighbour unchanged",
         );
 
         assert_eq!(
@@ -5310,9 +5380,8 @@ mod tests {
         );
         assert_eq!(
             row.groups[1].take_pending_width_change(),
-            Some(625),
-            "release stamps right neighbour's persisted width as a fraction \
-             of its display (750/1200)",
+            Some(667),
+            "release preserves the right neighbour's persisted width",
         );
     }
 
@@ -5379,8 +5448,8 @@ mod tests {
             "press must start the resize before clamp behavior is exercised",
         );
         // Drag 500px left: 400 - 500 = -100, below `min_group_px(1200) =
-        // 240`. Clamp pins left at 240; right absorbs only the actual
-        // 160px moved, settling at 560.
+        // 240`. Clamp pins left at 240; ordinary infinite-strip resize
+        // leaves the right neighbour at 400.
         let handled = dispatch_row(
             &mut row,
             &WindowEvent::CursorMoved {
@@ -5404,13 +5473,8 @@ mod tests {
         );
         assert_eq!(
             row.groups[1].resolved_width_px(),
-            800.0 - min,
-            "right neighbour absorbs only the actual movement, not the requested 500",
-        );
-        assert_eq!(
-            row.groups[0].resolved_width_px() + row.groups[1].resolved_width_px(),
-            800.0,
-            "pair sum is preserved across the clamp",
+            400.0,
+            "ordinary resize does not redistribute into the right neighbour",
         );
     }
 
