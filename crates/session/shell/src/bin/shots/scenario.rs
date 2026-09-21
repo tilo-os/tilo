@@ -1383,6 +1383,12 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     out.push(',');
     push_kv_bool(&mut out, "overlay_room_activity", st.overlays.room_activity);
     out.push(',');
+    push_kv_bool(
+        &mut out,
+        "workspace_activity_open",
+        shell::shell::tab_binding::active_workspace_activity_tab(&st.tree()).is_some(),
+    );
+    out.push(',');
     push_kv_str(
         &mut out,
         "room_activity_view",
@@ -2464,28 +2470,32 @@ fn room_activity_from_palette() -> Scenario {
     }
 }
 
-/// Work-session cards at rest, then the exact state reached without a
-/// pointer: traverse the modal and expand a named session, revealing the
-/// shared boundary that can move one underlying action in either direction.
+/// The recap at rest, then the exact state reached without a pointer:
+/// expand one high-level outcome and follow it into the granular log.
 fn room_activity_catch_up_keyboard() -> Scenario {
     Scenario {
         name: "room_activity_catch_up_keyboard",
-        description: "Open Catch up, traverse its controls by keyboard, and reveal the editable boundary between adjacent work sessions.",
+        description: "Open the tiled recap, expand a high-level outcome, then follow it into Full history.",
         actions: vec![
             Action::SeedRoomActivity { explore: false },
             Action::Relayout,
-            Action::Snapshot("01-catch-up"),
-            Action::Key(Key::Named(NamedKey::Home)),
-            Action::Key(Key::Named(NamedKey::ArrowRight)),
-            Action::Key(Key::Named(NamedKey::ArrowRight)),
-            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("01-recap"),
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Named(NamedKey::ArrowLeft)),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Modifiers(ModifiersState::SUPER),
+            Action::Key(Key::Character("-".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Relayout,
+            Action::Snapshot("02-window-reordered-and-resized"),
             Action::Key(Key::Named(NamedKey::End)),
             Action::Key(Key::Named(NamedKey::Enter)),
-            Action::Snapshot("02-work-session-boundary-revealed"),
-            Action::Key(Key::Named(NamedKey::End)),
-            Action::Snapshot("03-work-session-boundary-focus-visible"),
+            Action::Wait(12),
+            Action::Relayout,
+            Action::Snapshot("03-outcome-expanded"),
             Action::Key(Key::Named(NamedKey::Enter)),
-            Action::Snapshot("04-boundary-moved-one-action"),
+            Action::Relayout,
+            Action::Snapshot("04-full-history"),
         ],
     }
 }

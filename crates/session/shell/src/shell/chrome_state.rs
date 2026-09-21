@@ -953,7 +953,13 @@ impl ChromeState {
 
     pub fn open_room_activity(&mut self, focus: Option<ActivityFocus>) {
         self.activity_focus_request = focus;
-        self.overlays.room_activity = true;
+        {
+            let mut tree = self.tree_mut();
+            crate::shell::tab_binding::open_workspace_activity(&mut tree);
+        }
+        // Kept as a request edge for compatibility with older control/state
+        // clients; Activity itself is no longer a modal overlay.
+        self.overlays.room_activity = false;
         self.overlays.collaborators = false;
         self.bump();
     }
@@ -1125,6 +1131,7 @@ impl ChromeState {
         let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
         let tab = group.tabs.iter().find(|t| t.id == tab_id)?;
         let app_id = match &tab.tile {
+            TileContent::WorkspaceActivity => "org.tilo.WorkspaceActivity".to_string(),
             // A peer window carries an app id in the same namespace
             // `AppKind::app_id` maps the others into.
             TileContent::Foreign { app_id, .. }
