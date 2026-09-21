@@ -82,7 +82,15 @@ if ($LASTEXITCODE -ne 0) {
 
 # An SSH disconnect is expected during a successful poweroff. Process exit is
 # the authority that the native output store is no longer open by QEMU.
-& ssh.exe @sshOptions 'sudo systemctl poweroff' 2>$null
+$savedErrorActionPreference = $ErrorActionPreference
+try {
+    # A successful remote poweroff normally closes SSH with status 255 and may
+    # emit a disconnect message on stderr. Process exit below is authoritative.
+    $ErrorActionPreference = 'Continue'
+    & ssh.exe @sshOptions 'sudo systemctl poweroff' 2>$null
+} finally {
+    $ErrorActionPreference = $savedErrorActionPreference
+}
 $deadline = [DateTime]::UtcNow.AddSeconds(90)
 while ((Get-Process -Id $builderPid -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {
     Start-Sleep -Milliseconds 500
