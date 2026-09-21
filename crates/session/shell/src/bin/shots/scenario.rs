@@ -37,7 +37,10 @@ use super::driver::ShellDriver;
 /// `resolve_named_rect`-based click targeting out of reach of the next
 /// scenario that needs it.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "the screenshot scenario DSL intentionally keeps actions available before every variant has a catalogue caller"
+)]
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
     ClickAt(Point),
