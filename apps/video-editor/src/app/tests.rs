@@ -10571,8 +10571,9 @@ fn a_disabled_export_button_offers_no_pointer() {
         "a render in flight disables Export"
     );
     render(&mut app);
-    let mut tr = TextRenderer::new();
-    let l = app.export_layout(&mut tr, &Theme::dark());
+    let l = app
+        .with_dialog_layout(|app, tr, theme| app.export_layout(tr, theme))
+        .expect("rendered dialog layout");
     assert_eq!(
         app.cursor_shape(l.confirm.center()),
         Some(CursorIcon::Default),
