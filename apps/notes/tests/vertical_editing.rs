@@ -9,6 +9,10 @@ use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fixture's editor field distinguishes the widget from its layout and renderer"
+)]
 struct Editor {
     editor: BlockEditor,
     tree: TaffyTree<()>,

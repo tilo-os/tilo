@@ -536,6 +536,10 @@ pub struct NotesApp {
     /// A route selected by Back/Forward. The ordinary open path still performs
     /// stale-resource validation, while this marker prevents that replay from
     /// being pushed as a brand-new route and destroying the forward branch.
+    #[allow(
+        clippy::option_option,
+        reason = "outer None means no history replay; inner None is the notebook overview route"
+    )]
     history_target: Option<Option<PageId>>,
     /// A block reveal requested by a brokered view operation. Re-applied after
     /// the selected page binds to its collaborative block list, because binding
@@ -630,7 +634,7 @@ impl NotesApp {
             if let Some(meta) = workspace.get(sel) {
                 let body = storage::read_page_body(&root, sel)
                     .map_err(|error| format!("Could not read note {}: {error}", meta.title))?;
-                main.load_page_with_link_resolver(sel, &meta.title, body, |t| {
+                main.load_page_with_link_resolver(sel, &meta.title, &body, |t| {
                     by_title.get(t).copied()
                 });
             }
@@ -643,7 +647,7 @@ impl NotesApp {
                 workspace.set_selected(Some(id));
                 let body = storage::read_page_body(&root, id)
                     .map_err(|error| format!("Could not read note {title}: {error}"))?;
-                main.load_page_with_link_resolver(id, &title, body, |t| by_title.get(t).copied());
+                main.load_page_with_link_resolver(id, &title, &body, |t| by_title.get(t).copied());
                 sidebar.sync_from_workspace(&workspace);
             }
         }
@@ -1576,7 +1580,7 @@ impl NotesApp {
             .map(|m| m.title.clone())
             .unwrap_or_default();
         if self.legacy_fixture_storage.is_none() {
-            match self.main.bind_canonical_page(state, sel, &title, list) {
+            match self.main.bind_canonical_page(state, sel, &title, &list) {
                 Ok(()) => {
                     self.bound_page = Some(sel);
                     self.refresh_link_pages();
@@ -1596,7 +1600,7 @@ impl NotesApp {
                 // one: the saver would replace the original bytes with it.
                 tracing::warn!(%error, page = %sel, "notes: page bind refused");
                 if self.legacy_read_blocked != Some(sel) {
-                    self.report_page_read_failure(error.to_string());
+                    self.report_page_read_failure(&error.to_string());
                 }
                 self.legacy_read_blocked = Some(sel);
                 self.bound_page = None;
@@ -2116,7 +2120,7 @@ impl NotesApp {
     fn apply_event(&mut self, ev: OutEvent) {
         if self.legacy_read_blocked.is_some() {
             self.report_page_read_failure(
-                "The current note could not be read; its unsaved draft is still open".into(),
+                "The current note could not be read; its unsaved draft is still open",
             );
             return;
         }
@@ -2174,7 +2178,7 @@ impl NotesApp {
                 if let Err(e) = storage::write_page_body(&root, id, "") {
                     tracing::error!(error = %e, page = %id, "notes: write empty page failed");
                 }
-                self.main.load_page(id, "Untitled", String::new());
+                self.main.load_page(id, "Untitled", "");
             }
             OutEvent::Move { id, delta } => {
                 // Reorder among siblings. The new `order` propagates to
@@ -2207,7 +2211,7 @@ impl NotesApp {
                     let bodies = match bodies {
                         Ok(bodies) => bodies,
                         Err(error) => {
-                            self.report_page_read_failure(error.to_string());
+                            self.report_page_read_failure(&error.to_string());
                             return;
                         }
                     };
@@ -2229,7 +2233,7 @@ impl NotesApp {
                     if let Some(meta) = self.workspace.get(new_root) {
                         let title = meta.title.clone();
                         if let Some((_, body)) = bodies.iter().find(|(id, _)| *id == new_root) {
-                            self.load_page_with_resolver(new_root, &title, body.clone());
+                            self.load_page_with_resolver(new_root, &title, body);
                         }
                     }
                 }
@@ -2246,7 +2250,7 @@ impl NotesApp {
     /// Load a page through `MainPanel::load_page_with_link_resolver`,
     /// resolving `[[Title]]` link marks against the current
     /// workspace's page list.
-    fn load_page_with_resolver(&mut self, id: PageId, title: &str, body: String) {
+    fn load_page_with_resolver(&mut self, id: PageId, title: &str, body: &str) {
         // Snapshot the title→id map ahead of borrowing main mutably.
         let by_title: std::collections::HashMap<String, PageId> = self
             .workspace
@@ -2345,11 +2349,11 @@ impl NotesApp {
     /// Cmd-K palette and by click-on-link events.
     pub fn navigate_to(&mut self, id: PageId) {
         if let Err(error) = self.try_navigate_to(id) {
-            self.report_page_read_failure(error);
+            self.report_page_read_failure(&error);
         }
     }
 
-    fn report_page_read_failure(&mut self, error: String) {
+    fn report_page_read_failure(&mut self, error: &str) {
         tracing::warn!(%error, "notes: page read refused");
         self.transfer_toasts.push(
             format!("Could not read note: {error}"),
@@ -2378,7 +2382,7 @@ impl NotesApp {
             let body = storage::read_page_body(&root, id).map_err(|error| error.to_string())?;
             self.workspace.set_selected(Some(id));
             self.record_current_route();
-            self.load_page_with_resolver(id, &title, body);
+            self.load_page_with_resolver(id, &title, &body);
             // `load_page_with_resolver` creates a fresh, unbound editor. This
             // matters even when opening the page already selected (for example
             // a brokered block reveal): force the next sync to bind it back to
@@ -2579,6 +2583,10 @@ impl NotesApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "drains each asynchronous Markdown transfer outcome through one completion boundary"
+    )]
     fn drain_markdown_transfer(&mut self, doc: &mut AutoCommit) {
         if let Some(job) = self.markdown_job.try_take() {
             match job {
@@ -2693,7 +2701,7 @@ impl NotesApp {
         &mut self,
         doc: &mut AutoCommit,
         path: &std::path::Path,
-        body: String,
+        body: &str,
     ) -> Result<(), String> {
         if self.legacy_read_blocked.is_some() {
             return Err(
@@ -2702,11 +2710,11 @@ impl NotesApp {
         }
         let (body, assets) = if let Some(legacy) = self.legacy_fixture_storage.as_ref() {
             (
-                adopt_portable_markdown_assets(&legacy.root, path, &body),
+                adopt_portable_markdown_assets(&legacy.root, path, body),
                 Vec::new(),
             )
         } else {
-            adopt_canonical_markdown_assets(path, &body)
+            adopt_canonical_markdown_assets(path, body)
         };
         let mut workspace = if self.legacy_fixture_storage.is_some() {
             let mut workspace = self.workspace.clone();
@@ -2763,8 +2771,8 @@ impl NotesApp {
     fn finish_direct_markdown_import(
         &mut self,
         doc: &mut AutoCommit,
-        title: String,
-        body: String,
+        title: &str,
+        body: &str,
     ) -> Result<PageId, String> {
         let title = title.trim();
         let title = if title.is_empty() {
@@ -2772,7 +2780,7 @@ impl NotesApp {
         } else {
             title
         };
-        let body = crate::markdown::strip_matching_title_heading(&body, title);
+        let body = crate::markdown::strip_matching_title_heading(body, title);
         let mut workspace = Self::project_workspace(doc, self.workspace.selected())?;
         let page = workspace.create_page(None);
         workspace.rename(page, title);
@@ -2826,6 +2834,10 @@ impl NotesApp {
     /// the private jump palette and in-document links construct the identical
     /// operation and arrive here too, so every open path validates the same
     /// durable page/block resource before changing presentation state.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps the exhaustive typed Notes operation dispatch in one validation boundary"
+    )]
     fn open_notes_operation(
         &mut self,
         operation: actions::NotesOperation,
@@ -3759,7 +3771,7 @@ impl Widget for NotesApp {
                 .take()
                 .ok_or("No local file import is pending")?;
             self.import_control_emitted = false;
-            self.finish_markdown_import(doc, &source, body)?;
+            self.finish_markdown_import(doc, &source, &body)?;
             return Ok(Some(ui::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )));
@@ -3774,7 +3786,7 @@ impl Widget for NotesApp {
             if crate::markdown::parse(&body).len() > MAX_MARKDOWN_IMPORT_BLOCKS {
                 return Err("Markdown content contains more than 10,000 blocks".into());
             }
-            let page = self.finish_direct_markdown_import(doc, title, body)?;
+            let page = self.finish_direct_markdown_import(doc, &title, &body)?;
             let mut output = tilo_actions::ActionOutput::default();
             output.resources.push(actions::page_resource_id(page));
             return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
@@ -4480,9 +4492,7 @@ impl Widget for NotesApp {
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        self.children()
-            .into_iter()
-            .find_map(|child| child.modal_capture())
+        self.children().into_iter().find_map(Widget::modal_capture)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -4909,6 +4919,10 @@ impl NotesApp {
         clippy::too_many_arguments,
         reason = "forwards the Widget event context"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "routes the complete context-menu event lifecycle through one stateful boundary"
+    )]
     fn handle_note_context_menu(
         &mut self,
         event: &WindowEvent,
@@ -5075,7 +5089,7 @@ impl NotesApp {
                                 .blocks()
                                 .iter()
                                 .find(|block| &block.id == id)
-                                .map(|block| block.text())
+                                .map(ui::widget::Block::text)
                         }) != self.note_menu_table_source.as_deref())
                 {
                     return;

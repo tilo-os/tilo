@@ -140,7 +140,7 @@ fn mouse_wheel_scrolls_and_clamps_to_content() {
     let id = app.selected_for_test().unwrap();
     let body = tall_body();
     notes::storage::write_page_body(tmp.path(), id, &body).unwrap();
-    app.main_panel_mut().load_page(id, "Long page", body);
+    app.main_panel_mut().load_page(id, "Long page", &body);
     // Complete the normal legacy origin bind before measuring wheel behavior.
     // Otherwise its delayed first bind replaces the panel midway through this test.
     app.bypass_seed_grace_for_test();
@@ -203,7 +203,7 @@ fn bottom_scroll_reveals_the_last_row_just_above_the_actual_status_pill() {
         let id = app.selected_for_test().unwrap();
         let body = tall_body();
         notes::storage::write_page_body(tmp.path(), id, &body).unwrap();
-        app.main_panel_mut().load_page(id, "Long note", body);
+        app.main_panel_mut().load_page(id, "Long note", &body);
         app.bypass_seed_grace_for_test();
         let mut state = ui::State::new();
         let (taffy, child) = settle_scaled(&mut app, &mut state, 1000, 1000, scale).unwrap();
@@ -249,6 +249,10 @@ fn mouse(state: winit::event::ElementState) -> WindowEvent {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end scrollbar test verifies pointer, keyboard, semantic, and reload paths"
+)]
 fn note_scrollbar_drags_pages_and_exposes_the_same_position_semantically() {
     use ui::a11y::Action;
     use winit::event::ElementState::{Pressed, Released};
@@ -257,7 +261,7 @@ fn note_scrollbar_drags_pages_and_exposes_the_same_position_semantically() {
     let id = app.selected_for_test().unwrap();
     let body = tall_body();
     notes::storage::write_page_body(tmp.path(), id, &body).unwrap();
-    app.main_panel_mut().load_page(id, "Long note", body);
+    app.main_panel_mut().load_page(id, "Long note", &body);
     app.bypass_seed_grace_for_test();
     let mut state = ui::State::new();
     let (taffy, child) = settle(&mut app, &mut state, 1000, 600).unwrap();
@@ -426,7 +430,7 @@ fn note_scrollbar_drags_pages_and_exposes_the_same_position_semantically() {
     let id = app.selected_for_test().unwrap();
     notes::storage::write_page_body(short.path(), id, "Fits on screen").unwrap();
     app.main_panel_mut()
-        .load_page(id, "Short note", "Fits on screen".into());
+        .load_page(id, "Short note", "Fits on screen");
     app.bypass_seed_grace_for_test();
     let mut state = ui::State::new();
     settle(&mut app, &mut state, 1000, 600).unwrap();
@@ -453,7 +457,7 @@ fn revealing_a_deep_block_scrolls_its_caret_into_view_and_allows_manual_scrollin
     let id = app.selected_for_test().unwrap();
     let body = tall_body();
     notes::storage::write_page_body(tmp.path(), id, &body).unwrap();
-    app.main_panel_mut().load_page(id, "Long note", body);
+    app.main_panel_mut().load_page(id, "Long note", &body);
     app.bypass_seed_grace_for_test();
     let mut state = ui::State::new();
     settle(&mut app, &mut state, 1000, 400).unwrap();

@@ -70,10 +70,14 @@ fn case_folded_match_ranges(haystack: &str, needle: &str) -> Vec<(usize, usize)>
     let mut ranges = Vec::new();
     let mut start_slot = 0usize;
     while start_slot < boundaries.len().saturating_sub(1) {
-        let start = boundaries[start_slot];
+        let Some(&start) = boundaries.get(start_slot) else {
+            break;
+        };
         let mut matched_end = None;
         for &end in boundaries.iter().skip(start_slot.saturating_add(1)) {
-            let candidate = &haystack[start..end];
+            let Some(candidate) = haystack.get(start..end) else {
+                continue;
+            };
             let candidate_folded = candidate.to_lowercase();
             if candidate_folded == folded {
                 matched_end = Some(end);
@@ -147,6 +151,10 @@ fn syntax_role(scopes: &ScopeStack) -> Option<TransientColorRole> {
     None
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the parser advances one shared index while both slices are bounds-checked by the loop"
+)]
 fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
     let set = syntax_set();
     let mut index = 0usize;
@@ -385,7 +393,7 @@ impl Block {
             .with_size(kind.font_size())
             .with_mono();
         line.set_inline_formatting(false);
-        Self::with_id(kind.clone(), line)
+        Self::with_id(kind, line)
     }
 
     pub fn table(text: &str, visual: bool) -> Self {
@@ -1331,6 +1339,10 @@ impl BlockEditor {
     /// and selections on surviving blocks. No durable state is written.
     /// # Errors
     /// Refuses malformed records before replacing any retained editor state.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "focus and remapped positions are validated against the freshly installed projection"
+    )]
     pub fn sync_existing_block_objects(
         &mut self,
         state: &mut AutoCommit,
@@ -1509,6 +1521,10 @@ impl BlockEditor {
 
     /// Preserves focus + caret across the rebuild so a remote edit
     /// elsewhere doesn't yank the local caret.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the restored focus index is clamped to the non-empty rebuilt projection"
+    )]
     fn rebuild_from_doc(&mut self, state: &mut AutoCommit, list: &ObjId, doc_len: usize) {
         let saved_focus = self.focused;
         let saved_id = self
@@ -1519,7 +1535,7 @@ impl BlockEditor {
         let saved_table_caret = saved_table_cell
             .as_ref()
             .and_then(|(id, _, _)| self.table_editors.get(id))
-            .and_then(|table| table.projected_caret());
+            .and_then(super::table::Table::projected_caret);
         let saved_caret = self
             .focused
             .and_then(|i| self.blocks.get(i))
@@ -1577,10 +1593,10 @@ impl BlockEditor {
                         table.restore_projected_caret(&caret);
                     }
                 }
-            } else if let Some(b) = self.blocks.get_mut(fi) {
-                if let Some(c) = saved_caret {
-                    b.line.set_cursor_pos(c);
-                }
+            } else if let Some(b) = self.blocks.get_mut(fi)
+                && let Some(c) = saved_caret
+            {
+                b.line.set_cursor_pos(c);
             }
         }
     }
@@ -1603,7 +1619,7 @@ impl BlockEditor {
         self.blocks.iter().find_map(|block| {
             self.table_editors
                 .get(&block.id)
-                .and_then(|table| table.projected_focus())
+                .and_then(super::table::Table::projected_focus)
                 .map(|(row, column)| (block.id.clone(), row, column))
         })
     }
@@ -1708,9 +1724,10 @@ impl BlockEditor {
         }
         let len = self.find_matches.len();
         let next = match (self.find_active, reverse) {
-            (Some(0) | None, true) => len - 1,
-            (Some(index), true) => index - 1,
-            (Some(index), false) => (index + 1) % len,
+            (Some(0) | None, true) => len.saturating_sub(1),
+            (Some(index), true) => index.saturating_sub(1),
+            (Some(index), false) if index < len.saturating_sub(1) => index.saturating_add(1),
+            (Some(_), false) => 0,
             (None, false) => 0,
         };
         self.activate_find_match(next);
@@ -1817,6 +1834,10 @@ impl BlockEditor {
         *ctx.handled
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "finite theme-scaled drawing coordinates intentionally use affine arithmetic"
+    )]
     fn draw_find_overlay(
         &mut self,
         scene: &mut Scene,
@@ -1880,7 +1901,7 @@ impl BlockEditor {
         } else {
             format!(
                 "{} / {}",
-                self.find_active.map_or(0, |index| index + 1),
+                self.find_active.map_or(0, |index| index.saturating_add(1)),
                 self.find_matches.len()
             )
         };
@@ -2005,7 +2026,7 @@ impl BlockEditor {
             _ => Block::paragraph(suffix),
         };
         suffix_block.line.set_marks(suffix_marks);
-        suffix_block.code_group = block.code_group.clone();
+        block.code_group.clone_into(&mut suffix_block.code_group);
         suffix_block.set_indent(block.indent());
         let next_idx = idx.saturating_add(1);
         self.blocks.insert(next_idx, suffix_block);
@@ -2189,13 +2210,13 @@ impl BlockEditor {
             return index.saturating_add(1).min(self.blocks.len());
         };
         let depth = parent.indent();
-        let mut end = index + 1;
+        let mut end = index.saturating_add(1);
         while self
             .blocks
             .get(end)
             .is_some_and(|child| child.indent() > depth)
         {
-            end += 1;
+            end = end.saturating_add(1);
         }
         end
     }
@@ -2218,18 +2239,21 @@ impl BlockEditor {
         }
         let depth = parent.indent();
         let end = self.list_subtree_end(last);
-        let deepest = self.blocks[idx..end]
-            .iter()
-            .map(|b| b.indent())
-            .max()
-            .unwrap_or(depth);
-        let shift = delta
-            .max(-(depth as i8))
-            .min((MAX_LIST_INDENT - deepest) as i8);
+        let Some(subtree) = self.blocks.get(idx..end) else {
+            return false;
+        };
+        let deepest = subtree.iter().map(Block::indent).max().unwrap_or(depth);
+        let minimum_shift = i8::try_from(depth).unwrap_or(i8::MAX).saturating_neg();
+        let maximum_shift =
+            i8::try_from(MAX_LIST_INDENT.saturating_sub(deepest)).unwrap_or(i8::MAX);
+        let shift = delta.max(minimum_shift).min(maximum_shift);
         if shift == 0 {
             return false;
         }
-        for block in &mut self.blocks[idx..end] {
+        let Some(subtree) = self.blocks.get_mut(idx..end) else {
+            return false;
+        };
+        for block in subtree {
             block.set_indent(clamp_indent(block.indent(), shift));
         }
         self.structure_dirty = true;
@@ -2465,8 +2489,13 @@ impl BlockEditor {
         let depth = current.indent();
         {
             if up {
-                while target > 0 && self.blocks[target].indent() > depth {
-                    target -= 1;
+                while target > 0
+                    && self
+                        .blocks
+                        .get(target)
+                        .is_some_and(|block| block.indent() > depth)
+                {
+                    target = target.saturating_sub(1);
                 }
             }
             let adjacent = self.blocks.get(target)?;
@@ -2490,9 +2519,14 @@ impl BlockEditor {
             return None;
         }
         let mut destination = target;
-        let depth = self.blocks[group.start].indent();
-        while destination > 0 && self.blocks[destination].indent() > depth {
-            destination -= 1;
+        let depth = self.blocks.get(group.start)?.indent();
+        while destination > 0
+            && self
+                .blocks
+                .get(destination)
+                .is_some_and(|block| block.indent() > depth)
+        {
+            destination = destination.saturating_sub(1);
         }
         let other = self.movable_group(destination);
         if other.start < group.end && group.start < other.end {
@@ -2518,19 +2552,19 @@ impl BlockEditor {
             .focused
             .filter(|index| group.contains(index))
             .unwrap_or(source)
-            - group.start;
+            .saturating_sub(group.start);
         self.clear_cross_block_selection();
         self.cross_block_drag_start = None;
         self.kbd_sel_anchor = None;
         let count = group.len();
         let insertion = if boundary > group.start {
-            boundary - count
+            boundary.saturating_sub(count)
         } else {
             boundary
         };
         let moving: Vec<_> = self.blocks.drain(group).collect();
         self.blocks.splice(insertion..insertion, moving);
-        self.focused = Some(insertion + focus_offset);
+        self.focused = Some(insertion.saturating_add(focus_offset));
         for (index, block) in self.blocks.iter_mut().enumerate() {
             block
                 .line
@@ -2637,7 +2671,7 @@ impl BlockEditor {
             let line = &self.blocks.get(index)?.line;
             let (start, end) = line
                 .selection_range()
-                .unwrap_or((line.cursor_pos(), line.cursor_pos()));
+                .unwrap_or_else(|| (line.cursor_pos(), line.cursor_pos()));
             Some(DocumentSelection {
                 anchor: DocumentPosition {
                     block: index,
@@ -2669,10 +2703,10 @@ impl BlockEditor {
         }
         let prior = self.document_selection;
         self.document_selection = Some(selection);
-        if matches!(command, "copy" | "cut") {
-            if let Some(text) = self.selected_text() {
-                clipboard_copy(&text);
-            }
+        if matches!(command, "copy" | "cut")
+            && let Some(text) = self.selected_text()
+        {
+            clipboard_copy(&text);
         }
         if command == "copy" {
             self.document_selection = prior;
@@ -2788,7 +2822,11 @@ impl BlockEditor {
             return;
         };
         let after = boundary > group.start;
-        let index = if after { boundary - 1 } else { boundary };
+        let index = if after {
+            boundary.saturating_sub(1)
+        } else {
+            boundary
+        };
         let Some(rect) = self.block_paint_rect(index) else {
             return;
         };
@@ -2896,6 +2934,11 @@ impl BlockEditor {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "one cohesive image interaction state machine validates the active block before indexing"
+    )]
     fn handle_image_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         use winit::event::{ElementState, MouseButton};
         if *ctx.handled {
@@ -3016,10 +3059,10 @@ impl BlockEditor {
                     self.set_image_source_mode(&id, true);
                 }
                 Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => {
-                    self.focus_adjacent_visual_row(index, false)
+                    self.focus_adjacent_visual_row(index, false);
                 }
                 Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
-                    self.focus_adjacent_visual_row(index, true)
+                    self.focus_adjacent_visual_row(index, true);
                 }
                 Key::Named(NamedKey::Backspace | NamedKey::Delete) => {
                     let end = self.blocks[index].text().len();
@@ -3178,8 +3221,11 @@ impl BlockEditor {
         let Some(run) = self.blocks.get(start..=end) else {
             return false;
         };
-        if run.is_empty()
-            || run
+        let Some((first, rest)) = run.split_first() else {
+            return false;
+        };
+        if !matches!(first.kind, BlockKind::CodeBlock { .. })
+            || rest
                 .iter()
                 .any(|block| !matches!(block.kind, BlockKind::CodeBlock { .. }))
         {
@@ -3187,7 +3233,7 @@ impl BlockEditor {
         }
         clipboard_copy(&run.iter().map(Block::text).collect::<Vec<_>>().join("\n"));
         self.copied_code_start = Some(start);
-        self.copied_code_feedback = Some((run[0].id.clone(), std::time::Instant::now()));
+        self.copied_code_feedback = Some((first.id.clone(), std::time::Instant::now()));
         self.dirty = true;
         true
     }
@@ -3429,6 +3475,10 @@ fn clamp_char_boundary(text: &str, byte: usize) -> usize {
     b
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered block diff is kept together so move/insert/delete precedence remains explicit"
+)]
 fn semantic_block_ops(before: &[BlockSnapshot], after: &[BlockSnapshot]) -> Vec<BlockEditOp> {
     let mut ops = Vec::new();
     let old = before
@@ -3699,7 +3749,7 @@ fn markdown_table_data_rows(source: &str) -> Vec<Vec<&str>> {
 }
 
 fn markdown_table_ranges(source: &str) -> Vec<Vec<std::ops::Range<usize>>> {
-    let mut offset = 0;
+    let mut offset = 0usize;
     let mut rows = Vec::new();
     for line in source.split_inclusive('\n') {
         let trimmed = line.trim();
@@ -3713,7 +3763,7 @@ fn markdown_table_ranges(source: &str) -> Vec<Vec<std::ops::Range<usize>>> {
             escaped = ch == '\\' && !escaped;
         }
         if !delimiters.is_empty() {
-            let start = if delimiters.first() == Some(&0) { 1 } else { 0 };
+            let start = usize::from(delimiters.first() == Some(&0));
             let end = if delimiters.last().copied() == trimmed.len().checked_sub(1) {
                 trimmed.len().saturating_sub(1)
             } else {
@@ -3727,15 +3777,17 @@ fn markdown_table_ranges(source: &str) -> Vec<Vec<std::ops::Range<usize>>> {
                 .chain(std::iter::once(end))
             {
                 if let Some(cell) = trimmed.get(previous..boundary) {
-                    let left = previous + cell.len().saturating_sub(cell.trim_start().len());
-                    let right = left + cell.trim().len();
-                    cells.push(offset + leading + left..offset + leading + right);
+                    let left =
+                        previous.saturating_add(cell.len().saturating_sub(cell.trim_start().len()));
+                    let right = left.saturating_add(cell.trim().len());
+                    let base = offset.saturating_add(leading);
+                    cells.push(base.saturating_add(left)..base.saturating_add(right));
                 }
                 previous = boundary.saturating_add(1);
             }
             rows.push(cells);
         }
-        offset += line.len();
+        offset = offset.saturating_add(line.len());
     }
     rows
 }
@@ -3772,7 +3824,12 @@ fn encode_table_cell(value: &str) -> String {
     let last_content = normalized
         .rfind(|character| character != ' ')
         .map_or(0, |index| {
-            index + normalized[index..].chars().next().map_or(0, char::len_utf8)
+            index.saturating_add(
+                normalized
+                    .get(index..)
+                    .and_then(|suffix| suffix.chars().next())
+                    .map_or(0, char::len_utf8),
+            )
         });
     let mut encoded = String::with_capacity(normalized.len());
     for (index, character) in normalized.char_indices() {
@@ -3867,6 +3924,12 @@ impl TablePreviewLayout {
         self.row_heights.iter().sum()
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::cast_precision_loss,
+        reason = "bounded table-grid rendering converts validated row and column indices to coordinates"
+    )]
     fn editor_rects(&self, rect: Rect, scale: f64) -> Vec<Rect> {
         let source_rows = self.rows.len() + usize::from(self.stacked_labels.is_some());
         let mut rects = vec![Rect::ZERO; source_rows.saturating_mul(self.columns)];
@@ -3920,6 +3983,12 @@ impl TablePreviewLayout {
 
 /// Measurement and painting consume the same complete table and text style.
 /// The renderer wraps cell text; row height follows its tallest cell.
+#[expect(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    reason = "table measurement is one cohesive pass and converts bounded viewport dimensions for the text API"
+)]
 fn markdown_table_layout(
     source: &str,
     width: f32,
@@ -4059,6 +4128,10 @@ fn markdown_table_layout(
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the finite measured pixel height is intentionally narrowed for the f32 layout API"
+)]
 pub(super) fn measure_table_preview_height(
     source: &str,
     width: f32,
@@ -4092,7 +4165,10 @@ fn formula_run_end(blocks: &[Block], start: usize) -> usize {
             .get(end.saturating_add(1))
             .and_then(|block| formula_descriptor(&block.kind))
             == Some(descriptor)
-        && blocks[start].same_code_group(&blocks[end + 1])
+        && blocks
+            .get(start)
+            .zip(blocks.get(end.saturating_add(1)))
+            .is_some_and(|(first, next)| first.same_code_group(next))
     {
         end = end.saturating_add(1);
     }
@@ -4808,6 +4884,10 @@ fn deterministic_block_uuid(seed: &str) -> Uuid {
 /// the only way `insert_object`/`put_object` can fail here — leaving the
 /// caller's local block unbound rather than panicking on a legitimate CRDT
 /// race.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the CRDT insertion boundary takes the complete serialized block schema explicitly"
+)]
 fn insert_doc_block(
     state: &mut AutoCommit,
     list: &ObjId,
@@ -4841,7 +4921,7 @@ fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, crate::view::Thaw
         [(Value::Scalar(value), _)] => value
             .to_u64()
             .filter(|depth| *depth <= u64::from(MAX_LIST_INDENT))
-            .map(|depth| depth as u8)
+            .and_then(|depth| u8::try_from(depth).ok())
             .ok_or_else(invalid),
         _ => Err(invalid()),
     }
@@ -5140,6 +5220,10 @@ impl BlockEditor {
     /// already folded into the start block by the caller), appending
     /// `suffix` to the last one. Returns `(caret_block, caret_byte)` for
     /// where the cursor should land right after the pasted text.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the caller supplies a validated start block and this helper preserves its style"
+    )]
     fn insert_replacement_tail(
         &mut self,
         start_block: usize,
@@ -5152,10 +5236,12 @@ impl BlockEditor {
             let body = if offset.saturating_add(1) == inserted.len() {
                 format!("{line}{suffix}")
             } else {
-                (*line).to_string()
+                line.to_string()
             };
             let mut block = continuation_block(first_kind, &body);
-            block.code_group = self.blocks[start_block].code_group.clone();
+            self.blocks[start_block]
+                .code_group
+                .clone_into(&mut block.code_group);
             block.set_indent(self.blocks[start_block].indent());
             block.line.set_local_author(self.local_author.clone());
             self.blocks
@@ -5514,6 +5600,12 @@ struct FormulaDrawCtx<'a> {
     focus: Option<usize>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "table painting mirrors the cohesive measurement pass and narrows finite pixel widths for text"
+)]
 fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     if rect.width() <= 1.0 || rect.height() <= 1.0 {
         return;
@@ -5657,6 +5749,10 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "finite image-card pixel widths are intentionally narrowed for the text renderer"
+)]
 fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     let Some((alt, destination)) = standalone_markdown_image(source) else {
         return;
@@ -5745,6 +5841,10 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
 /// rule) plus its text line. A free function, not a method — it only
 /// ever needs `b`, not `self`, which keeps `draw`'s per-block loop out
 /// of the borrow checker's way.
+#[expect(
+    clippy::too_many_lines,
+    reason = "block painting is a cohesive exhaustive dispatch over all block kinds"
+)]
 fn draw_block(
     b: &mut Block,
     idx: usize,
@@ -5767,7 +5867,7 @@ fn draw_block(
             if let Some(Some(preview)) = ctx.image_previews.get(idx).copied() {
                 let image = ctx.image_attachments.get(&b.id);
                 let source = image
-                    .map_or(b.text(), |image| image.source.as_str())
+                    .map_or_else(|| b.text(), |image| image.source.as_str())
                     .to_string();
                 let editing = image.is_some_and(|image| image.editing);
                 draw_markdown_image(ctx, preview, &source);
@@ -6093,14 +6193,16 @@ fn draw_code_block_prefix(
         },
         |formula| formula.end,
     );
-    let top = formulas.chrome.get(idx).copied().flatten().map_or(
-        line_rect.y0
-            - CODE_PAD_Y
-            - if formulas.runs.get(idx).is_none_or(Option::is_none) {
-                CODE_HEADER_HEIGHT * f64::from(ctx.theme.text_scale)
-            } else {
-                0.0
-            },
+    let top = formulas.chrome.get(idx).copied().flatten().map_or_else(
+        || {
+            line_rect.y0
+                - CODE_PAD_Y
+                - if formulas.runs.get(idx).is_none_or(Option::is_none) {
+                    CODE_HEADER_HEIGHT * f64::from(ctx.theme.text_scale)
+                } else {
+                    0.0
+                }
+        },
         |chrome| chrome.syntax_badge.y0 - 3.0,
     );
     let bottom = formulas
@@ -6294,6 +6396,12 @@ impl Widget for BlockEditor {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        clippy::cast_possible_truncation,
+        reason = "the five-pass widget contract builds one index-aligned layout projection with finite pixel dimensions"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -6484,6 +6592,12 @@ impl Widget for BlockEditor {
         node
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        clippy::cast_possible_truncation,
+        reason = "the five-pass widget contract applies one index-aligned layout projection with finite pixel dimensions"
+    )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
@@ -6656,6 +6770,15 @@ impl Widget for BlockEditor {
         self.build_formula_chrome_rects();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "one cohesive paint pass uses aligned caches and bounded viewport arithmetic"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -7480,7 +7603,7 @@ impl Widget for BlockEditor {
         if let Some(rect) = self
             .table_editors
             .get(&block.id)
-            .and_then(|table| table.projected_ime_rect())
+            .and_then(super::table::Table::projected_ime_rect)
         {
             return Some(rect);
         }
@@ -7493,6 +7616,11 @@ impl Widget for BlockEditor {
 
     /// Block contents are not surfaced as a `value` — a screen reader
     /// walks the per-block subtree instead.
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "the complete resource tree is emitted in one cohesive accessibility snapshot"
+    )]
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let mut children: Vec<AccessNode> = self
@@ -7857,12 +7985,17 @@ impl Widget for BlockEditor {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "one semantic dispatcher keeps every resource action on the same validated target path"
+    )]
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AutoCommit,
+        path: &ObjId,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate) {
             match target {
@@ -7890,7 +8023,7 @@ impl Widget for BlockEditor {
         if let Some(target) = target.strip_prefix("notes.slash-menu:") {
             let handled = self
                 .slash_menu
-                .perform_semantic_action(target, action, _state, _path);
+                .perform_semantic_action(target, action, state, path);
             if let Some(new_kind) = self.slash_menu.take_selected_kind() {
                 self.commit_slash_selection(new_kind);
             }
@@ -7932,9 +8065,7 @@ impl Widget for BlockEditor {
                 self.focus_block(index, CursorPlacement::Byte(cursor));
             }
             self.begin_action_intercept();
-            let handled = self.blocks[index]
-                .line
-                .perform_action(action, _state, _path);
+            let handled = self.blocks[index].line.perform_action(action, state, path);
             if handled {
                 self.dirty = true;
                 if matches!(action, crate::a11y::Action::SetValue(_)) {
@@ -7991,7 +8122,7 @@ impl Widget for BlockEditor {
                 let (row, column) = self
                     .table_editors
                     .get(id)
-                    .and_then(|table| table.projected_focus())
+                    .and_then(super::table::Table::projected_focus)
                     .unwrap_or((0, 0));
                 self.begin_action_intercept();
                 let changed = self.edit_table_structure(index, row, column, command);
@@ -8014,26 +8145,25 @@ impl Widget for BlockEditor {
                         self.pending_semantic_ops.extend(ops);
                         return changed;
                     }
-                    crate::a11y::Action::Focus | crate::a11y::Action::Activate => {
+                    crate::a11y::Action::Focus | crate::a11y::Action::Activate
                         if self
                             .table_editors
                             .get_mut(id)
-                            .is_some_and(|table| table.focus_projected_cell(row, column))
-                        {
-                            for (other, table) in &mut self.table_editors {
-                                if other != id {
-                                    table.blur_projection();
-                                }
+                            .is_some_and(|table| table.focus_projected_cell(row, column)) =>
+                    {
+                        for (other, table) in &mut self.table_editors {
+                            if other != id {
+                                table.blur_projection();
                             }
-                            self.clear_cross_block_selection();
-                            for block in &mut self.blocks {
-                                block.line.set_focus(false);
-                            }
-                            self.focused = Some(index);
-                            self.is_focused = true;
-                            self.dirty = true;
-                            return true;
                         }
+                        self.clear_cross_block_selection();
+                        for block in &mut self.blocks {
+                            block.line.set_focus(false);
+                        }
+                        self.focused = Some(index);
+                        self.is_focused = true;
+                        self.dirty = true;
+                        return true;
                     }
                     _ => {}
                 }
@@ -8349,6 +8479,11 @@ impl BlockEditor {
     /// Select-all is document-scoped, like a browser editing host, rather
     /// than stopping at the focused paragraph's `TextInput`. Returns
     /// `true` when the caller should stop routing this event any further.
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "validated non-empty block and code-run endpoints define the selection bounds"
+    )]
     fn try_select_all_shortcut(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         use winit::event::{ElementState, KeyEvent};
         use winit::keyboard::Key;
@@ -8529,11 +8664,10 @@ impl BlockEditor {
             .iter()
             .copied()
             .find(|(rect, _, _)| rect.contains(self.last_mouse_pos))
+            && self.copy_code_run(start, end)
         {
-            if self.copy_code_run(start, end) {
-                *ctx.handled = true;
-                return true;
-            }
+            *ctx.handled = true;
+            return true;
         }
         if self.handle_popover_pointer_press(ctx) || self.begin_block_drag_at_handle(ctx) {
             return true;
@@ -8804,6 +8938,11 @@ impl BlockEditor {
     /// Routes the event into the focused block's own `TextInput`, drains
     /// any structural signal it emitted, and promotes `# `/`## `/`### `
     /// paragraphs to headings on the keystroke that completes the prefix.
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "the focused index is validated before this cohesive event-routing state machine"
+    )]
     fn route_event_to_focused_block(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if matches!(
             event,
@@ -9006,6 +9145,11 @@ impl BlockEditor {
         self.fenced_code_run(index)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "the seed index is validated and both scans maintain in-bounds neighboring indices"
+    )]
     fn fenced_code_run(&self, index: usize) -> Option<(usize, usize)> {
         let kind = &self.blocks.get(index)?.kind;
         if !matches!(kind, BlockKind::CodeBlock { .. }) {
@@ -9024,6 +9168,11 @@ impl BlockEditor {
         Some((start, end))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "ordinary_code_run validates the complete inclusive run and its focused seed"
+    )]
     fn exit_code_run(&mut self, index: usize, before: bool) {
         let Some((start, end)) = self.ordinary_code_run(index) else {
             return;
@@ -9066,6 +9215,12 @@ impl BlockEditor {
         self.dirty = true;
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "one cohesive keyboard transaction operates on an already validated inclusive code run"
+    )]
     fn handle_code_keyboard(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         let WindowEvent::KeyboardInput { event, .. } = event else {
             return false;
@@ -9092,7 +9247,7 @@ impl BlockEditor {
                     let line = &self.blocks[index].line;
                     let (start, end) = line
                         .selection_range()
-                        .unwrap_or((line.cursor_pos(), line.cursor_pos()));
+                        .unwrap_or_else(|| (line.cursor_pos(), line.cursor_pos()));
                     self.document_selection = Some(DocumentSelection {
                         anchor: DocumentPosition {
                             block: index,
@@ -9302,8 +9457,11 @@ impl BlockEditor {
                     Key::Named(NamedKey::Backspace) => {
                         if language.pop().is_none() {
                             self.try_convert_to(index, BlockKind::Paragraph);
-                            self.blocks[index].line.set_text("``");
-                            self.blocks[index].line.set_cursor_pos(2);
+                            let Some(block) = self.blocks.get_mut(index) else {
+                                return false;
+                            };
+                            block.line.set_text("``");
+                            block.line.set_cursor_pos(2);
                             self.opening_code_fence = None;
                             self.edit_pending = true;
                             self.commit_pending = true;
@@ -9336,7 +9494,10 @@ impl BlockEditor {
             _ => return false,
         }
         let lang = (!language.is_empty()).then_some(language);
-        self.blocks[index].kind = BlockKind::CodeBlock { lang: lang.clone() };
+        let Some(block) = self.blocks.get_mut(index) else {
+            return false;
+        };
+        block.kind = BlockKind::CodeBlock { lang: lang.clone() };
         self.opening_code_fence = Some((id, lang));
         self.structure_dirty = true;
         self.doc_structure_dirty = true;
@@ -9349,6 +9510,10 @@ impl BlockEditor {
 }
 
 impl BlockEditor {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "row and column bounds are checked before the atomic rectangular table rewrite"
+    )]
     fn edit_table_structure(
         &mut self,
         index: usize,
@@ -9377,8 +9542,10 @@ impl BlockEditor {
         let mut divider: Vec<String> = markdown_table_rows(&source)
             .get(1)
             .filter(|row| markdown_table_separator(row))
-            .map(|row| row.iter().map(|value| (*value).to_owned()).collect())
-            .unwrap_or_else(|| vec!["---".to_owned(); columns]);
+            .map_or_else(
+                || vec!["---".to_owned(); columns],
+                |row| row.iter().map(|value| (*value).to_owned()).collect(),
+            );
         divider.resize(columns, "---".to_owned());
         let mut focus_row = row;
         let mut focus_column = column;
@@ -9531,6 +9698,11 @@ impl BlockEditor {
         true
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "one cohesive table interaction state machine routes controls and projected cells"
+    )]
     fn handle_visual_table_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         let mut toggle = None;
         let mut structural = None;
@@ -9581,7 +9753,7 @@ impl BlockEditor {
             let (row, column) = self
                 .table_editors
                 .get(&id)
-                .and_then(|table| table.projected_focus())
+                .and_then(super::table::Table::projected_focus)
                 .unwrap_or((0, 0));
             self.edit_table_structure(
                 index,
@@ -9750,12 +9922,10 @@ impl BlockEditor {
             self.kbd_sel_anchor = Some(anchor);
             self.paint_cross_block_selection(anchor.0, anchor.1, target, position.byte);
             if let Some(block) = self.blocks.get_mut(target) {
-                let local_anchor = if target == anchor.0 {
-                    anchor.1
-                } else if target > anchor.0 {
-                    0
-                } else {
-                    block.line.value().len()
+                let local_anchor = match target.cmp(&anchor.0) {
+                    std::cmp::Ordering::Equal => anchor.1,
+                    std::cmp::Ordering::Greater => 0,
+                    std::cmp::Ordering::Less => block.line.value().len(),
                 };
                 block
                     .line
@@ -9852,14 +10022,25 @@ impl BlockEditor {
         if self.ordinary_code_run(index).is_none() {
             return false;
         }
-        let text = self.blocks[index].text();
+        let Some(block) = self.blocks.get(index) else {
+            return false;
+        };
+        let text = block.text();
         let split = clamp_char_boundary(text, split.min(text.len()));
-        let indent: String = text[..split]
+        let indent: String = text
+            .get(..split)
+            .unwrap_or_default()
             .chars()
             .take_while(|character| matches!(character, ' ' | '\t'))
             .collect();
         self.split_at_cursor(index, split);
-        let line = &mut self.blocks[index + 1].line;
+        let Some(line) = self
+            .blocks
+            .get_mut(index.saturating_add(1))
+            .map(|block| &mut block.line)
+        else {
+            return false;
+        };
         let text = format!("{indent}{}", line.value());
         line.set_text(&text);
         line.set_cursor_pos(indent.len());
@@ -9936,10 +10117,11 @@ impl BlockEditor {
         }
         let source = block.text();
         let split_at = clamp_char_boundary(source, split_at.min(source.len()));
+        let (prefix, suffix) = source.split_at(split_at);
         let mut updated = String::with_capacity(source.len().saturating_add(1));
-        updated.push_str(&source[..split_at]);
+        updated.push_str(prefix);
         updated.push('\n');
-        updated.push_str(&source[split_at..]);
+        updated.push_str(suffix);
         block.line.set_text(&updated);
         block.line.set_cursor_pos(split_at.saturating_add(1));
         self.dirty = true;
@@ -11737,7 +11919,7 @@ mod tests {
         let heads = (doc.base_heads(), doc.pending_ops());
         let mut editor = BlockEditor::new();
         editor
-            .bind_existing_block_objects(&doc, &[second.clone(), first.clone()])
+            .bind_existing_block_objects(&doc, &[second, first.clone()])
             .unwrap();
         editor.focus_block(1, CursorPlacement::Byte(3));
         editor.sync(&mut doc, &automerge::ROOT);

@@ -789,12 +789,14 @@ fn prepare_duplicate_blocks(
             .get(&source_map, "code_group")
             .map_err(|e| e.to_string())?
             .and_then(|(value, _)| value.to_str().map(str::to_owned))
-            .map(|old| {
-                groups
-                    .entry(old)
-                    .or_insert_with(|| (*blocks[id.as_str()]).clone())
-                    .clone()
-            });
+            .map(|old| -> Result<_, String> {
+                let copied = blocks
+                    .get(id.as_str())
+                    .cloned()
+                    .ok_or_else(|| "source block mapping is missing".to_owned())?;
+                Ok(groups.entry(old).or_insert(copied).clone())
+            })
+            .transpose()?;
         copied_blocks.push(DuplicateBlock {
             id: (*blocks
                 .get(id.as_str())

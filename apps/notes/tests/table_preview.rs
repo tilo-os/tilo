@@ -1,5 +1,5 @@
 //! Tables use their complete content for production layout and painting.
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write as _};
 use taffy::prelude::*;
 use ui::a11y::Role;
 use ui::presence::PresenceCtx;
@@ -59,10 +59,12 @@ fn table_source(rows: usize, columns: usize, final_value: &str) -> String {
     );
     for row in 1..rows {
         let mut cells = vec!["x"; columns];
-        if row + 1 == rows {
-            cells[columns - 1] = final_value;
+        if row == rows.saturating_sub(1)
+            && let Some(last) = cells.last_mut()
+        {
+            *last = final_value;
         }
-        source.push_str(&format!("\n|{}|", cells.join("|")));
+        let _ = write!(source, "\n|{}|", cells.join("|"));
     }
     source
 }

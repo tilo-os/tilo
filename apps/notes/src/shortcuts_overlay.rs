@@ -362,7 +362,7 @@ impl ShortcutsOverlay {
                     _ => self.max_scroll_y,
                 }
                 .clamp(0.0, self.max_scroll_y);
-                self.dirty |= next != self.scroll_y;
+                self.dirty |= (next - self.scroll_y).abs() > f64::EPSILON;
                 self.scroll_y = next;
                 true
             }

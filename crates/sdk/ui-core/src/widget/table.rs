@@ -462,6 +462,17 @@ impl Table {
         self.n_rows() == 0 || self.n_cols() == 0
     }
 
+    fn projected_index(&self, row: usize, column: usize) -> Option<usize> {
+        row.checked_mul(self.n_cols())?
+            .checked_add(column)
+            .filter(|index| *index < self.cells.len())
+    }
+
+    fn projected_position(&self, index: usize) -> Option<(usize, usize)> {
+        let columns = self.n_cols();
+        Some((index.checked_div(columns)?, index.checked_rem(columns)?))
+    }
+
     fn make_cell(rid: &str, cid: &str) -> TextInput {
         TextInput::new(vec![])
             .with_id(&format!("cell_{rid}_{cid}"))
@@ -475,12 +486,12 @@ impl Table {
     /// created: edits are returned to the host's normal action bridge.
     pub(super) fn project_cells(&mut self, rows: &[Vec<String>]) {
         let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
-        let saved_focus = self.projected_focus().map(|(row, column)| {
-            (
-                row,
-                column,
-                self.cells[row * self.n_cols() + column].get_state(),
-            )
+        let saved_focus = self.projected_focus().and_then(|(row, column)| {
+            let state = self
+                .cells
+                .get(self.projected_index(row, column)?)?
+                .get_state();
+            Some((row, column, state))
         });
         let shape_changed = self.n_rows() != rows.len() || self.n_cols() != columns;
         if shape_changed {
@@ -495,9 +506,10 @@ impl Table {
                 .collect();
         }
         for (index, input) in self.cells.iter_mut().enumerate() {
-            let value = rows
-                .get(index / columns)
-                .and_then(|row| row.get(index % columns))
+            let value = index
+                .checked_div(columns)
+                .zip(index.checked_rem(columns))
+                .and_then(|(row, column)| rows.get(row).and_then(|row| row.get(column)))
                 .map_or("", String::as_str);
             // set_text is a no-op for an unchanged model echo, retaining caret
             // and selection through normal redraws and canonical commits.
@@ -508,8 +520,8 @@ impl Table {
             && !rows.is_empty()
             && columns > 0
         {
-            let row = row.min(rows.len() - 1);
-            let column = column.min(columns - 1);
+            let row = row.min(rows.len().saturating_sub(1));
+            let column = column.min(columns.saturating_sub(1));
             self.focus_projected_cell(row, column);
             if let Some(caret) = caret {
                 self.restore_projected_caret(&caret);
@@ -533,20 +545,26 @@ impl Table {
         self.cells
             .iter()
             .position(Widget::is_focused)
-            .map(|index| (index / self.n_cols().max(1), index % self.n_cols().max(1)))
+            .and_then(|index| self.projected_position(index))
     }
 
     pub(super) fn projected_caret(&self) -> Option<String> {
         let (row, column) = self.projected_focus()?;
-        self.cells[row * self.n_cols() + column].get_state()
+        self.cells
+            .get(self.projected_index(row, column)?)?
+            .get_state()
     }
 
     pub(super) fn restore_projected_caret(&mut self, state: &str) {
         let Some((row, column)) = self.projected_focus() else {
             return;
         };
-        let index = row * self.n_cols() + column;
-        let input = &mut self.cells[index];
+        let Some(index) = self.projected_index(row, column) else {
+            return;
+        };
+        let Some(input) = self.cells.get_mut(index) else {
+            return;
+        };
         input.set_state(state);
         let caret = input.caret_position();
         let selection = input.selection_range_public();
@@ -564,7 +582,9 @@ impl Table {
         if row >= self.n_rows() || column >= self.n_cols() {
             return false;
         }
-        let target = row * self.n_cols() + column;
+        let Some(target) = self.projected_index(row, column) else {
+            return false;
+        };
         for (index, input) in self.cells.iter_mut().enumerate() {
             input.set_focus(index == target);
         }
@@ -594,13 +614,17 @@ impl Table {
             .and_then(Widget::ime_cursor_rect)
     }
 
+    #[allow(
+        clippy::option_option,
+        reason = "outer Option distinguishes an unsupported command; inner Option distinguishes a handled command with no cell edit"
+    )]
     pub(super) fn projected_clipboard(
         &mut self,
         command: &str,
     ) -> Option<Option<(usize, usize, String)>> {
         let (row, column) = self.projected_focus()?;
-        let columns = self.n_cols();
-        let input = self.cells.get_mut(row * columns + column)?;
+        let index = self.projected_index(row, column)?;
+        let input = self.cells.get_mut(index)?;
         let before = input.value().to_owned();
         match command {
             "select-all" => input.set_selection(0, input.value().len()),
@@ -658,6 +682,10 @@ impl Table {
     }
 
     #[allow(clippy::too_many_arguments, reason = "shared TextInput event context")]
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the Widget event interface supplies modifiers by reference"
+    )]
     pub(super) fn handle_projected_event(
         &mut self,
         event: &WindowEvent,
@@ -689,17 +717,16 @@ impl Table {
                     .iter()
                     .position(|input| input.get_rect().contains(point))
             }) {
-                self.focus_projected_cell(
-                    index / self.n_cols().max(1),
-                    index % self.n_cols().max(1),
-                );
+                if let Some((row, column)) = self.projected_position(index) {
+                    self.focus_projected_cell(row, column);
+                }
                 *focus_target = Some(node);
             } else {
                 self.blur_projection();
             }
         }
         let (row, column) = self.projected_focus()?;
-        let focused = row * self.n_cols() + column;
+        let focused = self.projected_index(row, column)?;
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == ElementState::Pressed
         {
@@ -722,7 +749,9 @@ impl Table {
                         .filter(|target| *target < self.cells.len())
                 };
                 if let Some(target) = target {
-                    self.focus_projected_cell(target / self.n_cols(), target % self.n_cols());
+                    if let Some((row, column)) = self.projected_position(target) {
+                        self.focus_projected_cell(row, column);
+                    }
                 } else {
                     self.blur_projection();
                     self.projection_exit = Some(!backwards);

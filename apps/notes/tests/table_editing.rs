@@ -77,6 +77,10 @@ impl Fixture {
         )
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "test helper owns each semantic action for immediate dispatch"
+    )]
     fn action(&mut self, target: &str, action: Action) -> bool {
         self.editor
             .perform_semantic_action(target, &action, &mut self.doc, &automerge::ROOT)
@@ -97,6 +101,10 @@ impl Fixture {
             .unwrap()
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "test helper owns each synthetic event for immediate dispatch"
+    )]
     fn event(
         &mut self,
         event: WindowEvent,

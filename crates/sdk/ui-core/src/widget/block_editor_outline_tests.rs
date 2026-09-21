@@ -15,11 +15,7 @@ fn moving_list_parent_moves_its_entire_subtree_past_the_next_subtree() {
     assert_eq!(editor.neighboring_group(0, false), Some(3));
     assert!(editor.move_block_to(0, 3));
     assert_eq!(
-        editor
-            .blocks
-            .iter()
-            .map(|block| block.text())
-            .collect::<Vec<_>>(),
+        editor.blocks.iter().map(Block::text).collect::<Vec<_>>(),
         ["B", "b", "A", "a", "aa"]
     );
     assert_eq!(editor.focused_index(), Some(2));
@@ -53,11 +49,7 @@ fn moving_from_middle_of_code_keeps_rows_and_caret_together() {
     assert_eq!(editor.neighboring_group(2, false), Some(3));
     assert!(editor.move_block_to(2, 3));
     assert_eq!(
-        editor
-            .blocks
-            .iter()
-            .map(|block| block.text())
-            .collect::<Vec<_>>(),
+        editor.blocks.iter().map(Block::text).collect::<Vec<_>>(),
         ["Before", "After", "first()", "second()"]
     );
     assert_eq!(editor.focused_index(), Some(3));

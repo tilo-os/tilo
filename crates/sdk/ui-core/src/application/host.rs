@@ -1,10 +1,17 @@
 //! Explicit process-host services shared by standalone application runners.
 //! Apps supply their definition and migration; this owner supplies storage,
 //! identity, authority and local presentation. No ambient profile discovery.
-use super::*;
+use super::{
+    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, HostContext, InstanceId,
+    InstanceViewStore, LaunchError, LaunchTarget, PermissionContext, PreparedComponentInputs,
+    RecordCheckout, RecordId, RecordOpenError, RecordStore, RestoreInput, SavedInstanceView,
+    UserId, View, validate_identity,
+};
 use crate::record::RecordOwners;
+use std::cell::RefCell;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 const PERSONAL_WORKSPACE: &str = "personal";
 const DEVICE_ID_FILE: &str = ".tilo-device-id";
@@ -233,7 +240,7 @@ fn stable_instance_id(app_id: &str) -> InstanceId {
 fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {
     let path = profile_root.join(DEVICE_ID_FILE);
     match std::fs::read_to_string(&path) {
-        Ok(value) => return validate_device_id(value),
+        Ok(value) => return validate_device_id(&value),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(LaunchError::Operation(format!(
@@ -274,10 +281,10 @@ fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {
     }
     let value = std::fs::read_to_string(&path)
         .map_err(|error| LaunchError::Operation(format!("reading {}: {error}", path.display())))?;
-    validate_device_id(value)
+    validate_device_id(&value)
 }
 
-fn validate_device_id(value: String) -> Result<String, LaunchError> {
+fn validate_device_id(value: &str) -> Result<String, LaunchError> {
     let value = value.trim().to_owned();
     validate_identity(&value).map_err(LaunchError::Restore)?;
     if value
@@ -463,6 +470,7 @@ impl ApplicationHost {
 #[cfg(test)]
 mod native_process_tests {
     use super::*;
+    use crate::application::AppComponent;
 
     fn rejected_factory(
         _: HostContext,
@@ -565,8 +573,10 @@ mod native_process_tests {
             mismatched.resolve("dev.tilo.notes", &author),
             Err(LaunchError::BindingMismatch)
         ));
-        let mut relative = NativeProcessEnvironment::default();
-        relative.xdg_data_home = Some(PathBuf::from("relative"));
+        let relative = NativeProcessEnvironment {
+            xdg_data_home: Some(PathBuf::from("relative")),
+            ..NativeProcessEnvironment::default()
+        };
         assert!(relative.resolve("dev.tilo.notes", &author).is_err());
         assert!(
             NativeProcessEnvironment::default()

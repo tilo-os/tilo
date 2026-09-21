@@ -3,10 +3,10 @@ use automerge::{ObjType, ROOT, transaction::Transactable};
 use winit::keyboard::ModifiersState;
 
 fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: NamedKey, modifiers: ModifiersState) {
-    send_key(editor, doc, Key::Named(key), modifiers);
+    send_key(editor, doc, &Key::Named(key), modifiers);
 }
 
-fn send_key(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key, modifiers: ModifiersState) {
+fn send_key(editor: &mut BlockEditor, doc: &mut AutoCommit, key: &Key, modifiers: ModifiersState) {
     let mut event: KeyEvent = unsafe { std::mem::zeroed() };
     event.logical_key = key.clone();
     event.physical_key =
@@ -51,14 +51,14 @@ fn select_all_first_selects_code_then_the_whole_document() {
     send_key(
         &mut editor,
         &mut doc,
-        Key::Character("a".into()),
+        &Key::Character("a".into()),
         ModifiersState::CONTROL,
     );
     assert_eq!(editor.selected_text().as_deref(), Some("one\ntwo"));
     send_key(
         &mut editor,
         &mut doc,
-        Key::Character("a".into()),
+        &Key::Character("a".into()),
         ModifiersState::CONTROL,
     );
     assert_eq!(
@@ -76,7 +76,7 @@ fn repeated_select_all_stays_on_whole_note_and_copy_code_keeps_caret() {
     send_key(
         &mut editor,
         &mut doc,
-        Key::Character("c".into()),
+        &Key::Character("c".into()),
         ModifiersState::CONTROL | ModifiersState::SHIFT,
     );
     assert_eq!(crate::clipboard_paste().as_deref(), Some("one\ntwo"));
@@ -86,7 +86,7 @@ fn repeated_select_all_stays_on_whole_note_and_copy_code_keeps_caret() {
         send_key(
             &mut editor,
             &mut doc,
-            Key::Character("a".into()),
+            &Key::Character("a".into()),
             ModifiersState::CONTROL,
         );
         assert_eq!(
@@ -110,7 +110,7 @@ fn multiline_code_paste_keeps_indentation_blank_lines_and_suffix() {
     send_key(
         &mut editor,
         &mut doc,
-        Key::Character("v".into()),
+        &Key::Character("v".into()),
         ModifiersState::CONTROL,
     );
     assert_eq!(

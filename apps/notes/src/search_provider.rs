@@ -265,6 +265,7 @@ impl SearchProvider for NoteSearchProvider {
                 }
             );
         }
+        drop(snapshot);
         page
     }
 

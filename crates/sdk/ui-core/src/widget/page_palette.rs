@@ -213,7 +213,7 @@ impl PageJumpPalette {
         let available = viewport.height() - 32.0 - (PADDING * 3.0 + INPUT_HEIGHT) * self.text_scale;
         (1..=MAX_VISIBLE_ROWS)
             .filter(|rows| row_f64(*rows) * self.row_height() * self.text_scale <= available)
-            .last()
+            .next_back()
             .unwrap_or(1)
     }
 
@@ -756,15 +756,15 @@ impl Widget for PageJumpPalette {
         if !self.visible_flag {
             return false;
         }
-        if target == "notes.search.query" {
-            if let crate::a11y::Action::SetValue(value) = action {
-                self.query = value.clone();
-                self.query_selection = Selection::collapsed(self.query.len());
-                self.query_composition.clear();
-                self.cursor = 0;
-                self.rebuild_visible();
-                return true;
-            }
+        if target == "notes.search.query"
+            && let crate::a11y::Action::SetValue(value) = action
+        {
+            self.query.clone_from(value);
+            self.query_selection = Selection::collapsed(self.query.len());
+            self.query_composition.clear();
+            self.cursor = 0;
+            self.rebuild_visible();
+            return true;
         }
         if matches!(action, crate::a11y::Action::Activate)
             && let Some(id) = target
@@ -1020,7 +1020,7 @@ mod tests {
         use crate::search::{SearchCatalog, SearchProvider, SearchResult};
         struct Provider(SearchCatalog);
         impl SearchProvider for Provider {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "Notes"
             }
             fn search(&self, _: &str) -> Vec<SearchResult> {

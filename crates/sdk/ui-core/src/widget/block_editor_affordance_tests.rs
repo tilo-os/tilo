@@ -184,10 +184,7 @@ fn checklist_pointer_matches_the_actual_toggle_hit_target() {
     editor.blocks[0]
         .line
         .apply_layout_external(Rect::new(60.0, 0.0, 300.0, 24.0));
-    let point = Point::new(
-        60.0 - f64::from(prefix_gutter_for(&editor.blocks[0].kind)) / 2.0,
-        12.0,
-    );
+    let point = Point::new(60.0 - prefix_gutter_for(&editor.blocks[0].kind) / 2.0, 12.0);
     assert_eq!(editor.checkbox_hit_test(point), Some(0));
     assert_eq!(
         editor.cursor_shape(point),
