@@ -201,7 +201,8 @@ def command(argv, payload=None, *, timeout=120, text=True):
         stderr = result.stderr if isinstance(result.stderr, str) else result.stderr.decode(errors='replace')
         transport = ('unable to connect','connection refused','connection reset','context deadline',
                      'i/o timeout','tls handshake timeout','server has asked for the client to provide',
-                     'timed out waiting','unexpected eof')
+                     'timed out waiting','unexpected eof','creator status poll lost transport',
+                     'kubectl transport failed')
         if Path(argv[0]).name == 'kubectl' and any(row in stderr.lower() for row in transport):
             raise ControllerTransportError(f'kubectl failed (exit {result.returncode})')
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
@@ -742,6 +743,18 @@ def registry_auth(args):
     return value
 
 
+def remove_legacy_registry_auth(operation_dir):
+    """Erase only the old controller-side credential file before any resume."""
+    path=Path(operation_dir)/'registry-auth.json'
+    if not path.exists() and not path.is_symlink():
+        return
+    info=path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.geteuid()
+            or info.st_mode&0o077):
+        raise ValueError('legacy registry auth residue is not a private regular file')
+    path.unlink()
+
+
 def validate_disk_args(value):
     required = {'source','target','architecture','revision','manifest_sha256','composefs_digest',
       'systemd_version','public_bundle','output','generation','size_bytes','offline_key_signature',
@@ -828,7 +841,8 @@ finally:os.close(fd)
     return True
 
 
-def controller(root, args, disk, agent, inspect_only, evidence_name='creator-environment.json'):
+def controller(root, args, disk, agent, inspect_only, evidence_name='creator-environment.json',
+               registry_auth_bytes=None):
     argv = ['python3', str(root/'os/dev/create-supervised-kata-disk.py'),
       '--context',args.context,'--namespace',disk['namespace'],'--pod',disk['pod'],
       '--pod-uid',disk['pod_uid'],'--node',disk['node'],'--node-uid',disk['node_uid'],
@@ -839,12 +853,16 @@ def controller(root, args, disk, agent, inspect_only, evidence_name='creator-env
     if inspect_only:
         argv.append('--inspect-only')
     else:
-        argv += ['--registry-auth',str(args.operation_dir/'registry-auth.json'),
-                 '--creation-receipt',str(args.operation_dir/'creation.json')]
+        argv += ['--creation-receipt',str(args.operation_dir/'creation.json'),
+                 '--creator-job-receipt',str(args.operation_dir/'creator-job.json')]
+        if registry_auth_bytes is not None:
+            argv.append('--registry-auth-stdin')
     try:
-        return command(argv, timeout=7200)
-    except ValueError:
-        if not inspect_only:
+        if registry_auth_bytes is None:
+            return command(argv, timeout=7200)
+        return command(argv, registry_auth_bytes, timeout=7200, text=False).decode()
+    except ValueError as error:
+        if not inspect_only and not isinstance(error, ControllerTransportError):
             collect_creator_failure(args, disk)
         raise
 
@@ -872,9 +890,10 @@ test "$(stat -c '%u:%g:%a:%F' /work/disk-output)" = '0:0:700:directory'
                     '--', 'sh', '-ceu', script), timeout=30)
 
 
-def create_on_worker(root, args, disk, agent, evidence_name='creator-environment.json'):
+def create_on_worker(root, args, disk, agent, evidence_name='creator-environment.json',
+                     registry_auth_bytes=None):
     controller(root, args, disk, agent, True, evidence_name)
-    controller(root, args, disk, agent, False, evidence_name)
+    controller(root, args, disk, agent, False, evidence_name, registry_auth_bytes)
 
 
 def verify_disk(context, disk, values, auth):
@@ -1482,6 +1501,29 @@ def resume_creator(args, nodes):
     return checkpoint,creation,identity,disk,disk_node,vm_node
 
 
+def resume_pending_creator(args, nodes):
+    """Adopt only the exact pre-checkpoint creator after a control-plane loss."""
+    bindings=json.loads((args.operation_dir/'worker-bindings.json').read_text())
+    if set(bindings) != {'creator'}:
+        raise ValueError('pre-checkpoint creator has unexpected worker bindings')
+    disk=bindings['creator']; validate_creator_binding(disk)
+    live=optional_same_worker(args.context,disk)
+    if live is None:
+        raise ValueError('pre-checkpoint creator disappeared and must be restarted fresh')
+    pod=api_json(args.context,'-n',disk['namespace'],'get','pod',disk['pod'],'--request-timeout=15s')
+    labels=pod.get('metadata',{}).get('labels',{})
+    try: expires_at=int(labels[EXPIRES_LABEL])
+    except (KeyError,TypeError,ValueError) as error: raise ValueError('pre-checkpoint creator expiry is invalid') from error
+    if (labels.get(OWNER_LABEL)!=OWNER or labels.get(OPERATION_LABEL)!=args.acceptance_id
+            or expires_at<=int(time.time())):
+        raise ValueError('pre-checkpoint creator ownership or expiry differs')
+    matches=[node for node in nodes.get('items',[]) if node.get('metadata',{}).get('name')==disk['node']]
+    if len(matches)!=1 or matches[0].get('metadata',{}).get('uid')!=disk['node_uid']:
+        raise ValueError('pre-checkpoint creator node changed')
+    _,vm_node=select_nodes(nodes,disk['node'],args.vm_node)
+    return disk,matches[0],vm_node,expires_at
+
+
 def verifier_manifest(args, node, checkpoint):
     return disk_manifest('tilo-verify-'+args.acceptance_id,node,deadline=7200,
                          operation=args.acceptance_id,expires_at=checkpoint['expires_at'])
@@ -1703,16 +1745,21 @@ def main():
             p.error('resume operation directory does not exist')
     else:
         args.operation_dir.mkdir(mode=0o700,parents=True,exist_ok=False)
+    remove_legacy_registry_auth(args.operation_dir)
     timer=LaneTimer(args.operation_dir/'timings.json')
     values=json.loads(args.disk_args.read_text());validate_disk_args(values)
     root=Path(__file__).resolve().parents[2]; helpers=git_archive(root,args.helper_revision)
     public=public_archive(args.public_bundle)
     installer_bootc = installer_bootc_archive(
         args.installer_bootc_helper, values['installer_bootc_sha256'])
+    pending_creator=False
     with timer.stage('creator_admission'):
         nodes=api_json(args.context,'get','nodes','-l','kubernetes.io/arch=arm64','--request-timeout=20s')
-        if args.resume:
+        if args.resume and (args.operation_dir/'creator-checkpoint.json').exists():
             checkpoint,creation,identity,disk,disk_node,vm_node=resume_creator(args,nodes)
+        elif args.resume:
+            disk,disk_node,vm_node,expires_at=resume_pending_creator(args,nodes)
+            pending_creator=True
         else:
             disk_node,vm_node=select_nodes(nodes,args.disk_node,args.vm_node)
             expires_at=int(time.time())+PAUSE_TTL_SECONDS
@@ -1720,40 +1767,39 @@ def main():
               operation=args.acceptance_id,expires_at=expires_at))
             write_private(args.operation_dir/'worker-bindings.json',
                           (json.dumps({'creator':disk},indent=2,sort_keys=True)+'\n').encode())
-    if args.resume:
+    if args.resume and not pending_creator:
         timer.skip('input_transfer');timer.skip('create_install');timer.skip('freeze_identity')
     else:
-        auth_path=args.operation_dir/'registry-auth.json'
-        cleanup_auth=lambda: auth_path.unlink(missing_ok=True)
+        auth_bytes=None
         try:
-            with timer.stage('input_transfer'):
+            if pending_creator:
+                timer.skip('input_transfer')
                 auth_bytes=registry_auth(args)
-                write_private(auth_path,auth_bytes)
-                atexit.register(cleanup_auth)
-                agent=host_agent(args.context,disk['node'])
-                stream_creator_inputs(args.context,disk['namespace'],disk['pod'],'disk',
-                                      helpers,public,installer_bootc)
+            else:
+                with timer.stage('input_transfer'):
+                    auth_bytes=registry_auth(args)
+                    stream_creator_inputs(args.context,disk['namespace'],disk['pod'],'disk',
+                                          helpers,public,installer_bootc)
             with timer.stage('create_install'):
-                create_on_worker(root,args,disk,agent)
+                agent=host_agent(args.context,disk['node'])
+                create_on_worker(root,args,disk,agent,registry_auth_bytes=auth_bytes)
                 creation=(args.operation_dir/'creation.json').read_bytes()
             with timer.stage('freeze_identity'):
                 freeze_raw(args.context,disk)
                 identity=raw_identity(args.context,disk)
                 write_private(args.operation_dir/'raw-identity.json',
                               (json.dumps(identity,indent=2,sort_keys=True)+'\n').encode())
-        except BaseException:
-            cleanup_auth()
-            try:
-                delete_worker(args.context,disk)
-            finally:
-                try: atexit.unregister(cleanup_auth)
-                except Exception: pass
+        except ControllerTransportError:
+            write_private(args.operation_dir/'creator-recovery.json',
+              (json.dumps({'schema':1,'purpose':'tilo-supervised-creator-recovery',
+                           'acceptance_id':args.acceptance_id,'creator':disk,
+                           'state':'transport-interrupted'},indent=2,sort_keys=True)+'\n').encode())
             raise
-        try: cleanup_auth()
         except BaseException:
             delete_worker(args.context,disk)
             raise
-        atexit.unregister(cleanup_auth);del auth_bytes
+        finally:
+            auth_bytes=None
         checkpoint=establish_creator_checkpoint(
           args,disk,disk_node,creation,identity,expires_at)
     # Only now provision the verifier. It has a distinct new Kata sandbox and

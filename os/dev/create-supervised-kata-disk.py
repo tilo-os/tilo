@@ -168,6 +168,7 @@ try:
    if auth is not None: os.environ['REGISTRY_AUTH_FILE']=str(auth)
    receipt=m.create_from_supervised_controller(types.SimpleNamespace(**args),payload['observation'])
    receipt['controller_helper']={'revision':payload['helper_revision'],'bundle_sha256':payload['helper_bundle_sha256']}
+   receipt['controller_job']={'binding':binding}
    encoded=(json.dumps(receipt,sort_keys=True)+'\n').encode(); destination=args['output'].with_name('creation.json'); temporary=destination.with_name('.creation.json.tmp')
    fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
    try:
@@ -257,7 +258,10 @@ finally:
 
 
 def checked(argv, payload=None):
-    result = subprocess.run(argv, input=payload, text=True, capture_output=True)
+    try:
+        result = subprocess.run(argv, input=payload, text=True, capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ControllerTransportError(f'{Path(argv[0]).name} transport failed') from error
     if result.returncode:
         # Kubernetes and registry errors can contain sensitive configuration.
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
@@ -440,9 +444,12 @@ finally:os.close(fd)'''
 
 
 def remote_creator_status(kubectl_base, namespace, pod, container, binding):
-    result = subprocess.run(kubectl_base + ['-n', namespace, 'exec', pod, '-c', container,
-                                            '--', 'python3', '-c', REMOTE_CREATOR_STATUS],
-                            text=True, capture_output=True)
+    try:
+        result = subprocess.run(kubectl_base + ['-n', namespace, 'exec', pod, '-c', container,
+                                                '--', 'python3', '-c', REMOTE_CREATOR_STATUS],
+                                text=True, capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ControllerTransportError('creator status poll lost transport') from error
     if result.returncode:
         # These constant stdout markers come from the authenticated remote
         # reader.  All other diagnostics stay local and are transport errors.
@@ -483,7 +490,7 @@ def poll_creator_job(kubectl_base, namespace, pod, container, binding, *,
     raise ValueError('detached creator job timed out')
 
 
-def remote_creator_receipt(kubectl_base, namespace, pod, container, status):
+def remote_creator_receipt(kubectl_base, namespace, pod, container, status, binding):
     output = checked(kubectl_base + ['-n', namespace, 'exec', pod, '-c', container,
                                      '--', 'python3', '-c', REMOTE_CREATOR_RECEIPT])
     try:
@@ -492,7 +499,37 @@ def remote_creator_receipt(kubectl_base, namespace, pod, container, status):
         raise ValueError('creator receipt is not bounded base64') from error
     if hashlib.sha256(receipt).hexdigest() != status['creation_sha256']:
         raise ValueError('creator receipt differs from detached success status')
+    try:
+        document = json.loads(receipt)
+    except json.JSONDecodeError as error:
+        raise ValueError('creator receipt is not JSON') from error
+    if (document.get('controller_job') != {'binding': binding}
+            or document.get('path') != binding.get('output')
+            or document.get('size_bytes') != 64 * 1024**3
+            or document.get('disk_created') is not True
+            or document.get('controller_helper', {}).get('revision') != binding.get('helper_revision')
+            or document.get('controller_helper', {}).get('bundle_sha256')
+               != binding.get('helper_bundle_sha256')):
+        raise ValueError('creator receipt does not bind the admitted detached job')
     return receipt
+
+
+def persist_creator_job(path, binding, status):
+    validate_creator_job_status(status, binding)
+    document = {'schema': 1, 'purpose': 'tilo-supervised-creator-job-launch',
+                'binding': binding, 'status': status}
+    path = Path(path); path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    encoded = (json.dumps(document, indent=2, sort_keys=True) + '\n').encode()
+    fd, temporary = tempfile.mkstemp(prefix='.creator-job-', suffix='.json', dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(encoded); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try: os.unlink(temporary)
+        except FileNotFoundError: pass
+    return document
 
 
 def inspect_pod(pod, node, expected_uid, guest_image):
@@ -704,8 +741,13 @@ def main():
     p.add_argument('--evidence', type=Path, required=True)
     p.add_argument('--creation-receipt', type=Path,
                    help='required for creation: private local copy of the accepted receipt')
-    p.add_argument('--registry-auth', type=Path,
-                   help='optional bounded registry auth file streamed only through authenticated exec')
+    auth = p.add_mutually_exclusive_group()
+    auth.add_argument('--registry-auth', type=Path,
+                      help='optional bounded registry auth file streamed only through authenticated exec')
+    auth.add_argument('--registry-auth-stdin', action='store_true',
+                      help='read bounded registry auth only from this controller stdin')
+    p.add_argument('--creator-job-receipt', type=Path,
+                   help='private durable non-secret detached creator launch state')
     p.add_argument('--helper-revision', required=True,
                    help='full commit whose tracked os/dev Python helpers are executed')
     p.add_argument('--operation',
@@ -744,7 +786,18 @@ def main():
         raise ValueError('--operation is required for disk creation')
     disk_args = json.loads(args.disk_args.read_text())
     bundle, bundle_sha256 = helper_bundle(args.helper_revision)
-    registry_auth = private_input(args.registry_auth, limit=1024*1024) if args.registry_auth else None
+    if args.registry_auth_stdin:
+        registry_auth = sys.stdin.buffer.read(1024*1024 + 1)
+        if not 2 <= len(registry_auth) <= 1024 * 1024:
+            raise ValueError('stdin registry auth is not a bounded document')
+        try:
+            parsed_auth = json.loads(registry_auth)
+        except json.JSONDecodeError as error:
+            raise ValueError('stdin registry auth is not JSON') from error
+        if not isinstance(parsed_auth.get('auths'), dict) or not parsed_auth['auths']:
+            raise ValueError('stdin registry auth has no registry entries')
+    else:
+        registry_auth = private_input(args.registry_auth, limit=1024*1024) if args.registry_auth else None
     binding, binding_sha256 = creator_job_binding(
         args.operation, args.pod_uid, args.node_uid, identity, args.guest_image,
         disk_args, observation, args.helper_revision, bundle_sha256)
@@ -765,9 +818,29 @@ def main():
         validate_creator_job_status(json.loads(launch), binding)
     except json.JSONDecodeError as error:
         raise ValueError('creator launch did not return bounded JSON') from error
-    status = poll_creator_job(k, args.namespace, args.pod, pod['spec']['containers'][0]['name'], binding)
-    output = remote_creator_receipt(k, args.namespace, args.pod,
-                                    pod['spec']['containers'][0]['name'], status).decode()
+    launched = json.loads(launch)
+    if args.creator_job_receipt is not None:
+        persist_creator_job(args.creator_job_receipt, binding, launched)
+    try:
+        status = poll_creator_job(k, args.namespace, args.pod,
+                                  pod['spec']['containers'][0]['name'], binding)
+        output = remote_creator_receipt(k, args.namespace, args.pod,
+                                        pod['spec']['containers'][0]['name'], status, binding).decode()
+    except ValueError as error:
+        if str(error) != 'detached creator process vanished':
+            raise
+        # A crash after the atomic creation.json rename but before the status
+        # rename is recoverable only by independently revalidating that receipt.
+        candidate = checked(k + ['-n', args.namespace, 'exec', args.pod, '-c',
+                                 pod['spec']['containers'][0]['name'], '--',
+                                 'python3', '-c', REMOTE_CREATOR_RECEIPT])
+        try:
+            raw = base64.b64decode(candidate.strip(), validate=True)
+        except ValueError as decode_error:
+            raise error from decode_error
+        output = remote_creator_receipt(k, args.namespace, args.pod,
+                                        pod['spec']['containers'][0]['name'],
+                                        {'creation_sha256': hashlib.sha256(raw).hexdigest()}, binding).decode()
     del registry_auth
     after = get('pod', args.pod, args.namespace)
     if inspect_pod(after,args.node,args.pod_uid,args.guest_image) != identity or after['spec'] != pod['spec']:
