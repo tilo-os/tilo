@@ -683,6 +683,12 @@ class LaneAdmission(unittest.TestCase):
             lane.create_on_worker(Path('/root'), args, {'pod': 'disk'}, {'pod': 'agent'})
         self.assertEqual(events, [('controller', True), ('controller', False)])
 
+    def test_creator_resume_requests_exact_failed_job_retry(self):
+        events=[];args=type('Args',(),{'context':'ctx'})()
+        with patch.object(lane,'controller',side_effect=lambda *a,**k: events.append((a[4],k.get('retry_failed')))):
+            lane.create_on_worker(Path('/root'),args,{'pod':'disk'},{'pod':'agent'},retry_failed=True)
+        self.assertEqual(events,[(True,None),(False,True)])
+
     def test_creator_streams_auth_without_local_credential_file(self):
         args=SimpleNamespace(context='ctx',host_pins=Path('/pins'),disk_args=Path('/args'),
             operation_dir=Path('/operation'),helper_revision='a'*40,acceptance_id='run1')
@@ -691,14 +697,37 @@ class LaneAdmission(unittest.TestCase):
         agent={'metadata':{'name':'kata-deploy'}}
         result=SimpleNamespace(returncode=0,stdout=b'{}',stderr=b'')
         with patch.object(lane.subprocess,'run',return_value=result) as command:
-            lane.controller(Path('/root'),args,disk,agent,False,registry_auth_bytes=b'{"auths":{"registry":{}}}')
+            lane.controller(Path('/root'),args,disk,agent,False,registry_auth_bytes=b'{"auths":{"registry":{}}}',
+                            retry_failed=True)
         argv=command.call_args.args[0];payload=command.call_args.kwargs['input']
         self.assertIn('--registry-auth-stdin',argv)
         self.assertIn('--creator-job-receipt',argv)
+        self.assertIn('--retry-failed-creator-job',argv)
         self.assertNotIn('registry-auth.json',str(argv))
         self.assertEqual(payload,b'{"auths":{"registry":{}}}')
         self.assertEqual(command.call_args.kwargs['timeout'],7200)
         self.assertFalse(command.call_args.kwargs['text'])
+
+    def test_creator_controller_persists_bound_failed_job_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args=SimpleNamespace(context='ctx',host_pins=Path('/pins'),disk_args=Path('/args'),
+                operation_dir=Path(directory),helper_revision='a'*40,acceptance_id='run1')
+            binding={'operation':'run1'}
+            (Path(directory)/'creator-job.json').write_text(json.dumps({
+                'schema':1,'purpose':'tilo-supervised-creator-job-launch',
+                'binding':binding,'status':{}}))
+            log=b'creator job failed: NameError\n  helper.py:1 run\n'
+            result=SimpleNamespace(returncode=1,stdout='',stderr=(
+                'TILO_CREATOR_JOB_FAILURE_LOG '+base64.b64encode(log).decode()+'\n'))
+            disk={'namespace':'kata-system','pod':'tilo-disk-run1','pod_uid':'pod-uid',
+                  'node':'disk','node_uid':'node-uid'};agent={'metadata':{'name':'kata-deploy'}}
+            with patch.object(lane.subprocess,'run',return_value=result), \
+                    patch.object(lane,'collect_creator_failure',return_value=False):
+                with self.assertRaises(lane.CreatorJobFailed):
+                    lane.controller(Path('/root'),args,disk,agent,False)
+            document=json.loads((Path(directory)/'creator-job.failure.json').read_text())
+            self.assertEqual(document['binding'],binding)
+            self.assertEqual(base64.b64decode(document['log_base64']),log)
 
     def test_creator_create_or_adopt_creates_when_absent(self):
         disk_node=node('disk',disk=True);disk_node['metadata']['uid']='disk-node-uid'

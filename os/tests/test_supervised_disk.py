@@ -294,6 +294,18 @@ class DetachedCreatorJob(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'process vanished'):
                 controller.remote_creator_status(['kubectl'],'ns','pod','disk',self.binding())
 
+    def test_failed_status_is_distinguished_and_its_bound_log_is_retrieved(self):
+        failed=self.status('failed',process=self.process(),log_bytes=32,log_truncated=False)
+        with patch.object(controller,'remote_creator_status',return_value=failed):
+            with self.assertRaises(controller.CreatorJobFailed):
+                controller.poll_creator_job(['kubectl'],'ns','pod','disk',self.binding(),
+                                            clock=lambda:0,wall_clock=lambda:10,sleep=lambda _:None)
+        log=b'creator job failed: NameError\n  create-development-disk.py:1 run\n'
+        with patch.object(controller,'checked',return_value=base64.b64encode(log).decode()):
+            self.assertEqual(controller.remote_creator_failure_log(
+                ['kubectl'],'ns','pod','disk',self.binding()),log)
+        self.assertIn("status.get('binding')!=expected",controller.REMOTE_CREATOR_FAILURE_LOG)
+
     def test_credentials_are_memory_only_and_terminal_cleanup_is_in_job(self):
         self.assertIn("credential=pathlib.Path('/tmp')", controller.GUEST_LAUNCH)
         self.assertIn("row[4]=='/tmp'", controller.GUEST_LAUNCH)
@@ -336,6 +348,9 @@ class DetachedCreatorJob(unittest.TestCase):
             self.assertFalse(credentials.exists())
             status=json.loads((job/'status.json').read_text())
             self.assertEqual(status['state'],'failed')
+            log=(job/'log.txt').read_text()
+            self.assertIn('creator job failed: BadZipFile',log)
+            self.assertNotIn('secret',log)
             controller.validate_creator_job_status(status,self.binding())
 
 
