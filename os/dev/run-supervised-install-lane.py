@@ -607,9 +607,19 @@ def stream_creator_inputs(context, namespace, pod, container, helpers, public,
     archive, identities = creator_input_archive(helpers, public, installer_bootc)
     script = r'''set -euo pipefail
 umask 077
+test ! -e /work/disk-output/.creator-job
 for destination in /work/helpers /work/public-trust /work/installer-bootc-helper; do
-  test ! -e "$destination" && test ! -L "$destination"
+  if test -e "$destination" || test -L "$destination"; then
+    test ! -L "$destination"
+    test "$(stat -c '%u:%g:%a:%F' "$destination")" = '0:0:700:directory'
+    rm -rf -- "$destination"
+  fi
 done
+if test -e /work/.creator-inputs.json || test -L /work/.creator-inputs.json; then
+  test ! -L /work/.creator-inputs.json
+  test "$(stat -c '%u:%g:%a:%F' /work/.creator-inputs.json)" = '0:0:600:regular file'
+  rm -f -- /work/.creator-inputs.json
+fi
 stage=$(mktemp -d /work/.creator-inputs.XXXXXX)
 own_helpers=0; own_public=0; own_installer=0
 cleanup() {
@@ -638,12 +648,40 @@ mv -T -n "$stage/public-trust" /work/public-trust
 test ! -e "$stage/public-trust"; own_public=1
 mv -T -n "$stage/installer-bootc-helper" /work/installer-bootc-helper
 test ! -e "$stage/installer-bootc-helper"; own_installer=1
+receipt=$(mktemp /work/.creator-inputs.XXXXXX)
+printf '{"schema":1,"purpose":"tilo-supervised-creator-inputs","helpers":"%s","public":"%s","installer":"%s"}\n' "$1" "$2" "$3" > "$receipt"
+chmod 0600 "$receipt"
+mv -T "$receipt" /work/.creator-inputs.json
 own_helpers=0; own_public=0; own_installer=0
 '''
     names = ('helpers.tar', 'public-trust.tar', 'installer-bootc-helper.tar')
     command(kubectl(context, '-n', namespace, 'exec', '-i', pod, '-c', container,
                     '--', 'sh', '-ceu', script, 'sh', *(identities[name] for name in names)),
             archive, timeout=300, text=False)
+
+
+def creator_inputs_ready(context, disk, helpers, public, installer_bootc):
+    expected={'schema':1,'purpose':'tilo-supervised-creator-inputs',
+              'helpers':hashlib.sha256(helpers).hexdigest(),
+              'public':hashlib.sha256(public).hexdigest(),
+              'installer':hashlib.sha256(installer_bootc).hexdigest()}
+    script=r'''import json,os,stat
+p='/work/.creator-inputs.json';i=os.lstat(p)
+if not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1 or i.st_mode&0o077 or not 2<=i.st_size<=4096:raise SystemExit(2)
+fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW)
+try:
+ o=os.fstat(fd)
+ if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size):raise SystemExit(2)
+ print(os.read(fd,4097).decode())
+finally:os.close(fd)'''
+    try:
+        value=json.loads(command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk',
+                                         '--','python3','-c',script),timeout=30))
+    except ControllerTransportError:
+        raise
+    except (ValueError,json.JSONDecodeError):
+        return False
+    return value==expected
 
 
 def public_archive(root):
@@ -858,9 +896,17 @@ def controller(root, args, disk, agent, inspect_only, evidence_name='creator-env
         if registry_auth_bytes is not None:
             argv.append('--registry-auth-stdin')
     try:
-        if registry_auth_bytes is None:
-            return command(argv, timeout=7200)
-        return command(argv, registry_auth_bytes, timeout=7200, text=False).decode()
+        try:
+            result=subprocess.run(argv,input=registry_auth_bytes,capture_output=True,
+                                  text=registry_auth_bytes is None,timeout=7200)
+        except (OSError,subprocess.TimeoutExpired) as error:
+            raise ControllerTransportError('creator controller process lost transport') from error
+        if result.returncode:
+            stderr=result.stderr if isinstance(result.stderr,str) else result.stderr.decode(errors='replace')
+            if result.returncode==75 and stderr.strip().endswith('TILO_CREATOR_CONTROLLER_TRANSPORT'):
+                raise ControllerTransportError('creator controller reported transport loss')
+            raise ValueError(f'creator controller failed (exit {result.returncode})')
+        return result.stdout if isinstance(result.stdout,str) else result.stdout.decode()
     except ValueError as error:
         if not inspect_only and not isinstance(error, ControllerTransportError):
             collect_creator_failure(args, disk)
@@ -1773,8 +1819,13 @@ def main():
         auth_bytes=None
         try:
             if pending_creator:
-                timer.skip('input_transfer')
                 auth_bytes=registry_auth(args)
+                if creator_inputs_ready(args.context,disk,helpers,public,installer_bootc):
+                    timer.skip('input_transfer')
+                else:
+                    with timer.stage('input_transfer'):
+                        stream_creator_inputs(args.context,disk['namespace'],disk['pod'],'disk',
+                                              helpers,public,installer_bootc)
             else:
                 with timer.stage('input_transfer'):
                     auth_bytes=registry_auth(args)
