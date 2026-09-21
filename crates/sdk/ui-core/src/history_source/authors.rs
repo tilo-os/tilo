@@ -432,11 +432,11 @@ mod tests {
         (bytes, derived)
     }
 
-    fn secure_test_identity(path: &std::path::Path) {
+    fn secure_test_identity(_path: &std::path::Path) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            std::fs::set_permissions(_path, std::fs::Permissions::from_mode(0o600))
                 .expect("secure identity permissions");
         }
     }
