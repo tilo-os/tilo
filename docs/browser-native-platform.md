@@ -22,7 +22,7 @@ owner before committing an edit.
   regions, and focus, while redacting protected values.
 - `src/browser.rs` translates browser input, IME, semantic actions, and clipboard
   transfers into the real frame.
-- `ui/src/widget/text_input.rs` remains the canonical selection, composition,
+- `crates/sdk/ui-core/src/widget/text_input.rs` remains the canonical selection, composition,
   filtering, cut-ordering, and IME-geometry implementation.
 
 Clipboard reads and writes stay within the trusted browser event. Cut deletes
