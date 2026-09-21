@@ -6327,7 +6327,7 @@ mod architecture_tests {
             .start_resource_operation(
                 ui::tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
-                "qos.ui.control.invoke",
+                "tilo.ui.control.invoke",
                 &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
                 &AutoCommit::new(),
                 &automerge::ROOT,
@@ -7452,7 +7452,7 @@ mod tests {
                 .start_resource_operation(
                     ui::tilo_actions::InvocationId::new(),
                     OperationKind::Effect,
-                    "qos.ui.control.invoke",
+                    "tilo.ui.control.invoke",
                     &serde_json::to_vec(id).unwrap(),
                     &doc,
                     &root,
@@ -7507,7 +7507,7 @@ mod tests {
                 .start_resource_operation(
                     ui::tilo_actions::InvocationId::new(),
                     OperationKind::Effect,
-                    "qos.ui.control.invoke",
+                    "tilo.ui.control.invoke",
                     &serde_json::to_vec(id).unwrap(),
                     &doc,
                     &root,
@@ -7627,7 +7627,7 @@ mod tests {
                         .start_resource_operation(
                             ui::tilo_actions::InvocationId::new(),
                             OperationKind::Effect,
-                            "qos.ui.control.invoke",
+                            "tilo.ui.control.invoke",
                             &serde_json::to_vec("browser.site.connection").unwrap(),
                             &doc,
                             &root,
@@ -7772,7 +7772,7 @@ mod tests {
                     .start_resource_operation(
                         ui::tilo_actions::InvocationId::new(),
                         OperationKind::Effect,
-                        "qos.ui.control.invoke",
+                        "tilo.ui.control.invoke",
                         &serde_json::to_vec("browser.site.toggle").unwrap(),
                         &doc,
                         &root,
@@ -7919,7 +7919,7 @@ mod tests {
             .start_resource_operation(
                 ui::tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
-                "qos.ui.control.invoke",
+                "tilo.ui.control.invoke",
                 &serde_json::to_vec("browser.site.close").unwrap(),
                 &doc,
                 &root,
