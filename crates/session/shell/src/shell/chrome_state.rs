@@ -2591,7 +2591,7 @@ mod active_tab_tests {
         let grants = ws.app_grants_snapshot();
         drop(guard);
         assert!(
-            grants.contains_key("org.tilo.Editor"),
+            grants.contains_key("org.nirios.Editor"),
             "built-in Editor must be keyed by its canonical app-id; \
              grants = {grants:?}"
         );

@@ -1706,12 +1706,12 @@ mod tests {
             );
         }
         for (index, rect) in overlay.row_action_rects().iter().enumerate() {
-            let row_top = overlay.panel_rect().y0 + 48.0 + row_count_as_f64(index) * ROW_H;
+            let row = overlay.row_rects[index];
             assert!(
-                (rect.center().y - (row_top + ROW_H / 2.0)).abs() < f64::EPSILON,
+                (rect.center().y - row.center().y).abs() < f64::EPSILON,
                 "row {index}'s button is centred in its row"
             );
-            assert!(rect.y0 >= row_top && rect.y1 <= row_top + ROW_H);
+            assert!(rect.y0 >= row.y0 && rect.y1 <= row.y1);
         }
         let band_top = overlay.panel_rect().y1 - FOOTER_H - ACTIONS_H;
         assert!(invite.y0 >= band_top && invite.y1 <= band_top + ACTIONS_H);

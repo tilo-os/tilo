@@ -344,7 +344,7 @@ mod tests {
         ws
     }
 
-    const FILES: &str = "dev.tilo.file-explorer";
+    const FILES: &str = crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
 
     fn tree_with_local_app(app_id: &str) -> (WorkspaceTree, TabId) {
         let mut ws = room_owned_by("quinten");

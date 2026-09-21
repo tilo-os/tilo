@@ -2152,7 +2152,7 @@ fn strip_scroll_across_apps() -> Scenario {
         // Back to the first window, which pans the strip home the way
         // focus always does — the starting position for the travel.
         Action::SelectGroup(Some(0)),
-        Action::Wait(6),
+        Action::Wait(PAN_SETTLE_FRAMES),
         Action::Snapshot("05-strip-at-rest"),
     ];
     // Travel the strip by focus, the only sanctioned view motion: a

@@ -118,7 +118,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             frame.host().fixture_provider_ids(),
-            vec!["notes", "editor", "records"]
+            vec!["actions", "notes", "editor", "records"]
         );
         assert_eq!(frame.chrome().active_local_user(), "shell-fixture");
         assert!(!frame.paint().encoding().is_empty());
@@ -252,7 +252,7 @@ mod tests {
         assert!(frame.chrome().records().open_records().is_empty());
         assert_eq!(
             frame.host().fixture_provider_ids(),
-            vec!["notes", "editor", "records"]
+            vec!["actions", "notes", "editor", "records"]
         );
         assert!(!frame.paint().encoding().is_empty());
         click(&mut frame, "topbar_tray_pill", &mut document);
@@ -274,9 +274,10 @@ mod tests {
         let note = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
         let files = tree.workspaces[0].strips[0].window_groups[0].tabs[1].id;
         let mut frame = FrameBuilder::with_fixture_inputs(tree, (3840, 2160), inputs).unwrap();
+        let store = frame.chrome().records().clone();
+        crate::shell::tab_documents::create_scratch_tab_record(&store, note).unwrap();
         let mut document = automerge::AutoCommit::new();
         frame.pump_apps(&mut document, &automerge::ROOT);
-        let store = frame.chrome().records().clone();
         // The actual Notes CRDT operation edits the actual tab-bound record.
         store
             .with(&ui::record::RecordId::for_tab(note), |doc| {
@@ -332,7 +333,7 @@ mod tests {
         assert_rebuilt_files(&mut frame, strip, files, &child, &mut document);
         assert_eq!(
             frame.host().fixture_provider_ids(),
-            vec!["notes", "editor", "records"]
+            vec!["actions", "notes", "editor", "records"]
         );
         assert_eq!(guard.attempts(), 0);
     }
