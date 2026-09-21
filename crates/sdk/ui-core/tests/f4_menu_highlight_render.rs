@@ -484,7 +484,7 @@ fn bg_app_ground_is_opaque_so_samples_are_meaningful() {
     // Guards the sampling method itself: every case composites over the
     // theme's window ground, so a transparent ground would make each ΔL*
     // above meaningless rather than merely wrong.
-    for name in SHIPPED_THEMES {
+    for name in Theme::ALL {
         let theme = Theme::named(name).expect("shipped preset resolves");
         let px = theme.bg_app.to_rgba8();
         assert_eq!(px.a, 0xff, "{name}: bg_app must be opaque");
@@ -494,29 +494,12 @@ fn bg_app_ground_is_opaque_so_samples_are_meaningful() {
 /// Every preset `Theme::named` resolves, including the accessibility track:
 /// the veneer polarity and the accent are per-theme decisions, so a highlight
 /// that survives the two defaults can still vanish on a preset.
-const SHIPPED_THEMES: [&str; 14] = [
-    "dark",
-    "light",
-    "qosblue",
-    "mocha",
-    "latte",
-    "dracula",
-    "nord",
-    "gruvbox",
-    "gruvboxlight",
-    "solarized",
-    "oled",
-    "paper",
-    "rosepine",
-    "highcontrast",
-];
-
 /// The armed context-menu row must read on every shipped theme, and its
 /// label must stay legible on the fill it sits on — the reported surface,
 /// swept across every palette the OS can be set to.
 #[test]
 fn context_menu_highlight_is_visible_in_every_shipped_theme() {
-    for name in SHIPPED_THEMES {
+    for name in Theme::ALL {
         let theme = Theme::named(name).expect("shipped preset resolves");
         let mut menu = ContextMenu::new();
         for label in labels() {
