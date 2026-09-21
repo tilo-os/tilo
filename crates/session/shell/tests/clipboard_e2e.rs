@@ -3271,6 +3271,9 @@ fn drag_and_drop_carries_data_between_two_clients() {
             compositor.recent_log(),
         );
     }
+    // Enter queues accept/actions on the target's Wayland connection. Order
+    // their processing before the separate control socket releases the grab.
+    target.roundtrip();
     compositor.pointer_button(false);
     target.wait_until(|s| s.dnd_dropped, "the target client never saw the drop");
 
