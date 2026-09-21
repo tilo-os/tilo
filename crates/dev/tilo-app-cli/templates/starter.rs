@@ -7,6 +7,11 @@ use ui::widget::{
 };
 
 /// A complete local form → action/resource → retained output loop.
+///
+/// # Panics
+///
+/// Panics if the statically declared form fields cannot be bound. That would
+/// indicate that this generated template and its form declaration diverged.
 #[expect(
     clippy::expect_used,
     reason = "field names are declared on the action form immediately above"
