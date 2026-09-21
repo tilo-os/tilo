@@ -855,7 +855,7 @@ impl AppComponent {
                     }
                 })
                 .map_err(|error| error.to_string());
-            root.unmount_native_views();
+            crate::widget::unmount_native_views(root);
             result
         } else {
             Ok(())

@@ -1264,7 +1264,7 @@ impl App {
     }
     fn close_native_content(&mut self) {
         self.close_components();
-        self.root_widget.unmount_native_views();
+        crate::widget::unmount_native_views(self.root_widget.as_mut());
     }
 
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
@@ -5727,13 +5727,13 @@ impl App {
         // widget/document authority, and it always runs on the App owner
         // thread.
         self.pump_action_directory_requests();
-        for request in self.root_widget.take_collab_requests() {
+        for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collab_manager.send(request);
         }
         let events = self.collab_manager.poll();
         for event in events {
             any = true;
-            self.root_widget.handle_collab_event(&event);
+            crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
             match event {
                 CollabEvent::Context { collaborators, .. } => {
                     self.apply_collab_context(collaborators);
@@ -5972,7 +5972,7 @@ impl App {
     )]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
         let _entry = self.enter_wake_scope();
-        self.root_widget.handle_collab_event(&event);
+        crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
         match event {
             CollabEvent::RemotePresenceUpdate {
                 user_id,
@@ -7914,7 +7914,7 @@ fn draw_frame_content(
     // frame, so clipping out a static region would just paint background
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| std::time::Instant::now());
-    app.root_widget.native_view_frame_start();
+    crate::widget::native_view_frame_start(app.root_widget.as_mut());
     if app.history_layout.is_none_or(|layout| layout.app_visible) {
         app.root_widget.draw_with_presence(
             scene,
@@ -8232,7 +8232,7 @@ fn run_layout_pass(
     if (structure_rebuilt || recomposed)
         && let Some(host) = native_host
     {
-        app.root_widget.mount_native_views(host);
+        crate::widget::mount_native_views(app.root_widget.as_mut(), host);
     }
     app.layout.last_layout_logical = Some(logical);
     app.layout.layout_dirty = false;
@@ -10288,12 +10288,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             &window,
             self.a11y_proxy.clone(),
         ));
-        self.app
-            .root_widget
-            .mount_native_views(&crate::widget::NativeViewHost::live(
-                &window,
-                self.app.platform,
-            ));
+        crate::widget::mount_native_views(
+            self.app.root_widget.as_mut(),
+            &crate::widget::NativeViewHost::live(&window, self.app.platform),
+        );
         // Windows otherwise exposes an empty white client area while GPU
         // pipelines compile. Prepare those before revealing the window; the
         // normal visible-window redraw path still submits its first frame.
@@ -10516,12 +10514,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             WindowEvent::ScaleFactorChanged { .. } => {
                 // The render path reads `window.scale_factor()` each frame,
                 // so we just need to invalidate layout and redraw.
-                self.app
-                    .root_widget
-                    .mount_native_views(&crate::widget::NativeViewHost::live(
-                        &window,
-                        self.app.platform,
-                    ));
+                crate::widget::mount_native_views(
+                    self.app.root_widget.as_mut(),
+                    &crate::widget::NativeViewHost::live(&window, self.app.platform),
+                );
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
             }
@@ -20067,7 +20063,7 @@ mod viewport_composition_tests {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
         let host = crate::widget::NativeViewHost::headless(app.platform, 1.0);
-        app.root_widget.mount_native_views(&host);
+        crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
         for width in [1200, 920] {
             let mounts = calls
                 .borrow()
