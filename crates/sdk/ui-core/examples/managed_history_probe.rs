@@ -22,8 +22,7 @@ use tilo_ui::{
         PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView, restore,
     },
     widget::{
-        AppKind, AppWidget, Column, IconDescriptor, IdentityStore, ListModel, NativeViewBackend,
-        Text, TileContent, TileHost, Widget,
+        AppKind, AppWidget, Column, IconDescriptor, Text, TileContent, TileHost, Widget,
     },
 };
 use vello::{
