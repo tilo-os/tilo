@@ -11984,8 +11984,8 @@ impl WordProcessorWidget {
                 // Check only when a snapshot is due. Pending edits commit here,
                 // so stale views cannot hide unsaved changes. A virtual window
                 // must never be mistaken for the complete recovery document.
-                let views_current = *heads == state.base_heads()
-                    && materialized_pending_ops == state.pending_ops();
+                let views_current =
+                    *heads == state.base_heads() && materialized_pending_ops == state.pending_ops();
                 state.get_heads();
                 if views_current
                     && !has_preview
