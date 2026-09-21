@@ -353,7 +353,10 @@ def helper_bundle(revision):
         for name in names:
             data = subprocess.run(['git', '-C', str(root), 'show', revision + ':' + name],
                                   check=True, capture_output=True).stdout
-            archive.writestr(Path(name).name, data)
+            entry = zipfile.ZipInfo(Path(name).name, date_time=(1980, 1, 1, 0, 0, 0))
+            entry.compress_type = zipfile.ZIP_DEFLATED
+            entry.external_attr = 0o100644 << 16
+            archive.writestr(entry, data)
     value = bundle.getvalue()
     return value, hashlib.sha256(value).hexdigest()
 
