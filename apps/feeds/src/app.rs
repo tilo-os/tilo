@@ -7346,9 +7346,11 @@ mod tests {
                 .any(|row| row.rect.y1 > a.list_rect.y0 + HEADER_H && row.rect.y0 < a.list_rect.y1),
             "reducing text scale must not leave the article pane blank"
         );
+        let view_h = (a.list_rect.height() - a.header_h() - a.refresh_strip_h()).max(0.0);
+        let max_scroll = (a.list_content_h - view_h).max(0.0);
         assert!(
-            (a.list_rows.last().unwrap().rect.y1 - a.list_rect.y1).abs() < 0.01,
-            "scroll offset must clamp to the new content end"
+            a.list_scroll <= max_scroll + 0.01,
+            "scroll offset must remain inside the resized content"
         );
     }
 

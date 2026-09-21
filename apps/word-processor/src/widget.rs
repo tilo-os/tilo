@@ -1167,7 +1167,7 @@ pub struct WordProcessorWidget {
     #[cfg(test)]
     reference_text_rendering: bool,
     /// A pending transaction has no committed head and may later be rolled back.
-    materialized_pending: bool,
+    materialized_pending_ops: usize,
     /// Page-header block sequence (drawn in every page's top-margin band). A
     /// `page-number` field marker is substituted with the page number per page.
     header: Vec<BlockView>,
@@ -1392,7 +1392,7 @@ impl WordProcessorWidget {
             block_views_have_preview: false,
             #[cfg(test)]
             reference_text_rendering: false,
-            materialized_pending: false,
+            materialized_pending_ops: 0,
             header: Vec::new(),
             footer: Vec::new(),
             laid: Vec::new(),
@@ -2935,8 +2935,9 @@ impl WordProcessorWidget {
         // committed head, so refresh while they exist and once after they leave
         // (including rollback); the host alone chooses the commit boundary.
         let heads = state.base_heads();
-        let pending = state.pending_ops() > 0;
-        let changed = self.materialized_heads != heads || pending || self.materialized_pending;
+        let pending_ops = state.pending_ops();
+        let changed =
+            self.materialized_heads != heads || self.materialized_pending_ops != pending_ops;
         let (old_start, old_end) = self.body_window_bounds();
         let replacement = if changed
             && !self.block_views_have_preview
@@ -3002,7 +3003,7 @@ impl WordProcessorWidget {
         }
         if changed {
             self.materialized_heads = heads;
-            self.materialized_pending = pending;
+            self.materialized_pending_ops = pending_ops;
         }
         self.body_window_start = start;
         // The spell cache deliberately follows the materialized render window:
@@ -8728,6 +8729,12 @@ impl WordProcessorWidget {
         if !matches!(logical_key, Key::Named(NamedKey::Backspace)) {
             self.last_autocorrection = None;
         }
+        let text_block = (!self.inner.has_selection()
+            && matches!(self.inner.region(), Region::Body)
+            && (text.is_some()
+                || (matches!(logical_key, Key::Named(NamedKey::Backspace))
+                    && self.inner.caret().offset > 0)))
+            .then(|| self.inner.caret().block.clone());
         let effect = match logical_key {
             Key::Named(named) => self
                 .handle_named_edit_key(state, *named, shift)
@@ -8749,7 +8756,11 @@ impl WordProcessorWidget {
                 self.save_status = DocumentSaveStatus::Modified;
                 self.note_edit_for_autosave(state);
             }
-            self.refresh_blocks(state);
+            if effect == KeyPressEffect::Edit {
+                self.refresh_blocks_after_text_edit(state, text_block.as_deref());
+            } else {
+                self.refresh_blocks(state);
+            }
             self.lifecycle.dirty = true;
             self.lifecycle.needs_commit = true;
             *handled = true;
@@ -11965,6 +11976,7 @@ impl WordProcessorWidget {
         let notes = &self.notes;
         let body_order = &self.body_order;
         let heads = &self.materialized_heads;
+        let materialized_pending_ops = self.materialized_pending_ops;
         let window_start = self.body_window_start;
         let has_preview = self.block_views_have_preview;
         self.recovery.note_edit(document_path.as_deref(), || {
@@ -11972,8 +11984,10 @@ impl WordProcessorWidget {
                 // Check only when a snapshot is due. Pending edits commit here,
                 // so stale views cannot hide unsaved changes. A virtual window
                 // must never be mistaken for the complete recovery document.
-                let current_heads = state.get_heads();
-                if *heads == current_heads
+                let views_current = *heads == state.base_heads()
+                    && materialized_pending_ops == state.pending_ops();
+                state.get_heads();
+                if views_current
                     && !has_preview
                     && window_start == 0
                     && blocks.len() == body_order.len()

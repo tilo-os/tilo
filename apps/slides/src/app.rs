@@ -9970,11 +9970,18 @@ mod tests {
             .collect();
 
         assert_eq!(segments.len(), TextAlign::ALL.len());
-        assert_eq!(segments[0].x0, chrome.inspector.x0 + 16.0);
-        assert_eq!(segments.last().unwrap().x1, chrome.inspector.x1 - 16.0);
+        let left = chrome.inspector.x0 + 16.0;
+        let right = chrome.inspector.x1 - 16.0;
+        assert_eq!(segments[0].x0, left);
+        assert_eq!(segments.last().unwrap().x1, right);
         let width = segments[0].width();
         for pair in segments.windows(2) {
-            assert_eq!(pair[0].x1, pair[1].x0, "segments meet without gaps");
+            if (pair[0].y0 - pair[1].y0).abs() < 0.5 {
+                assert_eq!(pair[0].x1, pair[1].x0, "segments meet without gaps");
+            } else {
+                assert_eq!(pair[0].x1, right, "each wrapped row fills the right edge");
+                assert_eq!(pair[1].x0, left, "each wrapped row starts at the left edge");
+            }
             assert_eq!(pair[1].width(), width, "segments divide the row evenly");
         }
     }

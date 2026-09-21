@@ -118,7 +118,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             frame.host().fixture_provider_ids(),
-            vec!["notes", "editor", "records"]
+            vec!["actions", "notes", "editor", "records"]
         );
         assert_eq!(frame.chrome().active_local_user(), "shell-fixture");
         assert!(!frame.paint().encoding().is_empty());
@@ -252,7 +252,7 @@ mod tests {
         assert!(frame.chrome().records().open_records().is_empty());
         assert_eq!(
             frame.host().fixture_provider_ids(),
-            vec!["notes", "editor", "records"]
+            vec!["actions", "notes", "editor", "records"]
         );
         assert!(!frame.paint().encoding().is_empty());
         click(&mut frame, "topbar_tray_pill", &mut document);

@@ -2395,27 +2395,13 @@ impl PhotosApp {
         self.library_cards
             .iter()
             .filter_map(|(id, card, _)| {
-                let details = self
-                    .library_details_cards
+                self.library_details_cards
                     .iter()
-                    .find(|(candidate, _)| candidate == id)
-                    .map(|(_, bounds)| *bounds)?;
-                Some((
-                    *card,
-                    details,
-                    Rect::new(
-                        card.x1 - LIBRARY_ACTION_H * 2.0,
-                        card.y1 - LIBRARY_ACTION_H,
-                        card.x1 - LIBRARY_ACTION_H,
-                        card.y1,
-                    ),
-                    Rect::new(
-                        card.x1 - LIBRARY_ACTION_H,
-                        card.y1 - LIBRARY_ACTION_H,
-                        card.x1,
-                        card.y1,
-                    ),
-                ))
+                    .any(|(candidate, _)| candidate == id)
+                    .then(|| {
+                        let actions = card_action_controls(*card);
+                        (*card, actions.details, actions.remove, actions.favorite)
+                    })
             })
             .collect()
     }
@@ -5635,17 +5621,12 @@ impl PhotosApp {
                                     .with_action_target(open_target)
                             }];
                             if !self.album_editor && !self.selection_mode {
+                                let actions = card_action_controls(*bounds);
                                 let favorite_target = format!("photos:library-favorite:{id}");
-                                let favorite_bounds = Rect::new(
-                                    bounds.x1 - 44.0,
-                                    bounds.y1 - 44.0,
-                                    bounds.x1,
-                                    bounds.y1,
-                                );
                                 children.push(
                                     AccessNode::new(Role::ToggleButton)
                                         .with_name("Favorite")
-                                        .with_bounds(favorite_bounds)
+                                        .with_bounds(actions.favorite)
                                         .with_state(AccessState {
                                             focusable: true,
                                             checked: Some(*favorite),
@@ -5664,12 +5645,7 @@ impl PhotosApp {
                                         .with_description(
                                             "Removes this photograph from every album",
                                         )
-                                        .with_bounds(Rect::new(
-                                            bounds.x1 - 88.0,
-                                            bounds.y1 - 44.0,
-                                            bounds.x1 - 44.0,
-                                            bounds.y1,
-                                        ))
+                                        .with_bounds(actions.remove)
                                         .with_state(AccessState {
                                             focusable: true,
                                             ..Default::default()
@@ -5682,12 +5658,7 @@ impl PhotosApp {
                                         .with_description(
                                             "Edit shared folder, people, tags, and capture date",
                                         )
-                                        .with_bounds(Rect::new(
-                                            bounds.x0 + 8.0,
-                                            bounds.y1 - 44.0,
-                                            (bounds.x0 + 108.0).min(bounds.x1 - 88.0),
-                                            bounds.y1,
-                                        ))
+                                        .with_bounds(actions.details)
                                         .with_state(AccessState {
                                             focusable: true,
                                             ..Default::default()
@@ -11151,30 +11122,12 @@ impl PhotosApp {
                     );
                 }
             }
-            let action_y = card.y1 - LIBRARY_ACTION_H;
-            let control_w = LIBRARY_ACTION_H;
-            let details = if desktop_library {
-                Rect::new(
-                    card.x1 - control_w * 3.0,
-                    action_y,
-                    card.x1 - control_w * 2.0,
-                    card.y1,
-                )
-            } else {
-                Rect::new(
-                    card.x0 + 8.0,
-                    action_y,
-                    (card.x0 + 108.0).min(card.x1 - control_w * 2.0),
-                    card.y1,
-                )
-            };
-            let remove = Rect::new(
-                card.x1 - control_w * 2.0,
-                action_y,
-                card.x1 - control_w,
-                card.y1,
-            );
-            let star = Rect::new(card.x1 - control_w, action_y, card.x1, card.y1);
+            let actions = card_action_controls(card);
+            let action_y = actions.details.y0;
+            let control_w = CARD_ACTION_CONTROL_W;
+            let details = actions.details;
+            let remove = actions.remove;
+            let star = actions.favorite;
             // Both text rows are explicitly constrained to this card. The
             // action row owns the bottom 44px, so no title can collide with a
             // neighboring column or a control.
