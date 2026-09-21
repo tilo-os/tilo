@@ -2947,8 +2947,6 @@ mod tests {
 
     #[test]
     fn call_resize_samples_keep_content_and_native_chrome_in_one_geometry() {
-        use ui::Widget;
-
         let (mut app, _doc) = app_with_doc();
         app.call.join("c_huddle");
         render_frame(&mut app, 1200.0, 800.0);
