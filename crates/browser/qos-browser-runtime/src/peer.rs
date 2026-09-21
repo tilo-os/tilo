@@ -395,11 +395,7 @@ async fn connect_owner(
         cert: Box::new(config.certificate),
         revocations: vec![],
     };
-    let request = NeighbourMsg::SyncReq {
-        since: vec![],
-        room: config.bootstrap.room,
-        invite_id: None,
-    };
+    let room = config.bootstrap.room;
     let setup = (|| -> Result<(), JsValue> {
         if action_v2 {
             let room = peer.state.borrow().room().parse().map_err(error)?;
@@ -410,9 +406,6 @@ async fn connect_owner(
         stage_journal(&peer, &peer.state.borrow(), &peer.outbox.borrow()).map_err(error)?;
         session
             .publish_presence(postcard::to_allocvec(&hello).map_err(error)?)
-            .map_err(error)?;
-        session
-            .publish_presence(postcard::to_allocvec(&request).map_err(error)?)
             .map_err(error)?;
         Ok(())
     })();
@@ -489,6 +482,7 @@ async fn connect_owner(
     }
     wasm_bindgen_futures::spawn_local(async move {
         let mut replaying = true;
+        let mut post_ready_repair = crate::post_ready_repair::PostReadyRepair::default();
         while let Some(inbound) = session.recv().await {
             if peer.closed.get() || peer.transport_generation.get() != transport_generation {
                 return;
@@ -499,6 +493,35 @@ async fn connect_owner(
                 Inbound::Ready { .. } => {
                     replaying = false;
                     peer.last_relay_contact.set(Some(js_sys::Date::now()));
+                    let request_repair = post_ready_repair.on_ready(
+                        peer.transport_generation.get() == transport_generation,
+                        &peer.state.borrow(),
+                        peer._key.verifying_key().to_bytes(),
+                        SystemTime::now(),
+                    );
+                    if request_repair {
+                        let request = NeighbourMsg::SyncReq {
+                            since: vec![],
+                            room: room.clone(),
+                            invite_id: None,
+                        };
+                        if let Err(failure) = postcard::to_allocvec(&request)
+                            .map_err(|failure| failure.to_string())
+                            .and_then(|request| {
+                                session
+                                    .publish_presence(request)
+                                    .map_err(|failure| failure.to_string())
+                            })
+                        {
+                            peer.transport_connected.set(false);
+                            report(
+                                &peer,
+                                "failed",
+                                Some(format!("checkpoint repair request failed: {failure}")),
+                            );
+                            return;
+                        }
+                    }
                     report(&peer, "admitting", None);
                     continue;
                 }
