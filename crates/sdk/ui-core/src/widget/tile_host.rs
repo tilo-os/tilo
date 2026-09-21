@@ -2526,12 +2526,12 @@ mod tests {
         }
         let record_dir = app_state::DocStore::room_record_dir_at(
             &root,
-            "dev.qos.tile-host-test",
+            "dev.tilo.tile-host-test",
             "room",
             &checkout.id.storage_key(),
         )
         .unwrap();
-        let path = app_state::DocStore::open_canonical_at("dev.qos.tile-host-test", &record_dir)
+        let path = app_state::DocStore::open_canonical_at("dev.tilo.tile-host-test", &record_dir)
             .unwrap()
             .document_path()
             .to_path_buf();
@@ -2576,7 +2576,7 @@ mod tests {
     }
     static DECLARED_HISTORY: crate::history_mode::HistoryDefinition =
         crate::history_mode::HistoryDefinition {
-            app_id: "dev.qos.tile-host-test",
+            app_id: "dev.tilo.tile-host-test",
             scopes: &[crate::history_mode::HistoryScopeDefinition {
                 key: "body",
                 title: "Body",
@@ -2593,7 +2593,7 @@ mod tests {
         };
     static EXISTING_HISTORY: crate::history_mode::HistoryDefinition =
         crate::history_mode::HistoryDefinition {
-            app_id: "dev.qos.tile-host-test",
+            app_id: "dev.tilo.tile-host-test",
             scopes: &[crate::history_mode::HistoryScopeDefinition {
                 key: "external",
                 title: "External",
@@ -2750,7 +2750,7 @@ mod tests {
                 .unwrap();
             let path = app_state::DocStore::room_record_dir_at(
                 &root,
-                "dev.qos.tile-host-test",
+                "dev.tilo.tile-host-test",
                 "room",
                 &a.id.storage_key(),
             )
