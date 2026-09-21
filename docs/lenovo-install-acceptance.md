@@ -42,7 +42,10 @@ boot and desktop acceptance. A 64 GiB raw image needs a device with at least
 128 GB device.
 
 Disconnect backup and unrelated removable drives. Inventory disks without
-changing them:
+changing them. Run these commands from native Windows PowerShell with a native
+Windows Python build (ARM64 is supported), not from WSL. Inventory and planning
+do not need elevation; only the final `write` command needs an Administrator
+PowerShell:
 
 ```powershell
 python .\os\dev\write-verified-installer-media.py inventory `
