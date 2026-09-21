@@ -46,7 +46,7 @@ pub mod action_host;
 pub mod action_palette;
 pub mod animation;
 #[cfg(test)]
-extern crate self as ui;
+extern crate self as tilo_ui;
 #[cfg(test)]
 #[allow(
     dead_code,

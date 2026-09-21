@@ -65,10 +65,12 @@ for how selection and shared runtime compatibility interact. Use **Release / app
 dispatch for a development artifact, selecting the smallest applicable app and
 architecture set and leaving `publish` off unless publication is intended.
 
-The app registry is publicly reachable at `https://registry.sandbox.example`, but its
-signed catalogue is still empty. CI catalogue submission is not merged or enabled;
-Forgejo package publication alone does not make an app discoverable there. See the
-[production roadmap](docs/ci-production-roadmap.md) for the remaining acceptance gates.
+The app registry is publicly reachable at `https://registry.sandbox.example`. Main-branch
+app publication now submits each newly built immutable qpkg to it; separate collector
+and networkless signer jobs independently verify accepted requests before advancing
+the signed catalogue. Forgejo package publication remains a distinct artifact channel
+and alone does not make an app discoverable. See the [production roadmap](docs/ci-production-roadmap.md)
+for the remaining acceptance gates.
 
 OS publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually
 run **Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
@@ -88,6 +90,28 @@ test targets. Both modes use `--locked` on one native x86-64 runner and share th
 normal download/compiler caches. Missing or ignored tests fail. The job records
 source SHA, workflow SHA, builder digest and exit status; its diagnostic result
 does not replace required PR checks or trigger publication.
+
+For a related group, set `target_kind=lib` (leave `test_target` empty), or keep
+`target_kind=integration` and name the integration target. Supply `test_names` as
+a JSON array of up to 32 exact paths, leaving `test_name` empty. All names must
+exist before any case runs. Every case runs even if an earlier case fails, and
+the run fails if any case fails or is ignored. One job reuses one target tree;
+there is no workspace-wide selection or per-case runner dispatch.
+
+For example, write `["tests::first_case", "tests::second_case"]` to `cases.json`
+and submit directly through the scheduler (replace the example package and SHA):
+
+```sh
+jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
+  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
+  | fgj api -X POST repos/qos/qos/actions/workflows/focused-test.yml/dispatches --hostname code.sandbox.example
+```
+
+Use this structured request for lists: the installed `fgj workflow run` does not
+expand `-F` files and parses `-f` values as CSV, which breaks JSON arrays.
+
+Do not reserve runners or ask another agent to allocate a slot. Each case's
+result and the exact source/workflow/builder identities appear in the run summary.
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
@@ -169,6 +193,23 @@ An unavailable run or log is retained with a `collection_errors` evidence gap;
 it does not discard the remaining snapshot or become a comparison baseline.
 When too little complete evidence remains, the report records that the optional
 comparison is unavailable and still exits successfully with the snapshot.
+
+For a failing pull request, start with the exact-head contexts and then open only
+the failed run:
+
+```sh
+fgj pr checks <pr-number>
+fgj actions run view <run-number>
+fgj actions run logs <run-number>
+```
+
+The app plan and affected-package selector are workflow summaries, so inspect
+them before assuming CI built the whole workspace or app fleet. Main-branch
+check receipts are recorded out of band by `tools/ci/receipt.sh`; they do not
+modify `main` and are evidence for one source SHA and run ID only. A successful
+receipt does not qualify a package, OS release, registry deployment or hardware
+target. For queue/startup regressions, preserve the run number and compare it
+with `timing_report.py` instead of estimating from the web UI.
 
 ## Preview affected applications
 
@@ -271,9 +312,13 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `libclang` (shared library) | `clang-libs` | bindgen for PipeWire and FFmpeg bindings; Python 3 checks that it can load |
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
 | `rust-analyzer` (binary) | `rustup component add rust-analyzer` | the code editor's language-server test drives a real server |
+| `cryptsetup` (binary) | `cryptsetup` | rollback mechanism tests drive a real LUKS2 header |
+| `swtpm` `swtpm_setup` (binaries) | `swtpm` `swtpm-tools` | rollback mechanism tests drive an isolated software TPM |
+| `tpm2_getcap` (binary) | `tpm2-tools` | rollback mechanism tests exercise production TPM policy commands |
 
-The sandbox and language-server tests require `bwrap` and `rust-analyzer`.
-Install them where Cargo runs, including inside a build container.
+The sandbox, language-server, and rollback mechanism tests require the binary
+tools listed above. Install them where Cargo runs, including inside a build
+container.
 
 ### Native Windows Imager builds
 
@@ -859,7 +904,7 @@ or `cycle`, log out and back in through the VM's UI to test session cleanup.
 
 The VM needs the `tilo-session-devel` developer entry once, and **"Tilo (my
 build)"** must be selected in its greeter once.  `deploy shell` writes the
-marked debug binary to `~/.local/share/tilo-dev/shell` and updates the existing
+marked debug binary to `~/.local/share/tilo-app/shell` and updates the existing
 developer-session config, so later cycles do not install an RPM.  Change the
 remote account/location with `TILO_VM_USER`, `TILO_VM_HOST`, and
 `TILO_VM_DEV_ROOT`; `TILO_VM_SSH_PORT` is always mandatory. Build an app or
@@ -1020,7 +1065,7 @@ $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-0.1.0-1.fc43.x86_64.rpm
 
 $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-devel-0.1.0-1.fc43.x86_64.rpm
 /usr/libexec/tilo-session-dev
-/usr/share/wayland-sessions/tilo-dev.desktop
+/usr/share/wayland-sessions/tilo-app.desktop
 ```
 
 GDM reads session entries from `/usr/share/wayland-sessions/`. On an ostree host,
