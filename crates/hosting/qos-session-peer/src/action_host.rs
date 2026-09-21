@@ -546,7 +546,7 @@ impl ActionHost {
         self.acknowledge_committed(owner)?;
         self.publication
             .borrow_mut()
-            .send(owner, |bytes, _| {
+            .send_committed(owner, |bytes, _| {
                 if let NeighbourMsg::AppDocument {
                     app_id,
                     cluster_id,

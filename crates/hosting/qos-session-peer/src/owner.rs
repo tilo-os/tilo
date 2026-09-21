@@ -10,6 +10,7 @@ use qos_peer_state::transport::{Retention, retention};
 use qos_peer_state::{DocumentRow, NeighbourMsg, StatePeer, TransportOrigin};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tilo_user_identity::{DeviceCert, RevocationList, WorkspaceDirectory};
 use web_time::SystemTime;
 
@@ -149,6 +150,40 @@ pub(crate) struct PublicationRevision {
     outgoing_len: usize,
     outgoing_bytes: usize,
 }
+#[derive(Clone, Debug)]
+pub(crate) struct LivePublicationTransition {
+    room: String,
+    before: PublicationRevision,
+    before_generation: u64,
+    after: PublicationRevision,
+    generation: u64,
+    messages: Arc<[(Vec<u8>, Retention)]>,
+}
+impl LivePublicationTransition {
+    pub(crate) fn before(&self) -> PublicationRevision {
+        self.before
+    }
+    pub(crate) fn after(&self) -> PublicationRevision {
+        self.after
+    }
+    pub(crate) fn before_generation(&self) -> u64 {
+        self.before_generation
+    }
+    pub(crate) fn room(&self) -> &str {
+        &self.room
+    }
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub(crate) fn messages(&self) -> &[(Vec<u8>, Retention)] {
+        &self.messages
+    }
+}
+struct PendingLivePublicationTransition {
+    before: PublicationRevision,
+    before_generation: u64,
+    messages: Vec<(Vec<u8>, Retention)>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PublicationAdvance {
     None,
@@ -161,11 +196,13 @@ pub struct SessionOwner {
     aggregate: Aggregate,
     peer: StatePeer,
     workspace_id: u64,
+    live_publication_transition: Option<Arc<LivePublicationTransition>>,
 }
 
 #[cfg(test)]
 std::thread_local! {
     static DOCUMENT_CAUSAL_PROOFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static TEST_PUBLICATION_TIME: std::cell::RefCell<Option<SystemTime>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -176,6 +213,24 @@ fn reset_document_causal_proofs() {
 #[cfg(test)]
 fn document_causal_proofs() -> usize {
     DOCUMENT_CAUSAL_PROOFS.get()
+}
+fn publication_time() -> SystemTime {
+    #[cfg(test)]
+    {
+        return TEST_PUBLICATION_TIME
+            .with(|time| time.borrow().clone().unwrap_or_else(SystemTime::now));
+    }
+    #[cfg(not(test))]
+    SystemTime::now()
+}
+#[cfg(test)]
+fn with_test_publication_time<T>(time: SystemTime, operation: impl FnOnce() -> T) -> T {
+    TEST_PUBLICATION_TIME.with(|current| {
+        let prior = current.replace(Some(time));
+        let result = operation();
+        current.replace(prior);
+        result
+    })
 }
 fn encode(aggregate: &Aggregate, identity: &Identity) -> Result<Vec<u8>> {
     encode_with_timing(aggregate, identity, None)
@@ -357,6 +412,7 @@ impl SessionOwner {
             aggregate,
             peer,
             workspace_id: workspace,
+            live_publication_transition: None,
         })
     }
     pub fn open(root: &Path) -> Result<Self> {
@@ -373,6 +429,7 @@ impl SessionOwner {
             aggregate,
             peer,
             workspace_id,
+            live_publication_transition: None,
         };
         let mut candidate = owner.peer.clone();
         let desktop_changed =
@@ -480,6 +537,9 @@ impl SessionOwner {
             outgoing_bytes: self.aggregate.outgoing.iter().map(Vec::len).sum(),
         }
     }
+    pub(crate) fn live_publication_transition(&self) -> Option<&Arc<LivePublicationTransition>> {
+        self.live_publication_transition.as_ref()
+    }
     pub(crate) fn publication_advance(&self, before: PublicationRevision) -> PublicationAdvance {
         let after = self.publication_revision();
         if after == before {
@@ -519,7 +579,7 @@ impl SessionOwner {
         &self,
         next: &mut Aggregate,
         candidate: &mut StatePeer,
-    ) -> Result<()> {
+    ) -> Result<Option<PendingLivePublicationTransition>> {
         let generation = self
             .aggregate
             .generation
@@ -532,7 +592,7 @@ impl SessionOwner {
             .durable_mutation_messages(
                 &self.peer,
                 &self.identity.native,
-                SystemTime::now(),
+                publication_time(),
                 generation,
             )
             .map_err(anyhow::Error::msg)?;
@@ -541,13 +601,56 @@ impl SessionOwner {
             .map(postcard::to_stdvec)
             .collect::<Result<Vec<_>, _>>()?;
         let tail = &next.outgoing[next.publication.baseline_len..];
-        if tail.len().saturating_add(encoded.len()) > MAX_PUBLICATION_TAIL_ENTRIES
-            || tail.iter().chain(&encoded).map(Vec::len).sum::<usize>() > MAX_PUBLICATION_TAIL_BYTES
+        if tail.len().saturating_add(encoded.len()) >= MAX_PUBLICATION_TAIL_ENTRIES
+            || tail.iter().chain(&encoded).map(Vec::len).sum::<usize>()
+                >= MAX_PUBLICATION_TAIL_BYTES
         {
+            let before = self.publication_revision();
+            let before_generation = self.aggregate.generation;
+            let mut before_room = self
+                .peer
+                .admitted_room()
+                .ok_or_else(|| anyhow::anyhow!("missing prior room governance"))?
+                .clone();
+            let before_room_heads = before_room.get_heads();
             let checkpoint = candidate
-                .durable_bootstrap_messages(&self.identity.native, SystemTime::now(), generation)
+                .durable_bootstrap_messages(&self.identity.native, publication_time(), generation)
                 .map_err(anyhow::Error::msg)?;
+            let mut room = candidate
+                .admitted_room()
+                .ok_or_else(|| anyhow::anyhow!("missing compacted room governance"))?
+                .clone();
+            let changes = room
+                .get_changes(&before_room_heads)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect::<Vec<_>>();
+            let mut live = Vec::with_capacity(checkpoint.len());
+            live.push((
+                postcard::to_stdvec(&NeighbourMsg::SyncResp {
+                    changes,
+                    room: candidate.room().to_owned(),
+                })?,
+                Retention::Delta,
+            ));
             self.replace_publication(next, &checkpoint)?;
+            live.extend(
+                next.outgoing
+                    .iter()
+                    .skip(1)
+                    .cloned()
+                    .map(|bytes| (bytes, Retention::Checkpoint)),
+            );
+            let live_bytes = live.iter().map(|(bytes, _)| bytes.len()).sum::<usize>();
+            if live.len() <= MAX_PUBLICATION_TAIL_ENTRIES
+                && live_bytes <= MAX_PUBLICATION_TAIL_BYTES
+            {
+                return Ok(Some(PendingLivePublicationTransition {
+                    before,
+                    before_generation,
+                    messages: live,
+                }));
+            }
         } else {
             for message in &messages {
                 let (_, kind) =
@@ -557,9 +660,13 @@ impl SessionOwner {
             next.outgoing.extend(encoded);
             *candidate = selective;
         }
-        Ok(())
+        Ok(None)
     }
     fn commit(&mut self, mut aggregate: Aggregate, candidate: StatePeer) -> Result<CommitReceipt> {
+        // A failed durability barrier must not leave an old live-only artifact
+        // reachable while the owner is suspended. The new artifact is installed
+        // only by its caller after this method returns successfully.
+        self.live_publication_transition = None;
         let timing = Timing::new("aggregate_persist");
         timing.mark("candidate_durable_start");
         aggregate.peer = candidate.durable().map_err(anyhow::Error::msg)?;
@@ -587,7 +694,24 @@ impl SessionOwner {
         self.peer = candidate;
         Ok(receipt)
     }
+    fn install_live_publication_transition(
+        &mut self,
+        pending: Option<PendingLivePublicationTransition>,
+    ) {
+        let Some(pending) = pending else {
+            return;
+        };
+        self.live_publication_transition = Some(Arc::new(LivePublicationTransition {
+            room: self.peer.room().to_owned(),
+            before: pending.before,
+            before_generation: pending.before_generation,
+            after: self.publication_revision(),
+            generation: self.aggregate.generation,
+            messages: pending.messages.into(),
+        }));
+    }
     pub fn flush(&mut self) -> Result<CommitReceipt> {
+        self.live_publication_transition = None;
         let bytes = encode(&self.aggregate, &self.identity)?;
         self.store.commit(&bytes)?;
         Ok(CommitReceipt {
@@ -675,7 +799,7 @@ impl SessionOwner {
             );
             return self.commit(next, candidate).map(Some);
         }
-        if request {
+        let transition = if request {
             let messages = candidate
                 .durable_bootstrap_messages(
                     &self.identity.native,
@@ -687,10 +811,13 @@ impl SessionOwner {
                 )
                 .map_err(anyhow::Error::msg)?;
             self.replace_publication(&mut next, &messages)?;
+            None
         } else {
-            self.append_mutation_publication(&mut next, &mut candidate)?;
-        }
-        self.commit(next, candidate).map(Some)
+            self.append_mutation_publication(&mut next, &mut candidate)?
+        };
+        let receipt = self.commit(next, candidate)?;
+        self.install_live_publication_transition(transition);
+        Ok(Some(receipt))
     }
     /// Explicit recovery/admission checkpoint: caller supplies a validated candidate.
     /// Ordinary local changes use `commit_mutation_candidate` instead.
@@ -737,10 +864,13 @@ impl SessionOwner {
         timing.mark("aggregate_clone_end");
         next.directory = directory;
         timing.mark("mutation_publication_start");
-        self.append_mutation_publication(&mut next, &mut candidate)?;
+        let transition = self.append_mutation_publication(&mut next, &mut candidate)?;
         timing.mark("mutation_publication_end");
         timing.mark("aggregate_persist_start");
         let result = self.commit(next, candidate);
+        if result.is_ok() {
+            self.install_live_publication_transition(transition);
+        }
         timing.mark("aggregate_persist_end");
         result
     }
@@ -941,6 +1071,7 @@ impl SessionOwner {
             aggregate,
             peer,
             workspace_id,
+            live_publication_transition: None,
         })
     }
 }
@@ -1027,6 +1158,144 @@ mod admission_validation_tests {
                 .to_string()
                 .contains("admission removes existing record")
         );
+    }
+}
+
+#[cfg(test)]
+mod compaction_transition_tests {
+    use super::*;
+    use std::time::Duration;
+    use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
+
+    fn commit_small_changed_record(owner: &mut SessionOwner, value: u64) {
+        let app = "dev.qos.word-processor";
+        let record = "tab:0000000000000001";
+        let mut candidate = owner.peer().clone();
+        let mut document = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
+        document.put(ROOT, "fresh-compaction-test", value).unwrap();
+        document.commit();
+        candidate
+            .publish_document(
+                app,
+                record,
+                document.save(),
+                &owner.identity.native,
+                SystemTime::now(),
+            )
+            .unwrap();
+        owner
+            .commit_mutation_candidate(candidate, owner.directory().to_vec())
+            .unwrap();
+    }
+
+    fn consumer(owner: &SessionOwner, now: SystemTime) -> StatePeer {
+        let mut revocations = RevocationList::new();
+        for entry in owner.peer().revocations() {
+            revocations.insert(entry).unwrap();
+        }
+        StatePeer::new(
+            owner.peer().room(),
+            owner.peer().authority().clone(),
+            owner.peer().certificates(),
+            revocations,
+            now,
+        )
+        .unwrap()
+    }
+
+    fn receive_encoded(target: &mut StatePeer, source: [u8; 32], encoded: &[u8], now: SystemTime) {
+        target
+            .receive_from(
+                TransportOrigin::RelayDelta(source),
+                postcard::from_bytes(encoded).unwrap(),
+                now,
+            )
+            .unwrap();
+    }
+
+    fn room_heads(peer: &StatePeer) -> Vec<ui::automerge::ChangeHash> {
+        peer.admitted_room().unwrap().clone().get_heads()
+    }
+
+    #[test]
+    fn threshold_compaction_replaces_expired_live_basis_with_fresh_equivalent_transition() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        let initial_at = SystemTime::now();
+        let source = owner.peer().authority().device_public_key;
+        let initial = owner.outgoing().to_vec();
+        let stale_snapshot = initial[1].clone();
+        let mut transitioned = consumer(&owner, initial_at);
+        for encoded in &initial {
+            receive_encoded(&mut transitioned, source, encoded, initial_at);
+        }
+        let mut sent = initial.len();
+        for value in 0..31 {
+            commit_small_changed_record(&mut owner, value);
+            for encoded in &owner.outgoing()[sent..] {
+                receive_encoded(&mut transitioned, source, encoded, initial_at);
+            }
+            sent = owner.outgoing().len();
+        }
+
+        let delayed = initial_at + Duration::from_secs(301);
+        assert!(
+            transitioned
+                .receive_from(
+                    TransportOrigin::RelayDelta(source),
+                    postcard::from_bytes(&stale_snapshot).unwrap(),
+                    delayed,
+                )
+                .unwrap_err()
+                .contains("timestamp"),
+            "the old persisted checkpoint is not live-valid after 300 seconds"
+        );
+        with_test_publication_time(delayed, || commit_small_changed_record(&mut owner, 31));
+        let transition = owner
+            .live_publication_transition()
+            .expect("threshold compaction installs the fresh live artifact")
+            .clone();
+        assert_eq!(
+            transition
+                .messages()
+                .iter()
+                .skip(1)
+                .map(|(bytes, _)| bytes)
+                .collect::<Vec<_>>(),
+            owner.outgoing().iter().skip(1).collect::<Vec<_>>(),
+            "the transition and durable basis carry the exact same fresh snapshot wire frames"
+        );
+        for (encoded, _) in transition.messages() {
+            receive_encoded(&mut transitioned, source, encoded, delayed);
+        }
+
+        let mut full = consumer(&owner, delayed);
+        for encoded in owner.outgoing() {
+            receive_encoded(&mut full, source, encoded, delayed);
+        }
+        assert_eq!(transitioned.rows(), full.rows());
+        assert_eq!(room_heads(&transitioned), room_heads(&full));
+        assert_eq!(transitioned.replay_floors(), full.replay_floors());
+        assert_eq!(transitioned.incomplete_reason(), full.incomplete_reason());
+        for row in full.rows() {
+            assert_eq!(
+                transitioned.document_heads(&row.app_id, &row.record_id),
+                full.document_heads(&row.app_id, &row.record_id)
+            );
+            assert_eq!(
+                transitioned
+                    .durable_coverage(&row.app_id, &row.record_id)
+                    .unwrap(),
+                full.durable_coverage(&row.app_id, &row.record_id).unwrap()
+            );
+            assert_eq!(
+                transitioned
+                    .durable_covers_current(&row.app_id, &row.record_id)
+                    .unwrap(),
+                full.durable_covers_current(&row.app_id, &row.record_id)
+                    .unwrap()
+            );
+        }
     }
 }
 
