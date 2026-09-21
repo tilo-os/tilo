@@ -15,6 +15,7 @@ exclude = [
     "vendor/winit",
     "vendor/wgpu-hal",
     "vendor/openh264-sys2",
+    "vendor/wayland-backend",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -521,6 +522,13 @@ wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 winit = { path = "vendor/winit" }
+# The pure-Rust server used by Smithay used to panic if a client disappeared
+# from inside a request callback which had just created a child object. OAuth
+# browser launches make that race easy to hit: a probing helper can connect,
+# create a registry object, and exit before dispatch finishes. Keep the
+# compositor alive and treat the vanished object as a disconnected client.
+# See vendor/wayland-backend/TILO-PATCH.md.
+wayland-backend = { path = "vendor/wayland-backend" }
 # Vendored vello variants size scratch buffers from the current scene and
 # include the matching shader/encoding changes.
 vello_encoding = { path = "vendor/vello_encoding" }
