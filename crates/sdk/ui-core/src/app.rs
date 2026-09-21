@@ -5635,13 +5635,13 @@ impl App {
         // widget/document authority, and it always runs on the App owner
         // thread.
         self.pump_action_directory_requests();
-        for request in self.root_widget.take_collab_requests() {
+        for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collab_manager.send(request);
         }
         let events = self.collab_manager.poll();
         for event in events {
             any = true;
-            self.root_widget.handle_collab_event(&event);
+            crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
             match event {
                 CollabEvent::Context { collaborators, .. } => {
                     self.apply_collab_context(collaborators);
@@ -5874,7 +5874,7 @@ impl App {
     )]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
         let _entry = self.enter_wake_scope();
-        self.root_widget.handle_collab_event(&event);
+        crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
         match event {
             CollabEvent::RemotePresenceUpdate {
                 user_id,
