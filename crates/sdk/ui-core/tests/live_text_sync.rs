@@ -21,7 +21,7 @@ use std::time::Duration;
 use crate::support::typed_collab::TypedBroker;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
-use ui::collaboration::CollabRequest;
+use tilo_ui::collaboration::CollabRequest;
 
 fn text_of(doc: &AutoCommit) -> String {
     let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "text") else {

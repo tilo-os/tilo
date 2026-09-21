@@ -1,4 +1,4 @@
-//! Pixel-level test for `ui::presence::draw_remote_cursors`. Renders a
+//! Pixel-level test for `tilo_ui::presence::draw_remote_cursors`. Renders a
 //! single remote cursor at a known position into an offscreen surface,
 //! then samples pixels around the apex to assert that *something*
 //! non-background was painted there — the lightest possible proof the
@@ -18,10 +18,10 @@
 use vello::Scene;
 use vello::peniko::Color;
 
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::{PresenceCtx, draw_remote_cursors};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::{PresenceCtx, draw_remote_cursors};
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
 
 #[test]
 #[allow(
