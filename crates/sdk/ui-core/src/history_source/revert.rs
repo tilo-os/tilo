@@ -333,6 +333,10 @@ fn blocked_container(
 /// the run created that somebody has since written inside would delete
 /// their work outright. A multi-element removal is split so the elements
 /// nobody touched still go.
+#[allow(
+    clippy::too_many_lines,
+    reason = "classification keeps the patch shadow, conflict attribution, and write decision in one auditable pass"
+)]
 fn classify(
     doc: &AutoCommit,
     inverse: Vec<Patch>,

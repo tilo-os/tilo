@@ -34,7 +34,7 @@ pub fn schema_operations_since(doc: &mut AutoCommit, heads: &[ChangeHash]) -> Ve
                 new_object,
                 key: match &operation.key {
                     Key::Map(key) => Some(key.to_string()),
-                    _ => None,
+                    Key::Seq(_) => None,
                 },
                 timestamp,
             });

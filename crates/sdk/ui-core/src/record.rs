@@ -1749,7 +1749,7 @@ impl RecordStore {
                     candidate
                         .get_changes(&before)
                         .iter()
-                        .map(|change| change.hash())
+                        .map(automerge::Change::hash)
                         .collect()
                 }
             };

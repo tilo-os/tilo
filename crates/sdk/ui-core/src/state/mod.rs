@@ -1269,6 +1269,10 @@ pub fn write_patches(
 
 /// Filtered history must retain skipped structural patches: later diff indices
 /// still include their logical effects, even though their live content survives.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the patch replay must share object remapping and list cursor state across every Automerge patch variant"
+)]
 pub(crate) fn write_selected_patches(
     doc: &mut AutoCommit,
     patches: Vec<(automerge::Patch, bool)>,
@@ -1442,7 +1446,7 @@ pub(crate) fn write_selected_patches(
             PatchAction::DeleteSeq { index, length } => {
                 // Removing elements the local action inserted; they exist
                 // post-action, so each position is anchored at `after`.
-                if let Some(order) = list_order.as_deref_mut() {
+                if let Some(order) = list_order {
                     let end = index.saturating_add(length).min(order.len());
                     if index < end {
                         for cursor in order.drain(index..end) {
