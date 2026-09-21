@@ -314,6 +314,11 @@ jobs:
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:
+          # Large test compilations need the existing 7 GiB-per-rustc budget.
+          # Run 14014 reached the x86 runner's 9 GiB cgroup limit and recorded
+          # an OOM kill with four build jobs. Limit compilation, not nextest's
+          # test concurrency; later check and Clippy steps keep their defaults.
+          CARGO_BUILD_JOBS: '1'
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
