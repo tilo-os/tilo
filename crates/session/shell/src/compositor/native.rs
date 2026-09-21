@@ -1803,6 +1803,15 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
             NamedKeyTag::F1 => NamedKey::F1,
             NamedKeyTag::F4 => NamedKey::F4,
             NamedKeyTag::PrintScreen => NamedKey::PrintScreen,
+            NamedKeyTag::AudioVolumeUp => NamedKey::AudioVolumeUp,
+            NamedKeyTag::AudioVolumeDown => NamedKey::AudioVolumeDown,
+            NamedKeyTag::AudioVolumeMute => NamedKey::AudioVolumeMute,
+            NamedKeyTag::MicrophoneVolumeMute => NamedKey::MicrophoneVolumeMute,
+            NamedKeyTag::BrightnessUp => NamedKey::BrightnessUp,
+            NamedKeyTag::BrightnessDown => NamedKey::BrightnessDown,
+            NamedKeyTag::MediaPlayPause => NamedKey::MediaPlayPause,
+            NamedKeyTag::MediaTrackNext => NamedKey::MediaTrackNext,
+            NamedKeyTag::MediaTrackPrevious => NamedKey::MediaTrackPrevious,
             NamedKeyTag::Space => NamedKey::Space,
             NamedKeyTag::Shift => NamedKey::Shift,
             NamedKeyTag::Control => NamedKey::Control,
@@ -1810,6 +1819,39 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
             NamedKeyTag::Super => NamedKey::Super,
         }),
         KeyTag::Char(c) => Key::Character(SmolStr::new(c.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod injected_key_mapping_tests {
+    use super::keytag_into_winit_key;
+    use crate::compositor::test_control::{KeyTag, NamedKeyTag};
+    use winit::keyboard::{Key, NamedKey};
+
+    #[test]
+    fn injected_media_keys_map_to_the_production_logical_keys() {
+        for (tag, expected) in [
+            (NamedKeyTag::AudioVolumeUp, NamedKey::AudioVolumeUp),
+            (NamedKeyTag::AudioVolumeDown, NamedKey::AudioVolumeDown),
+            (NamedKeyTag::AudioVolumeMute, NamedKey::AudioVolumeMute),
+            (
+                NamedKeyTag::MicrophoneVolumeMute,
+                NamedKey::MicrophoneVolumeMute,
+            ),
+            (NamedKeyTag::BrightnessUp, NamedKey::BrightnessUp),
+            (NamedKeyTag::BrightnessDown, NamedKey::BrightnessDown),
+            (NamedKeyTag::MediaPlayPause, NamedKey::MediaPlayPause),
+            (NamedKeyTag::MediaTrackNext, NamedKey::MediaTrackNext),
+            (
+                NamedKeyTag::MediaTrackPrevious,
+                NamedKey::MediaTrackPrevious,
+            ),
+        ] {
+            assert_eq!(
+                keytag_into_winit_key(KeyTag::Named(tag)),
+                Key::Named(expected)
+            );
+        }
     }
 }
 
@@ -5606,7 +5648,7 @@ pub fn run() {
                             frame_builder.host().qs_actions(),
                             frame_builder.host().status_bridge(),
                         ) {
-                            frame_builder.with_chrome(|st| st.show_osd(osd));
+                            frame_builder.with_chrome(|st| publish_media_osd(st, osd));
                             session_changed = true;
                         }
                     } else if peer_sync.as_ref().is_some_and(|network| {
@@ -7347,6 +7389,51 @@ pub fn run() {
     // Releases the D-Bus bus name and tears down the notification object
     // server before returning to the session wrapper.
     drop(notif_handle);
+}
+
+/// Publish a successful machine-level change to every shell surface that
+/// mirrors it before raising the transient readout. Quick Settings may be
+/// open while a hardware key is pressed, so waiting for its next device read
+/// would leave the visible slider behind the value in the OSD.
+fn publish_media_osd(
+    chrome: &mut crate::shell::chrome_state::ChromeState,
+    osd: crate::shell::osd::Osd,
+) {
+    sync_quick_settings_from_osd(&mut chrome.quick_settings, osd);
+    chrome.show_osd(osd);
+}
+
+fn sync_quick_settings_from_osd(
+    quick_settings: &mut crate::shell::chrome_state::QuickSettingsState,
+    osd: crate::shell::osd::Osd,
+) {
+    match osd.kind {
+        crate::shell::osd::OsdKind::Volume { .. } => {
+            quick_settings.volume = osd.level;
+        }
+        crate::shell::osd::OsdKind::Brightness => {
+            quick_settings.brightness = osd.level;
+        }
+        crate::shell::osd::OsdKind::MicMute { .. } | crate::shell::osd::OsdKind::Transport(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod media_osd_publication_tests {
+    use super::sync_quick_settings_from_osd;
+    use crate::shell::chrome_state::QuickSettingsState;
+    use crate::shell::osd::Osd;
+
+    #[test]
+    fn successful_level_osds_update_the_open_quick_settings_sliders() {
+        let mut quick_settings = QuickSettingsState::default();
+
+        sync_quick_settings_from_osd(&mut quick_settings, Osd::volume(0.73, false));
+        assert!((quick_settings.volume - 0.73).abs() < f32::EPSILON);
+
+        sync_quick_settings_from_osd(&mut quick_settings, Osd::brightness(0.28));
+        assert!((quick_settings.brightness - 0.28).abs() < f32::EPSILON);
+    }
 }
 
 /// Session-owned ambient-light loop. Settings only records policy; the
