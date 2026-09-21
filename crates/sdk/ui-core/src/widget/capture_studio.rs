@@ -19,7 +19,7 @@ use crate::{
     surface,
     text_render::{TextRenderer, TextWeight},
     theme::Theme,
-    widget::{TaffyTreeExt, Widget},
+    widget::{Button, ButtonFace, Chip, ChipLead, ChipStyle, TaffyTreeExt, Widget},
 };
 use automerge::{AutoCommit, ObjId};
 use std::{
@@ -335,6 +335,13 @@ enum DragSelection {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RegionChrome {
+    metadata: Rect,
+    remove: Rect,
+    outside: bool,
+}
+
 impl DragSelection {
     fn set_current(&mut self, point: Point) {
         match self {
@@ -357,6 +364,7 @@ pub struct CaptureStudio {
     mode: CaptureMode,
     source: SourceMode,
     regions: Vec<Rect>,
+    region_remove_rects: Vec<Rect>,
     drag: Option<DragSelection>,
     cursor: Point,
     include_pointer: bool,
@@ -428,6 +436,7 @@ impl Default for CaptureStudio {
             mode: CaptureMode::Screenshot,
             source: SourceMode::Region,
             regions: Vec::new(),
+            region_remove_rects: Vec::new(),
             drag: None,
             cursor: Point::ZERO,
             include_pointer: false,
@@ -502,6 +511,7 @@ impl CaptureStudio {
         self.open = true;
         self.opened_at = Some(Instant::now());
         self.regions.clear();
+        self.region_remove_rects.clear();
         self.drag = None;
         if self.recording_active {
             self.mode = CaptureMode::Recording;
@@ -623,6 +633,7 @@ impl CaptureStudio {
     pub fn set_source_mode(&mut self, source: SourceMode) {
         self.source = source;
         self.regions.clear();
+        self.region_remove_rects.clear();
         self.selected_target = if source == SourceMode::Window {
             self.candidates.first().map(|target| target.id.clone())
         } else {
@@ -1074,12 +1085,10 @@ impl CaptureStudio {
         }
     }
     fn selection_bounds(&self) -> Rect {
-        Rect::new(
-            self.rect.x0 + 8.0,
-            self.rect.y0 + 90.0,
-            self.rect.x1 - 8.0,
-            self.bottom_bar().y0 - 12.0,
-        )
+        // Picker chrome floats over the clean compositor scene and disappears
+        // before capture execution. It must not make the physical output's
+        // top and bottom bands impossible to select.
+        self.rect
     }
 
     fn selection_handle_points(region: Rect) -> [(SelectionHandle, Point); 8] {
@@ -1259,13 +1268,95 @@ impl CaptureStudio {
         *region = Self::moved_selection_rect(*region, Point::ZERO, Point::ZERO + delta, bounds);
         true
     }
-    fn region_remove_rect(region: Rect) -> Rect {
-        Rect::new(
-            region.x1 - 34.0,
-            region.y0 + 8.0,
-            region.x1 - 10.0,
-            region.y0 + 32.0,
-        )
+    fn region_chrome_layout(
+        region: Rect,
+        metadata_width: f64,
+        bounds: Rect,
+        occupied: &[Rect],
+    ) -> RegionChrome {
+        const HEIGHT: f64 = 24.0;
+        const GAP: f64 = 6.0;
+        const REMOVE_WIDTH: f64 = 24.0;
+        let total_width = metadata_width + GAP + REMOVE_WIDTH;
+        let clamp_x = |x: f64| x.clamp(bounds.x0, (bounds.x1 - total_width).max(bounds.x0));
+        let clamp_y = |y: f64| y.clamp(bounds.y0, (bounds.y1 - HEIGHT).max(bounds.y0));
+        let candidates = [
+            Rect::new(
+                clamp_x(region.x0),
+                region.y0 - GAP - HEIGHT,
+                clamp_x(region.x0) + total_width,
+                region.y0 - GAP,
+            ),
+            Rect::new(
+                clamp_x(region.x0),
+                region.y1 + GAP,
+                clamp_x(region.x0) + total_width,
+                region.y1 + GAP + HEIGHT,
+            ),
+            Rect::new(
+                region.x1 + GAP,
+                clamp_y(region.y0),
+                region.x1 + GAP + total_width,
+                clamp_y(region.y0) + HEIGHT,
+            ),
+            Rect::new(
+                region.x0 - GAP - total_width,
+                clamp_y(region.y0),
+                region.x0 - GAP,
+                clamp_y(region.y0) + HEIGHT,
+            ),
+        ];
+        let group = candidates.into_iter().find(|candidate| {
+            bounds.contains(candidate.origin())
+                && bounds.contains(Point::new(candidate.x1, candidate.y1))
+                && occupied
+                    .iter()
+                    .all(|other| candidate.intersect(*other).area() <= 0.0)
+        });
+        let (group, outside) = group.map_or_else(
+            || {
+                let x0 = clamp_x(region.x0 + 8.0);
+                let y0 = clamp_y(region.y0 + 8.0);
+                (Rect::new(x0, y0, x0 + total_width, y0 + HEIGHT), false)
+            },
+            |group| (group, true),
+        );
+        RegionChrome {
+            metadata: Rect::new(group.x0, group.y0, group.x0 + metadata_width, group.y1),
+            remove: Rect::new(group.x1 - REMOVE_WIDTH, group.y0, group.x1, group.y1),
+            outside,
+        }
+    }
+
+    fn region_chrome(
+        &self,
+        region: Rect,
+        index: usize,
+        regions: &[Rect],
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) -> (Option<String>, Option<String>, String, RegionChrome) {
+        let multiple = regions.len() > 1;
+        let dimensions = format!(
+            "{} × {}",
+            region.width().round() as i64,
+            region.height().round() as i64
+        );
+        let live = (self.mode == CaptureMode::Pip).then(|| "LIVE".to_string());
+        let ordinal = multiple.then(|| (index + 1).to_string());
+        let labels = [
+            live.as_deref(),
+            ordinal.as_deref(),
+            Some(dimensions.as_str()),
+        ];
+        let visible = labels.into_iter().flatten().collect::<Vec<_>>();
+        let width = visible
+            .iter()
+            .map(|label| Chip::natural_width_at(label, 24.0, ChipLead::None, theme, text_renderer))
+            .sum::<f64>()
+            + visible.len().saturating_sub(1) as f64 * 4.0;
+        let chrome = Self::region_chrome_layout(region, width, self.selection_bounds(), regions);
+        (live, ordinal, dimensions, chrome)
     }
     fn selected_candidate(&self) -> Option<&CaptureTarget> {
         let id = self.selected_target.as_ref()?;
@@ -1332,23 +1423,21 @@ impl CaptureStudio {
         // every pointer move; making this pill resize for every digit during a
         // drag adds visual chatter rather than useful feedback.
         let regions = &self.regions;
-        let finish = match self.mode {
-            CaptureMode::Screenshot => "Enter to save",
-            CaptureMode::Recording => "Enter to record",
-            CaptureMode::Pip => "Enter to float",
-        };
         if self.source == SourceMode::Region
             && let Some(region) = regions.last()
         {
             return format!(
-                "{} × {} · {finish}",
+                "{} × {} selected",
                 region.width().round() as i64,
                 region.height().round() as i64,
             );
         }
         if self.source == SourceMode::Multi && !regions.is_empty() {
             let noun = if regions.len() == 1 { "area" } else { "areas" };
-            return format!("{} {noun} · drag to add · {finish}", regions.len());
+            return format!(
+                "{} {noun} selected. Shift-drag to add another.",
+                regions.len()
+            );
         }
         match (self.mode, self.source) {
             (CaptureMode::Screenshot, SourceMode::Region) => "Drag to select",
@@ -2131,6 +2220,10 @@ impl CaptureStudio {
     }
 
     fn click(&mut self, p: Point) {
+        self.click_with_additive(p, false);
+    }
+
+    fn click_with_additive(&mut self, p: Point, additive: bool) {
         if self.replay_active {
             let (_, save, stop) = self.replay_indicator_rects();
             if self.replay_saved_actions_visible() {
@@ -2315,13 +2408,14 @@ impl CaptureStudio {
                 }
                 return;
             }
-            if self.source == SourceMode::Multi
+            if matches!(self.source, SourceMode::Region | SourceMode::Multi)
                 && let Some(index) = self
-                    .regions
+                    .region_remove_rects
                     .iter()
-                    .position(|region| Self::region_remove_rect(*region).contains(p))
+                    .position(|remove| remove.contains(p))
             {
                 self.regions.remove(index);
+                self.region_remove_rects.clear();
                 return;
             }
             if matches!(self.source, SourceMode::Region | SourceMode::Multi)
@@ -2329,7 +2423,7 @@ impl CaptureStudio {
             {
                 return;
             }
-            if self.source != SourceMode::Multi {
+            if self.source != SourceMode::Multi || !additive {
                 self.regions.clear()
             }
             self.drag = Some(DragSelection::Create {
@@ -2392,43 +2486,22 @@ impl CaptureStudio {
     fn toggle_button(
         scene: &mut Scene,
         t: Affine,
+        tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
         on: bool,
         hovered: bool,
         icon: Icon,
     ) {
-        let c = &theme.tokens.colors;
-        let fill = if on {
-            c.accent[5]
-        } else if hovered {
-            c.lift(0.72)
+        let face = if on {
+            ButtonFace::new(r, "").primary()
         } else {
-            c.lift(0.35)
-        };
-        if on {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                fill,
-                None,
-                &RoundedRect::from_rect(r, 10.0),
-            );
-        } else {
-            surface::card(scene, t, r, 10.0, fill);
+            ButtonFace::new(r, "")
         }
-        icons::draw_icon(
-            scene,
-            t,
-            r.inset(-9.0),
-            icon,
-            if on || hovered {
-                c.text_primary
-            } else {
-                c.text_dim
-            },
-            icons::LUCIDE_DEFAULT_STROKE_PX,
-        )
+        .icon(icon)
+        .radius(10.0)
+        .hovered(hovered);
+        Button::paint(scene, t, tr, theme, &face);
     }
 
     fn target_badge(
@@ -2789,64 +2862,17 @@ impl CaptureStudio {
         active: bool,
         hovered: bool,
     ) {
-        let c = &theme.tokens.colors;
-        let color = if active || hovered {
-            c.text_primary
+        let face = if active {
+            ButtonFace::new(rect, label).primary()
         } else {
-            c.text_dim
-        };
-        let fill = if active {
-            c.accent[5]
-        } else if hovered {
-            c.lift(0.72)
-        } else {
-            c.lift(0.35)
-        };
-        if active {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                fill,
-                None,
-                &RoundedRect::from_rect(rect, 9.0),
-            );
-        } else {
-            surface::card(scene, t, rect, 9.0, fill);
+            ButtonFace::new(rect, label)
         }
-        let font_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
-        let (text_w, text_h) = tr.measure_weighted(label, font_size, None, TextWeight::Medium);
-        let icon_size = 15.0;
-        let gap = 6.0;
-        let group_w = icon_size + gap + f64::from(text_w);
-        let x = rect.center().x - group_w / 2.0;
-        icons::draw_icon(
-            scene,
-            t,
-            Rect::new(
-                x,
-                rect.center().y - icon_size / 2.0,
-                x + icon_size,
-                rect.center().y + icon_size / 2.0,
-            ),
-            icon,
-            color,
-            1.4,
-        );
-        tr.draw_text_weighted(
-            scene,
-            label,
-            font_size,
-            color,
-            t.pre_translate(
-                (
-                    x + icon_size + gap,
-                    rect.center().y - f64::from(text_h) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-            TextWeight::Medium,
-        );
+        .icon(icon)
+        .radius(9.0)
+        .text_size(theme.tokens.typography.scale.sm)
+        .weight(TextWeight::Medium)
+        .hovered(hovered);
+        Button::paint(scene, t, tr, theme, &face);
     }
 
     fn scrim_path(&self, regions: &[Rect]) -> BezPath {
@@ -3963,64 +3989,47 @@ impl CaptureStudio {
         }
 
         let label_x = preview.x1 + 9.0;
-        let compact = self.status_rect().width() < 1000.0;
         let action_limit = if receipt.copied { dismiss.x0 } else { pin.x0 };
-        let label = if compact {
-            format!(
-                "{} · {}×{}",
-                if receipt.copied { "Copied" } else { "Saved" },
-                receipt.width,
-                receipt.height
-            )
-        } else if receipt.copied {
-            "Copied".to_string()
-        } else {
-            "Saved".to_string()
-        };
-        // Compact pills carry one centred line; wide pills stack the label
-        // over the dimensions, the pair centred as a block on the pill.
-        let line_h = line_height(
-            text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
-        );
-        let label_top = if compact {
-            pill.center().y - line_h / 2.0
-        } else {
-            pill.center().y - line_h
-        };
-        let label_budget = (action_limit - label_x - 5.0).max(20.0);
-        let shown = fit_label(
-            text_renderer,
-            &label,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
-            label_budget,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            &shown,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            colors.text_primary.with_alpha_factor(content_alpha),
-            transform.pre_translate((label_x, label_top).into()),
+        let status = if receipt.copied { "Copied" } else { "Saved" };
+        let dimensions = format!("{} × {}", receipt.width, receipt.height);
+        let (status_width, status_height) = text_renderer.measure_weighted(
+            status,
+            theme.tokens.typography.scale.xs,
             None,
             TextWeight::Semibold,
         );
-        if !compact {
-            let dims = fit_label(
-                text_renderer,
-                &format!("{} × {}", receipt.width, receipt.height),
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
+        text_renderer.draw_text_weighted(
+            scene,
+            status,
+            theme.tokens.typography.scale.xs,
+            colors.text_primary.with_alpha_factor(content_alpha),
+            transform
+                .pre_translate((label_x, pill.center().y - f64::from(status_height) / 2.0).into()),
+            None,
+            TextWeight::Semibold,
+        );
+        let dimensions_x = label_x + f64::from(status_width) + 8.0;
+        let dimensions_width = (action_limit - dimensions_x - 5.0).max(0.0);
+        if dimensions_width >= 24.0 {
+            let (_, dimensions_height) = text_renderer.measure_weighted(
+                &dimensions,
+                theme.tokens.typography.scale.xs,
+                Some(dimensions_width as f32),
                 TextWeight::Regular,
-                label_budget,
             );
             text_renderer.draw_text_weighted(
                 scene,
-                &dims,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
+                &dimensions,
+                theme.tokens.typography.scale.xs,
                 colors.text_dim.with_alpha_factor(content_alpha),
-                transform.pre_translate((label_x, pill.center().y).into()),
-                None,
+                transform.pre_translate(
+                    (
+                        dimensions_x,
+                        pill.center().y - f64::from(dimensions_height) / 2.0,
+                    )
+                        .into(),
+                ),
+                Some(dimensions_width as f32),
                 TextWeight::Regular,
             );
         }
@@ -4535,7 +4544,8 @@ impl Widget for CaptureStudio {
             }
         }
         if self.source != SourceMode::Window {
-            for (i, r) in regions.into_iter().enumerate() {
+            self.region_remove_rects.clear();
+            for (i, r) in regions.iter().copied().enumerate() {
                 s.fill(
                     Fill::NonZero,
                     t,
@@ -4571,94 +4581,57 @@ impl Widget for CaptureStudio {
                     }
                 }
                 Self::draw_selection_handles(s, t, theme, r, self.cursor);
-                let badge_width = if self.mode == CaptureMode::Pip {
-                    54.0
-                } else {
-                    24.0
-                };
-                let b = Rect::new(
-                    r.x0 + 8.0,
-                    r.y0 + 8.0,
-                    r.x0 + 8.0 + badge_width,
-                    r.y0 + 32.0,
-                );
-                s.fill(
-                    Fill::NonZero,
-                    t,
-                    selection_color,
-                    None,
-                    &RoundedRect::from_rect(b, 12.0),
-                );
-                // The index badge and the dimensions beside it share one
-                // centre line, so they read as a single caption.
-                let badge_top = centered_text_top(
-                    tr,
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    TextWeight::Semibold,
-                    b.center().y,
-                );
-                tr.draw_text_weighted(
-                    s,
-                    &if self.mode == CaptureMode::Pip {
-                        format!("LIVE {}", i + 1)
-                    } else {
-                        (i + 1).to_string()
-                    },
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    c.text_primary,
-                    t.pre_translate(
-                        (
-                            b.x0 + if self.mode == CaptureMode::Pip {
-                                7.0
-                            } else {
-                                8.0
-                            },
-                            badge_top,
-                        )
-                            .into(),
-                    ),
-                    None,
-                    TextWeight::Semibold,
-                );
-                tr.draw_text(
-                    s,
-                    &format!(
-                        "{} × {}",
-                        r.width().round() as i64,
-                        r.height().round() as i64
-                    ),
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    c.text_primary,
-                    t.pre_translate((b.x1 + 8.0, badge_top).into()),
-                    None,
-                );
-                if self.source == SourceMode::Multi && r.width() >= 80.0 {
-                    let remove = Self::region_remove_rect(r);
-                    let hovered = remove.contains(self.cursor);
-                    s.fill(
-                        Fill::NonZero,
-                        t,
-                        if hovered {
-                            c.semantic.danger.with_alpha_factor(0.28)
-                        } else {
-                            c.surfaces.raised.with_alpha_factor(0.92)
-                        },
-                        None,
-                        &RoundedRect::from_rect(remove, 12.0),
+                let (live, ordinal, dimensions, chrome) =
+                    self.region_chrome(r, i, &regions, theme, tr);
+                let mut metadata_x = chrome.metadata.x0;
+                for label in [
+                    live.as_deref(),
+                    ordinal.as_deref(),
+                    Some(dimensions.as_str()),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let width = Chip::natural_width_at(
+                        label,
+                        chrome.metadata.height(),
+                        ChipLead::None,
+                        theme,
+                        tr,
                     );
-                    icons::draw_icon(
+                    let rect = Rect::new(
+                        metadata_x,
+                        chrome.metadata.y0,
+                        metadata_x + width,
+                        chrome.metadata.y1,
+                    );
+                    Chip::draw_at(
                         s,
                         t,
-                        remove.inset(-6.0),
-                        Icon::X,
-                        if hovered {
-                            c.semantic.danger
-                        } else {
-                            c.text_dim
-                        },
-                        1.4,
+                        rect,
+                        label,
+                        ChipLead::None,
+                        ChipStyle::tinted(selection_color),
+                        theme,
+                        tr,
                     );
+                    metadata_x = rect.x1 + 4.0;
                 }
+                let hovered = chrome.remove.contains(self.cursor);
+                let face = if hovered {
+                    ButtonFace::new(chrome.remove, "")
+                        .danger()
+                        .icon(Icon::X)
+                        .accessible_name("Remove selection")
+                } else {
+                    ButtonFace::new(chrome.remove, "")
+                        .icon(Icon::X)
+                        .accessible_name("Remove selection")
+                }
+                .radius(12.0)
+                .hovered(hovered);
+                Button::paint(s, t, tr, theme, &face);
+                self.region_remove_rects.push(chrome.remove);
             }
         }
         let top = self.top_bar();
@@ -4945,6 +4918,7 @@ impl Widget for CaptureStudio {
             Self::toggle_button(
                 s,
                 bottom_t,
+                tr,
                 theme,
                 pointer,
                 self.include_pointer,
@@ -4956,6 +4930,7 @@ impl Widget for CaptureStudio {
             Self::toggle_button(
                 s,
                 bottom_t,
+                tr,
                 theme,
                 self.system_audio_rect(),
                 self.audio.includes_system(),
@@ -4967,6 +4942,7 @@ impl Widget for CaptureStudio {
             Self::toggle_button(
                 s,
                 bottom_t,
+                tr,
                 theme,
                 self.microphone_rect(),
                 self.audio.includes_microphone(),
@@ -5007,80 +4983,32 @@ impl Widget for CaptureStudio {
                 CaptureMode::Pip => i == 1,
             };
             let danger_action = self.mode == CaptureMode::Recording && i == 2;
-            let foreground = if danger_action && active {
-                c.ink_on(
-                    c.semantic.danger,
-                    c.text_primary,
-                    crate::tokens::colors::ON_FILL_MIN_CONTRAST,
-                )
-            } else if active {
-                c.text_primary
-            } else {
-                c.text_dim
-            };
-            s.fill(
-                Fill::NonZero,
-                bottom_t,
-                if active && emphasized {
-                    match self.mode {
-                        CaptureMode::Screenshot => c.accent[5],
-                        CaptureMode::Recording => c.semantic.danger,
-                        CaptureMode::Pip => c.semantic.info,
-                    }
-                } else if hovered {
-                    c.lift(0.72)
-                } else {
-                    c.lift(0.35)
-                },
-                None,
-                &RoundedRect::from_rect(r, 10.0),
-            );
-            if hovered && emphasized {
-                s.stroke(
-                    &Stroke::new(1.0),
-                    bottom_t,
-                    c.text_primary.with_alpha_factor(0.30),
-                    None,
-                    &RoundedRect::from_rect(r.inflate(-0.5, -0.5), 9.5),
-                );
-            }
             let labeled = emphasized || (self.mode == CaptureMode::Recording && i == 1);
-            let icon_rect = if labeled {
-                // Icon and label sit on the button's centre line together.
-                Rect::from_center_size(Point::new(r.x0 + 18.0, r.center().y), (16.0, 16.0))
-            } else {
-                Rect::new(
-                    r.center().x - 9.0,
-                    r.center().y - 9.0,
-                    r.center().x + 9.0,
-                    r.center().y + 9.0,
-                )
-            };
-            icons::draw_icon(s, bottom_t, icon_rect, icon, foreground, 1.5);
-            if labeled {
-                let label = match (self.mode, i) {
+            let label = if labeled {
+                match (self.mode, i) {
                     (CaptureMode::Recording, 1) => "Last 30s",
                     (CaptureMode::Screenshot, _) => "Save",
                     (CaptureMode::Recording, _) if self.recording_active => "Stop",
                     (CaptureMode::Recording, _) => "Record",
                     (CaptureMode::Pip, _) => "Create PiP",
-                };
-                let label_top = centered_text_top(
-                    tr,
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    TextWeight::Semibold,
-                    r.center().y,
-                );
-                tr.draw_text_weighted(
-                    s,
-                    label,
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    foreground,
-                    bottom_t.pre_translate((r.x0 + 32.0, label_top).into()),
-                    None,
-                    TextWeight::Semibold,
-                );
+                }
+            } else {
+                ""
+            };
+            let face = if danger_action && emphasized {
+                ButtonFace::new(r, label).danger()
+            } else if emphasized {
+                ButtonFace::new(r, label).primary()
+            } else {
+                ButtonFace::new(r, label)
             }
+            .icon(icon)
+            .radius(10.0)
+            .text_size(theme.tokens.typography.scale.xs)
+            .weight(TextWeight::Semibold)
+            .hovered(hovered)
+            .disabled(!active);
+            Button::paint(s, bottom_t, tr, theme, &face);
         }
         s.pop_layer()
     }
@@ -5234,7 +5162,7 @@ impl Widget for CaptureStudio {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.click(self.cursor),
+            } => self.click_with_additive(self.cursor, modifiers.state().shift_key()),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -5463,6 +5391,9 @@ impl Widget for CaptureStudio {
         if matches!(self.source, SourceMode::Region | SourceMode::Multi) {
             for (index, region) in self.regions.iter().enumerate() {
                 o.push((format!("capture.selection.{index}.move"), *region));
+                if let Some(remove) = self.region_remove_rects.get(index) {
+                    o.push((format!("capture.selection.{index}.remove"), *remove));
+                }
                 for (handle, point) in Self::selection_handle_points(*region) {
                     let name = match handle {
                         SelectionHandle::NorthWest => "nw",
@@ -5546,10 +5477,10 @@ mod tests {
         assert_eq!(s.default_picker_context(), "Drag to select");
 
         s.regions.push(Rect::new(20., 100., 640., 470.));
-        assert_eq!(s.default_picker_context(), "620 × 370 · Enter to save");
+        assert_eq!(s.default_picker_context(), "620 × 370 selected");
 
         s.set_mode(CaptureMode::Recording);
-        assert_eq!(s.default_picker_context(), "620 × 370 · Enter to record");
+        assert_eq!(s.default_picker_context(), "620 × 370 selected");
 
         s.set_mode(CaptureMode::Pip);
         s.set_source_mode(SourceMode::Multi);
@@ -5559,7 +5490,7 @@ mod tests {
         ]);
         assert_eq!(
             s.default_picker_context(),
-            "2 areas · drag to add · Enter to float"
+            "2 areas selected. Shift-drag to add another."
         );
     }
 
@@ -5653,6 +5584,61 @@ mod tests {
     }
 
     #[test]
+    fn multi_new_drag_replaces_unless_shift_extends_selection() {
+        let mut s = CaptureStudio::default();
+        s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        s.open();
+        s.set_source_mode(SourceMode::Multi);
+        s.regions.push(Rect::new(80.0, 100.0, 260.0, 240.0));
+
+        s.click_with_additive(Point::new(420.0, 180.0), false);
+        s.drag
+            .as_mut()
+            .unwrap()
+            .set_current(Point::new(620.0, 360.0));
+        s.finish_region_drag();
+        assert_eq!(s.regions, vec![Rect::new(420.0, 180.0, 620.0, 360.0)]);
+
+        s.click_with_additive(Point::new(90.0, 390.0), true);
+        s.drag
+            .as_mut()
+            .unwrap()
+            .set_current(Point::new(290.0, 560.0));
+        s.finish_region_drag();
+        assert_eq!(s.regions.len(), 2, "Shift extends the existing selection");
+        assert_eq!(s.regions[0], Rect::new(420.0, 180.0, 620.0, 360.0));
+        assert_eq!(s.regions[1], Rect::new(90.0, 390.0, 290.0, 560.0));
+    }
+
+    #[test]
+    fn region_selection_reaches_output_edges_and_chrome_prefers_outside() {
+        let mut s = CaptureStudio::default();
+        s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        s.open();
+        s.click(Point::new(200.0, 300.0));
+        s.drag.as_mut().unwrap().set_current(Point::new(500.0, 0.0));
+        assert_eq!(s.active_regions()[0].y0, 0.0);
+        s.drag
+            .as_mut()
+            .unwrap()
+            .set_current(Point::new(500.0, 600.0));
+        assert_eq!(s.active_regions()[0].y1, 600.0);
+
+        let middle = Rect::new(180.0, 180.0, 500.0, 380.0);
+        let outside = CaptureStudio::region_chrome_layout(middle, 90.0, s.rect, &[middle]);
+        assert!(outside.outside);
+        assert_eq!(outside.metadata.y1, middle.y0 - 6.0);
+
+        let full = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let inside = CaptureStudio::region_chrome_layout(full, 90.0, s.rect, &[full]);
+        assert!(
+            !inside.outside,
+            "a full-output selection has no outside lane"
+        );
+        assert!(full.contains(inside.metadata.center()));
+    }
+
+    #[test]
     fn existing_region_moves_resizes_nudges_and_clamps_without_restarting() {
         let mut s = CaptureStudio::default();
         s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -5725,7 +5711,10 @@ mod tests {
             "PiP does not inherit screenshot cursor trails"
         );
 
-        s.click(CaptureStudio::region_remove_rect(s.regions[0]).center());
+        let first = s.regions[0];
+        let remove = CaptureStudio::region_chrome_layout(first, 96.0, s.rect, &s.regions).remove;
+        s.region_remove_rects = vec![remove, Rect::ZERO];
+        s.click(remove.center());
         assert_eq!(s.regions, vec![Rect::new(500., 180., 900., 520.)]);
     }
     #[test]

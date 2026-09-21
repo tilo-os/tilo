@@ -74,7 +74,7 @@ fn split_and_save_round_trip_through_disk() {
     // Reset the welcome page so its demo blocks do not mix with the fixture.
     {
         let panel = app.main_panel_mut();
-        panel.load_page(welcome_id, "Welcome", String::new());
+        panel.load_page(welcome_id, "Welcome", "");
     }
 
     // Seed: type "First", press Enter, type "Second" — via the
@@ -116,7 +116,7 @@ fn heading_promotion_survives_save_reload() {
     // starter page's demo blocks.
     {
         let panel = app.main_panel_mut();
-        panel.load_page(welcome_id, "Welcome", String::new());
+        panel.load_page(welcome_id, "Welcome", "");
     }
 
     {

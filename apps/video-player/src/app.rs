@@ -32,7 +32,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::Spacing;
 use ui::widget::video_player::{PlayerSetting, PlayerSettingEvent};
-use ui::widget::{ActionEmitter, Button, ButtonFace, VideoPlayer, Widget};
+use ui::widget::{ActionEmitter, Button, ButtonFace, FloatingSurfaceProvider, VideoPlayer, Widget};
 
 use crate::actions::PlayerOperation;
 use crate::collab::{CollabPlayback, Role};
@@ -3323,7 +3323,22 @@ impl Default for PlayerApp {
     }
 }
 
+impl FloatingSurfaceProvider for PlayerApp {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.pending_pip.take()
+    }
+}
+
 impl Widget for PlayerApp {
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
+
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
     }
@@ -3691,12 +3706,6 @@ impl Widget for PlayerApp {
 
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
-    }
-
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.pending_pip.take()
     }
 
     fn refresh_control_action_availability(
@@ -4607,7 +4616,8 @@ mod tests {
             .unwrap();
         app.apply_layout(&taffy, root, Point::ZERO);
         app.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
-        let request = Widget::take_floating_surface_request(&mut app).expect("PiP request");
+        let request = ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut app)
+            .expect("PiP request");
         assert_eq!(request.id, "video-player.current-video");
         assert_eq!(
             request.role,

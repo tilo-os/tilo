@@ -39,9 +39,9 @@ use ui::webview::{
 };
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
-    AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
-    IconDescriptor, MenuItem, ProgressBar, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput,
-    TextInputKind, WebView, Widget,
+    AppKind, AppWidget, Button, Column, Container, Continuable, EmptyState,
+    FloatingSurfaceProvider, IconDescriptor, ProgressBar, Row, ScrollAxis, Scrollable, Spacer,
+    Text, TextInput, TextInputKind, WebView, Widget,
 };
 
 use crate::actions::{
@@ -4195,12 +4195,70 @@ impl Continuable for BrowserWidget {
     }
 }
 
+impl FloatingSurfaceProvider for BrowserWidget {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.pending_pip.take()
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
+        self.pending_capture_studio.take()
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.pending_pip_region_update
+            .take()
+            .map(|region| vec![(PIP_ID.into(), region)])
+            .unwrap_or_default()
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.active_pip.then(|| PIP_ID.into()).into_iter().collect()
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &ui::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        match message {
+            ui::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. }
+                if id == PIP_ID =>
+            {
+                self.active_pip = true;
+            }
+            ui::floating_surface::FloatingSurfaceHostMessage::Closed { id }
+            | ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
+                if id == PIP_ID =>
+            {
+                self.active_pip = false;
+                self.active_pip_element = None;
+                self.pip_page_fallback = false;
+                self.active_pip_refresh_probe = None;
+                self.next_pip_refresh_at = None;
+                self.pending_pip_region_update = None;
+                self.published_pip_region = None;
+                self.structure_dirty = true;
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Widget for BrowserWidget {
     fn continuable(&self) -> Option<&dyn Continuable> {
         Some(self)
     }
 
     fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
+    }
+
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
+
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
         Some(self)
     }
 
@@ -5391,61 +5449,6 @@ impl Widget for BrowserWidget {
         }
     }
 
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.pending_pip.take()
-    }
-
-    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
-        self.pending_capture_studio.take()
-    }
-
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        self.pending_pip_region_update
-            .take()
-            .map(|region| vec![(self.pip_id.clone(), region)])
-            .unwrap_or_default()
-    }
-
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.active_pip
-            .then(|| self.pip_id.clone())
-            .into_iter()
-            .collect()
-    }
-
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &ui::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        match message {
-            ui::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. }
-                if id == &self.pip_id =>
-            {
-                self.active_pip = true;
-            }
-            ui::floating_surface::FloatingSurfaceHostMessage::Closed { id }
-            | ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
-                if id == &self.pip_id =>
-            {
-                self.active_pip = false;
-                self.active_pip_element = None;
-                self.pip_page_fallback = false;
-                self.active_pip_refresh_probe = None;
-                self.next_pip_refresh_at = None;
-                self.pending_pip_region_update = None;
-                self.published_pip_region = None;
-                self.structure_dirty = true;
-            }
-            _ => {}
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Chrome and modal input must precede page dispatch."
-    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,

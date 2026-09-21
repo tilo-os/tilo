@@ -2738,7 +2738,8 @@ impl ShellOverlayHost {
         for row in rows {
             // SAFETY: identical sequential traversal to `Widget::draw` above.
             unsafe {
-                (&mut *row).draw_floating_surfaces(
+                ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+                    &mut *row,
                     &mut workspace,
                     transform,
                     text_renderer,
@@ -3783,7 +3784,7 @@ impl ShellOverlayHost {
                 // SAFETY: stable Box<GroupRow> contract; this is a shared
                 // read and cannot race a workspace reconciliation sweep.
                 let row: &GroupRow = unsafe { &**ptr };
-                Widget::active_floating_surface_ids(row)
+                ui::widget::FloatingSurfaceWidgetExt::active_floating_surface_ids(row)
             })
             .collect()
     }
@@ -3796,7 +3797,7 @@ impl ShellOverlayHost {
             // SAFETY: same stable Box<GroupRow> contract as the request
             // harvesters; the host owns exclusive access for dispatch.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            Widget::on_floating_surface_host_message(row, message);
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(row, message);
         }
     }
 
@@ -7476,7 +7477,9 @@ impl ShellOverlayHost {
             // SAFETY: same stable `Box<GroupRow>` contract as
             // `capture_targets`; update holds exclusive access to the host.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            if let Some(request) = Widget::take_floating_surface_request(row) {
+            if let Some(request) =
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(row)
+            {
                 let already_queued = self
                     .pending_floating_surfaces
                     .iter()
@@ -7492,7 +7495,9 @@ impl ShellOverlayHost {
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: same stable Box<GroupRow> contract as request harvest.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            for update in Widget::take_floating_surface_source_updates(row) {
+            for update in
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_source_updates(row)
+            {
                 if let Some(existing) = self
                     .pending_floating_surface_updates
                     .iter_mut()
@@ -7515,7 +7520,8 @@ impl ShellOverlayHost {
             // SAFETY: same stable Box<GroupRow> contract as the floating
             // surface harvester immediately above.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            requested = requested.or_else(|| Widget::take_capture_studio_request(row));
+            requested = requested
+                .or_else(|| ui::widget::FloatingSurfaceWidgetExt::take_capture_studio_request(row));
         }
         if let Some(mode) = requested {
             let _ = self.open_capture_studio(mode);
@@ -15311,6 +15317,20 @@ impl Widget for ShellOverlayHost {
         children.extend(self.capture_mirror_nodes.iter().copied());
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             let onboarding_node = onboarding.build_layout(taffy, theme, node_map);
+            // The desktop already consumes the root flex row. The tutorial is
+            // modal chrome above that desktop, not another sibling pane: make
+            // it fill the viewport without participating in flex placement.
+            if let Ok(style) = taffy.style(onboarding_node) {
+                let mut overlay_style = style.clone();
+                overlay_style.position = Position::Absolute;
+                overlay_style.inset = TaffyRect {
+                    left: LengthPercentageAuto::length(0.0),
+                    right: LengthPercentageAuto::length(0.0),
+                    top: LengthPercentageAuto::length(0.0),
+                    bottom: LengthPercentageAuto::length(0.0),
+                };
+                let _ = taffy.set_style(onboarding_node, overlay_style);
+            }
             self.onboarding_node = Some(onboarding_node);
             children.push(onboarding_node);
         }
@@ -15409,7 +15429,7 @@ impl Widget for ShellOverlayHost {
                 // combined-output coordinate space. Push the real boundary
                 // before child layout so both sides resolve one identical
                 // rect on the ownership-transfer frame.
-                Widget::set_floating_surface_bounds(row, self.rect);
+                ui::widget::FloatingSurfaceWidgetExt::set_floating_surface_bounds(row, self.rect);
             }
         }
         let Ok(children) = taffy.children(node) else {
@@ -15548,7 +15568,8 @@ impl Widget for ShellOverlayHost {
             // owned by this host. Drawing is sequential and `&mut self`
             // prevents another traversal from aliasing these rows.
             unsafe {
-                (&mut *row).draw_floating_surfaces(
+                ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+                    &mut *row,
                     scene,
                     transform,
                     text_renderer,
@@ -30123,6 +30144,47 @@ mod tests {
         assert!(
             !chrome.borrow().overlays.desktop_tour,
             "the request edge is consumed so dismissing does not reopen it"
+        );
+    }
+
+    #[test]
+    fn first_login_tour_composes_with_the_real_desktop() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        host.enable_host_desktop_onboarding(std::path::PathBuf::from(
+            "/var/empty/tilo-first-login-tour-test",
+        ));
+        host.set_onboarding_visual_state_for_snapshot(
+            crate::onboarding_view::OnboardingVisualState::TourNavigate,
+        );
+
+        assert!(
+            host.onboarding
+                .as_ref()
+                .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context),
+            "starting the first-login tour must release the opaque setup backdrop"
+        );
+        let harness = build_harness_with_host(host, chrome);
+        assert!(
+            harness.host.content_node.is_some(),
+            "the real desktop stays in the first-login tour layout"
+        );
+        assert!(
+            harness.host.onboarding_node.is_some(),
+            "the first-login tour remains modal above the desktop"
+        );
+        let tour_rect = harness
+            .host
+            .onboarding
+            .as_ref()
+            .expect("first-login tour")
+            .get_rect();
+        assert_eq!(
+            tour_rect,
+            Rect::new(0.0, 0.0, 1600.0, 900.0),
+            "the tutorial overlay must cover the visible desktop rather than landing beside it"
         );
     }
 

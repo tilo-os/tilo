@@ -22,6 +22,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
@@ -86,21 +87,63 @@ pub enum LineSignal {
 /// Matches the body baseline the rest of the UI uses for `TextInput`.
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 
+/// Geometry shared by every mark segment `draw` paints in one frame, so
+/// `paint_mark_segment` doesn't need a fistful of separate parameters.
+struct MarkDrawCtx<'a> {
+    text: &'a str,
+    xs: &'a [f64],
+    rect: Rect,
+    pad: f64,
+    scroll_x: f64,
+    text_y: f64,
+    line_height: f64,
+    text_size: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) enum ImagePreview {
+    #[default]
+    Absent,
+    Present {
+        dimensions: Option<(u32, u32)>,
+        editing: bool,
+    },
+}
+
+impl ImagePreview {
+    fn is_present(self) -> bool {
+        matches!(self, Self::Present { .. })
+    }
+}
+
+#[derive(Default)]
+struct RichTextDirty {
+    marks: bool,
+    styled_layout: bool,
+}
+
 pub struct RichTextLine {
     inner: TextInput,
     /// At most one signal in flight per frame; new signals overwrite the slot.
     signal: Option<LineSignal>,
     font_size: f32,
     wrap: bool,
+    inline_formatting: bool,
+    measurement_theme: Theme,
+    layout_inset: f32,
+    layout_header_height: f32,
+    table_preview: Option<bool>,
+    table_source_height: f32,
+    /// An image attachment uses the leaf's actual Taffy width for its preview.
+    image_preview: ImagePreview,
+    image_source_height: f32,
     /// Kept sorted by `range.start`.
     marks: Vec<MarkSpan>,
     /// Paint-only semantic colours (for example fenced-code syntax). These
     /// never enter Automerge or the Markdown mark model.
     transient_colors: Vec<TransientColorSpan>,
     /// Formatting-only edits must notify the owning document just like typing.
-    marks_dirty: bool,
-    accent_rgb: Option<[u8; 3]>,
-    transient_rgb: [Option<[u8; 3]>; 8],
+    dirty: RichTextDirty,
     /// Drained once `handle_event` observes a text-input edit.
     pending_marks: Vec<Mark>,
     /// Snapshot used to detect splice direction + length so `marks` stays
@@ -125,11 +168,17 @@ impl RichTextLine {
             signal: None,
             font_size: DEFAULT_FONT_SIZE,
             wrap: false,
+            inline_formatting: true,
+            measurement_theme: Theme::dark(),
+            layout_inset: 0.0,
+            layout_header_height: 0.0,
+            table_preview: None,
+            table_source_height: 0.0,
+            image_preview: ImagePreview::Absent,
+            image_source_height: 0.0,
             marks: Vec::new(),
             transient_colors: Vec::new(),
-            marks_dirty: false,
-            accent_rgb: None,
-            transient_rgb: [None; 8],
+            dirty: RichTextDirty::default(),
             pending_marks: Vec::new(),
             prev_text: String::new(),
             prev_cursor: 0,
@@ -164,9 +213,48 @@ impl RichTextLine {
         self.inner.set_mono(mono);
     }
 
+    /// Source-code cells retain literal text rather than prose formatting or
+    /// note-link shortcuts. Monospace alone does not imply these semantics.
+    pub fn set_inline_formatting(&mut self, enabled: bool) {
+        self.dirty.styled_layout |= self.inline_formatting != enabled;
+        self.inline_formatting = enabled;
+        self.inner.set_compact_multiline(!enabled);
+        if !enabled {
+            self.pending_marks.clear();
+        }
+    }
+
     pub fn set_wrap(&mut self, wrap: bool) {
         self.wrap = wrap;
         self.inner.set_multiline(wrap);
+    }
+
+    pub(super) fn set_compact_wrapped(&mut self, compact: bool) {
+        self.inner.set_compact_multiline(compact);
+    }
+
+    pub(super) fn set_layout_inset(&mut self, inset: f32) {
+        self.layout_inset = inset;
+    }
+
+    pub(super) fn set_layout_header_height(&mut self, height: f32) {
+        self.layout_header_height = height;
+    }
+
+    pub(super) fn set_table_preview(&mut self, visual: Option<bool>) {
+        self.table_preview = visual;
+    }
+
+    pub(super) fn table_source_height(&self) -> f32 {
+        self.table_source_height
+    }
+
+    pub(super) fn set_image_preview(&mut self, preview: ImagePreview) {
+        self.image_preview = preview;
+    }
+
+    pub(super) fn image_source_height(&self) -> f32 {
+        self.image_source_height
     }
 
     pub fn value(&self) -> &str {
@@ -238,8 +326,9 @@ impl RichTextLine {
         self.inner.set_text(s);
         self.inner.set_cursor_pos(s.len());
         // Doesn't preserve prior marks; parents re-seed via `set_marks`.
+        self.dirty.styled_layout |= !self.marks.is_empty();
         self.marks.clear();
-        self.marks_dirty = false;
+        self.dirty.marks = false;
         self.pending_marks.clear();
         self.prev_text = s.to_string();
         self.prev_cursor = s.len();
@@ -249,7 +338,7 @@ impl RichTextLine {
     /// A user edit to text or rich spans. Programmatic projection stays clean.
     pub fn take_dirty(&mut self) -> Option<String> {
         let text = self.inner.take_dirty();
-        if std::mem::take(&mut self.marks_dirty) {
+        if std::mem::take(&mut self.dirty.marks) {
             Some(text.unwrap_or_else(|| self.inner.value().to_owned()))
         } else {
             text
@@ -307,13 +396,14 @@ impl RichTextLine {
         &self.marks
     }
 
-    pub fn set_marks(&mut self, marks: Vec<MarkSpan>) {
+    pub fn set_marks(&mut self, mut marks: Vec<MarkSpan>) {
+        marks.sort_by_key(|s| s.range.start);
+        self.dirty.styled_layout |= self.marks != marks;
         self.marks = marks;
-        self.marks.sort_by_key(|s| s.range.start);
-        self.refresh_attributes();
     }
 
     pub fn set_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
+        self.dirty.styled_layout |= self.transient_colors != colors;
         self.transient_colors = colors;
         self.refresh_attributes();
     }
@@ -326,7 +416,7 @@ impl RichTextLine {
     pub fn add_mark(&mut self, span: MarkSpan) {
         self.marks.push(span);
         self.marks.sort_by_key(|s| s.range.start);
-        self.refresh_attributes();
+        self.dirty.styled_layout = true;
     }
 
     pub fn pending_marks(&self) -> &[Mark] {
@@ -336,10 +426,13 @@ impl RichTextLine {
     /// With no active selection, pushes the mark onto the pending list so
     /// the next typed character inherits it.
     pub fn toggle_mark(&mut self, mark: Mark) {
+        if !self.inline_formatting {
+            return;
+        }
         if let Some((s, e)) = self.inner.selection_range_public() {
             marks::toggle_mark_range(&mut self.marks, s..e, mark);
-            self.marks_dirty = true;
-            self.refresh_attributes();
+            self.dirty.marks = true;
+            self.dirty.styled_layout = true;
         } else {
             // Pushing the same mark twice cancels it (Notion-style).
             if let Some(idx) = self.pending_marks.iter().position(|m| m.same_kind(&mark)) {
@@ -533,7 +626,8 @@ impl RichTextLine {
         // `[[` right before the caret emits LinkOpen; brackets are stripped
         // later by the popover commit path, not here.
         let caret = self.inner.cursor_pos();
-        if inserted > 0
+        if self.inline_formatting
+            && inserted > 0
             && let Some(prefix) = new_text.as_bytes().get(..caret)
             && prefix.ends_with(b"[[")
             && let Some(open_at) = caret.checked_sub(2)
@@ -542,7 +636,77 @@ impl RichTextLine {
         }
     }
 
+    /// Give the input attributed text before it measures or paints. Overpainting
+    /// plain glyphs cannot preserve wrapping or pointer/caret geometry.
+    fn sync_wrapped_spans(&mut self, theme: &Theme) {
+        if self.wrap && !self.inline_formatting && !self.transient_colors.is_empty() {
+            let text = self.value();
+            let mut boundaries = vec![0, text.len()];
+            for color in &self.transient_colors {
+                for boundary in [color.range.start, color.range.end] {
+                    if text.is_char_boundary(boundary) {
+                        boundaries.push(boundary);
+                    }
+                }
+            }
+            boundaries.sort_unstable();
+            boundaries.dedup();
+            let spans = boundaries
+                .windows(2)
+                .filter_map(|range| {
+                    let &[start, end] = range else {
+                        return None;
+                    };
+                    let mut span = crate::richtext::RichSpan::new(text.get(start..end)?);
+                    if self.inner.is_mono() {
+                        span.family = Some(crate::richtext::FontFamily::Mono);
+                    }
+                    if let Some(color) = self
+                        .transient_colors
+                        .iter()
+                        .rev()
+                        .find(|color| color.range.contains(&start))
+                    {
+                        let color = transient_color(theme, color.role);
+                        span.color = Some([color.r(), color.g(), color.b()]);
+                    }
+                    Some(span)
+                })
+                .collect();
+            self.inner.set_rich_spans(Some(spans));
+            return;
+        }
+        if !self.wrap || !self.inline_formatting || self.marks.is_empty() {
+            self.inner.set_rich_spans(None);
+            return;
+        }
+        let text = self.value();
+        let spans = marks::segments_for(text.len(), &self.marks)
+            .into_iter()
+            .filter_map(|segment| {
+                let source = text.get(segment.range)?;
+                let mut span = crate::richtext::RichSpan::new(source)
+                    .bold(segment.bold)
+                    .italic(segment.italic);
+                if segment.code {
+                    span.family = Some(crate::richtext::FontFamily::Mono);
+                    let background = theme.tokens.colors.surfaces.raised;
+                    span.background = Some([background.r(), background.g(), background.b()]);
+                }
+                if segment.code || segment.link.is_some() || segment.external_link {
+                    let color = theme.tokens.colors.accent[5];
+                    span.color = Some([color.r(), color.g(), color.b()]);
+                }
+                Some(span)
+            })
+            .collect();
+        self.inner.set_rich_spans(Some(spans));
+    }
+
     fn draw_wrapped_mark_decorations(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        if !self.inline_formatting {
+            return;
+        }
         for span in &self.marks {
             let (color, strike) = match span.mark {
                 Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_) => {
@@ -584,6 +748,10 @@ impl Default for RichTextLine {
 }
 
 impl Widget for RichTextLine {
+    fn layout_needs_measure(&self) -> bool {
+        (self.wrap && self.dirty.styled_layout) || self.inner.layout_needs_measure()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.
@@ -604,14 +772,19 @@ impl Widget for RichTextLine {
         self.prepare_attributes(theme);
         self.inner.capture_layout_text_scale(theme.text_scale);
         let scale = theme.text_scale;
+        self.measurement_theme.clone_from(theme);
         self.inner.set_font_size(self.font_size);
         self.inner.set_multiline(self.wrap);
+        self.sync_wrapped_spans(theme);
         // font_size * 1.5 so headings end up taller than paragraph rows without a measure pass.
         let height = (self.font_size * scale * 1.5).max(20.0 * scale);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: if self.wrap {
+                height: if self.wrap
+                    || self.table_preview.is_some()
+                    || self.image_preview.is_present()
+                {
                     Dimension::auto()
                 } else {
                     Dimension::length(height)
@@ -652,6 +825,105 @@ impl Widget for RichTextLine {
         self.inner.apply_layout_external(rect);
     }
 
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        self.sync_wrapped_spans(&self.measurement_theme.clone());
+        self.dirty.styled_layout = false;
+        self.inner.acknowledge_layout_measure();
+        if let Some(visual) = self.table_preview {
+            let width = known
+                .width
+                .unwrap_or(match available.width {
+                    taffy::AvailableSpace::Definite(width) => width,
+                    _ => 400.0,
+                })
+                .max(1.0);
+            self.table_source_height = if visual {
+                0.0
+            } else {
+                self.inner
+                    .measure_wrapped_content(width, text_renderer, &self.measurement_theme)
+            };
+            let preview_height = super::block_editor::measure_table_preview_height(
+                self.value(),
+                width,
+                text_renderer,
+                &self.measurement_theme,
+            );
+            return Size {
+                width,
+                height: self.table_source_height
+                    + preview_height
+                    + super::block_editor::table_toolbar_height(
+                        width,
+                        self.measurement_theme.text_scale,
+                    ),
+            };
+        }
+        if let ImagePreview::Present {
+            dimensions,
+            editing,
+        } = self.image_preview
+        {
+            let width = known
+                .width
+                .unwrap_or(match available.width {
+                    taffy::AvailableSpace::Definite(width) => width,
+                    _ => 400.0,
+                })
+                .max(1.0);
+            self.image_source_height = if editing {
+                self.inner.measure_wrapped_content(
+                    (width - self.layout_inset).max(1.0),
+                    text_renderer,
+                    &self.measurement_theme,
+                )
+            } else {
+                0.0
+            };
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "bounded image pixel dimensions are converted to the f32 layout coordinate space"
+            )]
+            let preview_height = dimensions.map_or(
+                220.0 * self.measurement_theme.text_scale,
+                |(image_width, image_height)| {
+                    width * image_height.max(1) as f32 / image_width.max(1) as f32
+                },
+            );
+            return Size {
+                width,
+                height: self.image_source_height
+                    + if editing {
+                        6.0 * self.measurement_theme.text_scale
+                    } else {
+                        0.0
+                    }
+                    + preview_height,
+            };
+        }
+        if !self.wrap {
+            return Size::ZERO;
+        }
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => width,
+            _ => 400.0,
+        });
+        let height = self.inner.measure_wrapped_content(
+            (width - self.layout_inset).max(1.0),
+            text_renderer,
+            &self.measurement_theme,
+        );
+        Size {
+            width,
+            height: height + self.layout_header_height,
+        }
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -660,9 +932,26 @@ impl Widget for RichTextLine {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.prepare_attributes(theme);
+        self.sync_wrapped_spans(theme);
+        // The inner TextInput draws the plain text first; mark-styled
+        // segments are then overpainted on top only where styling differs.
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
+
+        if self.marks.is_empty() && self.transient_colors.is_empty() {
+            return;
+        }
+
+        let text = self.inner.value().to_string();
+        let segments = if self.inline_formatting {
+            marks::segments_for(text.len(), &self.marks)
+        } else {
+            Vec::new()
+        };
+        if segments.is_empty() && self.transient_colors.is_empty() {
+            return;
+        }
+
         if self.wrap {
             self.draw_wrapped_mark_decorations(scene, transform, theme);
         }
@@ -705,6 +994,11 @@ impl Widget for RichTextLine {
             }
 
             match logical_key {
+                // Wrapped prose owns real newlines in its Text object. Let
+                // TextInput splice Shift+Enter so marks, undo, and peers see
+                // the same line break, without creating another list item.
+                Key::Named(NamedKey::Enter)
+                    if self.wrap && self.inline_formatting && modifiers.state().shift_key() => {}
                 Key::Named(NamedKey::Enter) => {
                     // Shift+Enter is a soft-break; plain Enter splits.
                     let split_at = self.inner.cursor_pos();
@@ -718,15 +1012,20 @@ impl Widget for RichTextLine {
                 }
                 Key::Named(NamedKey::Backspace) => {
                     // Otherwise the inner input handles the delete.
-                    if self.inner.cursor_pos() == 0 {
+                    if self.inner.cursor_pos() == 0 && self.selection_range().is_none() {
                         self.signal = Some(LineSignal::BackspaceAtStart);
                         *handled = true;
                         return;
                     }
                 }
-                Key::Named(NamedKey::ArrowUp) => {
+                Key::Named(NamedKey::ArrowUp)
+                    if !self.wrap
+                        || !self.inner.has_visual_row(false)
+                        || ((modifiers.state().control_key() || modifiers.state().super_key())
+                            && modifiers.state().shift_key()) =>
+                {
                     let m = modifiers.state();
-                    self.signal = if (m.control_key() || m.super_key()) && m.shift_key() {
+                    self.signal = if m.shift_key() {
                         Some(LineSignal::SelectBlockUp {
                             caret: self.inner.cursor_pos(),
                         })
@@ -736,9 +1035,14 @@ impl Widget for RichTextLine {
                     *handled = true;
                     return;
                 }
-                Key::Named(NamedKey::ArrowDown) => {
+                Key::Named(NamedKey::ArrowDown)
+                    if !self.wrap
+                        || !self.inner.has_visual_row(true)
+                        || ((modifiers.state().control_key() || modifiers.state().super_key())
+                            && modifiers.state().shift_key()) =>
+                {
                     let m = modifiers.state();
-                    self.signal = if (m.control_key() || m.super_key()) && m.shift_key() {
+                    self.signal = if m.shift_key() {
                         Some(LineSignal::SelectBlockDown {
                             caret: self.inner.cursor_pos(),
                         })
@@ -827,6 +1131,220 @@ impl Widget for RichTextLine {
         }
         handled
     }
+}
+
+fn transient_color(theme: &Theme, role: TransientColorRole) -> vello::peniko::Color {
+    let colors = &theme.tokens.colors;
+    match role {
+        TransientColorRole::Keyword => colors.accent[6],
+        TransientColorRole::Type => colors.accent[7],
+        TransientColorRole::Function => colors.semantic.info,
+        TransientColorRole::String => colors.semantic.success,
+        TransientColorRole::Number => colors.semantic.warning,
+        TransientColorRole::Comment => colors.text_dim,
+        TransientColorRole::Macro => colors.semantic.danger,
+        TransientColorRole::Operator => colors.neutral[7],
+    }
+}
+
+fn paint_transient_color(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    span: &TransientColorSpan,
+    ctx: &MarkDrawCtx<'_>,
+) {
+    let end = span.range.end.min(ctx.text.len());
+    let Some(slice) = ctx.text.get(span.range.start..end) else {
+        return;
+    };
+    if slice.is_empty() {
+        return;
+    }
+    let x_offset = ctx.xs.get(span.range.start).copied().unwrap_or(0.0);
+    let x = ctx.rect.x0 + ctx.pad + x_offset - ctx.scroll_x;
+    let color = transient_color(theme, span.role);
+    text_renderer.draw_text_styled(
+        scene,
+        slice,
+        ctx.text_size,
+        color,
+        translated(transform, x, ctx.text_y),
+        None,
+        TextWeight::Regular,
+        false,
+        true,
+    );
+}
+
+/// Paints one mark segment's overpaint (code chip, link/underline/strike
+/// rules, and restyled glyphs) inside the clip layer `draw` already pushed.
+/// A pure function of its inputs — no `self` needed.
+fn paint_mark_segment(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    seg: &MarkSegment,
+    ctx: &MarkDrawCtx<'_>,
+) {
+    if seg.range.start >= ctx.text.len() {
+        return;
+    }
+    // A mark's byte range might not land on a char boundary after an edit
+    // races the mark-shift logic; skip rather than panic.
+    let Some(slice) = ctx
+        .text
+        .get(seg.range.start..seg.range.end.min(ctx.text.len()))
+    else {
+        return;
+    };
+    if slice.is_empty() {
+        return;
+    }
+
+    let x_offset = ctx.xs.get(seg.range.start).copied().unwrap_or(0.0);
+    let x = ctx.rect.x0 + ctx.pad + x_offset - ctx.scroll_x;
+    let sans_end_x_offset = ctx
+        .xs
+        .get(seg.range.end.min(ctx.xs.len().saturating_sub(1)))
+        .copied()
+        .unwrap_or(x_offset);
+    let sans_end_x = ctx.rect.x0 + ctx.pad + sans_end_x_offset - ctx.scroll_x;
+
+    paint_segment_decorations(scene, transform, theme, seg, ctx, x, sans_end_x);
+
+    let needs_overpaint = seg.bold
+        || seg.italic
+        || seg.code
+        || seg.underline
+        || seg.strikethrough
+        || seg.link.is_some()
+        || seg.external_link;
+    if !needs_overpaint {
+        return;
+    }
+
+    let tokens = &theme.tokens;
+    let color = if seg.link.is_some() || seg.external_link || seg.code {
+        tokens.colors.accent[5]
+    } else {
+        tokens.colors.text_primary
+    };
+
+    let weight = if seg.bold {
+        TextWeight::Bold
+    } else {
+        TextWeight::Regular
+    };
+    let italic = seg.italic;
+    let mono = false;
+
+    text_renderer.draw_text_styled(
+        scene,
+        slice,
+        ctx.text_size,
+        color,
+        translated(transform, x, ctx.text_y),
+        None,
+        weight,
+        italic,
+        mono,
+    );
+}
+
+/// Draws the code-chip background and the link/underline/strikethrough
+/// rules for one segment — the parts of `paint_mark_segment` that don't
+/// depend on the restyled text run itself.
+fn paint_segment_decorations(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    seg: &MarkSegment,
+    ctx: &MarkDrawCtx<'_>,
+    x: f64,
+    sans_end_x: f64,
+) {
+    let tokens = &theme.tokens;
+
+    if seg.code {
+        // Inline code renders in the document font (`mono = false` in
+        // `paint_mark_segment`) so its extent matches the sans layout slot
+        // exactly; a wider monospace measurement would overlap next chars.
+        let bg_rect = Rect::new(
+            x - 2.0,
+            ctx.text_y + 1.0,
+            sans_end_x + 2.0,
+            ctx.text_y + ctx.line_height - 1.0,
+        );
+        let bg = vello::kurbo::RoundedRect::from_rect(bg_rect, 3.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.surfaces.raised,
+            None,
+            &bg,
+        );
+    }
+
+    if seg.link.is_some() || seg.external_link {
+        let underline = Rect::new(
+            x,
+            ctx.text_y + ctx.line_height - 3.0,
+            sans_end_x,
+            ctx.text_y + ctx.line_height - 1.0,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.accent[5],
+            None,
+            &underline,
+        );
+    }
+
+    // In text colour, distinct from the accent-coloured link underline above.
+    if seg.underline {
+        let rule = Rect::new(
+            x,
+            ctx.text_y + ctx.line_height - 2.0,
+            sans_end_x,
+            ctx.text_y + ctx.line_height - 1.0,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.text_primary,
+            None,
+            &rule,
+        );
+    }
+
+    if seg.strikethrough {
+        let mid = ctx.text_y + ctx.line_height * 0.5;
+        let rule = Rect::new(x, mid - 0.5, sans_end_x, mid + 0.5);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.text_primary,
+            None,
+            &rule,
+        );
+    }
+}
+
+/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
+/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
+/// but composing two f64-based affine transforms cannot meaningfully
+/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
+/// for.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
+)]
+fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
+    transform * Affine::translate((dx, dy))
 }
 
 /// Clamps to the end. Converts Automerge marks (char-indexed) to the byte
@@ -1430,6 +1948,51 @@ mod tests {
             line.take_dirty().is_none(),
             "programmatic replacement discards the old edit"
         );
+    }
+
+    #[test]
+    fn literal_code_rejects_formatting_shortcuts_and_restores_prose_behavior() {
+        for modifier in [ModifiersState::CONTROL, ModifiersState::SUPER] {
+            for shortcut in ["b", "i", "e", "u"] {
+                let mut line = RichTextLine::new().with_text("source").with_mono();
+                line.set_focus(true);
+                line.inner_mut().set_selection(0, 6);
+                line.set_inline_formatting(false);
+                dispatch_with_mods(&mut line, &char_press(shortcut), Modifiers::from(modifier));
+                assert_eq!(line.value(), "source");
+                assert!(line.marks().is_empty());
+                assert!(line.pending_marks().is_empty());
+                assert!(line.take_dirty().is_none());
+
+                line.set_inline_formatting(true);
+                dispatch_with_mods(&mut line, &char_press(shortcut), Modifiers::from(modifier));
+                assert_eq!(line.marks().len(), 1, "prose shortcut {shortcut} restored");
+            }
+        }
+    }
+
+    #[test]
+    fn literal_code_brackets_do_not_open_note_links_or_inherit_pending_marks() {
+        let mut line = RichTextLine::new();
+        line.set_focus(true);
+        dispatch_with_mods(
+            &mut line,
+            &char_press("b"),
+            Modifiers::from(ModifiersState::CONTROL),
+        );
+        assert_eq!(line.pending_marks(), &[Mark::Bold]);
+        line.set_inline_formatting(false);
+        dispatch(&mut line, &char_press("["));
+        dispatch(&mut line, &char_press("["));
+        assert_eq!(line.value(), "[[");
+        assert!(line.take_signal().is_none());
+        assert!(line.marks().is_empty());
+        line.set_inline_formatting(true);
+        dispatch(&mut line, &char_press("["));
+        assert!(matches!(
+            line.take_signal(),
+            Some(LineSignal::LinkOpen { .. })
+        ));
     }
 
     #[test]

@@ -91,6 +91,11 @@ impl EditableLabel {
         self.input.set_font_size(size);
     }
 
+    /// Hide the insertion caret beneath a modal without committing an edit.
+    pub fn suppress_caret_paint(&mut self, suppressed: bool) {
+        self.input.suppress_caret_paint(suppressed);
+    }
+
     #[must_use]
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
         self.idle_color = Some(color);
@@ -568,6 +573,34 @@ mod tests {
             EditOutcome::None,
             "outcome is rising-edge"
         );
+    }
+
+    #[test]
+    fn modal_paint_suppression_retains_title_draft_and_selection() {
+        let mut label = EditableLabel::new("Draft title");
+        label.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 50.0));
+        label.begin_edit();
+        let before = label.input.get_state();
+        let mut renderer = crate::TextRenderer::new();
+        let mut draw = |label: &mut EditableLabel| {
+            let mut scene = Scene::new();
+            label.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut renderer,
+                &Theme::dark(),
+                &PresenceCtx::empty(),
+            );
+            scene.encoding().draw_tags.len()
+        };
+        let visible = draw(&mut label);
+        label.suppress_caret_paint(true);
+        assert_eq!(draw(&mut label).saturating_add(1), visible);
+        assert!(label.is_editing());
+        assert_eq!(label.input.get_state(), before);
+        assert_eq!(label.current_text(), "Draft title");
+        label.suppress_caret_paint(false);
+        assert_eq!(draw(&mut label), visible);
     }
 
     #[test]
