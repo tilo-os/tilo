@@ -288,7 +288,7 @@ fn native_document_envelope_refuses_foreign_route_without_touching_outer_state()
     let mut app =
         App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Text::new("root")));
     let installed = crate::collaboration::RouteSpec::app("installed-app", uuid::Uuid::new_v4());
-    app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: installed.clone(),
         epoch: uuid::Uuid::new_v4(),
     });
@@ -361,7 +361,7 @@ impl RoutedOwners {
         state.doc.put(ROOT, "outer", "outer only").unwrap();
         state.commit_action(None, None);
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
-        app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
             route: crate::collaboration::RouteSpec::app(
                 "outer-shell",
                 uuid::Uuid::parse_str(workspace).unwrap(),
@@ -564,7 +564,7 @@ fn native_owned_remote_delivery_preserves_pending_edits_until_normal_boundary() 
 fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
     use automerge::ReadDoc;
     let mut fixture = RoutedOwners::new();
-    fixture.app.bound_broker_route_for_test = None;
+    fixture.app.actions.bound_broker_route_for_test = None;
     fixture.app.refresh_document_routes();
     fixture
         .records
@@ -580,13 +580,14 @@ fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
         .unwrap();
     fixture.app.publish_owned_documents();
     assert!(fixture.app.document_routes.sent.is_empty());
-    fixture.app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
-        route: crate::collaboration::RouteSpec::app(
-            "outer-shell",
-            fixture.bindings[0].broker_route().unwrap().cluster_id,
-        ),
-        epoch: uuid::Uuid::new_v4(),
-    });
+    fixture.app.actions.bound_broker_route_for_test =
+        Some(crate::collaboration::PrimaryRouteWitness {
+            route: crate::collaboration::RouteSpec::app(
+                "outer-shell",
+                fixture.bindings[0].broker_route().unwrap().cluster_id,
+            ),
+            epoch: uuid::Uuid::new_v4(),
+        });
     fixture.app.publish_owned_documents();
     let (_, request) = fixture
         .app
@@ -1059,7 +1060,7 @@ fn native_hidden_resource_at_action_cannot_bypass_history_presentation() {
     let declared = app.collect_declared_resources();
     let violations = tilo_actions::validate_surface(
         &declared,
-        &app.action_registry,
+        &app.actions.action_registry,
         &app.root_widget.resource_operation_handlers(),
     );
     assert!(violations.is_empty(), "{violations:?}");
@@ -1077,7 +1078,7 @@ fn native_hidden_resource_at_action_cannot_bypass_history_presentation() {
     assert!(app.poll_directed_invocations());
     assert_eq!(probe.completions.get(), 1);
     assert!(
-        app.local_invocations.is_empty(),
+        app.actions.local_invocations.is_empty(),
         "hidden retry cannot be rejected merely because first invocation is in flight"
     );
     let target = named(&mut app, "History");
@@ -1253,7 +1254,7 @@ fn native_admitted_legacy_effect_cannot_poll_replacement_or_closed_owner() {
             0,
             "old operation cannot poll a replacement or closed owner"
         );
-        assert!(app.local_invocations.is_empty());
+        assert!(app.actions.local_invocations.is_empty());
     }
 }
 
@@ -1440,6 +1441,7 @@ fn native_route_epoch_change_retires_queued_bytes_before_later_drain() {
     fixture.app.apply_signed_document_envelope(&incoming, None);
     fixture
         .app
+        .actions
         .bound_broker_route_for_test
         .as_mut()
         .unwrap()
@@ -1471,6 +1473,7 @@ fn native_scrollback_and_live_share_exact_primary_and_owned_route_admission() {
     let second = fixture.remote(1, "scrollback-second", true);
     let primary = fixture
         .app
+        .actions
         .bound_broker_route_for_test
         .as_ref()
         .unwrap()
@@ -1580,7 +1583,7 @@ fn native_queued_remote_cannot_retarget_same_id_new_legacy_store() {
     tile.bind_record(first.clone(), checkout.clone());
     let pointer = std::ptr::from_mut(tile.as_mut());
     let mut app = App::new_with_controlled_inputs(State::new(), tile);
-    app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: crate::collaboration::RouteSpec::app("shell", uuid::Uuid::parse_str(room).unwrap()),
         epoch: uuid::Uuid::new_v4(),
     });
@@ -2203,6 +2206,7 @@ fn round1_primary_malformed_remote_recovers_with_snapshot_after_local_edit_finis
         let mut fixture = RoutedOwners::new();
         let route = fixture
             .app
+            .actions
             .bound_broker_route_for_test
             .as_ref()
             .unwrap()
@@ -2442,6 +2446,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
     } else {
         fixture
             .app
+            .actions
             .bound_broker_route_for_test
             .as_ref()
             .unwrap()
