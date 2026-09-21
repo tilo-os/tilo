@@ -6,8 +6,8 @@ fn native_bound_sync_routes_notebook_bytes_and_preserves_local_undo_and_retries(
     let binding = fixture.bindings[0].clone();
     fixture.app.actions.bound_broker_route_for_test =
         Some(crate::collaboration::PrimaryRouteWitness {
-        route: binding.broker_route().unwrap(),
-        epoch: uuid::Uuid::new_v4(),
+            route: binding.broker_route().unwrap(),
+            epoch: uuid::Uuid::new_v4(),
         });
     fixture
         .app
