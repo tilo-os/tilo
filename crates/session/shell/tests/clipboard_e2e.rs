@@ -2202,7 +2202,10 @@ fn spawn_isolated_x11_probe(
 
 #[test]
 #[ignore = "starts installed Electron with a compositor-minted token in a private Xwayland session; opt in for compatibility review"]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one live Electron launch verifies activation-token propagation, native-client focus transfer, and foreign-tab placement against the same private Xwayland session"
+)]
 fn installed_electron_client_maps_focuses_and_places_through_private_xwayland() {
     let compositor = Compositor::start_host_desktop();
     // Keep one ordinary native Wayland client alive throughout the Electron
