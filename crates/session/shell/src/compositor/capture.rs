@@ -2309,7 +2309,7 @@ mod tests {
             .join("\n");
         let store = frame_builder.chrome().records().clone();
         let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
-        if store.open_record(&checkout).is_err() {
+        if !store.open_record(&checkout) {
             store
                 .create_record(&checkout)
                 .expect("capture fixture creates its Notes record");
