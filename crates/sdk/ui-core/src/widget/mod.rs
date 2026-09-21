@@ -607,6 +607,34 @@ pub trait CompleteContentProvider {
     ) -> bool;
 }
 
+/// Host services associated with one retained widget event dispatch.
+pub struct EventCtx<'a> {
+    pub scale_factor: f64,
+    pub modifiers: &'a winit::event::Modifiers,
+    pub state: &'a mut AutoCommit,
+    pub path: &'a ObjId,
+    pub handled: &'a mut bool,
+    pub focus_target: &'a mut Option<NodeId>,
+    pub node_id: NodeId,
+    pub taffy: &'a TaffyTree<()>,
+}
+
+impl EventCtx<'_> {
+    /// Reborrow this event for a retained child with its own document path and node.
+    pub fn reborrow<'b>(&'b mut self, path: &'b ObjId, node_id: NodeId) -> EventCtx<'b> {
+        EventCtx {
+            scale_factor: self.scale_factor,
+            modifiers: self.modifiers,
+            state: &mut *self.state,
+            path,
+            handled: &mut *self.handled,
+            focus_target: &mut *self.focus_target,
+            node_id,
+            taffy: self.taffy,
+        }
+    }
+}
+
 pub trait Widget {
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
@@ -831,15 +859,13 @@ pub trait Widget {
         presence: &PresenceCtx,
     );
 
-    // This is the widget system's event-dispatch contract, implemented by
-    // ~90 widgets; every parameter is independently meaningful (the raw
-    // event, scaling, modifiers, CRDT handle+path, two out-params, and the
-    // node's own identity/layout). Bundling it into a context struct would
-    // be a real signature change rippling through every implementor for no
-    // behavioural difference, not a mechanical lint fix.
+    /// Compatibility dispatcher for retained containers and host code.
+    ///
+    /// New widgets implement [`Widget::handle_event_ctx`]. Existing positional
+    /// implementations remain valid while call sites migrate independently.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the shared Widget event contract exposes independently meaningful input, document, focus and layout parameters"
+        reason = "temporary compatibility adapter; implementations use EventCtx"
     )]
     fn handle_event(
         &mut self,
@@ -852,7 +878,24 @@ pub trait Widget {
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
-    );
+    ) {
+        self.handle_event_ctx(
+            event,
+            &mut EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
+        );
+    }
+
+    /// Handle one input event with the runtime services for this retained node.
+    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         vec![]
     }

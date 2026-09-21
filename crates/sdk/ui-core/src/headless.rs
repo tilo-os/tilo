@@ -5489,21 +5489,10 @@ mod a11y_driver_tests {
             _pr: &PresenceCtx,
         ) {
         }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the fixture implements the fixed Widget::handle_event trait signature"
-        )]
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _n: NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -5814,23 +5803,11 @@ mod undo_driver_tests {
         ) {
         }
 
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the fixture implements the fixed Widget::handle_event trait signature"
-        )]
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            doc: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            handled: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
+
+            let doc = &mut *ctx.state;
+            let handled = &mut *ctx.handled;
             let WindowEvent::KeyboardInput { event: ke, .. } = event else {
                 return;
             };
@@ -6105,22 +6082,9 @@ mod dispatched_action_driver_tests {
         ) {
         }
 
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the fixture implements the fixed Widget::handle_event trait signature"
-        )]
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            doc: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            handled: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+            let doc = &mut *ctx.state;
+            let handled = &mut *ctx.handled;
             let WindowEvent::KeyboardInput { event: ke, .. } = event else {
                 return;
             };
