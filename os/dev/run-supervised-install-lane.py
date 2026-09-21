@@ -665,10 +665,11 @@ def creator_input_archive(helpers, public, installer_bootc, selected=None):
                             for name, content in inputs.items()}
 
 
-REMOTE_CREATOR_INPUT_STATUS = r'''import hashlib,json,os,pathlib,re,stat
+REMOTE_CREATOR_INPUT_STATUS = r'''import hashlib,json,os,pathlib,re,stat,sys
 work=pathlib.Path('/work'); job=work/'disk-output/.creator-job'; receipt=work/'.creator-inputs.json'
 marker=work/'.creator-inputs-reconcile.json'
 names={'helpers':'helpers','public':'public-trust','installer':'installer-bootc-helper'}
+expected_pod_uid=sys.argv[1]; expected_node_uid=sys.argv[2]; expected_operation=sys.argv[3]
 def result(state,**extra):
  print(json.dumps({'state':state,**extra},sort_keys=True)); raise SystemExit
 def read_private(path,limit):
@@ -678,15 +679,39 @@ def read_private(path,limit):
  if (not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1
      or i.st_mode&0o077 or i.st_size<2 or i.st_size>limit):result('invalid')
  try:
-  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW); o=os.fstat(fd)
-  if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size):result('invalid')
-  value=os.read(fd,limit+1); os.close(fd)
-  if len(value)!=i.st_size:result('invalid')
-  return value
+ fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW); o=os.fstat(fd)
+ if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size):result('invalid')
+ value=os.read(fd,limit+1); os.close(fd)
+ if len(value)!=i.st_size:result('invalid')
+ return value
  except BaseException:result('invalid')
-if job.exists() or job.is_symlink(): result('active')
+def failed_job(path):
+ if path.is_symlink() or not path.is_dir():result('active')
+ info=path.lstat()
+ if info.st_uid or info.st_gid or stat.S_IMODE(info.st_mode)!=0o700:result('active')
+ try:status=json.loads(read_private(path/'status.json',65536))
+ except BaseException:result('active')
+ binding=status.get('binding') if isinstance(status,dict) else None
+ if (status.get('schema')!=1 or status.get('purpose')!='tilo-supervised-creator-job'
+     or status.get('state')!='failed' or status.get('log_bytes')!=0
+     or not isinstance(binding,dict)
+     or binding.get('operation')!=expected_operation
+     or binding.get('pod_uid')!=expected_pod_uid
+     or binding.get('node_uid')!=expected_node_uid
+     or binding.get('output')!='/work/disk-output/disk.raw'):
+  result('active')
+ return status
+job_state=None
+backup_job=work/'disk-output/.creator-job.failed-backup'
+if job.exists() or job.is_symlink():
+ if backup_job.exists() or backup_job.is_symlink():result('active')
+ job_state='retryable-failed'; failed_job(job)
+elif backup_job.exists() or backup_job.is_symlink():
+ job_state='retryable-cleanup'; failed_job(backup_job)
 raw=read_private(receipt,4096)
-if raw is None: result('missing')
+if raw is None:
+ if job_state is not None: result('invalid')
+ result('missing')
 try:document=json.loads(raw)
 except BaseException:result('invalid')
 if (set(document)!={'schema','purpose','helpers','public','installer'}
@@ -730,15 +755,17 @@ for name in names:
   continue
  if (not stat.S_ISDIR(info.st_mode) or info.st_uid or info.st_gid or
      info.st_mode&0o077):result('invalid')
-result('reconcile' if marker_value is not None else 'ready',receipt=document,
+result(job_state or ('reconcile' if marker_value is not None else 'ready'),receipt=document,
        receipt_sha256=receipt_sha256,**({'marker':marker_value} if marker_value is not None else {}))'''
 
 
-def creator_input_status(context, disk):
+def creator_input_status(context, disk, acceptance_id='run1'):
     """Read the exact private receipt and reject unsafe pending state."""
     try:
         value=json.loads(command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk',
-                                         '--','python3','-c',REMOTE_CREATOR_INPUT_STATUS),timeout=30))
+                                         '--','python3','-c',REMOTE_CREATOR_INPUT_STATUS,
+                                         'python3',disk.get('pod_uid',''),disk.get('node_uid',''),
+                                         acceptance_id),timeout=30))
     except (ValueError,TypeError,json.JSONDecodeError) as error:
         raise CreatorInputReconciliationError('creator input status is not valid JSON') from error
     state=value.get('state') if isinstance(value,dict) else None
@@ -746,9 +773,10 @@ def creator_input_status(context, disk):
         return None
     if state=='active':
         raise CreatorInputReconciliationError('cannot reconcile creator inputs while creator job is active')
-    if state not in ('ready','reconcile','reconcile-complete') \
+    if state not in ('ready','reconcile','reconcile-complete','retryable-failed','retryable-cleanup') \
             or set(value) != ({'state','receipt','receipt_sha256'}
-                               if state=='ready' else {'state','receipt','receipt_sha256','marker'}):
+                               if state in ('ready','retryable-failed','retryable-cleanup')
+                               else {'state','receipt','receipt_sha256','marker'}):
         raise CreatorInputReconciliationError('creator input receipt or component state is invalid')
     receipt=value['receipt']
     marker=value.get('marker')
@@ -758,7 +786,7 @@ def creator_input_status(context, disk):
                    for name in ('helpers','public','installer'))
             or receipt['schema']!=1 or receipt['purpose']!='tilo-supervised-creator-inputs'
             or not re.fullmatch(r'[0-9a-f]{64}',value['receipt_sha256'])
-            or (state!='ready' and (not isinstance(marker,dict)
+            or (state in ('reconcile','reconcile-complete') and (not isinstance(marker,dict)
                 or set(marker)!={'schema','purpose','old_receipt_sha256','changed',
                                  'helpers','public','installer'}
                 or marker['schema']!=1
@@ -767,6 +795,58 @@ def creator_input_status(context, disk):
                 or not isinstance(marker['changed'],str) or not marker['changed']))):
         raise CreatorInputReconciliationError('creator input receipt or component state is invalid')
     return value
+
+
+REMOTE_CREATOR_FAILED_JOB_RESET = r'''import json,os,pathlib,shutil,stat,sys
+work=pathlib.Path('/work'); output=work/'disk-output'; job=output/'.creator-job'; backup=output/'.creator-job.failed-backup'
+expected_pod_uid=sys.argv[1]; expected_node_uid=sys.argv[2]; expected_operation=sys.argv[3]
+def read(path):
+ i=path.lstat()
+ if (not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1 or i.st_mode&0o077
+     or i.st_size<2 or i.st_size>65536):raise ValueError('failed creator status is invalid')
+ fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  value=os.read(fd,65537)
+ finally:os.close(fd)
+ if len(value)!=i.st_size:raise ValueError('failed creator status changed')
+ return json.loads(value)
+def validate(path):
+ if path.is_symlink() or not path.is_dir():raise ValueError('failed creator job is not a private directory')
+ i=path.lstat()
+ if i.st_uid or i.st_gid or stat.S_IMODE(i.st_mode)!=0o700:raise ValueError('failed creator job permissions differ')
+ value=read(path/'status.json'); binding=value.get('binding')
+ if (value.get('schema')!=1 or value.get('purpose')!='tilo-supervised-creator-job'
+     or value.get('state')!='failed' or value.get('log_bytes')!=0
+     or not isinstance(binding,dict) or binding.get('operation')!=expected_operation
+     or binding.get('pod_uid')!=expected_pod_uid or binding.get('node_uid')!=expected_node_uid
+     or binding.get('output')!='/work/disk-output/disk.raw'):
+  raise ValueError('creator job is not an exact retryable failure')
+if not output.is_dir() or output.is_symlink() or output.stat().st_uid or output.stat().st_gid \
+   or stat.S_IMODE(output.stat().st_mode)!=0o700:raise ValueError('creator output directory is invalid')
+for child in output.iterdir():
+ if child.name not in (job.name,backup.name):raise ValueError('creator output is not retry-empty')
+if job.exists() or job.is_symlink():
+ if backup.exists() or backup.is_symlink():raise ValueError('creator failed-job quarantine is ambiguous')
+ validate(job); os.rename(job,backup)
+elif not (backup.exists() or backup.is_symlink()):
+ raise ValueError('creator failed-job quarantine is absent')
+validate(backup)
+shutil.rmtree(backup)
+if job.exists() or backup.exists():raise ValueError('creator failed-job quarantine remained')
+print('TILO_CREATOR_FAILED_JOB_RESET')'''
+
+
+def reset_failed_creator_job(context, disk, acceptance_id):
+    argv=kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk','--','python3','-c',
+                 REMOTE_CREATOR_FAILED_JOB_RESET,'python3',disk['pod_uid'],disk['node_uid'],acceptance_id)
+    try:
+        output=command(argv,timeout=30)
+    except ControllerTransportError:
+        raise
+    except ValueError as error:
+        raise CreatorInputReconciliationError('failed creator job could not be reset safely') from error
+    if output.strip()!='TILO_CREATOR_FAILED_JOB_RESET':
+        raise CreatorInputReconciliationError('failed creator job reset receipt is invalid')
 
 
 def stream_creator_inputs(context, namespace, pod, container, helpers, public,
@@ -2940,12 +3020,15 @@ def main():
         try:
             if pending_creator:
                 auth_bytes=registry_auth(args)
-                status=creator_input_status(args.context,disk)
+                status=creator_input_status(args.context,disk,args.acceptance_id)
                 if status is None:
                     with timer.stage('input_transfer'):
                         stream_creator_inputs(args.context,disk['namespace'],disk['pod'],'disk',
                                               helpers,public,installer_bootc)
                 else:
+                    if status['state'] in ('retryable-failed','retryable-cleanup'):
+                        reset_failed_creator_job(args.context,disk,args.acceptance_id)
+                        status=dict(status,state='ready')
                     components=creator_input_components(helpers,public,installer_bootc)
                     changed=(status['state'] != 'ready' or
                              any(status['receipt'][name] != hashlib.sha256(content).hexdigest()
