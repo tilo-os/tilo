@@ -239,7 +239,8 @@ static int sds_security(struct state *s, ntfs_inode *ni, uint64_t *raw) {
   INDEX_ENTRY *entry = ctx->entry;
   uint16_t length = le16_to_cpu(entry->length),
            offset = le16_to_cpu(entry->data_offset);
-  if (offset > length || sizeof(SECURITY_DESCRIPTOR_HEADER) > length - offset ||
+  if (offset > length ||
+      sizeof(SECURITY_DESCRIPTOR_HEADER) > (size_t)(length - offset) ||
       le16_to_cpu(entry->data_length) != sizeof(SECURITY_DESCRIPTOR_HEADER))
     goto out;
   SECURITY_DESCRIPTOR_HEADER header;
