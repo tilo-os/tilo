@@ -5579,6 +5579,43 @@ pub fn run() {
             }
         }};
     }
+    macro_rules! pump_phase {
+        ($name:literal, $body:expr) => {{
+            if loop_timing {
+                let started = Instant::now();
+                let value = $body;
+                let elapsed = started.elapsed();
+                if elapsed >= Duration::from_millis(8) {
+                    eprintln!(
+                        "PUMP-PHASE name={} elapsed_us={}",
+                        $name,
+                        elapsed.as_micros()
+                    );
+                }
+                value
+            } else {
+                $body
+            }
+        }};
+        ($name:literal, $count:expr, $body:expr) => {{
+            if loop_timing {
+                let started = Instant::now();
+                let value = $body;
+                let elapsed = started.elapsed();
+                if elapsed >= Duration::from_millis(8) {
+                    eprintln!(
+                        "PUMP-PHASE name={} elapsed_us={} items={}",
+                        $name,
+                        elapsed.as_micros(),
+                        $count
+                    );
+                }
+                value
+            } else {
+                $body
+            }
+        }};
+    }
     // Frame-loop instrumentation (`TILO_FRAME_TRACE`/`TILO_FRAME_SUMMARY`), free
     // when neither is set. See `compositor::metrics`.
     let mut metrics = metrics::FrameRecorder::from_env();
@@ -6504,7 +6541,7 @@ pub fn run() {
         // returns true when changed, itself a paint reason. Drain the
         // network actor into the replica: peer changes fold in before this frame's pump reads them, bumping the revision to repaint.
         if let Some(net) = peer_sync.as_ref() {
-            net.tick();
+            pump_phase!("network-tick", net.tick());
             let runtime = device_fabric_runtime.get_or_insert_with(|| {
                 crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
                     net,
@@ -6530,41 +6567,66 @@ pub fn run() {
                 });
             let app_focus = active_physical_gamepad_binding(&tree_handle.read());
             runtime.set_local_app_focus(app_focus.clone());
-            runtime.pump(
-                net,
-                &state.selection_store(),
-                crate::shell::device_fabric_runtime::LocalFabricCapabilities {
-                    display,
-                    pointer: true,
-                    keyboard: true,
-                    audio_output: system_audio,
-                },
+            pump_phase!(
+                "device-fabric-runtime",
+                runtime.pump(
+                    net,
+                    &state.selection_store(),
+                    crate::shell::device_fabric_runtime::LocalFabricCapabilities {
+                        display,
+                        pointer: true,
+                        keyboard: true,
+                        audio_output: system_audio,
+                    },
+                )
             );
-            crate::shell::physical_gamepad::pump_physical_gamepads(net, app_focus.as_ref());
+            pump_phase!(
+                "physical-gamepads",
+                crate::shell::physical_gamepad::pump_physical_gamepads(net, app_focus.as_ref())
+            );
             if let Some(bridge) = realtime_fabric_bridge.as_ref() {
-                bridge.pump_app_events();
+                pump_phase!("realtime-app-events", bridge.pump_app_events());
             }
-            for (controller, event) in crate::shell::device_fabric_runtime::take_spatial_input() {
-                let _ = state.apply_personal_fabric_input(&controller, event);
-            }
-            for controller in crate::shell::device_fabric_runtime::take_spatial_input_releases() {
-                let _ = state.release_personal_fabric_input(&controller);
-            }
-            for event in crate::shell::device_fabric_runtime::take_personal_display_events() {
-                use crate::shell::device_fabric_runtime::PersonalDisplayEvent;
-                match event {
-                    PersonalDisplayEvent::Started {
-                        session_id,
-                        source,
-                        mirror_only,
-                        ..
-                    } => {
-                        let input_net = Arc::clone(net);
-                        let input_source = source.clone();
-                        let spatial_sink =
-                            Arc::new(move |event: crate::network::streaming::InputEvent| {
-                                use crate::network::streaming::InputEvent;
-                                let mapped = match event {
+            let spatial_input = crate::shell::device_fabric_runtime::take_spatial_input();
+            let spatial_input_count = spatial_input.len();
+            pump_phase!(
+                "spatial-input",
+                spatial_input_count,
+                for (controller, event) in spatial_input {
+                    let _ = state.apply_personal_fabric_input(&controller, event);
+                }
+            );
+            let spatial_releases =
+                crate::shell::device_fabric_runtime::take_spatial_input_releases();
+            let spatial_release_count = spatial_releases.len();
+            pump_phase!(
+                "spatial-input-releases",
+                spatial_release_count,
+                for controller in spatial_releases {
+                    let _ = state.release_personal_fabric_input(&controller);
+                }
+            );
+            let personal_display_events =
+                crate::shell::device_fabric_runtime::take_personal_display_events();
+            let personal_display_event_count = personal_display_events.len();
+            pump_phase!(
+                "personal-display-events",
+                personal_display_event_count,
+                for event in personal_display_events {
+                    use crate::shell::device_fabric_runtime::PersonalDisplayEvent;
+                    match event {
+                        PersonalDisplayEvent::Started {
+                            session_id,
+                            source,
+                            mirror_only,
+                            ..
+                        } => {
+                            let input_net = Arc::clone(net);
+                            let input_source = source.clone();
+                            let spatial_sink =
+                                Arc::new(move |event: crate::network::streaming::InputEvent| {
+                                    use crate::network::streaming::InputEvent;
+                                    let mapped = match event {
                                 InputEvent::PointerMotion { x, y } => Some(
                                     crate::shell::device_fabric::FabricInputEvent::PointerMotion {
                                         x: spatial_coord(x),
@@ -6590,204 +6652,228 @@ pub fn run() {
                                 | InputEvent::PointerLeave { .. }
                                 | InputEvent::KeyboardFocus { .. } => None,
                             };
-                                if let Some(mapped) = mapped {
-                                    let _ = crate::shell::device_fabric_runtime::send_spatial_input(
-                                        &input_net,
-                                        &input_source,
-                                        mapped,
-                                    );
-                                }
-                            });
-                        let sink: Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync> =
-                            if mirror_only {
+                                    if let Some(mapped) = mapped {
+                                        let _ =
+                                            crate::shell::device_fabric_runtime::send_spatial_input(
+                                                &input_net,
+                                                &input_source,
+                                                mapped,
+                                            );
+                                    }
+                                });
+                            let sink: Arc<
+                                dyn Fn(crate::network::streaming::InputEvent) + Send + Sync,
+                            > = if mirror_only {
                                 Arc::new(|_| {})
                             } else {
                                 spatial_sink
                             };
-                        frame_builder
-                            .host_mut()
-                            .mount_personal_display(session_id, sink);
-                    }
-                    PersonalDisplayEvent::Frame {
-                        session_id,
-                        sequence,
-                        annex_b,
-                        ..
-                    } => {
-                        let outcome = frame_builder
-                            .host_mut()
-                            .push_personal_display_frame(session_id, &annex_b);
-                        crate::shell::device_fabric_runtime::report_personal_display_decode(
-                            net, session_id, sequence, outcome,
-                        );
-                    }
-                    PersonalDisplayEvent::Ended { session_id } => {
-                        let _ = frame_builder
-                            .host_mut()
-                            .unmount_personal_display(session_id);
+                            frame_builder
+                                .host_mut()
+                                .mount_personal_display(session_id, sink);
+                        }
+                        PersonalDisplayEvent::Frame {
+                            session_id,
+                            sequence,
+                            annex_b,
+                            ..
+                        } => {
+                            let outcome = frame_builder
+                                .host_mut()
+                                .push_personal_display_frame(session_id, &annex_b);
+                            crate::shell::device_fabric_runtime::report_personal_display_decode(
+                                net, session_id, sequence, outcome,
+                            );
+                        }
+                        PersonalDisplayEvent::Ended { session_id } => {
+                            let _ = frame_builder
+                                .host_mut()
+                                .unmount_personal_display(session_id);
+                        }
                     }
                 }
-            }
-            for event in crate::shell::device_fabric_runtime::take_nearby_drop_events() {
-                use crate::shell::device_fabric_runtime::NearbyDropEvent;
-                let fabric = net.device_fabric();
-                let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
-                    fabric.snapshots().get(peer).map_or_else(
-                        || "your device".to_string(),
-                        |snapshot| snapshot.presence.label.clone(),
-                    )
-                };
-                let (title, body) = match event {
-                    NearbyDropEvent::Sending { file_name, peer } => (
-                        "Sending nearby".to_string(),
-                        format!("{file_name} to {}", peer_label(&peer)),
-                    ),
-                    NearbyDropEvent::Sent { file_name, peer } => (
-                        "Sent nearby".to_string(),
-                        format!("{file_name} to {}", peer_label(&peer)),
-                    ),
-                    NearbyDropEvent::Failed { file_name, peer } => (
-                        "Nearby drop failed".to_string(),
-                        format!("{file_name} · {}", peer_label(&peer)),
-                    ),
-                    NearbyDropEvent::Received { path, peer } => (
-                        "Received nearby".to_string(),
-                        format!(
-                            "{} from {}",
-                            path.file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("File"),
-                            peer_label(&peer)
+            );
+            let nearby_drop_events = crate::shell::device_fabric_runtime::take_nearby_drop_events();
+            let nearby_drop_event_count = nearby_drop_events.len();
+            pump_phase!(
+                "nearby-drop-events",
+                nearby_drop_event_count,
+                for event in nearby_drop_events {
+                    use crate::shell::device_fabric_runtime::NearbyDropEvent;
+                    let fabric = net.device_fabric();
+                    let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
+                        fabric.snapshots().get(peer).map_or_else(
+                            || "your device".to_string(),
+                            |snapshot| snapshot.presence.label.clone(),
+                        )
+                    };
+                    let (title, body) = match event {
+                        NearbyDropEvent::Sending { file_name, peer } => (
+                            "Sending nearby".to_string(),
+                            format!("{file_name} to {}", peer_label(&peer)),
                         ),
-                    ),
-                };
-                frame_builder.with_chrome(|chrome| {
-                    chrome.push_notification(title, body);
-                });
-            }
+                        NearbyDropEvent::Sent { file_name, peer } => (
+                            "Sent nearby".to_string(),
+                            format!("{file_name} to {}", peer_label(&peer)),
+                        ),
+                        NearbyDropEvent::Failed { file_name, peer } => (
+                            "Nearby drop failed".to_string(),
+                            format!("{file_name} · {}", peer_label(&peer)),
+                        ),
+                        NearbyDropEvent::Received { path, peer } => (
+                            "Received nearby".to_string(),
+                            format!(
+                                "{} from {}",
+                                path.file_name()
+                                    .and_then(|name| name.to_str())
+                                    .unwrap_or("File"),
+                                peer_label(&peer)
+                            ),
+                        ),
+                    };
+                    frame_builder.with_chrome(|chrome| {
+                        chrome.push_notification(title, body);
+                    });
+                }
+            );
             let desired = {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
                 desired_legacy_shares(&tree)
             };
-            state.reconcile_legacy_share_sessions(
-                net.local_peer_id_hash(),
-                &desired,
-                &legacy_share_config,
+            pump_phase!(
+                "legacy-share-reconcile",
+                state.reconcile_legacy_share_sessions(
+                    net.local_peer_id_hash(),
+                    &desired,
+                    &legacy_share_config,
+                )
             );
-            for inbound in net.take_inbound_legacy() {
-                match inbound.message {
-                    crate::network::NeighbourMsg::SurfaceStreamStart {
-                        surface,
-                        source_peer,
-                        app_id,
-                        codec,
-                        hdr_static_metadata,
-                        ..
-                    } => {
-                        let reply_net = Arc::clone(net);
-                        let local_peer = net.local_peer_id_hash();
-                        let workspace_topic = inbound.workspace_topic;
-                        let input_sink = Arc::new(move |input| {
-                            if let Ok(event) = postcard::to_allocvec(&input) {
-                                let _ = reply_net.publish_legacy_message(
-                                    workspace_topic,
-                                    crate::network::NeighbourMsg::RemoteInput {
-                                        peer: local_peer,
-                                        surface,
-                                        event,
-                                    },
-                                );
-                            }
-                        });
-                        let stream = PendingLegacyStream {
-                            source_peer,
+            let inbound_legacy = net.take_inbound_legacy();
+            let inbound_legacy_count = inbound_legacy.len();
+            pump_phase!(
+                "legacy-inbound",
+                inbound_legacy_count,
+                for inbound in inbound_legacy {
+                    match inbound.message {
+                        crate::network::NeighbourMsg::SurfaceStreamStart {
                             surface,
-                            local_peer,
+                            source_peer,
                             app_id,
                             codec,
                             hdr_static_metadata,
-                            input_sink,
-                        };
-                        let mounted = !stream.app_id.is_empty()
-                            && frame_builder.host_mut().mount_peer_stream(
-                                stream.source_peer,
-                                stream.surface,
-                                stream.local_peer,
-                                &stream.app_id,
-                                &stream.codec,
-                                stream.hdr_static_metadata,
-                                Arc::clone(&stream.input_sink),
-                            );
-                        if !mounted {
-                            tracing::warn!(
+                            ..
+                        } => {
+                            let reply_net = Arc::clone(net);
+                            let local_peer = net.local_peer_id_hash();
+                            let workspace_topic = inbound.workspace_topic;
+                            let input_sink = Arc::new(move |input| {
+                                if let Ok(event) = postcard::to_allocvec(&input) {
+                                    let _ = reply_net.publish_legacy_message(
+                                        workspace_topic,
+                                        crate::network::NeighbourMsg::RemoteInput {
+                                            peer: local_peer,
+                                            surface,
+                                            event,
+                                        },
+                                    );
+                                }
+                            });
+                            let stream = PendingLegacyStream {
                                 source_peer,
                                 surface,
-                                app_id = stream.app_id,
-                                "legacy stream is waiting for its peer-window tab"
+                                local_peer,
+                                app_id,
+                                codec,
+                                hdr_static_metadata,
+                                input_sink,
+                            };
+                            let mounted = !stream.app_id.is_empty()
+                                && frame_builder.host_mut().mount_peer_stream(
+                                    stream.source_peer,
+                                    stream.surface,
+                                    stream.local_peer,
+                                    &stream.app_id,
+                                    &stream.codec,
+                                    stream.hdr_static_metadata,
+                                    Arc::clone(&stream.input_sink),
+                                );
+                            if !mounted {
+                                tracing::warn!(
+                                    source_peer,
+                                    surface,
+                                    app_id = stream.app_id,
+                                    "legacy stream is waiting for its peer-window tab"
+                                );
+                            }
+                            pending_legacy_streams.insert((source_peer, surface), stream);
+                        }
+                        crate::network::NeighbourMsg::SurfaceFrame {
+                            surface,
+                            source_peer,
+                            encoded_h264,
+                            ..
+                        } => {
+                            let _ = frame_builder.host_mut().push_peer_stream_frame(
+                                source_peer,
+                                surface,
+                                &encoded_h264,
+                                None,
                             );
                         }
-                        pending_legacy_streams.insert((source_peer, surface), stream);
-                    }
-                    crate::network::NeighbourMsg::SurfaceFrame {
-                        surface,
-                        source_peer,
-                        encoded_h264,
-                        ..
-                    } => {
-                        let _ = frame_builder.host_mut().push_peer_stream_frame(
-                            source_peer,
+                        crate::network::NeighbourMsg::SurfaceStreamEnd {
                             surface,
-                            &encoded_h264,
-                            None,
-                        );
-                    }
-                    crate::network::NeighbourMsg::SurfaceStreamEnd {
-                        surface,
-                        source_peer,
-                        ..
-                    } => {
-                        pending_legacy_streams.remove(&(source_peer, surface));
-                        let _ = frame_builder
-                            .host_mut()
-                            .unmount_peer_stream(source_peer, surface);
-                    }
-                    crate::network::NeighbourMsg::RemoteInput {
-                        peer,
-                        surface,
-                        event,
-                    } => {
-                        match postcard::from_bytes::<crate::network::streaming::InputEvent>(&event)
-                        {
-                            Ok(event) => {
-                                let _ = state.apply_network_remote_input(peer, surface, event);
+                            source_peer,
+                            ..
+                        } => {
+                            pending_legacy_streams.remove(&(source_peer, surface));
+                            let _ = frame_builder
+                                .host_mut()
+                                .unmount_peer_stream(source_peer, surface);
+                        }
+                        crate::network::NeighbourMsg::RemoteInput {
+                            peer,
+                            surface,
+                            event,
+                        } => {
+                            match postcard::from_bytes::<crate::network::streaming::InputEvent>(
+                                &event,
+                            ) {
+                                Ok(event) => {
+                                    let _ = state.apply_network_remote_input(peer, surface, event);
+                                }
+                                Err(error) => tracing::warn!(
+                                    peer,
+                                    surface,
+                                    %error,
+                                    "dropping malformed remote input"
+                                ),
                             }
-                            Err(error) => tracing::warn!(
-                                peer,
-                                surface,
-                                %error,
-                                "dropping malformed remote input"
-                            ),
+                        }
+                        _ => {
+                            tracing::debug!("ignoring non-stream message in the legacy inbox");
                         }
                     }
-                    _ => {
-                        tracing::debug!("ignoring non-stream message in the legacy inbox");
+                }
+            );
+            let pending_legacy_count = pending_legacy_streams.len();
+            pump_phase!(
+                "legacy-remount",
+                pending_legacy_count,
+                for stream in pending_legacy_streams.values() {
+                    if !stream.app_id.is_empty() {
+                        let _ = frame_builder.host_mut().mount_peer_stream(
+                            stream.source_peer,
+                            stream.surface,
+                            stream.local_peer,
+                            &stream.app_id,
+                            &stream.codec,
+                            stream.hdr_static_metadata,
+                            Arc::clone(&stream.input_sink),
+                        );
                     }
                 }
-            }
-            for stream in pending_legacy_streams.values() {
-                if !stream.app_id.is_empty() {
-                    let _ = frame_builder.host_mut().mount_peer_stream(
-                        stream.source_peer,
-                        stream.surface,
-                        stream.local_peer,
-                        &stream.app_id,
-                        &stream.codec,
-                        stream.hdr_static_metadata,
-                        Arc::clone(&stream.input_sink),
-                    );
-                }
-            }
+            );
         }
         pump_checkpoint!("device-fabric-and-network");
         // Keep the presence relay current, then fold in what peers sent. Pointer
