@@ -665,37 +665,73 @@ def creator_input_archive(helpers, public, installer_bootc, selected=None):
                             for name, content in inputs.items()}
 
 
-REMOTE_CREATOR_INPUT_STATUS = r'''import hashlib,json,os,pathlib,stat
+REMOTE_CREATOR_INPUT_STATUS = r'''import hashlib,json,os,pathlib,re,stat
 work=pathlib.Path('/work'); job=work/'disk-output/.creator-job'; receipt=work/'.creator-inputs.json'
+marker=work/'.creator-inputs-reconcile.json'
+names={'helpers':'helpers','public':'public-trust','installer':'installer-bootc-helper'}
 def result(state,**extra):
  print(json.dumps({'state':state,**extra},sort_keys=True)); raise SystemExit
+def read_private(path,limit):
+ try:i=path.lstat()
+ except FileNotFoundError:return None
+ except OSError:result('invalid')
+ if (not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1
+     or i.st_mode&0o077 or i.st_size<2 or i.st_size>limit):result('invalid')
+ try:
+  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW); o=os.fstat(fd)
+  if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size):result('invalid')
+  value=os.read(fd,limit+1); os.close(fd)
+  if len(value)!=i.st_size:result('invalid')
+  return value
+ except BaseException:result('invalid')
 if job.exists() or job.is_symlink(): result('active')
-try:i=receipt.lstat()
-except FileNotFoundError: result('missing')
-except OSError: result('invalid')
-if (not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1
-    or i.st_mode&0o077 or i.st_size<2 or i.st_size>4096): result('invalid')
-try:
- fd=os.open(receipt,os.O_RDONLY|os.O_NOFOLLOW)
- o=os.fstat(fd)
- if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size): result('invalid')
- value=os.read(fd,4097); os.close(fd)
- if len(value)!=i.st_size: result('invalid')
- document=json.loads(value)
-except BaseException: result('invalid')
+raw=read_private(receipt,4096)
+if raw is None: result('missing')
+try:document=json.loads(raw)
+except BaseException:result('invalid')
 if (set(document)!={'schema','purpose','helpers','public','installer'}
     or document.get('schema')!=1
     or document.get('purpose')!='tilo-supervised-creator-inputs'
-    or any(not isinstance(document.get(name),str) or
-           not __import__('re').fullmatch(r'[0-9a-f]{64}',document[name])
+    or any(not isinstance(document.get(name),str) or not re.fullmatch(r'[0-9a-f]{64}',document[name])
            for name in ('helpers','public','installer'))): result('invalid')
-for name in ('helpers','public','installer'):
- path=work/({'helpers':'helpers','public':'public-trust','installer':'installer-bootc-helper'}[name])
+marker_value=None
+marker_raw=read_private(marker,4096)
+if marker_raw is not None:
+ try:marker_value=json.loads(marker_raw)
+ except BaseException:result('invalid')
+ if (set(marker_value)!= {'schema','purpose','old_receipt_sha256','changed','helpers','public','installer'}
+     or marker_value.get('schema')!=1
+     or marker_value.get('purpose')!='tilo-supervised-creator-input-reconciliation'
+     or not re.fullmatch(r'[0-9a-f]{64}',marker_value.get('old_receipt_sha256',''))
+     or not isinstance(marker_value.get('changed'),str)
+     or not marker_value['changed']):result('invalid')
+ changed=marker_value['changed'].split(',')
+ if len(set(changed))!=len(changed) or any(name not in names for name in changed):result('invalid')
+ if any(not re.fullmatch(r'[0-9a-f]{64}',marker_value.get(name,'')) for name in names):result('invalid')
+ for name in changed:
+  path=work/names[name]; backup=work/('.creator-inputs-backup.'+names[name])
+  if backup.exists() or backup.is_symlink():
+   try:backup_info=backup.lstat()
+   except OSError:result('invalid')
+   if (not stat.S_ISDIR(backup_info.st_mode) or backup_info.st_uid or backup_info.st_gid
+       or backup_info.st_nlink!=1 or backup_info.st_mode&0o077):result('invalid')
+  if not path.exists() and not backup.exists():result('invalid')
+receipt_sha256=hashlib.sha256(raw).hexdigest()
+if marker_value is not None and receipt_sha256!=marker_value['old_receipt_sha256']:
+ for name in marker_value['changed'].split(','):
+  if not (work/names[name]).exists():result('invalid')
+ if any(document[name]!=marker_value[name] for name in names):result('invalid')
+ result('reconcile-complete',receipt=document,receipt_sha256=receipt_sha256,marker=marker_value)
+for name in names:
+ path=work/names[name]
  try:info=path.lstat()
- except OSError:result('invalid')
+ except OSError:
+  if marker_value is None or name not in marker_value['changed']:result('invalid')
+  continue
  if (not stat.S_ISDIR(info.st_mode) or info.st_uid or info.st_gid or
-     info.st_nlink!=1 or info.st_mode&0o077): result('invalid')
-result('ready',receipt=document,receipt_sha256=hashlib.sha256(value).hexdigest())'''
+     info.st_nlink!=1 or info.st_mode&0o077):result('invalid')
+result('reconcile' if marker_value is not None else 'ready',receipt=document,
+       receipt_sha256=receipt_sha256,**({'marker':marker_value} if marker_value is not None else {}))'''
 
 
 def creator_input_status(context, disk):
@@ -710,15 +746,25 @@ def creator_input_status(context, disk):
         return None
     if state=='active':
         raise CreatorInputReconciliationError('cannot reconcile creator inputs while creator job is active')
-    if state!='ready' or set(value)!={'state','receipt','receipt_sha256'}:
+    if state not in ('ready','reconcile','reconcile-complete') \
+            or set(value) != ({'state','receipt','receipt_sha256'}
+                               if state=='ready' else {'state','receipt','receipt_sha256','marker'}):
         raise CreatorInputReconciliationError('creator input receipt or component state is invalid')
     receipt=value['receipt']
+    marker=value.get('marker')
     if (not isinstance(receipt,dict) or set(receipt)!={'schema','purpose','helpers','public','installer'}
             or any(not isinstance(receipt.get(name),str) or
                    not re.fullmatch(r'[0-9a-f]{64}',receipt[name])
                    for name in ('helpers','public','installer'))
             or receipt['schema']!=1 or receipt['purpose']!='tilo-supervised-creator-inputs'
-            or not re.fullmatch(r'[0-9a-f]{64}',value['receipt_sha256'])):
+            or not re.fullmatch(r'[0-9a-f]{64}',value['receipt_sha256'])
+            or (state!='ready' and (not isinstance(marker,dict)
+                or set(marker)!={'schema','purpose','old_receipt_sha256','changed',
+                                 'helpers','public','installer'}
+                or marker['schema']!=1
+                or marker['purpose']!='tilo-supervised-creator-input-reconciliation'
+                or not re.fullmatch(r'[0-9a-f]{64}',marker['old_receipt_sha256'])
+                or not isinstance(marker['changed'],str) or not marker['changed']))):
         raise CreatorInputReconciliationError('creator input receipt or component state is invalid')
     return value
 
@@ -788,7 +834,24 @@ def stream_creator_input_delta(context, namespace, pod, container, helpers, publ
     components=creator_input_components(helpers,public,installer_bootc)
     identities={name:hashlib.sha256(content).hexdigest()
                 for name,(_,content) in components.items()}
-    changed=tuple(name for name in components if status['receipt'][name]!=identities[name])
+    state=status.get('state','ready')
+    if state=='reconcile-complete':
+        cleanup=r'''set -euo pipefail
+test ! -e /work/disk-output/.creator-job
+test "$(sha256sum /work/.creator-inputs.json | cut -d' ' -f1)" = "$1"
+for backup in /work/.creator-inputs-backup.*; do
+  if test -e "$backup" || test -L "$backup"; then rm -rf -- "$backup"; fi
+done
+rm -f -- /work/.creator-inputs-reconcile.json
+test ! -e /work/.creator-inputs-reconcile.json
+'''
+        command(kubectl(context,'-n',namespace,'exec',pod,'-c',container,'--','sh','-ceu',cleanup,
+                        'sh',status['receipt_sha256']),timeout=30)
+        return True
+    forced=tuple(status.get('marker',{}).get('changed','').split(',')) \
+        if state=='reconcile' else ()
+    changed=tuple(dict.fromkeys(forced+tuple(name for name in components
+                                              if status['receipt'][name]!=identities[name])))
     if not changed:
         return False
     archive,_=creator_input_archive(helpers,public,installer_bootc,changed)
@@ -798,16 +861,31 @@ test ! -e /work/disk-output/.creator-job
 test -f /work/.creator-inputs.json
 test "$(stat -c '%u:%g:%a:%F' /work/.creator-inputs.json)" = '0:0:600:regular file'
 test "$(sha256sum /work/.creator-inputs.json | cut -d' ' -f1)" = "$1"
-helpers_hash=$2; public_hash=$3; installer_hash=$4; changed_count=$5
+old_receipt=$1; helpers_hash=$2; public_hash=$3; installer_hash=$4; changed_count=$5
 shift 5
 test "$changed_count" -ge 1 -a "$changed_count" -le 3
 stage=$(mktemp -d /work/.creator-inputs.XXXXXX)
-cleanup(){ rm -rf -- "$stage"; }
-trap cleanup EXIT HUP INT TERM
+marker=/work/.creator-inputs-reconcile.json
+committed=0
+rollback(){
+  if test "$committed" = 0; then
+    for target in helpers public-trust installer-bootc-helper; do
+      backup=/work/.creator-inputs-backup.$target
+      if test -e "$backup" || test -L "$backup"; then
+        if test -e "/work/$target" || test -L "/work/$target"; then rm -rf -- "/work/$target"; fi
+        mv -T "$backup" "/work/$target"
+      fi
+    done
+    rm -f -- "$marker"
+  fi
+  rm -rf -- "$stage"
+}
+trap rollback EXIT HUP INT TERM
 tar --no-same-owner -C "$stage" -xf -
 test "$(find "$stage" -mindepth 1 -maxdepth 1 -type f -printf x | wc -c)" = "$changed_count"
 test "$(find "$stage" -mindepth 1 -maxdepth 1 ! -type f -print -quit)" = ''
 seen=0
+changed_csv=
 for component in "$@"; do
   case "$component" in
     helpers) archive=helpers.tar; target=helpers; expected=$helpers_hash;;
@@ -820,20 +898,44 @@ for component in "$@"; do
   mkdir -m 0700 "$stage/$target"
   tar --no-same-owner -C "$stage/$target" -xf "$stage/$archive"
   test -n "$(find "$stage/$target" -mindepth 1 -print -quit)"
-  if test -e "/work/$target" || test -L "/work/$target"; then
-    test ! -L "/work/$target"
-    test "$(stat -c '%u:%g:%a:%F' "/work/$target")" = '0:0:700:directory'
-    rm -rf -- "/work/$target"
-  fi
-  mv -T -n "$stage/$target" "/work/$target"
-  test ! -e "$stage/$target"
+  if test -n "$changed_csv"; then changed_csv="$changed_csv,$component"; else changed_csv="$component"; fi
   seen=$((seen+1))
+done
+test "$seen" = "$changed_count"
+for target in helpers public-trust installer-bootc-helper; do
+  backup=/work/.creator-inputs-backup.$target
+  if test -e "$backup" || test -L "$backup"; then
+    test ! -L "$backup"
+    if test -e "/work/$target" || test -L "/work/$target"; then rm -rf -- "$backup"; else mv -T "$backup" "/work/$target"; fi
+  fi
+done
+marker_tmp=$(mktemp /work/.creator-inputs-reconcile.XXXXXX)
+printf '{"schema":1,"purpose":"tilo-supervised-creator-input-reconciliation","old_receipt_sha256":"%s","changed":"%s","helpers":"%s","public":"%s","installer":"%s"}\n' "$old_receipt" "$changed_csv" "$helpers_hash" "$public_hash" "$installer_hash" > "$marker_tmp"
+chmod 0600 "$marker_tmp"
+mv -T "$marker_tmp" "$marker"
+for component in "$@"; do
+  case "$component" in
+    helpers) target=helpers;; public) target=public-trust;; installer) target=installer-bootc-helper;; *) exit 24;;
+  esac
+  backup=/work/.creator-inputs-backup.$target
+  test ! -e "$backup" && test ! -L "$backup"
+  test -d "/work/$target" && test ! -L "/work/$target"
+  test "$(stat -c '%u:%g:%a:%F' "/work/$target")" = '0:0:700:directory'
+  mv -T "/work/$target" "$backup"
+  mv -T "$stage/$target" "/work/$target"
+  test ! -e "$stage/$target"
 done
 test "$seen" = "$changed_count"
 receipt=$(mktemp /work/.creator-inputs.XXXXXX)
 printf '{"schema":1,"purpose":"tilo-supervised-creator-inputs","helpers":"%s","public":"%s","installer":"%s"}\n' "$helpers_hash" "$public_hash" "$installer_hash" > "$receipt"
 chmod 0600 "$receipt"
 mv -T "$receipt" /work/.creator-inputs.json
+committed=1
+for target in helpers public-trust installer-bootc-helper; do
+  backup=/work/.creator-inputs-backup.$target
+  if test -e "$backup" || test -L "$backup"; then rm -rf -- "$backup"; fi
+done
+rm -f -- "$marker"
 '''
     names=tuple(components[name][0] for name in changed)
     hashes=(identities['helpers'],identities['public'],identities['installer'])
@@ -2845,8 +2947,9 @@ def main():
                                               helpers,public,installer_bootc)
                 else:
                     components=creator_input_components(helpers,public,installer_bootc)
-                    changed=any(status['receipt'][name] != hashlib.sha256(content).hexdigest()
-                                for name,(_,content) in components.items())
+                    changed=(status['state'] != 'ready' or
+                             any(status['receipt'][name] != hashlib.sha256(content).hexdigest()
+                                 for name,(_,content) in components.items()))
                     if not changed:
                         timer.skip('input_transfer')
                     else:
