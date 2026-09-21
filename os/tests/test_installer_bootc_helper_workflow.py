@@ -36,12 +36,13 @@ class InstallerBootcHelperWorkflowTests(unittest.TestCase):
         self.assertIn("actions/cache/save@5a3ec84e", workflow)
         self.assertIn("key: ${{ steps.source.outputs.cache_key }}", workflow)
         self.assertNotIn("restore-keys:", workflow)
+        self.assertNotIn("runner.temp", workflow)
 
     def test_workflow_builds_only_bootc_and_uploads_bounded_output(self):
         workflow = WORKFLOW.read_text()
         self.assertEqual(workflow.count("cargo build --locked --release -p bootc"), 1)
-        self.assertIn("--output \"$RUNNER_TEMP/installer-bootc-helper\"", workflow)
-        self.assertIn("path: ${{ runner.temp }}/installer-bootc-helper/", workflow)
+        self.assertIn("--output /tmp/installer-bootc-helper", workflow)
+        self.assertIn("path: /tmp/installer-bootc-helper/", workflow)
         self.assertIn("if-no-files-found: error", workflow)
         self.assertIn("retention-days: 14", workflow)
         self.assertNotIn("docker build", workflow)
