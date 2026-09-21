@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Advance an accepted WinGet release on the landing page
         env:
-          TILO_RELEASE_REPOSITORY: ${{ vars.IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo/releases' }}
+          TILO_RELEASE_REPOSITORY: ${{ vars.IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases' }}
           CREDENTIAL_BROKER: ${{ vars.IMAGER_SITE_CREDENTIAL_BROKER }}
           ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
           BOOTSTRAP_SITE_TOKEN: ${{ secrets.SITE_RELEASE_TOKEN }}
