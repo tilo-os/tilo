@@ -1,5 +1,6 @@
 """Pure admission fixtures plus read-only regular-file handling; no loop operations."""
 import copy
+from contextlib import nullcontext
 import hashlib
 import importlib.util
 import json
@@ -39,6 +40,59 @@ class Layout(unittest.TestCase):
 
     def test_duplicate_loader_directive(self):
         with self.assertRaises(ValueError): disk.config_lines(b'efi /one\nefi /two\n')
+
+    def test_cheap_preflight_mounts_read_only_and_parses_arm64_uki(self):
+        digest = 'a' * 128
+        uki = synthetic_uki('aarch64', f'quiet composefs={digest}'.encode())
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / 'disk.raw'
+            with image.open('wb') as stream:
+                stream.truncate(3 * 1024**3)
+
+            def command(argv, **_kwargs):
+                if argv[:4] == ['/usr/sbin/losetup', '--find', '--show', '--read-only']:
+                    return b'/dev/loop7\n'
+                if argv[:2] == ['/usr/sbin/blockdev', '--getro']:
+                    return b'1\n'
+                if argv[:2] == ['/usr/sbin/sfdisk', '--json']:
+                    return json.dumps(self.table).encode()
+                if argv[0] == '/usr/bin/mount':
+                    destination = Path(argv[-1])
+                    if argv[2] == 'vfat':
+                        (destination / 'loader/entries').mkdir(parents=True)
+                        (destination / 'loader/entries/tilo.conf').write_text(
+                            f'title Tilo\nefi /EFI/Linux/bootc/bootc_composefs-{digest}.efi\n')
+                        (destination / 'loader/loader.conf').write_text('timeout 1\n')
+                        target = destination / f'EFI/Linux/bootc/bootc_composefs-{digest}.efi'
+                        target.parent.mkdir(parents=True)
+                        target.write_bytes(uki)
+                    else:
+                        (destination / 'composefs').mkdir()
+                        (destination / 'state/deploy').mkdir(parents=True)
+                    return b''
+                if argv[:2] == ['/usr/bin/findmnt', '--json']:
+                    mountpoint = argv[argv.index('--mountpoint') + 1]
+                    filesystem = 'vfat' if mountpoint.endswith('/esp') else 'btrfs'
+                    return json.dumps({'filesystems': [{'target': mountpoint,
+                        'fstype': filesystem, 'options': 'ro,nodev,nosuid,noexec'}]}).encode()
+                if argv[0] in ('/usr/bin/umount', '/usr/sbin/losetup'):
+                    return b''
+                raise AssertionError(argv)
+
+            with patch.object(disk.os, 'getuid', return_value=0), \
+                    patch.object(disk.os, 'geteuid', return_value=0), \
+                    patch.object(disk, 'require_private_namespace'), \
+                    patch.object(disk, '_directory', side_effect=lambda path:
+                        os.open(path, os.O_RDONLY | os.O_DIRECTORY)), \
+                    patch.object(disk, 'loop_partition_nodes', return_value=nullcontext()), \
+                    patch.object(disk, 'command', side_effect=command), \
+                    patch.object(disk.hardware, 'trusted_path', side_effect=lambda root, relative, **_kw:
+                        root / relative):
+                receipt = disk.preflight_disk(image.resolve())
+            self.assertEqual(receipt['purpose'], 'tilo-disk-boot-preflight')
+            self.assertEqual(receipt['uki']['architecture'], 'aarch64')
+            self.assertEqual(receipt['composefs_digest'], digest)
+            self.assertTrue(all(row['read_only_mount_verified'] for row in receipt['partitions']))
 
     def test_material_rejection_is_not_swallowed(self):
         with patch.object(disk.hardware, 'trusted_path', side_effect=lambda root, relative, **kw: root / relative), \
