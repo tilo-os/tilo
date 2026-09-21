@@ -288,7 +288,7 @@ impl OpenTarget {
     /// will land before the user commits.
     pub fn result_hint(self) -> &'static str {
         match self {
-            OpenTarget::Beside => "Opens beside",
+            OpenTarget::Beside => "Opens in rightmost space",
             OpenTarget::Here(_) => "Opens here, as a tab",
         }
     }
@@ -755,6 +755,16 @@ impl ChromeState {
 
     pub fn strip_viewport(&self) -> Option<&crate::shell::placement::StripViewport> {
         self.strip_viewport.as_ref()
+    }
+
+    /// Replace app startup inputs for deterministic offscreen captures.
+    #[doc(hidden)]
+    pub fn set_hosted_inputs_for_capture(
+        &mut self,
+        inputs: super::hosted_inputs::HostedTileInputs,
+    ) {
+        self.hosted_inputs = inputs;
+        self.bump();
     }
 
     pub fn set_viewport_size(&mut self, size: (f64, f64)) {

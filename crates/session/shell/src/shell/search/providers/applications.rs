@@ -1218,7 +1218,7 @@ mod tests {
         assert_eq!(out[0].score, 100, "prefix match on the display name");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Opens beside · Tilo · so.tilo.hello · 0.1.0"),
+            Some("Opens in rightmost space · Tilo · so.tilo.hello · 0.1.0"),
             "the row names the package it will launch"
         );
     }
@@ -1358,7 +1358,7 @@ mod tests {
         assert_eq!(out[0].score, 20, "category ranks below name and id matches");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Opens beside · Tilo · Office · so.tilo.sheets"),
+            Some("Opens in rightmost space · Tilo · Office · so.tilo.sheets"),
             "a declared category is the more useful second line than the version"
         );
     }
@@ -2093,7 +2093,7 @@ impl SearchProvider for NativeApplicationsProvider {
                             })?;
                         let mut state = chrome.borrow_mut();
                         let destination = match state.open_target {
-                            OpenTarget::Beside => crate::shell::window_actions::Destination::Beside,
+                            OpenTarget::Beside => crate::shell::window_actions::Destination::Search,
                             OpenTarget::Here(_) => crate::shell::window_actions::Destination::Here,
                         };
                         crate::shell::window_actions::open_hosted(
@@ -2158,6 +2158,83 @@ mod native_application_tests {
         chrome.borrow_mut().hosted_inputs = HostedTileInputs::default();
         assert!(
             (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).is_err()
+        );
+    }
+
+    #[test]
+    fn native_app_search_opens_at_the_rightmost_visible_space() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        for title in ["second", "third", "fourth"] {
+            crate::compositor::tab_binding::open_hosted_app(
+                &mut tree,
+                AppKind::Terminal,
+                title,
+                crate::shell::tab_binding::Placement::NewGroup,
+            );
+        }
+        let strip_id = tree.workspaces[0].strips[0].id;
+        let ids = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|group| group.id)
+            .collect::<Vec<_>>();
+        tree.set_active_group(strip_id, ids[0]);
+
+        let chrome = ChromeState::new(tree);
+        {
+            let mut state = chrome.borrow_mut();
+            state.hosted_inputs = HostedTileInputs::for_host_directory(directory.path()).unwrap();
+            state.set_strip_viewport(Some(crate::shell::placement::StripViewport {
+                strip: strip_id,
+                groups: ids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| crate::shell::placement::GroupSpan {
+                        id: *id,
+                        x0: index as f64 * 100.0,
+                        x1: index as f64 * 100.0 + 100.0,
+                    })
+                    .collect(),
+                visible_x0: 0.0,
+                visible_x1: 350.0,
+            }));
+        }
+
+        let mut doc = automerge::AutoCommit::new();
+        let results = NativeApplicationsProvider.query(SearchContext {
+            needle: "Files",
+            wanted: &[ResourceKind::Application],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let groups = &tree.active_workspace().unwrap().strips[0].window_groups;
+        let files_group = groups
+            .iter()
+            .find(|group| !ids.contains(&group.id))
+            .expect("Files search result created a group");
+        assert!(
+            files_group.tabs.iter().any(|tab| {
+                matches!(
+                    &tab.tile,
+                    crate::shell::state::TileContent::AppPlaceholder {
+                        kind: AppKind::FileExplorer,
+                        ..
+                    }
+                )
+            }),
+            "the new group contains the real hosted Files app",
+        );
+        let files_group = files_group.id;
+        assert_eq!(
+            groups.iter().map(|group| group.id).collect::<Vec<_>>(),
+            vec![ids[0], ids[1], ids[2], files_group, ids[3]],
+            "the native search provider must use the same rightmost-visible placement as launched apps",
         );
     }
 }

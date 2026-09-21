@@ -273,6 +273,8 @@ pub enum Action {
         app: &'static str,
         title: &'static str,
     },
+    /// Expose the real native Files/Editor catalogue to palette search.
+    EnableNativeAppSearch,
     /// Sample the make-space slide at fixed points along its curve and
     /// capture each as `prefix-<ms>`.
     ///
@@ -824,6 +826,16 @@ fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action)
                 }
                 st.bump();
             });
+        }
+        Action::EnableNativeAppSearch => {
+            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory(
+                &std::env::temp_dir(),
+            ) {
+                Ok(inputs) => {
+                    driver.with_chrome(|st| st.set_hosted_inputs_for_capture(inputs));
+                }
+                Err(error) => eprintln!("scenario: could not enable native app search: {error}"),
+            }
         }
         Action::DragWheelRim { dy, steps } => {
             driver.relayout();
@@ -1617,6 +1629,7 @@ pub fn catalogue() -> Vec<Scenario> {
         window_open_into_tabbed_group(),
         window_open_at_visible_seam(),
         window_open_at_next_seam_rightwards(),
+        searched_app_opens_at_rightmost_space(),
         strip_scroll_across_apps(),
         narrow_groups_side_by_side(),
         tab_pill_reveal(),
@@ -3771,6 +3784,55 @@ fn window_open_at_next_seam_rightwards() -> Scenario {
             },
             Action::Wait(PLACEMENT_SETTLE_FRAMES),
             Action::Snapshot("03-settled"),
+        ],
+    }
+}
+
+/// An app selected from search ignores incidental focus and takes the
+/// rightmost insertion point on screen. Four third-width groups make the
+/// final group sit just beyond the viewport, so the searched app must be
+/// inserted before it rather than next to the focused first group.
+fn searched_app_opens_at_rightmost_space() -> Scenario {
+    Scenario {
+        name: "searched_app_opens_at_rightmost_space",
+        description: "Search for an app with a full strip; it opens in the rightmost visible space before the first off-screen window.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::OpenHostedWindow {
+                app: "Files",
+                title: "Files",
+            },
+            Action::SelectGroup(Some(1)),
+            Action::OpenHostedWindow {
+                app: "Terminal",
+                title: "Terminal",
+            },
+            Action::SelectGroup(Some(2)),
+            Action::OpenHostedWindow {
+                app: "Browser",
+                title: "Browser",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(333),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(8),
+            Action::Snapshot("00-before-search"),
+            Action::EnableNativeAppSearch,
+            Action::OpenPalette,
+            Action::Wait(2),
+            Action::Type("org.tilo.Files".into()),
+            Action::Wait(2),
+            Action::Snapshot("01-search-result"),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::SampleMakeSpace {
+                prefix: "02-making-room",
+                at_ms: MAKE_SPACE_SAMPLES,
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(333),
+            Action::Wait(8),
+            Action::Snapshot("03-after-open"),
         ],
     }
 }
