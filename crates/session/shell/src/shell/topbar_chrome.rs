@@ -214,6 +214,16 @@ struct CacheFingerprint {
     clock_activity: Option<(String, u64, bool, bool)>,
 }
 
+/// One dot in the centre band's carousel indicator. Paint and hit testing
+/// intentionally share this geometry so the visible control and its target
+/// cannot drift apart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CenterDot {
+    pub center: Point,
+    pub radius: f64,
+    pub slot: Rect,
+}
+
 /// No calendar source is wired to the shell, so this paints what's
 /// actually knowable rather than a plausible fixed string.
 fn calendar_strip_parts(now: chrono::DateTime<Local>) -> (String, String, &'static str) {
@@ -893,6 +903,52 @@ impl TopBarChrome {
     /// 1.6× the base so the saturated indigo fill reads as focused.
     pub const DOT_ACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.6;
     pub const DOT_INACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.0;
+
+    const DOT_COLUMN_MARGIN: f64 = 1.0;
+    const DOT_SLOT_HALF_W: f64 = 10.0;
+
+    /// Restore the accepted vertical carousel indicator from `7d58e7146`.
+    /// The unequal active/inactive diameters are included in the layout so
+    /// both visual gaps remain equal and the column stays centred.
+    fn center_dot_layout(band: Rect, bar: Rect, active: usize) -> [CenterDot; 3] {
+        let radius_of = |i: usize| {
+            if i == active {
+                Self::DOT_ACTIVE_RADIUS
+            } else {
+                Self::DOT_INACTIVE_RADIUS
+            }
+        };
+        let ink: f64 = (0..3).map(|i| radius_of(i) * 2.0).sum();
+        let gap = ((band.height() - Self::DOT_COLUMN_MARGIN * 2.0 - ink) / 2.0).max(1.0);
+        let column_h = ink + gap * 2.0;
+        let mut edge = band.center().y - column_h / 2.0;
+        let mut centers = [0.0; 3];
+        let mut radii = [0.0; 3];
+        for i in 0..3 {
+            let radius = radius_of(i);
+            radii[i] = radius;
+            centers[i] = edge + radius;
+            edge += radius * 2.0 + gap;
+        }
+        let boundary = |a: usize, b: usize| (centers[a] + radii[a] + centers[b] - radii[b]) / 2.0;
+        let cuts = [boundary(0, 1), boundary(1, 2)];
+        let x = Self::dot_column_x(band);
+        let edges = [bar.y0, cuts[0], cuts[1], bar.y1];
+        std::array::from_fn(|i| CenterDot {
+            center: Point::new(x, centers[i]),
+            radius: radii[i],
+            slot: Rect::new(
+                x - Self::DOT_SLOT_HALF_W,
+                edges[i],
+                x + Self::DOT_SLOT_HALF_W,
+                edges[i + 1],
+            ),
+        })
+    }
+
+    fn dot_column_x(band: Rect) -> f64 {
+        band.x0 + 12.0
+    }
 
     /// Strictly larger than inactive; the affordance is scale-up +
     /// saturated indigo.
@@ -1713,30 +1769,22 @@ impl TopBarChrome {
             );
         }
 
-        let dot_x = band.x0 + 16.0;
-        let dot_gap = 24.0_f64;
         let active_dot = self.center_widget.index();
-        for (i, slot) in self.center_dot_rects.iter_mut().enumerate() {
-            let cx = dot_x + small_count_to_f64(i) * dot_gap;
+        let dots = Self::center_dot_layout(band, self.rect, active_dot);
+        for (i, dot) in dots.iter().enumerate() {
             let active = active_dot == i;
-            let r = if active {
-                Self::DOT_ACTIVE_RADIUS
-            } else {
-                Self::DOT_INACTIVE_RADIUS
-            };
             let color = if active {
                 colors.accent[5]
             } else {
                 colors.neutral[7]
             };
-            // Full-height target; neighbouring 24 px lanes remain distinct.
-            *slot = Rect::new(cx - 12.0, center_y - 16.0, cx + 12.0, center_y + 16.0);
-            let c = vello::kurbo::Circle::new(Point::new(cx, center_y), r);
+            self.center_dot_rects[i] = dot.slot;
+            let c = vello::kurbo::Circle::new(dot.center, dot.radius);
             scene.fill(Fill::NonZero, transform, color, None, &c);
         }
 
         // Widget content fills the band to the right of the dots.
-        let content_x0 = dot_x + 64.0;
+        let content_x0 = Self::dot_column_x(band) + 24.0;
         let content_x1 = band.x1 - 12.0;
         let content_cx = f64::midpoint(content_x0, content_x1);
         (content_x0, content_x1, content_cx)
@@ -4583,6 +4631,29 @@ mod tests {
             (chrome.active_dot_radius() - TopBarChrome::DOT_BASE_SIZE * 1.6).abs() < f64::EPSILON,
             "active dot radius should be 1.6× the base size",
         );
+    }
+
+    #[test]
+    fn center_dots_restore_vertical_non_overlapping_layout() {
+        let bar = Rect::new(0.0, 0.0, 1600.0, f64::from(TOPBAR_HEIGHT_PX));
+        let band = Rect::new(620.0, 3.0, 980.0, 37.0);
+        for active in 0..3 {
+            let dots = TopBarChrome::center_dot_layout(band, bar, active);
+            assert_eq!(dots[0].center.x, dots[1].center.x);
+            assert_eq!(dots[1].center.x, dots[2].center.x);
+            for pair in dots.windows(2) {
+                assert!(
+                    pair[0].center.y + pair[0].radius < pair[1].center.y - pair[1].radius,
+                    "vertical dot ink must not overlap"
+                );
+                assert!(pair[0].slot.y1 <= pair[1].slot.y0);
+            }
+            for dot in dots {
+                assert!(dot.slot.contains(dot.center));
+                assert!(dot.center.y - dot.radius >= band.y0);
+                assert!(dot.center.y + dot.radius <= band.y1);
+            }
+        }
     }
 
     #[test]
