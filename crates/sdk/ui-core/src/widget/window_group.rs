@@ -6,7 +6,9 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::tabs::CLOSE_FADE_MS;
-use crate::widget::{TabBar, TabDescriptor, TileContent, TileHost, Widget};
+use crate::widget::{
+    FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, TileHost, Widget,
+};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -1399,6 +1401,80 @@ impl WindowGroup {
     }
 }
 
+impl FloatingSurfaceProvider for WindowGroup {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        self.active_host_mut()
+            .and_then(FloatingSurfaceProvider::take_floating_surface_request)
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+        self.active_host_mut()
+            .and_then(FloatingSurfaceProvider::take_capture_studio_request)
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.hosts
+            .iter_mut()
+            .flat_map(|(_, host)| {
+                FloatingSurfaceProvider::take_floating_surface_source_updates(host)
+            })
+            .collect()
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::draw_floating_surfaces(
+                host,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::set_floating_surface_bounds(host, bounds);
+        }
+    }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        self.hosts
+            .iter()
+            .flat_map(|(_, host)| FloatingSurfaceProvider::floating_surface_presentations(host))
+            .collect()
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.hosts
+            .iter()
+            .flat_map(|(_, host)| FloatingSurfaceProvider::active_floating_surface_ids(host))
+            .collect()
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_host_message(host, message);
+        }
+    }
+}
+
 impl Widget for WindowGroup {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         if let Some(h) = self.active_host_mut() {
@@ -1683,60 +1759,13 @@ impl Widget for WindowGroup {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        self.active_host_mut()
-            .and_then(Widget::take_floating_surface_request)
+
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
     }
-    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
-        self.active_host_mut()
-            .and_then(Widget::take_capture_studio_request)
-    }
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        self.hosts
-            .iter_mut()
-            .flat_map(|(_, host)| host.take_floating_surface_source_updates())
-            .collect()
-    }
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        for (_, host) in &mut self.hosts {
-            host.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
-        }
-    }
-    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
-        for (_, host) in &mut self.hosts {
-            host.set_floating_surface_bounds(bounds);
-        }
-    }
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-        self.hosts
-            .iter()
-            .flat_map(|(_, host)| host.floating_surface_presentations())
-            .collect()
-    }
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.hosts
-            .iter()
-            .flat_map(|(_, host)| host.active_floating_surface_ids())
-            .collect()
-    }
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &crate::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        for (_, host) in &mut self.hosts {
-            host.on_floating_surface_host_message(message);
-        }
+
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
     }
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
@@ -1765,8 +1794,8 @@ impl Widget for WindowGroup {
         let bar = self.bar.take_structure_dirty();
         #[allow(
             clippy::unnecessary_fold,
-            reason = "Every hosted widget must have its structure-dirty flag drained even when an earlier host is already dirty."
-        )] // see comment above: must not short-circuit
+            reason = "all host dirty flags must be drained without short-circuiting"
+        )]
         let hosts = self
             .hosts
             .iter_mut()

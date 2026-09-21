@@ -243,11 +243,15 @@ impl ResourceId {
 pub struct ResourcePresentation {
     pub detail: Option<String>,
     pub badge: Option<String>,
+    /// Bounded plain-text content for a shell/toolkit-owned preview. Apps
+    /// provide data only; they never control preview pixels or interaction.
+    pub preview: Option<String>,
 }
 
 impl ResourcePresentation {
     pub const MAX_DETAIL_BYTES: usize = 160;
     pub const MAX_BADGE_BYTES: usize = 32;
+    pub const MAX_PREVIEW_BYTES: usize = 512;
 
     #[must_use]
     pub fn is_valid(&self) -> bool {
@@ -258,6 +262,12 @@ impl ResourcePresentation {
                 .badge
                 .as_ref()
                 .is_none_or(|value| value.len() <= Self::MAX_BADGE_BYTES && !value.contains('\n'))
+            && self.preview.as_ref().is_none_or(|value| {
+                value.len() <= Self::MAX_PREVIEW_BYTES
+                    && !value
+                        .chars()
+                        .any(|character| matches!(character, '\r' | '\0'))
+            })
     }
 }
 
@@ -930,6 +940,7 @@ pub struct FlatAction<'a> {
     pub resource_id: ResourceId,
     pub resource_kind: String,
     pub resource_label: String,
+    pub resource_presentation: Option<ResourcePresentation>,
     pub action: &'a ActionSpec,
 }
 
@@ -950,6 +961,7 @@ fn flatten_into<'a>(resource: &'a Resource, out: &mut Vec<FlatAction<'a>>) {
             resource_id: resource.id.clone(),
             resource_kind: resource.kind.clone(),
             resource_label: resource.label.clone(),
+            resource_presentation: resource.presentation.clone(),
             action,
         });
     }
@@ -1070,6 +1082,7 @@ mod tests {
         let valid = ResourcePresentation {
             detail: Some("19 °C".into()),
             badge: Some("LIVE".into()),
+            preview: Some("Sunny with a light breeze".into()),
         };
         assert!(valid.is_valid());
         assert!(
@@ -1082,6 +1095,7 @@ mod tests {
         let oversized = ResourcePresentation {
             detail: Some("x".repeat(ResourcePresentation::MAX_DETAIL_BYTES + 1)),
             badge: None,
+            preview: None,
         };
         assert!(!oversized.is_valid());
         assert!(
@@ -1094,6 +1108,29 @@ mod tests {
             !ResourcePresentation {
                 detail: None,
                 badge: Some("unsafe\nsecond line".into()),
+                preview: None,
+            }
+            .is_valid()
+        );
+        for preview in [
+            "x".repeat(ResourcePresentation::MAX_PREVIEW_BYTES + 1),
+            "unsafe\rpreview".into(),
+            "unsafe\0preview".into(),
+        ] {
+            assert!(
+                !ResourcePresentation {
+                    detail: None,
+                    badge: None,
+                    preview: Some(preview),
+                }
+                .is_valid()
+            );
+        }
+        assert!(
+            ResourcePresentation {
+                detail: None,
+                badge: None,
+                preview: Some("x".repeat(ResourcePresentation::MAX_PREVIEW_BYTES)),
             }
             .is_valid()
         );

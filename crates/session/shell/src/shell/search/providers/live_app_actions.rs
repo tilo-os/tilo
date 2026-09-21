@@ -1404,7 +1404,13 @@ impl LiveAppActionsProvider {
         let presentation_text = presentation
             .as_ref()
             .into_iter()
-            .flat_map(|value| [value.detail.as_deref(), value.badge.as_deref()])
+            .flat_map(|value| {
+                [
+                    value.detail.as_deref(),
+                    value.badge.as_deref(),
+                    value.preview.as_deref(),
+                ]
+            })
             .flatten()
             .collect::<Vec<_>>()
             .join(" ");
@@ -2986,6 +2992,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the authenticated directory traversal scenario is clearest as one test"
+    )]
     fn resource_only_directory_row_enters_an_authenticated_child_scope() {
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
         let provider = LiveAppActionsProvider::new(broker.clone());
@@ -3014,6 +3024,7 @@ mod tests {
                         &tilo_actions::ResourcePresentation {
                             detail: Some("Chapter 7".into()),
                             badge: Some("2 collaborators".into()),
+                            preview: None,
                         },
                     )
                     .unwrap(),

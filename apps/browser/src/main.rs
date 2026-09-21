@@ -667,7 +667,8 @@ fn render_live_shot_to_png(
         widget.apply_layout(&taffy, child, Point::ORIGIN);
 
         if pip_probe_started && pip_request.is_none() {
-            pip_request = Widget::take_floating_surface_request(&mut widget);
+            pip_request =
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut widget);
         }
 
         let page = probe.state();

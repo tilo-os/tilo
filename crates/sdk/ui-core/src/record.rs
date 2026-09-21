@@ -667,6 +667,9 @@ pub struct RecordSet {
     canonical_root: Option<PathBuf>,
     pending: HashMap<RecordId, Reserved>,
     next_reservation: u64,
+    // Drop after the writers and reservations above. Temporary profiles must
+    // outlive asynchronous flushes and recovery handles, not just their host.
+    _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
 struct Reserved {
@@ -706,6 +709,7 @@ impl RecordSet {
             canonical_root: None,
             pending: HashMap::new(),
             next_reservation: 0,
+            _profile_lifetime: None,
         }
     }
 
@@ -727,6 +731,7 @@ impl RecordSet {
             canonical_root: None,
             pending: HashMap::new(),
             next_reservation: 0,
+            _profile_lifetime: None,
         }
     }
 
@@ -1284,6 +1289,7 @@ pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 pub struct RecordOwners {
     root: PathBuf,
     owners: HashMap<(String, String), std::rc::Weak<std::cell::RefCell<RecordSet>>>,
+    profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
 impl RecordOwners {
@@ -1291,6 +1297,19 @@ impl RecordOwners {
         Self {
             root: profile_state_root,
             owners: HashMap::new(),
+            profile_lifetime: None,
+        }
+    }
+
+    /// Retain a host-owned profile resource until its last writer/recovery owner
+    /// is gone. Construct this before opening any records.
+    pub(crate) fn with_profile_lifetime(
+        profile_state_root: PathBuf,
+        lifetime: std::rc::Rc<dyn std::any::Any>,
+    ) -> Self {
+        Self {
+            profile_lifetime: Some(lifetime),
+            ..Self::new(profile_state_root)
         }
     }
 
@@ -1323,6 +1342,7 @@ impl RecordOwners {
             canonical_root: Some(self.root.clone()),
             pending: HashMap::new(),
             next_reservation: 0,
+            _profile_lifetime: self.profile_lifetime.clone(),
         });
         self.owners.insert(key, std::rc::Rc::downgrade(&store.0));
         Ok(store)
@@ -1975,6 +1995,72 @@ impl RecordStore {
         Ok(parked.action_state.generation)
     }
 
+    /// Merge broker-admitted bytes atomically into the canonical owner. Validate
+    /// on a private copy before ending local typing or changing the undo baseline.
+    pub(crate) fn merge_remote_document(
+        &self,
+        checkout: &RecordCheckout,
+        mutation: collab_types::DocumentMutation,
+    ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
+        let (_, _, workspace) = self
+            .canonical_namespace()
+            .ok_or("record has no canonical namespace")?;
+        self.with_action_state(&checkout.id, |doc, history, actions| {
+            let origin = home(doc).ok_or("record origin is missing")?;
+            let mut local = doc.clone();
+            actions.commit_for_save(&mut local);
+            let before = local.get_heads();
+            let mut candidate = local.clone();
+            let observed = match mutation {
+                collab_types::DocumentMutation::Snapshot(bytes) => {
+                    let mut incoming =
+                        AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+                    validate_replica_identity(&incoming, checkout, &workspace, &origin)?;
+                    let heads = incoming.get_heads();
+                    candidate
+                        .merge(&mut incoming)
+                        .map_err(|error| error.to_string())?;
+                    heads
+                }
+                collab_types::DocumentMutation::Incremental(bytes) => {
+                    // load_incremental deliberately accepts a valid prefix of
+                    // corrupt input. Validate the entire payload first. Missing
+                    // dependencies are valid for an incremental message and are
+                    // checked only after Automerge has parsed every chunk.
+                    match AutoCommit::load_with_options(
+                        &bytes,
+                        automerge::LoadOptions::new()
+                            .on_partial_load(automerge::OnPartialLoad::Error),
+                    ) {
+                        Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
+                        Err(error) => return Err(error.to_string()),
+                    }
+                    candidate
+                        .load_incremental(&bytes)
+                        .map_err(|error| error.to_string())?;
+                    candidate
+                        .get_changes(&before)
+                        .iter()
+                        .map(automerge::Change::hash)
+                        .collect()
+                }
+            };
+            validate_replica_identity(&candidate, checkout, &workspace, &origin)?;
+            let changed = candidate.get_heads() != before;
+            if changed {
+                // Finish the local span against LOCAL heads, never the merged
+                // heads: undoing it must leave the remote author's edits intact.
+                actions.finish_external(&mut local, history);
+                history.rebase(&mut candidate);
+                actions.generation = actions.generation.and_then(|value| value.checked_add(1));
+            }
+            // Keep valid changes with dependencies still in flight, too.
+            *doc = candidate;
+            Ok((changed, observed))
+        })
+        .map_err(|error| error.to_string())?
+    }
+
     /// Do something with a record's document. `None` if the record is not open here.
     pub fn with<R>(&self, id: &RecordId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
         let mut set = self.0.borrow_mut();
@@ -2063,6 +2149,40 @@ impl RecordStore {
     pub fn flush(&self) {
         self.0.borrow_mut().flush_open();
     }
+}
+
+fn validate_replica_identity(
+    doc: &AutoCommit,
+    checkout: &RecordCheckout,
+    workspace: &str,
+    origin: &str,
+) -> Result<(), String> {
+    validate_identity(doc, checkout, workspace).map_err(|error| error.to_string())?;
+    // A losing CRDT value must not conceal a foreign identity. Independent
+    // equal stamps are harmless; every concurrent value must name this record.
+    for (value, object) in doc.get_all(ROOT, META).map_err(|error| error.to_string())? {
+        if value != Value::Object(ObjType::Map) {
+            return Err("conflicting record identity".into());
+        }
+        for (field, expected) in [
+            ("id", checkout.id.as_str()),
+            ("kind", checkout.kind.as_str()),
+            (ROOM, workspace),
+            ("home", origin),
+        ] {
+            let values = doc
+                .get_all(&object, field)
+                .map_err(|error| error.to_string())?;
+            if values.is_empty()
+                || values
+                    .iter()
+                    .any(|(value, _)| value.to_str() != Some(expected))
+            {
+                return Err("conflicting record identity".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 impl std::fmt::Debug for RecordStore {
