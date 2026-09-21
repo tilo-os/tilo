@@ -101,7 +101,10 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
 
 struct Layout {
     taffy: TaffyTree<()>,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "retaining the root node keeps the full Taffy fixture explicit even though event routing begins at its child"
+    )]
     root_node: NodeId,
     child_node: NodeId,
 }
@@ -383,19 +386,17 @@ fn shift_resize_handle_redistributes_width_between_neighbours() {
     );
 }
 
-/// A normal drag far past the resized group's maximum clamps that group
-/// without changing its neighbour, and the clamped width persists.
+/// A normal drag far past the resized group's maximum clamps that group in
+/// the infinite strip without stealing width from its neighbour.
 #[test]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "st's only use is producing tree via tree(); the read-guard's lifetime \
               is tied to st's borrow, so it can't be dropped before tree's last use"
 )]
-fn resize_handle_drag_clamps_at_min_width_and_persists() {
+fn resize_handle_drag_clamps_at_max_width_without_squeezing_its_neighbour() {
     let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200]);
-    // Start both at Narrow. From two Normals the right group can't reach its
-    // minimum at all (the left would grow past the display), so the pair sum
-    // has to leave slack for the clamp to be reachable.
+    // Start both at Narrow so the resized group's full clamp range is visible.
     for g in &mut tree.workspaces[0].strips[0].window_groups {
         g.width = WindowWidth::Narrow;
     }
@@ -403,8 +404,8 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let layout = lay_out_host(&mut host);
 
     let usable = usable_strip_px(&mut host, strip_id);
-    let pair_sum = 2.0 * WindowWidth::Narrow.resolve(usable);
-    let min = ui::widget::min_group_px(usable);
+    let initial = WindowWidth::Narrow.resolve(usable);
+    let max = ui::widget::max_group_px(usable);
     let handle_rect = host
         .group_row_mut_for_tests(strip_id)
         .expect("strip GroupRow")
@@ -414,8 +415,8 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
     let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-    // Far past the right neighbour's min: it can only shrink to the
-    // display's minimum, so the left group grows by that slack, not by 5000.
+    // Ordinary resizing grows into the strip's horizontal canvas. A huge
+    // gesture therefore clamps the resized group, not the group beside it.
     cursor(&mut host, &layout, Point::new(cx, cy));
     press(&mut host, &layout);
     cursor(&mut host, &layout, Point::new(cx + 5000.0, cy));
@@ -429,19 +430,18 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
     let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
     assert_approx_eq!(
-        right.width.resolve(usable),
-        min,
-        "the shrinking (right) group clamps at the display's minimum width, not below",
-    );
-    assert_approx_eq!(
         left.width.resolve(usable),
-        pair_sum - min,
-        "the growing (left) group absorbs only the neighbour's actual slack",
+        max,
+        "the resized group clamps at its maximum instead of growing without bound",
     );
     assert_approx_eq!(
-        left.width.resolve(usable) + right.width.resolve(usable),
-        pair_sum,
-        "pair sum is preserved under clamp — no overlap, no runaway width",
+        right.width.resolve(usable),
+        initial,
+        "ordinary resize must leave the adjacent group unchanged",
+    );
+    assert!(
+        left.width.resolve(usable) > right.width.resolve(usable),
+        "the infinite strip must retain the extra horizontal space",
     );
 }
 
