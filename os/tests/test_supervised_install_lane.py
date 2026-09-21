@@ -559,10 +559,49 @@ class LaneAdmission(unittest.TestCase):
     def test_creator_inspects_then_starts_idempotent_detached_job(self):
         events = []
         args = type('Args', (), {'context': 'ctx'})()
-        with patch.object(lane, 'controller', side_effect=lambda *a: events.append(('controller', a[4]))), \
+        with patch.object(lane, 'controller', side_effect=lambda *a, **k: events.append(('controller', a[4]))), \
                 patch.object(lane, 'prepare_disk_output', side_effect=lambda *a: events.append(('prepare', None))):
             lane.create_on_worker(Path('/root'), args, {'pod': 'disk'}, {'pod': 'agent'})
         self.assertEqual(events, [('controller', True), ('controller', False)])
+
+    def test_creator_streams_auth_without_local_credential_file(self):
+        args=SimpleNamespace(context='ctx',host_pins=Path('/pins'),disk_args=Path('/args'),
+            operation_dir=Path('/operation'),helper_revision='a'*40,acceptance_id='run1')
+        disk={'namespace':'kata-system','pod':'tilo-disk-run1','pod_uid':'pod-uid',
+              'node':'disk','node_uid':'node-uid'}
+        agent={'metadata':{'name':'kata-deploy'}}
+        with patch.object(lane,'command',return_value=b'{}') as command:
+            lane.controller(Path('/root'),args,disk,agent,False,registry_auth_bytes=b'{"auths":{"registry":{}}}')
+        argv,payload=command.call_args.args[:2]
+        self.assertIn('--registry-auth-stdin',argv)
+        self.assertIn('--creator-job-receipt',argv)
+        self.assertNotIn('registry-auth.json',str(argv))
+        self.assertEqual(payload,b'{"auths":{"registry":{}}}')
+        self.assertEqual(command.call_args.kwargs,{'timeout':7200,'text':False})
+
+    def test_resume_pending_creator_adopts_only_bound_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,_,disk_node,creator,_,_=self.resumable_fixture(directory)
+            (Path(directory)/'worker-bindings.json').write_text(json.dumps({'creator':creator}))
+            vm=node('vm',kvm=True)
+            pod={'metadata':{'labels':{lane.OWNER_LABEL:lane.OWNER,
+                 lane.OPERATION_LABEL:args.acceptance_id,lane.EXPIRES_LABEL:'4102444800'}}}
+            with patch.object(lane,'optional_same_worker',return_value=creator), \
+                    patch.object(lane,'api_json',return_value=pod):
+                disk,current,selected_vm,expires=lane.resume_pending_creator(args,{'items':[disk_node,vm]})
+            self.assertEqual(disk,creator)
+            self.assertEqual(current,disk_node)
+            self.assertEqual(selected_vm,vm)
+            self.assertEqual(expires,4102444800)
+
+    def test_legacy_controller_credential_is_removed_only_when_private(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'registry-auth.json';path.write_text('{"auths":{}}');path.chmod(0o600)
+            lane.remove_legacy_registry_auth(directory)
+            self.assertFalse(path.exists())
+            path.write_text('{"auths":{}}');path.chmod(0o644)
+            with self.assertRaisesRegex(ValueError,'residue'):
+                lane.remove_legacy_registry_auth(directory)
 
     def test_finalized_layer_audit_must_bind_creation(self):
         creation={'source':{'image_id':'sha256:'+'a'*64,'hardware_profile':'generic-arm64'},

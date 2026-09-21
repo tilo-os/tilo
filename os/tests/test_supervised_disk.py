@@ -1,6 +1,7 @@
 """Admission checks only; no installer or remote Kubernetes operations."""
 import base64
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -252,6 +253,23 @@ class DetachedCreatorJob(unittest.TestCase):
         self.assertIn("auth.unlink();auth.parent.rmdir();auth=None", controller.GUEST_JOB)
         self.assertIn("try:auth.unlink()", controller.GUEST_JOB)
         self.assertNotIn('registry_auth', controller.GUEST_JOB)
+
+    def test_remote_receipt_binds_detached_request_before_adoption(self):
+        binding=self.binding()
+        receipt={'disk_created':True,'path':'/work/disk-output/disk.raw',
+                 'size_bytes':64*1024**3,'controller_job':{'binding':binding},
+                 'controller_helper':{'revision':binding['helper_revision'],
+                                      'bundle_sha256':binding['helper_bundle_sha256']}}
+        raw=(json.dumps(receipt,sort_keys=True)+'\n').encode()
+        status={'creation_sha256':hashlib.sha256(raw).hexdigest()}
+        with patch.object(controller,'checked',return_value=base64.b64encode(raw).decode()):
+            self.assertEqual(controller.remote_creator_receipt(['kubectl'],'ns','pod','disk',status,binding),raw)
+        receipt['controller_job']={'binding':{}}
+        hostile=(json.dumps(receipt,sort_keys=True)+'\n').encode()
+        with patch.object(controller,'checked',return_value=base64.b64encode(hostile).decode()):
+            with self.assertRaisesRegex(ValueError,'does not bind'):
+                controller.remote_creator_receipt(['kubectl'],'ns','pod','disk',
+                                                   {'creation_sha256':hashlib.sha256(hostile).hexdigest()},binding)
 
     @unittest.skipUnless(hasattr(os, 'O_NOFOLLOW') and Path('/proc/self').exists()
                          and os.geteuid() == 0,
