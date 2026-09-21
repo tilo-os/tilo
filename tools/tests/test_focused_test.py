@@ -229,8 +229,13 @@ class FocusedTests(unittest.TestCase):
             root = Path(tmp)
             runner = root / 'runner'
             runner.touch()
-            with patch.object(focused.subprocess, 'check_output', side_effect=[
-                    'a' * 40, json.dumps(self.metadata), listed]), \
+            reads = iter(['a' * 40, json.dumps(self.metadata), listed])
+            def read(command, **kwargs):
+                if command[0] == 'cargo':
+                    limit.assert_called_once_with(focused.resource.RLIMIT_CORE, (0, 0))
+                return next(reads)
+            with patch.object(focused.resource, 'setrlimit') as limit, \
+                 patch.object(focused.subprocess, 'check_output', side_effect=read), \
                  patch.object(focused, 'history_runner_wrapper', return_value=runner) as wrapper, \
                  patch.object(focused.subprocess, 'run', side_effect=[
                      subprocess.CompletedProcess([], 0, output),

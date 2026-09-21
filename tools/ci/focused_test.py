@@ -163,6 +163,9 @@ def execute(root, values, outcomes=None):
         print('TILO_NATIVE_ENVIRONMENT ' + json.dumps(
             {'source_sha': actual, **inspect_native_environment()}, sort_keys=True), flush=True)
         return 0
+    if values['OPERATION'] == HISTORY_BACKTRACE_OPERATION:
+        # The --list preflight also starts the test binary before its GDB runner.
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     metadata = json.loads(read(['cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1']))
     packages = [p for p in metadata['packages']
                 if p['name'] == values['PACKAGE'] and p['id'] in metadata['workspace_members']]
