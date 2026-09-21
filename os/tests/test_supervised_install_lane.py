@@ -180,6 +180,13 @@ class LaneAdmission(unittest.TestCase):
         compile(lane.REMOTE_CREATOR_INPUT_STATUS, '<creator-input-status>', 'exec')
         compile(lane.REMOTE_CREATOR_FAILED_JOB_RESET, '<creator-failed-job-reset>', 'exec')
 
+    def test_creator_input_status_passes_exact_python_arguments(self):
+        worker={'namespace':'kata-system','pod':'tilo-disk-run1',
+                'pod_uid':'pod-uid','node_uid':'node-uid'}
+        with patch.object(lane,'command',return_value=json.dumps({'state':'missing'})) as command:
+            self.assertIsNone(lane.creator_input_status('ctx',worker,'run1'))
+        self.assertEqual(command.call_args.args[0][-3:],['pod-uid','node-uid','run1'])
+
     @unittest.skipUnless(hasattr(os,'O_NOFOLLOW') and getattr(os,'geteuid',lambda:1)()==0,
                          'remote receipt contract requires Linux root semantics')
     def test_remote_input_status_accepts_nested_component_directories(self):
@@ -196,7 +203,7 @@ class LaneAdmission(unittest.TestCase):
             receipt_path.chmod(0o600)
             script=lane.REMOTE_CREATOR_INPUT_STATUS.replace(
                 "pathlib.Path('/work')",f"pathlib.Path({str(root)!r})")
-            result=lane.subprocess.run([sys.executable,'-c',script,'python3','pod-uid','node-uid','run1'],
+            result=lane.subprocess.run([sys.executable,'-c',script,'pod-uid','node-uid','run1'],
                                        capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(json.loads(result.stdout)['state'],'ready')
@@ -219,16 +226,16 @@ class LaneAdmission(unittest.TestCase):
             status_path=job/'status.json'; status_path.write_text(json.dumps(status)+'\n'); status_path.chmod(0o600)
             status_script=lane.REMOTE_CREATOR_INPUT_STATUS.replace(
                 "pathlib.Path('/work')",f"pathlib.Path({str(root)!r})")
-            result=lane.subprocess.run([sys.executable,'-c',status_script,'python3','pod-uid',
+            result=lane.subprocess.run([sys.executable,'-c',status_script,'pod-uid',
                                         'node-uid','run1'],capture_output=True,text=True)
             self.assertEqual(json.loads(result.stdout)['state'],'retryable-failed')
             reset_script=lane.REMOTE_CREATOR_FAILED_JOB_RESET.replace(
                 "pathlib.Path('/work')",f"pathlib.Path({str(root)!r})")
-            result=lane.subprocess.run([sys.executable,'-c',reset_script,'python3','pod-uid',
+            result=lane.subprocess.run([sys.executable,'-c',reset_script,'pod-uid',
                                         'node-uid','run1'],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertFalse(job.exists())
-            result=lane.subprocess.run([sys.executable,'-c',status_script,'python3','pod-uid',
+            result=lane.subprocess.run([sys.executable,'-c',status_script,'pod-uid',
                                         'node-uid','run1'],capture_output=True,text=True)
             self.assertEqual(json.loads(result.stdout)['state'],'ready')
 
