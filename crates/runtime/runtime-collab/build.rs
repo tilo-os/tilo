@@ -1,9 +1,21 @@
+const EXPECTED_SCHEMA_FNV1A: u64 = 0x832c_866b_6879_c358;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Generated module lands in OUT_DIR; lib.rs pulls it in via `include!`.
-    println!("cargo:rerun-if-changed=schema/collab.capnp");
-    capnpc::CompilerCommand::new()
-        .src_prefix("schema")
-        .file("schema/collab.capnp")
-        .run()?;
+    const SCHEMA: &str = "schema/collab.capnp";
+    const GENERATED: &str = "src/generated/collab_capnp.rs";
+    println!("cargo:rerun-if-changed={SCHEMA}");
+    println!("cargo:rerun-if-changed={GENERATED}");
+
+    let schema = std::fs::read(SCHEMA)?;
+    let actual = schema.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
+    });
+    if actual != EXPECTED_SCHEMA_FNV1A {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{SCHEMA} changed without regenerating {GENERATED}"),
+        )
+        .into());
+    }
     Ok(())
 }

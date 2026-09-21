@@ -1787,6 +1787,91 @@ mod tests {
     }
 
     #[test]
+    fn canonical_actions_accept_every_editor_block_kind_and_reject_invalid_table_modes() {
+        use automerge::ReadDoc;
+        use ui::widget::BlockKind;
+        let mut doc = AutoCommit::new();
+        crate::notebook::initialize_empty(&mut doc).unwrap();
+        let mut workspace = Workspace::new();
+        let page = workspace.create_page(None);
+        let action = upsert_page_action(workspace.get(page).unwrap());
+        tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+        let kinds = [
+            BlockKind::Paragraph,
+            BlockKind::Quote,
+            BlockKind::Heading(1),
+            BlockKind::Heading(2),
+            BlockKind::Heading(3),
+            BlockKind::Bullet { indent: 5 },
+            BlockKind::Numbered { indent: 5 },
+            BlockKind::Checklist {
+                indent: 5,
+                done: false,
+            },
+            BlockKind::Checklist {
+                indent: 5,
+                done: true,
+            },
+            BlockKind::CodeBlock {
+                lang: Some("rust".into()),
+            },
+            BlockKind::Table { visual: false },
+            BlockKind::Table { visual: true },
+            BlockKind::Divider,
+        ];
+        let mut after = None;
+        let ops = kinds
+            .iter()
+            .map(|kind| {
+                let id = Uuid::new_v4().to_string();
+                let op = BlockEditOp::Insert {
+                    block_id: id.clone(),
+                    after: after.clone(),
+                    kind: crate::markdown::block_kind_wire(kind),
+                    text: "Preserved content".into(),
+                };
+                after = Some(id);
+                op
+            })
+            .collect();
+        let action = apply_block_ops_action(page, ops);
+        let mut peer = doc.clone();
+        let applied = tilo_actions::dispatch(
+            &mut doc,
+            &action,
+            encode(&action),
+            &mut LocalTransport::new(),
+        )
+        .unwrap();
+        tilo_actions::replay(&mut peer, applied.envelope(), &registry()).unwrap();
+        assert_eq!(doc.get_heads(), peer.get_heads());
+        crate::notebook::validate(&doc).unwrap();
+        let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
+        assert_eq!(doc.length(&list), kinds.len());
+        for (index, kind) in kinds.iter().enumerate() {
+            assert_eq!(
+                NotesDoc::block_kind(&doc, &list, index),
+                crate::markdown::block_kind_wire(kind)
+            );
+        }
+        for kind in ["table", "table:2", "table:true", "table:01", "table:1:0"] {
+            let before = doc.get_heads();
+            let action = apply_block_ops_action(
+                page,
+                vec![BlockEditOp::SetKind {
+                    block_id: after.clone().unwrap(),
+                    kind: kind.into(),
+                }],
+            );
+            assert!(
+                tilo_actions::apply_local(&mut doc, &action, encode(&action)).is_err(),
+                "invalid kind accepted: {kind}"
+            );
+            assert_eq!(doc.get_heads(), before);
+        }
+    }
+
+    #[test]
     fn import_page_dispatch_rolls_back_invalid_body_and_replays_complete_page() {
         let mut workspace = Workspace::default();
         let page = workspace.create_page(None);

@@ -1068,25 +1068,20 @@ fn route_mouse_input(
         || (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
             && state.client_input.pointer_focus.is_some())
         || (chrome_drag && !pressed);
-    // Account for every physical edge, including gestures which begin in
-    // chrome. A chrome file drag can later hand that held button to Smithay;
-    // its release must then be recognised as the matching final edge. This
-    // mirrors keyboard routing, where ownership controls forwarding but not
-    // the shared-seat ledger.
-    let local_transition = evdev_button(button).map(|code| {
-        let forward = state.remote_seats.local_button_transition(code, pressed);
-        (code, forward)
-    });
     let consumed = if to_client {
-        match local_transition {
-            Some((code, true)) => state.forward_client_pointer_button(code, pressed),
-            Some((_, false)) => {
-                // The shared legacy pointer already has this button in the
-                // requested state. It still belongs to the client grab; do
-                // not let the duplicate edge fall through to shell chrome.
-                true
+        match evdev_button(button) {
+            Some(code) => {
+                if admit_local_pointer_edge(state, code, pressed, chrome_drag) {
+                    state.forward_client_pointer_button(code, pressed)
+                } else {
+                    // The shared legacy pointer already has this button in
+                    // the requested state. It still belongs to the client
+                    // grab; do not let the duplicate edge fall through to
+                    // shell chrome.
+                    true
+                }
             }
-            _ => false,
+            None => false,
         }
     } else {
         false
@@ -1101,6 +1096,22 @@ fn route_mouse_input(
     }
     // The file manager has to see the release too, to end its own side of the gesture without moving anything.
     consumed && !chrome_drag
+}
+
+/// Decide whether one local pointer edge reaches the shared Wayland seat.
+///
+/// Ordinary client gestures are refcounted with remote participants. A drag
+/// promoted from compositor chrome is different: its press belonged to the
+/// in-process widget and was therefore never entered in that ledger, but the
+/// server-side `DnD` grab still requires the matching release to finish a drop.
+fn admit_local_pointer_edge(
+    state: &mut State,
+    button: u32,
+    pressed: bool,
+    chrome_drag: bool,
+) -> bool {
+    let final_shared_edge = state.remote_seats.local_button_transition(button, pressed);
+    final_shared_edge || (chrome_drag && !pressed)
 }
 
 /// `WindowEvent::MouseWheel` half of [`route_input`]: Alt-modified wheel is a
@@ -2171,6 +2182,27 @@ mod tests {
             "pointer loss retires only the host's ownership"
         );
         assert!(state.remote_seats.button_transition(PEER, LEFT, false));
+    }
+
+    #[test]
+    fn chrome_drag_release_bypasses_an_absent_client_press() {
+        const LEFT: u32 = 272;
+
+        let mut state = seat_state();
+        assert_eq!(state.remote_seats.button_holder_count(LEFT), 0);
+        assert!(
+            admit_local_pointer_edge(&mut state, LEFT, false, true),
+            "the DnD grab must receive the release even though Chrome owned the press"
+        );
+        assert_eq!(
+            state.remote_seats.button_holder_count(LEFT),
+            0,
+            "the exceptional release must not invent shared button ownership"
+        );
+        assert!(
+            !admit_local_pointer_edge(&mut state, LEFT, false, false),
+            "ordinary duplicate releases remain suppressed"
+        );
     }
 
     /// A lock is a trusted input-capture boundary, not permission to stop

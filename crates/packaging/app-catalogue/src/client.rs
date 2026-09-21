@@ -354,6 +354,12 @@ mod tests {
                 qpkg_root_hash_hex: "cd".repeat(32),
                 qpkg_size_bytes: 1024,
                 released_at_unix: 100,
+                qpkg_blake3_hex: Some("ef".repeat(32)),
+                target: Some(registry_types::RegistryTarget {
+                    architecture: std::env::consts::ARCH.into(),
+                    isa: "x86_64".into(),
+                    runtime: None,
+                }),
             }],
             updated_at_unix: 200,
             signature_hex: String::new(),
@@ -377,6 +383,7 @@ mod tests {
             }],
             entries: vec![entry],
             owner_signature_hex: String::new(),
+            channel_authorization: None,
         };
         registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
         snapshot
@@ -438,6 +445,7 @@ mod tests {
                 base_url: base_url.into(),
                 owner_pubkey_hex: "11".repeat(32),
                 enabled: true,
+                channel: pkg::version::ReleaseChannel::Stable,
             };
             if base_url.contains('?') {
                 assert_eq!(
@@ -456,6 +464,7 @@ mod tests {
             base_url: "http://127.0.0.1:8080".into(),
             owner_pubkey_hex: "11".repeat(32),
             enabled: true,
+            channel: pkg::version::ReleaseChannel::Stable,
         };
         assert_eq!(
             registry_url(&loopback, "entries").unwrap().as_str(),

@@ -1,29 +1,57 @@
 # Product packaging coverage and next Windows qualification
 
-Source audit: main `97fde6687`, 2026-09-19. A defined workflow is not evidence
+Source audit: main `d34b49c38`, 2026-09-21. A defined workflow is not evidence
 that every target has a ready runner, successful native build or releasable
 artifact.
+
+See the [CI and packaging roadmap](ci-production-roadmap.md) for the build graph,
+promotion model, service levels and phased production plan.
 
 ## Routine change lifecycle
 
 Routine work starts on a task branch and lands through one updated pull request.
-The exact head needs independent review and the protected check and lint
-contexts before merge.
+The protected check and lint contexts must pass for the exact head before merge.
 `check.yml` and `lint.yml` preserve a result for every `main` commit; dependency
 selection keeps the Rust lane focused while nightly CI remains the full-workspace
 backstop.
 
-The trusted merge dispatcher completes eligible routine app PRs automatically,
-one at a time. Its current allowlist is deliberately narrow: Rust source changes
-inside an existing `apps/<app>/src/` package. It fails closed when the branch is
-out of date, author/reviewer/integrator identities overlap, branch protection
-drifts, or exact-head check, lint or independent approval is missing. Other PRs
-still need an explicit merge. See [Release pipeline](release-pipeline.md) for the
-enabled heavy-build and publication triggers.
+The trusted merge controller classifies changes using the deployed
+[admission code](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/admission.py)
+and [path policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json).
+Ordinary product and documentation changes are routine; tools are classified by
+path, not by being tools. CI/policy, publication, signing and named security
+boundaries use the protected scope, as does an existing file's executable-mode
+change. Named dependency exceptions carry their own CI checks. No scope requires
+review.
+
+After exact-head checks pass, the author posts `/merge <full-head-sha>` or follows
+the controller's queue instructions. Reviews are informational and never block
+integration. A new push requires fresh checks and intent.
+
+Review state does **not** turn a routine documentation PR into a protected-scope
+change. Such a PR still uses routine integration, respecting queue priority. The
+operator command is only for changes the classifier assigns to the protected
+scope. See [Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow)
+for the command and limits, and [Release pipeline](release-pipeline.md) for
+heavy-build and publication triggers.
+
+## What runs for each event
+
+| Event | Routine feedback | Packaging and release behavior |
+| --- | --- | --- |
+| Task-branch push | Fast quality for that commit: changed-file formatting, lint-exception policy, repository policy, `cargo deny`, and `cargo machete` | No app publication or OS build |
+| Pull request to `main` | Fast quality plus affected reverse-dependency checks and applicable security contracts; the app workflow reports its dependency-selected plan | No qpkg publication and no full OS build |
+| Push to `main` | Fast quality and affected checks retain a result for that exact commit | Relevant app/package inputs publish the dependency-selected x86-64 app set, reuse unchanged collection members, and submit newly built qpkgs to the signed registry; OS publication remains off |
+| Nightly, tag, or explicit dispatch | Full-workspace and product-specific qualification according to the workflow | App and desktop release matrices expand only on their documented triggers; an OS version is published only by an OS tag or a `main` dispatch with `publish=true` |
+
+Do not interpret a skipped Rust row as missing CI. The aggregate accepts it only
+for the audited documentation/helper allowlist; quality remains required. Use the
+selector summary to see which packages and security contracts applied to the
+exact head.
 
 | Product | Existing path | Remaining qualification or deferral |
 | --- | --- | --- |
-| Linux/qOS native apps | `release-apps.yml`: affected-app PR planning; continuous dependency-selected x86-64 packaging on `main`; explicit/tagged signed qpkg and runtime collection on x86-64 and ARM64 | Main rebuilds changed qpkgs and reuses immutable collection members. ARM64 remains available for explicit/tagged releases while ordinary main packaging stays on the configured x86-64 lane. qOS ISA policy is explicit; this is not a universal Linux standalone installer. |
+| Linux/qOS native apps | `release-apps.yml`: affected-app PR planning; continuous dependency-selected x86-64 packaging on `main`; explicit/tagged signed qpkg and runtime collection on x86-64 and ARM64 | Main compiles and packages selected app binaries and reuses immutable collection members; full-collection dependency features preserve the shared runtime ABI. ARM64 remains available for explicit/tagged releases while ordinary main packaging stays on the configured x86-64 lane. qOS ISA policy is explicit; this is not a universal Linux standalone installer. |
 | Whole desktop / Linux distributions | `package-desktop.yml`: Arch, Nix, Ubuntu 24.04, Debian 13, Fedora 44; architecture jobs run distro builds serially | PR contracts remain cheap; weekly/manual distribution builds and main payload publication remain. ARM requires the workflow's native capability gate. Distribution install tests do not establish bootable OS/device acceptance. |
 | Setup application, Linux | `release-imager.yml`: default explicit Linux x86 smoke; full native/tag lanes add ARM64, AppImage and release checks | Catalog, signing, installation and physical-media qualification remain distinct. |
 | Setup application, Windows | Existing x86-64/ARM64 jobs use `imager-windows-x86_64` / `imager-windows-aarch64`, MSVC targets, imager tests, package build and signature checks | Enabled for imager tags or explicit `full_native=true`, not ordinary pushes. Actual native host availability must be checked before dispatch. |

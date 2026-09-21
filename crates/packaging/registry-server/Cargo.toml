@@ -24,6 +24,7 @@ path = "src/main.rs"
 atomic-file = { path = "../../../crates/system/atomic-file" }
 registry-types = { path = "../registry-types" }
 app-registry = { path = "../app-registry" }
+pkg = { path = "../pkg" }
 
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "fs", "time", "io-util"] }
 hyper        = { version = "1", features = ["server", "http1"] }
@@ -44,12 +45,14 @@ anyhow.workspace = true
 blake3 = { workspace = true }
 libc = { workspace = true }
 zeroize.workspace = true
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+# Moderation fetches run in the deployed container. Use its maintained CA
+# bundle so newly issued public certificates do not depend on the root set
+# compiled into an older pinned application image.
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls-native-roots"] }
 
 [dev-dependencies]
 tempfile.workspace = true
 rand.workspace = true
-pkg = { path = "../pkg" }
 
 [lints]
 workspace = true

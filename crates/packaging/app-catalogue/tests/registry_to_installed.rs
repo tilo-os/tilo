@@ -84,6 +84,9 @@ kind = "app"
 name = "Sheets"
 category = "Office"
 
+[package.isa]
+{} = "{}"
+
 [publisher]
 identity = "ed25519:{pubhex}"
 signature = ""
@@ -99,12 +102,28 @@ mode = "off"
 [entrypoint]
 bin = "bin/app"
 type = "gui"
-"#
+"#,
+        native_target().0,
+        native_target().1,
     );
     let manifest = Manifest::from_toml_str(&manifest_toml).unwrap();
     let mut store = MemoryBlobStore::new();
     let id = pack(&payload, &manifest, identity, &mut store).unwrap();
     app_registry::qpkg::write_bytes(id, &store).unwrap()
+}
+
+/// Manifest key/value and registry wire label for the runner's architecture.
+fn native_target() -> (&'static str, &'static str, &'static str) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        ("x86_64", "baseline", "x86_64")
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        ("aarch64", "armv8-a", "aarch64")
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    compile_error!("registry installation tests require a supported package architecture");
 }
 
 fn test_publisher() -> SigningIdentity {
@@ -132,6 +151,12 @@ fn signed_entry(package_id: &str, qpkg_url: &str, qpkg: &[u8]) -> RegistryEntry 
             qpkg_root_hash_hex: root.to_hex(),
             qpkg_size_bytes: qpkg.len() as u64,
             released_at_unix: 1,
+            qpkg_blake3_hex: Some(blake3::hash(qpkg).to_hex().to_string()),
+            target: Some(registry_types::RegistryTarget {
+                architecture: native_target().0.into(),
+                isa: native_target().2.into(),
+                runtime: None,
+            }),
         }],
         updated_at_unix: 2,
         signature_hex: String::new(),
@@ -159,6 +184,7 @@ fn signed_snapshot_json(entry: RegistryEntry, owner: &SigningKey) -> String {
         }],
         entries: vec![entry],
         owner_signature_hex: String::new(),
+        channel_authorization: None,
     };
     sign_snapshot(&mut snapshot, owner).unwrap();
     serde_json::to_string(&snapshot).unwrap()
@@ -297,6 +323,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
                 base_url: registry.base_url(),
                 owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
                 enabled: true,
+                channel: pkg::version::ReleaseChannel::Stable,
             }],
         })
         .unwrap(),
@@ -396,6 +423,7 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
                 base_url: registry.base_url(),
                 owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
                 enabled: true,
+                channel: pkg::version::ReleaseChannel::Stable,
             }],
         })
         .unwrap(),
@@ -512,6 +540,7 @@ fn publish_and_install(
                 base_url: registry.base_url(),
                 owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
                 enabled: true,
+                channel: pkg::version::ReleaseChannel::Stable,
             }],
         })
         .unwrap(),

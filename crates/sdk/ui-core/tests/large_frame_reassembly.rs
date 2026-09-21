@@ -16,7 +16,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::support::typed_collab::TypedBroker;
-use ui::collaboration::CollabRequest;
+use tilo_ui::collaboration::CollabRequest;
 
 #[test]
 fn large_frame_survives_split_reads() {
