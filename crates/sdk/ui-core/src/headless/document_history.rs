@@ -536,7 +536,11 @@ impl FrameHarness {
         );
         if keyboard {
             let Some(node) = self.focused.filter(|node| self.is_history_node(*node)) else {
-                return !layout.app_visible;
+                // A managed History surface owns its modal keyboard routing
+                // even when standalone chrome has hidden the live app. Let
+                // the existing HistoryHost route below receive Enter/Escape;
+                // only a genuinely hidden ordinary app has no recipient.
+                return self.history.is_none() && !layout.app_visible;
             };
             // SAFETY: focused retained chrome is unbound and the admitted tree
             // remains exclusive for the duration of this event.

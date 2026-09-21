@@ -6358,6 +6358,10 @@ impl AudiencePresentationProvider for SlidesApp {
 }
 
 impl Widget for SlidesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
         Some(self)
     }
