@@ -31,8 +31,8 @@ class RegistryWarmupTests(unittest.TestCase):
         manifest=SimpleNamespace(returncode=0,stdout=raw)
         config=SimpleNamespace(returncode=0,stdout=json.dumps({
             'Digest':digest,'Architecture':'arm64'}).encode())
-        metadata=f'image="{canonical}"\nimageid="{image_id}"\n'
-        with patch('builtins.open',mock_open(read_data=metadata)), \
+        metadata=f'image="{canonical}"\nimageid="{image_id}"\nrootless=0\n'
+        with patch('builtins.open',mock_open(read_data=metadata.encode())), \
                 patch.object(wrapper.subprocess,'run',side_effect=[inspect,manifest,config]) as run:
             self.assertIsNone(wrapper.require_bound_source(source,digest))
         self.assertEqual(run.call_args_list[0].args[0],[
@@ -41,9 +41,13 @@ class RegistryWarmupTests(unittest.TestCase):
             '/usr/bin/skopeo','inspect','--raw'])
         hostile=SimpleNamespace(returncode=0,stdout=json.dumps([{
             'Id':image_id,'Digest':digest,'RepoDigests':['registry.invalid/x@'+digest]}]).encode())
-        with patch('builtins.open',mock_open(read_data=metadata)), \
+        with patch('builtins.open',mock_open(read_data=metadata.encode())), \
                 patch.object(wrapper.subprocess,'run',return_value=hostile), \
                 self.assertRaisesRegex(ValueError,'image identity mismatch'):
+            wrapper.require_bound_source(source,digest)
+        duplicate=(metadata+f'imageid="{image_id}"\n').encode()
+        with patch('builtins.open',mock_open(read_data=duplicate)), \
+                self.assertRaisesRegex(ValueError,'metadata is ambiguous'):
             wrapper.require_bound_source(source,digest)
 
     def test_private_udev_preflight_requires_pid1_mount_and_no_database(self):

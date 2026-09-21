@@ -10,6 +10,7 @@ import stat
 import subprocess
 import threading
 import time
+import tomllib
 
 
 SOURCE = re.compile(r'docker://code\.podesta\.ai/[a-z0-9_./-]+@(sha256:[0-9a-f]{64})')
@@ -32,12 +33,13 @@ def require_bound_source(source, expected):
     match = SOURCE.fullmatch(source)
     if match is None or match.group(1) != expected:
         raise ValueError('bound source check requires the exact immutable source')
-    fields = {}
-    for line in open('/run/.containerenv', encoding='utf-8'):
-        item = re.fullmatch(r'([a-z]+)="([^"\n]*)"\n?', line)
-        if item is None or item.group(1) in fields:
-            raise ValueError('container identity metadata is ambiguous')
-        fields[item.group(1)] = item.group(2)
+    try:
+        with open('/run/.containerenv', 'rb') as stream:
+            fields = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise ValueError('container identity metadata is ambiguous') from error
+    if not isinstance(fields, dict):
+        raise ValueError('container identity metadata is ambiguous')
     image_id = fields.get('imageid', '').removeprefix('sha256:')
     canonical = source.removeprefix('docker://')
     if (not re.fullmatch(r'[0-9a-f]{64}', image_id)
