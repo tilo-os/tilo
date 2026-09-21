@@ -19,17 +19,24 @@
 
 set -uo pipefail
 
-readonly REAL_CARGO="${HOME}/.cargo/bin/cargo"
+real_cargo="${CARGO_HOME:-${HOME}/.cargo}/bin/cargo"
 
 # Fall back to any other cargo on PATH that is not this shim (rustup-less environments).
-if [ ! -x "$REAL_CARGO" ]; then
+if [ ! -x "$real_cargo" ]; then
   self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  real_cargo=""
   while IFS= read -r cand; do
-    [ "$(readlink -f "$cand" 2>/dev/null)" != "$self" ] && exec "$cand" "$@"
-  done < <(command -v -a cargo 2>/dev/null)
-  echo "cargo: no cargo binary found" >&2
-  exit 127
+    if [ "$(readlink -f "$cand" 2>/dev/null || echo "$cand")" != "$self" ]; then
+      real_cargo="$cand"
+      break
+    fi
+  done < <(type -a -p cargo 2>/dev/null)
+  if [ -z "$real_cargo" ]; then
+    echo "cargo: no cargo binary found" >&2
+    exit 127
+  fi
 fi
+readonly REAL_CARGO="$real_cargo"
 
 [ -n "${QCARGO_BYPASS:-}" ] && exec "$REAL_CARGO" "$@"
 

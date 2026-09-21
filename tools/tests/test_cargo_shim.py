@@ -9,7 +9,7 @@ SHIM = Path(__file__).resolve().parents[1] / "ci" / "cargo-shim"
 
 
 class CacheIncrementalPolicy(unittest.TestCase):
-    def run_build(self, wrapper=None, incremental=None):
+    def run_build(self, wrapper=None, incremental=None, missing_cargo_home=False):
         with tempfile.TemporaryDirectory(prefix="qos-cargo-shim-") as directory:
             root = Path(directory)
             (root / "src").mkdir()
@@ -34,6 +34,8 @@ class CacheIncrementalPolicy(unittest.TestCase):
             env.update(PATH=str(root) + os.pathsep + env["PATH"],
                        CARGO_TARGET_DIR=str(root / "target"),
                        SHIM_TEST_RECORD=str(record))
+            if missing_cargo_home:
+                env["CARGO_HOME"] = str(root / "empty-cargo-home")
             if wrapper:
                 env["RUSTC_WRAPPER"] = str(root / wrapper)
             if incremental is not None:
@@ -57,6 +59,14 @@ class CacheIncrementalPolicy(unittest.TestCase):
 
     def test_explicit_incremental_choice_is_preserved(self):
         self.assertEqual(self.run_build(incremental="1"), {"1"})
+
+    def test_path_fallback_applies_selected_cache_policy(self):
+        self.assertEqual(self.run_build(missing_cargo_home=True), {"0"})
+
+    def test_path_fallback_preserves_custom_wrapper_policy(self):
+        self.assertEqual(
+            self.run_build(wrapper="custom-wrapper", missing_cargo_home=True), {"unset"}
+        )
 
 
 if __name__ == "__main__":
