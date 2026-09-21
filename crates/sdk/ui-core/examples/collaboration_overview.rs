@@ -6,11 +6,11 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_actions::ActionContext;
-use ui::num::f32_of_u32;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::{PermissionContext, UserId};
-use ui::text_render::TextRenderer;
-use ui::{
+use tilo_ui::num::f32_of_u32;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::permissions::{PermissionContext, UserId};
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::{
     ActivityDigest, App, CollaborationExperience, CollaborationOverview, HistoryAuthor,
     HistoryEntry, HistoryEntryId, LiveStatus, PersonPresence, PresenceCtx, SemanticActivity, State,
     StatusOrigin, Theme, Widget,

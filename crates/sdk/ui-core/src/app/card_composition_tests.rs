@@ -46,8 +46,17 @@ fn layout(app: &mut App, width: u32) {
 }
 
 fn layout_in(app: &mut App, width: u32, height: u32) {
-    app.layout_dirty = true;
-    run_layout_pass(app, app.root_node.unwrap(), width, height, 1.0, false, None).unwrap();
+    app.layout.layout_dirty = true;
+    run_layout_pass(
+        app,
+        app.layout.root_node.unwrap(),
+        width,
+        height,
+        1.0,
+        false,
+        None,
+    )
+    .unwrap();
 }
 
 fn controls(app: &App) -> Vec<(String, KurboRect)> {
@@ -160,8 +169,8 @@ fn send_widget_then_host_fallback(app: &mut App, event: &WindowEvent) -> bool {
         &app.state.root,
         &mut handled,
         &mut focus_target,
-        app.root_node.unwrap(),
-        &app.taffy,
+        app.layout.root_node.unwrap(),
+        &app.layout.taffy,
     );
     if let Some(target) = focus_target {
         app.set_focused_node(Some(target));

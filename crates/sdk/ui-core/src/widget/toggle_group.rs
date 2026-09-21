@@ -40,7 +40,7 @@ fn usize_to_f32(n: usize) -> f32 {
 /// dwarfing its own labels. `apply_layout` re-partitions whatever width the
 /// host actually assigns.
 const SEGMENT_WIDTH: f32 = 120.0;
-const STRIP_HEIGHT: f32 = 36.0;
+const STRIP_HEIGHT: f32 = 44.0;
 
 pub struct Segment {
     pub label: String,

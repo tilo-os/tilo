@@ -10,10 +10,12 @@
 
 use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
 use std::time::SystemTime;
-use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
-use ui::permissions::{Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb};
-use ui::presence::{PathSegment, PresenceKey};
-use ui::widget::{TextInput, Widget};
+use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use tilo_ui::permissions::{
+    Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb,
+};
+use tilo_ui::presence::{PathSegment, PresenceKey};
+use tilo_ui::widget::{TextInput, Widget};
 
 #[test]
 fn memory_relay_fans_out_presence_updates_to_both_peers() {
@@ -149,9 +151,9 @@ fn status_crosses_the_same_authenticated_room_presence_path() {
     let room = PresenceKey::Workspace {
         id: "finance-room".into(),
     };
-    let status = ui::LiveStatus {
+    let status = tilo_ui::LiveStatus {
         text: "Reconciling forecast against actuals".into(),
-        origin: ui::StatusOrigin::Inferred {
+        origin: tilo_ui::StatusOrigin::Inferred {
             generator: "local".into(),
         },
         updated_at: SystemTime::now(),
@@ -174,7 +176,10 @@ fn status_crosses_the_same_authenticated_room_presence_path() {
         .status_for(&UserId("alice".into()), SystemTime::now())
         .expect("remote status reaches the room presence context");
     assert_eq!(received.text, "Reconciling forecast against actuals");
-    assert!(matches!(received.origin, ui::StatusOrigin::Inferred { .. }));
+    assert!(matches!(
+        received.origin,
+        tilo_ui::StatusOrigin::Inferred { .. }
+    ));
 }
 
 #[test]
@@ -312,9 +317,9 @@ fn peer_caret_in_text_input_renders_on_remote_app() {
 
     let mut input = TextInput::new(vec![PathSegment::Field("doc".into())]);
     let mut scene = vello::Scene::new();
-    let theme = ui::theme::Theme::dark();
-    let mut tr = ui::text_render::TextRenderer::new();
-    let perms = ui::permissions::PermissionContext::permissive();
+    let theme = tilo_ui::theme::Theme::dark();
+    let mut tr = tilo_ui::text_render::TextRenderer::new();
+    let perms = tilo_ui::permissions::PermissionContext::permissive();
 
     input.draw_with_presence(
         &mut scene,
@@ -335,29 +340,33 @@ fn peer_caret_in_text_input_renders_on_remote_app() {
 }
 
 #[test]
-fn crdt_incremental_deltas_replay_on_remote_peer() {
+fn crdt_incremental_deltas_replay_on_remote_state() {
     use automerge::ReadDoc;
 
     // Alice makes a concrete CRDT mutation, serializes the delta via
-    // `save_incremental`, and fires it through the relay; bob's app must
-    // apply the bytes to his own doc so they converge.
+    // `save_incremental`, and fires it through the relay; Bob's receiving
+    // State applies the bytes through the same API used by the routed App.
     let mut relay = MemoryRelay::new();
     let alice_peer = relay.attach("alice");
     let bob_peer = relay.attach("bob");
-    let (mut alice_app, _) = headless_app("alice", alice_peer.clone());
-    let (mut bob_app, _) = headless_app("bob", bob_peer.clone());
+    let mut alice_state = tilo_ui::state::State::new();
+
+    // Establish the shared document history first. An incremental change
+    // cannot be applied until the normal snapshot handshake has run.
+    let snapshot = alice_state.save();
+    let mut bob_state = tilo_ui::state::State::load(&snapshot).expect("shared base loads");
+    let _ = alice_state.save_incremental();
 
     // In production a widget would mutate the doc as part of event
     // handling — done directly here to keep the test self-contained.
     {
         use automerge::transaction::Transactable;
-        let state = alice_app.state_mut_for_test();
-        state
+        alice_state
             .doc
             .put(automerge::ROOT, "hello", "from alice")
             .expect("put scalar");
     }
-    let delta = alice_app.state_mut_for_test().save_incremental();
+    let delta = alice_state.save_incremental();
     assert!(
         !delta.is_empty(),
         "save_incremental must emit non-empty bytes after a mutation"
@@ -370,18 +379,16 @@ fn crdt_incremental_deltas_replay_on_remote_peer() {
     let events = bob_peer.poll();
     let mut applied = false;
     for ev in events {
-        if matches!(
-            document_mutation(&ev),
-            Some(collab_types::DocumentMutation::Incremental(_))
-        ) {
+        if let Some(collab_types::DocumentMutation::Incremental(data)) = document_mutation(&ev) {
+            bob_state
+                .load_incremental(&data)
+                .expect("remote state accepts a delta from its shared base");
             applied = true;
         }
-        bob_app.apply_collab_event_for_test(ev);
     }
     assert!(applied, "bob must receive the incremental document event");
 
-    let state = bob_app.state_mut_for_test();
-    let got = state
+    let got = bob_state
         .doc
         .get(automerge::ROOT, "hello")
         .expect("read back")

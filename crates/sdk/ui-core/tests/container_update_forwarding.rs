@@ -25,10 +25,10 @@ use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId, ROOT};
 use taffy::{NodeId, Style, TaffyTree};
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{Column, Container, Row, Stack, Widget};
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{Column, Container, Row, Stack, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
@@ -70,7 +70,10 @@ impl Widget for Probe {
     ) {
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the test widget implements the framework event contract"
+    )]
     fn handle_event(
         &mut self,
         _event: &WindowEvent,
