@@ -8781,10 +8781,20 @@ fn apply_shell_gesture(
     action: crate::compositor::backend::drm::gestures::GestureAction,
 ) {
     use crate::compositor::backend::drm::gestures::GestureAction;
-    if let GestureAction::StepAlongStrip(dir) = action {
-        // Goes through the host, not the chrome: the widget side owns the active tab, undone by the next writeback otherwise.
-        frame_builder.host_mut().step_focus_along_strip(dir);
-        return;
+    match action {
+        GestureAction::StripPanUpdate { travel, began } => {
+            frame_builder
+                .host_mut()
+                .update_active_strip_pan(travel, began);
+            return;
+        }
+        GestureAction::StripPanEnd { .. } => {
+            frame_builder
+                .host_mut()
+                .end_active_strip_pan(Instant::now());
+            return;
+        }
+        _ => {}
     }
     frame_builder.with_chrome(|st| match action {
         GestureAction::SwitchWorkspace(dir) => {
@@ -8792,7 +8802,7 @@ fn apply_shell_gesture(
         }
         // Handled (and returned on) above; a panic here would take down the
         // whole session for a gesture that already did its job.
-        GestureAction::StepAlongStrip(_) => {}
+        GestureAction::StripPanUpdate { .. } | GestureAction::StripPanEnd { .. } => {}
         GestureAction::ShowOverview => {
             if !st.overlays.overview {
                 st.overlays.overview = true;
