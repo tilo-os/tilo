@@ -62,7 +62,7 @@ const NEW_BTN_MARGIN: f64 = 8.0;
 /// little smaller than the row preserves label space without making the hit
 /// targets fiddly.
 const ROW_ACTION_SIZE: f64 = 26.0;
-const ROW_ACTION_GAP: f64 = 2.0;
+const ROW_ACTION_GAP: f64 = ui::tokens::Spacing::BASE.s1 as f64 / 2.0;
 /// Left content inset: rows, the header label and the selection pill all
 /// start this far in from the sidebar's left edge so nothing is jammed
 /// against the window frame.
@@ -80,7 +80,7 @@ const GLYPH_WIDTH: f64 = 16.0;
 const DOUBLE_CLICK_INTERVAL_MS: u128 = 400;
 /// Pixels of cursor jitter still tolerated between the two clicks of
 /// a double-click.
-const DOUBLE_CLICK_RADIUS_PX: f64 = 4.0;
+const DOUBLE_CLICK_RADIUS_PX: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 /// Default text size for tree row labels.
 const ROW_TEXT_SIZE: f32 = 14.0;
 /// Deliberate dwell before a collapsed branch springs open during a drag.
