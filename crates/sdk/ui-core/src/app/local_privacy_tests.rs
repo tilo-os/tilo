@@ -242,7 +242,7 @@ fn assert_local_app_behavior() {
         Box::new(crate::widget::Column::new()),
     );
     assert_ne!(
-        author, second.local_author.0,
+        author, second.collaboration.local_author.0,
         "each local app needs an ephemeral identity"
     );
     let callback_wake = captured.borrow().as_ref().unwrap().clone();

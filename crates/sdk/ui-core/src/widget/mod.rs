@@ -912,6 +912,40 @@ pub trait Widget {
         None
     }
 
+    /// Attach native child views through this owner's retained lifecycle topology.
+    ///
+    /// Presentation containers with inactive or hidden live descendants override
+    /// this traversal so lifecycle ownership remains independent of drawing and
+    /// input visibility.
+    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+            lifecycle.mount_native_view(host);
+        }
+        for child in self.children_mut() {
+            child.mount_native_views(host);
+        }
+    }
+
+    /// Tear native children down while their parent window still exists.
+    fn unmount_native_views(&mut self) {
+        for child in self.children_mut() {
+            child.unmount_native_views();
+        }
+        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+            lifecycle.unmount_native_view();
+        }
+    }
+
+    /// Begin a native-view frame through this owner's retained lifecycle topology.
+    fn native_view_frame_start(&mut self) {
+        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+            lifecycle.native_view_frame_start();
+        }
+        for child in self.children_mut() {
+            child.native_view_frame_start();
+        }
+    }
+
     /// Expose detachable/capture surfaces only for widgets that own them.
     fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
         None
@@ -2835,13 +2869,15 @@ mod a11y_tree_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
-    struct CollaborationProbe {
+    struct CollabProbe {
         events: std::rc::Rc<std::cell::Cell<u32>>,
         child: Option<Box<dyn Widget>>,
     }
 
-    impl Collaborative for CollaborationProbe {
+    impl Collaborative for CollabProbe {
         fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
             vec![crate::collaboration::CollabRequest::ClearContinuation {
                 app_id: "probe".into(),
@@ -2920,7 +2956,7 @@ mod tests {
         }
 
         fn name(&self) -> &'static str {
-            "CollaborationProbe"
+            "CollabProbe"
         }
 
         fn get_rect(&self) -> vello::kurbo::Rect {
@@ -2931,11 +2967,11 @@ mod tests {
     #[test]
     fn collaboration_capabilities_visit_parent_and_child_exactly_once() {
         let events = std::rc::Rc::new(std::cell::Cell::new(0));
-        let child = CollaborationProbe {
+        let child = CollabProbe {
             events: std::rc::Rc::clone(&events),
             child: None,
         };
-        let mut root = CollaborationProbe {
+        let mut root = CollabProbe {
             events: std::rc::Rc::clone(&events),
             child: Some(Box::new(child)),
         };

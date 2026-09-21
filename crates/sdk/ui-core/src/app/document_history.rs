@@ -53,7 +53,7 @@ impl App {
             || self
                 .actions
                 .action_palette
-                .as_deref()
+                .as_ref()
                 .is_some_and(|palette| palette.is_presented())
         {
             let root = FrameworkPresentation {
@@ -401,7 +401,7 @@ impl App {
         let palette_node = self
             .actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .filter(|palette| palette.is_presented())
             .map(|palette| {
                 palette.build_layout(
@@ -424,7 +424,7 @@ impl App {
                 roots.push((
                     self.actions
                         .action_palette
-                        .as_deref()
+                        .as_ref()
                         .expect("palette was just built"),
                     node,
                 ));
@@ -454,7 +454,7 @@ impl App {
                 roots.push((
                     self.actions
                         .action_palette
-                        .as_deref()
+                        .as_ref()
                         .expect("palette was just built"),
                     node,
                 ));
@@ -505,7 +505,7 @@ impl App {
             roots.push((
                 self.actions
                     .action_palette
-                    .as_deref()
+                    .as_ref()
                     .expect("palette was just built"),
                 node,
             ));

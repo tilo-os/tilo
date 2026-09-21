@@ -7,8 +7,9 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-#[cfg(test)]
 use std::cell::Cell;
+#[cfg(test)]
+use std::cell::RefCell;
 
 mod bound_record_sync;
 mod close_admission;
@@ -1836,6 +1837,7 @@ impl App {
             #[cfg(any(test, feature = "test-support"))]
             controlled_installed_history_definition: None,
             framework_input: std::rc::Rc::new(Cell::new(false)),
+            native_input_probe: None,
             history_key_release: false,
             history_focus: None,
             text_renderer: inputs.text_renderer.resolve(),
@@ -3965,7 +3967,7 @@ impl App {
     /// broker. Public cross-device state is derived by the shell and remains
     /// path/URL-free; this report never enters the room document.
     fn publish_playback_handoff(&mut self) {
-        if !self.collaboration.manager.is_connected() {
+        let Some(route) = self.private_continuity_route() else {
             return;
         };
         let now = Instant::now();
@@ -5322,7 +5324,6 @@ impl App {
                 None,
                 None,
                 None,
-                None,
             );
             self.root_widget
                 .on_control_invocation_result(&intent.address, &result);
@@ -5610,7 +5611,7 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        self.actions.action_palette = Some(Box::new(palette));
+        self.actions.action_palette = Some(palette);
         self.rebuild_action_palette_admission();
     }
 
@@ -5651,7 +5652,7 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
+        if let Some(palette) = self.actions.action_palette.as_mut() {
             palette.activate_ordinary(request);
         }
         self.rebuild_action_palette_admission();
@@ -5661,7 +5662,7 @@ impl App {
         let Some(pending) = self
             .actions
             .action_palette
-            .as_deref()
+            .as_ref()
             .and_then(|p| p.ordinary_capture_request())
         else {
             return;
@@ -5689,7 +5690,7 @@ impl App {
                 arguments,
             )
         })();
-        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
+        if let Some(palette) = self.actions.action_palette.as_mut() {
             match result {
                 Ok(request) => palette.retain_ordinary(request),
                 Err(_) => palette.close(),
@@ -5699,11 +5700,10 @@ impl App {
 
     fn open_action_palette_at(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         self.open_action_palette();
-        let activated = self
-            .actions
-            .action_palette
-            .as_deref_mut()
-            .is_some_and(|palette| palette.activate_address(&address.resource, &address.action));
+        let activated =
+            self.actions.action_palette.as_mut().is_some_and(|palette| {
+                palette.activate_address(&address.resource, &address.action)
+            });
         if !activated {
             self.close_action_palette();
         } else {
@@ -5740,7 +5740,7 @@ impl App {
     }
 
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
-        self.actions.action_palette.as_deref()
+        self.actions.action_palette.as_ref()
     }
 
     fn refresh_action_palette_resources(&mut self) {
@@ -5771,7 +5771,7 @@ impl App {
         let lazy_resource_ids = self
             .actions
             .action_palette
-            .as_deref()
+            .as_ref()
             .map(crate::action_palette::ActionPalette::referenced_action_resource_ids)
             .unwrap_or_default();
         for id in lazy_resource_ids {
@@ -5795,7 +5795,7 @@ impl App {
         let targets = self
             .actions
             .action_palette
-            .as_deref()
+            .as_ref()
             .map(crate::action_palette::ActionPalette::referenced_bound_targets)
             .unwrap_or_default();
         for target in targets {
@@ -5815,7 +5815,7 @@ impl App {
                 snapshot.resources.push(resource);
             }
         }
-        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
+        if let Some(palette) = self.actions.action_palette.as_mut() {
             palette.refresh_open_resources(&resources);
             palette.load_bound_resources(bound);
         }
@@ -5828,7 +5828,7 @@ impl App {
         if !self
             .actions
             .action_palette
-            .as_deref()
+            .as_ref()
             .is_some_and(|palette| palette.is_presented())
         {
             return false;
@@ -5837,19 +5837,15 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        let consumed = self
-            .actions
-            .action_palette
-            .as_deref_mut()
-            .is_some_and(|palette| {
-                palette.route_event(
-                    event,
-                    scale,
-                    &self.input.modifiers,
-                    &mut self.state.doc,
-                    &self.state.root,
-                )
-            });
+        let consumed = self.actions.action_palette.as_mut().is_some_and(|palette| {
+            palette.route_event(
+                event,
+                scale,
+                &self.input.modifiers,
+                &mut self.state.doc,
+                &self.state.root,
+            )
+        });
         self.finish_action_palette_input(consumed)
     }
 
@@ -5858,7 +5854,7 @@ impl App {
             return false;
         }
         self.refresh_action_palette_resources();
-        let Some(palette) = self.actions.action_palette.as_deref_mut() else {
+        let Some(palette) = self.actions.action_palette.as_mut() else {
             return false;
         };
         self.bindings.clear();
@@ -5866,18 +5862,47 @@ impl App {
         self.focused_node = None;
         let root = self.state.root.clone();
         let consumed = palette.handle_key(event, &self.input.modifiers, &mut self.state.doc, &root);
+        self.finish_action_palette_input(consumed)
+    }
+
+    fn finish_action_palette_input(&mut self, consumed: bool) -> bool {
+        // The transition may have replaced the field or closed the overlay.
+        // Re-admission below retires the old tree and preserves the real
+        // redraw's structural-change condition for the next layout solve.
+        self.layout.structure_dirty = true;
+        let root = self.state.root.clone();
+        self.capture_ordinary_palette_request();
+        let exact_capture = self
+            .actions
+            .action_palette
+            .as_ref()
+            .and_then(crate::action_palette::ActionPalette::history_exact_capture_request);
+        if let Some((target, invocation, original_arguments)) = exact_capture {
+            let witness = crate::bound_dispatch::control_witness_with_arguments(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                &target,
+                &invocation,
+                &original_arguments,
+            )
+            .map_err(|error| error.to_string());
+            if let Some(palette) = self.actions.action_palette.as_mut() {
+                palette.retain_history_exact_witness(witness);
+            }
+        }
         // An operation row may have fired. Document mutations go through the
         // deterministic executor; effects/views route to the owning widget.
         let pending = self
             .actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .and_then(crate::action_palette::ActionPalette::take_operation);
         if let Some(pending) = pending {
             // Projected View actions resolve their retained widget through the
             // current checked map, including after the palette has closed.
             self.rebuild_action_palette_admission();
             let argument = pending.wire_argument();
+            let continuation_arguments = pending.continuation_arguments();
             let actor = self.collaboration.local_author.0.clone();
             // Confirmation was collected by the palette, but the request has
             // not crossed the session broker yet. Host-required documents are
@@ -6088,7 +6113,7 @@ impl App {
             if let Err(error) = result {
                 tracing::warn!(%error, "resource operation failed");
                 if pending.history_target.is_some()
-                    && let Some(palette) = self.actions.action_palette.as_deref_mut()
+                    && let Some(palette) = self.actions.action_palette.as_mut()
                 {
                     palette.retain_history_refusal(pending, error.to_string());
                 }
@@ -6101,7 +6126,7 @@ impl App {
         let navigation = self
             .actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .and_then(super::action_palette::ActionPalette::take_scoped_navigation);
         if let Some((action_id, binding)) = navigation {
             if let Some(binding) = binding {
@@ -6126,7 +6151,7 @@ impl App {
         if self
             .actions
             .action_palette
-            .as_deref()
+            .as_ref()
             .is_some_and(|p| !p.is_open())
         {
             self.close_action_palette();
@@ -7167,6 +7192,7 @@ impl App {
             self.collaboration.manager.send(request);
         }
         let events = self.collaboration.manager.poll();
+        let mut action_surface_may_have_changed = false;
         for event in events {
             any = true;
             action_surface_may_have_changed |= Self::collab_event_may_change_action_surface(&event);
@@ -7563,7 +7589,7 @@ impl App {
         if self
             .actions
             .action_palette
-            .as_deref()
+            .as_ref()
             .is_some_and(|palette| palette.is_presented())
         {
             let node = self.layout.node_map.keys().copied().find(|&node| {
@@ -7706,6 +7732,7 @@ impl App {
                 &self.layout.node_map,
                 &self.bindings,
                 &self.collaboration.local_author,
+                &self.permission_ctx,
             )
         };
         let mut visited = std::collections::HashSet::new();
@@ -8129,7 +8156,7 @@ impl App {
         if self
             .actions
             .action_palette
-            .as_deref()
+            .as_ref()
             .is_some_and(|p| p.is_presented())
         {
             return crate::accesskit_bridge::build_presentation_with_resources_bound(
@@ -8293,18 +8320,14 @@ impl App {
             self.bindings.clear();
             self.layout.node_map.clear();
             self.focused_node = None;
-            let handled = self
-                .actions
-                .action_palette
-                .as_deref_mut()
-                .is_some_and(|palette| {
-                    palette.perform_semantic_action(
-                        target,
-                        action,
-                        &mut self.state.doc,
-                        &self.state.root,
-                    )
-                });
+            let handled = self.actions.action_palette.as_mut().is_some_and(|palette| {
+                palette.perform_semantic_action(
+                    target,
+                    action,
+                    &mut self.state.doc,
+                    &self.state.root,
+                )
+            });
             self.finish_action_palette_input(handled);
             return None;
         }
@@ -8452,7 +8475,7 @@ impl App {
         if let Some(palette) = self
             .actions
             .action_palette
-            .as_deref()
+            .as_ref()
             .filter(|p| p.is_presented())
         {
             return self.accessibility.semantic_tree.refresh_bound(
@@ -8526,7 +8549,7 @@ impl App {
                 let activated = self
                     .actions
                     .action_palette
-                    .as_deref_mut()
+                    .as_mut()
                     .is_some_and(|palette| palette.activate_bound(target));
                 self.capture_ordinary_palette_request();
                 Ok(activated)
@@ -8608,18 +8631,14 @@ impl App {
                         self.bindings.clear();
                         self.layout.node_map.clear();
                         self.focused_node = None;
-                        let handled =
-                            self.actions
-                                .action_palette
-                                .as_deref_mut()
-                                .is_some_and(|palette| {
-                                    palette.perform_semantic_action(
-                                        &semantic_target,
-                                        &verb,
-                                        &mut self.state.doc,
-                                        &self.state.root,
-                                    )
-                                });
+                        let handled = self.actions.action_palette.as_mut().is_some_and(|palette| {
+                            palette.perform_semantic_action(
+                                &semantic_target,
+                                &verb,
+                                &mut self.state.doc,
+                                &self.state.root,
+                            )
+                        });
                         self.finish_action_palette_input(handled);
                         return Ok(handled);
                     }
@@ -9772,7 +9791,7 @@ fn draw_frame_content(
     if let Some(ap) = app
         .actions
         .action_palette
-        .as_deref_mut()
+        .as_mut()
         .filter(|p| p.is_presented())
     {
         let win_w = f64::from(width) / f64::from(scale_factor);
@@ -11190,14 +11209,14 @@ impl AppHandler {
         // Continue one bounded provider page per frame. Re-querying resets the
         // palette generation/cursors, so stale work cannot leak into a newer
         // query. A follow-up redraw is requested only while more pages exist.
-        let (search_pending, search_announcement) = app
-            .actions
-            .action_palette
-            .as_deref_mut()
-            .map_or((false, None), |palette| {
-                let progress = palette.advance_search_page();
-                (progress.pending, palette.take_search_announcement())
-            });
+        let (search_pending, search_announcement) =
+            app.actions
+                .action_palette
+                .as_mut()
+                .map_or((false, None), |palette| {
+                    let progress = palette.advance_search_page();
+                    (progress.pending, palette.take_search_announcement())
+                });
         needs_followup_redraw |= search_pending;
         if let (Some(reader), Some(announcement)) = (
             app.accessibility.screen_reader.as_mut(),
@@ -13206,8 +13225,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         };
         match crate::render_thread::retry::next_wake(
             Instant::now(),
-            visual_work,
-            app.collaboration.manager.is_connected(),
+            primary_blocked_until,
+            any_render_available,
+            demand,
             scheduled_deadline,
             retry_at,
             animation_deadline,
@@ -15731,7 +15751,7 @@ mod action_palette_tests {
         app.open_action_palette();
         app.actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .unwrap()
             .set_query("ada");
         let labels = app.action_palette().unwrap().result_labels();
@@ -15783,7 +15803,7 @@ mod action_palette_tests {
         app.open_action_palette();
         app.actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .unwrap()
             .set_query("restricted");
         // A query advances one provider page immediately; remaining providers
@@ -15792,7 +15812,7 @@ mod action_palette_tests {
         let mut progress = app
             .actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .unwrap()
             .advance_search_page();
         for _ in 0..8 {
@@ -15802,7 +15822,7 @@ mod action_palette_tests {
             progress = app
                 .actions
                 .action_palette
-                .as_deref_mut()
+                .as_mut()
                 .unwrap()
                 .advance_search_page();
         }
@@ -15879,7 +15899,7 @@ mod action_palette_tests {
         app.open_action_palette();
         app.actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .unwrap()
             .set_query("focus");
 
@@ -19929,7 +19949,7 @@ mod bound_component_tests {
                 .app
                 .actions
                 .action_palette
-                .as_deref_mut()
+                .as_mut()
                 .unwrap()
                 .activate_bound(&target)
         );
@@ -19937,7 +19957,7 @@ mod bound_component_tests {
             .app
             .actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .unwrap()
             .take_operation()
             .unwrap();
@@ -20379,14 +20399,14 @@ mod bound_component_tests {
                 .app
                 .actions
                 .action_palette
-                .as_deref_mut()
+                .as_mut()
                 .unwrap()
                 .set_query("sealed");
             fixture
                 .app
                 .actions
                 .action_palette
-                .as_deref_mut()
+                .as_mut()
                 .unwrap()
                 .advance_search_page();
             if initially_allowed {
@@ -20404,7 +20424,7 @@ mod bound_component_tests {
                     .app
                     .actions
                     .action_palette
-                    .as_deref_mut()
+                    .as_mut()
                     .unwrap()
                     .advance_search_page();
             }
@@ -20418,7 +20438,7 @@ mod bound_component_tests {
                 .app
                 .actions
                 .action_palette
-                .as_deref_mut()
+                .as_mut()
                 .unwrap()
                 .set_cursor(allowed);
             assert!(
@@ -20439,14 +20459,14 @@ mod bound_component_tests {
                 .app
                 .actions
                 .action_palette
-                .as_deref_mut()
+                .as_mut()
                 .unwrap()
                 .set_query("sealedopaque");
             fixture
                 .app
                 .actions
                 .action_palette
-                .as_deref_mut()
+                .as_mut()
                 .unwrap()
                 .advance_search_page();
             let labels = fixture.app.action_palette().unwrap().result_labels();
@@ -20485,7 +20505,7 @@ mod bound_component_tests {
         PAGED_SEARCH_COUNTS.with_borrow_mut(|slot| *slot = Some(counts.clone()));
         fixture.app.open_action_palette();
         PAGED_SEARCH_COUNTS.with_borrow_mut(|slot| *slot = None);
-        let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
+        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
         palette.set_query("paged");
         let mut ticks = 0;
         while palette.advance_search_page().pending {
@@ -20846,7 +20866,7 @@ mod bound_component_tests {
     fn task4_lazy_palette_and_opaque_navigation_keep_provider_owner() {
         let mut fixture = ActionFixture::new();
         fixture.app.open_action_palette();
-        let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
+        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
         palette.set_query("lazy");
         for _ in 0..4 {
             palette.advance_search_page();
@@ -20858,7 +20878,7 @@ mod bound_component_tests {
             .iter()
             .find(|target| target.address.instance_id == 12)
             .unwrap();
-        let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
+        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
         assert!(palette.activate_bound(target));
         let pending = palette.take_operation().unwrap();
         assert!(
@@ -20873,7 +20893,7 @@ mod bound_component_tests {
             .invoke_bound_target(target, None, "fixture-user", true, false, None, None, None)
             .unwrap();
         fixture.app.open_action_palette();
-        let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
+        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
         palette.set_query("opaque");
         for _ in 0..4 {
             palette.advance_search_page();
@@ -21004,6 +21024,7 @@ mod bound_component_tests {
         assert_eq!(fixture.app.actions.next_broker_request_id, next_id);
         fixture.app.invoke_published_action(
             50,
+            None,
             alias.to_owned(),
             "follow-up".into(),
             None,
@@ -21214,7 +21235,7 @@ mod prepared_runner_tests {
         let component = editable_component(&host, 11);
         let mut app =
             App::from_component_using(component, presentation_inputs(2.0), services).unwrap();
-        assert_eq!(app.collaboration.local_author(), &author());
+        assert_eq!(app.local_author(), &author());
         assert!(app.presence_ctx.is_own_identity(&author().0));
         assert!(app.presence_ctx.is_own_identity("announced-handle"));
         assert!(app.debug_mode);
@@ -21857,7 +21878,7 @@ mod prepared_runner_tests {
         assert!(
             app.actions
                 .action_palette
-                .as_deref_mut()
+                .as_mut()
                 .unwrap()
                 .activate_bound(&target)
         );
@@ -21894,7 +21915,7 @@ mod prepared_runner_tests {
             },
         )
         .unwrap();
-        assert_eq!(app.collaboration.local_author(), &author());
+        assert_eq!(app.local_author(), &author());
         app.init_layout();
         app.open_action_palette();
         let before = app.text_renderer.cache_stats();
@@ -21915,7 +21936,7 @@ mod prepared_runner_tests {
         activate_palette_action(&mut app, "prompt");
         app.actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .unwrap()
             .set_query("prompted");
         palette_key(&mut app, Key::Named(NamedKey::Enter), None);
@@ -21926,7 +21947,7 @@ mod prepared_runner_tests {
         palette_frame(&mut app);
         app.actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .unwrap()
             .set_query(r#"{"value":"typed","enabled":true}"#);
         palette_key(&mut app, Key::Named(NamedKey::Enter), None);
@@ -21936,16 +21957,12 @@ mod prepared_runner_tests {
         palette_frame(&mut app);
         app.actions
             .action_palette
-            .as_deref_mut()
+            .as_mut()
             .unwrap()
             .set_query("wrong");
         palette_key(&mut app, Key::Named(NamedKey::Enter), None);
         assert_eq!(body(&host.records, &checkout), "typed");
-        app.actions
-            .action_palette
-            .as_deref_mut()
-            .unwrap()
-            .set_query("JA");
+        app.actions.action_palette.as_mut().unwrap().set_query("JA");
         palette_key(&mut app, Key::Named(NamedKey::Enter), None);
         assert_eq!(body(&host.records, &checkout), "confirmed");
         app.open_action_palette();
