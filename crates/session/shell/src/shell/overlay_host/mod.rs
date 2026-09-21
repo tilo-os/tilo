@@ -25172,6 +25172,12 @@ mod palette_dispatch_tests {
         (host, chrome)
     }
 
+    fn host_with_launch_polling() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
+        let (mut host, chrome) = host_with_chrome();
+        host.desktop_controls = DesktopControlsSource::Persisted;
+        (host, chrome)
+    }
+
     #[test]
     fn workspace_rename_owns_reserved_chords_in_production_dispatch() {
         let (mut host, chrome) = host_with_chrome();
@@ -25751,7 +25757,7 @@ mod palette_dispatch_tests {
     #[test]
     #[serial_test::serial(launch_events)]
     fn clean_launch_exit_retires_its_pending_open_notice() {
-        let (mut host, chrome) = host_with_chrome();
+        let (mut host, chrome) = host_with_launch_polling();
         let package_id = "dev.tilo.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,
@@ -26757,7 +26763,7 @@ mod palette_dispatch_tests {
     #[serial_test::serial(launch_events)]
     fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
         const SURFACE: u64 = 918_273;
-        let (h, chrome) = host_with_chrome();
+        let (h, chrome) = host_with_launch_polling();
         let notice = {
             let mut st = chrome.borrow_mut();
             st.push_notification_full(crate::shell::notification::Notification::new(
@@ -26839,7 +26845,7 @@ mod palette_dispatch_tests {
     #[serial_test::serial(launch_events)]
     fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
         const SURFACE: u64 = 918_274;
-        let (h, chrome) = host_with_chrome();
+        let (h, chrome) = host_with_launch_polling();
         let notice = {
             let mut st = chrome.borrow_mut();
             st.push_notification_full(crate::shell::notification::Notification::new(
