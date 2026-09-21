@@ -1872,7 +1872,7 @@ impl TextInput {
             let mut layout = RichTextLayout::shape_styled_reusing(
                 &mut tr.font_system,
                 &spans,
-                &style,
+                style,
                 Some(available_width),
                 TextAlign::Left,
                 Vec::new(),

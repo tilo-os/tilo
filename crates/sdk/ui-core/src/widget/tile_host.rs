@@ -1413,10 +1413,10 @@ impl Widget for TileHost {
     fn checkpoint_components(&mut self) -> Vec<String> {
         let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
         errors.extend(self.record_error.iter().cloned());
-        if let Some(binding) = &self.binding {
-            if let Err(error) = binding.store.try_flush() {
-                errors.push(error);
-            }
+        if let Some(binding) = &self.binding
+            && let Err(error) = binding.store.try_flush()
+        {
+            errors.push(error);
         }
         if let TileContent::App(root) = &mut self.content {
             errors.extend(root.checkpoint_components());

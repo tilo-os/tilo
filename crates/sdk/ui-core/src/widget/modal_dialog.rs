@@ -868,7 +868,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             .children
             .get(*index)?
             .bounds
-            .map(|bounds| bounds.to_rect())
+            .map(super::super::a11y::AccessBounds::to_rect)
     }
 }
 

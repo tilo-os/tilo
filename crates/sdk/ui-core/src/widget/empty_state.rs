@@ -641,7 +641,7 @@ impl Widget for EmptyState {
         available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let width = known.width.or_else(|| match available.width {
+        let width = known.width.or(match available.width {
             taffy::AvailableSpace::Definite(width) => Some(width),
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
         });

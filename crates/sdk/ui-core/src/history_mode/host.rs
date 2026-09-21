@@ -423,8 +423,8 @@ impl HistoryHost {
         if self.assets.has_results() {
             return true;
         }
-        if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source() {
-            if source.target().map(|target| target.binding) != self.observed_file_binding
+        if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source()
+            && (source.target().map(|target| target.binding) != self.observed_file_binding
                 || source.wants_open()
                 || self
                     .files
@@ -433,10 +433,9 @@ impl HistoryHost {
                 || self
                     .retired_files
                     .iter()
-                    .any(super::files_session::FileController::has_results)
-            {
-                return true;
-            }
+                    .any(super::files_session::FileController::has_results))
+        {
+            return true;
         }
         if self.open_requested.get()
             || !self.commands.borrow().is_empty()
@@ -520,19 +519,19 @@ impl HistoryHost {
             changed = true;
             match command {
                 Command::Review(command) => {
-                    if matches!(command, review::ReviewCommand::Cancel) {
-                        if let Some(files) = &mut self.files {
-                            files.cancel_review();
-                            self.review = None;
-                        }
+                    if matches!(command, review::ReviewCommand::Cancel)
+                        && let Some(files) = &mut self.files
+                    {
+                        files.cancel_review();
+                        self.review = None;
                     }
                     self.review_request = Some(command);
                 }
                 Command::FileParent(parent) => {
-                    if let Some(files) = &mut self.files {
-                        if let Some(version) = files.selected() {
-                            files.select(version, Some(parent));
-                        }
+                    if let Some(files) = &mut self.files
+                        && let Some(version) = files.selected()
+                    {
+                        files.select(version, Some(parent));
                     }
                 }
                 Command::FileUndo => self.review_file_compensation(false),
@@ -609,10 +608,10 @@ impl HistoryHost {
                                 }
                             }
                             HistorySourceRegistration::Unversioned { reason, .. } => {
-                                self.unavailable = Text::new(reason)
+                                self.unavailable = Text::new(reason);
                             }
                             HistorySourceRegistration::CheckedFiles { .. } => {
-                                self.close_files_presentation()
+                                self.close_files_presentation();
                             }
                         }
                     }

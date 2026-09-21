@@ -360,39 +360,40 @@ impl App {
             self.input.modifiers = *modifiers;
         }
         let mut handled = self.handle_screen_reader_key(event);
-        if !handled && let winit::event::WindowEvent::KeyboardInput { event, .. } = event {
-            if event.state == winit::event::ElementState::Pressed {
-                use winit::keyboard::{Key, NamedKey};
-                match &event.logical_key {
-                    Key::Named(NamedKey::Tab) => {
-                        self.focus_tab(self.input.modifiers.state().shift_key());
-                        handled = true;
-                    }
-                    Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                        if let Some(node) = self.focused_node {
-                            let _ = self.dispatch_node(node, |widget, doc, path| {
-                                widget.perform_action(&crate::a11y::Action::Activate, doc, path)
-                            });
-                            handled = true;
-                        }
-                    }
-                    Key::Named(
-                        key @ (NamedKey::ArrowUp
-                        | NamedKey::ArrowDown
-                        | NamedKey::ArrowLeft
-                        | NamedKey::ArrowRight),
-                    ) => {
-                        let direction = match key {
-                            NamedKey::ArrowUp => super::Direction::Up,
-                            NamedKey::ArrowDown => super::Direction::Down,
-                            NamedKey::ArrowLeft => super::Direction::Left,
-                            _ => super::Direction::Right,
-                        };
-                        self.navigate_focus(direction);
-                        handled = true;
-                    }
-                    _ => {}
+        if !handled
+            && let winit::event::WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == winit::event::ElementState::Pressed
+        {
+            use winit::keyboard::{Key, NamedKey};
+            match &event.logical_key {
+                Key::Named(NamedKey::Tab) => {
+                    self.focus_tab(self.input.modifiers.state().shift_key());
+                    handled = true;
                 }
+                Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                    if let Some(node) = self.focused_node {
+                        let _ = self.dispatch_node(node, |widget, doc, path| {
+                            widget.perform_action(&crate::a11y::Action::Activate, doc, path)
+                        });
+                        handled = true;
+                    }
+                }
+                Key::Named(
+                    key @ (NamedKey::ArrowUp
+                    | NamedKey::ArrowDown
+                    | NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight),
+                ) => {
+                    let direction = match key {
+                        NamedKey::ArrowUp => super::Direction::Up,
+                        NamedKey::ArrowDown => super::Direction::Down,
+                        NamedKey::ArrowLeft => super::Direction::Left,
+                        _ => super::Direction::Right,
+                    };
+                    self.navigate_focus(direction);
+                    handled = true;
+                }
+                _ => {}
             }
         }
         if !handled

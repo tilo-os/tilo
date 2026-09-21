@@ -397,7 +397,7 @@ impl CompositionFocus {
                     legacy.clone(),
                     focused_ancestor || focused,
                     nodes,
-                )
+                );
             });
         }
         let mut nodes = Vec::new();

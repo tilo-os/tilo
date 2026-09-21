@@ -30,7 +30,7 @@ type ArgsRootFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
 type LegacyPreparer = fn(&LaunchArgs) -> Result<LegacyLaunchInputs, LaunchError>;
 
 /// Transitional inputs for existing state/widget apps. Canonical applications
-/// should use ApplicationDefinition + PreparedComponentInputs instead. This
+/// should use `ApplicationDefinition` + `PreparedComponentInputs` instead. This
 /// bridge preserves the SAME state, writer, record policy and registry in native
 /// and headless execution; it is not a second application framework.
 pub struct LegacyLaunchInputs {
@@ -406,7 +406,7 @@ impl LaunchSpec {
     /// Fallible shared preparation for legacy apps needing a coordinated
     /// state/root, explicit record policy, or action registry. Runs under the
     /// host's wake scope before either runner is constructed. Prepared component
-    /// definitions reject this legacy override. It replaces open_state/root
+    /// definitions reject this legacy override. It replaces `open_state/root`
     /// callbacks, which are not invoked a second time.
     #[must_use]
     pub fn prepare_legacy_with_args(mut self, prepare: LegacyPreparer) -> Self {
@@ -1172,7 +1172,7 @@ fn prepare_legacy_launch(
     Ok(PreparedLegacyLaunch { scope, inputs })
 }
 
-/// Exact production branch, testable without process::exit or a native window.
+/// Exact production branch, testable without `process::exit` or a native window.
 fn dispatch_legacy_headless(
     spec: &LaunchSpec,
     args: &LaunchArgs,
