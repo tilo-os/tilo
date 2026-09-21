@@ -1051,9 +1051,11 @@ impl RoomActivityPane {
     }
 
     pub fn away_change_count(&self, workspace: u64) -> usize {
-        (self.presence_workspace == Some(workspace))
-            .then_some(self.away_digest.total_changes)
-            .unwrap_or_default()
+        if self.presence_workspace == Some(workspace) {
+            self.away_digest.total_changes
+        } else {
+            0
+        }
     }
 
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
@@ -1407,14 +1409,21 @@ impl RoomActivityPane {
             return false;
         };
         let (new_left_end, new_right_start) = match boundary.direction {
-            BoundaryDirection::IntoNewer if older.entry_ids.len() > 1 => (
-                older.entry_ids[older.entry_ids.len() - 2],
-                older.entry_ids[older.entry_ids.len() - 1],
-            ),
-            BoundaryDirection::IntoOlder if newer.entry_ids.len() > 1 => {
-                (newer.entry_ids[0], newer.entry_ids[1])
+            BoundaryDirection::IntoNewer => {
+                let Some((&new_right_start, preceding)) = older.entry_ids.split_last() else {
+                    return false;
+                };
+                let Some(&new_left_end) = preceding.last() else {
+                    return false;
+                };
+                (new_left_end, new_right_start)
             }
-            _ => return false,
+            BoundaryDirection::IntoOlder => {
+                let [new_left_end, new_right_start, ..] = newer.entry_ids.as_slice() else {
+                    return false;
+                };
+                (*new_left_end, *new_right_start)
+            }
         };
         if ui::history_groups::materialize_and_move_boundary(
             &mut tree.doc,
@@ -6812,9 +6821,11 @@ fn activity_day_label(timestamp: SystemTime, now: SystemTime) -> String {
     use chrono::{DateTime, Local};
     let timestamp: DateTime<Local> = timestamp.into();
     let now: DateTime<Local> = now.into();
-    if timestamp.date_naive() == now.date_naive() {
+    let today = now.date_naive();
+    let yesterday = today.pred_opt().unwrap_or(today);
+    if timestamp.date_naive() == today {
         "Today".to_string()
-    } else if timestamp.date_naive() == now.date_naive().pred_opt().unwrap_or(now.date_naive()) {
+    } else if timestamp.date_naive() == yesterday {
         "Yesterday".to_string()
     } else {
         timestamp.format("%a, %-d %b").to_string()
