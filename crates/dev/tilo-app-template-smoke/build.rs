@@ -6,38 +6,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (name, template, file) in [
         (
             "profile-card",
-            tilo_dev::ComponentTemplate::Form,
+            tilo_app_cli::ComponentTemplate::Form,
             "profile_card.rs",
         ),
         (
             "activity-card",
-            tilo_dev::ComponentTemplate::Display,
+            tilo_app_cli::ComponentTemplate::Display,
             "activity_card.rs",
         ),
         (
             "project-tree",
-            tilo_dev::ComponentTemplate::Tree,
+            tilo_app_cli::ComponentTemplate::Tree,
             "project_tree.rs",
         ),
         (
             "activity-list",
-            tilo_dev::ComponentTemplate::List,
+            tilo_app_cli::ComponentTemplate::List,
             "activity_list.rs",
         ),
         (
             "results-table",
-            tilo_dev::ComponentTemplate::Table,
+            tilo_app_cli::ComponentTemplate::Table,
             "results_table.rs",
         ),
         (
             "article-body",
-            tilo_dev::ComponentTemplate::Text,
+            tilo_app_cli::ComponentTemplate::Text,
             "article_body.rs",
         ),
     ] {
-        let source = tilo_dev::render_component_source(name, template)?;
+        let source = tilo_app_cli::render_component_source(name, template)?;
         std::fs::write(output.join(file), source)?;
     }
-    println!("cargo:rerun-if-changed=../tilo-dev/src/lib.rs");
+    println!("cargo:rerun-if-changed=../tilo-app-cli/src/lib.rs");
     Ok(())
 }

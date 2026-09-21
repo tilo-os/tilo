@@ -17,7 +17,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::widget::{BlockEditor, BlockKind};
+use tilo_ui::widget::{BlockEditor, BlockKind};
 
 #[test]
 fn round_trip_heading_plus_two_paragraphs() {

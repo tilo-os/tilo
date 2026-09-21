@@ -65,10 +65,10 @@ Create it once:
 
 ```
 podman pull registry.fedoraproject.org/fedora-toolbox:44
-distrobox create --name tilo-dev-44 \
+distrobox create --name tilo-app-44 \
     --image registry.fedoraproject.org/fedora-toolbox:44 \
     --nvidia --yes
-distrobox enter tilo-dev-44 -- bash -c '
+distrobox enter tilo-app-44 -- bash -c '
     sudo dnf install -y \
         https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-44.noarch.rpm \
         https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-44.noarch.rpm
@@ -83,7 +83,7 @@ distrobox enter tilo-dev-44 -- bash -c '
 '
 ```
 
-Set `TILO_DISTROBOX=tilo-dev-44` when running
+Set `TILO_DISTROBOX=tilo-app-44` when running
 `scripts/test-flatpak-share.sh`. The nvenc subcommand then builds the test
 binary and runs it bare on the host — `ldd` resolves everything against
 `/lib64` naturally.
