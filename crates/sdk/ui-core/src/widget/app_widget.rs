@@ -113,7 +113,7 @@ mod component_adapter {
     use super::{AppCommand, AppHostIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
     use crate::widget::{
-        ActionDirectoryResourcePage, Affine, AppKind, AutoCommit, CaptureMode,
+        ActionDirectoryResourcePage, Affine, AppKind, AutoCommit, CaptureMode, Continuable,
         ControlBindingMetadata, DragPayload, HashMap, HashSet, Instant, NodeId, ObjId,
         PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart, Scene, TaffyTree,
         TaffyTreeExt, TextRenderer, Theme, WindowEvent,
@@ -122,11 +122,57 @@ mod component_adapter {
     pub(crate) struct BoundAppWidget {
         pub(crate) component: AppComponent,
     }
+
+    impl Continuable for BoundAppWidget {
+        fn continuation_metadata(
+            &self,
+            state: &AutoCommit,
+            _path: &ObjId,
+        ) -> Option<crate::collaboration::ContinuationMetadata> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(state, |document, record_root| {
+                    let root = self.component.root.as_deref()?;
+                    root.continuable()?
+                        .continuation_metadata(document, record_root)
+                })
+                .unwrap_or(None)
+        }
+
+        fn restore_continuation_metadata(
+            &mut self,
+            metadata: &crate::collaboration::ContinuationMetadata,
+            state: &mut AutoCommit,
+            _path: &ObjId,
+        ) -> bool {
+            let binding = self.component.callback_binding();
+            binding
+                .with_document(state, |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return false;
+                    };
+                    let Some(continuable) = root.continuable_mut() else {
+                        return false;
+                    };
+                    continuable.restore_continuation_metadata(metadata, document, record_root)
+                })
+                .unwrap_or(false)
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "existing Widget callback signatures"
     )]
     impl Widget for BoundAppWidget {
+        fn continuable(&self) -> Option<&dyn Continuable> {
+            Some(self)
+        }
+
+        fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+            Some(self)
+        }
+
         fn unsaved_documents(
             &self,
             _: &AutoCommit,
@@ -286,35 +332,6 @@ mod component_adapter {
                 })
                 .unwrap_or(());
             self.component.project_record_save_status();
-        }
-        fn continuation_metadata(
-            &self,
-            state: &AutoCommit,
-            _path: &ObjId,
-        ) -> Option<crate::collaboration::ContinuationMetadata> {
-            let binding = self.component.callback_binding();
-            binding
-                .read_document(state, |document, record_root| {
-                    let root = self.component.root.as_deref()?;
-                    root.continuation_metadata(document, record_root)
-                })
-                .unwrap_or(None)
-        }
-        fn restore_continuation_metadata(
-            &mut self,
-            metadata: &crate::collaboration::ContinuationMetadata,
-            state: &mut AutoCommit,
-            _path: &ObjId,
-        ) -> bool {
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(state, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.restore_continuation_metadata(metadata, document, record_root)
-                })
-                .unwrap_or(false)
         }
         fn update(&mut self, state: &mut AutoCommit, _path: &ObjId) -> bool {
             let binding = self.component.callback_binding();
