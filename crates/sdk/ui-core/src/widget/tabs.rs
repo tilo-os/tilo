@@ -2891,7 +2891,7 @@ impl TabBar {
                 .bytes()
                 .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)));
             if self.pending_drag.is_none() {
-                self.drag_lifted_at = Some(now);
+                self.drag_lifted_at = Some(Instant::now());
                 self.pending_drag = Some(DragPayload::Tab {
                     group: group_tag_hash,
                     tab: t.id,
