@@ -15,7 +15,16 @@ fn control_bounds(node: &AccessNode, target: &str) -> Option<KurboRect> {
 fn frame(app: &mut App) {
     app.root_widget.sync(&mut app.state.doc, &app.state.root);
     app.init_layout();
-    run_layout_pass(app, app.root_node.unwrap(), 800, 700, 1.0, true, None).unwrap();
+    run_layout_pass(
+        app,
+        app.layout.root_node.unwrap(),
+        800,
+        700,
+        1.0,
+        true,
+        None,
+    )
+    .unwrap();
     app.root_widget.draw(
         &mut Scene::new(),
         Affine::IDENTITY,
