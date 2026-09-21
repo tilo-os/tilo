@@ -176,12 +176,12 @@ another independently authenticated channel before the first release.
 
 Publishing to Homebrew and WinGet is a separate credentialed promotion after
 the signed release exists. Signed binaries are published to the dedicated
-public `tilo/releases` repository, never to the private source repository. The
+public `qos/releases` repository, never to the private source repository. The
 tag job obtains a 5–15 minute, target-only token from
 `IMAGER_RELEASE_CREDENTIAL_BROKER`; the source job token is not accepted for
 this step. `IMAGER_PUBLIC_RELEASE_REPOSITORY` can select another pre-created
 public `OWNER/REPOSITORY`. `publish-homebrew-tap.sh` creates/updates the
-first-party `tilo/homebrew-tilo` tap, replaces the version, immutable base URL and
+first-party `qos/homebrew-tilo` tap, replaces the version, immutable base URL and
 release SHA-256 values, and runs strict audits. `publish-winget.sh` submits the
 generated three-file manifest to Microsoft's public community index. See
 `docs/imager-release-operations.md` for runner labels, protected variables and

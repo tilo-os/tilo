@@ -3611,9 +3611,9 @@ impl App {
         if !self.collab_manager.is_connected() || self.pending_continuation_view.is_some() {
             return;
         }
-        let semantic = self
-            .root_widget
-            .continuation_metadata(&self.state.doc, &self.state.root);
+        let semantic = self.root_widget.continuable().and_then(|continuable| {
+            continuable.continuation_metadata(&self.state.doc, &self.state.root)
+        });
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
         let metadata = compose_structural_continuation_metadata(view, semantic);
         if metadata == self.last_published_continuation {
@@ -3675,11 +3675,13 @@ impl App {
                             schema_version: semantic.schema_version,
                             bytes: semantic.bytes,
                         };
-                        let _ = self.root_widget.restore_continuation_metadata(
-                            &metadata,
-                            &mut self.state.doc,
-                            &root,
-                        );
+                        if let Some(continuable) = self.root_widget.continuable_mut() {
+                            let _ = continuable.restore_continuation_metadata(
+                                &metadata,
+                                &mut self.state.doc,
+                                &root,
+                            );
+                        }
                         self.invalidate_widget_resource_cache();
                     }
                 }
@@ -3693,11 +3695,13 @@ impl App {
                 return;
             }
             let root = self.state.root.clone();
-            let _ = self.root_widget.restore_continuation_metadata(
-                &metadata,
-                &mut self.state.doc,
-                &root,
-            );
+            if let Some(continuable) = self.root_widget.continuable_mut() {
+                let _ = continuable.restore_continuation_metadata(
+                    &metadata,
+                    &mut self.state.doc,
+                    &root,
+                );
+            }
             self.invalidate_widget_resource_cache();
         }
     }
