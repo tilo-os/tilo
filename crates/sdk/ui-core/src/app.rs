@@ -6944,9 +6944,7 @@ impl App {
         // widget/document authority, and it always runs on the App owner
         // thread.
         self.pump_action_directory_requests();
-        self.refresh_document_routes();
-        self.drain_document_routes();
-        self.publish_owned_documents();
+        self.pump_document_routes();
         for request in self.root_widget.take_collab_requests() {
             self.collab_manager.send(request);
         }

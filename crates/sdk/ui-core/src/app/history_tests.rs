@@ -478,6 +478,7 @@ fn native_owned_routes_isolate_two_documents_and_outer_for_snapshot_incremental_
             doc.clone().save_incremental()
         })
         .unwrap();
+    let changed_clones = crate::history_mode::owner::OWNED_DOCUMENT_CLONES.get();
     fixture.app.publish_owned_documents();
     let cursor_after = fixture
         .records
@@ -491,14 +492,38 @@ fn native_owned_routes_isolate_two_documents_and_outer_for_snapshot_incremental_
     );
     assert_eq!(fixture.app.document_routes.sent.len(), 1);
     assert_eq!(
+        crate::history_mode::owner::OWNED_DOCUMENT_CLONES.get(),
+        changed_clones + 1,
+        "only the changed owner is cloned for publication"
+    );
+    assert_eq!(
         fixture.app.document_routes.sent[0].0,
         fixture.bindings[0].broker_route().unwrap()
     );
+    let clones = crate::history_mode::owner::OWNED_DOCUMENT_CLONES.get();
     fixture.app.publish_owned_documents();
     assert_eq!(
         fixture.app.document_routes.sent.len(),
         1,
         "unchanged heads do not enqueue again"
+    );
+    assert_eq!(
+        crate::history_mode::owner::OWNED_DOCUMENT_CLONES.get(),
+        clones,
+        "unchanged owned documents must not clone their full Automerge history"
+    );
+
+    let reconciles = super::document_routes::DOCUMENT_ROUTE_REFRESHES.get();
+    fixture.app.pump_collab_presence();
+    assert_eq!(
+        super::document_routes::DOCUMENT_ROUTE_REFRESHES.get(),
+        reconciles + 1,
+        "one app pump reconciles document custody exactly once"
+    );
+    assert_eq!(
+        crate::history_mode::owner::OWNED_DOCUMENT_CLONES.get(),
+        clones,
+        "the unchanged pump path does not clone owned documents"
     );
 }
 #[test]

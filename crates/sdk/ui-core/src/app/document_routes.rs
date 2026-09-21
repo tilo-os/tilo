@@ -5,7 +5,11 @@
 )]
 use super::*;
 use crate::collaboration::RouteSpec;
-use automerge::transaction::Transactable;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DOCUMENT_ROUTE_REFRESHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 fn matches_route(route: &RouteSpec, envelope: &collab_types::SignedOp) -> bool {
     collab_types::validate_document_payload_route(
@@ -76,6 +80,8 @@ impl App {
             }))
     }
     pub(super) fn refresh_document_routes(&mut self) {
+        #[cfg(test)]
+        DOCUMENT_ROUTE_REFRESHES.set(DOCUMENT_ROUTE_REFRESHES.get() + 1);
         let before = self.document_sync_status().map(str::to_owned);
         let witness = self.bound_broker_route().cloned();
         let joins = self.document_routes.reconcile(
@@ -112,6 +118,11 @@ impl App {
     /// Enqueue all changed live owned records. Success is queue admission, not
     /// durability: the SDK still awaits each document RPC before a terminal.
     fn queue_owned_documents(&mut self) -> Result<(), &'static str> {
+        self.refresh_document_routes();
+        self.queue_owned_documents_after_refresh()
+    }
+
+    fn queue_owned_documents_after_refresh(&mut self) -> Result<(), &'static str> {
         fn collect(root: &dyn Widget, owners: &mut Vec<crate::history_mode::HistoryOwner>) {
             if let Some(owner) = root.history_owner()
                 && !owners.iter().any(|known| known.same_owner(&owner))
@@ -122,7 +133,6 @@ impl App {
                 collect(child, owners);
             }
         }
-        self.refresh_document_routes();
         // Reconcile can omit a newly unreadable, unroutable or retired owner.
         // Such omissions cannot serve as proof that every live owner was queued.
         let mut current = vec![];
@@ -157,22 +167,31 @@ impl App {
                 blocked.get_or_insert("document owners conflict on the publication route");
                 continue;
             }
-            let Ok(mut document) = owner.document(&self.state.doc) else {
-                blocked.get_or_insert("an owned document is unreadable");
-                continue;
+            let publication = owner.prepare_publication(
+                &self.state.doc,
+                &entry.sent_heads,
+                entry.needs_snapshot,
+                entry.pending.failure.is_some(),
+            );
+            let (mut document, heads) = match publication {
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unchanged) => continue,
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unfinished) => {
+                    blocked.get_or_insert("an owned document has unfinished changes");
+                    continue;
+                }
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Blocked) => {
+                    blocked.get_or_insert("a changed document requires synchronization recovery");
+                    continue;
+                }
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Changed {
+                    document,
+                    heads,
+                }) => (document, heads),
+                Err(_) => {
+                    blocked.get_or_insert("an owned document is unreadable");
+                    continue;
+                }
             };
-            if document.pending_ops() != 0 {
-                blocked.get_or_insert("an owned document has unfinished changes");
-                continue;
-            }
-            let heads = crate::history_mode::sorted_heads(document.base_heads());
-            if heads == entry.sent_heads && !entry.needs_snapshot {
-                continue;
-            }
-            if entry.pending.failure.is_some() {
-                blocked.get_or_insert("a changed document requires synchronization recovery");
-                continue;
-            }
             // Clone serialization leaves the canonical writer and every other
             // subscriber's incremental save cursor intact.
             let request = if entry.needs_snapshot {
@@ -220,6 +239,10 @@ impl App {
     }
     pub(super) fn drain_document_routes(&mut self) {
         self.refresh_document_routes();
+        self.drain_document_routes_after_refresh();
+    }
+
+    fn drain_document_routes_after_refresh(&mut self) {
         let mut changed = false;
         for entry in &mut self.document_routes.owners {
             let Some(owner) = entry.owners.first() else {
@@ -281,6 +304,12 @@ impl App {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
         }
+    }
+
+    pub(super) fn pump_document_routes(&mut self) {
+        self.refresh_document_routes();
+        self.drain_document_routes_after_refresh();
+        let _ = self.queue_owned_documents_after_refresh();
     }
     pub(super) fn apply_signed_document_envelope(
         &mut self,
@@ -346,6 +375,6 @@ impl App {
             self.layout.layout_dirty = true;
             tracing::warn!(status = ?queue.failure, "collab: routed document deferred queue refused update; resynchronization required");
         }
-        self.drain_document_routes();
+        self.drain_document_routes_after_refresh();
     }
 }

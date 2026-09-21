@@ -4,11 +4,26 @@ use crate::{
     bound_dispatch::CallbackBinding,
     record::{RecordCheckout, RecordStore},
 };
-use automerge::AutoCommit;
+use automerge::{AutoCommit, transaction::Transactable};
 use std::{
     cell::Cell,
     rc::{Rc, Weak},
 };
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static OWNED_DOCUMENT_CLONES: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) enum OwnedDocumentPublication {
+    Unchanged,
+    Unfinished,
+    Blocked,
+    Changed {
+        document: Box<AutoCommit>,
+        heads: Vec<automerge::ChangeHash>,
+    },
+}
 
 pub(crate) struct LegacyHistoryLifetime {
     pub(crate) active: Cell<bool>,
@@ -161,14 +176,105 @@ impl HistoryOwner {
         self.validate()?;
         match &self.0 {
             OwnerKind::Component(binding) => binding
-                .read_document(outer, |doc, _| doc.clone())
+                .read_document(outer, |doc, _| {
+                    #[cfg(test)]
+                    OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
+                    doc.clone()
+                })
                 .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
             OwnerKind::Legacy {
                 store, checkout, ..
             } => store
-                .read_checked(&checkout.id, Clone::clone)
+                .read_checked(&checkout.id, |doc| {
+                    #[cfg(test)]
+                    OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
+                    doc.clone()
+                })
                 .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
         }
+    }
+
+    pub(crate) fn prepare_publication(
+        &self,
+        outer: &AutoCommit,
+        sent_heads: &[automerge::ChangeHash],
+        needs_snapshot: bool,
+        blocked: bool,
+    ) -> Result<OwnedDocumentPublication, HistoryRegistrationError> {
+        fn inspect(
+            document: &AutoCommit,
+            sent_heads: &[automerge::ChangeHash],
+            needs_snapshot: bool,
+            blocked: bool,
+        ) -> OwnedDocumentPublication {
+            if document.pending_ops() != 0 {
+                return OwnedDocumentPublication::Unfinished;
+            }
+            let heads = super::sorted_heads(document.base_heads());
+            if heads == sent_heads && !needs_snapshot {
+                return OwnedDocumentPublication::Unchanged;
+            }
+            if blocked {
+                return OwnedDocumentPublication::Blocked;
+            }
+            #[cfg(test)]
+            OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
+            OwnedDocumentPublication::Changed {
+                document: Box::new(document.clone()),
+                heads,
+            }
+        }
+
+        match &self.0 {
+            OwnerKind::Component(binding) => binding
+                .read_document(outer, |document, _| {
+                    inspect(document, sent_heads, needs_snapshot, blocked)
+                })
+                .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
+            OwnerKind::Legacy {
+                store,
+                checkout,
+                lifetime,
+            } => {
+                if !lifetime.upgrade().is_some_and(|life| life.active.get()) {
+                    return Err(HistoryRegistrationError::UnsupportedOwner);
+                }
+                store
+                    .open_existing_record_checked(checkout)
+                    .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
+                store
+                    .read_checked(&checkout.id, |document| {
+                        inspect(document, sent_heads, needs_snapshot, blocked)
+                    })
+                    .map_err(|_| HistoryRegistrationError::UnsupportedOwner)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_publication_rejects_same_id_with_stale_checkout_metadata() {
+        let store = RecordStore::in_memory();
+        let live = RecordCheckout::new(
+            crate::RecordId::for_tab(919),
+            crate::record::RecordKind::new("note"),
+        );
+        store.open_record(&live);
+        let stale = RecordCheckout::new(
+            live.id.clone(),
+            crate::record::RecordKind::new("different-kind"),
+        );
+        let lifetime = LegacyHistoryLifetime::new();
+        let owner = HistoryOwner::legacy(store, stale, &lifetime);
+
+        assert!(matches!(
+            owner.prepare_publication(&AutoCommit::new(), &[], true, false),
+            Err(HistoryRegistrationError::UnsupportedOwner)
+        ));
     }
 }
 
