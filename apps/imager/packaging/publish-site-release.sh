@@ -8,10 +8,11 @@ set -euo pipefail
 : "${TILO_SITE_GIT_TOKEN:?missing short-lived website token}"
 : "${TILO_LINUX_SIGNING_FINGERPRINT:?missing protected Linux signing fingerprint}"
 
-release_repository="${TILO_RELEASE_REPOSITORY:-qos/releases}"
+release_server="${TILO_RELEASE_SERVER:-https://github.com}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/releases}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
-release_root="${GITHUB_SERVER_URL%/}/${release_repository}/releases"
+release_root="${release_server%/}/${release_repository}/releases"
 
 version="${GITHUB_REF_NAME#imager-v}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
