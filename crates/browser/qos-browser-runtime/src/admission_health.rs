@@ -1,5 +1,61 @@
-use qos_peer_state::StatePeer;
+use qos_peer_state::{NeighbourMsg, StatePeer};
 use web_time::SystemTime;
+
+pub(crate) const OUTGOING_CHECKPOINT_MESSAGE: &str =
+    "Saved changes are waiting for the session peer to confirm them.";
+const MAX_SAFE_EPOCH_MS: u64 = 9_007_199_254_740_991;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct OutgoingProjection {
+    pub(crate) pending: usize,
+    pub(crate) blocked_expired: usize,
+    pub(crate) expiry_at_ms: Option<u64>,
+}
+
+pub(crate) fn outgoing_projection(
+    state: &StatePeer,
+    outbox: &[NeighbourMsg],
+    now: SystemTime,
+) -> OutgoingProjection {
+    let status = state.outbox_status(outbox, now);
+    let expiry_at_ms = outbox
+        .iter()
+        .filter(|message| !state.covers(message) && qos_peer_state::outbox::fresh(message, now))
+        .filter_map(|message| {
+            let NeighbourMsg::AppDocument { envelope, .. } = message else {
+                return None;
+            };
+            envelope
+                .timestamp
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .ok()
+                .and_then(|timestamp| u64::try_from(timestamp.as_millis()).ok())
+                .map(|timestamp| timestamp.saturating_add(300_001))
+                .filter(|timestamp| *timestamp <= MAX_SAFE_EPOCH_MS)
+        })
+        .min();
+    OutgoingProjection {
+        pending: status.pending,
+        blocked_expired: status.blocked_expired,
+        expiry_at_ms,
+    }
+}
+
+pub(crate) fn runtime_phase(
+    requested: &str,
+    complete: bool,
+    persistence_needed: bool,
+    was_ready: bool,
+    admission_incomplete: bool,
+) -> &str {
+    if admission_incomplete && !matches!(requested, "closed" | "failed") {
+        "incomplete"
+    } else if requested == "admitting" && complete && (!persistence_needed || was_ready) {
+        "ready"
+    } else {
+        requested
+    }
+}
 
 pub(crate) fn durable_admission_failure(
     state: &StatePeer,
@@ -161,6 +217,7 @@ impl AdmissionProgress {
 mod tests {
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
     use ed25519_dalek::SigningKey;
+    use qos_desktop::projection::RoomProjection;
     use qos_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
     use serde::{Deserialize, Serialize};
     use std::collections::BTreeMap;
@@ -523,5 +580,210 @@ mod tests {
             super::admission_phase(&denied, true, failure.as_deref()),
             "failed"
         );
+    }
+
+    #[test]
+    fn expired_outbox_for_nonrequired_record_is_checkpoint_notice_not_admission_failure() {
+        assert_eq!(
+            super::OUTGOING_CHECKPOINT_MESSAGE,
+            "Saved changes are waiting for the session peer to confirm them."
+        );
+        let root = SigningKey::from_bytes(&[21; 32]);
+        let authority_key = SigningKey::from_bytes(&[22; 32]);
+        let member_key = SigningKey::from_bytes(&[23; 32]);
+        let authority = certificate(&root, &authority_key, "authority");
+        let member = certificate(&root, &member_key, "member");
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000);
+        let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        let route = document();
+        let mut client = StatePeer::new(
+            room,
+            authority.clone(),
+            vec![authority.clone(), member.clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        client
+            .install_seed(
+                SeedState {
+                    room_changes: seed_room(room, &authority, &[authority.clone(), member.clone()])
+                        .unwrap(),
+                    documents: vec![route.clone()],
+                },
+                &authority_key,
+                now,
+            )
+            .unwrap();
+        let mut desktop = client.admitted_room().unwrap().clone();
+        RoomProjection::project_owned_contents(&mut desktop, &[], 5, None);
+        client
+            .install_seed(
+                SeedState {
+                    room_changes: desktop
+                        .get_changes(&[])
+                        .iter()
+                        .map(|change| change.raw_bytes().to_vec())
+                        .collect(),
+                    documents: vec![],
+                },
+                &authority_key,
+                now,
+            )
+            .unwrap();
+        assert!(
+            crate::desktop::admission(&client)
+                .unwrap()
+                .required
+                .iter()
+                .all(|required| required.app_id != route.app_id
+                    || required.record_id != route.record_id),
+            "the retained record is closed/non-required"
+        );
+
+        let mut governor = client.clone();
+        let mut future_client = client.clone();
+        let mut future_edit = AutoCommit::load(
+            &future_client
+                .document(&route.app_id, &route.record_id)
+                .unwrap(),
+        )
+        .unwrap();
+        future_edit.set_actor(automerge::ActorId::from(
+            member_key.verifying_key().to_bytes().to_vec(),
+        ));
+        let future_before = future_edit.get_heads();
+        future_edit.put(ROOT, "future", "clock-drift").unwrap();
+        future_edit.commit();
+        let future_time = now + Duration::from_secs(299);
+        let future = future_client
+            .publish_incremental(
+                &route.app_id,
+                &route.record_id,
+                future_edit.save_after(&future_before),
+                &member_key,
+                future_time,
+            )
+            .unwrap();
+        let future = super::outgoing_projection(&future_client, &[future], now);
+        assert_eq!(future.pending, 1);
+        assert_eq!(future.blocked_expired, 0);
+        assert_eq!(future.expiry_at_ms, Some(2_599_001));
+
+        let mut edited =
+            AutoCommit::load(&client.document(&route.app_id, &route.record_id).unwrap()).unwrap();
+        edited.set_actor(automerge::ActorId::from(
+            member_key.verifying_key().to_bytes().to_vec(),
+        ));
+        let before = edited.get_heads();
+        edited.put(ROOT, "later", "durable").unwrap();
+        edited.commit();
+        let original = client
+            .publish_incremental(
+                &route.app_id,
+                &route.record_id,
+                edited.save_after(&before),
+                &member_key,
+                now,
+            )
+            .unwrap();
+        let mut covering_governor = governor.clone();
+        covering_governor
+            .receive_from(
+                qos_peer_state::TransportOrigin::RelayDelta(member_key.verifying_key().to_bytes()),
+                original.clone(),
+                now,
+            )
+            .unwrap();
+        let mut covered_state = client.clone();
+        for message in covering_governor
+            .bootstrap_messages(&authority_key, now)
+            .unwrap()
+        {
+            covered_state
+                .receive_from(
+                    qos_peer_state::TransportOrigin::RelayDelta(
+                        authority_key.verifying_key().to_bytes(),
+                    ),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        assert!(covered_state.covers(&original));
+        let covered =
+            super::outgoing_projection(&covered_state, std::slice::from_ref(&original), now);
+        assert_eq!(covered.pending, 0);
+        assert_eq!(covered.blocked_expired, 0);
+        assert_eq!(
+            covered.expiry_at_ms, None,
+            "covered envelopes need no wakeup"
+        );
+        let durable = client.durable().unwrap();
+        let fresh_restored = StatePeer::restore(
+            &durable,
+            room,
+            authority.clone(),
+            vec![authority.clone(), member.clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        let fresh =
+            super::outgoing_projection(&fresh_restored, std::slice::from_ref(&original), now);
+        assert_eq!(fresh.pending, 1);
+        assert_eq!(fresh.blocked_expired, 0);
+        assert_eq!(fresh.expiry_at_ms, Some(2_300_001));
+
+        let later = now + Duration::from_secs(301);
+        let mut restored = StatePeer::restore(
+            &durable,
+            room,
+            authority.clone(),
+            vec![authority, member],
+            RevocationList::new(),
+            later,
+        )
+        .unwrap();
+        let mut outbox = vec![original];
+        let blocked = super::outgoing_projection(&restored, &outbox, later);
+        assert_eq!(blocked.pending, 1);
+        assert_eq!(blocked.blocked_expired, 1);
+        assert_eq!(blocked.expiry_at_ms, None);
+        assert_eq!(
+            super::runtime_phase("admitting", true, false, false, false),
+            "ready",
+            "outgoing expiry is not an admission failure"
+        );
+        assert_eq!(
+            super::runtime_phase("admitting", true, true, false, false),
+            "admitting",
+            "a never-ready owner cannot bypass its initial persistence barrier"
+        );
+        assert_eq!(
+            super::runtime_phase("admitting", true, true, true, false),
+            "ready",
+            "an established ready owner remains ready while committing later writes"
+        );
+        assert_eq!(super::admission_phase(&restored, true, None), "ready");
+
+        for message in governor.bootstrap_messages(&authority_key, later).unwrap() {
+            restored
+                .receive_from(
+                    qos_peer_state::TransportOrigin::RelayDelta(
+                        authority_key.verifying_key().to_bytes(),
+                    ),
+                    message,
+                    later,
+                )
+                .unwrap();
+        }
+        outbox = restored
+            .reconcile_outbox(&outbox, &member_key, later)
+            .unwrap();
+        assert_eq!(outbox.len(), 2, "original custody plus fresh replacement");
+        let renewed = super::outgoing_projection(&restored, &outbox, later);
+        assert_eq!(renewed.blocked_expired, 0);
+        assert_eq!(renewed.expiry_at_ms, Some(2_601_001));
     }
 }

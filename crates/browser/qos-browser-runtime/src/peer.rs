@@ -91,42 +91,43 @@ fn report_from(
 ) {
     let state = peer.state.borrow();
     let complete = crate::desktop::admission(&state).is_ok_and(|admission| admission.complete());
-    let outgoing = state.outbox_status(&peer.outbox.borrow(), SystemTime::now());
+    let outgoing = crate::admission_health::outgoing_projection(
+        &state,
+        &peer.outbox.borrow(),
+        SystemTime::now(),
+    );
     let incomplete = required_read_failure(peer, &state)
         .or_else(|| state.incomplete_reason())
-        .or_else(|| peer.admission_failure.borrow().clone())
-        .or_else(|| {
-            (outgoing.blocked_expired > 0).then(|| {
-                "unsent durable edits await a fresh authorized checkpoint for reconciliation".into()
-            })
-        });
+        .or_else(|| peer.admission_failure.borrow().clone());
     // One pass over the pending writes for both the phase and the trigger; the
     // health projection below counts them per record.
     let persistence_needed = !peer.cache.pending_writes().is_empty();
-    let phase = if incomplete.is_some() && !matches!(phase, "closed" | "failed") {
-        "incomplete"
-    } else if phase == "admitting" && complete && !persistence_needed {
-        "ready"
-    } else {
-        phase
-    };
-    let phase = if phase == "admitting" && peer.was_ready.get() && complete {
-        "ready"
-    } else {
-        phase
-    };
+    let phase = crate::admission_health::runtime_phase(
+        phase,
+        complete,
+        persistence_needed,
+        peer.was_ready.get(),
+        incomplete.is_some(),
+    );
     if phase == "ready" {
         peer.was_ready.set(true);
     }
     let error = error.or(incomplete);
-    let health = health(peer, &state, phase == "ready", error.as_deref(), source);
+    let health = health(
+        peer,
+        &state,
+        phase == "ready",
+        error.as_deref(),
+        source,
+        outgoing.blocked_expired,
+    );
     let synchronized = health["records"].as_array().is_some_and(|records| {
         !records.is_empty()
             && records
                 .iter()
                 .all(|record| record["acknowledgement"]["coversCurrentBasis"] == true)
     });
-    let value = serde_json::json!({"phase":phase,"desktop":{"version":1,"mode":"session"},"room":state.room(),"deviceId":peer._key.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>(),"records":state.rows(),"pendingPrerequisites":state.pending_count(),"persistenceNeeded":persistence_needed,"outgoingPending":peer.outbox.borrow().len(),"outgoingBlocked":outgoing.blocked_expired,"synchronization":if outgoing.blocked_expired>0{"blocked"}else if synchronized{"acknowledged"}else{"pending"},"error":error,"health":health});
+    let value = serde_json::json!({"phase":phase,"desktop":{"version":1,"mode":"session"},"room":state.room(),"deviceId":peer._key.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>(),"records":state.rows(),"pendingPrerequisites":state.pending_count(),"persistenceNeeded":persistence_needed,"outgoingPending":peer.outbox.borrow().len(),"outgoingBlocked":outgoing.blocked_expired,"outgoingExpiryAtMs":outgoing.expiry_at_ms,"synchronization":if outgoing.blocked_expired>0{"blocked"}else if synchronized{"acknowledged"}else{"pending"},"error":error,"health":health});
     let text = value.to_string();
     peer.last_report_ready.set(phase == "ready");
     // Health was recomputed above; only its delivery is skipped when the host
@@ -823,6 +824,22 @@ pub fn peer_pending_writes(id: u32) -> Result<String, JsValue> {
         .map_err(error)
     })
 }
+/// Recompute the read-only projection when a signed outbox envelope reaches
+/// its freshness deadline. This never publishes or changes durable custody.
+#[wasm_bindgen]
+pub fn peer_refresh_status(id: u32) -> Result<(), JsValue> {
+    PEERS.with(|peers| {
+        let peer = peers
+            .borrow()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| error("closed peer"))?;
+        if !peer.closed.get() {
+            report(&peer, "admitting", None);
+        }
+        Ok(())
+    })
+}
 #[wasm_bindgen]
 pub fn peer_committed(id: u32) -> Result<(), JsValue> {
     PEERS.with(|peers| {
@@ -1039,6 +1056,7 @@ fn health(
     ready: bool,
     reported_error: Option<&str>,
     source: crate::admission_health::ReportSource,
+    outgoing_blocked: usize,
 ) -> serde_json::Value {
     let journal_status = peer.cache.status(&StorageKey::Admission {
         workspace: state.room().into(),
@@ -1065,6 +1083,17 @@ fn health(
         let (code,message,recovery)=crate::admission_health::failure_policy(text,source,durable_failure.is_some(),peer.transport_connected.get());
         serde_json::json!({"id":"runtime:admission","code":code,"scope":{"kind":if !peer.transport_connected.get(){"connection"}else{"admission"}},"severity":if durable_failure.is_some()||matches!(source,crate::admission_health::ReportSource::ReceiveRejection){"error"}else{"notice"},"message":message,"recovery":[if recovery=="review-permissions"{serde_json::json!({"kind":recovery,"failureId":"runtime:admission"})}else{serde_json::json!({"kind":recovery})}],"occurredAtMs":js_sys::Date::now()})
     }).into_iter().collect::<Vec<_>>();
+    if outgoing_blocked > 0 {
+        failures.push(serde_json::json!({
+            "id":"runtime:outgoing",
+            "code":"checkpoint-expired",
+            "scope":{"kind":"admission"},
+            "severity":"notice",
+            "message":crate::admission_health::OUTGOING_CHECKPOINT_MESSAGE,
+            "recovery":[{"kind":"refresh-checkpoint"}],
+            "occurredAtMs":js_sys::Date::now()
+        }));
+    }
     if let Ok(admission) = crate::desktop::admission(state) {
         for app in admission.unsupported {
             failures.push(serde_json::json!({"id":format!("runtime:application:{app}"),"code":"runtime-unavailable","scope":{"kind":"admission"},"severity":"notice","message":format!("{app}: application integration or required service unavailable"),"recovery":[],"occurredAtMs":js_sys::Date::now()}));

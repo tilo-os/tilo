@@ -69,12 +69,13 @@ test('typed persistence batches keep binary bytes and exact revisions through co
 function fixture({enroll,recoveryClock,initialStatus,acquireStorage}={}){
  let next=0,held=0,storageRefs=0,failConnect=false,failClose=false,failCommit=false,pendingWrite=false,attempts=0,gate;
  const mountGates=[],mountSignals=[],mountOptionsSeen=[];
- const syncs=[];const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord,statusCallback,commitStatus,publishFailure=false,failMount=false;
+ const syncs=[];const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord,statusCallback,commitStatus,refreshStatus,reconnectStatus,publishFailure=false,failMount=false;
  const locks={request:async(_name,_opts,fn)=>{held++;try{return await fn({});}finally{held--;}}};
  const runtime={identity_request:()=>'{public}',identity_complete:()=>'{proof}',bind_identity:()=> 'opaque-key',peer_enrollment:()=>JSON.stringify({profile:'p',device:'d',room:'r'}),refresh_storage_lease(){},
   async connect_peer(_raw,_identity,_bytes,status){statusCallback=status;attempts++;if(gate)await gate.promise;if(failConnect)throw Error('dial failed');const id=++next;peers.add(id);status(JSON.stringify(initialStatus??{phase:'ready',records:[{app_id:'dev.qos.word-processor',record_id:'tab:1',heads:['h']}],health:{transport:{phase:'connected',authenticated:true,generation:'1'},admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0,progressRevision:'0'}}}));return id;},
-  async reconnect_peer(id){attempts++;assert(peers.has(id));if(gate)await gate.promise;if(failConnect)throw Error('dial failed');return id;},
+  async reconnect_peer(id){attempts++;assert(peers.has(id));if(gate)await gate.promise;if(failConnect)throw Error('dial failed');if(reconnectStatus)statusCallback(JSON.stringify(reconnectStatus()));return id;},
   peer_request_sync(id,generation){assert(peers.has(id));syncs.push([id,generation]);},
+  peer_refresh_status(id){assert(peers.has(id));if(refreshStatus)statusCallback(JSON.stringify(refreshStatus()));},
   async close_peer(id){closed.push(id);peers.delete(id);},async disconnect_peer(id){assert(peers.has(id));},
   peer_pending_writes(id){assert(peers.has(id),'closed peer');return JSON.stringify(pendingWrite?[{revision:1}]:[]);},acknowledge_storage(){pendingWrite=false;},peer_committed(id){assert(peers.has(id));if(publishFailure)throw Error('relay unavailable');if(commitStatus)statusCallback(JSON.stringify(commitStatus()));},
   suspend_peer(id,value){assert(peers.has(id));value?suspended.add(id):suspended.delete(id);},
@@ -92,7 +93,7 @@ function fixture({enroll,recoveryClock,initialStatus,acquireStorage}={}){
   }});
   mounts.add(mount);return mount;
  }});
- return{runtime,storage,connect,syncs,peers,mounts,closed,mountSignals,mountOptionsSeen,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},setCommitStatus:v=>commitStatus=v,status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
+ return{runtime,storage,connect,syncs,peers,mounts,closed,mountSignals,mountOptionsSeen,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},setCommitStatus:v=>commitStatus=v,setRefreshStatus:v=>refreshStatus=v,setReconnectStatus:v=>reconnectStatus=v,status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
 }
 test('committed desktop notices reach live mount subscriptions without entering snapshots or replaying',async t=>{
  const f=fixture(),peer=await f.connect();t.after(()=>peer.dispose());
@@ -246,8 +247,8 @@ test('aborting a failed initial mount prevents recovery from resurrecting its ta
 
 const drain=async()=>{for(let i=0;i<50;i++)await Promise.resolve();};
 function clock(){
- let time=0,id=0;const timers=new Map();
- return{now:()=>time,setTimeout:(fn,delay)=>{timers.set(++id,{fn,at:time+delay});return id;},clearTimeout:id=>timers.delete(id),async tick(ms){const end=time+ms;await drain();for(;;){const due=[...timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!due)break;time=due[1].at;timers.delete(due[0]);due[1].fn();await drain();}time=end;await drain();}};
+ let time=0,wallOffset=0,id=0;const timers=new Map();
+ return{now:()=>time+wallOffset,shiftWall:ms=>{wallOffset+=ms;},setTimeout:(fn,delay)=>{timers.set(++id,{fn,at:time+delay});return id;},clearTimeout:id=>timers.delete(id),async tick(ms){const end=time+ms;await drain();for(;;){const due=[...timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!due)break;time=due[1].at;timers.delete(due[0]);due[1].fn();await drain();}time=end;await drain();}};
 }
 const record={roomId:'r',appId:'dev.qos.word-processor',recordId:'tab:1'};
 const otherRecord={...record,recordId:'tab:2'};
@@ -255,6 +256,90 @@ function admissionStatus(admitted=false,records=[record]){
  return{phase:admitted?'ready':'incomplete',health:{transport:{phase:'connected',authenticated:true,generation:'1'},admission:{phase:admitted?'ready':'syncing',requiredRecords:records,pendingPrerequisites:admitted?0:1},records:records.map(record=>({record,admission:admitted?'admitted':'unavailable',current:admitted?{heads:['h']}:null,editing:{mode:admitted?'online':'blocked'},failureIds:[]})),failures:admitted?[]:[{id:'runtime:admission',code:'prerequisite-missing',scope:{kind:'admission'},severity:'error'}]}};
 }
 const operation=(peer,result)=>peer.getSnapshot().health.recoveryOperations.find(op=>op.id===result.operationId);
+function outgoingStatus(blocked,generation='1',expiryAtMs=null){
+ const ready=admissionStatus(true,[]);
+ return{...ready,outgoingBlocked:blocked,outgoingPending:blocked,outgoingExpiryAtMs:expiryAtMs,synchronization:blocked?'blocked':'acknowledged',health:{...ready.health,transport:{...ready.health.transport,generation},failures:blocked?[{id:'runtime:outgoing',code:'checkpoint-expired',scope:{kind:'admission'},severity:'notice',message:'Saved changes are waiting for the session peer to confirm them.',recovery:[{kind:'refresh-checkpoint'}],occurredAtMs:0}]:[]}};
+}
+test('fresh outgoing expiry wakes an idle peer once and starts bounded reconciliation',async()=>{
+ const time=clock(),f=fixture({recoveryClock:time,initialStatus:outgoingStatus(0,'1',300001)});f.setRefreshStatus(()=>outgoingStatus(1));const peer=await f.connect();
+ await time.tick(300000);assert.equal(f.syncs.length,0);await time.tick(1);assert.equal(f.syncs.length,0,'expiry first requests an authoritative Rust report');
+ await time.tick(10000);assert.equal(f.syncs.length,1);assert.equal(peer.getSnapshot().outgoingBlocked,1);await peer.dispose();
+});
+test('unchanged expiry projection cannot create a zero-delay status loop',async()=>{
+ const time=clock();let refreshes=0;const status=outgoingStatus(0,'1',300001),f=fixture({recoveryClock:time,initialStatus:status});
+ f.setRefreshStatus(()=>{refreshes++;return status;});const peer=await f.connect();await time.tick(300001);await drain();await time.tick(1000);
+ assert.equal(refreshes,1);assert.equal(f.syncs.length,0);await peer.dispose();
+});
+test('clock rollback reschedules a still-future outgoing expiry without polling',async()=>{
+ const time=clock();let refreshes=0;const status=outgoingStatus(0,'1',300001),f=fixture({recoveryClock:time,initialStatus:status});
+ f.runtime.peer_refresh_status=id=>{assert(f.peers.has(id));refreshes++;};const peer=await f.connect();await time.tick(300000);time.shiftWall(-1000);await time.tick(1);
+ assert.equal(refreshes,1);await time.tick(999);assert.equal(refreshes,1);await time.tick(1);assert.equal(refreshes,2);await time.tick(1000);assert.equal(refreshes,2);await peer.dispose();
+});
+test('expired outgoing recovery is bounded per condition and rearms only after clear or reconnect',async()=>{
+ const time=clock(),f=fixture({recoveryClock:time}),peer=await f.connect();
+ f.status(outgoingStatus(53));await drain();await time.tick(10000);assert.equal(f.syncs.length,1);
+ for(let second=0;second<10;second++){f.status(outgoingStatus(53));await time.tick(1000);}
+ assert.equal(f.syncs.length,2,'repeated reports share the same two-send episode');
+ for(let second=0;second<60;second++){f.status(outgoingStatus(53));await time.tick(1000);}
+ assert.equal(f.syncs.length,2,'an exhausted condition cannot rearm itself');
+ assert.equal(peer.getSnapshot().health.admission.phase,'ready');
+ assert(peer.getSnapshot().health.failures.some(failure=>failure.code==='checkpoint-expired'&&failure.severity==='notice'));
+ f.status(outgoingStatus(0));f.status(outgoingStatus(1));await time.tick(10000);
+ assert.equal(f.syncs.length,3,'a cleared then newly blocked condition gets a new bounded episode');
+ await time.tick(20000);assert.equal(f.syncs.length,4);
+ f.status(outgoingStatus(1,'2'));await time.tick(10000);
+ assert.equal(f.syncs.length,5,'a new authenticated transport gets one new bounded episode');
+ await peer.dispose();
+});
+test('explicit outgoing refresh waits for authoritative clear and can retry an exhausted episode',async()=>{
+ const time=clock(),f=fixture({recoveryClock:time}),peer=await f.connect();
+ f.status(outgoingStatus(53));await time.tick(30000);assert.equal(f.syncs.length,2);
+ let done=false;const retry=peer.recover({kind:'refresh-checkpoint'}).then(result=>{done=true;return result;});await drain();
+ f.status(outgoingStatus(53));await drain();assert.equal(done,false,'an unrelated ready report cannot complete outgoing repair');
+ await time.tick(10000);assert.equal(f.syncs.length,3,'manual retry gets one new bounded episode');
+ f.status(outgoingStatus(0));const result=await retry;
+ assert.equal(operation(peer,result).state,'succeeded');await peer.dispose();
+});
+test('explicit outgoing refresh timeout retains the blocked condition',async()=>{
+ const time=clock(),f=fixture({recoveryClock:time}),peer=await f.connect();f.status(outgoingStatus(53));
+ const retry=peer.recover({kind:'refresh-checkpoint'});await drain();f.status(outgoingStatus(53));await time.tick(30000);
+ const result=await retry;assert.equal(operation(peer,result).state,'failed');
+ assert.equal(peer.getSnapshot().outgoingBlocked,53);assert(peer.getSnapshot().health.failures.some(failure=>failure.code==='checkpoint-expired'));
+ await peer.dispose();
+});
+test('explicit outgoing refresh reconnects before its bounded episode',async()=>{
+ const time=clock(),offline=outgoingStatus(53);offline.health.transport={...offline.health.transport,phase:'offline',authenticated:false};
+ const f=fixture({recoveryClock:time,initialStatus:offline});f.setReconnectStatus(()=>outgoingStatus(53,'2'));const peer=await f.connect();const retry=peer.recover({kind:'refresh-checkpoint'});await drain();
+ assert.equal(f.counts().attempts,2,'manual reconciliation must rejoin transport');
+ await time.tick(10000);assert.equal(f.syncs.length>=1,true);f.status(outgoingStatus(0,'2'));
+ assert.equal(operation(peer,await retry).state,'succeeded');await peer.dispose();
+});
+test('terminal admission while outgoing is blocked refuses manual reconciliation promptly',async()=>{
+ for(const code of ['identity-revoked','record-install-failed']){
+  const value=outgoingStatus(53);value.health.failures.push({id:`runtime:${code}`,code,scope:{kind:'admission'},severity:'error',message:'terminal',recovery:[],occurredAtMs:0});
+  const f=fixture({recoveryClock:clock(),initialStatus:value}),peer=await f.connect();const result=await peer.recover({kind:'refresh-checkpoint'});
+  assert.equal(operation(peer,result).state,'failed',code);assert.equal(f.syncs.length,0);await peer.dispose();
+ }
+});
+test('terminal health without an outgoing field settles an active outgoing waiter',async()=>{
+ const time=clock(),f=fixture({recoveryClock:time}),peer=await f.connect();f.status(outgoingStatus(53));
+ const retry=peer.recover({kind:'refresh-checkpoint'});await drain();f.status(outgoingStatus(53));await drain();
+ const terminal=admissionStatus(true,[]);terminal.health.failures.push({id:'runtime:revoked',code:'identity-revoked',scope:{kind:'admission'},severity:'error',message:'terminal',recovery:[],occurredAtMs:0});f.status(terminal);
+ assert.equal(operation(peer,await retry).state,'failed');assert.equal(f.syncs.length,0);await peer.dispose();
+});
+test('record checkpoint recovery requires both outgoing clear and requested admission',async()=>{
+ const blocked=admissionStatus(false,[record]);Object.assign(blocked,{outgoingBlocked:53,outgoingPending:53,synchronization:'blocked'});blocked.health.failures.push({id:'runtime:outgoing',code:'checkpoint-expired',scope:{kind:'admission'},severity:'notice',message:'waiting',recovery:[{kind:'refresh-checkpoint'}],occurredAtMs:0});
+ const time=clock(),f=fixture({recoveryClock:time,initialStatus:blocked}),peer=await f.connect();let done=false;const retry=peer.recover({kind:'refresh-checkpoint',record}).then(result=>{done=true;return result;});await drain();
+ const cleared=admissionStatus(false,[record]);Object.assign(cleared,{outgoingBlocked:0,outgoingPending:0,synchronization:'acknowledged'});f.status(cleared);await drain();assert.equal(done,false,'outgoing clear cannot admit the requested record');
+ f.status({...admissionStatus(true,[record]),outgoingBlocked:0,outgoingPending:0,synchronization:'acknowledged'});assert.equal(operation(peer,await retry).state,'succeeded');await peer.dispose();
+});
+test('admission and outgoing reconciliation share one manual recovery deadline',async()=>{
+ const blocked=admissionStatus(false,[record]);Object.assign(blocked,{outgoingBlocked:53,outgoingPending:53,synchronization:'blocked'});
+ const time=clock(),f=fixture({recoveryClock:time,initialStatus:blocked}),peer=await f.connect();const retry=peer.recover({kind:'refresh-checkpoint',record});
+ await time.tick(20000);f.status({...admissionStatus(true,[record]),outgoingBlocked:53,outgoingPending:53,synchronization:'blocked'});await drain();
+ await time.tick(9999);assert.equal(operation(peer,{operationId:'1'})?.state,'pending');await time.tick(1);
+ const result=await retry;assert.equal(operation(peer,result).state,'failed');assert.equal(f.syncs.length,3,'one boundary request cannot extend the overall deadline');await peer.dispose();
+});
 test('checkpoint retry waits beyond transport join for actual admission; connection retry stays transport-only',async()=>{
  const f=fixture({recoveryClock:clock()}),peer=await f.connect();f.status(admissionStatus());await drain();
  const transport=await peer.recover({kind:'retry-connection'});assert.equal(operation(peer,transport).state,'succeeded');

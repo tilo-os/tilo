@@ -20,8 +20,9 @@ return async function connectPeer(options={}){
   const desktopCommitListeners=new Set(),actionResponseListeners=new Set();
   const subscribeDesktopCommits=listener=>{desktopCommitListeners.add(listener);return()=>desktopCommitListeners.delete(listener);};
   const subscribers=new Set(),mounts=new Set(),failedMounts=new Set(),pendingMounts=new Set(),mountControllers=new Set();
-  let reconnecting,closePromise,setup,operationId=0,surfaceId=0,healthRevision=0n,saving,admissionTimer=null,admissionDeadline=null,admissionRevision=0;
+  let reconnecting,closePromise,setup,operationId=0,surfaceId=0,healthRevision=0n,saving,admissionTimer=null,admissionDeadline=null,admissionRevision=0,outgoingTimer=null,outgoingExpiryTimer=null,outgoingExpiryAtMs=null,outgoingExpiryChecked=null,outgoingBlocked=0,outgoingRevision=0;
   const admissionWaiters=new Set(),admissionFailures=new Map();let admissionEpisode,admissionEpoch=0;
+  const outgoingWaiters=new Set();let outgoingEpisode,outgoingEpoch=0;
   const operations=new Map(),surfaces=new Map(),surfaceWaiters=new Map(),surfaceAttempts=new Map(),surfaceTargets=new WeakMap();
   let health={version:1,generation:'0',transport:{phase:'connecting',authenticated:false,lastRelayContactAtMs:null,lastSessionPeerContactAtMs:null,retry:{attempt:0,nextAttemptAtMs:null,inFlight:false}},admission:{phase:'waiting',requiredRecords:[],pendingPrerequisites:0,deadlineAtMs:null},records:[],surfaces:[],capabilities:{automaticRecovery:true,retrySaving:true,recoverRenderer:true,durablePeerAcknowledgement:false},failures:[],recoveryOperations:[]};
   const timerSet=recoveryClock.setTimeout??globalThis.setTimeout,timerClear=recoveryClock.clearTimeout??globalThis.clearTimeout,now=recoveryClock.now??Date.now;
@@ -84,7 +85,7 @@ return async function connectPeer(options={}){
   // `persistenceNeeded` asks this host to commit pending writes now. It is a
   // trigger, not snapshot state: the runtime's light report between commit
   // boundaries (phase plus trigger) publishes nothing to subscribers.
-  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}const {persistenceNeeded,committedDesktop,actionResponseReady,...parsed}=JSON.parse(value);if(actionResponseReady){for(const listener of [...actionResponseListeners])listener();if(!Object.keys(parsed).length&&!persistenceNeeded&&!committedDesktop)return;}if(committedDesktop){for(const listener of desktopCommitListeners){try{listener(committedDesktop);}catch{}}if(!Object.keys(parsed).length&&!persistenceNeeded)return;}let next=parsed;if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};report(next);for(const listener of [...actionResponseListeners])listener();if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(persistenceNeeded)void persist().catch(()=>{});};
+  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}const {persistenceNeeded,committedDesktop,actionResponseReady,outgoingExpiryAtMs:expiry,...parsed}=JSON.parse(value);if(actionResponseReady){for(const listener of [...actionResponseListeners])listener();if(!Object.keys(parsed).length&&!persistenceNeeded&&!committedDesktop)return;}if(committedDesktop){for(const listener of desktopCommitListeners){try{listener(committedDesktop);}catch{}}if(!Object.keys(parsed).length&&!persistenceNeeded)return;}const outgoingReport=Number.isSafeInteger(parsed.outgoingBlocked)&&parsed.outgoingBlocked>=0;if(outgoingReport){outgoingBlocked=parsed.outgoingBlocked;outgoingRevision++;outgoingExpiryAtMs=expiry===null||(Number.isSafeInteger(expiry)&&expiry>=0)?expiry:null;if(outgoingExpiryAtMs===null)outgoingExpiryChecked=null;}let next=parsed;if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};report(next);if(outgoingReport){scheduleOutgoingExpiry();reconcileOutgoing();}for(const waiter of outgoingWaiters)waiter.check();for(const listener of [...actionResponseListeners])listener();if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(persistenceNeeded)void persist().catch(()=>{});};
   async function post(route,body){
     const response=await fetchEnrollment(`${enrollmentBaseUrl}/${route}`,{method:'POST',headers:{'Content-Type':'application/json'},body,signal,cache:'no-store',credentials:'same-origin'});
     const text=await response.text();
@@ -117,14 +118,14 @@ return async function connectPeer(options={}){
     const failure={id,code:'admission-timeout',scope:{kind:'admission',...(record?{record}:{})},severity:'error',message:'Shared state is still catching up; automatic recovery paused.',recovery:[{kind:'refresh-checkpoint',...(record?{record}:{})}],occurredAtMs:now()};
     admissionFailures.set(id,record);health={...health,failures:[...health.failures.filter(f=>f.id!==id),failure]};return Object.assign(Error('Checkpoint admission timed out'),{failureId:id});
   }
-  function startAdmission(explicit=false,record){
+  function startAdmission(explicit=false,record,deadline=now()+30000){
     if(closed||closing||terminalAdmission()||!health.transport.authenticated)return;
     const transport=health.transport.generation;
     // A record retry owns only its own failures; joining never resets the budget.
     if(explicit){for(const [id,failedRecord] of admissionFailures){if(!record||!failedRecord||sameRecord(record,failedRecord)){health={...health,failures:health.failures.filter(f=>f.id!==id)};admissionFailures.delete(id);}}}
     if(admissionEpisode?.state==='active'&&admissionEpisode.transport===transport)return;
     if(!explicit&&admissionEpisode&&admissionEpisode.transport===transport&&admissionEpisode.state!=='complete')return;
-    stopAdmission();admissionDeadline=now()+30000;
+    stopAdmission();admissionDeadline=Math.min(now()+30000,deadline);
     admissionEpisode={epoch:++admissionEpoch,transport,owner:id,start:now(),deadline:admissionDeadline,lastProgress:now(),progress:health.admission.progressRevision??'0',sends:0,lastSent:-Infinity,state:'active'};
     scheduleAdmission();
   }
@@ -151,9 +152,48 @@ return async function connectPeer(options={}){
     startAdmission();
     const episode=admissionEpisode,progress=health.admission.progressRevision;if(episode?.state==='active'&&typeof progress==='string'&&/^(0|[1-9][0-9]*)$/.test(progress)&&BigInt(progress)>BigInt(episode.progress)){episode.progress=progress;episode.lastProgress=now();scheduleAdmission();}
   }
-  async function joinAdmission(explicit=false,record){
+  function stopOutgoingExpiry(){if(outgoingExpiryTimer!==null)timerClear(outgoingExpiryTimer);outgoingExpiryTimer=null;}
+  function scheduleOutgoingExpiry(){
+    stopOutgoingExpiry();
+    if(closed||closing||outgoingExpiryAtMs===null||outgoingExpiryAtMs===outgoingExpiryChecked)return;
+    const expiry=outgoingExpiryAtMs;
+    outgoingExpiryTimer=timerSet(()=>{
+      outgoingExpiryTimer=null;if(closed||closing||outgoingExpiryAtMs!==expiry)return;
+      const future=expiry>now();if(!future)outgoingExpiryChecked=expiry;
+      try{runtime.peer_refresh_status(id);}catch{}
+      if(future&&outgoingExpiryAtMs===expiry&&outgoingExpiryChecked!==expiry)scheduleOutgoingExpiry();
+    },Math.max(0,expiry-now()));
+  }
+  function stopOutgoing(){if(outgoingTimer!==null)timerClear(outgoingTimer);outgoingTimer=null;}
+  function startOutgoing(explicit=false,deadline=now()+30000){
+    if(closed||closing||outgoingBlocked===0||!admitted()||terminalAdmission()||!health.transport.authenticated)return;
+    const transport=health.transport.generation;
+    if(outgoingEpisode?.state==='active'&&outgoingEpisode.transport===transport){scheduleOutgoing();return;}
+    if(!explicit&&outgoingEpisode&&outgoingEpisode.transport===transport&&outgoingEpisode.state!=='complete')return;
+    stopOutgoing();outgoingEpisode={epoch:++outgoingEpoch,transport,start:now(),deadline:Math.min(now()+30000,deadline),sends:0,state:'active'};scheduleOutgoing();
+  }
+  function scheduleOutgoing(){
+    if(outgoingTimer!==null)timerClear(outgoingTimer);outgoingTimer=null;
+    const episode=outgoingEpisode;if(!episode||episode.state!=='active'||closed||closing)return;
+    const due=episode.sends<2?Math.min(episode.deadline,episode.start+(episode.sends+1)*10000):episode.deadline;
+    outgoingTimer=timerSet(()=>{
+      outgoingTimer=null;if(outgoingEpisode!==episode||closed||closing)return;
+      if(outgoingBlocked===0){episode.state='complete';return;}
+      if(now()>=episode.deadline){episode.state='exhausted';for(const waiter of [...outgoingWaiters])waiter.timeout();return;}
+      if(admitted()&&id!==undefined&&health.transport.authenticated&&health.transport.generation===episode.transport){
+        episode.sends++;try{runtime.peer_request_sync(id,episode.transport);}catch(error){connectionFailure(error);coordinator.schedule();}
+        scheduleOutgoing();
+      }
+    },Math.max(0,due-now()));
+  }
+  function reconcileOutgoing(){
+    if(closed||closing)return;
+    if(outgoingBlocked===0){if(outgoingEpisode)outgoingEpisode.state='complete';stopOutgoing();return;}
+    startOutgoing();
+  }
+  async function joinAdmission(explicit=false,record,deadline){
     if(!health.transport.authenticated)await reconnect();
-    startAdmission(explicit,record);
+    startAdmission(explicit,record,deadline);
     // Force one fresh projection without changing the published tail-coalescing
     // or private-write barriers. A stale ready callback cannot finish a waiter.
     await persist();
@@ -241,9 +281,10 @@ return async function connectPeer(options={}){
   function close(){
     if(closed)return Promise.resolve();
     if(closePromise)return closePromise;
-    closing=true;desktopCommitListeners.clear();const actionClose=actionsV1?.close();if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;coordinator.dispose();events?.removeEventListener?.('online',online);
+    closing=true;desktopCommitListeners.clear();const actionClose=actionsV1?.close();if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;stopOutgoing();stopOutgoingExpiry();coordinator.dispose();events?.removeEventListener?.('online',online);
     closePromise=(async()=>{
       for(const waiter of admissionWaiters)waiter.reject(Error('Session closed'));
+      for(const waiter of outgoingWaiters)waiter.reject(Error('Session closed'));
       for(const waiter of surfaceWaiters.values())waiter.reject(Error('Session closed'));surfaceWaiters.clear();
       for(const entry of surfaceAttempts.values())entry.cancelled=true;
       for(const controller of mountControllers)controller.abort();surfaceAttempts.clear();
@@ -269,13 +310,14 @@ return async function connectPeer(options={}){
   }
   function retryPersistence(){if(saving)return saving;saving=(async()=>{await settleMounts(failedMounts);failed=false;for(const mount of mounts)await mount.flush?.();await persist(!reconnecting);})().finally(()=>{saving=undefined;});return saving;}
   const sameRecord=(a,b)=>a&&b&&a.roomId===b.roomId&&a.appId===b.appId&&a.recordId===b.recordId;
-  function refreshCheckpoint(request,operation){
+  function refreshCheckpoint(request,operation,deadline=now()+30000){
     // A transport join may precede the authoritative checkpoint. Observe a fresh
     // admission projection, then settle only the resource named by this request.
     const revision=admissionRevision;
     return new Promise((resolve,reject)=>{
       let joined=false,settled=false;
-      const finish=error=>{if(settled)return;settled=true;admissionWaiters.delete(waiter);error?reject(error):resolve();};
+      const timeout=timerSet(()=>waiter.timeout(),Math.max(0,deadline-now()));
+      const finish=error=>{if(settled)return;settled=true;timerClear(timeout);admissionWaiters.delete(waiter);error?reject(error):resolve();};
       const waiter={reject:finish,timeout:()=>finish(admissionTimeout(request.record,`recovery:admission:${operation.id}`)),check:()=>{
         const row=request.record?health.records.find(row=>sameRecord(row.record,request.record)):null;
         const relevant=health.failures.filter(f=>f.severity==='error'&&(
@@ -288,8 +330,35 @@ return async function connectPeer(options={}){
         if(joined&&admitted&&!relevant.some(f=>f.scope.kind!=='connection'))finish();
       }};
       admissionWaiters.add(waiter);waiter.check();if(settled)return;
-      joinAdmission(true,request.record).then(()=>{joined=true;waiter.check();reconcileAdmission();},finish);
+      joinAdmission(true,request.record,deadline).then(()=>{joined=true;waiter.check();reconcileAdmission();},finish);
     });
+  }
+  function refreshOutgoing(operation,deadline=now()+30000){
+    const revision=outgoingRevision;
+    return new Promise((resolve,reject)=>{
+      let settled=false;
+      const timeout=timerSet(()=>waiter.timeout(),Math.max(0,deadline-now()));
+      const finish=error=>{if(settled)return;settled=true;timerClear(timeout);outgoingWaiters.delete(waiter);error?reject(error):resolve();};
+      const waiter={reject:finish,timeout:()=>finish(Object.assign(Error('Checkpoint reconciliation timed out'),{failureId:'runtime:outgoing'})),check:()=>{
+        if(closed||closing){finish(Error('Session closed'));return;}
+        const terminal=terminalAdmission();if(terminal){finish(Object.assign(Error('Checkpoint reconciliation failed'),{failureId:terminal.id}));return;}
+        if(outgoingRevision>revision&&outgoingBlocked===0)finish();
+      }};
+      outgoingWaiters.add(waiter);waiter.check();if(settled)return;startOutgoing(true,deadline);void persist().catch(finish);
+    });
+  }
+  function withinRecoveryDeadline(task,deadline,failureId){
+    return new Promise((resolve,reject)=>{
+      const timeout=timerSet(()=>reject(Object.assign(Error('Checkpoint recovery timed out'),{failureId})),Math.max(0,deadline-now()));
+      Promise.resolve(task).then(resolve,reject).finally(()=>timerClear(timeout));
+    });
+  }
+  async function recoverCheckpoint(request,operation){
+    const deadline=now()+30000;
+    const terminal=terminalAdmission();if(terminal)throw Object.assign(Error('Checkpoint recovery failed'),{failureId:terminal.id});
+    if(!health.transport.authenticated)await withinRecoveryDeadline(reconnect(),deadline,'runtime:outgoing');
+    await refreshCheckpoint(request,operation,deadline);
+    if(outgoingBlocked>0)await refreshOutgoing(operation,deadline);
   }
   function waitForDesktopAdmission(signal){
     // The renderer checks again after asynchronous asset loading and Winit
@@ -326,7 +395,7 @@ return async function connectPeer(options={}){
     const task=Promise.resolve().then(async()=>{
       switch(request.kind){
         case 'retry-connection':case 'reauthenticate':await reconnect();break;
-        case 'refresh-checkpoint':await refreshCheckpoint(request,operation);break;
+        case 'refresh-checkpoint':await recoverCheckpoint(request,operation);break;
         case 'retry-saving':await retryPersistence();break;
         case 'retry-desktop':{
           const mount=surfaces.get(request.surfaceId);if(!mount){await surfaceAttempts.get(request.surfaceId).run();break;}
