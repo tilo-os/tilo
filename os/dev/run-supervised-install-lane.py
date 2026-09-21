@@ -69,6 +69,10 @@ def kubectl_transport_error(stderr):
         'creator status poll lost transport', 'kubectl transport failed'))
 
 
+class CreatorInputReconciliationError(ValueError):
+    """Pending input state cannot be reconciled safely in place."""
+
+
 class CreatorBinding(TypedDict):
     pod: str
     pod_uid: str
@@ -640,10 +644,17 @@ def stream_tree(context, namespace, pod, container, destination, archive):
                     '--', 'sh', '-ceu', script, 'sh', destination), archive, timeout=300, text=False)
 
 
-def creator_input_archive(helpers, public, installer_bootc):
+def creator_input_components(helpers, public, installer_bootc):
+    return {'helpers': ('helpers.tar', helpers),
+            'public': ('public-trust.tar', public),
+            'installer': ('installer-bootc-helper.tar', installer_bootc)}
+
+
+def creator_input_archive(helpers, public, installer_bootc, selected=None):
     """Wrap independently authenticated creator inputs for one remote exec."""
-    inputs = {'helpers.tar': helpers, 'public-trust.tar': public,
-              'installer-bootc-helper.tar': installer_bootc}
+    components = creator_input_components(helpers, public, installer_bootc)
+    selected = tuple(components) if selected is None else tuple(selected)
+    inputs = {components[name][0]: components[name][1] for name in selected}
     out = io.BytesIO()
     with tarfile.open(fileobj=out, mode='w') as archive:
         for name, content in inputs.items():
@@ -652,6 +663,64 @@ def creator_input_archive(helpers, public, installer_bootc):
             archive.addfile(info, io.BytesIO(content))
     return out.getvalue(), {name: hashlib.sha256(content).hexdigest()
                             for name, content in inputs.items()}
+
+
+REMOTE_CREATOR_INPUT_STATUS = r'''import hashlib,json,os,pathlib,stat
+work=pathlib.Path('/work'); job=work/'disk-output/.creator-job'; receipt=work/'.creator-inputs.json'
+def result(state,**extra):
+ print(json.dumps({'state':state,**extra},sort_keys=True)); raise SystemExit
+if job.exists() or job.is_symlink(): result('active')
+try:i=receipt.lstat()
+except FileNotFoundError: result('missing')
+except OSError: result('invalid')
+if (not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1
+    or i.st_mode&0o077 or i.st_size<2 or i.st_size>4096): result('invalid')
+try:
+ fd=os.open(receipt,os.O_RDONLY|os.O_NOFOLLOW)
+ o=os.fstat(fd)
+ if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size): result('invalid')
+ value=os.read(fd,4097); os.close(fd)
+ if len(value)!=i.st_size: result('invalid')
+ document=json.loads(value)
+except BaseException: result('invalid')
+if (set(document)!={'schema','purpose','helpers','public','installer'}
+    or document.get('schema')!=1
+    or document.get('purpose')!='tilo-supervised-creator-inputs'
+    or any(not isinstance(document.get(name),str) or
+           not __import__('re').fullmatch(r'[0-9a-f]{64}',document[name])
+           for name in ('helpers','public','installer'))): result('invalid')
+for name in ('helpers','public','installer'):
+ path=work/({'helpers':'helpers','public':'public-trust','installer':'installer-bootc-helper'}[name])
+ try:info=path.lstat()
+ except OSError:result('invalid')
+ if (not stat.S_ISDIR(info.st_mode) or info.st_uid or info.st_gid or
+     info.st_nlink!=1 or info.st_mode&0o077): result('invalid')
+result('ready',receipt=document,receipt_sha256=hashlib.sha256(value).hexdigest())'''
+
+
+def creator_input_status(context, disk):
+    """Read the exact private receipt and reject unsafe pending state."""
+    try:
+        value=json.loads(command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk',
+                                         '--','python3','-c',REMOTE_CREATOR_INPUT_STATUS),timeout=30))
+    except (ValueError,TypeError,json.JSONDecodeError) as error:
+        raise CreatorInputReconciliationError('creator input status is not valid JSON') from error
+    state=value.get('state') if isinstance(value,dict) else None
+    if state=='missing':
+        return None
+    if state=='active':
+        raise CreatorInputReconciliationError('cannot reconcile creator inputs while creator job is active')
+    if state!='ready' or set(value)!={'state','receipt','receipt_sha256'}:
+        raise CreatorInputReconciliationError('creator input receipt or component state is invalid')
+    receipt=value['receipt']
+    if (not isinstance(receipt,dict) or set(receipt)!={'schema','purpose','helpers','public','installer'}
+            or any(not isinstance(receipt.get(name),str) or
+                   not re.fullmatch(r'[0-9a-f]{64}',receipt[name])
+                   for name in ('helpers','public','installer'))
+            or receipt['schema']!=1 or receipt['purpose']!='tilo-supervised-creator-inputs'
+            or not re.fullmatch(r'[0-9a-f]{64}',value['receipt_sha256'])):
+        raise CreatorInputReconciliationError('creator input receipt or component state is invalid')
+    return value
 
 
 def stream_creator_inputs(context, namespace, pod, container, helpers, public,
@@ -711,6 +780,67 @@ own_helpers=0; own_public=0; own_installer=0
     command(kubectl(context, '-n', namespace, 'exec', '-i', pod, '-c', container,
                     '--', 'sh', '-ceu', script, 'sh', *(identities[name] for name in names)),
             archive, timeout=300, text=False)
+
+
+def stream_creator_input_delta(context, namespace, pod, container, helpers, public,
+                               installer_bootc, status):
+    """Replace only changed pending inputs, with a final atomic receipt commit."""
+    components=creator_input_components(helpers,public,installer_bootc)
+    identities={name:hashlib.sha256(content).hexdigest()
+                for name,(_,content) in components.items()}
+    changed=tuple(name for name in components if status['receipt'][name]!=identities[name])
+    if not changed:
+        return False
+    archive,_=creator_input_archive(helpers,public,installer_bootc,changed)
+    script=r'''set -euo pipefail
+umask 077
+test ! -e /work/disk-output/.creator-job
+test -f /work/.creator-inputs.json
+test "$(stat -c '%u:%g:%a:%F' /work/.creator-inputs.json)" = '0:0:600:regular file'
+test "$(sha256sum /work/.creator-inputs.json | cut -d' ' -f1)" = "$1"
+helpers_hash=$2; public_hash=$3; installer_hash=$4; changed_count=$5
+shift 5
+test "$changed_count" -ge 1 -a "$changed_count" -le 3
+stage=$(mktemp -d /work/.creator-inputs.XXXXXX)
+cleanup(){ rm -rf -- "$stage"; }
+trap cleanup EXIT HUP INT TERM
+tar --no-same-owner -C "$stage" -xf -
+test "$(find "$stage" -mindepth 1 -maxdepth 1 -type f -printf x | wc -c)" = "$changed_count"
+test "$(find "$stage" -mindepth 1 -maxdepth 1 ! -type f -print -quit)" = ''
+seen=0
+for component in "$@"; do
+  case "$component" in
+    helpers) archive=helpers.tar; target=helpers; expected=$helpers_hash;;
+    public) archive=public-trust.tar; target=public-trust; expected=$public_hash;;
+    installer) archive=installer-bootc-helper.tar; target=installer-bootc-helper; expected=$installer_hash;;
+    *) exit 24;;
+  esac
+  test -f "$stage/$archive"
+  printf '%s  %s\n' "$expected" "$stage/$archive" | sha256sum -c - >/dev/null
+  mkdir -m 0700 "$stage/$target"
+  tar --no-same-owner -C "$stage/$target" -xf "$stage/$archive"
+  test -n "$(find "$stage/$target" -mindepth 1 -print -quit)"
+  if test -e "/work/$target" || test -L "/work/$target"; then
+    test ! -L "/work/$target"
+    test "$(stat -c '%u:%g:%a:%F' "/work/$target")" = '0:0:700:directory'
+    rm -rf -- "/work/$target"
+  fi
+  mv -T -n "$stage/$target" "/work/$target"
+  test ! -e "$stage/$target"
+  seen=$((seen+1))
+done
+test "$seen" = "$changed_count"
+receipt=$(mktemp /work/.creator-inputs.XXXXXX)
+printf '{"schema":1,"purpose":"tilo-supervised-creator-inputs","helpers":"%s","public":"%s","installer":"%s"}\n' "$helpers_hash" "$public_hash" "$installer_hash" > "$receipt"
+chmod 0600 "$receipt"
+mv -T "$receipt" /work/.creator-inputs.json
+'''
+    names=tuple(components[name][0] for name in changed)
+    hashes=(identities['helpers'],identities['public'],identities['installer'])
+    command(kubectl(context,'-n',namespace,'exec','-i',pod,'-c',container,'--','sh','-ceu',script,
+                    'sh',status['receipt_sha256'],*hashes,str(len(changed)),*changed),
+            archive,timeout=300,text=False)
+    return True
 
 
 def creator_inputs_ready(context, disk, helpers, public, installer_bootc):
@@ -2708,12 +2838,21 @@ def main():
         try:
             if pending_creator:
                 auth_bytes=registry_auth(args)
-                if creator_inputs_ready(args.context,disk,helpers,public,installer_bootc):
-                    timer.skip('input_transfer')
-                else:
+                status=creator_input_status(args.context,disk)
+                if status is None:
                     with timer.stage('input_transfer'):
                         stream_creator_inputs(args.context,disk['namespace'],disk['pod'],'disk',
                                               helpers,public,installer_bootc)
+                else:
+                    components=creator_input_components(helpers,public,installer_bootc)
+                    changed=any(status['receipt'][name] != hashlib.sha256(content).hexdigest()
+                                for name,(_,content) in components.items())
+                    if not changed:
+                        timer.skip('input_transfer')
+                    else:
+                        with timer.stage('input_transfer'):
+                            stream_creator_input_delta(args.context,disk['namespace'],disk['pod'],
+                                                      'disk',helpers,public,installer_bootc,status)
             else:
                 with timer.stage('input_transfer'):
                     auth_bytes=registry_auth(args)
@@ -2742,6 +2881,12 @@ def main():
             # The staged inputs and exact worker are the retry checkpoint.  A
             # generic controller failure has no trusted remote failure receipt,
             # so deleting the worker would turn a cheap resume into a rebuild.
+            raise
+        except CreatorInputReconciliationError:
+            write_private(args.operation_dir/'creator-recovery.json',
+              (json.dumps({'schema':1,'purpose':'tilo-supervised-creator-recovery',
+                           'acceptance_id':args.acceptance_id,'creator':disk,
+                           'state':'input-reconciliation-refused'},indent=2,sort_keys=True)+'\n').encode())
             raise
         except BaseException:
             delete_worker(args.context,disk)
