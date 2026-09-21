@@ -32,6 +32,17 @@ use super::outputs::DrmOutputKey;
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
 const CURSOR_DIM: u32 = 64;
 
+/// Whether a connected DRM connector is a display sink. DisplayPort Alt Mode
+/// over USB-C is reported by KMS as [`connector::Interface::DisplayPort`],
+/// while USB display adapters may use [`connector::Interface::USB`]; both are
+/// ordinary scanout targets. Only DRM writeback is an internal capture sink.
+fn is_display_connector(interface: connector::Interface) -> bool {
+    !matches!(
+        interface,
+        connector::Interface::Unknown | connector::Interface::Writeback
+    )
+}
+
 /// Minimal owned-fd wrapper implementing the `drm` crate's device traits; fd comes from libseat (`Session::open`), privileged + DRM master while the session is active.
 struct Card(OwnedFd);
 
@@ -200,11 +211,7 @@ fn connector_is_scanout_eligible(
     // Parallels display used by qOS). `Writeback` captures a CRTC rather than
     // displaying one, and `Unknown` supplies no typed evidence that it can be
     // used for scanout.
-    let is_scanout_sink = !matches!(
-        interface,
-        connector::Interface::Unknown | connector::Interface::Writeback
-    );
-    state == connector::State::Connected && has_usable_mode && is_scanout_sink
+    state == connector::State::Connected && has_usable_mode && is_display_connector(interface)
 }
 
 impl CardHandle {
@@ -1925,6 +1932,15 @@ mod tests {
             connector::Interface::Unknown,
             true
         ));
+    }
+
+    #[test]
+    fn usb_c_display_interfaces_are_scanout_targets() {
+        assert!(is_display_connector(connector::Interface::DisplayPort));
+        assert!(is_display_connector(connector::Interface::USB));
+        assert!(is_display_connector(connector::Interface::HDMIA));
+        assert!(!is_display_connector(connector::Interface::Writeback));
+        assert!(!is_display_connector(connector::Interface::Unknown));
     }
 
     #[test]
