@@ -222,6 +222,10 @@ pub enum OnboardingVisualState {
     Backup,
     BackupVerified,
     Ready,
+    TourNavigate,
+    TourOrganise,
+    TourCollaborate,
+    TourStart,
     CreateError,
     RestoreError,
 }
@@ -398,7 +402,10 @@ impl Invalidation {
     }
 }
 
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent onboarding ceremony states are clearer as named flags than as one coupled state enum"
+)]
 pub struct OnboardingView {
     flow: Onboarding,
     context: OnboardingContext,
@@ -681,11 +688,12 @@ impl OnboardingView {
         self.finished
     }
 
-    /// A reopened tour is trusted modal chrome, but it deliberately keeps the
-    /// real desktop visible underneath so each lesson points at its context.
-    /// First-login identity setup remains an opaque machine surface.
+    /// A tour is trusted modal chrome, but it deliberately keeps the real
+    /// desktop visible underneath so each lesson points at its context.
+    /// First-login identity setup remains an opaque machine surface until the
+    /// person explicitly starts the tour.
     pub fn presents_desktop_context(&self) -> bool {
-        self.tour_only
+        self.tour_page.is_some()
     }
 
     /// Reset this trusted view to the existing-identity backup step. Kept in
@@ -845,6 +853,7 @@ impl OnboardingView {
         self.identity_ready_page = false;
         self.portable_backup_only = false;
         self.tour_page = None;
+        self.tour_only = false;
         let minted = MintedIdentity {
             fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
             path: PathBuf::from("/var/lib/tilo/identities/primary.json"),
@@ -875,10 +884,31 @@ impl OnboardingView {
                 });
                 self.identity_ready_page = state == OnboardingVisualState::Ready;
             }
+            OnboardingVisualState::TourNavigate => {
+                self.set_tour_visual_state_for_snapshot(minted, TourPage::Navigate);
+            }
+            OnboardingVisualState::TourOrganise => {
+                self.set_tour_visual_state_for_snapshot(minted, TourPage::Organise);
+            }
+            OnboardingVisualState::TourCollaborate => {
+                self.set_tour_visual_state_for_snapshot(minted, TourPage::Collaborate);
+            }
+            OnboardingVisualState::TourStart => {
+                self.set_tour_visual_state_for_snapshot(minted, TourPage::Start);
+            }
         }
         self.composed = None;
         self.invalidation.both();
         self.settle_motion_for_snapshot();
+    }
+
+    fn set_tour_visual_state_for_snapshot(&mut self, minted: MintedIdentity, page: TourPage) {
+        self.flow.begin();
+        self.flow.set_acknowledged(true);
+        let _ = self.flow.complete(minted);
+        self.backup_was_verified = true;
+        self.identity_ready_page = true;
+        self.tour_page = Some(page);
     }
 
     fn build_composition(&self, theme: &Theme, panel_height: f32) -> Box<dyn Widget> {
@@ -1470,7 +1500,10 @@ impl OnboardingView {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the restore ceremony is kept together so copy, validation, and actions stay visibly ordered"
+    )]
     fn connect(&self, theme: &Theme) -> Box<dyn Widget> {
         let compact = self.rect.height() <= 540.0;
         let path = TextInput::new(Vec::new())
@@ -1616,7 +1649,10 @@ impl OnboardingView {
         Box::new(body.push(Box::new(Card::new(Box::new(list)))))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the backup ceremony is kept together so recovery guidance and its actions cannot diverge"
+    )]
     fn backup(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
             return Box::new(
@@ -1905,7 +1941,7 @@ fn clear_secret(buffer: &Arc<Mutex<String>>) {
 impl OnboardingView {
     fn draw_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let colors = &theme.tokens.colors;
-        if self.tour_only {
+        if self.tour_page.is_some() {
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1919,10 +1955,10 @@ impl OnboardingView {
                 None,
                 &self.rect,
             );
-            // The desktop is deliberately hidden while the tour is modal.
-            // Do not paint a focus target from the covered desktop behind the
-            // card: a full-width ring reads as a second, interactive surface
-            // and competes with the tour's own keyboard focus.
+            // Keep the real desktop legible while the tour is modal. Do not
+            // paint a focus target from the covered desktop behind the card:
+            // a full-width ring reads as a second, interactive surface and
+            // competes with the tour's own keyboard focus.
             return;
         }
         scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
@@ -2779,7 +2815,10 @@ impl Widget for OnboardingView {
         self.draw_picker(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the Widget event contract supplies this shared routing context to every implementation"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -3306,6 +3345,10 @@ mod tests {
         press(&mut document, KEY_TOUR_START);
         done.sync(&mut document, &automerge::ROOT);
         assert_eq!(done.tour_page, Some(TourPage::Navigate));
+        assert!(
+            done.presents_desktop_context(),
+            "the first-login tour must explain the desktop over the real desktop"
+        );
         assert_eq!(
             load_progress(directory.path()).expect("tour journal"),
             Some(PersistedStage::TourNavigate)
@@ -4213,7 +4256,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table-driven test verifies every onboarding page at every supported laptop size"
+    )]
     fn host_identity_actions_stay_visible_and_aligned_at_supported_laptop_sizes() {
         let scenarios: &[(&[&str], &[&str], bool)] = &[
             (

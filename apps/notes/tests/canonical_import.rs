@@ -336,6 +336,61 @@ fn unresolved_links_keep_labels_and_duplicate_unreferenced_titles_are_allowed() 
 }
 
 #[test]
+fn embedded_note_references_resolve_preserve_marks_and_refuse_ambiguous_targets() {
+    let f = LegacyFixture::rich();
+    f.write_page(
+        f.child,
+        "é **before** ![[Projects]] and ![[Missing]]\n".as_bytes(),
+    );
+    let source = f.source_bytes();
+    let outcome = imported(&f);
+    assert_eq!(outcome.warnings.len(), 1);
+    assert!(outcome.warnings[0].contains("![[Missing]]"));
+    let expected = f
+        .records
+        .read(&outcome.checkout.id, |doc| {
+            notebook::validate(doc).unwrap();
+            let rows = NotesDoc::page_block_snapshots(doc, f.child);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].1, "é before Projects and Missing");
+            let marks = NotesDoc::page_block_marks(doc, f.child);
+            assert_eq!(
+                marks[0].1,
+                vec![
+                    mark(3, 9, InlineMark::Bold),
+                    mark(
+                        10,
+                        18,
+                        InlineMark::Transclusion {
+                            page: f.root.to_string()
+                        }
+                    )
+                ]
+            );
+            (rows, marks)
+        })
+        .unwrap();
+    assert_eq!(source, f.source_bytes());
+    let f = f.reopen();
+    f.records.try_open_record(&outcome.checkout).unwrap();
+    assert_eq!(
+        f.records
+            .read(&outcome.checkout.id, |doc| (
+                NotesDoc::page_block_snapshots(doc, f.child),
+                NotesDoc::page_block_marks(doc, f.child)
+            ))
+            .unwrap(),
+        expected
+    );
+
+    let mut ambiguous = LegacyFixture::rich();
+    ambiguous.workspace.data.pages[2].title = "Projects".into();
+    ambiguous.write_metadata();
+    ambiguous.write_page(ambiguous.child, b"![[Projects]]\n");
+    refuse_source(&ambiguous);
+}
+
+#[test]
 fn busy_destination_refuses_before_source_read_and_retries_once() {
     let f = LegacyFixture::rich();
     let checkout = destination(f.key);
@@ -419,7 +474,13 @@ fn empty_initialization_and_projection_are_read_only() {
     keys.sort();
     assert_eq!(
         keys,
-        ["notes_schema_version", "pages", "tag_assignments", "tags"]
+        [
+            "assets",
+            "notes_schema_version",
+            "pages",
+            "tag_assignments",
+            "tags",
+        ]
     );
 }
 
@@ -454,7 +515,12 @@ fn canonical_validation_refuses_versions_and_malformed_shapes_without_reset() {
                 doc.delete(ROOT, "notes_schema_version").unwrap();
             }
             "future-version" => {
-                doc.put(ROOT, "notes_schema_version", 2).unwrap();
+                doc.put(
+                    ROOT,
+                    "notes_schema_version",
+                    u64::from(notebook::NOTES_SCHEMA_VERSION) + 1,
+                )
+                .unwrap();
             }
             "pages" | "tags" | "edges" => {
                 doc.put(

@@ -64,7 +64,11 @@ impl App {
         }
         let context = HistoryReadContext {
             document: &self.state.doc,
-            active_record: self.records.as_ref().and_then(|records| records.active()),
+            active_record: self
+                .persistence
+                .records
+                .as_ref()
+                .and_then(|records| records.active()),
             document_identity: self.state.document_identity(),
             permissions: &self.permission_ctx,
         };
@@ -123,7 +127,7 @@ impl App {
             self.root_widget.handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 handled,
@@ -381,7 +385,11 @@ impl App {
         self.history_layout = Some(layout);
         let context = HistoryReadContext {
             document: &self.state.doc,
-            active_record: self.records.as_ref().and_then(|records| records.active()),
+            active_record: self
+                .persistence
+                .records
+                .as_ref()
+                .and_then(|records| records.active()),
             document_identity: self.state.document_identity(),
             permissions: &self.permission_ctx,
         };
@@ -459,7 +467,7 @@ impl App {
                         widget.handle_event(
                             event,
                             scale,
-                            &self.modifiers,
+                            &self.input.modifiers,
                             doc,
                             path,
                             handled,
@@ -476,7 +484,7 @@ impl App {
             self.document_history.toolbar_mut().handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 handled,
@@ -492,7 +500,7 @@ impl App {
             search.handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 handled,
@@ -512,7 +520,7 @@ impl App {
             pane.handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 handled,
@@ -531,7 +539,11 @@ impl App {
     ) -> R {
         let context = HistoryReadContext {
             document: &self.state.doc,
-            active_record: self.records.as_ref().and_then(|records| records.active()),
+            active_record: self
+                .persistence
+                .records
+                .as_ref()
+                .and_then(|records| records.active()),
             document_identity: self.state.document_identity(),
             permissions: &self.permission_ctx,
         };
@@ -559,6 +571,7 @@ impl App {
         }
         if binding.is_none()
             && self
+                .persistence
                 .records
                 .as_ref()
                 .is_some_and(|records| records.active().is_none())
@@ -569,6 +582,7 @@ impl App {
             || HistoryTarget::Legacy {
                 app_id: crate::collaboration::local_app_id(),
                 record: self
+                    .persistence
                     .records
                     .as_ref()
                     .and_then(|records| records.active())
@@ -614,7 +628,7 @@ impl App {
     /// root. Native windows enable this automatically; embedding remains opt-in.
     pub fn enable_document_history_chrome(&mut self) {
         self.history_chrome_enabled = true;
-        self.document_history.enable_search(self.platform);
+        self.document_history.enable_search(self.input.platform);
         self.remember_history_content();
         self.layout.structure_dirty = true;
         self.layout.layout_dirty = true;
