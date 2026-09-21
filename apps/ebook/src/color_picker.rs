@@ -10,7 +10,6 @@ use vello::peniko::Color;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
-use crate::input_controls::InputPaintCtx;
 use crate::model::{hex_string, hsv_to_rgb, rgb_to_hsv};
 use crate::paint;
 
@@ -30,19 +29,6 @@ pub(super) struct ColorEdit {
 enum DragPart {
     Sv,
     Hue,
-}
-
-struct SvHueLayout {
-    x0: f64,
-    x1: f64,
-    top: f64,
-    size: f64,
-}
-
-struct PickerRow {
-    x0: f64,
-    x1: f64,
-    y: f64,
 }
 
 #[derive(Clone)]

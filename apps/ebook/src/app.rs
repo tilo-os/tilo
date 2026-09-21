@@ -59,14 +59,11 @@ use ui::widget::{
 
 use crate::chrome::{self as chrome, pointer_target, rhythm};
 use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
-use crate::comment_overlay::{
-    CommentAction, CommentOverlay, CommentOverlayView, CommentSemanticOutcome,
-};
+use crate::comment_overlay::{CommentAction, CommentOverlay, CommentSemanticOutcome};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
 use crate::input_controls::{
-    InputEventCtx, InputPaintCtx, NoteAction, NoteComposer, NoteSemanticOutcome, NoteView,
-    NumberControls, NumberField,
+    InputEventCtx, NoteAction, NoteComposer, NoteSemanticOutcome, NumberControls, NumberField,
 };
 use crate::local_library::LocalLibrary;
 use crate::model::{
@@ -78,29 +75,16 @@ use crate::paginate::{
     ChapterLayout, ChapterLayoutRequest, LayoutKey, LayoutKind, font_choice, layout_chapter,
 };
 use crate::paint;
-use crate::reader_bubble::{
-    ReaderBubble, ReaderBubbleAction, ReaderBubblePaintCtx, ReaderBubbleView, ReaderPosition,
-};
+use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
-use crate::reading_settings::{
-    ReadingSettings, ReadingSettingsAction, ReadingSettingsPaintCtx, ReadingSettingsView,
-};
-use crate::shelf_controls::{
-    ShelfBarView, ShelfControlAction, ShelfControls, ShelfMenuView, ShelfPaintCtx,
-};
+use crate::reading_settings::{ReadingSettings, ReadingSettingsAction};
+use crate::shelf_controls::{ShelfControlAction, ShelfControls};
 
 const TOP_BAR: f64 = 54.0;
 /// Side of the square −/+ buttons in a size stepper.
 const SIZE_STEPPER_BTN: f64 = 28.0;
 /// Width of the quick-settings visibility toggle in a font row.
 const FONT_ROW_TOGGLE_W: f64 = 40.0;
-
-struct EbookPaintCtx<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
 
 /// Whether a parsed book should replace the reader's current content or only
 /// join a watched shelf. The worker carries this presentation intent but never
@@ -732,13 +716,6 @@ enum Ico {
     Bookmark(bool),
     /// A downward chevron (dropdown affordance).
     ChevDown,
-}
-
-struct IconButtonView {
-    rect: Rect,
-    icon: Ico,
-    active: bool,
-    action: Action,
 }
 
 impl BooksApp {
@@ -6958,14 +6935,6 @@ struct ShelfGrid {
     scroll: f64,
 }
 
-struct BookCardView<'a> {
-    book: &'a Book,
-    index: usize,
-    cover: Rect,
-    focused: bool,
-    shared: bool,
-}
-
 impl BooksApp {
     fn draw_library(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.shelf_controls.begin_frame();
@@ -7995,141 +7964,6 @@ struct ReaderPageGeometry {
     rule_y: f64,
 }
 
-struct ReaderChromeView<'a> {
-    geometry: &'a ReaderPageGeometry,
-    chapter_count: usize,
-    selection_anchor: SelAnchor,
-}
-
-struct ReaderColumnsView<'a> {
-    layout: &'a ChapterLayout,
-    annotations: &'a [Annotation],
-    palette: &'a ReaderPalette,
-    base_family: &'a FontChoice,
-    base_mono: bool,
-    chapter: usize,
-    selection: Option<(DocPos, DocPos)>,
-    comment_group: Option<Uuid>,
-    panes: &'a [Pane],
-    geometry: &'a ReaderPageGeometry,
-    mode: ReadMode,
-}
-
-struct ReaderPaneView<'a> {
-    frame: &'a ReaderColumnsView<'a>,
-    pane: &'a Pane,
-    transform: Affine,
-}
-
-struct ReaderLineView<'a> {
-    pane: &'a ReaderPaneView<'a>,
-    block: &'a crate::paginate::LaidBlock,
-    indent: f64,
-    highlights: &'a [&'a Annotation],
-    line: &'a crate::paginate::LaidLine,
-    y: f64,
-    height: f64,
-}
-
-struct ReaderLineOutput<'a> {
-    highlight_tops: &'a mut HashMap<Uuid, (f64, HiColor)>,
-    selection_anchor: &'a mut SelAnchor,
-    comment_box: &'a mut CommentBoxBounds,
-}
-
-struct ReaderTopbarLayout {
-    viewport: Rect,
-    left_control_x: f64,
-    icon_size: f64,
-    bookmark_size: f64,
-    type_width: f64,
-    type_label_width: f32,
-    control_y: f64,
-}
-
-struct ReaderRailView {
-    panel_x0: f64,
-    y0: f64,
-    y1: f64,
-}
-
-struct RailScrollbarView {
-    x: f64,
-    y0: f64,
-    y1: f64,
-    scroll: f64,
-    max_scroll: f64,
-    visible_height: f64,
-    content_height: f64,
-}
-
-struct NotesPanelView {
-    rect: Rect,
-    count: usize,
-}
-
-struct NoteCardView<'a> {
-    rect: Rect,
-    annotation: &'a Annotation,
-    excerpt: &'a str,
-    note: &'a str,
-    inner_width: f32,
-    excerpt_height: f32,
-    composing: bool,
-}
-
-struct SettingsTabsView {
-    viewport: Rect,
-    y: f64,
-}
-
-#[derive(Clone, Copy)]
-struct SettingsColumnView {
-    x: f64,
-    width: f64,
-    y: f64,
-}
-
-struct FontRowView<'a> {
-    rect: Rect,
-    font: &'a FontEntry,
-}
-
-struct SchemeRowView<'a> {
-    rect: Rect,
-    scheme: &'a ColorScheme,
-    selected: bool,
-    renaming: bool,
-}
-
-struct SchemeEditorView<'a> {
-    content: Rect,
-    scheme: &'a ColorScheme,
-}
-
-struct AccentButtonView<'a> {
-    rect: Rect,
-    label: &'a str,
-    with_plus: bool,
-    action: Action,
-}
-
-struct SizeStepperView<'a> {
-    right_x: f64,
-    center_y: f64,
-    value: f64,
-    field: &'a NumberField,
-}
-
-struct PillView<'a> {
-    origin: Point,
-    height: f64,
-    label: &'a str,
-    text_size: f32,
-    active: bool,
-    action: Option<Action>,
-}
-
 impl BooksApp {
     fn draw_reader(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let lib = std::mem::take(&mut self.library);
@@ -8196,7 +8030,7 @@ impl BooksApp {
         self.resolve_pending_sel_edge();
 
         self.draw_reader_footer_and_chrome(
-            scene, t, tr, theme, &c, lib, annos, layout, &palette, &geom, mode, nchap, sel_anchor,
+            scene, t, tr, theme, &c, lib, annos, layout, &geom, nchap, sel_anchor,
         );
     }
 
@@ -8286,9 +8120,7 @@ impl BooksApp {
         lib: Arc<Vec<Arc<Book>>>,
         annos: Vec<Annotation>,
         layout: ChapterLayout,
-        palette: &ReaderPalette,
         geom: &ReaderPageGeometry,
-        mode: ReadMode,
         nchap: usize,
         sel_anchor: SelAnchor,
     ) {

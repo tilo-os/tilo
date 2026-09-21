@@ -61,19 +61,6 @@ use crate::presentation::RetentionPresentation;
 // expanded detail (`draw_timeline_list`). At 1× the measured value equals the
 // constant; the band only grows once the accessibility text scale makes its
 // labels taller than the band was drawn for.
-/// Shared custom-paint resources threaded through focused view helpers.
-struct DrawContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
-
-struct RecentActivityLabels<'a> {
-    when: &'a str,
-    action: &'a str,
-}
-
 const BAR_H: f64 = 52.0;
 const RAIL_W: f64 = 256.0;
 
@@ -1162,14 +1149,6 @@ impl BackupsApp {
         self.draw_toast(scene, t, tr, theme);
     }
 
-    fn bar_height(theme: &Theme) -> f64 {
-        BAR_H * f64::from(theme.text_scale)
-    }
-
-    /// Icon tabs preserve all four views at 200% text without turning their
-    /// labels into ambiguous initials. Their semantic names are always full;
-    /// this tooltip gives pointer users the same discoverability.
-
     fn draw_job_progress(
         &self,
         scene: &mut Scene,
@@ -1441,15 +1420,6 @@ impl BackupsApp {
                 .radius(7.0)
                 .text_size(fs),
         );
-    }
-
-    const fn view_icon(view: View) -> Icon {
-        match view {
-            View::Timeline => Icon::History,
-            View::Sources => Icon::Folder,
-            View::Destinations => Icon::HardDrive,
-            View::Schedules => Icon::Calendar,
-        }
     }
 
     /// Health signal (kept as text so the pill needs no bespoke tint) followed

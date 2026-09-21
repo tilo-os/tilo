@@ -741,10 +741,6 @@ impl GitClientApp {
         SplitLayout::from_width(self.rect.width(), NARROW_BREAKPOINT)
     }
 
-    fn appbar_height(&self) -> f64 {
-        self.appbar_h
-    }
-
     /// Whether the primary list column is currently a revealed/open overlay.
     fn flap_open(&self) -> bool {
         self.flap.is_open(self.layout_mode())
@@ -3871,7 +3867,7 @@ mod tests {
                         rect.x0 >= 0.0
                             && rect.x1 <= width
                             && rect.y0 >= 0.0
-                            && rect.y1 <= app.appbar_height(),
+                            && rect.y1 <= app.appbar_h,
                         "control {index} is outside the {width}px window: {rect:?}"
                     );
                     for other in controls.iter().skip(index + 1) {

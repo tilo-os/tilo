@@ -163,19 +163,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-fn shot_theme(kind: Option<&str>, text_scale: Option<f32>, reduce_motion: bool) -> Theme {
-    let theme = match kind {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = match text_scale {
-        Some(scale) => theme.with_text_scale(scale),
-        None => theme,
-    };
-    theme.with_reduce_motion(reduce_motion)
-}
-
 /// Render one offscreen frame of `widget` and write it as a PNG. Mirrors
 /// `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
@@ -244,21 +231,6 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("video-player: wrote shot to {}", out.display());
     Ok(())
-}
-
-#[cfg(test)]
-mod shot_tests {
-    use super::*;
-
-    #[test]
-    fn custom_shot_theme_propagates_text_scale_and_reduced_motion() {
-        let theme = shot_theme(Some("high-contrast"), Some(2.0), true);
-        assert!((theme.text_scale - 2.0).abs() < f32::EPSILON);
-        assert!(theme.reduce_motion);
-        let mut renderer = TextRenderer::new();
-        renderer.set_text_scale(theme.text_scale);
-        assert!((renderer.text_scale() - 2.0).abs() < f32::EPSILON);
-    }
 }
 
 #[cfg(test)]

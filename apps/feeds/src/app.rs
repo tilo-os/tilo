@@ -629,10 +629,7 @@ impl FeedsApp {
         HEADER_H * self.text_scale
     }
 
-    fn side_row_h(&self) -> f64 {
-        SIDE_ROW_H * self.text_scale
-    }
-
+    #[cfg(test)]
     fn list_row_h(&self) -> f64 {
         LIST_ROW_H * self.text_scale
     }

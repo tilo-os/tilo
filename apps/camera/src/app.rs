@@ -95,36 +95,8 @@ const MODE_LABEL_PAD_X: f64 = step(Spacing::BASE.s3);
 /// keep their authored 1× heights and grow to `label line + 2 × BADGE_PAD_Y`
 /// once the measured line no longer fits.
 const BADGE_PAD_Y: f64 = 3.0;
-/// The gallery card's caption strip: authored 44 px at 1×, growing to hold
-/// the measured label + timestamp block with `CAPTION_PAD_Y` above and below.
-const CAPTION_STRIP_MIN_H: f64 = 44.0;
-const CAPTION_PAD_Y: f64 = step(Spacing::BASE.s2);
-/// The scanner's floating title card: authored 52 px at 1×; the measured
-/// title + subtitle block is centred in it and grows it when needed.
-const GLASS_HEADER_MIN_H: f64 = 52.0;
-const GLASS_HEADER_PAD_Y: f64 = 10.0;
-const GLASS_HEADER_LINE_GAP: f64 = 1.0;
-/// The scan result card: authored 122 px at 1× (16 px inset, title, summary,
-/// a 30 px action row 12 px above the bottom edge); each part is measured
-/// and the card grows when the stack needs more than the authored height.
-const SCAN_CARD_MIN_H: f64 = 122.0;
-const SCAN_CARD_PAD: f64 = step(Spacing::BASE.s4);
-const SCAN_CARD_LINE_GAP: f64 = step(Spacing::BASE.s1);
-const SCAN_CARD_SECTION_GAP: f64 = step(Spacing::BASE.s3);
-const SCAN_CARD_ACTION_INSET: f64 = step(Spacing::BASE.s3);
-const SCAN_ACTION_MIN_H: f64 = 30.0;
-const SCAN_ACTION_PAD_Y: f64 = 7.0;
 /// Recent-scans rows: authored 44 px, measured summary + timestamp block.
 const SCAN_ROW_PAD_Y: f64 = 6.0;
-/// Gallery detail panel: the gap under each key/value line (12.5 px text →
-/// 15.6 px line + 10.4 = the authored 26 px pitch) and the label padding of
-/// the Favorite / Share / Delete buttons (authored 38 px at 1×).
-const DETAIL_ROW_GAP: f64 = 10.4;
-const DETAIL_ACTION_PAD_Y: f64 = step(Spacing::BASE.s2);
-/// Width the gallery grid gives up on its right for the 3 px scrollbar thumb
-/// (drawn 3..6 px inside the edge) once the roll overflows, so the thumb no
-/// longer paints over the last column's edge.
-const SCROLLBAR_GUTTER: f64 = 10.0;
 /// Payload composited into the sample scanner poster (hermetic path only).
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;";
 /// Single decoded-size budget for the contextual recent-capture preview.
@@ -3651,23 +3623,6 @@ impl CameraApp {
     ) {
         // Keep the four capture destinations inside a narrow/high-zoom viewport
         // instead of letting the fixed desktop-width pill clip off-screen.
-        let available_w = self.rect.width() - EDGE * 2.0;
-        let seg_w = if theme.text_scale >= 1.5 {
-            // Four translated labels need the full compact stage at 200%
-            // text. The old desktop cap made the words collide even though
-            // the surrounding viewport had room; retain a readable maximum
-            // on tablet/desktop widths without shrinking the phone target.
-            available_w.clamp(240.0, 360.0)
-        } else {
-            available_w.clamp(150.0, 240.0)
-        };
-        let height = if theme.text_scale >= 1.5 { 64.0 } else { 34.0 };
-        let seg = Rect::new(
-            center_x - seg_w / 2.0,
-            bottom_y - height,
-            center_x + seg_w / 2.0,
-            bottom_y,
-        );
         let on_cam = matches!(self.screen, Screen::Camera);
         let items: Vec<(String, bool, Action)> = vec![
             (
@@ -6009,6 +5964,7 @@ struct ScrollMetrics {
 /// other, and on a 480 px window the filter sat on the title's row and ran
 /// into it.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg(test)]
 struct GalleryChrome {
     /// Centre of the 32 px back button.
     back: Point,
@@ -6021,6 +5977,7 @@ struct GalleryChrome {
     content_top: f64,
 }
 
+#[cfg(test)]
 impl GalleryChrome {
     /// Authored 1× values: title 20 px at +16, count 12.5 px at +44, grid at
     /// +64 (or +104 when the filter owns the row below the title).

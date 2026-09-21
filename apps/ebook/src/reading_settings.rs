@@ -7,12 +7,11 @@
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
-use crate::input_controls::{InputEventCtx, InputPaintCtx, NumberControls, NumberField};
+use crate::input_controls::{InputEventCtx, NumberControls, NumberField};
 use crate::model::{ColorScheme, CompositionStyle, FontEntry, ReadMode, ReadTheme, Settings};
 use crate::paint;
 
@@ -30,25 +29,6 @@ pub(crate) enum ReadingSettingsAction {
     SetFont(String),
     SetReadTheme(ReadTheme),
     SetScheme(String),
-}
-
-/// Paint services supplied by the reader host for one settings frame.
-pub(crate) struct ReadingSettingsPaintCtx<'a> {
-    pub scene: &'a mut Scene,
-    pub transform: Affine,
-    pub text: &'a mut TextRenderer,
-    pub theme: &'a Theme,
-}
-
-/// Reader state and available geometry consumed by the settings popover.
-pub(crate) struct ReadingSettingsView<'a> {
-    pub viewport: Rect,
-    pub content_x0: f64,
-    pub content_x1: f64,
-    pub settings: &'a Settings,
-    pub fonts: &'a [FontEntry],
-    pub default_font_id: &'a str,
-    pub schemes: &'a [ColorScheme],
 }
 
 #[derive(Clone)]
@@ -75,27 +55,6 @@ struct Layout {
     font_pills: Vec<(String, String, f64, bool)>,
     scheme_pills: Vec<SchemePill>,
     scheme_widths: Vec<f64>,
-}
-
-#[derive(Clone, Copy)]
-struct ControlRow {
-    x0: f64,
-    x1: f64,
-    y: f64,
-    height: f64,
-    gap: f64,
-}
-
-impl ControlRow {
-    fn at_y(self, y: f64) -> Self {
-        Self { y, ..self }
-    }
-}
-
-struct PillSpec<'a> {
-    label: &'a str,
-    active: bool,
-    action: ReadingSettingsAction,
 }
 
 #[derive(Default)]
