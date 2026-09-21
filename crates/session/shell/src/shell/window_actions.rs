@@ -146,6 +146,9 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
             .or_else(|| group.tabs.first())
             .ok_or(DuplicateError::NoActiveTab)?;
         match &tab.tile {
+            TileContent::WorkspaceActivity => {
+                return Err(DuplicateError::ForeignWindow);
+            }
             TileContent::AppPlaceholder { kind, label } | TileContent::Stub { kind, label } => {
                 (kind.clone(), label.clone(), group.id)
             }
