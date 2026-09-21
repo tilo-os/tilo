@@ -348,8 +348,7 @@ impl Chip {
                   truncate anything that matters for a UI scale factor"
     )]
     pub fn label_size_for_height(height: f64, theme: &Theme) -> f32 {
-        let scaled_height = HEIGHT * f64::from(theme.text_scale);
-        theme.tokens.typography.scale.sm * (height / scaled_height).clamp(0.75, 1.6) as f32
+        theme.tokens.typography.scale.sm * (height / HEIGHT).clamp(0.75, 1.6) as f32
     }
 
     /// Intrinsic width of an immediate-mode chip — what [`Chip::draw_at`]
