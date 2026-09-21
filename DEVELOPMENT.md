@@ -65,10 +65,12 @@ for how selection and shared runtime compatibility interact. Use **Release / app
 dispatch for a development artifact, selecting the smallest applicable app and
 architecture set and leaving `publish` off unless publication is intended.
 
-The app registry is publicly reachable at `https://registry.podesta.ai`, but its
-signed catalogue is still empty. CI catalogue submission is not merged or enabled;
-Forgejo package publication alone does not make an app discoverable there. See the
-[production roadmap](docs/ci-production-roadmap.md) for the remaining acceptance gates.
+The app registry is publicly reachable at `https://registry.podesta.ai`. Main-branch
+app publication now submits each newly built immutable qpkg to it; separate collector
+and networkless signer jobs independently verify accepted requests before advancing
+the signed catalogue. Forgejo package publication remains a distinct artifact channel
+and alone does not make an app discoverable. See the [production roadmap](docs/ci-production-roadmap.md)
+for the remaining acceptance gates.
 
 OS publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually
 run **Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
@@ -191,6 +193,23 @@ An unavailable run or log is retained with a `collection_errors` evidence gap;
 it does not discard the remaining snapshot or become a comparison baseline.
 When too little complete evidence remains, the report records that the optional
 comparison is unavailable and still exits successfully with the snapshot.
+
+For a failing pull request, start with the exact-head contexts and then open only
+the failed run:
+
+```sh
+fgj pr checks <pr-number>
+fgj actions run view <run-number>
+fgj actions run logs <run-number>
+```
+
+The app plan and affected-package selector are workflow summaries, so inspect
+them before assuming CI built the whole workspace or app fleet. Main-branch
+check receipts are recorded out of band by `tools/ci/receipt.sh`; they do not
+modify `main` and are evidence for one source SHA and run ID only. A successful
+receipt does not qualify a package, OS release, registry deployment or hardware
+target. For queue/startup regressions, preserve the run number and compare it
+with `timing_report.py` instead of estimating from the web UI.
 
 ## Preview affected applications
 
