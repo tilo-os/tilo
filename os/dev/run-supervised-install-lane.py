@@ -445,7 +445,14 @@ test "$(stat -c '%u:%g:%F' /work)" = '0:0:directory'
 test "$(stat -c '%d' /work)" != "$(stat -c '%d' /)"
 chmod 0700 /work
 test "$(stat -c '%u:%g:%a:%F' /work)" = '0:0:700:directory'
+if test -e /work/disk-output || test -L /work/disk-output; then
+    test ! -L /work/disk-output
+    test "$(stat -c '%u:%g:%a:%F' /work/disk-output)" = '0:0:700:directory'
+    test -z "$(find /work/disk-output -mindepth 1 -maxdepth 1 -print -quit)"
+    rmdir -- /work/disk-output
+fi
 test ! -e /work/disk-output
+test ! -L /work/disk-output
 mkdir -m 0700 /work/disk-output
 test "$(stat -c '%u:%g:%a:%F' /work/disk-output)" = '0:0:700:directory'
 '''

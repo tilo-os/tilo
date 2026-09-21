@@ -195,7 +195,7 @@ class LaneAdmission(unittest.TestCase):
                     lane.collect_creator_failure(args, disk)
                 self.assertEqual(command.call_count, 1)
 
-    def test_creator_prepares_fresh_private_output_before_creation(self):
+    def test_creator_only_replaces_exact_empty_private_output_before_creation(self):
         disk = {'namespace': 'kata-system', 'pod': 'tilo-disk-run1'}
         with patch.object(lane, 'command') as command:
             lane.prepare_disk_output('ctx', disk)
@@ -208,9 +208,21 @@ class LaneAdmission(unittest.TestCase):
         self.assertIn("stat -c '%d' /work", script)
         self.assertLess(script.index('chmod 0700 /work'),
                         script.index("stat -c '%u:%g:%a:%F' /work"))
-        self.assertLess(script.index('test ! -e /work/disk-output'),
-                        script.index('mkdir -m 0700 /work/disk-output'))
-        self.assertEqual(script.count("0:0:700:directory"), 2)
+        output_guard = 'if test -e /work/disk-output || test -L /work/disk-output; then'
+        reject_link = 'test ! -L /work/disk-output'
+        exact_metadata = "stat -c '%u:%g:%a:%F' /work/disk-output"
+        empty_check = 'find /work/disk-output -mindepth 1 -maxdepth 1 -print -quit'
+        remove = 'rmdir -- /work/disk-output'
+        create = 'mkdir -m 0700 /work/disk-output'
+        self.assertLess(script.index(output_guard), script.index(reject_link))
+        self.assertLess(script.index(reject_link), script.index(exact_metadata))
+        self.assertLess(script.index(exact_metadata), script.index(empty_check))
+        self.assertLess(script.index(empty_check), script.index(remove))
+        self.assertLess(script.index(remove), script.index(create))
+        self.assertNotIn('rm -', script)
+        self.assertIn('test ! -e /work/disk-output\ntest ! -L /work/disk-output\n' + create,
+                      script)
+        self.assertEqual(script.count("0:0:700:directory"), 3)
         self.assertEqual(command.call_args.kwargs, {'timeout': 30})
 
     def test_creator_inspects_then_prepares_then_executes(self):
