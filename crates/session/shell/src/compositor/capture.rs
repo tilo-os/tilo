@@ -2315,8 +2315,26 @@ mod tests {
             .replace_content(ui::widget::TileContent::App(Box::new(
                 crate::shell::notes_app::NotesApp::with_seed(long_note),
             )));
+        // The tree initially focuses the last group, so explicitly expose the
+        // target for one ordinary layout/paint pass before proving that its
+        // semantic canvas remains capturable while wholly offscreen.
+        assert!(
+            frame_builder
+                .host_mut()
+                .group_row_mut_for_tests(strip_id)
+                .expect("live strip row")
+                .scroll_group_into_view(target_group),
+            "the target group must require scrolling into view"
+        );
         frame_builder.relayout();
         let _ = frame_builder.paint();
+        assert!(
+            frame_builder
+                .host_mut()
+                .group_at_for_tests(strip_id, 0)
+                .is_some_and(|group| group.complete_capture_rect().is_some()),
+            "long Notes document did not publish complete capture geometry"
+        );
         assert!(
             frame_builder
                 .host_mut()

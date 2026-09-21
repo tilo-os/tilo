@@ -31352,7 +31352,15 @@ mod tests {
     /// clickable.
     #[test]
     fn collaborator_actions_are_absent_without_the_invite_capability() {
-        let mut h = build_harness();
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new_with_fixture_handle(
+            tree.shared(),
+            crate::shell::hosted_inputs::HostedTileInputs::fixture()
+                .expect("deterministic hosted inputs"),
+        );
+        let host = ShellOverlayHost::with_fixture_content(Box::new(StubContent::new()))
+            .with_chrome(chrome.clone());
+        let mut h = build_harness_with_host(host, chrome);
         {
             // Owned by somebody else, and the local user holds no grant
             // here — the ordinary position of a guest in a room.
