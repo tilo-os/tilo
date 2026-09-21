@@ -355,25 +355,36 @@ class CanaryIdentity(unittest.TestCase):
         self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
         self.assertIn('burst-us-qos-builder-replication', replication)
 
-    def test_main_promotion_installs_aws_cli_from_ubuntu_universe(self):
-        promotion = BUILD.split('  promote-builder:', 1)[1]
-        tools = promotion.split('      - name: Install publication tools', 1)[1].split(
-            '      - name: Verify and publish the tested native builder index', 1
-        )[0]
-        enable_universe = 'sudo -n add-apt-repository --yes universe'
-        install_aws = (
-            'sudo -n apt-get install -y --no-install-recommends '
-            'awscli podman skopeo'
-        )
-        self.assertIn(
-            'sudo -n apt-get install -y --no-install-recommends '
-            'software-properties-common',
-            tools,
-        )
-        self.assertIn(enable_universe, tools)
-        self.assertIn(install_aws, tools)
-        self.assertLess(tools.index(enable_universe), tools.index(install_aws))
-        self.assertIn('sudo -n dnf install -y awscli podman skopeo', tools)
+    def test_main_promotion_installs_pinned_aws_cli_without_distro_package(self):
+        tools = step_block(BUILD, 'Install publication tools')
+        self.assertIn('curl unzip podman skopeo', tools)
+        self.assertNotRegex(tools, r'install .*\bawscli\b')
+        self.assertIn('bash ./os/dev/install-aws-cli.sh', tools)
+
+    def test_aws_cli_rejects_corrupt_download_before_extraction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            # A successful transfer containing invalid bytes must never execute.
+            scripts = {
+                'curl': '#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\nprintf corrupt > "$2"\n',
+                'unzip': '#!/bin/sh\ntouch "$RUNNER_TEMP/extracted"\nexit 99\n',
+            }
+            for name, body in scripts.items():
+                path = bin_dir / name
+                path.write_text(body)
+                path.chmod(0o755)
+            result = subprocess.run(
+                ['bash', str(ROOT / 'os/dev/install-aws-cli.sh')],
+                env={**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
+                     'RUNNER_TEMP': directory, 'GITHUB_PATH': str(root / 'path')},
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / 'extracted').exists())
+            self.assertFalse((root / 'path').exists())
+            self.assertEqual(list(root.glob('aws-cli-download.*')), [])
 
     def test_reuse_never_reaches_signing_or_promotion(self):
         signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]
