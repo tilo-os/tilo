@@ -1247,10 +1247,7 @@ impl App {
             self.actions.resource_generation.get(),
         )
         .unwrap_or_default();
-        let mut tree = std::mem::replace(
-            &mut self.accessibility.semantic_tree,
-            crate::a11y_tree::SemanticTree::new(),
-        );
+        let mut tree = std::mem::take(&mut self.accessibility.semantic_tree);
         let delta = self
             .with_native_presentation(|root, nodes, focused, _| {
                 tree.refresh_components(root, nodes, focused, &resources, &components)
