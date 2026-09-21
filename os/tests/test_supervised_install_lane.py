@@ -36,6 +36,21 @@ def helper_elf():
 
 
 class LaneAdmission(unittest.TestCase):
+    def resumable_fixture(self, directory, expires_at=4102444800):
+        root=Path(directory)
+        creator_node=node('disk',disk=True)
+        creator_node['metadata']['uid']='disk-node-uid'
+        creator={'pod':'tilo-disk-run1','pod_uid':'creator-pod-uid','namespace':'kata-system',
+          'node':'disk','node_uid':'disk-node-uid','spec':{},'image_id':lane.DISK_IMAGE}
+        args=SimpleNamespace(operation_dir=root,helper_revision='a'*40,
+          acceptance_id='run1',context='ctx',verifier_node=None,vm_node=None)
+        creation=b'{"disk_created":true}\n'
+        identity={'size':64*1024**3,'sha256':'b'*64}
+        (root/'creation.json').write_bytes(creation)
+        (root/'raw-identity.json').write_text(json.dumps(identity))
+        checkpoint=lane.checkpoint_creator(args,creator,creator_node,creation,identity,expires_at)
+        return args,checkpoint,creator_node,creator,creation,identity
+
     def test_gui_evidence_requires_desktop_and_rendered_local_browser_page(self):
         html='<!doctype html><h1>Tilo browser offline ready</h1>\n'
         good={'oobe_intro':'Create your local identity',
@@ -76,6 +91,75 @@ class LaneAdmission(unittest.TestCase):
                          [{'name':'REGISTRY_AUTH_FILE','value':'/work/registry-auth.json'}])
         self.assertEqual(lane.vm_manifest('tilo-vm-run1',vm)['spec']['containers'][0]
                          ['resources']['requests']['devic.es/kvm'],'1')
+
+    def test_controller_loss_before_verifier_pauses_credential_free_creator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,disk,creator,_,_=self.resumable_fixture(directory)
+            vm=node('vm',kvm=True);verify=node('verify',disk=True)
+            with patch.object(lane,'create_worker',side_effect=lane.ControllerTransportError('lost')):
+                with self.assertRaisesRegex(ValueError,'creator paused'):
+                    lane.provision_verifier_or_pause(args,{'items':[disk,verify,vm]},
+                                                      checkpoint,disk,vm)
+            paused=json.loads((Path(directory)/'paused-creator.json').read_text())
+            self.assertEqual(paused['creator'],creator)
+            self.assertEqual(paused['status'],'paused')
+            self.assertFalse((Path(directory)/'registry-auth.json').exists())
+            self.assertIn('--cleanup-paused',paused['cleanup_command'])
+
+    def test_creator_checkpoint_refuses_credentials_and_manifest_has_bounded_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,_,disk,creator,creation,identity=self.resumable_fixture(directory)
+            manifest=lane.disk_manifest('tilo-disk-run1',disk,operation='run1',expires_at=1234)
+            self.assertEqual(manifest['metadata']['labels'],{
+              lane.OWNER_LABEL:lane.OWNER,lane.OPERATION_LABEL:'run1',
+              lane.EXPIRES_LABEL:'1234'})
+            self.assertEqual(manifest['spec']['activeDeadlineSeconds'],43200)
+            (Path(directory)/'registry-auth.json').write_text('{}')
+            with self.assertRaisesRegex(ValueError,'cannot retain'):
+                lane.checkpoint_creator(args,creator,disk,creation,identity,1234)
+
+    def test_resume_uses_full_creator_node_without_duplicate_creator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,disk,creator,_,_=self.resumable_fixture(directory)
+            vm=node('vm',kvm=True);verify=node('verify',disk=True)
+            document={'items':[disk,verify,vm]}
+            with patch.object(lane,'require_same_worker') as same, \
+                    patch.object(lane,'create_worker') as create:
+                loaded=lane.resume_creator(args,document)
+            same.assert_called_once_with('ctx',creator)
+            create.assert_not_called()
+            self.assertTrue((Path(directory)/'paused-creator.json').exists())
+            self.assertIs(loaded[4],disk)
+            selected={'namespace':'kata-system','pod':'tilo-verify-run1'}
+            with patch.object(lane,'select_verifier_node',wraps=lane.select_verifier_node) as choose, \
+                    patch.object(lane,'create_worker',return_value=selected):
+                self.assertEqual(lane.provision_verifier_or_pause(
+                    args,document,checkpoint,loaded[4],loaded[5]),selected)
+            self.assertIs(choose.call_args.args[1],disk)
+
+    def test_resume_rejects_typed_checkpoint_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,_,_,_,_=self.resumable_fixture(directory)
+            path=Path(directory)/'creator-checkpoint.json'
+            hostile=json.loads(path.read_text());hostile['creator_node']='disk'
+            path.write_text(json.dumps(hostile))
+            with self.assertRaisesRegex(ValueError,'full node document'):
+                lane.load_creator_checkpoint(args)
+
+    def test_expired_pause_cleanup_checks_owner_uid_and_never_runs_early(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,_,creator,_,_=self.resumable_fixture(directory,expires_at=100)
+            lane.pause_creator(args,checkpoint,'ControllerTransportError')
+            pod={'metadata':{'uid':creator['pod_uid'],'labels':{
+              lane.OWNER_LABEL:lane.OWNER,lane.OPERATION_LABEL:args.acceptance_id,
+              lane.EXPIRES_LABEL:'100'}}}
+            with patch.object(lane,'api_json',return_value=pod), \
+                    patch.object(lane,'delete_worker') as delete:
+                with self.assertRaisesRegex(ValueError,'not reached'):
+                    lane.cleanup_paused_creator('ctx',directory,now=99)
+                lane.cleanup_paused_creator('ctx',directory,now=100)
+            delete.assert_called_once_with('ctx',creator)
+            self.assertTrue((Path(directory)/'paused-creator-cleaned.json').exists())
 
     def test_stale_or_shared_nodes_are_rejected(self):
         with self.assertRaisesRegex(ValueError,'disk-kernel'):
