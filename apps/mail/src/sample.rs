@@ -260,7 +260,7 @@ I have thoughts on the focus model.",
     mb.insert(
         SampleMessage {
             from: correspondents.linus,
-            to: vec![Addr::bare("tilo-dev@lists.tilo.example")],
+            to: vec![Addr::bare("tilo-app@lists.tilo.example")],
             subject: "Re: [PATCH] fuse: hydrate-on-read for projected blobs",
             body: "On Tue, the patch looks mostly fine, but the readahead window is \
 hard-coded to 1MB. Make it a mount option. Also your error path leaks the \

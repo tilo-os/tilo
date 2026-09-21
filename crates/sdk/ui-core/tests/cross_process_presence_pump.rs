@@ -14,11 +14,11 @@ use std::thread;
 use std::time::Duration;
 
 use crate::support::typed_collab::TypedBroker;
-use ui::app::App;
-use ui::collaboration::PresencePayload;
-use ui::presence::PresenceKey;
-use ui::state::State;
-use ui::widget::Container;
+use tilo_ui::app::App;
+use tilo_ui::collaboration::PresencePayload;
+use tilo_ui::presence::PresenceKey;
+use tilo_ui::state::State;
+use tilo_ui::widget::Container;
 
 fn wait_until(deadline: Duration, mut condition: impl FnMut() -> bool) -> bool {
     let start = std::time::Instant::now();
@@ -56,7 +56,7 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
             app_b.pump_collab_presence();
             app_b
                 .presence_ctx()
-                .pointer_for(&key, &ui::permissions::UserId("peer-a".into()))
+                .pointer_for(&key, &tilo_ui::permissions::UserId("peer-a".into()))
                 == Some((320.0, 240.0))
         }),
         "App B processes typed presence before the deadline"
@@ -70,7 +70,7 @@ fn cross_process_pump_lands_remote_cursor_on_peer_b() {
         .expect("peer-a's pointer populates App B's remote cursors");
     assert_eq!(alice.position, [320.0, 240.0]);
     assert_eq!(
-        presence.pointer_for(&key, &ui::permissions::UserId("peer-a".into())),
+        presence.pointer_for(&key, &tilo_ui::permissions::UserId("peer-a".into())),
         Some((320.0, 240.0)),
     );
 

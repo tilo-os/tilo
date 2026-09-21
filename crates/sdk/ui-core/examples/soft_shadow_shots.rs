@@ -1,4 +1,4 @@
-//! Offscreen renders of [`ui::surface::soft_shadow`] at every geometry the
+//! Offscreen renders of [`tilo_ui::surface::soft_shadow`] at every geometry the
 //! toolkit and the shell chrome actually ask for, so the primitive can be
 //! inspected without hunting for a scene that happens to contain the
 //! shape you changed.
@@ -19,9 +19,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;
 
-use ui::offscreen::OffscreenRenderer;
-use ui::surface::soft_shadow;
-use ui::theme::Theme;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::surface::soft_shadow;
+use tilo_ui::theme::Theme;
 
 /// `(name, width, height, spread, offset_y, intensity, radius)` — the
 /// live call sites, in their own numbers.
@@ -65,7 +65,10 @@ fn px_dim(v: f64) -> u32 {
 // Standard immediate-mode paint-helper signature (scene + geometry + the
 // shadow's own tunable parameters); every parameter is independently
 // load-bearing for this one shot case.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the paint helper receives independent shot geometry and shadow parameters"
+)]
 fn paint(
     scene: &mut Scene,
     canvas: Rect,

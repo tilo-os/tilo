@@ -1,4 +1,6 @@
 use super::{MusicApp, Track};
+#[cfg(all(test, feature = "audio"))]
+use ui::widget::Continuable as _;
 
 impl MusicApp {
     pub(super) fn make_open_file_button() -> ui::widget::Button {
