@@ -431,10 +431,14 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
             >= ui::text_metrics::line_height_px(text_base(), 2.0) + 2.0 * f64::from(app.spacing.s3)
     );
     assert_eq!(app.row_h(), ROW_H * 2.0);
-    assert_eq!(app.hit.search.height(), FIELD_H * 2.0);
+    let field_h = at_least_whole(
+        FIELD_H,
+        line_h(text_base(), 2.0) + 2.0 * f64::from(app.spacing.s2),
+    );
+    assert_eq!(app.hit.search.height(), field_h);
 
     app.shots_edit_contact();
-    drive_frame_with_theme(&mut app, 1440, 900, &large_text);
+    app.layout();
     let form = app.form.as_ref().expect("edit form");
     let first = form
         .inputs
@@ -449,7 +453,7 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
         .expect("last name")
         .ti_rect();
     assert!(last.y0 > first.y1, "paired fields stack at large text");
-    assert_eq!(first.height(), FIELD_H * 2.0);
+    assert_eq!(first.height(), field_h);
     let notes = form
         .inputs
         .iter()
@@ -460,7 +464,7 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
         "note text wraps instead of clipping"
     );
     assert!(
-        notes.ti_rect().height() >= FIELD_H * 4.0,
+        notes.ti_rect().height() >= field_h * 3.0,
         "notes reserve multiple large-text lines"
     );
 }

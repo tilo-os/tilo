@@ -220,7 +220,7 @@ fn production_launch_registers_history() {
 fn actual_migrating_opener_keeps_saved_graph() {
     use automerge::{ReadDoc, transaction::Transactable};
     const APP: &str = "dev.tilo.contacts";
-    if let Ok(stage) = std::env::var("QOS_CONTACTS_HISTORY_STARTUP") {
+    if let Ok(stage) = std::env::var("TILO_CONTACTS_HISTORY_STARTUP") {
         let legacy = contacts::storage::default_path().unwrap();
         if stage == "write" {
             let mut doc = automerge::AutoCommit::new();
@@ -285,10 +285,10 @@ fn actual_migrating_opener_keeps_saved_graph() {
                 "actual_migrating_opener_keeps_saved_graph",
                 "--nocapture",
             ])
-            .env("QOS_CONTACTS_HISTORY_STARTUP", stage)
+            .env("TILO_CONTACTS_HISTORY_STARTUP", stage)
             .env("XDG_DATA_HOME", dir.path())
-            .env("QOS_PACKAGE_ID", APP)
-            .env("QOS_CONTACTS_DATA", dir.path().join("legacy.automerge"))
+            .env("TILO_PACKAGE_ID", APP)
+            .env("TILO_CONTACTS_DATA", dir.path().join("legacy.automerge"))
             .output()
             .unwrap();
         assert!(

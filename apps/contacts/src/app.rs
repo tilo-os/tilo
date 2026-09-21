@@ -100,6 +100,7 @@ const TOOLBAR_BUTTON_TEXT: f32 = 13.0;
 /// two file buttons (Import / Export). Grown by the measured label growth.
 const TOOLBAR_NEW_W: f64 = 104.0;
 const TOOLBAR_FILE_W: f64 = 86.0;
+const TOOLBAR_DUPLICATE_W: f64 = 142.0;
 /// The toolbar labels, shared by the painter and the width measurement so
 /// the face is always sized for the text it actually shows.
 const TOOLBAR_IMPORT_LABEL: &str = "Import";
@@ -3275,6 +3276,13 @@ impl ContactsApp {
         let new_w = face_w(TOOLBAR_NEW_W, g.new);
         self.hit.new = Rect::new(x - new_w, btn_y, x, btn_y + btn_h);
         x -= new_w + if compact_toolbar { 6.0 } else { 10.0 };
+        if self.has_duplicate_candidate() {
+            let duplicate_w = face_w(TOOLBAR_DUPLICATE_W, 0.0);
+            self.hit.duplicates = Rect::new(x - duplicate_w, btn_y, x, btn_y + btn_h);
+            x -= duplicate_w + if compact_toolbar { 6.0 } else { 10.0 };
+        } else {
+            self.hit.duplicates = Rect::ZERO;
+        }
         let exp_w = face_w(TOOLBAR_FILE_W, g.export);
         self.hit.export = Rect::new(x - exp_w, btn_y, x, btn_y + btn_h);
         x -= exp_w + if compact_toolbar { 6.0 } else { 10.0 };
@@ -10631,10 +10639,11 @@ mod local_layout_tests {
         assert_eq!(app.hit.save.height(), two.action_h);
         assert_eq!(app.hit.add_phone.height(), two.add_h);
         assert!(
-            form.inputs
-                .iter()
-                .all(|f| (f.ti_rect().height() - two.field_h).abs() < 0.01),
-            "every field is one scaled row tall"
+            form.inputs.iter().all(|field| {
+                let rows = if field.slot == Slot::Notes { 3.0 } else { 1.0 };
+                (field.ti_rect().height() - two.field_h * rows).abs() < 0.01
+            }),
+            "every field uses its authored number of scaled rows"
         );
         let first = form
             .inputs
@@ -10684,6 +10693,8 @@ mod local_layout_tests {
         for c in sample_contacts() {
             app.store.upsert(c);
         }
+        app.rebuild_resource_index();
+        app.refresh_search_provider();
         let id = app
             .store
             .contacts
@@ -10742,6 +10753,7 @@ mod local_layout_tests {
         for c in sample_contacts() {
             app.store.upsert(c);
         }
+        app.rebuild_resource_index();
         // Grace Hopper is in "Work" only; narrowing the list to "Friends"
         // (Alan Turing's group) filters her out of the visible set.
         app.group_filter = Some("Friends".to_string());
@@ -12428,8 +12440,7 @@ mod local_layout_tests {
         let Some(Popup::GroupFilter { anchor }) = h.app.popup else {
             panic!("the group chip opens the filter popup");
         };
-        let mut opts = vec!["All".to_string()];
-        opts.extend(h.app.store.all_groups());
+        let opts = h.app.group_filter_options();
         let idx = opts
             .iter()
             .position(|o| o == "Friends")
@@ -13143,7 +13154,7 @@ mod local_layout_tests {
         let home = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", home.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
 
         // First launch.
@@ -13193,7 +13204,7 @@ mod local_layout_tests {
         let home = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", home.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
         let mut doc = store.new_document();
@@ -13263,7 +13274,7 @@ mod local_layout_tests {
         let home = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", home.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         let (dir, legacy) = scratch_book();
         let book = sample_contacts();
@@ -13718,7 +13729,7 @@ mod local_layout_tests {
         let home = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", home.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         // Seed a book into the store, then delete one contact and restart.
         let book = sample_contacts();
