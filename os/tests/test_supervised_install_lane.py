@@ -775,4 +775,74 @@ class LaneAdmission(unittest.TestCase):
         self.assertEqual(command.call_args.kwargs,{'timeout':120})
 
 
+class DetachedVmCycle(unittest.TestCase):
+    def binding(self):
+        return {'schema':1,'purpose':'tilo-supervised-vm-cycle-job','operation':'run1',
+                'cycle':'run1-prepared-alongside','vm':{'namespace':'agent-sandboxes',
+                'pod':'tilo-vm-run1','pod_uid':'p'*32,'container':'qemu','container_id':'c'*32,
+                'image':'registry.test/vm@sha256:'+'a'*64,'image_id':'registry.test/vm@sha256:'+'a'*64},
+                'disk':{'size':64*1024**3,'sha256':'b'*64},
+                'helper':{'path':'/work/source/os/dev/test-installer-cycle.sh','sha256':'d'*64},
+                'script_sha256':'e'*64,'environment_sha256':'f'*64,
+                'job_sha256':'0'*64}
+
+    def status(self, state, binding, **extra):
+        value={'schema':1,'purpose':'tilo-supervised-vm-cycle-job','state':state,
+               'binding':binding}; value.update(extra); return value
+
+    def process(self):
+        return {'pid':7,'start':'123','argv_sha256':'a'*64,
+                'cgroup_sha256':'b'*64,'request_sha256':'c'*64}
+
+    def test_poll_reconnects_and_uses_ten_second_normal_cadence(self):
+        binding=self.binding(); worker=binding['vm']
+        running=self.status('running',binding,process=self.process(),returncode=0,
+                            log_bytes=0,log_truncated=False)
+        success=self.status('succeeded',binding,process=self.process(),returncode=0,
+                            log_bytes=12,log_truncated=False)
+        class Clock:
+            value=0
+            def __call__(self): return self.value
+            def sleep(self, delay): self.value += delay
+        clock=Clock()
+        with patch.object(lane,'cycle_worker_identity',side_effect=[worker,worker,worker]), \
+             patch.object(lane,'remote_cycle_status',side_effect=[
+                 lane.ControllerTransportError('relay reset'),running,success]):
+            actual=lane.poll_cycle_job('ctx',worker,worker,binding,'/work/run1-job',
+                                       timeout=100,clock=clock,sleep=clock.sleep)
+        self.assertEqual(actual,success); self.assertEqual(clock.value,20)
+
+    def test_dead_or_stale_process_fails_closed(self):
+        binding=self.binding(); worker=binding['vm']
+        with patch.object(lane,'cycle_worker_identity',return_value=worker), \
+             patch.object(lane,'remote_cycle_status',side_effect=ValueError('VM cycle process vanished')):
+            with self.assertRaisesRegex(ValueError,'process vanished'):
+                lane.poll_cycle_job('ctx',worker,worker,binding,'/work/run1-job',
+                                    timeout=1,clock=lambda:0,sleep=lambda _:None)
+        bad=dict(binding); bad['vm']=dict(binding['vm'],pod_uid='x'*32)
+        running=self.status('running',binding,process=self.process(),returncode=0,
+                            log_bytes=0,log_truncated=False)
+        with self.assertRaisesRegex(ValueError,'differs'):
+            lane.validate_cycle_status(running,bad)
+
+    def test_completed_handoff_is_adopted_only_with_exact_worker_and_media(self):
+        vm={'pod':'tilo-vm-run1','pod_uid':'p'*32,'namespace':'agent-sandboxes','node':'arm1',
+            'node_uid':'n'*32,'spec':{},'image_id':'registry.test/vm@sha256:'+'a'*64}
+        identity={'size':64*1024**3,'sha256':'b'*64}
+        with tempfile.TemporaryDirectory() as directory:
+            lane.persist_vm_handoff(directory,'run1','verifier-released',vm,identity,vm)
+            with patch.object(lane,'optional_same_worker',return_value=vm) as same:
+                value=lane.adopt_vm_handoff('ctx',directory,'run1',identity)
+            self.assertEqual(value['state'],'verifier-released'); same.assert_called_once_with('ctx',vm)
+            with self.assertRaisesRegex(ValueError,'worker differs'):
+                lane.load_vm_handoff(directory,'run1',expected_vm=dict(vm,pod_uid='x'*32))
+
+    def test_handoff_state_requires_verifier_before_release(self):
+        vm={'pod':'tilo-vm-run1','pod_uid':'p'*32,'namespace':'agent-sandboxes','node':'arm1',
+            'node_uid':'n'*32,'spec':{},'image_id':'registry.test/vm@sha256:'+'a'*64}
+        identity={'size':64*1024**3,'sha256':'b'*64}
+        with self.assertRaisesRegex(ValueError,'verifier release'):
+            lane.vm_handoff_document('run1','verifier-release-intent',vm,identity)
+
+
 if __name__=='__main__':unittest.main()
