@@ -1376,7 +1376,7 @@ mod tests {
                 .expect("Photos contract")
                 .product)(&View::default(), &doc)
             .is_none(),
-            "holding a Photos replica must not silently rerender content; only the explicit export action may produce qos.content"
+            "holding a Photos replica must not silently rerender content; only the explicit export action may produce tilo.content"
         );
     }
 
