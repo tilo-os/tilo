@@ -23,10 +23,12 @@ use ui::presence::{PresenceCtx, user_color};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
+use ui::widget::drag::{DragController, ListMetrics};
 use vello::peniko::Color;
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::state::WorkspaceTree;
+use settings_store::hardware::{TopBarWidget, TopBarWidgetsConfig};
 
 /// Persistent chrome is deliberately a little taller than the original
 /// concept's 40 px sketch.  Forty pixels forced the navigation and status
@@ -173,6 +175,26 @@ impl CenterWidget {
             0 => CenterWidget::Clock,
             1 => CenterWidget::SystemMonitor,
             _ => CenterWidget::Calendar,
+        }
+    }
+}
+
+impl From<TopBarWidget> for CenterWidget {
+    fn from(value: TopBarWidget) -> Self {
+        match value {
+            TopBarWidget::Clock => Self::Clock,
+            TopBarWidget::SystemMonitor => Self::SystemMonitor,
+            TopBarWidget::Calendar => Self::Calendar,
+        }
+    }
+}
+
+impl From<CenterWidget> for TopBarWidget {
+    fn from(value: CenterWidget) -> Self {
+        match value {
+            CenterWidget::Clock => Self::Clock,
+            CenterWidget::SystemMonitor => Self::SystemMonitor,
+            CenterWidget::Calendar => Self::Calendar,
         }
     }
 }
@@ -485,6 +507,11 @@ pub struct TopBarChrome {
     activity_started: Option<Instant>,
     center_rect: Rect,
     center_dot_rects: [Rect; 3],
+    widget_config: TopBarWidgetsConfig,
+    widget_editing: bool,
+    widget_editor_rect: Rect,
+    widget_edit_drag: DragController<TopBarWidget>,
+    widget_edit_pressed: Option<usize>,
     /// Matches the sidebar-wheel's scroll contract. `f64` so pixel-delta
     /// scroll events (`f64` in `winit`) accumulate without a truncating
     /// `f64 -> f32` cast.
@@ -708,6 +735,11 @@ impl TopBarChrome {
             activity_started: None,
             center_rect: Rect::ZERO,
             center_dot_rects: [Rect::ZERO; 3],
+            widget_config: TopBarWidgetsConfig::load(),
+            widget_editing: false,
+            widget_editor_rect: Rect::ZERO,
+            widget_edit_drag: DragController::vertical(),
+            widget_edit_pressed: None,
             center_scroll_accum: 0.0,
             last_cursor: None,
             focused: false,
@@ -1769,9 +1801,21 @@ impl TopBarChrome {
             );
         }
 
-        let active_dot = self.center_widget.index();
+        let widgets = self.widget_config.widgets.clone();
+        if !widgets.contains(&TopBarWidget::from(self.center_widget)) {
+            self.center_widget = widgets
+                .first()
+                .copied()
+                .unwrap_or(TopBarWidget::Clock)
+                .into();
+        }
+        let active_dot = widgets
+            .iter()
+            .position(|widget| *widget == TopBarWidget::from(self.center_widget))
+            .unwrap_or(0);
         let dots = Self::center_dot_layout(band, self.rect, active_dot);
-        for (i, dot) in dots.iter().enumerate() {
+        self.center_dot_rects = [Rect::ZERO; 3];
+        for (i, dot) in dots.iter().take(widgets.len()).enumerate() {
             let active = active_dot == i;
             let color = if active {
                 colors.accent[5]
@@ -1788,6 +1832,161 @@ impl TopBarChrome {
         let content_x1 = band.x1 - 12.0;
         let content_cx = f64::midpoint(content_x0, content_x1);
         (content_x0, content_x1, content_cx)
+    }
+
+    fn widget_editor_row(&self, index: usize) -> Rect {
+        let top = self.widget_editor_rect.y0 + 62.0 + small_count_to_f64(index) * 50.0;
+        Rect::new(
+            self.widget_editor_rect.x0 + 14.0,
+            top,
+            self.widget_editor_rect.x1 - 14.0,
+            top + 42.0,
+        )
+    }
+
+    fn draw_widget_editor(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.widget_editing {
+            self.widget_editor_rect = Rect::ZERO;
+            return;
+        }
+        let width = 286.0;
+        let available = TopBarWidget::ALL
+            .iter()
+            .filter(|widget| !self.widget_config.widgets.contains(widget))
+            .count();
+        let height = 86.0
+            + small_count_to_f64(self.widget_config.widgets.len()) * 50.0
+            + if available > 0 { 54.0 } else { 0.0 };
+        let panel = Rect::new(
+            self.center_rect.center().x - width / 2.0,
+            self.rect.y1 + 8.0,
+            self.center_rect.center().x + width / 2.0,
+            self.rect.y1 + 8.0 + height,
+        );
+        self.widget_editor_rect = panel;
+        let rr = RoundedRect::from_rect(panel, 16.0);
+        scene.fill(Fill::NonZero, transform, theme.surfaces.overlay, None, &rr);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &rr,
+        );
+        text.draw_text_weighted(
+            scene,
+            "Edit top bar",
+            theme.tokens.typography.scale.md,
+            theme.tokens.colors.text_primary,
+            at(transform, (panel.x0 + 16.0, panel.y0 + 15.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        text.draw_text(
+            scene,
+            "Drag to reorder · click Remove",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            at(transform, (panel.x0 + 16.0, panel.y0 + 38.0)),
+            None,
+        );
+        let metrics =
+            ListMetrics::uniform(panel.y0 + 62.0, 42.0, 8.0, self.widget_config.widgets.len());
+        self.widget_edit_drag.sync_insertion(&metrics);
+        for (index, widget) in self
+            .widget_config
+            .widgets
+            .clone()
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            if self.widget_edit_drag.from_index() == Some(index) {
+                continue;
+            }
+            let mut row = self.widget_editor_row(index);
+            row = row.with_origin((
+                row.x0,
+                row.y0 + self.widget_edit_drag.item_shift(index, &metrics),
+            ));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(row, 10.0),
+            );
+            let label = match widget {
+                TopBarWidget::Clock => "Clock",
+                TopBarWidget::SystemMonitor => "System monitor",
+                TopBarWidget::Calendar => "Calendar",
+            };
+            text.draw_text(
+                scene,
+                "⠿",
+                theme.tokens.typography.scale.md,
+                theme.tokens.colors.text_dim,
+                at(transform, (row.x0 + 12.0, row.y0 + 11.0)),
+                None,
+            );
+            text.draw_text(
+                scene,
+                label,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                at(transform, (row.x0 + 40.0, row.y0 + 12.0)),
+                None,
+            );
+            text.draw_text(
+                scene,
+                "Remove",
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.danger,
+                at(transform, (row.x1 - 60.0, row.y0 + 13.0)),
+                None,
+            );
+        }
+        if let Some(ghost) = self.widget_edit_drag.ghost_rect(&metrics) {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[5].with_alpha(0.22),
+                None,
+                &RoundedRect::from_rect(
+                    Rect::new(panel.x0 + 14.0, ghost.y0, panel.x1 - 14.0, ghost.y1),
+                    10.0,
+                ),
+            );
+        }
+        if available > 0 {
+            let y = panel.y1 - 40.0;
+            let mut x = panel.x0 + 16.0;
+            for widget in TopBarWidget::ALL {
+                if self.widget_config.widgets.contains(&widget) {
+                    continue;
+                }
+                let label = match widget {
+                    TopBarWidget::Clock => "+ Clock",
+                    TopBarWidget::SystemMonitor => "+ Monitor",
+                    TopBarWidget::Calendar => "+ Calendar",
+                };
+                text.draw_text(
+                    scene,
+                    label,
+                    theme.tokens.typography.scale.xs,
+                    theme.tokens.colors.accent[5],
+                    at(transform, (x, y)),
+                    None,
+                );
+                x += 82.0;
+            }
+        }
     }
 
     fn draw_clock_widget(
@@ -2651,17 +2850,15 @@ impl TopBarChrome {
         self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }
 
-    /// Sets [`Self::avatar_stack_rect`] to the drawn chip stack's bounds.
-    /// An untouched solo workspace deliberately has no collaborator control
-    /// in the resting bar; inviting the first person starts in the contextual
-    /// workspace sheet opened from the workspace name. `pos` is `(center_y,
-    /// stack_right_x)`.
+    /// Sets [`Self::avatar_stack_rect`] to either the drawn chip stack's
+    /// bounds or the restored empty-room Invite control. `pos` is
+    /// `(center_y, stack_right_x)`.
     fn draw_avatar_stack_bounds(
         &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _theme: &Theme,
-        _text_renderer: &mut TextRenderer,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
         pos: (f64, f64),
         slot_count: usize,
     ) {
@@ -2680,7 +2877,53 @@ impl TopBarChrome {
             );
             return;
         }
-        self.avatar_stack_rect = Rect::ZERO;
+        // Restored from e1cdcea5a: the first invite is exactly when there is
+        // no avatar to click. An outlined empty seat names the action without
+        // pretending a participant is already present.
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let label = "Invite";
+        let label_size = tokens.typography.scale.xs;
+        let (label_w, label_h) =
+            text_renderer.measure_weighted(label, label_size, None, TextWeight::Medium);
+        let chip_r = 7.5_f64;
+        let pill_x1 = stack_right_x + 2.0;
+        let chip_cx = pill_x1 - 6.0 - chip_r;
+        let label_x = chip_cx - chip_r - 6.0 - f64::from(label_w);
+        let pill = Rect::new(label_x - 10.0, center_y - 12.0, pill_x1, center_y + 12.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(pill, f64::from(tokens.radii.sm)),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            label,
+            label_size,
+            colors.text_dim,
+            transform * Affine::translate((label_x, center_y - f64::from(label_h) / 2.0)),
+            None,
+            TextWeight::Medium,
+        );
+        let chip = vello::kurbo::Circle::new(Point::new(chip_cx, center_y), chip_r);
+        scene.stroke(
+            &Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
+            transform,
+            colors.border_standard,
+            None,
+            &chip,
+        );
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(chip_cx - 5.0, center_y - 5.0, chip_cx + 5.0, center_y + 5.0),
+            ui::icons::Icon::Plus,
+            colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        self.avatar_stack_rect = pill;
     }
 
     /// The click half of [`Widget::handle_event`]'s `MouseInput`
@@ -3686,6 +3929,7 @@ impl Widget for TopBarChrome {
         );
         self.draw_activity_badge(scene, transform, theme, text_renderer);
         self.draw_focus_indicator(scene, transform, theme);
+        self.draw_widget_editor(scene, transform, text_renderer, theme);
         let clock_activity = self.chrome.as_ref().and_then(|chrome| {
             let state = chrome.borrow();
             state.overlays.clock.then(|| state.clock_activity.clone())?
@@ -3736,6 +3980,19 @@ impl Widget for TopBarChrome {
         if let WindowEvent::CursorMoved { position, .. } = event {
             let point = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(point);
+            if self.widget_edit_drag.is_pending() {
+                *handled = self.widget_edit_drag.pointer_moved(
+                    point,
+                    &ListMetrics::uniform(
+                        self.widget_editor_rect.y0 + 62.0,
+                        42.0,
+                        8.0,
+                        self.widget_config.widgets.len(),
+                    ),
+                );
+                self.cache_fp = CacheFingerprint::default();
+                return;
+            }
             if self.clock_touch_id.is_none() && self.move_clock_drag_to(point) {
                 *handled = true;
             }
@@ -3782,6 +4039,17 @@ impl Widget for TopBarChrome {
             ..
         } = event
         {
+            if let Some((from, to)) = self.widget_edit_drag.commit()
+                && from < self.widget_config.widgets.len()
+                && to < self.widget_config.widgets.len()
+            {
+                let widget = self.widget_config.widgets.remove(from);
+                self.widget_config.widgets.insert(to, widget);
+                let _ = self.widget_config.save();
+                self.cache_fp = CacheFingerprint::default();
+                *handled = true;
+            }
+            self.widget_edit_pressed = None;
             if self.clock_touch_id.is_none() && self.clock_drag_offset.take().is_some() {
                 *handled = true;
             }
@@ -3799,6 +4067,54 @@ impl Widget for TopBarChrome {
             return;
         }
         if let Some(point) = self.last_cursor {
+            if self.widget_editing && self.widget_editor_rect.contains(point) {
+                for index in 0..self.widget_config.widgets.len() {
+                    let row = self.widget_editor_row(index);
+                    if !row.contains(point) {
+                        continue;
+                    }
+                    if point.x > row.x1 - 78.0 && self.widget_config.widgets.len() > 1 {
+                        self.widget_config.widgets.remove(index);
+                        let _ = self.widget_config.save();
+                    } else {
+                        let id = self.widget_config.widgets[index];
+                        self.widget_edit_drag
+                            .begin(id, index, point.y - row.y0, point);
+                        self.widget_edit_pressed = Some(index);
+                    }
+                    self.cache_fp = CacheFingerprint::default();
+                    *handled = true;
+                    return;
+                }
+                let mut x = self.widget_editor_rect.x0 + 16.0;
+                for widget in TopBarWidget::ALL {
+                    if self.widget_config.widgets.contains(&widget) {
+                        continue;
+                    }
+                    let add = Rect::new(
+                        x,
+                        self.widget_editor_rect.y1 - 48.0,
+                        x + 78.0,
+                        self.widget_editor_rect.y1 - 8.0,
+                    );
+                    if add.contains(point) {
+                        self.widget_config.widgets.push(widget);
+                        let _ = self.widget_config.save();
+                        self.cache_fp = CacheFingerprint::default();
+                        *handled = true;
+                        return;
+                    }
+                    x += 82.0;
+                }
+                *handled = true;
+                return;
+            }
+            if self.center_rect.contains(point) && modifiers.state().control_key() {
+                self.widget_editing = !self.widget_editing;
+                self.cache_fp = CacheFingerprint::default();
+                *handled = true;
+                return;
+            }
             if self.activate_clock_control_at(point) {
                 *handled = true;
                 return;
@@ -3815,7 +4131,7 @@ impl Widget for TopBarChrome {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.clock_drag_offset.is_some()
+        self.clock_drag_offset.is_some() || self.widget_edit_drag.is_pending()
     }
 
     fn name(&self) -> &'static str {
@@ -5060,7 +5376,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_roster_leaves_the_resting_bar_quiet() {
+    fn empty_roster_restores_the_clickable_invite_affordance() {
         let mut tree = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
@@ -5112,10 +5428,16 @@ mod tests {
             "this test is about the empty case and the roster is not empty",
         );
         assert!(
-            bar.avatar_stack_rect.is_zero_area(),
-            "an untouched solo workspace must not advertise collaboration in the resting bar",
+            bar.avatar_stack_rect.area() > 0.0,
+            "an empty room still needs a People entry point for the first invite",
         );
         assert!(!chrome.borrow().overlays.collaborators);
+
+        bar.last_cursor = Some(bar.avatar_stack_rect.center());
+        let mut handled = false;
+        bar.handle_left_click(&mut handled);
+        assert!(handled);
+        assert!(chrome.borrow().overlays.collaborators);
     }
 
     /// The topbar's shadow is its only linear-gradient fill, so pinning
