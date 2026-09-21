@@ -768,7 +768,7 @@ def creator_input_status(context, disk, acceptance_id='run1'):
     try:
         value=json.loads(command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk',
                                          '--','python3','-c',REMOTE_CREATOR_INPUT_STATUS,
-                                         'python3',disk.get('pod_uid',''),disk.get('node_uid',''),
+                                         disk.get('pod_uid',''),disk.get('node_uid',''),
                                          acceptance_id),timeout=30))
     except (ValueError,TypeError,json.JSONDecodeError) as error:
         raise CreatorInputReconciliationError('creator input status is not valid JSON') from error
@@ -842,7 +842,7 @@ print('TILO_CREATOR_FAILED_JOB_RESET')'''
 
 def reset_failed_creator_job(context, disk, acceptance_id):
     argv=kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk','--','python3','-c',
-                 REMOTE_CREATOR_FAILED_JOB_RESET,'python3',disk['pod_uid'],disk['node_uid'],acceptance_id)
+                 REMOTE_CREATOR_FAILED_JOB_RESET,disk['pod_uid'],disk['node_uid'],acceptance_id)
     try:
         output=command(argv,timeout=30)
     except ControllerTransportError:
