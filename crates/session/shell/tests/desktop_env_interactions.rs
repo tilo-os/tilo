@@ -211,14 +211,15 @@ fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
     );
 }
 
-/// Hover a group's first tab, satisfy pointer intent, and hold its chip-reveal
-/// curve past the end, so the per-tab chips have hit rects to click.
+/// Hover a group's first tab and hold its chip-reveal curve past the end, so
+/// the per-tab chips have hit rects to click.
 ///
 /// The cluster slides out on wall time: `TabBar::advance_reveal` starts the
 /// curve and returns where it started, so the rects stay `Rect::ZERO` until it
-/// has run. Pointer hover also has an intentional dwell before that curve can
-/// start. The test holds both production timers and lays out after each state
-/// transition, since `apply_layout` is what places the rects.
+/// has run. A test that hovers and reads straight back always reads zero and
+/// clicks nothing. `hold_reveal_at` is the renderer's own escape from that —
+/// an offscreen frame costs more wall time than the curve lasts — and layout
+/// has to run again afterwards, since `apply_layout` is what places the rects.
 fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: StripId) -> Layout {
     let pill = host
         .group_at_for_tests(strip_id, 0)
@@ -229,17 +230,8 @@ fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: Stri
         .expect("a pill")
         .center();
     cursor(host, layout, pill);
-    let mut intended = false;
-    if let Some(row) = host.group_row_mut_for_tests(strip_id) {
-        for group in &mut row.groups {
-            intended |= group
-                .bar_mut_for_tests()
-                .hold_hover_intent_at(std::time::Duration::from_secs(1));
-        }
-    }
-    assert!(intended, "hovering the pill must arm pointer intent");
-    // Once intent has matured, layout creates the reveal curve. It has to
-    // exist before the second clock can be held.
+    // The curve is created by the layout pass that first sees the new hover
+    // target, so it has to exist before it can be held.
     let layout = lay_out_host(host);
     let mut held = false;
     if let Some(row) = host.group_row_mut_for_tests(strip_id) {
