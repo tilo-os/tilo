@@ -392,6 +392,11 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
 #[test]
 fn native_peer_facade_recording_only_startup_cannot_advertise_durable_attachment() {
     let root = tempfile::tempdir().unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure broker fixture root");
+    }
     let mut tree = WorkspaceTree::default();
     let mut room = crate::test_support::Workspace::test_default(
         crate::test_support::WorkspaceId(71),

@@ -17,8 +17,43 @@ use ui::collaboration::CollabEvent;
 /// API other modules call.
 pub type FanoutSink = Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>;
 
+thread_local! {
+    static BROKER_FACADE_CALLS: std::cell::RefCell<Vec<usize>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+pub(crate) struct BrokerFacadeCallGuard {
+    identity: usize,
+}
+
+impl BrokerFacadeCallGuard {
+    pub(crate) fn enter(identity: usize) -> Self {
+        BROKER_FACADE_CALLS.with(|calls| {
+            calls.borrow_mut().push(identity);
+        });
+        Self { identity }
+    }
+}
+
+impl Drop for BrokerFacadeCallGuard {
+    fn drop(&mut self) {
+        BROKER_FACADE_CALLS.with(|calls| {
+            let popped = calls.borrow_mut().pop();
+            debug_assert_eq!(popped, Some(self.identity));
+        });
+    }
+}
+
+fn broker_facade_call_active(identity: Option<usize>) -> bool {
+    identity.is_some_and(|identity| {
+        BROKER_FACADE_CALLS.with(|calls| calls.borrow().contains(&identity))
+    })
+}
+
 /// Shared fanout registry for typed RPC subscribers and in-process shell consumers.
 pub struct FanoutState {
+    stopped: AtomicBool,
     peer_id_counter: AtomicU64,
     capnp: Mutex<Option<Arc<CapnpBrokerState>>>,
     local_subs: Mutex<Vec<Arc<RoomSubscription>>>,
@@ -65,6 +100,7 @@ impl FanoutState {
     }
     pub fn new() -> Self {
         Self {
+            stopped: AtomicBool::new(false),
             peer_id_counter: AtomicU64::new(0),
             capnp: Mutex::new(None),
             local_subs: Mutex::new(Vec::new()),
@@ -78,7 +114,12 @@ impl FanoutState {
             rooms: Mutex::new(rooms),
             sink,
         });
-        if let Ok(mut g) = self.local_subs.lock() {
+        if self.stopped.load(Ordering::Acquire) {
+            return sub;
+        }
+        if let Ok(mut g) = self.local_subs.lock()
+            && !self.stopped.load(Ordering::Acquire)
+        {
             g.push(Arc::clone(&sub));
         }
         sub
@@ -118,21 +159,63 @@ impl FanoutState {
     /// Attach the capnp fanout sink. Called at most once, at
     /// broker-spawn time; repeat calls are silently ignored.
     pub fn attach_capnp(&self, state: Arc<CapnpBrokerState>) {
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
         if let Ok(mut g) = self.capnp.lock()
             && g.is_none()
+            && !self.stopped.load(Ordering::Acquire)
+            && state.is_accepting()
         {
             *g = Some(state);
         }
     }
 
+    /// Stop the exact attached broker while excluding new local and typed
+    /// fanout. The broker releases its journal before this method detaches it,
+    /// and a replacement can never be cleared by the old thread's guard.
+    pub(crate) fn shutdown_capnp(&self, state: &Arc<CapnpBrokerState>) {
+        self.request_shutdown();
+        state.stop();
+        let mut guard = match self.capnp.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if guard
+            .as_ref()
+            .is_some_and(|attached| Arc::ptr_eq(attached, state))
+        {
+            *guard = None;
+        }
+        match self.local_subs.lock() {
+            Ok(mut subscribers) => subscribers.clear(),
+            Err(poisoned) => poisoned.into_inner().clear(),
+        }
+    }
+
+    pub(crate) fn request_shutdown(&self) {
+        self.stopped.store(true, Ordering::Release);
+        let state = self.capnp.lock().ok().and_then(|state| state.clone());
+        if let Some(state) = state {
+            state.request_stop();
+        }
+    }
+
     /// Read the capnp fanout sink if one has been attached.
-    pub fn capnp_state(&self) -> Option<Arc<CapnpBrokerState>> {
-        self.capnp.lock().ok().and_then(|g| g.clone())
+    pub(crate) fn capnp_state(&self) -> Option<Arc<CapnpBrokerState>> {
+        self.capnp
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .filter(|state| state.is_accepting())
     }
 
     /// Deliver `event` to every typed or in-process subscriber addressed by
     /// `route`, skipping the originating typed peer id.
     pub fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
         if route.cluster_id.is_empty() {
             tracing::debug!(
                 "collab_broker: dropping event with an unaddressed route \
@@ -141,6 +224,9 @@ impl FanoutState {
             return;
         }
         for sub in self.local_subs() {
+            if self.stopped.load(Ordering::Acquire) {
+                return;
+            }
             if sub.wants(route) {
                 (sub.sink)(event, route);
             }
@@ -195,7 +281,10 @@ impl AppActionBroker {
         &self,
         roots: Vec<crate::collab_broker_capnp::ActionDirectoryRoot>,
     ) {
-        self.state.replace_action_directory_roots_for_test(roots);
+        let _ = self.state.while_live(|state| {
+            state.replace_action_directory_roots_for_test(roots);
+            Ok(())
+        });
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -203,7 +292,10 @@ impl AppActionBroker {
         &self,
         surfaces: Vec<crate::collab_broker_capnp::PublishedSurface>,
     ) {
-        self.state.replace_published_surfaces_for_test(surfaces);
+        let _ = self.state.while_live(|state| {
+            state.replace_published_surfaces_for_test(surfaces);
+            Ok(())
+        });
     }
 
     /// Bounded, nonblocking bridge from shell chrome into the broker's
@@ -214,21 +306,25 @@ impl AppActionBroker {
     pub fn action_directory_request_queue(
         &self,
     ) -> crate::collab_broker_capnp::ActionDirectoryRequestQueue {
-        self.state.action_directory_request_queue()
+        self.state
+            .while_live(|state| Ok(state.action_directory_request_queue()))
+            .unwrap_or_else(|_| {
+                crate::collab_broker_capnp::ActionDirectoryRequestQueue::unavailable()
+            })
     }
 
     /// Reusable native broker attachment for an ordinary standalone peer.
     pub fn peer_action_attachment(
         &self,
     ) -> Result<(crate::peer_actions::PeerActionQueue, uuid::Uuid), String> {
-        Ok((
-            self.state.peer_action_queue(),
-            self.state.invocation_host()?,
-        ))
+        self.state
+            .while_live_fenced(|state| Ok((state.peer_action_queue(), state.invocation_host()?)))
     }
 
     pub fn surfaces(&self) -> Vec<crate::collab_broker_capnp::PublishedSurface> {
-        self.state.published_surfaces()
+        self.state
+            .while_live(|state| Ok(state.published_surfaces()))
+            .unwrap_or_default()
     }
 
     /// Generation of the retained published-surface source.  Palette query
@@ -236,14 +332,18 @@ impl AppActionBroker {
     /// snapshot.
     #[must_use]
     pub fn surfaces_generation(&self) -> u64 {
-        self.state.published_surfaces_generation()
+        self.state
+            .while_live(|state| Ok(state.published_surfaces_generation()))
+            .unwrap_or_default()
     }
 
     /// Small inert routes for currently connected `ActionDirectory` sources.
     /// Shell search uses these to fan out bounded pull queries; capabilities
     /// themselves remain owned by the broker `LocalSet`.
     pub fn action_directory_roots(&self) -> Vec<crate::collab_broker_capnp::ActionDirectoryRoot> {
-        self.state.action_directory_roots()
+        self.state
+            .while_live(|state| Ok(state.action_directory_roots()))
+            .unwrap_or_default()
     }
 
     /// Fetch one deterministic, bounded page of inert directory routes.
@@ -256,7 +356,8 @@ impl AppActionBroker {
         max_results: usize,
     ) -> crate::collab_broker_capnp::ActionDirectoryRootPage {
         self.state
-            .action_directory_root_page(after_peer, max_results)
+            .while_live(|state| Ok(state.action_directory_root_page(after_peer, max_results)))
+            .unwrap_or_default()
     }
 
     /// Invoke one published application action.
@@ -275,7 +376,7 @@ impl AppActionBroker {
     ) -> Result<std::sync::mpsc::Receiver<crate::collab_broker_capnp::InvocationCompletion>, String>
     {
         self.state
-            .invoke(peer_id, resource, action, argument, actor)
+            .while_live(|state| state.invoke(peer_id, resource, action, argument, actor))
     }
 
     /// Start a published action and return its lifecycle job.
@@ -292,15 +393,20 @@ impl AppActionBroker {
         actor: &str,
     ) -> Result<crate::collab_broker_capnp::InvocationJob, String> {
         self.state
-            .start_invocation(peer_id, resource, action, argument, actor)
+            .while_live(|state| state.start_invocation(peer_id, resource, action, argument, actor))
     }
 
     pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
-        self.state.invocation_status(id)
+        self.state
+            .while_live(|state| Ok(state.invocation_status(id)))
+            .ok()
+            .flatten()
     }
 
     pub fn statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
-        self.state.invocation_statuses(actor)
+        self.state
+            .while_live(|state| Ok(state.invocation_statuses(actor)))
+            .unwrap_or_default()
     }
 
     /// Request cooperative cancellation for an owned invocation.
@@ -309,16 +415,21 @@ impl AppActionBroker {
     ///
     /// Returns an error for an unknown, foreign, or non-cancellable invocation.
     pub fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
-        self.state.request_cancellation(id, actor)
+        self.state
+            .while_live(|state| state.request_cancellation(id, actor))
     }
 
     pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
-        self.state.can_cancel(id, actor)
+        self.state
+            .while_live(|state| Ok(state.can_cancel(id, actor)))
+            .unwrap_or(false)
     }
 
     /// True only while the named admitted agent has a live task subscription.
     pub fn agent_is_live_task_capable(&self, room: &str, agent: &str) -> bool {
-        self.state.agent_is_live_task_capable(room, agent)
+        self.state
+            .while_live(|state| Ok(state.agent_is_live_task_capable(room, agent)))
+            .unwrap_or(false)
     }
 
     /// Dispatch a task to its assigned live agent. There is intentionally no
@@ -329,7 +440,8 @@ impl AppActionBroker {
     /// Returns an error when no matching admitted live agent can accept the
     /// task.
     pub fn dispatch_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
-        self.state.dispatch_workspace_task(room, task_id)
+        self.state
+            .while_live(|state| state.dispatch_workspace_task(room, task_id))
     }
 
     #[allow(
@@ -350,8 +462,9 @@ impl AppActionBroker {
         actor: &str,
         phrase: Option<&str>,
     ) -> Result<String, String> {
-        self.state
-            .prepare_confirmation(peer_id, resource, action, argument, actor, phrase)
+        self.state.while_live(|state| {
+            state.prepare_confirmation(peer_id, resource, action, argument, actor, phrase)
+        })
     }
 
     #[allow(
@@ -372,20 +485,23 @@ impl AppActionBroker {
         actor: &str,
         token: &str,
     ) -> Result<crate::collab_broker_capnp::InvocationJob, String> {
-        self.state.start_invocation_confirmed(
-            peer_id,
-            resource,
-            action,
-            argument,
-            actor,
-            Some(token),
-        )
+        self.state.while_live(|state| {
+            state.start_invocation_confirmed(
+                peer_id,
+                resource,
+                action,
+                argument,
+                actor,
+                Some(token),
+            )
+        })
     }
 }
 
 pub struct BrokerHandle {
     capnp_socket_path: PathBuf,
     capnp_thread: Option<JoinHandle<()>>,
+    capnp_identity: Option<usize>,
     capnp_quit: Arc<AtomicBool>,
     pub fanout: Arc<FanoutState>,
     channels: Arc<Mutex<BrokerChannels>>,
@@ -536,9 +652,17 @@ impl BrokerHandle {
 }
 impl Drop for BrokerHandle {
     fn drop(&mut self) {
+        self.fanout.request_shutdown();
         self.capnp_quit.store(true, Ordering::Relaxed);
-        let _ = std::fs::remove_file(&self.capnp_socket_path);
-        let _ = self.capnp_thread.take();
+        if let Some(thread) = self.capnp_thread.take() {
+            join_owned_thread(thread, self.capnp_identity);
+        }
+    }
+}
+
+fn join_owned_thread(thread: JoinHandle<()>, identity: Option<usize>) {
+    if thread.thread().id() != std::thread::current().id() && !broker_facade_call_active(identity) {
+        let _ = thread.join();
     }
 }
 /// Start the production broker with explicit host-owned authority and services.
@@ -602,9 +726,11 @@ fn spawn_inner(
         quit.clone(),
         config,
     )?;
+    let capnp_identity = fanout.capnp_state().map(|state| Arc::as_ptr(&state).addr());
     Ok(BrokerHandle {
         capnp_socket_path: socket,
         capnp_thread: Some(thread),
+        capnp_identity,
         capnp_quit: quit,
         fanout,
         channels,

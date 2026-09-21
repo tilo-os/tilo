@@ -45,6 +45,8 @@ pub(crate) fn run_isolated_native_consent_test(test_name: &str, assertions: impl
                 .path()
                 .canonicalize()
                 .expect("canonical isolated native-consent root");
+            std::fs::set_permissions(&fixture_root, std::fs::Permissions::from_mode(0o700))
+                .expect("secure native-consent broker fixture root");
             let environment = fixture_root.join("environment");
             let runtime = environment.join("runtime");
             std::fs::create_dir_all(&runtime).expect("create isolated runtime");

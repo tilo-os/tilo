@@ -3,7 +3,11 @@ mod owner_commit_tests {
     use super::*;
 
     fn canonical_tempdir() -> tempfile::TempDir {
-        tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure owner broker fixture root");
+        directory
     }
 
     struct ExplicitAuthority;

@@ -380,6 +380,10 @@ pub fn spawn_with_agent_actions(
     path: &Path,
     actions: &[(&str, &str)],
 ) -> shell::shell::collab_broker::BrokerHandle {
+    use std::os::unix::fs::PermissionsExt as _;
+    let parent = path.parent().expect("typed broker socket has a parent");
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+        .expect("secure typed broker fixture root");
     let root = SigningKey::from_bytes(&ROOT_KEY);
     let collab_types::Principal::Person(principal) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),

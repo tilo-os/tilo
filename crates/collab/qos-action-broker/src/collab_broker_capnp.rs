@@ -20,11 +20,15 @@ use invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::CString;
+use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -966,7 +970,12 @@ impl LocalActionDirectoryRegistry {
     }
 
     fn remove(&self, peer_id: u64) {
-        self.directories.borrow_mut().remove(&peer_id);
+        // Dropping the removed Cap'n Proto client can synchronously release a
+        // connection lease and re-enter this idempotent cleanup. Release the
+        // registry borrow before capability drop so the nested removal sees
+        // an ordinary absent entry instead of panicking on RefCell reborrow.
+        let removed = self.directories.borrow_mut().remove(&peer_id);
+        drop(removed);
     }
 }
 
@@ -1051,6 +1060,12 @@ pub struct ActionDirectoryRequestQueue {
 
 impl ActionDirectoryRequestQueue {
     const CAPACITY: usize = 64;
+
+    pub(crate) fn unavailable() -> Self {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(0);
+        drop(receiver);
+        Self { sender }
+    }
 
     /// # Errors
     ///
@@ -1452,6 +1467,11 @@ struct PendingWorker {
 }
 /// Shared typed broker state, attached to the transport-neutral fanout core.
 pub struct CapnpBrokerState {
+    /// Serializes the cloneable shell facade against final shutdown. Broker
+    /// LocalSet tasks are dropped before shutdown takes the write side.
+    lifecycle: RwLock<()>,
+    accepting: AtomicBool,
+    stopped: AtomicBool,
     /// Keyed by `join_channel`'s `channel_id`; lazily inserted on first join.
     channels: Mutex<HashMap<String, ChannelSubscribers>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
@@ -1504,9 +1524,118 @@ pub struct CapnpBrokerState {
     invocation_id: AtomicU64,
     services: HostServices,
     workers: Mutex<Vec<PendingWorker>>,
+    #[cfg(test)]
+    thread_callbacks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 impl CapnpBrokerState {
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn is_accepting(&self) -> bool {
+        self.accepting.load(Ordering::Acquire) && !self.is_stopped()
+    }
+
+    pub(crate) fn request_stop(&self) {
+        self.accepting.store(false, Ordering::Release);
+    }
+
+    /// Hold the broker lifecycle read side for one complete shell-facade
+    /// operation. Once shutdown obtains the write side, no stale facade can
+    /// admit or publish new work.
+    pub(crate) fn while_live<T>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _live = self
+            .lifecycle
+            .read()
+            .map_err(|_| "broker unavailable".to_string())?;
+        if !self.is_accepting() {
+            return Err("broker unavailable".into());
+        }
+        let _call =
+            crate::collab_broker::BrokerFacadeCallGuard::enter(std::ptr::from_ref(self).addr());
+        operation(self)
+    }
+
+    /// Like `while_live`, but discard a newly cloned handle if a callback
+    /// requested this exact broker's shutdown before the handle escaped.
+    pub(crate) fn while_live_fenced<T>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let result = self.while_live(operation);
+        if !self.is_accepting() {
+            return Err("broker unavailable".into());
+        }
+        result
+    }
+
+    /// Finalize the shared state after the LocalSet and all of its RPC tasks
+    /// have been dropped. Surviving Arc-backed facades become inert, and the
+    /// journal lock is released before the socket path can be reclaimed.
+    pub(crate) fn stop(&self) {
+        let _exclusive = match self.lifecycle.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        self.request_stop();
+        if self.stopped.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        macro_rules! clear {
+            ($field:expr) => {
+                match $field.lock() {
+                    Ok(mut value) => value.clear(),
+                    Err(poisoned) => poisoned.into_inner().clear(),
+                }
+            };
+        }
+        clear!(self.channels);
+        clear!(self.surfaces);
+        clear!(self.action_directory_roots);
+        clear!(self.invocation_subscribers);
+        clear!(self.action_catalogue_subscribers);
+        clear!(self.pending_invocations);
+        clear!(self.stable_invocation_subscribers);
+        clear!(self.confirmation_grants);
+        clear!(self.cancellation_requests);
+        clear!(self.task_subscribers);
+        clear!(self.pending_task_runs);
+        clear!(self.workers);
+        #[cfg(test)]
+        clear!(self.thread_callbacks);
+        match self.peer_action_rx.lock() {
+            Ok(mut receiver) => {
+                receiver.take();
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().take();
+            }
+        }
+        self.refresh_action_directory_root_snapshot();
+
+        let journal = {
+            let mut slot = match self.journal.lock() {
+                Ok(slot) => slot,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            std::mem::replace(&mut *slot, Ok(None))
+        };
+        drop(journal);
+    }
+
+    #[cfg(test)]
+    fn enqueue_thread_callback(&self, callback: Box<dyn FnOnce() + Send>) {
+        match self.thread_callbacks.lock() {
+            Ok(mut callbacks) => callbacks.push(callback),
+            Err(poisoned) => poisoned.into_inner().push(callback),
+        }
+    }
+
     /// Allocate a private connected descriptor for an actual host-mounted worker.
     /// The peer must still prove the exact current certificate on every channel join.
     pub fn connect_local_worker(
@@ -1858,6 +1987,9 @@ impl CapnpBrokerState {
         (
             Arc::new(Self {
                 channels: Mutex::new(HashMap::new()),
+                lifecycle: RwLock::new(()),
+                accepting: AtomicBool::new(true),
+                stopped: AtomicBool::new(false),
                 fanout: Arc::downgrade(fanout),
                 broker_channels,
                 publisher,
@@ -1893,6 +2025,8 @@ impl CapnpBrokerState {
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),
+                #[cfg(test)]
+                thread_callbacks: Mutex::new(Vec::new()),
             }),
             bridge_rx,
         )
@@ -4122,6 +4256,19 @@ struct ConnectionLease {
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     peer_id: u64,
+}
+
+struct ConnectionExit {
+    state: Arc<CapnpBrokerState>,
+    directories: Rc<LocalActionDirectoryRegistry>,
+    peer_id: u64,
+}
+
+impl Drop for ConnectionExit {
+    fn drop(&mut self) {
+        self.state.remove_connection(self.peer_id);
+        self.directories.remove(self.peer_id);
+    }
 }
 
 impl Drop for ConnectionLease {
@@ -7206,6 +7353,321 @@ pub fn spawn(
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SocketIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn socket_identity(path: &Path) -> std::io::Result<SocketIdentity> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_socket() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "broker socket path is not a Unix socket",
+        ));
+    }
+    Ok(SocketIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+fn socket_lock_path(path: &Path) -> PathBuf {
+    let mut lock = path.as_os_str().to_os_string();
+    lock.push(".lock");
+    PathBuf::from(lock)
+}
+
+fn acquire_socket_path_lease(path: &Path) -> std::io::Result<File> {
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(socket_lock_path(path))?;
+    if !lock.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "broker socket lease is not a regular file",
+        ));
+    }
+    lock.try_lock().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "broker socket path is owned by another broker",
+        )
+    })?;
+    Ok(lock)
+}
+
+fn remove_socket_if_owned(path: &Path, identity: SocketIdentity) -> std::io::Result<bool> {
+    let current = match socket_identity(path) {
+        Ok(current) => current,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if current != identity {
+        return Ok(false);
+    }
+    std::fs::remove_file(path)?;
+    Ok(true)
+}
+
+fn private_socket_parent(path: &Path) -> std::io::Result<&Path> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "broker socket requires a parent directory",
+        )
+    })?;
+    let metadata = std::fs::symlink_metadata(parent)?;
+    // SAFETY: geteuid takes no arguments and has no failure mode.
+    let effective_uid = unsafe { libc::geteuid() };
+    if !metadata.file_type().is_dir()
+        || metadata.uid() != effective_uid
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "broker socket parent must be an owner-only directory",
+        ));
+    }
+    Ok(parent)
+}
+
+fn socket_stage_path(path: &Path) -> std::io::Result<PathBuf> {
+    let parent = private_socket_parent(path)?;
+    let leaf_len = path
+        .file_name()
+        .map(|leaf| leaf.as_bytes().len())
+        .filter(|len| *len > 0)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "broker socket requires a filename",
+            )
+        })?;
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let mut leaf = String::with_capacity(leaf_len);
+    if leaf_len > 1 {
+        leaf.push('.');
+    }
+    while leaf.len() < leaf_len {
+        let remaining = leaf_len - leaf.len();
+        leaf.push_str(&token[..remaining.min(token.len())]);
+    }
+    Ok(parent.join(leaf))
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static FAIL_STAGED_SOCKET_IDENTITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn staged_socket_identity(path: &Path) -> std::io::Result<SocketIdentity> {
+    #[cfg(test)]
+    if FAIL_STAGED_SOCKET_IDENTITY.with(|fail| fail.replace(false)) {
+        return Err(std::io::Error::other(
+            "injected staged socket identity failure",
+        ));
+    }
+    socket_identity(path)
+}
+
+fn bind_socket_stage(
+    path: &Path,
+) -> std::io::Result<(std::os::unix::net::UnixListener, SocketStage)> {
+    for _ in 0..8 {
+        let socket = socket_stage_path(path)?;
+        if socket == path {
+            continue;
+        }
+        let mut stage = SocketStage {
+            socket,
+            identity: None,
+            bound: false,
+            published: false,
+        };
+        match std::os::unix::net::UnixListener::bind(&stage.socket) {
+            Ok(listener) => {
+                stage.bound = true;
+                stage.identity = Some(staged_socket_identity(&stage.socket)?);
+                return Ok((listener, stage));
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::AlreadyExists
+                ) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "broker socket staging name collision",
+    ))
+}
+
+fn rename_socket_noreplace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let source = CString::new(source.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "broker socket staging path contains NUL",
+        )
+    })?;
+    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "broker socket destination path contains NUL",
+        )
+    })?;
+    #[cfg(target_os = "linux")]
+    // SAFETY: both pointers refer to live NUL-terminated path buffers.
+    // RENAME_NOREPLACE atomically refuses an occupied destination.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    // SAFETY: both pointers refer to live NUL-terminated path buffers.
+    // RENAME_EXCL atomically refuses an occupied destination.
+    let result = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let result = -1;
+    if result == 0 {
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    return Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic no-replace broker socket publication is unsupported",
+    ));
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EEXIST) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                "broker socket destination appeared during publication",
+            ));
+        }
+        Err(error)
+    }
+}
+
+struct SocketStage {
+    socket: PathBuf,
+    identity: Option<SocketIdentity>,
+    bound: bool,
+    published: bool,
+}
+
+impl Drop for SocketStage {
+    fn drop(&mut self) {
+        if !self.published
+            && let Some(identity) = self.identity
+        {
+            let _ = remove_socket_if_owned(&self.socket, identity);
+        } else if !self.published && self.bound {
+            if std::fs::symlink_metadata(&self.socket)
+                .is_ok_and(|metadata| metadata.file_type().is_socket())
+            {
+                let _ = std::fs::remove_file(&self.socket);
+            }
+        }
+    }
+}
+
+/// Remove only a proven stale socket, then bind and retain inode custody.
+/// A live socket, symlink, non-socket, or replacement inode is never unlinked.
+fn bind_owned_socket(
+    path: &Path,
+) -> std::io::Result<(std::os::unix::net::UnixListener, SocketCustody)> {
+    private_socket_parent(path)?;
+    let lease = acquire_socket_path_lease(path)?;
+    match socket_identity(path) {
+        Ok(stale_candidate) => match std::os::unix::net::UnixStream::connect(path) {
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    "broker socket is already accepting connections",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                if !remove_socket_if_owned(path, stale_candidate)? {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AddrInUse,
+                        "broker socket changed during stale-socket recovery",
+                    ));
+                }
+            }
+            Err(error) => return Err(error),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let (listener, mut stage) = bind_socket_stage(path)?;
+    let identity = stage.identity.expect("bound stage records its identity");
+    rename_socket_noreplace(&stage.socket, path)?;
+    stage.published = true;
+    if socket_identity(path)? != identity {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "broker socket pathname changed during publication",
+        ));
+    }
+    drop(stage);
+    Ok((
+        listener,
+        SocketCustody {
+            path: path.to_path_buf(),
+            identity,
+            _lease: lease,
+        },
+    ))
+}
+
+struct SocketCustody {
+    path: PathBuf,
+    identity: SocketIdentity,
+    _lease: File,
+}
+
+impl Drop for SocketCustody {
+    fn drop(&mut self) {
+        let _ = remove_socket_if_owned(&self.path, self.identity);
+    }
+}
+
+struct BrokerThreadShutdown {
+    state: Arc<CapnpBrokerState>,
+    fanout: Arc<FanoutState>,
+}
+
+impl Drop for BrokerThreadShutdown {
+    fn drop(&mut self) {
+        self.fanout.shutdown_capnp(&self.state);
+    }
+}
+
 pub(super) fn spawn_configured(
     socket_path: PathBuf,
     fanout: &Arc<FanoutState>,
@@ -7236,12 +7698,9 @@ pub(super) fn spawn_configured(
             .as_ref()
             .map_err(|error| std::io::Error::other(error.clone()))?;
     }
-    let _ = std::fs::remove_file(&socket_path);
-    fanout.attach_capnp(Arc::clone(&state));
-
     // Bind on the caller's thread: from the worker thread, a bind
     // failure surfaces only via a log line.
-    let std_listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+    let (std_listener, socket_custody) = bind_owned_socket(&socket_path)?;
     std_listener.set_nonblocking(true)?; // tokio's reactor requires this for `from_std`.
     tracing::info!(
         peer_sync = wired,
@@ -7255,9 +7714,20 @@ pub(super) fn spawn_configured(
         },
     );
 
+    let attached_state = Arc::clone(&state);
+    let fanout_for_thread = Arc::clone(fanout);
+    let socket_path_for_thread = socket_path.clone();
     let thread = std::thread::Builder::new()
         .name("qos-collab-broker-capnp".into())
         .spawn(move || {
+            // Declaration order is intentional: shutdown first makes every
+            // surviving facade inert and releases the journal, then socket
+            // custody removes only this broker's still-owned inode.
+            let _socket_custody = socket_custody;
+            let _shutdown = BrokerThreadShutdown {
+                state: Arc::clone(&state),
+                fanout: fanout_for_thread,
+            };
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -7283,12 +7753,22 @@ pub(super) fn spawn_configured(
                     Err(e) => {
                         tracing::warn!(
                             "capnp broker: adopting {} into the reactor failed: {e}",
-                            socket_path.display()
+                            socket_path_for_thread.display()
                         );
                         return;
                     }
                 };
                 loop {
+                    #[cfg(test)]
+                    {
+                        let callbacks = match state.thread_callbacks.lock() {
+                            Ok(mut callbacks) => std::mem::take(&mut *callbacks),
+                            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+                        };
+                        for callback in callbacks {
+                            callback();
+                        }
+                    }
                     let workers = state
                         .workers
                         .lock()
@@ -7365,6 +7845,7 @@ pub(super) fn spawn_configured(
                 }
             });
         })?;
+    fanout.attach_capnp(attached_state);
 
     Ok(thread)
 }
@@ -7587,6 +8068,11 @@ async fn drive_connection(
     peer_id: u64,
     worker: Option<WorkerBinding>,
 ) -> Result<(), capnp::Error> {
+    let _exit = ConnectionExit {
+        state: Arc::clone(&state),
+        directories: Rc::clone(&directories),
+        peer_id,
+    };
     let mut stream = stream;
     if worker.is_none() {
         authenticate_launcher_handoff(&mut stream, &state.services).await?;
@@ -7632,6 +8118,8 @@ pub mod tests {
     use crate::test_support::WorkspaceTree;
     use crate::test_support::WorkspaceTreeHandle;
     use std::cell::RefCell;
+    #[cfg(test)]
+    use std::os::unix::fs::PermissionsExt;
     use std::rc::Rc;
     #[cfg(test)]
     use std::time::SystemTime;
@@ -7644,6 +8132,744 @@ pub mod tests {
     use ed25519_dalek::Signer as _;
     #[cfg(test)]
     use ed25519_dalek::SigningKey;
+
+    #[cfg(test)]
+    fn lifecycle_socket(directory: &tempfile::TempDir, name: &str) -> PathBuf {
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("secure temporary broker directory");
+        directory.path().join(format!("{name}.sock"))
+    }
+
+    #[test]
+    fn socket_parent_must_be_owner_only_before_any_artifact_is_created() {
+        let directory = tempfile::tempdir().expect("temporary socket directory");
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("make parent deliberately non-private");
+        let path = directory.path().join("rejected.sock");
+
+        let error = bind_owned_socket(&path)
+            .err()
+            .expect("non-private parent must be rejected");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            std::fs::read_dir(directory.path())
+                .expect("inspect rejected parent")
+                .next()
+                .is_none(),
+            "parent rejection must precede socket, lease, or staging artifacts"
+        );
+    }
+
+    #[test]
+    fn socket_custody_reclaims_only_stale_owned_inodes() {
+        let directory = tempfile::tempdir().expect("temporary socket directory");
+        let live_path = lifecycle_socket(&directory, "live");
+        let live = std::os::unix::net::UnixListener::bind(&live_path).expect("live socket");
+        let error = bind_owned_socket(&live_path)
+            .err()
+            .expect("live broker socket must not be reclaimed");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(socket_identity(&live_path).is_ok());
+        drop(live);
+
+        let stale_path = lifecycle_socket(&directory, "stale");
+        let stale = std::os::unix::net::UnixListener::bind(&stale_path).expect("stale socket");
+        drop(stale);
+        let (replacement, custody) =
+            bind_owned_socket(&stale_path).expect("proven stale socket is reclaimed");
+        assert!(std::os::unix::net::UnixStream::connect(&stale_path).is_ok());
+        let contender_error = bind_owned_socket(&stale_path)
+            .err()
+            .expect("lifetime lease excludes a competing socket owner");
+        assert_eq!(contender_error.kind(), std::io::ErrorKind::AddrInUse);
+        drop(replacement);
+        drop(custody);
+        assert!(
+            !stale_path.exists(),
+            "owned socket inode is removed on final custody release"
+        );
+
+        let replaced_path = lifecycle_socket(&directory, "replacement");
+        let original =
+            std::os::unix::net::UnixListener::bind(&replaced_path).expect("original socket");
+        let original_identity = socket_identity(&replaced_path).expect("original identity");
+        drop(original);
+        std::fs::remove_file(&replaced_path).expect("remove original pathname");
+        let replacement =
+            std::os::unix::net::UnixListener::bind(&replaced_path).expect("replacement socket");
+        assert!(
+            !remove_socket_if_owned(&replaced_path, original_identity)
+                .expect("replacement identity check"),
+            "an old owner must not unlink a replacement socket"
+        );
+        assert!(std::os::unix::net::UnixStream::connect(&replaced_path).is_ok());
+        drop(replacement);
+
+        let racing_path = lifecycle_socket(&directory, "publish-race");
+        let (staged, stage) = bind_socket_stage(&racing_path).expect("private socket staging");
+        let racing =
+            std::os::unix::net::UnixListener::bind(&racing_path).expect("racing destination");
+        let racing_identity = socket_identity(&racing_path).expect("racing socket identity");
+        let error = rename_socket_noreplace(&stage.socket, &racing_path)
+            .expect_err("no-replace publication must preserve a racing destination");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        assert_eq!(
+            socket_identity(&racing_path).expect("racing socket survives"),
+            racing_identity
+        );
+        assert!(std::os::unix::net::UnixStream::connect(&racing_path).is_ok());
+        drop(staged);
+        drop(stage);
+        assert_eq!(
+            socket_identity(&racing_path).expect("stage cleanup preserves destination"),
+            racing_identity
+        );
+        drop(racing);
+
+        let entries_before_failure = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>();
+        let identity_failure_path = lifecycle_socket(&directory, "identity-failure");
+        FAIL_STAGED_SOCKET_IDENTITY.with(|fail| fail.set(true));
+        assert!(bind_socket_stage(&identity_failure_path).is_err());
+        let entries_after_failure = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            entries_after_failure, entries_before_failure,
+            "staged metadata failure leaves no socket artifact"
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            let parent_len = directory.path().as_os_str().as_bytes().len();
+            let separator = usize::from(!directory.path().as_os_str().is_empty());
+            let leaf_len = 103usize
+                .checked_sub(parent_len + separator)
+                .expect("temporary path leaves room for a valid Unix socket");
+            let long_path = directory.path().join("x".repeat(leaf_len));
+            assert_eq!(long_path.as_os_str().as_bytes().len(), 103);
+            let (listener, custody) = bind_owned_socket(&long_path)
+                .expect("valid near-limit final path must stage without expansion");
+            assert!(std::os::unix::net::UnixStream::connect(&long_path).is_ok());
+            drop(listener);
+            drop(custody);
+        }
+    }
+
+    #[cfg(test)]
+    struct LifecycleAuthority;
+
+    #[cfg(test)]
+    impl crate::peer_actions::CertificateAuthority for LifecycleAuthority {
+        fn authorize(
+            &self,
+            _: uuid::Uuid,
+            _: &tilo_user_identity::DeviceCert,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    struct LifecycleSink;
+
+    #[cfg(test)]
+    impl crate::collab_outbound::PeerPublishSink for LifecycleSink {
+        fn app_document(&self, _: String, _: String, _: String, _: collab_types::SignedOp) {}
+
+        fn app_presence(&self, _: String, _: String, _: collab_types::PeerPresence) {}
+
+        fn scrollback_request(&self, _: ArtifactId, _: u64, _: u16) {}
+    }
+
+    #[cfg(test)]
+    struct HealthyOwner;
+
+    #[cfg(test)]
+    impl qos_peer_state::owner_commit::OwnerCommitService for HealthyOwner {
+        fn commit(
+            &self,
+            _: qos_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> qos_peer_state::owner_commit::CommitFuture {
+            Box::pin(async { Err("unused lifecycle commit".into()) })
+        }
+
+        fn health(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stopped_state_releases_journal_and_makes_surviving_facade_inert() {
+        let directory = tempfile::tempdir().expect("temporary journal directory");
+        let fanout = Arc::new(FanoutState::new());
+        let config = crate::peer_actions::NativePeerBrokerConfig {
+            journal_root: directory.path().join("invocations"),
+            certificate_authority: Arc::new(LifecycleAuthority),
+        };
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
+            Some(WorkspaceTree::default().shared().authority()),
+            None,
+            Some(&config),
+            HostServices::default(),
+        );
+        let facade = crate::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(&state));
+        assert!(
+            facade.peer_action_attachment().is_ok(),
+            "live facade sees the opened invocation journal"
+        );
+        let state_for_poison = Arc::clone(&state);
+        assert!(
+            std::thread::spawn(move || {
+                let _journal = state_for_poison.journal.lock().expect("journal lock");
+                panic!("poison journal lock for shutdown recovery");
+            })
+            .join()
+            .is_err()
+        );
+
+        state.stop();
+
+        assert!(state.is_stopped());
+        assert!(facade.peer_action_attachment().is_err());
+        assert!(facade.surfaces().is_empty());
+        assert!(facade.statuses("owner").is_empty());
+        let reopened = InvocationJournal::open(&config.journal_root)
+            .expect("stopped broker releases the invocation-journal writer");
+        drop(reopened);
+    }
+
+    #[test]
+    fn admitted_live_operation_keeps_its_identity_when_shutdown_races_after_effect() {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let state_for_operation = Arc::clone(&state);
+        let (effect_tx, effect_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let operation = std::thread::spawn(move || {
+            state_for_operation.while_live(|_| {
+                effect_tx.send(()).expect("effect admitted");
+                release_rx.recv().expect("release admitted operation");
+                Ok(71_u64)
+            })
+        });
+        effect_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("operation reached its admitted effect");
+        state.request_stop();
+        release_tx.send(()).expect("release operation");
+        assert_eq!(
+            operation.join().expect("operation thread"),
+            Ok(71),
+            "an operation admitted before shutdown keeps its non-retryable identity"
+        );
+        state.stop();
+    }
+
+    #[test]
+    fn public_sink_can_drop_its_broker_without_self_join_or_early_unlink() {
+        let directory = tempfile::tempdir().expect("temporary socket directory");
+        let socket = lifecycle_socket(&directory, "self-drop");
+        let fanout = Arc::new(FanoutState::new());
+        let config = crate::peer_actions::NativePeerBrokerConfig {
+            journal_root: directory.path().join("self-drop-invocations"),
+            certificate_authority: Arc::new(LifecycleAuthority),
+        };
+        let broker = crate::collab_broker::spawn_with_test_services(
+            socket.clone(),
+            None,
+            PeerPublisher::disabled(),
+            Some(&config),
+            HostServices::default(),
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::clone(&fanout),
+        )
+        .expect("test broker");
+        let surviving_facade = broker.app_action_broker().expect("live broker facade");
+        let state = fanout.capnp_state().expect("attached broker state");
+        let holder = Arc::new(Mutex::new(Some(broker)));
+        let holder_for_sink = Arc::clone(&holder);
+        let socket_for_sink = socket.clone();
+        let (sink_done, sink_finished) = std::sync::mpsc::sync_channel(1);
+        let subscription = holder
+            .lock()
+            .expect("broker holder")
+            .as_ref()
+            .expect("broker")
+            .subscribe_rooms(
+                vec!["self-drop-room".into()],
+                Box::new(move |_, _| {
+                    let broker = holder_for_sink
+                        .lock()
+                        .expect("broker holder in sink")
+                        .take()
+                        .expect("broker dropped once");
+                    drop(broker);
+                    assert!(
+                        std::os::unix::net::UnixListener::bind(&socket_for_sink).is_err(),
+                        "self-drop keeps the owned pathname until this callback returns"
+                    );
+                    sink_done.send(()).expect("signal sink completion");
+                }),
+            );
+        let fanout_for_callback = Arc::clone(&fanout);
+        state.enqueue_thread_callback(Box::new(move || {
+            fanout_for_callback.fanout_to_route(
+                &CollabEvent::FollowChanged { peer_id: None },
+                u64::MAX,
+                &CrdtRoute::cluster("self-drop-room"),
+            );
+        }));
+        sink_finished
+            .recv_timeout(Duration::from_secs(2))
+            .expect("broker-thread public sink completed without self-join");
+        drop(subscription);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while socket.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            surviving_facade.peer_action_attachment().is_err(),
+            "facade retained across thread exit is inert"
+        );
+        let reopened_journal = InvocationJournal::open(&config.journal_root)
+            .expect("thread exit releases the journal before unlink");
+        drop(reopened_journal);
+        fanout.fanout_to_route(
+            &CollabEvent::FollowChanged {
+                peer_id: Some("stale".into()),
+            },
+            u64::MAX,
+            &CrdtRoute::cluster("self-drop-room"),
+        );
+        let replacement = crate::collab_broker::spawn_with_test_services(
+            socket,
+            None,
+            PeerPublisher::disabled(),
+            Some(&config),
+            HostServices::default(),
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("broker restarts after self-drop thread exits");
+        drop(replacement);
+    }
+
+    #[test]
+    fn off_thread_public_sink_can_drop_broker_without_join_deadlock() {
+        let directory = tempfile::tempdir().expect("temporary socket directory");
+        let socket = lifecycle_socket(&directory, "off-thread-drop");
+        let fanout = Arc::new(FanoutState::new());
+        let broker = crate::collab_broker::spawn_with_test_services(
+            socket.clone(),
+            None,
+            PeerPublisher::disabled(),
+            None,
+            HostServices::default(),
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::clone(&fanout),
+        )
+        .expect("test broker");
+        let holder = Arc::new(Mutex::new(Some(broker)));
+        let holder_for_sink = Arc::clone(&holder);
+        let (sink_done, sink_finished) = std::sync::mpsc::sync_channel(1);
+        let subscription = holder
+            .lock()
+            .expect("broker holder")
+            .as_ref()
+            .expect("broker")
+            .subscribe_rooms(
+                vec!["off-thread-room".into()],
+                Box::new(move |_, _| {
+                    let broker = holder_for_sink
+                        .lock()
+                        .expect("broker holder in sink")
+                        .take()
+                        .expect("broker dropped once");
+                    drop(broker);
+                    sink_done.send(()).expect("signal sink completion");
+                }),
+            );
+        let fanout_for_thread = Arc::clone(&fanout);
+        let caller = std::thread::spawn(move || {
+            fanout_for_thread.fanout_to_route(
+                &CollabEvent::FollowChanged { peer_id: None },
+                u64::MAX,
+                &CrdtRoute::cluster("off-thread-room"),
+            );
+        });
+        sink_finished
+            .recv_timeout(Duration::from_secs(2))
+            .expect("off-thread sink drop joined broker without deadlock");
+        caller.join().expect("off-thread fanout caller");
+        drop(subscription);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while socket.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!socket.exists());
+    }
+
+    #[cfg(test)]
+    struct DropBrokerOnHealth {
+        broker: Arc<Mutex<Option<crate::collab_broker::BrokerHandle>>>,
+    }
+
+    #[cfg(test)]
+    impl qos_peer_state::owner_commit::OwnerCommitService for DropBrokerOnHealth {
+        fn commit(
+            &self,
+            _: qos_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> qos_peer_state::owner_commit::CommitFuture {
+            Box::pin(async { Err("unused lifecycle commit".into()) })
+        }
+
+        fn health(&self) -> Result<(), String> {
+            drop(
+                self.broker
+                    .lock()
+                    .map_err(|_| "broker holder unavailable")?
+                    .take(),
+            );
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn owner_health_callback_can_drop_broker_without_facade_join_deadlock() {
+        let directory = tempfile::tempdir().expect("temporary broker directory");
+        let socket = lifecycle_socket(&directory, "owner-health-drop");
+        let journal_root = directory.path().join("owner-health-invocations");
+        let holder = Arc::new(Mutex::new(None));
+        let publisher = PeerPublisher::with_owner_commit(
+            Arc::new(LifecycleSink),
+            Arc::new(DropBrokerOnHealth {
+                broker: Arc::clone(&holder),
+            }),
+        );
+        let membership = WorkspaceTree::default().shared();
+        let config = crate::peer_actions::NativePeerBrokerConfig {
+            journal_root: journal_root.clone(),
+            certificate_authority: Arc::new(LifecycleAuthority),
+        };
+        let broker = crate::collab_broker::spawn_with_test_services(
+            socket.clone(),
+            Some(membership.authority()),
+            publisher,
+            Some(&config),
+            HostServices::default(),
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("test broker");
+        let facade = broker.app_action_broker().expect("live broker facade");
+        *holder.lock().expect("broker holder") = Some(broker);
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            result_tx
+                .send(facade.peer_action_attachment())
+                .expect("send facade result");
+        });
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("owner health callback returned without join deadlock");
+        assert!(
+            result.is_err(),
+            "shutdown requested by the health callback fences its facade result"
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while socket.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!socket.exists());
+        let reopened = InvocationJournal::open(&journal_root)
+            .expect("health callback shutdown releases journal");
+        drop(reopened);
+    }
+
+    #[cfg(test)]
+    struct DropOtherBrokerOnHealth {
+        broker: Arc<Mutex<Option<crate::collab_broker::BrokerHandle>>>,
+        socket: PathBuf,
+        journal_root: PathBuf,
+        proof: Arc<Mutex<Option<Result<(), String>>>>,
+    }
+
+    #[cfg(test)]
+    impl qos_peer_state::owner_commit::OwnerCommitService for DropOtherBrokerOnHealth {
+        fn commit(
+            &self,
+            _: qos_peer_state::owner_commit::OwnerCommitRequest,
+        ) -> qos_peer_state::owner_commit::CommitFuture {
+            Box::pin(async { Err("unused lifecycle commit".into()) })
+        }
+
+        fn health(&self) -> Result<(), String> {
+            drop(
+                self.broker
+                    .lock()
+                    .map_err(|_| "other broker holder unavailable")?
+                    .take(),
+            );
+            let result = if self.socket.exists() {
+                Err("unrelated broker drop returned before socket cleanup".into())
+            } else {
+                InvocationJournal::open(&self.journal_root)
+                    .map(drop)
+                    .map_err(|error| format!("unrelated broker journal remained locked: {error}"))
+            };
+            *self
+                .proof
+                .lock()
+                .map_err(|_| "other broker proof unavailable")? = Some(result);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn facade_guard_does_not_detach_an_unrelated_broker_drop() {
+        let directory = tempfile::tempdir().expect("temporary broker directory");
+        let other_socket = lifecycle_socket(&directory, "other");
+        let other_journal = directory.path().join("other-invocations");
+        let other_config = crate::peer_actions::NativePeerBrokerConfig {
+            journal_root: other_journal.clone(),
+            certificate_authority: Arc::new(LifecycleAuthority),
+        };
+        let other = crate::collab_broker::spawn_with_test_services(
+            other_socket.clone(),
+            Some(WorkspaceTree::default().shared().authority()),
+            PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(HealthyOwner)),
+            Some(&other_config),
+            HostServices::default(),
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("other broker");
+        let other_holder = Arc::new(Mutex::new(Some(other)));
+        let proof = Arc::new(Mutex::new(None));
+
+        let broker_socket = lifecycle_socket(&directory, "guarded");
+        let broker_config = crate::peer_actions::NativePeerBrokerConfig {
+            journal_root: directory.path().join("guarded-invocations"),
+            certificate_authority: Arc::new(LifecycleAuthority),
+        };
+        let broker = crate::collab_broker::spawn_with_test_services(
+            broker_socket,
+            Some(WorkspaceTree::default().shared().authority()),
+            PeerPublisher::with_owner_commit(
+                Arc::new(LifecycleSink),
+                Arc::new(DropOtherBrokerOnHealth {
+                    broker: Arc::clone(&other_holder),
+                    socket: other_socket,
+                    journal_root: other_journal,
+                    proof: Arc::clone(&proof),
+                }),
+            ),
+            Some(&broker_config),
+            HostServices::default(),
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("guarded broker");
+        let facade = broker.app_action_broker().expect("guarded broker facade");
+
+        facade
+            .peer_action_attachment()
+            .expect("unrelated broker drop does not fence this broker");
+        proof
+            .lock()
+            .expect("other broker proof")
+            .take()
+            .expect("health callback recorded cleanup")
+            .expect("unrelated broker drop synchronously released resources");
+        drop(broker);
+    }
+
+    #[test]
+    fn broker_thread_unwind_releases_journal_and_owned_socket() {
+        let directory = tempfile::tempdir().expect("temporary broker directory");
+        let socket = lifecycle_socket(&directory, "unwind");
+        let config = crate::peer_actions::NativePeerBrokerConfig {
+            journal_root: directory.path().join("unwind-invocations"),
+            certificate_authority: Arc::new(LifecycleAuthority),
+        };
+        let fanout = Arc::new(FanoutState::new());
+        let broker = crate::collab_broker::spawn_with_test_services(
+            socket.clone(),
+            None,
+            PeerPublisher::disabled(),
+            Some(&config),
+            HostServices::default(),
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::clone(&fanout),
+        )
+        .expect("test broker");
+        let facade = broker.app_action_broker().expect("live broker facade");
+        fanout
+            .capnp_state()
+            .expect("attached broker state")
+            .enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while socket.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!socket.exists(), "unwind releases owned socket custody");
+        assert!(
+            facade.peer_action_attachment().is_err(),
+            "unwind makes surviving broker facades inert"
+        );
+        let reopened = InvocationJournal::open(&config.journal_root)
+            .expect("unwind releases the invocation journal");
+        drop(reopened);
+        drop(broker);
+
+        let replacement = crate::collab_broker::spawn_with_test_services(
+            socket,
+            None,
+            PeerPublisher::disabled(),
+            Some(&config),
+            HostServices::default(),
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("broker restarts after broker-thread unwind");
+        drop(replacement);
+    }
+
+    #[test]
+    fn connection_exit_cleanup_is_idempotent_and_preserves_survivors_and_replacements() {
+        let fixture = local_directory_fixture();
+        let survivor = fixture.peer_id + 1;
+        let replacement = survivor + 1;
+        let survivor_root = ActionDirectoryRoot {
+            peer_id: survivor,
+            app_id: fixture.route.app_id.clone(),
+            cluster_id: fixture.cluster_id.clone(),
+            record_id: "survivor".into(),
+        };
+        fixture
+            .state
+            .action_directory_roots
+            .lock()
+            .expect("directory roots")
+            .insert(survivor, survivor_root.clone());
+        fixture.directories.directories.borrow_mut().insert(
+            survivor,
+            RegisteredActionDirectory {
+                app_id: fixture.route.app_id.clone(),
+                route: fixture.route.clone(),
+                directory: fixture.directory.clone(),
+            },
+        );
+        for peer_id in [fixture.peer_id, survivor] {
+            fixture
+                .state
+                .surfaces
+                .lock()
+                .expect("published surfaces")
+                .insert(
+                    peer_id,
+                    PublishedSurface {
+                        peer_id,
+                        app_id: fixture.route.app_id.clone(),
+                        route: fixture.route.clone(),
+                        actions: Vec::new(),
+                        live: true,
+                    },
+                );
+        }
+
+        drop(ConnectionExit {
+            state: Arc::clone(&fixture.state),
+            directories: Rc::clone(&fixture.directories),
+            peer_id: fixture.peer_id,
+        });
+        drop(ConnectionLease {
+            state: Arc::clone(&fixture.state),
+            directories: Rc::clone(&fixture.directories),
+            peer_id: fixture.peer_id,
+        });
+
+        assert!(
+            !fixture
+                .state
+                .surfaces
+                .lock()
+                .expect("published surfaces")
+                .contains_key(&fixture.peer_id)
+        );
+        assert!(
+            !fixture
+                .directories
+                .directories
+                .borrow()
+                .contains_key(&fixture.peer_id)
+        );
+        assert!(
+            fixture
+                .state
+                .surfaces
+                .lock()
+                .expect("published surfaces")
+                .contains_key(&survivor)
+        );
+        assert!(
+            fixture
+                .directories
+                .directories
+                .borrow()
+                .contains_key(&survivor)
+        );
+
+        fixture
+            .state
+            .action_directory_roots
+            .lock()
+            .expect("directory roots")
+            .insert(
+                replacement,
+                ActionDirectoryRoot {
+                    peer_id: replacement,
+                    app_id: fixture.route.app_id.clone(),
+                    cluster_id: fixture.cluster_id.clone(),
+                    record_id: "replacement".into(),
+                },
+            );
+        fixture.state.refresh_action_directory_root_snapshot();
+        let peer_ids = fixture
+            .state
+            .action_directory_roots()
+            .into_iter()
+            .map(|root| root.peer_id)
+            .collect::<std::collections::HashSet<_>>();
+        assert!(!peer_ids.contains(&fixture.peer_id));
+        assert!(peer_ids.contains(&survivor));
+        assert!(peer_ids.contains(&replacement));
+    }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum DirectoryResolveMode {

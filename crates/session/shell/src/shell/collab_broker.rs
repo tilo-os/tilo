@@ -228,8 +228,9 @@ impl Drop for BrokerHandle {
 /// # Errors
 ///
 /// Returns an error if the Cap'n Proto socket at `capnp_socket_path`
-/// cannot be bound (e.g. a stale socket file blocks it, or the parent
-/// directory is not writable).
+/// cannot be bound. The parent must already be an owner-only real directory
+/// (normally mode 0700); live sockets and non-private parents are rejected,
+/// while proven stale socket inodes are reclaimed.
 pub fn spawn_native(
     capnp_socket_path: PathBuf,
     peer_sync: &Option<Arc<ShellNetwork>>,

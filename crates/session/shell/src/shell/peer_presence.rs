@@ -1243,6 +1243,9 @@ mod two_sessions {
     /// Cap'n Proto broker under test opens its own socket the same way
     /// production does, just with no peer-sync bridge to Iroh.
     fn broker(dir: &std::path::Path, name: &str) -> crate::shell::collab_broker::BrokerHandle {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+            .expect("secure two-session broker fixture root");
         crate::shell::collab_broker::spawn_native(
             dir.join(name),
             &None,
