@@ -1,11 +1,12 @@
 import json
+import datetime as dt
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 
-from watch_receipt import acquire
+from watch_receipt import MAX_WATCH_ATTEMPTS, acquire
 
 
 class WatchReceiptTests(unittest.TestCase):
@@ -49,7 +50,7 @@ sys.stdin.readline()
     def test_recovery_is_bounded_and_ambiguous_delivery_is_not_repeated(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bounded.json"
-            for attempt in range(1, 4):
+            for attempt in range(1, MAX_WATCH_ATTEMPTS + 1):
                 with self.claim(path) as receipt:
                     self.assertEqual(receipt.data["attempt"], attempt)
             self.assertIsNone(self.claim(path))
@@ -63,6 +64,25 @@ sys.stdin.readline()
             path = Path(directory) / "receipt.json"
             path.write_text("partial write")
             self.assertIsNone(self.claim(path))
+
+    def test_old_reported_receipts_are_pruned_but_ambiguous_receipts_remain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=8)).isoformat()
+            reported = root / "reported.json"
+            with self.claim(reported) as receipt:
+                receipt.save(state="reported", acquired=old, message="done")
+            ambiguous = root / "ambiguous.json"
+            with self.claim(ambiguous) as receipt:
+                receipt.save(state="delivering", acquired=old)
+
+            with self.claim(root / "new.json"):
+                pass
+
+            self.assertFalse(reported.exists())
+            self.assertFalse(reported.with_suffix(".lock").exists())
+            self.assertTrue(ambiguous.exists())
+            self.assertTrue(ambiguous.with_suffix(".lock").exists())
 
 
 if __name__ == "__main__":
