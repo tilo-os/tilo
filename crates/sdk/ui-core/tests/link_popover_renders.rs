@@ -17,9 +17,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::widget::link_popover::PageEntry;
-use ui::widget::marks::Mark;
-use ui::widget::{BlockEditor, BlockKind};
+use tilo_ui::widget::link_popover::PageEntry;
+use tilo_ui::widget::marks::Mark;
+use tilo_ui::widget::{BlockEditor, BlockKind};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey, SmolStr};
 
@@ -61,7 +61,7 @@ fn seed_pages() -> Vec<PageEntry> {
 
 #[test]
 fn link_popover_filters_by_typed_filter() {
-    let mut p = ui::widget::link_popover::LinkPopover::new();
+    let mut p = tilo_ui::widget::link_popover::LinkPopover::new();
     p.set_items(seed_pages());
     p.set_visible(true);
     p.handle_key(&char_press("w"));
@@ -71,7 +71,7 @@ fn link_popover_filters_by_typed_filter() {
 
 #[test]
 fn enter_returns_chosen_page_entry() {
-    let mut p = ui::widget::link_popover::LinkPopover::new();
+    let mut p = tilo_ui::widget::link_popover::LinkPopover::new();
     p.set_items(seed_pages());
     p.set_visible(true);
     p.handle_key(&char_press("r"));
@@ -113,7 +113,7 @@ fn block_editor_double_bracket_opens_popover_and_commits_link() {
     let text = block.line.value().to_string();
     let new_text = format!("{}{}", &text[..0], "Welcome");
     block.line.set_text(&new_text);
-    block.line.add_mark(ui::widget::marks::MarkSpan::new(
+    block.line.add_mark(tilo_ui::widget::marks::MarkSpan::new(
         0..7,
         Mark::Link(chosen.id),
     ));

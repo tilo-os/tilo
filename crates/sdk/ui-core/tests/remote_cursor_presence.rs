@@ -13,12 +13,12 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::app::App;
-use ui::collaboration::{CollabEvent, Collaborator};
-use ui::permissions::UserId;
-use ui::presence::{ParticipantKind, user_color};
-use ui::state::State;
-use ui::widget::Container;
+use tilo_ui::app::App;
+use tilo_ui::collaboration::{CollabEvent, Collaborator};
+use tilo_ui::permissions::UserId;
+use tilo_ui::presence::{ParticipantKind, user_color};
+use tilo_ui::state::State;
+use tilo_ui::widget::Container;
 
 fn new_headless_app() -> App {
     // A trivial leaf is enough — this test never runs a frame, it just

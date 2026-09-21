@@ -26,7 +26,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Mutex;
 
-use ui::diag;
+use tilo_ui::diag;
 
 /// Set on the child to select which write it should attempt.
 const ROLE: &str = "TILO_BROKEN_PIPE_ROLE";

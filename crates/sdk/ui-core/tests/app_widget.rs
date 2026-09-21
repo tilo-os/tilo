@@ -9,8 +9,8 @@
 )]
 
 use automerge::{AutoCommit, ObjId};
-use ui::presence::PresenceCtx;
-use ui::{AppKind, AppWidget, IconDescriptor, Theme, Widget};
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::{AppKind, AppWidget, IconDescriptor, Theme, Widget};
 
 struct DummyApp;
 
@@ -37,7 +37,7 @@ impl Widget for DummyApp {
         &mut self,
         _scene: &mut vello::Scene,
         _transform: vello::kurbo::Affine,
-        _text_renderer: &mut ui::text_render::TextRenderer,
+        _text_renderer: &mut tilo_ui::text_render::TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) {
