@@ -518,6 +518,25 @@ impl FrameHarness {
         self.pump_component_wakes();
     }
 
+    /// Force the mounted component's real record writer to acknowledge all
+    /// pending edits, then project the resulting durability state.
+    ///
+    /// Capture scenarios use this at an explicit save boundary instead of
+    /// depending on a wall-clock debounce or mutating a status widget.
+    /// # Errors
+    /// Returns the record writer's durable storage failure.
+    pub fn flush_component_records(&mut self) -> Result<(), String> {
+        let result = self
+            .component_wake
+            .as_ref()
+            .ok_or_else(|| "driver has no mounted component".to_owned())?
+            .binding
+            .records
+            .try_flush();
+        self.relayout();
+        result
+    }
+
     fn drain_component_wakes(&self) {
         if let Some(wake) = &self.component_wake {
             wake.drain();
@@ -1210,7 +1229,7 @@ impl FrameHarness {
 
         let t_draw = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.scene.reset();
-        self.root.native_view_frame_start();
+        crate::widget::native_view_frame_start(self.root.as_mut());
         if self.history_layout.is_none_or(|layout| layout.app_visible) {
             self.root.draw_with_presence(
                 &mut self.scene,
@@ -2685,6 +2704,14 @@ impl FrameHarness {
         }
         self.input_scale = scale;
         Ok(())
+    }
+
+    /// Replace the host-projected collaborator state used by the real draw pass.
+    /// Capture and integration hosts use this to exercise the same presence
+    /// rendering that a live broker frame supplies, without a broker process.
+    pub fn set_presence_context(&mut self, presence: PresenceCtx) {
+        self.presence = presence;
+        self.relayout();
     }
 
     /// Send wheel line-deltas at the last pointer position. Move the pointer

@@ -57,7 +57,7 @@ exact head.
 | Setup application, Windows | Existing x86-64/ARM64 jobs use `imager-windows-x86_64` / `imager-windows-aarch64`, MSVC targets, imager tests, package build and signature checks | Enabled for imager tags or explicit `full_native=true`, not ordinary pushes. Actual native host availability must be checked before dispatch. |
 | Native Windows apps | Merged toolkit plus `tools/windows/install-apps.ps1`; production allowlist currently contains 30 selectable apps | This is a local build/install path, not continuous distributable app packaging. Versioned archive/MSIX format, signing/promotion, native dependency identity, disposable installation and runtime tests are not a qualified release path. Consider broad app coverage after a bounded native qualification. |
 | OS x86-64/ARM64 | `build-image.yml`: weekly integration, explicit builds and deliberate tag/manual publication | Retained component/development workflows cover targeted kernel, source, Windows compatibility guest and resume/finalize work. A generic architecture image is not qualification for every laptop/device. Keep device acceptance explicit. |
-| macOS products | Imager and Homebrew cask lane definitions remain disabled | Deliberately deferred. Do not delete definitions or restore macOS publication with Windows work. No current standalone macOS app release qualification is asserted. |
+| macOS Imager | Native x86-64 and ARM64 signed/notarized DMG and app-zip lanes; first-party Homebrew cask with native install tests | Enabled for `full_native` rehearsal and release tags; requires ephemeral native runners and protected signing/notarization brokers. This does not qualify unrelated standalone macOS apps. |
 
 At this audit, neither the admin runner listing nor the repository runner listing
 advertised a Windows/imager Windows label. Ephemeral runners can be absent while
@@ -79,8 +79,8 @@ Do not route Windows work onto Linux `runner` just because it is available.
 4. If native Windows app distribution becomes worthwhile, qualify a versioned,
    signed archive or MSIX on disposable native hosts. The shared toolkit and local
    installer already exist; distribution and clean-machine runtime evidence do not.
-5. Retain the disabled macOS imager and Homebrew definitions so later
-   qualification can resume without recreating the release design.
+5. Keep the enabled macOS Imager and Homebrew gates fail-closed so missing
+   native infrastructure or qualification evidence blocks publication.
 
 ## Executable planning without installation
 

@@ -28,6 +28,8 @@ mod app_widget;
 mod block_editor_markdown;
 #[path = "block_editor_slash_menu_integration.rs"]
 mod block_editor_slash_menu_integration;
+#[path = "block_editor_wrapping.rs"]
+mod block_editor_wrapping;
 #[cfg(unix)]
 #[path = "coedit_keystone.rs"]
 mod coedit_keystone;
