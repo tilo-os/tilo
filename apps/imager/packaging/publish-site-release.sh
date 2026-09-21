@@ -110,20 +110,20 @@ npm --prefix "$work/site" ci
 npm --prefix "$work/site" run test:release
 npm --prefix "$work/site" run build
 
-# The current enabled release matrix has no macOS artifacts. A separate website
-# deployment must understand that scope before its release pointer can advance.
-# Inspect the rendered download URLs, not only a manifest the UI might ignore.
-if grep -REq 'tilo-imager-macos-[^"<>[:space:]]*\.(dmg|zip)' "$work/site/dist"; then
-  printf 'landing page advertises deferred macOS downloads; update its enabled platform matrix before promotion\n' >&2
-  exit 1
-fi
-
 # The manifest is the release-origin contract. Refuse to publish a manifest a
 # site build ignores: that would turn every attractive download action into an
 # authentication-gated or dead link even though its own tests passed.
 expected_download="$release_root/download/$GITHUB_REF_NAME/$(jq -r '.assets.windowsX64Setup' "$manifest")"
 grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
   || { printf 'landing page does not consume the public releaseRoot manifest field\n' >&2; exit 1; }
+for asset_key in macosX64Dmg macosX64Portable macosArm64Dmg macosArm64Portable; do
+  asset="$(jq -r --arg key "$asset_key" '.assets[$key] // empty' "$manifest")"
+  [ -n "$asset" ] \
+    || { printf 'landing page manifest is missing required macOS asset %s\n' "$asset_key" >&2; exit 1; }
+  expected_download="$release_root/download/$GITHUB_REF_NAME/$asset"
+  grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
+    || { printf 'landing page does not expose required macOS asset %s\n' "$asset_key" >&2; exit 1; }
+done
 if grep -R -Fq -- 'https://code.podesta.ai/qos/qos/releases/download/' "$work/site/dist" \
    || grep -R -Fq -- 'https://code.podesta.ai/tilo/releases/download/' "$work/site/dist"; then
   printf 'landing page still contains private-source release downloads\n' >&2

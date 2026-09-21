@@ -142,13 +142,14 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
   || bad 'release credential outputs or signing identities are insufficiently constrained'
 
 publisher="$repo/apps/imager/packaging/publish-github-release.sh"
+publish_job="$(sed -n '/^  publish:/,/^  homebrew:/p' "$workflow")"
 if grep -Fq "release_repository=\"\${TILO_RELEASE_REPOSITORY:-tilo-os/releases}\"" "$publisher" \
    && grep -Fq 'release repository must be public' "$publisher" \
    && grep -Fq 'assert-github-installation-token.sh' "$publisher" \
    && grep -Fq 'release "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
    && grep -Fq 'IMAGER_PUBLIC_RELEASE_REPOSITORY' "$workflow" \
-   && sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq 'persist-credentials: false' \
-   && ! sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq '${{ github.token }}' \
+   && grep -Fq 'persist-credentials: false' <<<"$publish_job" \
+   && ! grep -Fq '${{ github.token }}' <<<"$publish_job" \
    && grep -Fq '.releaseRoot = $release_root' "$repo/apps/imager/packaging/publish-site-release.sh" \
    && grep -Fq 'landing page does not consume the public releaseRoot manifest field' "$repo/apps/imager/packaging/publish-site-release.sh" \
    && ! grep -Fq 'tilo/tilo/releases/download' \
@@ -238,9 +239,9 @@ for artifact in \
     || bad "$artifact is linked by the website but absent from the publication gate"
 done
 if python3 -m unittest discover -s "$repo/tools/tests" -p test_imager_enabled_platforms.py; then
-  ok 'enabled Linux/Windows releases retain strict artifacts and disabled macOS workflows'
+  ok 'enabled Linux/Windows/macOS releases retain a strict complete artifact matrix'
 else
-  bad 'enabled platform matrix or deferred macOS preservation failed'
+  bad 'enabled native platform matrix or publication gate failed'
 fi
 grep -Fq 'sha256sum --check --strict "$(basename "$path").sha256"' "$workflow" \
   && ok 'every required release sidecar is validated before publication' \
@@ -329,6 +330,10 @@ grep -Fq 'Build the complete native Linux package set' "$workflow" \
   && grep -Fq 'Launch the packaged Linux UI offscreen' "$workflow" \
   && grep -Fq 'Install and launch the packaged Windows UI offscreen' "$workflow" \
   && grep -Fq 'Mount and launch the packaged macOS UI offscreen' "$workflow" \
+  && grep -Fq 'xcrun stapler validate "$app"' \
+    "$repo/apps/imager/packaging/package-host.sh" \
+  && grep -Fq 'xcrun stapler validate "$out/$artifact_base.dmg"' \
+    "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'system bin/"tilo-imager-bin", "--shots"' \
     "$repo/apps/imager/packaging/homebrew/tilo-imager.rb.in" \
   && ok 'every native package is required and executes its packaged UI before publication' \
@@ -360,6 +365,10 @@ grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq '.linuxSigningFingerprint = $fingerprint' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.channels.homebrew = "available"' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.channels.winget = $winget_state' "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq 'for asset_key in macosX64Dmg macosX64Portable macosArm64Dmg macosArm64Portable' \
+    "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq 'landing page does not expose required macOS asset' \
+    "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/Tilo/Imager/${version}/Tilo.Imager.yaml' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'TILO_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}' "$workflow" \
   && ok 'landing-page manifest advances only through the gated release workflow' \

@@ -8,7 +8,7 @@ does not fan out into unrelated builds:
 | Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned qpkgs and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
 | OS | `vX.Y.Z`, or a manual **Release / OS** run from `main` with `publish` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
-| Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux and Windows downloads; macOS definitions retained but disabled |
+| Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux, Windows, and signed/notarized macOS downloads |
 
 Continuous app packaging runs on relevant `main` pushes. It selects affected
 qpkgs, reuses unchanged members from the prior immutable collection, and advances
@@ -47,7 +47,7 @@ Pull requests use the cheapest lane that proves the affected boundary:
 - Ordinary imager changes use the affected-package checks. Native imager
   packaging runs only on tags or manual dispatches. Manual runs default to
   Linux x86_64; tags or `full_native` add Linux ARM64 and Windows on both
-  architectures. macOS jobs remain disabled even with `full_native`.
+  architectures, including native Intel and Apple-silicon macOS packaging.
 
 Release jobs never use an Actions cache as an artifact hand-off. Forgejo cache
 entries are opportunistic and workflow artifacts are scoped to one run. Each
@@ -134,10 +134,10 @@ path remains separate from enabled tag/manual publication. A collection tag
 validates the complete requested set. Component tags are immutable publication
 boundaries and require the configured `QPKG_PUBLISHER_IDENTITY` secret.
 
-Manual imager runs with `full_native` rehearse the enabled Linux/Windows matrix
-without publication. Desktop `full_native` includes ARM64; it does not create a
-tagged package release, but a manual desktop run from `main` **does publish the
-OS payload**. Neither option enables deferred macOS jobs.
+Manual imager runs with `full_native` rehearse the enabled Linux, Windows, and
+macOS matrix without publication. Desktop `full_native` includes ARM64; it does
+not create a tagged package release, but a manual desktop run from `main`
+**does publish the OS payload**. Only the imager option allocates macOS hosts.
 
 Scheduled and manual OS integration builds retain the independent rebuild,
 installed-VM, desktop, app, and OS integration gates. Continuous OS publication
