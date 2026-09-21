@@ -57,6 +57,14 @@ assert data[:2] == b"BM"
 assert struct.unpack_from("<ii", data, 18) == (1024, 768)
 assert len(set(data[54:])) > 24, "splash is visually empty"
 PY
+grep -Fq "Tilo's three-dot mark" "$root/os/dev/make-boot-splash.py"
+grep -Fq 'for index, center_x in enumerate((56.0, 110.0, 164.0))' \
+  "$root/os/dev/make-plymouth-assets.py"
+if grep -Fq 'recognisable q' "$root/os/dev/make-boot-splash.py" \
+   || grep -Fq 'tail_distance' "$root/os/dev/make-plymouth-assets.py"; then
+  printf 'boot artwork still carries the retired qOS q mark\n' >&2
+  exit 1
+fi
 python3 - "$tmp/plymouth" <<'PY'
 import pathlib, struct, sys
 root = pathlib.Path(sys.argv[1])
