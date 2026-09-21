@@ -1313,7 +1313,7 @@ impl ChatApp {
 
         if scenario == "floating-call-returned" {
             let id = format!("chat-call:{}", self.call.channel);
-            <Self as Widget>::on_floating_surface_host_message(
+            <Self as FloatingSurfaceProvider>::on_floating_surface_host_message(
                 self,
                 &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
             );
