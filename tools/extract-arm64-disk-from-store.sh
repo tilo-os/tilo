@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 store=${1:-/mnt/c/tilo-build/output-store.raw}
-destination=${2:-"$HOME/tilo-vm/media/disk.raw"}
+destination=${2:-/mnt/c/tilo-build/local/disk.raw}
 expected_logical_bytes=${TILO_DISK_BYTES:-68719476736}
 reserve_bytes=${TILO_HOST_RESERVE_BYTES:-8589934592}
 mount_dir=$(mktemp -d /tmp/tilo-output-ro.XXXXXX)
@@ -92,6 +92,44 @@ required_host_bytes=$(( allocated_bytes + reserve_bytes ))
   echo "insufficient C: headroom: free=$host_free_bytes required=$required_host_bytes (disk allocation plus reserve)" >&2
   exit 1
 }
+
+# Prefer a native Windows sparse destination when the caller supplies the
+# native copier. The source stays on this read-only mount for the entire
+# conversion. qemu-img reads it through WSL's UNC server, writes straight to
+# NTFS, and performs a full byte comparison before atomic promotion. This
+# avoids both WSL VHD growth and the NBD/backing-chain path that returned zero
+# blocks during local boot.
+if [[ -n ${TILO_NATIVE_COPY_SCRIPT:-} ]]; then
+  [[ "$destination" == /mnt/?/* ]] || {
+    echo 'native handoff destination must be on a Windows drive mounted under /mnt/<drive>' >&2
+    exit 1
+  }
+  [[ -f "$TILO_NATIVE_COPY_SCRIPT" ]] || {
+    echo "native sparse copier is missing: $TILO_NATIVE_COPY_SCRIPT" >&2
+    exit 1
+  }
+  command -v powershell.exe >/dev/null || {
+    echo 'powershell.exe is unavailable through WSL interop' >&2
+    exit 1
+  }
+  source_windows=$(wslpath -w "$source_disk")
+  destination_windows=$(wslpath -w "$destination")
+  copier_windows=$(wslpath -w "$TILO_NATIVE_COPY_SCRIPT")
+  native_args=(-NoProfile -ExecutionPolicy Bypass -File "$copier_windows"
+    -SourcePath "$source_windows" -DestinationPath "$destination_windows"
+    -ExpectedBytes "$expected_logical_bytes")
+  if [[ -n ${TILO_QEMU_ROOT_WINDOWS:-} ]]; then
+    native_args+=(-QemuRoot "$TILO_QEMU_ROOT_WINDOWS")
+  fi
+  if [[ ${TILO_REPLACE_DESTINATION:-0} == 1 ]]; then
+    native_args+=(-Replace)
+  fi
+  powershell.exe "${native_args[@]}"
+  sudo sgdisk -v "$destination"
+  printf 'READY disk=%s filesystems=vfat,btrfs transport=native-qemu-img logical_bytes=%s host_free_before=%s\n' \
+    "$destination" "$logical_bytes" "$host_free_bytes"
+  exit 0
+fi
 
 rm -f -- "$temporary"
 sudo filefrag -e -b1 "$source_disk" | awk '
