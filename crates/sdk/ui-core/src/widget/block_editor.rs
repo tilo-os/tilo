@@ -69,10 +69,10 @@ fn case_folded_match_ranges(haystack: &str, needle: &str) -> Vec<(usize, usize)>
         .collect::<Vec<_>>();
     let mut ranges = Vec::new();
     let mut start_slot = 0usize;
-    while start_slot + 1 < boundaries.len() {
+    while start_slot < boundaries.len().saturating_sub(1) {
         let start = boundaries[start_slot];
         let mut matched_end = None;
-        for &end in boundaries.iter().skip(start_slot + 1) {
+        for &end in boundaries.iter().skip(start_slot.saturating_add(1)) {
             let candidate = &haystack[start..end];
             let candidate_folded = candidate.to_lowercase();
             if candidate_folded == folded {
@@ -88,9 +88,9 @@ fn case_folded_match_ranges(haystack: &str, needle: &str) -> Vec<(usize, usize)>
             start_slot = boundaries
                 .iter()
                 .position(|boundary| *boundary == end)
-                .unwrap_or(start_slot + 1);
+                .unwrap_or_else(|| start_slot.saturating_add(1));
         } else {
-            start_slot += 1;
+            start_slot = start_slot.saturating_add(1);
         }
     }
     ranges
@@ -1569,7 +1569,10 @@ impl BlockEditor {
                 let rows = markdown_table_data_rows(self.blocks[fi].text());
                 let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
                 if !rows.is_empty() && columns > 0 {
-                    table.focus_projected_cell(row.min(rows.len() - 1), column.min(columns - 1));
+                    table.focus_projected_cell(
+                        row.min(rows.len().saturating_sub(1)),
+                        column.min(columns.saturating_sub(1)),
+                    );
                     if let Some(caret) = saved_table_caret {
                         table.restore_projected_caret(&caret);
                     }
@@ -6342,8 +6345,13 @@ impl Widget for BlockEditor {
             let image_preview = image
                 .and_then(|image| standalone_markdown_image(&image.source))
                 .map(|(_, source)| self.image_dimensions.get(source).copied());
-            b.line
-                .set_image_preview(image_preview, image.is_some_and(|image| image.editing));
+            b.line.set_image_preview(match image_preview {
+                Some(dimensions) => super::rich_text_line::ImagePreview::Present {
+                    dimensions,
+                    editing: image.is_some_and(|image| image.editing),
+                },
+                None => super::rich_text_line::ImagePreview::Absent,
+            });
             b.line.set_table_preview(match b.kind {
                 BlockKind::Table { visual } => Some(visual),
                 _ => None,

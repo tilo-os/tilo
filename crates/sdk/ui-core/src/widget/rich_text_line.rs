@@ -98,6 +98,28 @@ struct MarkDrawCtx<'a> {
     text_size: f32,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) enum ImagePreview {
+    #[default]
+    Absent,
+    Present {
+        dimensions: Option<(u32, u32)>,
+        editing: bool,
+    },
+}
+
+impl ImagePreview {
+    fn is_present(self) -> bool {
+        matches!(self, Self::Present { .. })
+    }
+}
+
+#[derive(Default)]
+struct RichTextDirty {
+    marks: bool,
+    styled_layout: bool,
+}
+
 pub struct RichTextLine {
     inner: TextInput,
     /// At most one signal in flight per frame; new signals overwrite the slot.
@@ -111,18 +133,15 @@ pub struct RichTextLine {
     table_preview: Option<bool>,
     table_source_height: f32,
     /// An image attachment uses the leaf's actual Taffy width for its preview.
-    image_preview: Option<Option<(u32, u32)>>,
+    image_preview: ImagePreview,
     image_source_height: f32,
-    image_source_visible: bool,
     /// Kept sorted by `range.start`.
     marks: Vec<MarkSpan>,
     /// Paint-only semantic colours (for example fenced-code syntax). These
     /// never enter Automerge or the Markdown mark model.
     transient_colors: Vec<TransientColorSpan>,
     /// Formatting-only edits must notify the owning document just like typing.
-    marks_dirty: bool,
-    /// Mark geometry can change without authoring text (including remote marks).
-    styled_layout_dirty: bool,
+    dirty: RichTextDirty,
     /// Drained once `handle_event` observes a text-input edit.
     pending_marks: Vec<Mark>,
     /// Snapshot used to detect splice direction + length so `marks` stays
@@ -153,13 +172,11 @@ impl RichTextLine {
             layout_header_height: 0.0,
             table_preview: None,
             table_source_height: 0.0,
-            image_preview: None,
+            image_preview: ImagePreview::Absent,
             image_source_height: 0.0,
-            image_source_visible: false,
             marks: Vec::new(),
             transient_colors: Vec::new(),
-            marks_dirty: false,
-            styled_layout_dirty: false,
+            dirty: RichTextDirty::default(),
             pending_marks: Vec::new(),
             prev_text: String::new(),
             prev_cursor: 0,
@@ -197,7 +214,7 @@ impl RichTextLine {
     /// Source-code cells retain literal text rather than prose formatting or
     /// note-link shortcuts. Monospace alone does not imply these semantics.
     pub fn set_inline_formatting(&mut self, enabled: bool) {
-        self.styled_layout_dirty |= self.inline_formatting != enabled;
+        self.dirty.styled_layout |= self.inline_formatting != enabled;
         self.inline_formatting = enabled;
         self.inner.set_compact_multiline(!enabled);
         if !enabled {
@@ -230,13 +247,8 @@ impl RichTextLine {
         self.table_source_height
     }
 
-    pub(super) fn set_image_preview(
-        &mut self,
-        dimensions: Option<Option<(u32, u32)>>,
-        editing: bool,
-    ) {
-        self.image_preview = dimensions;
-        self.image_source_visible = editing;
+    pub(super) fn set_image_preview(&mut self, preview: ImagePreview) {
+        self.image_preview = preview;
     }
 
     pub(super) fn image_source_height(&self) -> f32 {
@@ -311,9 +323,9 @@ impl RichTextLine {
         self.inner.set_text(s);
         self.inner.set_cursor_pos(s.len());
         // Doesn't preserve prior marks; parents re-seed via `set_marks`.
-        self.styled_layout_dirty |= !self.marks.is_empty();
+        self.dirty.styled_layout |= !self.marks.is_empty();
         self.marks.clear();
-        self.marks_dirty = false;
+        self.dirty.marks = false;
         self.pending_marks.clear();
         self.prev_text = s.to_string();
         self.prev_cursor = s.len();
@@ -321,7 +333,7 @@ impl RichTextLine {
 
     pub fn take_dirty(&mut self) -> Option<String> {
         let text = self.inner.take_dirty();
-        if std::mem::take(&mut self.marks_dirty) {
+        if std::mem::take(&mut self.dirty.marks) {
             Some(text.unwrap_or_else(|| self.inner.value().to_owned()))
         } else {
             text
@@ -381,12 +393,12 @@ impl RichTextLine {
 
     pub fn set_marks(&mut self, mut marks: Vec<MarkSpan>) {
         marks.sort_by_key(|s| s.range.start);
-        self.styled_layout_dirty |= self.marks != marks;
+        self.dirty.styled_layout |= self.marks != marks;
         self.marks = marks;
     }
 
     pub fn set_transient_colors(&mut self, colors: Vec<TransientColorSpan>) {
-        self.styled_layout_dirty |= self.transient_colors != colors;
+        self.dirty.styled_layout |= self.transient_colors != colors;
         self.transient_colors = colors;
     }
 
@@ -398,7 +410,7 @@ impl RichTextLine {
     pub fn add_mark(&mut self, span: MarkSpan) {
         self.marks.push(span);
         self.marks.sort_by_key(|s| s.range.start);
-        self.styled_layout_dirty = true;
+        self.dirty.styled_layout = true;
     }
 
     pub fn pending_marks(&self) -> &[Mark] {
@@ -413,8 +425,8 @@ impl RichTextLine {
         }
         if let Some((s, e)) = self.inner.selection_range_public() {
             marks::toggle_mark_range(&mut self.marks, s..e, mark);
-            self.marks_dirty = true;
-            self.styled_layout_dirty = true;
+            self.dirty.marks = true;
+            self.dirty.styled_layout = true;
         } else {
             // Pushing the same mark twice cancels it (Notion-style).
             if let Some(idx) = self.pending_marks.iter().position(|m| m.same_kind(&mark)) {
@@ -657,7 +669,7 @@ impl Default for RichTextLine {
 
 impl Widget for RichTextLine {
     fn layout_needs_measure(&self) -> bool {
-        (self.wrap && self.styled_layout_dirty) || self.inner.layout_needs_measure()
+        (self.wrap && self.dirty.styled_layout) || self.inner.layout_needs_measure()
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -687,7 +699,9 @@ impl Widget for RichTextLine {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: if self.wrap || self.table_preview.is_some() || self.image_preview.is_some()
+                height: if self.wrap
+                    || self.table_preview.is_some()
+                    || self.image_preview.is_present()
                 {
                     Dimension::auto()
                 } else {
@@ -722,7 +736,7 @@ impl Widget for RichTextLine {
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
         self.sync_wrapped_spans(&self.measurement_theme.clone());
-        self.styled_layout_dirty = false;
+        self.dirty.styled_layout = false;
         self.inner.acknowledge_layout_measure();
         if let Some(visual) = self.table_preview {
             let width = known
@@ -754,7 +768,11 @@ impl Widget for RichTextLine {
                     ),
             };
         }
-        if let Some(dimensions) = self.image_preview {
+        if let ImagePreview::Present {
+            dimensions,
+            editing,
+        } = self.image_preview
+        {
             let width = known
                 .width
                 .unwrap_or(match available.width {
@@ -762,7 +780,7 @@ impl Widget for RichTextLine {
                     _ => 400.0,
                 })
                 .max(1.0);
-            self.image_source_height = if self.image_source_visible {
+            self.image_source_height = if editing {
                 self.inner.measure_wrapped_content(
                     (width - self.layout_inset).max(1.0),
                     text_renderer,
@@ -771,6 +789,10 @@ impl Widget for RichTextLine {
             } else {
                 0.0
             };
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "bounded image pixel dimensions are converted to the f32 layout coordinate space"
+            )]
             let preview_height = dimensions.map_or(
                 220.0 * self.measurement_theme.text_scale,
                 |(image_width, image_height)| {
@@ -780,7 +802,7 @@ impl Widget for RichTextLine {
             return Size {
                 width,
                 height: self.image_source_height
-                    + if self.image_source_visible {
+                    + if editing {
                         6.0 * self.measurement_theme.text_scale
                     } else {
                         0.0
