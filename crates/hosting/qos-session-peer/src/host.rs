@@ -27,6 +27,17 @@ struct QualificationHold {
     action_attachment_exit: Option<
         tokio::sync::oneshot::Sender<qos_action_broker::peer_actions::PeerActionAttachmentError>,
     >,
+    publication_failure: QualificationPublicationFailure,
+}
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum QualificationPublicationFailure {
+    #[default]
+    Absent,
+    ArmedDisconnect,
+    ArmedEncode,
+    FiredDisconnect,
+    FiredEncode,
 }
 #[cfg(feature = "test-support")]
 struct ActionRegistrationHold {
@@ -65,6 +76,18 @@ impl QualificationHold {
             }
             return true;
         }
+        if line == "qualification publication-disconnect" {
+            if self.publication_failure == QualificationPublicationFailure::Absent {
+                self.publication_failure = QualificationPublicationFailure::ArmedDisconnect;
+            }
+            return true;
+        }
+        if line == "qualification publication-encode" {
+            if self.publication_failure == QualificationPublicationFailure::Absent {
+                self.publication_failure = QualificationPublicationFailure::ArmedEncode;
+            }
+            return true;
+        }
         if let Some(kind) = line.strip_prefix("qualification action-attachment ") {
             let exit = match kind {
                 "eof" => {
@@ -94,6 +117,32 @@ impl QualificationHold {
         false
     }
 
+    fn publication_failure_once(&mut self) -> Option<anyhow::Error> {
+        match self.publication_failure {
+            QualificationPublicationFailure::ArmedDisconnect => {
+                self.publication_failure = QualificationPublicationFailure::FiredDisconnect;
+                Some(anyhow::Error::new(tilo_relay::CoeditError::Disconnected))
+            }
+            QualificationPublicationFailure::ArmedEncode => {
+                self.publication_failure = QualificationPublicationFailure::FiredEncode;
+                Some(anyhow::Error::new(tilo_relay::CoeditError::Encode(
+                    postcard::Error::SerializeBufferFull,
+                )))
+            }
+            _ => None,
+        }
+    }
+
+    fn publication_failure_status(&self) -> &'static str {
+        match self.publication_failure {
+            QualificationPublicationFailure::Absent => "absent",
+            QualificationPublicationFailure::ArmedDisconnect => "armed_disconnect",
+            QualificationPublicationFailure::ArmedEncode => "armed_encode",
+            QualificationPublicationFailure::FiredDisconnect => "fired_disconnect",
+            QualificationPublicationFailure::FiredEncode => "fired_encode",
+        }
+    }
+
     fn take_action_registration_barrier(
         &mut self,
     ) -> Option<qos_action_broker::peer_actions::ActionRegistrationBarrier> {
@@ -118,98 +167,180 @@ impl Drop for QualificationHold {
     }
 }
 
-/// Owner-side checkpoint cadence (Stage 1 / Stage 9).
+/// Owner-side cadence for durable baseline replacement.
 ///
-/// The native host re-derives and re-publishes its ENTIRE signed state — a
-/// multi-megabyte room checkpoint plus a per-document snapshot — after every
-/// committed inbound delta. Under the browser's publication window that became a
-/// full checkpoint per key-batch: the relay fanned each ~2-3 MB checkpoint back
-/// to the live browser (thousands of ~1.5 KB frames, the replay storm) and the
-/// native's single owner loop fell far enough behind draining its own inbound
-/// fan-out that the relay disconnected it for outbound backpressure, which
-/// triggered a reconnect, a retained-baseline replay, and re-publication — the
-/// amplification.
-///
-/// Coalesce them: publish a full checkpoint at most once per [`Self::MAX_DELTAS`]
-/// committed deltas, or once the inbound stream has been idle for
-/// [`Self::IDLE`]. Intermediate deltas are still committed locally with their
-/// durability receipt (only the redundant *wire* checkpoint is coalesced), and
-/// the relay retains only the newest checkpoint per channel, so an offline
-/// device still bootstraps from exactly one.
+/// Ordinary commits append a bounded room delta and only their dirty route
+/// snapshots. Those selective tails publish immediately. When the durable tail
+/// reaches its count/byte bound, the owner replaces it with a complete recovery
+/// basis; that multi-record replacement and any following tails remain coalesced
+/// until idle or the hard commit cap. Reconnect/catch-up paths can still force
+/// the latest complete basis immediately.
 struct CheckpointCadence {
     deltas_since_publish: u32,
     pending: bool,
+    replacement_pending: bool,
     last_activity: std::time::Instant,
 }
 impl CheckpointCadence {
-    /// Publish at latest every this many committed deltas even under continuous
-    /// input, so a peer that never pauses still gets a bounded-staleness anchor.
-    /// Set well above a full typing burst so that, in practice, the anchor
-    /// fires on the idle path below and a continuous typist never floods a live
-    /// subscriber with a multi-megabyte checkpoint mid-stream.
+    /// Publish a pending replacement at latest after this many committed
+    /// changes even under continuous input.
     const MAX_DELTAS: u32 = 1024;
-    /// Flush a coalesced checkpoint once input pauses for this long. Set well
-    /// above the browser's 100 ms publication window, normal inter-key gaps, and
-    /// the momentary main-thread stalls a delivered frame causes, so that only a
-    /// genuine pause in typing — never active typing, and not the bursty catch-up
-    /// of a backpressured native draining its inbound queue — triggers the anchor.
+    /// Flush a pending complete basis once input pauses for this long.
     const IDLE: Duration = Duration::from_millis(5000);
     fn new() -> Self {
         Self {
             deltas_since_publish: 0,
             pending: false,
+            replacement_pending: false,
             last_activity: std::time::Instant::now(),
         }
     }
-    /// A delta committed locally. Returns whether the coalesced full checkpoint
-    /// is due now (the per-delta count reached the cap); otherwise the publish
-    /// is deferred and will flush on idle or at the cap.
-    fn on_commit(&mut self, now: std::time::Instant) -> bool {
-        self.last_activity = now;
-        self.deltas_since_publish = self.deltas_since_publish.saturating_add(1);
-        self.pending = true;
-        if self.deltas_since_publish >= Self::MAX_DELTAS {
-            self.mark_published(now);
-            true
-        } else {
-            false
+    fn publication_due(
+        &mut self,
+        advance: crate::owner::PublicationAdvance,
+        now: std::time::Instant,
+        force: bool,
+    ) -> bool {
+        use crate::owner::PublicationAdvance;
+        if advance == PublicationAdvance::None && !force {
+            return false;
         }
+        self.last_activity = now;
+        self.pending = true;
+        if advance != PublicationAdvance::None {
+            self.deltas_since_publish = self.deltas_since_publish.saturating_add(1);
+        }
+        if matches!(advance, PublicationAdvance::BaselineReplacement { .. }) {
+            self.replacement_pending = true;
+        }
+        force
+            || (!self.replacement_pending
+                && matches!(advance, PublicationAdvance::SelectiveTail { .. }))
+            || self.deltas_since_publish >= Self::MAX_DELTAS
     }
     /// On an idle tick: flush the coalesced checkpoint once input has paused.
-    fn due_on_idle(&mut self, now: std::time::Instant) -> bool {
-        if self.pending && now.duration_since(self.last_activity) >= Self::IDLE {
-            self.mark_published(now);
-            true
-        } else {
-            false
-        }
+    fn due_on_idle(&self, now: std::time::Instant) -> bool {
+        self.pending && now.duration_since(self.last_activity) >= Self::IDLE
     }
     /// A checkpoint was published (through any path); reset the coalescing state.
     fn mark_published(&mut self, now: std::time::Instant) {
         self.deltas_since_publish = 0;
         self.pending = false;
+        self.replacement_pending = false;
         self.last_activity = now;
     }
 }
 
-fn signed_commit_publication_due(cadence: &mut CheckpointCadence, now: std::time::Instant) -> bool {
-    cadence.on_commit(now)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublicationDispatch {
+    None,
+    DeferredBaseline { entries: usize, bytes: usize },
+    PublishedSelective { entries: usize, bytes: usize },
+    PublishedBaseline { entries: usize, bytes: usize },
+    PublishedForced,
 }
 
-fn owner_commit_publication_due(
-    cadence: &mut CheckpointCadence,
-    now: std::time::Instant,
-    desktop: bool,
-) -> bool {
-    if desktop {
-        // Desktop commits append their room delta and any newly created record
-        // to the durable outbox. Publish that gesture in this owner turn, not
-        // after the background document checkpoint's idle window.
-        cadence.mark_published(now);
-        true
-    } else {
-        cadence.on_commit(now)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublicationFailureAction {
+    Reconnect,
+    Fatal,
+}
+
+fn committed_publication_failure(problem: &anyhow::Error) -> PublicationFailureAction {
+    match problem.downcast_ref::<tilo_relay::CoeditError>() {
+        Some(tilo_relay::CoeditError::Disconnected) => PublicationFailureAction::Reconnect,
+        Some(tilo_relay::CoeditError::Encode(_)) | None => PublicationFailureAction::Fatal,
     }
+}
+
+fn dispatch_committed_publication(
+    cadence: &mut CheckpointCadence,
+    owner: &SessionOwner,
+    before: crate::owner::PublicationRevision,
+    now: std::time::Instant,
+    force: bool,
+    send: impl FnOnce() -> Result<()>,
+) -> Result<PublicationDispatch> {
+    use crate::owner::PublicationAdvance;
+    let started = std::time::Instant::now();
+    let advance = owner.publication_advance(before);
+    let (class, entries, bytes) = match advance {
+        PublicationAdvance::None => ("none", 0, 0),
+        PublicationAdvance::SelectiveTail { entries, bytes } => ("selective_tail", entries, bytes),
+        PublicationAdvance::BaselineReplacement { entries, bytes } => {
+            ("baseline_replacement", entries, bytes)
+        }
+    };
+    let (published, deferred) = match advance {
+        PublicationAdvance::None if !force => {
+            return Ok(PublicationDispatch::None);
+        }
+        PublicationAdvance::None => (PublicationDispatch::PublishedForced, None),
+        PublicationAdvance::SelectiveTail { entries, bytes } => {
+            let deferred =
+                cadence
+                    .replacement_pending
+                    .then(|| PublicationDispatch::DeferredBaseline {
+                        entries: owner.outgoing().len(),
+                        bytes: owner.outgoing().iter().map(Vec::len).sum(),
+                    });
+            let published = if cadence.replacement_pending {
+                PublicationDispatch::PublishedBaseline {
+                    entries: owner.outgoing().len(),
+                    bytes: owner.outgoing().iter().map(Vec::len).sum(),
+                }
+            } else {
+                PublicationDispatch::PublishedSelective { entries, bytes }
+            };
+            (published, deferred)
+        }
+        PublicationAdvance::BaselineReplacement { entries, bytes } => (
+            PublicationDispatch::PublishedBaseline { entries, bytes },
+            Some(PublicationDispatch::DeferredBaseline { entries, bytes }),
+        ),
+    };
+    let due = cadence.publication_due(advance, now, force);
+    if !due {
+        if std::env::var_os("QOS_RELAY_PHASE_DIAGNOSTICS").is_some() {
+            tracing::info!(
+                phase = "owner_publication_dispatch",
+                class,
+                entries,
+                bytes,
+                decision = "deferred",
+                success = true,
+                elapsed_us = started.elapsed().as_micros() as u64
+            );
+        }
+        return Ok(deferred.unwrap());
+    }
+    if let Err(problem) = send() {
+        if std::env::var_os("QOS_RELAY_PHASE_DIAGNOSTICS").is_some() {
+            tracing::info!(
+                phase = "owner_publication_dispatch",
+                class,
+                entries,
+                bytes,
+                decision = "publish",
+                success = false,
+                elapsed_us = started.elapsed().as_micros() as u64
+            );
+        }
+        return Err(problem);
+    }
+    cadence.mark_published(now);
+    if std::env::var_os("QOS_RELAY_PHASE_DIAGNOSTICS").is_some() {
+        tracing::info!(
+            phase = "owner_publication_dispatch",
+            class,
+            entries,
+            bytes,
+            decision = "publish",
+            success = true,
+            elapsed_us = started.elapsed().as_micros() as u64
+        );
+    }
+    Ok(published)
 }
 
 pub struct NativeSubscription {
@@ -759,15 +890,19 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 if qualification.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
                     qualification.expired = true; qualification.release();
                 }
-                // Flush a coalesced checkpoint once inbound input has paused
-                // (Stage 1/9 cadence). Publishing the latest full state is
-                // idempotent; the relay retains only the newest per channel.
+                // A recovery-basis replacement and every following tail stay
+                // ordered behind this idle flush. Ordinary selective tails do
+                // not reach this path because they publish in their commit turn.
                 if cadence.due_on_idle(std::time::Instant::now()) {
                     if let Some(current) = session.as_ref().filter(|s| s.is_ready()) {
                         tracing::debug!(site = "idle_flush", "publish site");
-                        if let Err(problem) = publish(&owner, current) {
-                            error = Some(problem.to_string());
-                            if let Some(old) = session.take() { close_session(old, &format!("idle checkpoint flush failed: {problem}")).await; }
+                        match publish(&owner, current) {
+                            Ok(()) => cadence.mark_published(std::time::Instant::now()),
+                            Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => {
+                                error = Some(problem.to_string());
+                                if let Some(old) = session.take() { close_session(old, &format!("idle checkpoint flush failed: {problem}")).await; }
+                            },
+                            Err(problem) => action_error = Some(signing.fail(problem.to_string())),
                         }
                     }
                 }
@@ -818,6 +953,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 let _timing = crate::action_timing::Timing::slow("owner_commit");
                 let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
                 let desktop = pending.is_desktop();
+                let publication_before = owner.publication_revision();
                 let result = if desktop { pending.apply_desktop(&mut owner) } else { pending.apply(&mut owner).map(|_| None) };
                 if let Ok(Some(delivery)) = &result {
                     if let Some(session) = session.as_ref() {
@@ -827,19 +963,43 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     }
                 }
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
-                // An owner commit reacting to remote input (an acknowledgement or
-                // effect receipt the native's apps derive from each browser delta)
-                // is coalesced by the same cadence as the inbound path; otherwise
-                // a live browser typing drives one native checkpoint per key. The
-                // commit is durable locally regardless; only the wire checkpoint
-                // is deferred and flushes on idle or at the cap. Explicit
-                // desktop gestures publish immediately through the same cursor.
-                let due = owner_commit_publication_due(&mut cadence, std::time::Instant::now(), desktop);
-                let published = if due { tracing::debug!(site = "owner_commit", "publish site"); session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("owner committed while disconnected; publication pending")).and_then(|s| publish(&owner, s)) } else { Ok(()) };
+                let published = dispatch_committed_publication(
+                    &mut cadence,
+                    &owner,
+                    publication_before,
+                    std::time::Instant::now(),
+                    desktop,
+                    || {
+                        tracing::debug!(site = "owner_commit", "publish site");
+                        #[cfg(feature = "test-support")]
+                        if let Some(problem) = qualification.publication_failure_once() {
+                            return Err(problem);
+                        }
+                        session
+                            .as_ref()
+                            .filter(|s| s.is_ready())
+                            .ok_or_else(|| anyhow::anyhow!("owner committed while disconnected; publication pending"))
+                            .and_then(|s| publish(&owner, s))
+                    },
+                );
                 if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }
                 if let Err(problem) = result { action_error = Some(problem); }
-                if let Err(problem) = published { action_error = Some(signing.fail(problem.to_string())); }
+                let reconnect_publication = match published {
+                    Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => {
+                        error = Some(problem.to_string());
+                        Some(problem.to_string())
+                    }
+                    Err(problem) => {
+                        action_error = Some(signing.fail(problem.to_string()));
+                        None
+                    }
+                    Ok(_) => None,
+                };
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                drop(current);
+                if let Some(problem) = reconnect_publication {
+                    if let Some(old) = session.take() { close_session(old, &format!("owner publication transport failed: {problem}")).await; }
+                }
             },
             pending = signatures.recv(), if session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
                 let timing = pending.diagnostic_timing();
@@ -847,22 +1007,46 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 let hold = qualification.route.as_ref().is_some_and(|(app, record)| pending.matches_route(app, record));
                 let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
                 timing.mark("apply_start");
+                let publication_before = owner.publication_revision();
                 let (complete, result) = pending.apply(&mut owner);
                 timing.mark("apply_end");
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
                 timing.mark("publication_start");
-                let published = if signed_commit_publication_due(&mut cadence, std::time::Instant::now()) {
-                    tracing::debug!(site = "signed_commit", "publish site");
-                    session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("signed commit publication pending; native peer unavailable")).and_then(|s| publish(&owner, s))
-                } else {
-                    Ok(())
-                };
+                let published = dispatch_committed_publication(
+                    &mut cadence,
+                    &owner,
+                    publication_before,
+                    std::time::Instant::now(),
+                    false,
+                    || {
+                        tracing::debug!(site = "signed_commit", "publish site");
+                        #[cfg(feature = "test-support")]
+                        if let Some(problem) = qualification.publication_failure_once() {
+                            return Err(problem);
+                        }
+                        session
+                            .as_ref()
+                            .filter(|s| s.is_ready())
+                            .ok_or_else(|| anyhow::anyhow!("signed commit publication pending; native peer unavailable"))
+                            .and_then(|s| publish(&owner, s))
+                    },
+                );
                 timing.mark("publication_end");
                 timing.mark("runtime_committed_start");
                 if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }
                 timing.mark("runtime_committed_end");
                 if let Err(problem) = result { action_error = Some(problem); }
-                if let Err(problem) = published { action_error = Some(signing.fail(problem.to_string())); }
+                let reconnect_publication = match published {
+                    Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => {
+                        error = Some(problem.to_string());
+                        Some(problem.to_string())
+                    }
+                    Err(problem) => {
+                        action_error = Some(signing.fail(problem.to_string()));
+                        None
+                    }
+                    Ok(_) => None,
+                };
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
                 #[cfg(feature = "test-support")]
                 if hold {
@@ -872,6 +1056,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 } else { complete(); }
                 #[cfg(not(feature = "test-support"))]
                 complete();
+                drop(current);
+                if let Some(problem) = reconnect_publication {
+                    if let Some(old) = session.take() { close_session(old, &format!("signed publication transport failed: {problem}")).await; }
+                }
             },
             message = network.recv() => if let Some(message) = message {
                 if let Some(current) = session.as_ref().filter(|s| s.is_ready()) {
@@ -910,7 +1098,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             tracing::debug!(site = "ready", "publish site");
                             match publish(&owner,current) {
                                 Ok(())=>{error=None; cadence.mark_published(std::time::Instant::now());}
-                                Err(problem)=>{error=Some(problem.to_string());if let Some(old)=session.take(){close_session(old, &format!("initial publication failed: {problem}")).await;}}
+                                Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => {error=Some(problem.to_string());if let Some(old)=session.take(){close_session(old, &format!("initial publication failed: {problem}")).await;}},
+                                Err(problem)=>{action_error=Some(signing.fail(problem.to_string()));*authority.0.lock().map_err(|_|anyhow::anyhow!("authority unavailable"))?=None;if let Some(old)=session.take(){close_session(old, &format!("initial publication invalid: {problem}")).await;}}
                             }
                         }
                     },
@@ -929,6 +1118,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         let decoded: Result<qos_peer_state::NeighbourMsg> = postcard::from_bytes(&bytes).map_err(anyhow::Error::from);
                         let kind = decoded.as_ref().map(message_kind).unwrap_or("undecodable");
                         let started = std::time::Instant::now();
+                        let publication_before = owner.publication_revision();
                         let received = {
                             let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
                             let received = decoded.and_then(|message|owner.receive(origin,message));
@@ -944,13 +1134,27 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             Ok(receipt) => {
                                 if !owner.permits_publication() {error=owner.peer().incomplete_reason();if let Some(old)=session.take(){close_session(old, "owner incomplete after inbound").await;}}
                                 else if receipt.is_some() {
-                                    // Steady-state document deltas are coalesced by the cadence so a
-                                    // continuous typist never floods a live peer with a checkpoint;
-                                    // a SyncReq or any non-document commit is a bootstrap/catch-up
-                                    // request and publishes immediately so the requester converges.
                                     let now = std::time::Instant::now();
-                                    let due = if kind == "AppDocument" { cadence.on_commit(now) } else { cadence.mark_published(now); true };
-                                    if due { tracing::debug!(site = if kind == "AppDocument" { "inbound_delta_cap" } else { "inbound_bootstrap" }, "publish site"); if let Some(current) = session.as_ref().filter(|current|current.is_ready()) { if let Err(problem) = publish(&owner,current) { error = Some(problem.to_string()); if let Some(old)=session.take(){ close_session(old, &format!("publication failed after receipt: {problem}")).await; } } } }
+                                    let published = dispatch_committed_publication(
+                                        &mut cadence,
+                                        &owner,
+                                        publication_before,
+                                        now,
+                                        kind != "AppDocument",
+                                        || {
+                                            tracing::debug!(site = if kind == "AppDocument" { "inbound_selective" } else { "inbound_bootstrap" }, "publish site");
+                                            session
+                                                .as_ref()
+                                                .filter(|current| current.is_ready())
+                                                .ok_or_else(|| anyhow::anyhow!("inbound publication pending; native peer unavailable"))
+                                                .and_then(|current| publish(&owner, current))
+                                        },
+                                    );
+                                    match published {
+                                        Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => { error = Some(problem.to_string()); if let Some(old)=session.take(){ close_session(old, &format!("publication failed after receipt: {problem}")).await; } },
+                                        Err(problem) => { action_error=Some(signing.fail(problem.to_string())); *authority.0.lock().map_err(|_|anyhow::anyhow!("authority unavailable"))?=None; if let Some(old)=session.take(){close_session(old, &format!("publication invalid after receipt: {problem}")).await;} },
+                                        Ok(_) => {},
+                                    }
                                 }
                             },
                             Err(problem) => { error = Some(problem.to_string()); if !owner.permits_publication() { if let Some(old)=session.take(){close_session(old, "inbound rejected and owner incomplete").await;} } }
@@ -967,6 +1171,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         match command.request {
                             crate::enrollment_http::EnrollmentRequest::Challenge(request)=>enrollment.challenge(&owner,request,tilo_relay::clock::now_ns()).and_then(|response|serde_json::to_vec(&response).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))),
                             crate::enrollment_http::EnrollmentRequest::Complete(request)=>{
+                                let publication_before = owner.publication_revision();
                                 let enrolled = {
                                     let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
                                     let enrolled = enrollment.complete(&mut owner,request,tilo_relay::clock::now_ns());
@@ -975,13 +1180,24 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                 };
                                 match enrolled {
                                     Err(error)=>Err(error),
-                                    Ok(certificate)=>match host.update_membership(&owner).await {
+                                    Ok(certificate)=>{
+                                        // Enrollment durably replaces the recovery basis before
+                                        // membership reconciliation or transport publication can
+                                        // fail. Arm that cut now; a later forced dispatch observes
+                                        // no additional revision and clears it only after success.
+                                        let publication_after = owner.publication_revision();
+                                        let _ = cadence.publication_due(owner.publication_advance(publication_before),std::time::Instant::now(),false);
+                                        match host.update_membership(&owner).await {
                                         Err(error)=>Err(crate::enrollment::EnrollmentError::new(503,format!("committed enrollment awaits relay membership reconciliation: {error}"))),
                                         Ok(())=>{
-                                            let published=session.as_ref().ok_or_else(||anyhow::anyhow!("native subscription unavailable")).and_then(|current|publish(&owner,current));
-                                            published.map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string())).and_then(|()|crate::enrollment::public_bootstrap(&owner,&certificate,serde_json::to_value(&host.address).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))?,&host.packet_url.to_string(),tilo_relay::clock::now_ns())).and_then(|value|serde_json::to_vec(&value).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string())))
+                                            let published=dispatch_committed_publication(&mut cadence,&owner,publication_after,std::time::Instant::now(),true,||session.as_ref().filter(|current|current.is_ready()).ok_or_else(||anyhow::anyhow!("native subscription unavailable")).and_then(|current|publish(&owner,current)));
+                                            match published {
+                                                Ok(_) => crate::enrollment::public_bootstrap(&owner,&certificate,serde_json::to_value(&host.address).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))?,&host.packet_url.to_string(),tilo_relay::clock::now_ns()).and_then(|value|serde_json::to_vec(&value).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))),
+                                                Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => { error=Some(problem.to_string()); if let Some(old)=session.take(){close_session(old,&format!("enrollment publication failed: {problem}")).await;} Err(crate::enrollment::EnrollmentError::new(503,problem.to_string())) },
+                                                Err(problem) => { action_error=Some(signing.fail(problem.to_string())); *authority.0.lock().map_err(|_|anyhow::anyhow!("authority unavailable"))?=None; if let Some(old)=session.take(){close_session(old,&format!("enrollment publication invalid: {problem}")).await;} Err(crate::enrollment::EnrollmentError::new(503,problem.to_string())) },
+                                            }
                                         }
-                                    }
+                                    }}
                                 }
                             }
                         }
@@ -1005,7 +1221,9 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         "publication": {
                             "room_heads": owner.peer().admitted_room().map(|room| room.clone().get_heads().iter().map(ToString::to_string).collect::<Vec<_>>()),
                             "receipts": owner.peer().rows().iter().map(|row| owner.peer().durable_coverage(&row.app_id, &row.record_id)).collect::<Result<Vec<_>, _>>().map_err(anyhow::Error::msg)?,
-                        }});
+                        },
+                        "publication_failure": qualification.publication_failure_status(),
+                    });
                 }
                 status["native_subscription_generation"] = json!(subscription_generation);
                 let authorization=authorization.clone();let commands=enrollment_commands.clone();
@@ -1179,101 +1397,273 @@ mod reconnect_policy_tests {
 
 #[cfg(test)]
 mod cadence_tests {
-    use super::{CheckpointCadence, owner_commit_publication_due, signed_commit_publication_due};
-    use std::time::{Duration, Instant};
+    use super::{
+        CheckpointCadence, PublicationDispatch, PublicationFailureAction,
+        committed_publication_failure, dispatch_committed_publication,
+    };
+    use crate::{SessionOwner, owner::PublicationAdvance, publication::PublicationCursor};
+    use qos_peer_state::transport::Retention;
+    use std::time::{Duration, Instant, SystemTime};
+    use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
+
+    fn commit_small_changed_record(owner: &mut SessionOwner, value: u64) {
+        let key = tilo_user_identity::persist::read_device_key(
+            &tilo_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
+                .device_privkey,
+        )
+        .unwrap();
+        let app = "dev.qos.word-processor";
+        let record = "tab:0000000000000001";
+        let mut candidate = owner.peer().clone();
+        let mut document = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
+        document.put(ROOT, "cadence-test", value).unwrap();
+        document.commit();
+        candidate
+            .publish_document(app, record, document.save(), &key, SystemTime::now())
+            .unwrap();
+        owner
+            .commit_mutation_candidate(candidate, owner.directory().to_vec())
+            .unwrap();
+    }
 
     #[test]
-    fn burst_of_fifty_deltas_yields_one_checkpoint_at_the_cadence_not_per_delta() {
-        // A 50-delta burst tighter than IDLE must NOT publish a full checkpoint
-        // per delta (that fanned a multi-megabyte checkpoint back to the browser
-        // per key — the storm). With the cap well above a burst, the whole burst
-        // coalesces and flushes as exactly one checkpoint when input pauses. The
-        // cadence only ever defers, so no reconnect can result from it.
+    fn selective_owner_tail_publishes_in_commit_turn_without_replaying_baseline() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        let mut cursor = PublicationCursor::default();
+        cursor.send(&owner, |_, _| Ok(())).unwrap();
+        let before = owner.publication_revision();
+        commit_small_changed_record(&mut owner, 1);
+
+        let now = Instant::now();
         let mut cadence = CheckpointCadence::new();
-        let start = Instant::now();
-        let mut during_burst = 0u32;
-        for i in 0..50u32 {
-            // 10 ms spacing keeps the whole 490 ms burst inside one IDLE window.
-            let now = start + Duration::from_millis(u64::from(i) * 10);
-            if cadence.on_commit(now) {
-                during_burst += 1;
-            }
+        let mut delivered = Vec::new();
+        let dispatch =
+            dispatch_committed_publication(&mut cadence, &owner, before, now, false, || {
+                cursor.send(&owner, |bytes, kind| {
+                    delivered.push((bytes.to_vec(), kind));
+                    Ok(())
+                })
+            })
+            .unwrap();
+
+        assert!(matches!(
+            dispatch,
+            PublicationDispatch::PublishedSelective { entries: 2, .. }
+        ));
+        assert_eq!(delivered.len(), 2, "only the durable selective tail is new");
+        assert_eq!(
+            delivered.iter().map(|(_, kind)| *kind).collect::<Vec<_>>(),
+            vec![Retention::Delta, Retention::Checkpoint]
+        );
+        assert!(
+            !cadence.due_on_idle(now + CheckpointCadence::IDLE),
+            "a successful immediate send leaves no five-second retry"
+        );
+    }
+
+    #[test]
+    fn failed_selective_transport_publish_remains_dirty_for_reconnect_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        let before = owner.publication_revision();
+        commit_small_changed_record(&mut owner, 2);
+
+        let now = Instant::now();
+        let mut cadence = CheckpointCadence::new();
+        let error =
+            dispatch_committed_publication(&mut cadence, &owner, before, now, false, || {
+                Err(anyhow::Error::new(tilo_relay::CoeditError::Disconnected))
+            })
+            .unwrap_err();
+        assert_eq!(
+            committed_publication_failure(&error),
+            PublicationFailureAction::Reconnect
+        );
+        assert!(
+            cadence.due_on_idle(now + CheckpointCadence::IDLE),
+            "failed publication must retain a bounded retry"
+        );
+    }
+
+    #[test]
+    fn local_publication_failure_remains_fatal() {
+        let corrupt = anyhow::anyhow!("committed publication bytes are corrupt");
+        assert_eq!(
+            committed_publication_failure(&corrupt),
+            PublicationFailureAction::Fatal
+        );
+    }
+
+    #[test]
+    fn baseline_compaction_defers_itself_and_following_tail_until_successful_flush() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        let original_baseline = owner.publication_baseline();
+        for value in 0..32 {
+            commit_small_changed_record(&mut owner, value);
         }
         assert_eq!(
-            during_burst, 0,
-            "a 50-delta burst under the cap publishes nothing mid-stream"
+            owner.publication_baseline(),
+            original_baseline,
+            "64 selective tail entries fit without compaction"
         );
-        assert!(
-            cadence.pending,
-            "the burst is coalesced, awaiting an idle flush"
+
+        let now = Instant::now();
+        let mut cadence = CheckpointCadence::new();
+        let before_compaction = owner.publication_revision();
+        commit_small_changed_record(&mut owner, 32);
+        let mut sends = 0;
+        let compacted = dispatch_committed_publication(
+            &mut cadence,
+            &owner,
+            before_compaction,
+            now,
+            false,
+            || {
+                sends += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            compacted,
+            PublicationDispatch::DeferredBaseline { .. }
+        ));
+        assert_eq!(sends, 0);
+
+        let before_tail = owner.publication_revision();
+        commit_small_changed_record(&mut owner, 33);
+        let tail = dispatch_committed_publication(
+            &mut cadence,
+            &owner,
+            before_tail,
+            now + Duration::from_millis(1),
+            false,
+            || {
+                sends += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(matches!(tail, PublicationDispatch::DeferredBaseline { .. }));
+        assert_eq!(
+            sends, 0,
+            "a tail cannot bypass its unsent replacement basis"
         );
-        let idle = start + Duration::from_millis(50 * 10) + CheckpointCadence::IDLE;
+
+        let idle = now + Duration::from_millis(1) + CheckpointCadence::IDLE;
+        assert!(cadence.due_on_idle(idle));
         assert!(
             cadence.due_on_idle(idle),
-            "the paused burst flushes exactly one checkpoint"
+            "testing or attempting a due publication must not clear dirty state"
         );
-        assert!(
-            !cadence.due_on_idle(idle),
-            "an already-flushed idle does not re-fire"
-        );
+    }
+
+    #[test]
+    fn replacement_and_following_tails_flush_once_after_idle_success() {
+        let mut cadence = CheckpointCadence::new();
+        let start = Instant::now();
+        assert!(!cadence.publication_due(
+            PublicationAdvance::BaselineReplacement {
+                entries: 32,
+                bytes: 1
+            },
+            start,
+            false,
+        ));
+        for i in 1..50u32 {
+            let now = start + Duration::from_millis(u64::from(i) * 10);
+            assert!(!cadence.publication_due(
+                PublicationAdvance::SelectiveTail {
+                    entries: 2,
+                    bytes: 1
+                },
+                now,
+                false,
+            ));
+        }
+        let idle = start + Duration::from_millis(50 * 10) + CheckpointCadence::IDLE;
+        assert!(cadence.due_on_idle(idle));
+        cadence.mark_published(idle);
+        assert!(!cadence.due_on_idle(idle));
         assert!(!cadence.pending);
     }
 
     #[test]
     fn continuous_input_still_anchors_at_the_hard_delta_cap() {
-        // Even a typist who never pauses gets a bounded-staleness anchor: the
-        // per-delta cap forces exactly one checkpoint once it is reached.
         let mut cadence = CheckpointCadence::new();
         let start = Instant::now();
-        let mut publishes = 0u32;
-        for i in 0..(CheckpointCadence::MAX_DELTAS + 5) {
-            let now = start + Duration::from_millis(u64::from(i)); // 1 ms apart, never idle
-            if cadence.on_commit(now) {
-                publishes += 1;
-            }
+        assert!(!cadence.publication_due(
+            PublicationAdvance::BaselineReplacement {
+                entries: 32,
+                bytes: 1
+            },
+            start,
+            false,
+        ));
+        for i in 1..CheckpointCadence::MAX_DELTAS {
+            let due = cadence.publication_due(
+                PublicationAdvance::SelectiveTail {
+                    entries: 2,
+                    bytes: 1,
+                },
+                start + Duration::from_millis(u64::from(i)),
+                false,
+            );
+            assert_eq!(due, i + 1 == CheckpointCadence::MAX_DELTAS);
         }
-        assert_eq!(
-            publishes, 1,
-            "the hard cap fires exactly once across MAX_DELTAS+5 deltas"
-        );
+        cadence.mark_published(start + Duration::from_millis(1024));
+        assert!(cadence.publication_due(
+            PublicationAdvance::SelectiveTail {
+                entries: 2,
+                bytes: 1
+            },
+            start + Duration::from_millis(1025),
+            false,
+        ));
     }
 
     #[test]
     fn idle_does_not_fire_during_continuous_input() {
         let mut cadence = CheckpointCadence::new();
         let start = Instant::now();
-        cadence.on_commit(start);
-        // A tick shorter than IDLE after activity must not flush.
+        assert!(!cadence.publication_due(
+            PublicationAdvance::BaselineReplacement {
+                entries: 32,
+                bytes: 1
+            },
+            start,
+            false,
+        ));
+        assert!(!cadence.publication_due(
+            PublicationAdvance::SelectiveTail {
+                entries: 2,
+                bytes: 1
+            },
+            start + CheckpointCadence::IDLE - Duration::from_millis(1),
+            false,
+        ));
         assert!(!cadence.due_on_idle(start + CheckpointCadence::IDLE - Duration::from_millis(1)));
         assert!(cadence.pending);
     }
 
     #[test]
-    fn signed_app_commits_are_coalesced_by_the_host_cadence() {
+    fn forced_publication_flushes_pending_replacement_only_after_success() {
         let mut cadence = CheckpointCadence::new();
         let start = Instant::now();
-        for offset in 0..50 {
-            assert!(!signed_commit_publication_due(
-                &mut cadence,
-                start + Duration::from_millis(offset),
-            ));
-        }
-        assert!(cadence.pending);
-        assert!(cadence.due_on_idle(start + Duration::from_millis(50) + CheckpointCadence::IDLE));
-    }
-
-    #[test]
-    fn desktop_gesture_flushes_pending_publication_without_waiting_for_idle() {
-        let mut cadence = CheckpointCadence::new();
-        let start = Instant::now();
-        assert!(!owner_commit_publication_due(&mut cadence, start, false));
-        let gesture = start + Duration::from_millis(20);
-        assert!(owner_commit_publication_due(&mut cadence, gesture, true));
+        let replacement = PublicationAdvance::BaselineReplacement {
+            entries: 32,
+            bytes: 1,
+        };
+        assert!(!cadence.publication_due(replacement, start, false));
+        let gesture = start + Duration::from_millis(1);
+        assert!(cadence.publication_due(PublicationAdvance::None, gesture, true));
+        assert!(
+            cadence.pending,
+            "the decision alone is not a successful send"
+        );
+        cadence.mark_published(gesture);
         assert!(!cadence.due_on_idle(gesture + CheckpointCadence::IDLE));
-        assert!(!owner_commit_publication_due(
-            &mut cadence,
-            gesture + CheckpointCadence::IDLE,
-            false
-        ));
     }
 }

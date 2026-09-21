@@ -142,6 +142,19 @@ pub struct CommitReceipt {
     pub records: Vec<DocumentRow>,
     pub replay_floors: Vec<(String, String, [u8; 32], u64)>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PublicationRevision {
+    baseline_generation: u64,
+    baseline_len: usize,
+    outgoing_len: usize,
+    outgoing_bytes: usize,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PublicationAdvance {
+    None,
+    SelectiveTail { entries: usize, bytes: usize },
+    BaselineReplacement { entries: usize, bytes: usize },
+}
 pub struct SessionOwner {
     store: SessionStore,
     pub(crate) identity: Identity,
@@ -458,6 +471,35 @@ impl SessionOwner {
             self.aggregate.publication.baseline_generation,
             self.aggregate.publication.baseline_len,
         )
+    }
+    pub(crate) fn publication_revision(&self) -> PublicationRevision {
+        PublicationRevision {
+            baseline_generation: self.aggregate.publication.baseline_generation,
+            baseline_len: self.aggregate.publication.baseline_len,
+            outgoing_len: self.aggregate.outgoing.len(),
+            outgoing_bytes: self.aggregate.outgoing.iter().map(Vec::len).sum(),
+        }
+    }
+    pub(crate) fn publication_advance(&self, before: PublicationRevision) -> PublicationAdvance {
+        let after = self.publication_revision();
+        if after == before {
+            return PublicationAdvance::None;
+        }
+        if after.baseline_generation == before.baseline_generation
+            && after.baseline_len == before.baseline_len
+            && after.outgoing_len > before.outgoing_len
+            && after.outgoing_bytes >= before.outgoing_bytes
+        {
+            PublicationAdvance::SelectiveTail {
+                entries: after.outgoing_len - before.outgoing_len,
+                bytes: after.outgoing_bytes - before.outgoing_bytes,
+            }
+        } else {
+            PublicationAdvance::BaselineReplacement {
+                entries: after.outgoing_len,
+                bytes: after.outgoing_bytes,
+            }
+        }
     }
     fn replace_publication(&self, next: &mut Aggregate, messages: &[NeighbourMsg]) -> Result<()> {
         next.outgoing = messages

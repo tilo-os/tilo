@@ -77,7 +77,7 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
     loop {
         assert!(Instant::now() < deadline, "native peer never subscribed");
         let (code, status) = request(origin, "/status", None, None).await;
-        if code == 200 && status["native_peer"] == "subscribed" {
+        if code == 200 && status["native_peer"] == "subscribed" && status["actions"] == "ready" {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -758,15 +758,41 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn normal_host_serves_real_checked_application_catalogue() {
-    checked_application_catalogue(false).await;
+    checked_application_catalogue(false, PublicationFailureFixture::None).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn catalogue_and_close_work_with_multiple_writers() {
-    checked_application_catalogue(true).await;
+    checked_application_catalogue(true, PublicationFailureFixture::None).await;
 }
 
-async fn checked_application_catalogue(multiple_writers: bool) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublicationFailureFixture {
+    None,
+    #[cfg(feature = "test-support")]
+    Disconnect,
+    #[cfg(feature = "test-support")]
+    Encode,
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn committed_selective_publication_disconnect_replays_without_reinvoking() {
+    checked_application_catalogue(false, PublicationFailureFixture::Disconnect).await;
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn committed_selective_publication_encode_failure_is_fatal() {
+    checked_application_catalogue(false, PublicationFailureFixture::Encode).await;
+}
+
+async fn checked_application_catalogue(
+    multiple_writers: bool,
+    publication_failure: PublicationFailureFixture,
+) {
+    #[cfg(not(feature = "test-support"))]
+    let _ = publication_failure;
     use tilo_relay::{
         RelayClient,
         peer_actions::{ActionMessage, DirectedAction},
@@ -1033,22 +1059,30 @@ async fn checked_application_catalogue(multiple_writers: bool) {
     };
     assert_eq!(table_cells(&remote), 0);
     #[cfg(feature = "test-support")]
-    let client = active_replacement(
-        &mut host,
-        origin,
-        client,
-        &observer_binding,
-        &mut remote,
-        room,
-        &cert,
-        &native,
-        broker_host,
-        invocation,
-        operation.clone(),
-    )
-    .await;
+    let client = if publication_failure != PublicationFailureFixture::None {
+        client
+    } else {
+        active_replacement(
+            &mut host,
+            origin,
+            client,
+            &observer_binding,
+            &mut remote,
+            room,
+            &cert,
+            &native,
+            broker_host,
+            invocation,
+            operation.clone(),
+        )
+        .await
+    };
     #[cfg(feature = "test-support")]
-    let first_observation = ActionMessage::Status { invocation };
+    let first_observation = if publication_failure != PublicationFailureFixture::None {
+        operation.clone()
+    } else {
+        ActionMessage::Status { invocation }
+    };
     #[cfg(not(feature = "test-support"))]
     let first_observation = operation.clone();
     invoke_and_observe(
@@ -1069,6 +1103,80 @@ async fn checked_application_catalogue(multiple_writers: bool) {
     );
     #[cfg(feature = "test-support")]
     observe_native_publication(origin, &client, &mut remote).await;
+    #[cfg(feature = "test-support")]
+    if publication_failure != PublicationFailureFixture::None {
+        let prior = selective_publication_failure_after_commit(
+            &mut host,
+            origin,
+            &client,
+            &mut remote,
+            room,
+            &cert,
+            &native,
+            broker_host,
+            &catalogue,
+            publication_failure,
+        )
+        .await;
+        let expected_rows = remote.rows();
+        let expected_heads = remote
+            .admitted_room()
+            .unwrap()
+            .clone()
+            .get_heads()
+            .into_iter()
+            .map(|head| head.0)
+            .collect::<Vec<_>>();
+        let expected_receipts = expected_rows
+            .iter()
+            .map(|row| {
+                remote
+                    .durable_coverage(&row.app_id, &row.record_id)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        client.close().await;
+        use std::io::Write;
+        writeln!(host.0.stdin.as_mut().unwrap(), "shutdown").unwrap();
+        let exit = tokio::task::spawn_blocking(move || host.0.wait().unwrap())
+            .await
+            .unwrap();
+        assert!(exit.success());
+        let reopened = SessionOwner::open(&state).unwrap();
+        if publication_failure == PublicationFailureFixture::Disconnect {
+            assert_eq!(reopened.peer().rows(), expected_rows);
+            assert_eq!(
+                reopened
+                    .peer()
+                    .admitted_room()
+                    .unwrap()
+                    .clone()
+                    .get_heads()
+                    .into_iter()
+                    .map(|head| head.0)
+                    .collect::<Vec<_>>(),
+                expected_heads
+            );
+            assert_eq!(
+                reopened
+                    .peer()
+                    .rows()
+                    .iter()
+                    .map(|row| {
+                        reopened
+                            .peer()
+                            .durable_coverage(&row.app_id, &row.record_id)
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>(),
+                expected_receipts
+            );
+        } else {
+            assert_eq!(table_cells(reopened.peer()), prior + 4);
+            assert_eq!(table_cells(&remote), prior);
+        }
+        return;
+    }
     let (desktop_invocation, desktop_operation, desktop_records) = desktop_open_through_broker(
         &client,
         &mut remote,
@@ -2414,6 +2522,175 @@ async fn observe_native_publication(
     })
     .await
     .expect("observer did not admit the fixed native publication within five seconds");
+}
+
+#[cfg(feature = "test-support")]
+async fn selective_publication_failure_after_commit(
+    host: &mut Host,
+    origin: &str,
+    client: &tilo_relay::RelayClient,
+    remote: &mut qos_peer_state::StatePeer,
+    room: uuid::Uuid,
+    cert: &tilo_user_identity::DeviceCert,
+    native: &tilo_user_identity::DeviceCert,
+    broker_host: uuid::Uuid,
+    catalogue: &serde_json::Value,
+    failure: PublicationFailureFixture,
+) -> usize {
+    use std::io::Write;
+    use tilo_relay::{
+        peer_actions::{ActionMessage, DirectedAction},
+        transport_v2::EnvelopeV2,
+    };
+
+    let surface = catalogue["surfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|surface| surface["app_id"] == "dev.qos.word-processor")
+        .unwrap();
+    let action = surface["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action["action"] == "insert-table")
+        .unwrap();
+    let invocation = tilo_actions::InvocationId::new();
+    let operation = ActionMessage::InvokeBound {
+        host: broker_host,
+        invocation,
+        app_peer: surface["peer_id"].as_u64().unwrap().to_string(),
+        app_id: surface["app_id"].as_str().unwrap().into(),
+        record_id: surface["record_id"].as_str().unwrap().into(),
+        resource: action["resource"].as_str().unwrap().into(),
+        action: "insert-table".into(),
+        argument: None,
+        confirmation: None,
+        revision: None,
+    };
+    let generation =
+        request(origin, "/status", None, None).await.1["native_subscription_generation"]
+            .as_u64()
+            .unwrap();
+    writeln!(
+        host.0.stdin.as_mut().unwrap(),
+        "qualification publication-{}",
+        match failure {
+            PublicationFailureFixture::Disconnect => "disconnect",
+            PublicationFailureFixture::Encode => "encode",
+            PublicationFailureFixture::None => unreachable!(),
+        }
+    )
+    .unwrap();
+    host.0.stdin.as_mut().unwrap().flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = request(origin, "/status", None, None).await.1;
+        let armed = match failure {
+            PublicationFailureFixture::Disconnect => "armed_disconnect",
+            PublicationFailureFixture::Encode => "armed_encode",
+            PublicationFailureFixture::None => unreachable!(),
+        };
+        if status["qualification"]["publication_failure"] == armed {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "publication failure hook did not arm: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let prior = table_cells(remote);
+    let invoke_request = uuid::Uuid::new_v4();
+    client
+        .send_action(EnvelopeV2::Directed(DirectedAction {
+            room,
+            request_id: invoke_request,
+            source: cert.device_public_key,
+            target: native.device_public_key,
+            message: operation,
+        }))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut status_request = None;
+    let mut terminal = false;
+    let recovered = loop {
+        let status = request(origin, "/status", None, None).await.1;
+        let fired = match failure {
+            PublicationFailureFixture::Disconnect => "fired_disconnect",
+            PublicationFailureFixture::Encode => "fired_encode",
+            PublicationFailureFixture::None => unreachable!(),
+        };
+        if failure == PublicationFailureFixture::Encode
+            && status["qualification"]["publication_failure"] == fired
+            && status["actions"] == "unavailable"
+            && status["native_peer"] == "disconnected"
+        {
+            assert!(status["action_error"].is_string(), "{status}");
+            assert_eq!(table_cells(remote), prior);
+            return prior;
+        }
+        if failure == PublicationFailureFixture::Disconnect {
+            assert_ne!(status["actions"], "unavailable", "{status}");
+        }
+        let ready = status["qualification"]["publication_failure"] == fired
+            && status["native_subscription_generation"].as_u64().unwrap() > generation
+            && status["actions"] == "ready"
+            && status["native_peer"] == "subscribed";
+        if ready && status_request.is_none() {
+            let request_id = uuid::Uuid::new_v4();
+            client
+                .send_action(EnvelopeV2::Directed(DirectedAction {
+                    room,
+                    request_id,
+                    source: cert.device_public_key,
+                    target: native.device_public_key,
+                    message: ActionMessage::Status { invocation },
+                }))
+                .unwrap();
+            status_request = Some(request_id);
+        }
+        if ready && terminal && table_cells(remote) > prior {
+            assert!(status["action_error"].is_null(), "{status}");
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "committed selective publication did not reconnect: {status}; terminal={terminal}; cells={}",
+            table_cells(remote)
+        );
+        tokio::select! {
+            state = client.recv() => apply_state(remote, state.expect("observer state stream ended")),
+            event = client.recv_action() => {
+                if let EnvelopeV2::Delivered { action, source_user } = event.expect("observer action stream ended") {
+                    if action.request_id == invoke_request || Some(action.request_id) == status_request {
+                        assert_eq!(source_user, native.user_public_key);
+                        assert_eq!(action.source, native.device_public_key);
+                        assert_eq!(action.target, cert.device_public_key);
+                        assert_eq!(action.room, room);
+                        if let ActionMessage::Observation { invocation: got, update: Some(update), uncertain, .. } = action.message {
+                            assert_eq!(got, invocation);
+                            assert!(!uncertain);
+                            if update.is_terminal() {
+                                assert!(matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }), "{update:?}");
+                                terminal = true;
+                            }
+                        }
+                    }
+                }
+            },
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+        }
+    };
+    assert_eq!(recovered["action_error"], serde_json::Value::Null);
+    assert_eq!(
+        table_cells(remote),
+        prior + 4,
+        "recovery must replay the one committed 2x2 effect exactly once"
+    );
+    observe_native_publication(origin, client, remote).await;
+    prior
 }
 
 async fn desktop_open_through_broker(
