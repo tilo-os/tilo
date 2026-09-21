@@ -936,7 +936,7 @@ impl DesktopRoot {
                 .iter()
                 .map(|(app, definition)| json!({"id":app,"label":definition.title}))
                 .collect::<Vec<_>>();
-            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
+            let next = json!({"version":1,"generation":self.handle.generation,"entries":entries,"workspaces":workspaces,"applications":applications,"activeWorkspace":tree.active.0.to_string(),"activeStrip":tree.active_workspace().and_then(|w| tree.active_strip.get(&w.id).copied().or_else(||w.strips.first().map(|s|s.id))).map(|s|s.0.to_string()),"active":active,"widthPermille":group.map(|g|g.width.permille()),"maximized":group.is_some_and(|g|g.maximized),"capabilities":{"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,"closeInactive":true},"history":snapshot.get("history").cloned().unwrap_or(serde_json::Value::Null),"scroll":snapshot.get("scroll").cloned().unwrap_or(serde_json::Value::Null),"desktopPan":snapshot.get("desktopPan").cloned().unwrap_or(serde_json::Value::Null)});
             if *snapshot != next {
                 *snapshot = next;
                 changed = true;
@@ -978,7 +978,7 @@ impl DesktopRoot {
             changed = true;
         }
         let available = self.activity_snapshot().is_ok();
-        let capabilities = json!({"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,
+        let capabilities = json!({"select":true,"width":true,"maximize":true,"strips":true,"commands":true,"globalSearch":true,"close":true,"closeInactive":true,
             "workspaceSelect":!self.handle.tree.borrow().workspaces.is_empty(),"workspaceHistory":available,"workspaceReplay":available});
         let activity = self.activity.as_ref().filter(|_| available).map(|activity| json!({
             "workspace":activity.workspace.0.to_string(), "view":activity.pane.view(),
@@ -1015,10 +1015,29 @@ impl DesktopRoot {
             return Err("Stale desktop surface".into());
         }
         if let Command::Close { route, .. } = &command {
-            if self.active_route().as_ref() != Some(route) {
-                return Err("Application is no longer active".into());
+            let (workspace_id, strip, group, tab) = route.ids()?;
+            let tree = self.handle.tree.borrow();
+            let workspace = tree
+                .active_workspace()
+                .filter(|workspace| workspace.id == workspace_id)
+                .ok_or("Workspace is no longer active")?;
+            let group_exists = workspace
+                .strips
+                .iter()
+                .find(|candidate| candidate.id == strip)
+                .and_then(|candidate| {
+                    candidate
+                        .window_groups
+                        .iter()
+                        .find(|candidate| candidate.id == group)
+                })
+                .is_some_and(|candidate| {
+                    candidate.tabs.iter().any(|candidate| candidate.id == tab)
+                });
+            if !group_exists {
+                return Err("Application is no longer available".into());
             }
-            let (_, strip, group, tab) = route.ids()?;
+            drop(tree);
             let location = qos_desktop::session_commands::TabLocation {
                 strip: strip.0,
                 group,
@@ -1027,7 +1046,7 @@ impl DesktopRoot {
             if let Some((invocation, _)) = self.handle.session_requests.borrow().iter().find(|(_, bound)| matches!(&bound.command, qos_desktop::session_commands::DesktopCommand::CloseTab { location: pending } if pending == &location)) {
                 return Ok((false, Some(invocation.to_string())));
             }
-            let resources = self.resources(doc);
+            let resources = self.resources_for_close(doc, Some(location));
             let address = tilo_actions::ActionAddress::new("desktop:requests", "close-tab");
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .map_err(|error| error.to_string())?;
@@ -1354,32 +1373,11 @@ impl DesktopRoot {
         changed |= self.dirty;
         changed
     }
-}
-
-impl Widget for DesktopRoot {
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = self.resources(doc);
-        let mut views = tilo_actions::Resource::new(
-            activity::view_actions::RESOURCE_ID,
-            "desktop",
-            "Workspace views",
-        );
-        for descriptor in activity::view_actions::workspace_view_descriptors(
-            &self.handle.tree.borrow(),
-            self.activity_snapshot().is_ok(),
-        ) {
-            views = views.with_action(descriptor.action());
-        }
-        resources.push(views);
-        resources
-    }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "qos.desktop.request",
-            activity::view_actions::OPERATION_TYPE,
-        ]
-    }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources_for_close(
+        &self,
+        _doc: &AutoCommit,
+        close_target: Option<qos_desktop::session_commands::TabLocation>,
+    ) -> Vec<tilo_actions::Resource> {
         use qos_desktop::session_commands::*;
         use tilo_actions::{
             ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
@@ -1407,6 +1405,13 @@ impl Widget for DesktopRoot {
                 actions.push(action);
             }
         };
+        if let Some(location) = close_target {
+            add(
+                "close-tab".into(),
+                "Close application".into(),
+                DesktopCommand::CloseTab { location },
+            );
+        }
         let strip = tree
             .active_strip
             .get(&workspace.id)
@@ -1439,11 +1444,13 @@ impl Widget for DesktopRoot {
                         group: group.id,
                         tab: tab.id,
                     };
-                    add(
-                        "close-tab".into(),
-                        format!("Close {}", tab.title),
-                        DesktopCommand::CloseTab { location },
-                    );
+                    if close_target.is_none() {
+                        add(
+                            "close-tab".into(),
+                            format!("Close {}", tab.title),
+                            DesktopCommand::CloseTab { location },
+                        );
+                    }
                     let index = group
                         .tabs
                         .iter()
@@ -1644,6 +1651,35 @@ impl Widget for DesktopRoot {
         }
         vec![resource]
     }
+}
+
+impl Widget for DesktopRoot {
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = self.resources(doc);
+        let mut views = tilo_actions::Resource::new(
+            activity::view_actions::RESOURCE_ID,
+            "desktop",
+            "Workspace views",
+        );
+        for descriptor in activity::view_actions::workspace_view_descriptors(
+            &self.handle.tree.borrow(),
+            self.activity_snapshot().is_ok(),
+        ) {
+            views = views.with_action(descriptor.action());
+        }
+        resources.push(views);
+        resources
+    }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "qos.desktop.request",
+            activity::view_actions::OPERATION_TYPE,
+        ]
+    }
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.resources_for_close(doc, None)
+    }
+
     fn invoke_resource_operation_v2(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -3817,6 +3853,140 @@ mod tests {
             serde_json::to_string(&*handle.tree.borrow()).unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn external_close_of_an_inactive_route_queues_its_exact_tab_without_selecting_it() {
+        use crate::desktop_navigation::{Command, Route};
+        use qos_desktop::session_commands::DesktopCommand;
+        let (mut root, handle, _) = fixture_with_topology(|tree| {
+            let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+            let tab = group.tabs.remove(1);
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .push(WindowGroup {
+                    id: 4,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            tree.active_group.insert(StripId(2), 3);
+        });
+        let before = root.active_route().expect("active route");
+        let target = Route {
+            workspace: "1".into(),
+            strip: "2".into(),
+            group: "4".into(),
+            tab: handle.tree.borrow().workspaces[0].strips[0].window_groups[1].tabs[0]
+                .id
+                .to_string(),
+        };
+
+        let invocation = root
+            .navigate(
+                Command::Close {
+                    generation: handle.generation.clone(),
+                    route: target.clone(),
+                },
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .expect("inactive close is accepted")
+            .1
+            .expect("close invocation");
+
+        assert_eq!(root.active_route(), Some(before));
+        let requests = handle.session_requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0.to_string(), invocation);
+        assert!(matches!(
+            &requests[0].1.command,
+            DesktopCommand::CloseTab { location }
+                if location.strip == 2 && location.group == 4 && location.tab.to_string() == target.tab
+        ));
+        drop(requests);
+
+        assert_eq!(
+            root.navigate(
+                Command::Close {
+                    generation: handle.generation.clone(),
+                    route: target.clone(),
+                },
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .expect("duplicate inactive close is accepted")
+            .1
+            .as_deref(),
+            Some(invocation.as_str())
+        );
+        assert_eq!(handle.session_requests.borrow().len(), 1);
+
+        let mut foreign = target;
+        foreign.workspace = "2".into();
+        assert!(
+            root.navigate(
+                Command::Close {
+                    generation: handle.generation.clone(),
+                    route: foreign,
+                },
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert_eq!(handle.session_requests.borrow().len(), 1);
+    }
+    #[test]
+    fn external_close_uses_its_target_when_the_active_strip_is_empty() {
+        use crate::desktop_navigation::{Command, Route};
+        use qos_desktop::session_commands::DesktopCommand;
+        let (mut root, handle, _) = fixture_with_topology(|tree| {
+            let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+            let tab = group.tabs.remove(1);
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .push(WindowGroup {
+                    id: 4,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
+            tree.workspaces[0].strips.push(Strip {
+                id: StripId(5),
+                name: "Empty".into(),
+                window_groups: vec![],
+            });
+            tree.active_strip.insert(WorkspaceId(1), StripId(5));
+        });
+        let target = Route {
+            workspace: "1".into(),
+            strip: "2".into(),
+            group: "4".into(),
+            tab: handle.tree.borrow().workspaces[0].strips[0].window_groups[1].tabs[0]
+                .id
+                .to_string(),
+        };
+        assert_eq!(root.active_route(), None);
+
+        root.navigate(
+            Command::Close {
+                generation: handle.generation.clone(),
+                route: target.clone(),
+            },
+            &AutoCommit::new(),
+            &automerge::ROOT,
+        )
+        .expect("target close is available without an active group");
+
+        assert_eq!(root.active_route(), None);
+        assert!(matches!(
+            &handle.session_requests.borrow()[0].1.command,
+            DesktopCommand::CloseTab { location }
+                if location.strip == 2 && location.group == 4 && location.tab.to_string() == target.tab
+        ));
     }
     #[test]
     fn workspace_navigation_document_history_interlock_preserves_exact_owner() {
