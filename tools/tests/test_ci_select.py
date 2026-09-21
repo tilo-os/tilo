@@ -92,6 +92,23 @@ class SelectorTests(unittest.TestCase):
         self.assertNotIn("base", plan["selected"])
         self.assertEqual(plan["shard_count"], 1)
 
+    def test_tilo_ui_test_link_uses_large_x86_runner(self) -> None:
+        self.metadata["packages"].append({
+            "name": "tilo-ui",
+            "manifest_path": str(self.root / "tilo-ui" / "Cargo.toml"),
+            "targets": [{"name": "tilo-ui"}],
+            "dependencies": [],
+        })
+        plan = ci_select.make_plan(
+            self.metadata, self.root, ["tilo-ui/src/lib.rs"], 2
+        )
+        self.assertEqual(plan["matrix"]["include"][0]["runner"], "runner-large")
+
+        ordinary = ci_select.make_plan(
+            self.metadata, self.root, ["leaf/src/lib.rs"], 2
+        )
+        self.assertEqual(ordinary["matrix"]["include"][0]["runner"], "runner")
+
     def test_design_only_has_explicit_empty_rust_matrix(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["docs/designs/ci.md"], 2)
         self.assertFalse(plan["rust_required"])
