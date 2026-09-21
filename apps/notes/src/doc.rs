@@ -792,7 +792,7 @@ fn prepare_duplicate_blocks(
             .map(|old| -> Result<_, String> {
                 let copied = blocks
                     .get(id.as_str())
-                    .cloned()
+                    .copied()
                     .ok_or_else(|| "source block mapping is missing".to_owned())?;
                 Ok(groups.entry(old).or_insert(copied).clone())
             })
