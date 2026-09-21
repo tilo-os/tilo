@@ -190,6 +190,23 @@ class LaneAdmission(unittest.TestCase):
         self.assertEqual(argv[-2:],['1','helpers'])
         self.assertIn('mv -T "$receipt" /work/.creator-inputs.json',argv[argv.index('-ceu')+1])
 
+    def test_pending_input_delta_has_disconnect_recovery_contract(self):
+        inputs=(b'helpers-new',b'public-same',b'installer-same')
+        components=lane.creator_input_components(*inputs)
+        receipt={name:hashlib.sha256(content).hexdigest() for name,(_,content) in components.items()}
+        receipt['helpers']=hashlib.sha256(b'helpers-old').hexdigest()
+        status={'receipt':receipt,'receipt_sha256':'a'*64}
+        with patch.object(lane,'command') as command:
+            lane.stream_creator_input_delta('ctx','kata-system','pod','disk',*inputs,status)
+        script=command.call_args.args[0][command.call_args.args[0].index('-ceu')+1]
+        self.assertIn('creator-inputs-reconcile.json',script)
+        self.assertIn('creator-inputs-backup.',script)
+        self.assertIn('rollback(){',script)
+        self.assertIn('trap rollback EXIT HUP INT TERM',script)
+        self.assertLess(script.index('mv -T "/work/$target" "$backup"'),
+                        script.index('mv -T "$stage/$target" "/work/$target"'))
+        self.assertIn('committed=1',script)
+
     def test_gui_evidence_requires_desktop_and_rendered_local_browser_page(self):
         html='<!doctype html><h1>Tilo browser offline ready</h1>\n'
         good={'oobe_intro':'Create your local identity',
