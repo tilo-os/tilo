@@ -5562,8 +5562,10 @@ pub fn run() {
     let legacy_share_config = crate::config::load_config().flatpak_share;
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
-    // Optional per-iteration timing (`TILO_LOOP_TIMING=1`): logs any tick over
-    // 100ms non-sleeping work with a phase breakdown, so a stall is measured, not guessed.
+    // Slow iterations are exceptional and always worth preserving in the
+    // session flight record: a compositor that stops pumping input for 100 ms
+    // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
+    // verbose aggregate line for development runs.
     let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
     let mut pump_checkpoint = Instant::now();
     let mut pump_slowest = ("start", Duration::ZERO);
@@ -5636,6 +5638,12 @@ pub fn run() {
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
+    // Test-control commands are intentionally serviced after this tick's
+    // paint gate. Preserve their redraw edge for the following iteration;
+    // dropping it here records input latency forever without ever producing
+    // the reflecting frame.
+    let mut injected_redraw_pending = false;
+    let mut frame_clock_retired_serial = 0u64;
     while !close_requested {
         let iter_t0 = Instant::now();
         metrics.begin_tick(iter_t0);
@@ -5644,6 +5652,10 @@ pub fn run() {
             .and_then(present::PresentPipe::latest_retirement)
         {
             metrics.note_retirement(serial, retired_at);
+            if serial > frame_clock_retired_serial {
+                frame_clock.note_presented(retired_at);
+                frame_clock_retired_serial = serial;
+            }
         }
         // The previous `event_loop.dispatch` only establishes readiness for
         // nested DRM/libinput and test-control fds. Drain the backend now,
@@ -6236,6 +6248,7 @@ pub fn run() {
             pump_slowest = ("pump-start", Duration::ZERO);
         }
 
+        let pump_bookkeeping_started = Instant::now();
         // The power menu is shell UI only.  Its Lock row requests this
         // compositor-owned transition through ChromeState; drain the edge
         // here so it takes the exact same SessionManager path as Super+L and
@@ -6586,6 +6599,8 @@ pub fn run() {
         // deciding whether to paint — drains a hosted terminal's PTY;
         // returns true when changed, itself a paint reason. Drain the
         // network actor into the replica: peer changes fold in before this frame's pump reads them, bumping the revision to repaint.
+        let pump_bookkeeping_done = Instant::now();
+        let pump_network_started = pump_bookkeeping_done;
         if let Some(net) = peer_sync.as_ref() {
             pump_phase!("network-tick", net.tick());
             let runtime = device_fabric_runtime.get_or_insert_with(|| {
@@ -6926,6 +6941,8 @@ pub fn run() {
         // is read level-triggered (covers every source: seat, remote peer, test
         // socket); room set is re-read each tick since a workspace can join a
         // room mid-session and the subscription must follow.
+        let pump_network_done = Instant::now();
+        let pump_presence_started = pump_network_done;
         let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
             // The pointer as the input state knows it — "nowhere", not the origin, for
             // a session that never moved one; being level-triggered, `cursor()` would paint a cursor for nobody.
@@ -6962,8 +6979,10 @@ pub fn run() {
             false
         };
         pump_checkpoint!("peer-presence");
-        let mut apps_changed =
-            frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        let pump_presence_done = Instant::now();
+        let pump_apps_started = pump_presence_done;
+        let mut apps_changed = foreign_capture_changed
+            | frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         if desktop_continuation
             .as_mut()
             .is_some_and(|continuation| continuation.pump(frame_builder.host().onboarding_active()))
@@ -6973,6 +6992,7 @@ pub fn run() {
         {
             tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to qOS");
         }
+        let pump_apps_done = Instant::now();
         pump_checkpoint!("widget-pump");
         if take_deferred_peer_sync_activation(
             &mut deferred_peer_sync,
@@ -7018,6 +7038,7 @@ pub fn run() {
             }
             apps_changed = true;
         }
+        let pump_finalize_started = Instant::now();
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
@@ -7034,16 +7055,43 @@ pub fn run() {
         let keepalive_due = false;
         let lock_clock_due =
             lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh);
-        metrics.mark_pump(
-            iter_t0
-                .elapsed()
-                .checked_sub(t_input_done)
-                .unwrap_or_default(),
-        );
+        let pump_done = Instant::now();
+        let pump_total = pump_done
+            .duration_since(iter_t0)
+            .checked_sub(t_input_done)
+            .unwrap_or_default();
+        metrics.mark_pump(pump_total);
         if loop_timing && pump_slowest.1 > Duration::from_millis(100) {
             eprintln!(
                 "SLOW-PUMP slowest={} elapsed={:?}",
                 pump_slowest.0, pump_slowest.1
+            );
+        }
+        if slow_prepaint_phase(pump_total) {
+            tracing::warn!(
+                target: "tilo::latency",
+                elapsed_ms = pump_total.as_secs_f64() * 1_000.0,
+                bookkeeping_ms = pump_bookkeeping_done
+                    .duration_since(pump_bookkeeping_started)
+                    .as_secs_f64()
+                    * 1_000.0,
+                network_ms = pump_network_done
+                    .duration_since(pump_network_started)
+                    .as_secs_f64()
+                    * 1_000.0,
+                presence_ms = pump_presence_done
+                    .duration_since(pump_presence_started)
+                    .as_secs_f64()
+                    * 1_000.0,
+                apps_ms = pump_apps_done
+                    .duration_since(pump_apps_started)
+                    .as_secs_f64()
+                    * 1_000.0,
+                finalize_ms = pump_done
+                    .duration_since(pump_finalize_started)
+                    .as_secs_f64()
+                    * 1_000.0,
+                "pre-paint pump stalled compositor input"
             );
         }
         // Is there anything new to show? This redraw gating lets a static desktop
@@ -7548,9 +7596,15 @@ pub fn run() {
                 submit_done,
                 submitted_serial,
             );
-            // Advance the deadline series off the moment the frame was handed to the
-            // display — the clock paces *production*; the render thread's vsync paces consumption behind it.
-            frame_clock.note_presented(submit_done);
+            // An asynchronous presenter advances the cadence only when its
+            // physical retirement is observed at the top of a later loop
+            // iteration. Advancing here at scene handoff used to run the
+            // software clock ahead of KMS page-flip completion, repeatedly
+            // filling the bounded queue and collapsing a 144 Hz panel toward
+            // 60 Hz. Synchronous/headless presentation still retires here.
+            if !async_present {
+                frame_clock.note_presented(submit_done);
+            }
             if sleep_lock_frame_pending
                 && !sleep_lock_frame_failed
                 && session.is_locked()
@@ -7651,12 +7705,17 @@ pub fn run() {
         }
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
-        if loop_timing && t_work_done > Duration::from_millis(100) {
+        if (loop_timing || t_work_done > Duration::from_millis(100))
+            && t_work_done > Duration::from_millis(100)
+        {
             eprintln!(
-                "SLOW-ITER total_work={:?} | input={:?} paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
+                "SLOW-ITER total_work={:?} | input={:?} pump=+{:?} post_pump_paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
                 t_work_done,
                 t_input_done,
-                t_paint_done.checked_sub(t_input_done).unwrap_or_default(),
+                pump_total,
+                t_paint_done
+                    .checked_sub(pump_done.duration_since(iter_t0))
+                    .unwrap_or_default(),
                 t_testctl_done.checked_sub(t_paint_done).unwrap_or_default(),
                 t_work_done.checked_sub(t_testctl_done).unwrap_or_default(),
             );
