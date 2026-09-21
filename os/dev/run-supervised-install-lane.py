@@ -1082,6 +1082,9 @@ try:
    actual.update(block)
  finally:os.close(check)
  if actual.hexdigest()!=digest:raise ValueError('destination digest differs')
+ mode_fd=os.open(temp_name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=dir_fd)
+ try:os.fchmod(mode_fd,0o400);os.fsync(mode_fd)
+ finally:os.close(mode_fd)
  os.link(temp_name,name,src_dir_fd=dir_fd,dst_dir_fd=dir_fd,follow_symlinks=False);final_created=True
  os.unlink(temp_name,dir_fd=dir_fd);os.fsync(dir_fd)
  receipt={'schema':1,'purpose':'tilo-direct-sparse-transfer','operation':operation,
