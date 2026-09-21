@@ -8,6 +8,7 @@ use winit::{
 
 use std::cell::{Cell, RefCell};
 
+mod bound_record_sync;
 mod close_admission;
 mod document_history;
 pub use document_history::DocumentHistorySnapshot;
@@ -739,6 +740,7 @@ struct ActionRuntime {
     /// exact snapshot until the host crosses a state-mutation boundary.
     resource_cache: RefCell<Option<ResourceCache>>,
     bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
+    bound_record_sync: Option<bound_record_sync::BoundRecordSync>,
     bound_publication: crate::bound_dispatch::BoundPublication,
     bound_directory_route: Option<crate::collaboration::PrimaryRouteWitness>,
     last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
@@ -790,6 +792,7 @@ impl ActionRuntime {
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
             resource_cache: RefCell::new(None),
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
+            bound_record_sync: None,
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
             bound_directory_route: None,
             last_published_bound_route: None,
@@ -860,6 +863,7 @@ pub struct App {
     root_widget: Box<dyn Widget>,
     text_renderer: TextRenderer,
     palette_source: PaletteSource,
+    watch_system_settings: bool,
     layout: LayoutRuntime,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
@@ -1036,6 +1040,7 @@ struct AppConstructionInputs {
     configured_theme: ConstructionValue<Theme>,
     text_renderer: ConstructionValue<TextRenderer>,
     palette_source: PaletteSource,
+    watch_system_settings: bool,
     debug_mode: fn() -> bool,
     theme_store_stamp: fn() -> Option<std::time::SystemTime>,
     local_author: ConstructionValue<crate::permissions::UserId>,
@@ -1053,6 +1058,34 @@ struct AppConstructionInputs {
 }
 
 impl AppConstructionInputs {
+    fn native_component(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+    ) -> Self {
+        Self::component_with_services(
+            inputs,
+            binding,
+            Self::production(CollaborationManager::for_record(&binding.checkout.id)),
+        )
+    }
+
+    fn component_with_services(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        mut services: Self,
+    ) -> Self {
+        // Keep the explicit presentation and canonical author. Only the native
+        // runner supplies process services; the application factory stays pure.
+        services.configured_theme = ConstructionValue::Ready(inputs.theme);
+        services.text_renderer = ConstructionValue::Ready(inputs.text_renderer);
+        services.palette_source = PaletteSource::Host;
+        services.local_author = ConstructionValue::Ready(binding.author.clone());
+        let mut presence = services.presence_ctx.resolve();
+        presence.add_own_identity(&binding.author.0);
+        services.presence_ctx = ConstructionValue::Ready(presence);
+        services
+    }
+
     fn component(
         inputs: crate::application::ComponentRunnerInputs,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -1064,6 +1097,7 @@ impl AppConstructionInputs {
             configured_theme: ConstructionValue::Ready(inputs.theme),
             text_renderer: ConstructionValue::Ready(inputs.text_renderer),
             palette_source: PaletteSource::Host,
+            watch_system_settings: false,
             local_author: ConstructionValue::Ready(binding.author.clone()),
             presence_ctx: ConstructionValue::Ready(presence),
             surface_id: ConstructionValue::Ready(format!(
@@ -1093,6 +1127,7 @@ impl AppConstructionInputs {
                 renderer: TextRenderer::new,
                 field: crate::widget::SearchField::new,
             },
+            watch_system_settings: true,
             debug_mode: || cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             theme_store_stamp: || {
                 settings_store::settings_path()
@@ -1132,6 +1167,7 @@ impl AppConstructionInputs {
                 renderer: crate::font_catalog::fixture_renderer,
                 field: || crate::widget::SearchField::with_language("en_US"),
             },
+            watch_system_settings: true,
             debug_mode: || false,
             theme_store_stamp: || None,
             local_author: ConstructionValue::Lazy(|| {
@@ -1161,15 +1197,45 @@ impl App {
     /// # Errors
     /// Returns the original component recovery owners when mounting is refused.
     pub fn from_component(
-        mut component: crate::application::AppComponent,
+        component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
     ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, AppConstructionInputs::component)
+    }
+
+    /// Mount a standalone native component with the process's existing system
+    /// services, including record-scoped collaboration and accessibility.
+    /// Presentation, identity, storage and authority still belong to the host.
+    /// # Errors
+    /// Preserves the component's recovery owners on mount or route mismatch.
+    pub fn from_component_with_native_services(
+        component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, AppConstructionInputs::native_component)
+    }
+
+    fn from_component_using(
+        mut component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+        construction: fn(
+            crate::application::ComponentRunnerInputs,
+            &crate::bound_dispatch::CallbackBinding,
+        ) -> AppConstructionInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
         let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
         let handle = scope.handle();
         if let Err(error) = component.mount(move |_| handle.wake()) {
             return Err(component.setup_error(error));
         }
-        let inputs = AppConstructionInputs::component(inputs, &component.callback_binding());
+        let binding = component.callback_binding();
+        let inputs = construction(inputs, &binding);
+        if let Some(route) = inputs.collab_manager.primary_route()
+            && !binding.matches_broker_route(Some(route))
+        {
+            return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
+        }
         let root = Box::new(crate::widget::BoundAppWidget { component });
         Ok(Self::from_scoped_parts_with_inputs(
             scope,
@@ -1179,9 +1245,28 @@ impl App {
         ))
     }
 
+    pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
+        let theme = Theme::configured().with_a11y(
+            &crate::a11y::A11ySettings {
+                high_contrast: Self::high_contrast_env_enabled(),
+                reduce_motion: Self::reduce_motion_env_enabled(),
+                ..Default::default()
+            },
+            Self::text_scale_env().unwrap_or(1.0),
+            Self::ui_scale_env().unwrap_or(1.0),
+        );
+        let mut text_renderer = TextRenderer::new();
+        text_renderer.set_text_scale(theme.text_scale);
+        crate::application::ComponentRunnerInputs {
+            theme,
+            text_renderer,
+        }
+    }
+
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.actions.bound_record_sync = None;
         self.component_close_reports
             .extend(self.root_widget.close_components());
         self.component_close_reports
@@ -1436,6 +1521,7 @@ impl App {
             root_widget,
             text_renderer: inputs.text_renderer.resolve(),
             palette_source: inputs.palette_source,
+            watch_system_settings: inputs.watch_system_settings,
             layout: LayoutRuntime::new(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             component_close_reports: vec![],
@@ -5099,8 +5185,8 @@ impl App {
         stamp: impl FnOnce() -> Option<std::time::SystemTime>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
-        // Prepared components retain the caller's presentation and local services.
-        if matches!(self.palette_source, PaletteSource::Host) {
+        // Only an explicitly native service host watches process settings.
+        if !self.watch_system_settings {
             return false;
         }
         if now.saturating_duration_since(self.last_theme_store_check) < Duration::from_millis(750) {
@@ -5340,20 +5426,25 @@ impl App {
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
         if self.collab_manager.is_connected() {
-            let (delta, heads) = self.state.pending_outbound_delta();
-            if !delta.is_empty() {
-                tracing::debug!(
-                    target: "tilo.state",
-                    event = "document_send",
-                    kind = "incremental",
-                    bytes = delta.len(),
-                    heads = heads.len(),
-                    "queueing document mutation"
-                );
-                if self.collab_manager.send(
-                    crate::collaboration::CollabRequest::document_incremental(delta),
-                ) {
-                    self.state.advance_outbound(heads);
+            match self.pending_primary_document_delta() {
+                Ok((delta, heads)) if !delta.is_empty() => {
+                    tracing::debug!(
+                        target: "tilo.state",
+                        event = "document_send",
+                        kind = "incremental",
+                        bytes = delta.len(),
+                        heads = heads.len(),
+                        "queueing document mutation"
+                    );
+                    if self.collab_manager.send(
+                        crate::collaboration::CollabRequest::document_incremental(delta),
+                    ) {
+                        self.advance_primary_document(heads);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "collab: primary document is unavailable");
                 }
             }
         }
@@ -5529,12 +5620,13 @@ impl App {
         let applied = match collab_types::DocumentMutation::decode(
             decrypted_payload.unwrap_or(&envelope.payload),
         ) {
-            Ok(collab_types::DocumentMutation::Snapshot(data)) => {
-                self.state.merge_snapshot(&data).is_ok()
-            }
-            Ok(collab_types::DocumentMutation::Incremental(data)) => {
-                self.state.load_incremental(&data).is_ok()
-            }
+            Ok(mutation) => match self.apply_primary_document(mutation) {
+                Ok(changed) => changed,
+                Err(error) => {
+                    tracing::warn!(%error, "collab: primary document mutation refused");
+                    false
+                }
+            },
             Err(error) => {
                 tracing::warn!(%error, "collab: broker delivered an untyped signed document op");
                 false
@@ -5662,10 +5754,16 @@ impl App {
                     None => self.unfollow(),
                 },
                 CollabEvent::DocumentSnapshotRequested { .. } => {
-                    let data = self.state.save();
-                    let _ = self
-                        .collab_manager
-                        .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                    match self.primary_document_snapshot() {
+                        Ok(data) => {
+                            let _ = self
+                                .collab_manager
+                                .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "collab: primary snapshot refused");
+                        }
+                    }
                 }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     self.presence_ctx
@@ -16819,6 +16917,8 @@ mod bound_component_tests {
         }
     }
 
+    include!("app/bound_record_sync_tests.rs");
+
     #[test]
     fn task4_bound_publication_preserves_contracts_and_directed_owner() {
         let mut fixture = ActionFixture::broker();
@@ -18175,6 +18275,47 @@ mod prepared_runner_tests {
                 RestoreInput::None,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn prepared_native_services_keep_explicit_presentation_and_watch_system_updates() {
+        fn services(
+            inputs: crate::application::ComponentRunnerInputs,
+            binding: &crate::bound_dispatch::CallbackBinding,
+        ) -> AppConstructionInputs {
+            let mut services = AppConstructionInputs::controlled();
+            services.debug_mode = || true;
+            let mut presence = PresenceCtx::empty();
+            presence.set_own_identity(["announced-handle"]);
+            services.presence_ctx = ConstructionValue::Ready(presence);
+            AppConstructionInputs::component_with_services(inputs, binding, services)
+        }
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 11);
+        let mut app =
+            App::from_component_using(component, presentation_inputs(2.0), services).unwrap();
+        assert_eq!(app.local_author(), &author());
+        assert!(app.presence_ctx.is_own_identity(&author().0));
+        assert!(app.presence_ctx.is_own_identity("announced-handle"));
+        assert!(app.debug_mode);
+        assert!(app.watch_system_settings);
+        assert_presentation(&app.theme, 1.5, 1.25);
+        let due = app.last_theme_store_check + Duration::from_millis(750);
+        assert!(app.reconcile_configured_theme_with(
+            due,
+            || Some(std::time::SystemTime::UNIX_EPOCH),
+            |app| {
+                app.base_theme = Theme::light();
+            },
+        ));
+        assert_eq!(app.theme.name, Theme::light().name);
+        assert_eq!(app.theme.text_scale, 1.5);
+        assert_eq!(app.theme.ui_scale, 1.25);
+        assert!(app.theme.reduce_motion);
+        draw_prepared_component_test_frame(&mut app);
+        app.close_components();
+        assert_eq!(app.component_close_reports().len(), 1);
+        assert!(app.component_close_reports()[0].record_error.is_none());
     }
 
     #[test]
@@ -20096,3 +20237,7 @@ mod card_composition_tests;
 #[cfg(test)]
 #[path = "app/form_composition_tests.rs"]
 mod form_composition_tests;
+
+#[cfg(test)]
+#[path = "app/notes_rich_controls_tests.rs"]
+mod notes_rich_controls_tests;

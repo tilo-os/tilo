@@ -1043,6 +1043,7 @@ impl Widget for ContextMenu {
                     AccessNode::new(Role::MenuItem)
                         .with_name(label.clone())
                         .with_action_target(format!("context-menu:item:{index}"))
+                        .with_bounds(self.item_rect(index).unwrap_or(Rect::ZERO))
                         .with_position(action_position, action_count)
                         .with_state(AccessState {
                             focusable: *enabled,

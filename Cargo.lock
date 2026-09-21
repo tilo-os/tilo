@@ -9169,6 +9169,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "blake3",
+ "chrono",
  "dirs 6.0.0",
  "runtime-dylib",
  "runtime-portal-xdg",

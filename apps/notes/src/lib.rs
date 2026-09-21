@@ -34,12 +34,16 @@
 
 pub mod actions;
 pub mod app;
+mod block_order;
+pub mod capture;
 pub mod component;
 pub use component::definition;
 pub mod doc;
+pub mod hosting;
 pub mod legacy_import;
 pub mod main_panel;
 pub mod markdown;
+pub mod metadata;
 pub mod model;
 pub mod notebook;
 pub use ui::num;
