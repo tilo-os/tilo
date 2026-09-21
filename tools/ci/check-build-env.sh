@@ -14,14 +14,17 @@ MODULES=(
   wayland-client libpipewire-0.3 fuse3 dbus-1
   libavcodec libavformat libavutil libswscale
   gstreamer-1.0 gstreamer-app-1.0
+  libgcrypt
 )
 # Integration tests require bwrap for launcher confinement, rust-analyzer for
 # the code editor's language-server checks, and a software TPM plus LUKS tools
 # for the rollback mechanism suite. The image also supplies sccache so workflows
-# do not download or compile it.
+# do not download or compile it. Autotools and the libgcrypt development
+# metadata are required to bootstrap the pinned NTFS source (crypto stays off).
 BINARIES=(
   capnp bwrap rust-analyzer sccache fc-match gst-inspect-1.0 jq rg yt-dlp
   cryptsetup swtpm swtpm_setup tpm2_getcap
+  autoreconf autoconf automake aclocal libtoolize
 )
 FONTS=(
   "Noto Sans Arabic"
