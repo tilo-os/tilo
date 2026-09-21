@@ -1,3 +1,8 @@
+#![allow(
+    clippy::large_enum_variant,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! `collab-types` — the cryptographic foundation for Tilo Spaces,
 //! Channels, and role-based access control.
 //!

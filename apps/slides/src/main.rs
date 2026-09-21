@@ -1,3 +1,12 @@
+#![allow(
+    clippy::many_single_char_names,
+    clippy::redundant_clone,
+    clippy::similar_names,
+    clippy::single_match_else,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "migration stack lint debt is scoped to this target"
+)]
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 //! Slides — standard Tilo application entry point.

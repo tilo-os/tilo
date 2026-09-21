@@ -1,3 +1,8 @@
+#![allow(
+    clippy::exit,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Offscreen shots for the HIG §1 `NavShell` primitive.
 //!
 //! Renders the four canonical states — no window opened — so the layout can be
