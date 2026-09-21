@@ -11,8 +11,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, IconDescriptor,
-    MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
+    AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, FullscreenProvider,
+    IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1443,26 +1443,11 @@ impl Widget for BrowserTabs {
             tab.widget.set_motion_reduced(reduced);
         }
     }
-    fn fullscreen_intent(&self) -> Option<bool> {
-        Some(self.active().content_fullscreen())
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
     }
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        ui::fullscreen::FullscreenRequest::mirror(ui::fullscreen::FullscreenTarget::Largest)
-    }
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        self.window_fullscreen_active = active;
-        self.active_mut().set_window_fullscreen_active(active);
-        if active && self.active().content_fullscreen() {
-            self.observed_active_content_fullscreen = true;
-            self.start_fullscreen_hint();
-        } else {
-            if !active {
-                self.active_mut().exit_content_fullscreen();
-                self.observed_active_content_fullscreen = false;
-            }
-            self.clear_fullscreen_hint();
-        }
-        self.dirty = true;
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
     }
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if let Some(recovery) = self.recovery.as_mut() {
@@ -1548,6 +1533,32 @@ impl Continuable for BrowserTabs {
     ) -> bool {
         self.active_mut()
             .restore_continuation_metadata(metadata, state, root)
+    }
+}
+
+impl FullscreenProvider for BrowserTabs {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        Some(self.active().content_fullscreen())
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        ui::fullscreen::FullscreenRequest::mirror(ui::fullscreen::FullscreenTarget::Largest)
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        self.window_fullscreen_active = active;
+        self.active_mut().set_window_fullscreen_active(active);
+        if active && self.active().content_fullscreen() {
+            self.observed_active_content_fullscreen = true;
+            self.start_fullscreen_hint();
+        } else {
+            if !active {
+                self.active_mut().exit_content_fullscreen();
+                self.observed_active_content_fullscreen = false;
+            }
+            self.clear_fullscreen_hint();
+        }
+        self.dirty = true;
     }
 }
 
