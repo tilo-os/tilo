@@ -14310,9 +14310,9 @@ impl ShellOverlayHost {
     }
 
     /// The tail of `handle_event`: sidebar forwarding, click-to-focus,
-    /// content dispatch, then the horizontal-wheel fallback that steps
-    /// focus along the strip (the same step Super+Left/Right takes;
-    /// 0.5 rejects trackpad noise).
+    /// horizontal strip navigation, then content dispatch. A horizontal
+    /// gesture steps focus along the strip (the same step Super+Left/Right
+    /// takes); 0.5 rejects trackpad noise.
     #[allow(
         clippy::too_many_arguments,
         reason = "Sidebar/content routing shares the Widget event context, CRDT path, handled/focus outputs, child nodes, and layout tree."
@@ -14371,6 +14371,24 @@ impl ShellOverlayHost {
         {
             self.stamp_active_group_from_click(p);
         }
+        // Horizontal strip navigation is shell chrome, so it must run before
+        // the active app can consume a generic wheel event. Vertical and
+        // diagonally vertical gestures still belong to app content.
+        if let WindowEvent::MouseWheel { delta, .. } = event {
+            let (dx, dy) = match *delta {
+                winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
+                winit::event::MouseScrollDelta::PixelDelta(p) => {
+                    (f64_to_f32_lossy(p.x) / 40.0, f64_to_f32_lossy(p.y) / 40.0)
+                }
+            };
+            if dx.abs() > 0.5 && dx.abs() > dy.abs() {
+                let dir = if dx > 0.0 { 1 } else { -1 };
+                if self.step_focus_along_strip(dir) {
+                    *handled = true;
+                    return;
+                }
+            }
+        }
         if let Some(&content_child) = children.first() {
             self.content.handle_event(
                 event,
@@ -14391,21 +14409,6 @@ impl ShellOverlayHost {
             // open the menu in the same dispatch so it is on screen — and
             // in the accessibility tree — by the time this event returns.
             self.harvest_pending_tab_context_menus();
-        }
-
-        // Same step as Super+Left/Right, avoiding a park on the window
-        // seam that free-panning would allow. 0.5 rejects trackpad noise.
-        if !*handled && let WindowEvent::MouseWheel { delta, .. } = event {
-            let dx = match *delta {
-                winit::event::MouseScrollDelta::LineDelta(x, _) => x,
-                winit::event::MouseScrollDelta::PixelDelta(p) => f64_to_f32_lossy(p.x) / 40.0,
-            };
-            if dx.abs() > 0.5 {
-                let dir = if dx > 0.0 { 1 } else { -1 };
-                if self.step_focus_along_strip(dir) {
-                    *handled = true;
-                }
-            }
         }
     }
 }
