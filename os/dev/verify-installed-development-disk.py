@@ -21,6 +21,7 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -257,6 +258,81 @@ def readonly_mount(path, expected_type=None):
     return rows[0]
 
 
+def preflight_disk(path):
+    """Cheap read-only structural check before spending time on a VM boot."""
+    if os.getuid() != 0 or os.geteuid() != 0:
+        raise ValueError('disk preflight requires root')
+    require_private_namespace()
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('disk preflight requires an absolute path')
+    parent = _directory(path.parent)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_size < 2 * 1024**3:
+                raise ValueError('disk must be a regular image large enough for ESP and root')
+            with tempfile.TemporaryDirectory(prefix='tilo-disk-preflight-') as directory, ExitStack() as cleanup:
+                scratch = Path(directory)
+                loop = command(['/usr/sbin/losetup', '--find', '--show', '--read-only', '--partscan',
+                                f'/proc/self/fd/{fd}'], pass_fds=(fd,)).decode().strip()
+                if not re.fullmatch('/dev/loop[0-9]+', loop):
+                    raise ValueError('unexpected allocated loop identity')
+                cleanup.callback(command, ['/usr/sbin/losetup', '--detach', loop])
+                cleanup.enter_context(loop_partition_nodes(loop))
+                if command(['/usr/sbin/blockdev', '--getro', loop]).strip() != b'1':
+                    raise ValueError('loop is not read-only')
+                layout = json.loads(command(['/usr/sbin/sfdisk', '--json', loop]))
+                parts = partitions(layout, loop)
+                esp, root = scratch / 'esp', scratch / 'root'
+                for device, destination, kind, options in zip(
+                        parts, (esp, root), ('vfat', 'btrfs'),
+                        ('ro,nodev,nosuid,noexec', 'ro,nodev,nosuid,noexec,nologreplay')):
+                    destination.mkdir()
+                    command(['/usr/bin/mount', '-t', kind, '-o', options, device, str(destination)])
+                    cleanup.callback(command, ['/usr/bin/umount', str(destination)])
+                    readonly_mount(destination, kind)
+
+                entries = hardware.trusted_path(esp, Path('loader/entries'), regular=False)
+                names = list(entries.iterdir())
+                if len(names) != 1 or not names[0].name.endswith('.conf'):
+                    raise ValueError('fresh disk must have exactly one boot entry')
+                entry = config_lines(read(esp, names[0].relative_to(esp)))
+                match = re.fullmatch(r'/EFI/Linux/bootc/bootc_composefs-([0-9a-f]{128})\.efi',
+                                     entry.get('efi', ''))
+                if not match:
+                    raise ValueError('boot entry does not select a sealed composefs UKI')
+                digest = match.group(1)
+                uki = selected_uki(esp, digest)
+                data = read(esp, uki, prediction.boot.UKI_LIMIT)
+                sections = prediction.boot.uki_sections(data, 'aarch64')
+                if not (root / 'composefs').is_dir() or not (root / 'state/deploy').is_dir():
+                    raise ValueError('installed root lacks composefs repository or deployment state')
+                after = os.fstat(fd)
+                if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+                     before.st_ctime_ns) !=
+                    (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                     after.st_ctime_ns)):
+                    raise ValueError('disk changed during preflight')
+                return {'schema': 1, 'purpose': 'tilo-disk-boot-preflight',
+                    'disk': str(path), 'size_bytes': before.st_size,
+                    'partition_table': 'gpt', 'sector_size': 512,
+                    'partitions': [
+                        {'name': 'EFI-SYSTEM', 'type': 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b',
+                         'filesystem': 'vfat', 'read_only_mount_verified': True},
+                        {'name': 'root', 'type': '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab',
+                         'filesystem': 'btrfs', 'read_only_mount_verified': True}],
+                    'uki': {'path': uki, 'architecture': 'aarch64',
+                            'sha256': hashlib.sha256(data).hexdigest(),
+                            'sections': sorted(sections)},
+                    'composefs_digest': digest, 'vm_boot_verified': False}
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
+
+
 def audit_material(root, esp, uki, digest, architecture):
     etc = hardware.trusted_path(root, Path(f'state/deploy/{digest}/etc'), regular=False)
     var = hardware.trusted_path(root, Path('state/os/default/var'), regular=False)
@@ -485,6 +561,9 @@ def verify(args):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--preflight-disk':
+        print(json.dumps(preflight_disk(Path(sys.argv[2])), sort_keys=True))
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('source', 'target', 'architecture', 'revision', 'manifest-sha256', 'composefs-digest', 'systemd-version'):
         parser.add_argument('--' + name, required=True)
