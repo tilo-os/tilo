@@ -117,6 +117,12 @@ on the target computer. Network and optional hardware-key setup remain
 available from the normal step trail. The Review screen shows the resulting
 choices before any destructive operation.
 
+Language and locale choices come from the same catalog compiled into both
+applications and installed on the live system. The target-side repair is a
+bounded chooser rather than free text, and the privileged installer checks the
+immutable catalog again before writing `locale.conf`; a plausible but
+unsupported locale cannot silently fall back to English after first boot.
+
 The current host bundles keep the Imager UI unprivileged. Only after the target
 and destructive warning are confirmed does the operating system authenticate a
 short-lived writer mode. Its request contains no profile secret, is bound to a
