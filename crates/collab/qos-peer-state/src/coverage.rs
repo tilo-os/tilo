@@ -2,7 +2,7 @@
 //! Carried in the existing room CRDT; this does not change neighbour v1 bytes.
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 pub const FIELD: &str = "document_checkpoint_coverage_v1";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coverage {
@@ -37,8 +37,21 @@ pub fn route_key(app: &str, record: &str) -> String {
     format!("{app}\0{record}")
 }
 pub fn put(doc: &mut AutoCommit, coverage: Coverage) -> Result<(), String> {
+    put_all(doc, vec![coverage])
+}
+pub(crate) fn put_all(doc: &mut AutoCommit, coverages: Vec<Coverage>) -> Result<(), String> {
+    if coverages.is_empty() {
+        return Ok(());
+    }
     let mut rows = entries(doc)?;
-    rows.insert(route_key(&coverage.app, &coverage.record), coverage);
+    let mut incoming = BTreeSet::new();
+    for coverage in coverages {
+        let route = route_key(&coverage.app, &coverage.record);
+        if !incoming.insert(route.clone()) {
+            return Err("duplicate checkpoint coverage route in batch".into());
+        }
+        rows.insert(route, coverage);
+    }
     let bytes = postcard::to_allocvec(&rows).map_err(|e| e.to_string())?;
     doc.put(ROOT, FIELD, ScalarValue::Bytes(bytes))
         .map_err(|e| e.to_string())?;
@@ -73,4 +86,36 @@ pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_batch_routes_leave_governance_unchanged() {
+        let coverage = Coverage {
+            room: "room".into(),
+            app: "app".into(),
+            record: "record".into(),
+            payload_hash: [1; 32],
+            heads: vec!["head".into()],
+            author: [2; 32],
+            sequence: 1,
+            watermarks: BTreeMap::new(),
+        };
+        let mut doc = AutoCommit::new();
+        put(&mut doc, coverage.clone()).unwrap();
+        let heads = doc.get_heads();
+        let rows = entries(&doc).unwrap();
+        let mut next = coverage;
+        next.sequence = 2;
+        assert!(
+            put_all(&mut doc, vec![next.clone(), next])
+                .unwrap_err()
+                .contains("duplicate")
+        );
+        assert_eq!(doc.get_heads(), heads);
+        assert_eq!(entries(&doc).unwrap(), rows);
+    }
 }

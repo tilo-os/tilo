@@ -1220,6 +1220,26 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
+        let (message, coverage) = self.prepare_signed_mutation(app, record, mutation, key, now)?;
+        if let Some(coverage) = coverage {
+            crate::coverage::put(
+                self.room_doc
+                    .as_deref_mut()
+                    .ok_or("missing room governance")?,
+                coverage,
+            )?;
+        }
+        self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
+        Ok(message)
+    }
+    fn prepare_signed_mutation(
+        &self,
+        app: &str,
+        record: &str,
+        mutation: DocumentMutation,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<(NeighbourMsg, Option<crate::coverage::Coverage>), String> {
         let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
         let route = Route {
             app: app.into(),
@@ -1261,7 +1281,7 @@ impl StatePeer {
             record_id: record.into(),
             envelope: Box::new(op),
         };
-        if let DocumentMutation::Snapshot(bytes) = &mutation {
+        let coverage = if let DocumentMutation::Snapshot(bytes) = &mutation {
             if author.as_bytes() != &self.authority.device_public_key {
                 return Err("only pinned governor may publish a retained checkpoint".into());
             }
@@ -1282,7 +1302,7 @@ impl StatePeer {
             let NeighbourMsg::AppDocument { envelope, .. } = &message else {
                 unreachable!()
             };
-            let coverage = crate::coverage::Coverage {
+            Some(crate::coverage::Coverage {
                 room: self.room.clone(),
                 app: app.into(),
                 record: record.into(),
@@ -1295,18 +1315,13 @@ impl StatePeer {
                 author: *author.as_bytes(),
                 sequence: seq,
                 watermarks,
-            };
-            crate::coverage::put(
-                self.room_doc
-                    .as_deref_mut()
-                    .ok_or("missing room governance")?,
-                coverage,
-            )?;
-        }
-        self.receive(*author.as_bytes(), message.clone(), now)?;
-        Ok(message)
+            })
+        } else {
+            None
+        };
+        Ok((message, coverage))
     }
-    pub fn signed_snapshots(
+    fn signed_snapshots_in_place(
         &mut self,
         key: &SigningKey,
         now: SystemTime,
@@ -1316,10 +1331,42 @@ impl StatePeer {
             .iter()
             .map(|(route, entry)| (route.clone(), entry.doc.clone().save()))
             .collect::<Vec<_>>();
-        documents
+        let prepared = documents
             .into_iter()
-            .map(|(route, bytes)| self.publish_document(&route.app, &route.record, bytes, key, now))
-            .collect()
+            .map(|(route, bytes)| {
+                self.prepare_signed_mutation(
+                    &route.app,
+                    &route.record,
+                    DocumentMutation::Snapshot(bytes),
+                    key,
+                    now,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (messages, coverages): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
+        let coverages = coverages.into_iter().flatten().collect::<Vec<_>>();
+        if !coverages.is_empty() {
+            crate::coverage::put_all(
+                self.room_doc
+                    .as_deref_mut()
+                    .ok_or("missing room governance")?,
+                coverages,
+            )?;
+        }
+        for message in &messages {
+            self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
+        }
+        Ok(messages)
+    }
+    pub fn signed_snapshots(
+        &mut self,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut candidate = self.clone();
+        let messages = candidate.signed_snapshots_in_place(key, now)?;
+        *self = candidate;
+        Ok(messages)
     }
     /// The governor publishes one consistent room coverage/checkpoint pair.
     pub fn bootstrap_messages(
@@ -1328,7 +1375,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
         let mut candidate = self.clone();
-        let snapshots = candidate.signed_snapshots(key, now)?;
+        let snapshots = candidate.signed_snapshots_in_place(key, now)?;
         let mut messages = vec![candidate.room_message()];
         messages.extend(snapshots);
         *self = candidate;
@@ -1343,7 +1390,7 @@ impl StatePeer {
         generation: u64,
     ) -> Result<Vec<NeighbourMsg>, String> {
         let mut candidate = self.clone();
-        let snapshots = candidate.signed_snapshots(key, now)?;
+        let snapshots = candidate.signed_snapshots_in_place(key, now)?;
         let room = candidate
             .room_doc
             .as_deref_mut()
