@@ -8,7 +8,7 @@
 //! ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 //! ```
 //!
-//! Shell and framework internals may depend on the lower `ui` package directly;
+//! Shell and framework internals may depend on the lower `tilo-ui` package directly;
 //! ordinary applications should use this facade.
 
 pub use ui_core::*;

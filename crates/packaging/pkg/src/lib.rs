@@ -56,6 +56,7 @@ pub mod trust;
 pub mod unpack;
 pub mod validate;
 pub mod verify;
+pub mod version;
 
 pub use blobs::{BlobHash, BlobStore, BlobStoreError, Collection, MemoryBlobStore};
 pub use id::{Kind, PackageId, ParsePackageIdError};
