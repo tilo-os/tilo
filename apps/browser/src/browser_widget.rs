@@ -4209,12 +4209,15 @@ impl FloatingSurfaceProvider for BrowserWidget {
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
         self.pending_pip_region_update
             .take()
-            .map(|region| vec![(PIP_ID.into(), region)])
+            .map(|region| vec![(self.pip_id.clone(), region)])
             .unwrap_or_default()
     }
 
     fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.active_pip.then(|| PIP_ID.into()).into_iter().collect()
+        self.active_pip
+            .then(|| self.pip_id.clone())
+            .into_iter()
+            .collect()
     }
 
     fn on_floating_surface_host_message(
@@ -4223,13 +4226,13 @@ impl FloatingSurfaceProvider for BrowserWidget {
     ) {
         match message {
             ui::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. }
-                if id == PIP_ID =>
+                if id == &self.pip_id =>
             {
                 self.active_pip = true;
             }
             ui::floating_surface::FloatingSurfaceHostMessage::Closed { id }
             | ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
-                if id == PIP_ID =>
+                if id == &self.pip_id =>
             {
                 self.active_pip = false;
                 self.active_pip_element = None;
