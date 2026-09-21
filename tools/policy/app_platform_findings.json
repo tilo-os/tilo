@@ -1,0 +1,1203 @@
+{
+  "schema_version": 1,
+  "description": "Stable finding and migration-task IDs used to attribute app-platform baseline exceptions.",
+  "findings": [
+    {
+      "id": "A01-01",
+      "title": "Per-app host directory discovery (extract; medium)",
+      "primary_task": "L02"
+    },
+    {
+      "id": "A01-02",
+      "title": "Calendar hardcodes the Downloads folder (extract; medium)",
+      "primary_task": "D01"
+    },
+    {
+      "id": "A01-03",
+      "title": "Clocks implements authenticated-session transport and private writes (extract backend; high)",
+      "primary_task": "I03"
+    },
+    {
+      "id": "A01-04",
+      "title": "Contacts directly speaks a custom notification D-Bus extension (extract backend; high)",
+      "primary_task": "H02"
+    },
+    {
+      "id": "A01-05",
+      "title": "TOTP chooses key custody using secret-tool availability (extract backend; high)",
+      "primary_task": "K01"
+    },
+    {
+      "id": "A01-06",
+      "title": "Code editor owns Unix subprocess-group lifecycle (extract backend; high)",
+      "primary_task": "C01"
+    },
+    {
+      "id": "A01-07",
+      "title": "Ebook equates sharing with a Linux mount path and POSIX path-list syntax (extract; high)",
+      "primary_task": "W02"
+    },
+    {
+      "id": "A01-08",
+      "title": "PDFium dynamic library discovery is Linux-centric (extract loader backend; medium)",
+      "primary_task": "E02"
+    },
+    {
+      "id": "A01-09",
+      "title": "PDF save requires directory fsync with ordinary File::open (extract durable-file operation; high)",
+      "primary_task": "S03"
+    },
+    {
+      "id": "A01-10",
+      "title": "Word processor guesses toolkit drag payload ownership (extract ownership capability; high)",
+      "primary_task": "D03"
+    },
+    {
+      "id": "A01-11",
+      "title": "Word processor discovers locale from POSIX environment itself (extract discovery; medium)",
+      "primary_task": "L01"
+    },
+    {
+      "id": "A01-12",
+      "title": "Platform-dependent test fixtures need capability-specific verification (test-only; medium)",
+      "primary_task": "V01"
+    },
+    {
+      "id": "A01-13",
+      "title": "Linux packaging and macOS bundle tooling are intentional target backends (retain target-specific)",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A02-01",
+      "title": "Camera owns Linux V4L2 enumeration and capture (high)",
+      "primary_task": "M02"
+    },
+    {
+      "id": "A02-02",
+      "title": "Camera launches xdg-open directly (high)",
+      "primary_task": "D01"
+    },
+    {
+      "id": "A02-03",
+      "title": "Maps embeds the XDG location implementation (high)",
+      "primary_task": "H02"
+    },
+    {
+      "id": "A02-04",
+      "title": "Music network policy probes NetworkManager itself (medium)",
+      "primary_task": "H01"
+    },
+    {
+      "id": "A02-05",
+      "title": "Music duplicates native playback and media-session backends (high)",
+      "primary_task": "M03"
+    },
+    {
+      "id": "A02-06",
+      "title": "Editor owns native decode, PCM output and export plumbing (high)",
+      "primary_task": "M04"
+    },
+    {
+      "id": "A02-07",
+      "title": "Tube private persistence contains Unix security primitives (high)",
+      "primary_task": "S03"
+    },
+    {
+      "id": "A02-08",
+      "title": "Tube explicitly binds account/device secret acquisition to XDG (high)",
+      "primary_task": "K01"
+    },
+    {
+      "id": "A02-09",
+      "title": "Multiple apps duplicate platform directory selection (medium)",
+      "primary_task": "L02"
+    },
+    {
+      "id": "A02-10",
+      "title": "Editor resolver hardcodes FUSE mount and equates stat with hydration (high)",
+      "primary_task": "W02"
+    },
+    {
+      "id": "A02-11",
+      "title": "Music hand-builds file URIs (medium)",
+      "primary_task": "M03"
+    },
+    {
+      "id": "A02-12",
+      "title": "yt-dlp availability/execution is a host integration requirement (medium)",
+      "primary_task": "C01"
+    },
+    {
+      "id": "A02-13",
+      "title": "Native-media test environment assumptions must remain explicit",
+      "primary_task": "V01"
+    },
+    {
+      "id": "A02-14",
+      "title": "App manifests intentionally describe Linux deployment",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A03-01",
+      "title": "External URI/file launching belongs to a host capability (high)",
+      "primary_task": "D01"
+    },
+    {
+      "id": "A03-02",
+      "title": "Terminal owns the Unix service discovery and descriptor transport (high)",
+      "primary_task": "C02"
+    },
+    {
+      "id": "A03-03",
+      "title": "Terminal shell/PTY/confinement probing is a platform backend (high)",
+      "primary_task": "C02"
+    },
+    {
+      "id": "A03-04",
+      "title": "Agent diagnostic endpoints expose Unix transport (medium)",
+      "primary_task": "I02"
+    },
+    {
+      "id": "A03-05",
+      "title": "Chat capture selection and media availability are Linux-shaped (high)",
+      "primary_task": "M02"
+    },
+    {
+      "id": "A03-06",
+      "title": "Chat host identity and workspace mount discovery (medium)",
+      "primary_task": "L02"
+    },
+    {
+      "id": "A03-07",
+      "title": "Browser private storage safety relies on Unix permissions, flock and PID liveness (high)",
+      "primary_task": "S03"
+    },
+    {
+      "id": "A03-08",
+      "title": "Repository-owned Chromium native host is already a backend, located under an app (high)",
+      "primary_task": "E01"
+    },
+    {
+      "id": "A03-09",
+      "title": "macOS Keychain implementation belongs behind credential-store capability (high)",
+      "primary_task": "K01"
+    },
+    {
+      "id": "A03-10",
+      "title": "Remote SSH trust-store and default identity paths assume Unix layout (high)",
+      "primary_task": "K02"
+    },
+    {
+      "id": "A03-11",
+      "title": "App shortcut OS choice and Git credential bridge (medium)",
+      "primary_task": "D02"
+    },
+    {
+      "id": "A03-13",
+      "title": "Browser private process launch and WPE composition remain app-owned (medium)",
+      "primary_task": "E01"
+    },
+    {
+      "id": "A03-12",
+      "title": "Keep native deployment/test boundaries explicit (medium)",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A04-01",
+      "title": "Files owns the collaborative filesystem's xattr transport and errno ABI (high)",
+      "primary_task": "W02"
+    },
+    {
+      "id": "A04-02",
+      "title": "Files Unix service channels and path-byte encoding live in app code (high)",
+      "primary_task": "I02"
+    },
+    {
+      "id": "A04-03",
+      "title": "Files trash, known folders, and symlinks contain target policy (high)",
+      "primary_task": "D03"
+    },
+    {
+      "id": "A04-04",
+      "title": "Files launch integration and drag handoff assume the Tilo host layout (medium)",
+      "primary_task": "D02"
+    },
+    {
+      "id": "A04-05",
+      "title": "Workspace and user-directory defaults are duplicated in apps (medium)",
+      "primary_task": "L02"
+    },
+    {
+      "id": "A04-06",
+      "title": "OSK has an unguarded Wayland/Linux injection backend (high)",
+      "primary_task": "H02"
+    },
+    {
+      "id": "A04-07",
+      "title": "OSK native swipe model asset discovery is host-specific (low)",
+      "primary_task": "E03"
+    },
+    {
+      "id": "A04-08",
+      "title": "Disks contains Linux block-device discovery and privileged operations (high)",
+      "primary_task": "N01"
+    },
+    {
+      "id": "A04-09",
+      "title": "Firewall's firewalld backend is app-local (medium)",
+      "primary_task": "H03"
+    },
+    {
+      "id": "A04-10",
+      "title": "Logs owns journalctl execution/parsing (medium)",
+      "primary_task": "H01"
+    },
+    {
+      "id": "A04-11",
+      "title": "Monitor mixes portable sampling with Linux enrichment and POSIX termination (medium)",
+      "primary_task": "H01"
+    },
+    {
+      "id": "A04-12",
+      "title": "Containers owns Podman/Distrobox backend and shell launcher scripts (high)",
+      "primary_task": "H04"
+    },
+    {
+      "id": "A04-13",
+      "title": "VPN telemetry and local profile persistence retain Linux assumptions (medium)",
+      "primary_task": "H03"
+    },
+    {
+      "id": "A04-14",
+      "title": "Settings embeds host identity, account, security and hardware discovery (high)",
+      "primary_task": "H01"
+    },
+    {
+      "id": "A04-15",
+      "title": "Settings audio extends os-actions with direct wpctl logic (medium)",
+      "primary_task": "M03"
+    },
+    {
+      "id": "A04-16",
+      "title": "Settings input-source/timezone catalogs and fallback paths are native (medium)",
+      "primary_task": "L01"
+    },
+    {
+      "id": "A04-17",
+      "title": "Settings embeds Bootc/systemd deployment management (high)",
+      "primary_task": "B02"
+    },
+    {
+      "id": "A04-18",
+      "title": "Settings device mesh and local model admin owns Linux helper locations/processes (high)",
+      "primary_task": "H04"
+    },
+    {
+      "id": "A04-19",
+      "title": "Store has host Flatpak probes outside its existing app-host broker (medium)",
+      "primary_task": "H04"
+    },
+    {
+      "id": "A04-20",
+      "title": "Windows app owns Linux appliance helpers and Unix service handle adoption (high)",
+      "primary_task": "B03"
+    },
+    {
+      "id": "A04-21",
+      "title": "Backup metadata and private temporary output use Unix-specific primitives (medium)",
+      "primary_task": "S03"
+    },
+    {
+      "id": "A04-22",
+      "title": "Preserve existing shared boundaries; target-scope deployment and native certification (medium migration coordination)",
+      "primary_task": "V01"
+    },
+    {
+      "id": "A05-01",
+      "title": "Device inventory, identity and destructive media authorization (high; backend + extract)",
+      "primary_task": "N01"
+    },
+    {
+      "id": "A05-02",
+      "title": "Host architecture and build target are conflated outside Windows (medium; extract)",
+      "primary_task": "L03"
+    },
+    {
+      "id": "A05-03",
+      "title": "Native pickers and known folders live inside the app (medium; backend)",
+      "primary_task": "D01"
+    },
+    {
+      "id": "A05-04",
+      "title": "Local storage roots and protected directory policy leak into view/flow (medium; extract)",
+      "primary_task": "L02"
+    },
+    {
+      "id": "A05-05",
+      "title": "Desktop installation is a deliberate Linux service backend (high; backend)",
+      "primary_task": "N04"
+    },
+    {
+      "id": "A05-06",
+      "title": "Private filesystem ownership, durable receipts and native names (high; backend + mixed seams)",
+      "primary_task": "N02"
+    },
+    {
+      "id": "A05-07",
+      "title": "Verified persistent download cache and bundle handle operations (high; backend)",
+      "primary_task": "N02"
+    },
+    {
+      "id": "A05-08",
+      "title": "Connected-folder endpoint evidence and NTFS source bridge (high; backend)",
+      "primary_task": "N03"
+    },
+    {
+      "id": "A05-09",
+      "title": "Transaction witnesses, leases and durable connection storage (high; backend)",
+      "primary_task": "N03"
+    },
+    {
+      "id": "A05-10",
+      "title": "Build graph and standalone profile tool need a narrow shared codec seam (medium; extract)",
+      "primary_task": "N01"
+    },
+    {
+      "id": "A05-11",
+      "title": "Packaging and credentials are target deployment tooling (retain; deployment)",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A05-12",
+      "title": "Native tests must move with backend ownership, not disappear (high; test)",
+      "primary_task": "V01"
+    },
+    {
+      "id": "A06-01",
+      "title": "File-search fallback directly invokes Linux desktop opener",
+      "primary_task": "D01"
+    },
+    {
+      "id": "A06-02",
+      "title": "Host-app catalogue and launch model expose desktop-entry backend",
+      "primary_task": "D02"
+    },
+    {
+      "id": "A06-03",
+      "title": "Process launch, service descriptors and runtime directories mixed with shell policy",
+      "primary_task": "B01"
+    },
+    {
+      "id": "A06-04",
+      "title": "General brokers bind Unix transport and peer identity directly",
+      "primary_task": "I02"
+    },
+    {
+      "id": "A06-05",
+      "title": "Native runtime host already has a Unix seam, but daemon and MCP bypass it",
+      "primary_task": "I02"
+    },
+    {
+      "id": "A06-06",
+      "title": "Secure persistence primitives duplicated across domain modules",
+      "primary_task": "S03"
+    },
+    {
+      "id": "A06-07",
+      "title": "Onboarding UI owns privileged enrollment processes and mount discovery",
+      "primary_task": "H04"
+    },
+    {
+      "id": "A06-08",
+      "title": "First boot, config and machine identity encode Linux deployment locations",
+      "primary_task": "L02"
+    },
+    {
+      "id": "A06-09",
+      "title": "Filesystem publication helpers hard-coded into state and network actor",
+      "primary_task": "W03"
+    },
+    {
+      "id": "A06-10",
+      "title": "Nearby transfer and cache space use OS filesystem implementation",
+      "primary_task": "S03"
+    },
+    {
+      "id": "A06-11",
+      "title": "Topbar performs Linux process liveness and private file IPC during draw",
+      "primary_task": "I03"
+    },
+    {
+      "id": "A06-12",
+      "title": "Hardware capabilities and device class selected in shell",
+      "primary_task": "H02"
+    },
+    {
+      "id": "A06-13",
+      "title": "Remote audio and capture should reuse existing target adapter seams",
+      "primary_task": "M02"
+    },
+    {
+      "id": "A06-14",
+      "title": "Desktop service adapters live with notification/media/Bluetooth models",
+      "primary_task": "H02"
+    },
+    {
+      "id": "A06-15",
+      "title": "Projection, catalogue and Windows compatibility select packaged helpers",
+      "primary_task": "B03"
+    },
+    {
+      "id": "A06-16",
+      "title": "Compositor/network graphics are deliberate platform backend",
+      "primary_task": "M01"
+    },
+    {
+      "id": "A06-17",
+      "title": "Entry points are already appropriate platform composition roots",
+      "primary_task": "G02"
+    },
+    {
+      "id": "A06-18",
+      "title": "Test/platform suite separation and pre-existing hardware skip constraints",
+      "primary_task": "V01"
+    },
+    {
+      "id": "A07-01",
+      "title": "Extract Unix local transport from portable control/capture contracts",
+      "primary_task": "I03"
+    },
+    {
+      "id": "A07-02",
+      "title": "Host paths and private persistence are embedded in shared portal services",
+      "primary_task": "S03"
+    },
+    {
+      "id": "A07-03",
+      "title": "Retain Wayland/DRM compositor as explicit Linux platform backend",
+      "primary_task": "B01"
+    },
+    {
+      "id": "A07-04",
+      "title": "Keep sandbox enforcement Linux-specific; eliminate misleading duplicate construction APIs",
+      "primary_task": "B01"
+    },
+    {
+      "id": "A07-05",
+      "title": "Host service implementations should plug into existing semantic traits",
+      "primary_task": "H02"
+    },
+    {
+      "id": "A07-06",
+      "title": "Portal protocol is Linux; capture/control authority is not",
+      "primary_task": "M02"
+    },
+    {
+      "id": "A07-07",
+      "title": "Cargo and native bundle boundaries",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A07-08",
+      "title": "Test tools/examples carry intentional native prerequisites",
+      "primary_task": "V01"
+    },
+    {
+      "id": "A08-01",
+      "title": "Service discovery and connected-handle transport",
+      "primary_task": "I01"
+    },
+    {
+      "id": "A08-02",
+      "title": "Automatic native attachment mixes bootstrap policy with Unix exec/build machinery",
+      "primary_task": "G02"
+    },
+    {
+      "id": "A08-03",
+      "title": "Granted filesystem implementation is a valuable existing security seam",
+      "primary_task": "S01"
+    },
+    {
+      "id": "A08-04",
+      "title": "Storage service escapes the guarded native filesystem boundary",
+      "primary_task": "I02"
+    },
+    {
+      "id": "A08-05",
+      "title": "XDG portals are a deliberate backend, not the portable capability API",
+      "primary_task": "D01"
+    },
+    {
+      "id": "A08-06",
+      "title": "Identity private storage has an existing provider contract to reuse",
+      "primary_task": "K01"
+    },
+    {
+      "id": "A08-07",
+      "title": "ush is an entire intentional Linux runtime backend",
+      "primary_task": "C02"
+    },
+    {
+      "id": "A08-08",
+      "title": "Launcher security machinery must move as a coherent Linux backend",
+      "primary_task": "B01"
+    },
+    {
+      "id": "A08-09",
+      "title": "Launcher shared modules still expose Unix IPC and Linux environment plans",
+      "primary_task": "B01"
+    },
+    {
+      "id": "A08-10",
+      "title": "GPU selection, runtime hardening and performance are host adapters",
+      "primary_task": "B01"
+    },
+    {
+      "id": "A08-11",
+      "title": "App-host daemon mixes package operations, Linux launchers and service-manager plumbing",
+      "primary_task": "H04"
+    },
+    {
+      "id": "A08-12",
+      "title": "app-fs is an intentional FUSE adapter over reusable verified content storage",
+      "primary_task": "W03"
+    },
+    {
+      "id": "A08-13",
+      "title": "Runtime bundles are Linux ELF/glibc artifacts, not generic host runtimes",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A08-14",
+      "title": "CPU capability detection is duplicated and inconsistent",
+      "primary_task": "L03"
+    },
+    {
+      "id": "A08-15",
+      "title": "Recovery must not equate unavailable process observation with death",
+      "primary_task": "S02"
+    },
+    {
+      "id": "A08-16",
+      "title": "Cross-process registry locking disappears on non-Unix targets",
+      "primary_task": "S02"
+    },
+    {
+      "id": "A08-17",
+      "title": "Package path/executable and private-key semantics need platform-aware validation",
+      "primary_task": "S01"
+    },
+    {
+      "id": "A08-18",
+      "title": "Directory and installed-tool discovery is scattered",
+      "primary_task": "L02"
+    },
+    {
+      "id": "A08-19",
+      "title": "Greeter login/session discovery and power commands are Linux session providers",
+      "primary_task": "B02"
+    },
+    {
+      "id": "A08-20",
+      "title": "In-session unlock is a Linux PAM privileged helper",
+      "primary_task": "B02"
+    },
+    {
+      "id": "A08-21",
+      "title": "Installer inventory and install execution belong to Fedora Bootc deployment provider",
+      "primary_task": "N04"
+    },
+    {
+      "id": "A08-22",
+      "title": "NTFS broker/parser boundary must remain stronger than a generic file reader",
+      "primary_task": "N03"
+    },
+    {
+      "id": "A08-23",
+      "title": "NTFS native build and staging are explicit target tooling; vendor is not extraction fodder",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A08-24",
+      "title": "Power governor daemon is a Linux image component",
+      "primary_task": "H02"
+    },
+    {
+      "id": "A09-01",
+      "title": "Durable/private file replacement is already centralized, but exposes Unix semantics",
+      "primary_task": "S01"
+    },
+    {
+      "id": "A09-02",
+      "title": "Persistence locking, file identity and canonical-path ownership",
+      "primary_task": "S02"
+    },
+    {
+      "id": "A09-03",
+      "title": "User/config/cache/runtime directories and process identity leak into policy stores",
+      "primary_task": "L02"
+    },
+    {
+      "id": "A09-04",
+      "title": "Bounded child execution must keep process-tree cancellation semantics",
+      "primary_task": "C01"
+    },
+    {
+      "id": "A09-05",
+      "title": "Hardware/session action facade mixes portable contracts with Linux commands",
+      "primary_task": "H02"
+    },
+    {
+      "id": "A09-06",
+      "title": "Bluetooth and power already have strong separation seams",
+      "primary_task": "H02"
+    },
+    {
+      "id": "A09-07",
+      "title": "Media privacy and trusted client identity are Linux-specific security mechanisms",
+      "primary_task": "M02"
+    },
+    {
+      "id": "A09-08",
+      "title": "Gamepad forwarding has reusable semantic interfaces and explicit Linux backends",
+      "primary_task": "H02"
+    },
+    {
+      "id": "A09-09",
+      "title": "Tool launching and desktop application discovery are freedesktop integrations",
+      "primary_task": "D02"
+    },
+    {
+      "id": "A09-10",
+      "title": "Credential custody is Secret Service-specific with local-key fallback",
+      "primary_task": "K01"
+    },
+    {
+      "id": "A09-11",
+      "title": "Native TLS trust is deliberately fixed to the Tilo Fedora image",
+      "primary_task": "K02"
+    },
+    {
+      "id": "A09-12",
+      "title": "TTS factory's purported subprocess portability still depends on Unix process APIs",
+      "primary_task": "E03"
+    },
+    {
+      "id": "A09-13",
+      "title": "Windows appliance is a Linux host service, not a Windows-native host backend",
+      "primary_task": "B03"
+    },
+    {
+      "id": "A09-14",
+      "title": "Projector combines portable protocols with Linux discovery/capture process management",
+      "primary_task": "M02"
+    },
+    {
+      "id": "A09-15",
+      "title": "Image boot/rollback/extension tools should remain explicit Linux deployment backends",
+      "primary_task": "B02"
+    },
+    {
+      "id": "A09-16",
+      "title": "Tinker and optional swipe native build have explicit Linux/host-toolchain contracts",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A10-01",
+      "title": "secure identity persistence contains platform backends in the identity domain (high)",
+      "primary_task": "S01"
+    },
+    {
+      "id": "A10-02",
+      "title": "image trust and machine provisioning are explicitly Linux deployment backends (high boundary priority)",
+      "primary_task": "B02"
+    },
+    {
+      "id": "A10-03",
+      "title": "requester lifetime and ownership are Linux procfs concepts exposed by the relay (high)",
+      "primary_task": "S02"
+    },
+    {
+      "id": "A10-04",
+      "title": "polkit user resolution, service control, helper execution and ownership restoration belong in a privileged platform broker (high)",
+      "primary_task": "H04"
+    },
+    {
+      "id": "A10-05",
+      "title": "filesystem locations and daemon lifecycle are embedded in domain defaults (medium)",
+      "primary_task": "L02"
+    },
+    {
+      "id": "A10-06",
+      "title": "compute has a good sandbox trait but still embeds Linux filesystem mechanics outside it (high)",
+      "primary_task": "B01"
+    },
+    {
+      "id": "A10-07",
+      "title": "compute eligibility probes Linux power and launcher paths directly (medium)",
+      "primary_task": "H01"
+    },
+    {
+      "id": "A10-08",
+      "title": "enrollment LAN discovery relies on platform socket delivery semantics (medium)",
+      "primary_task": "I02"
+    },
+    {
+      "id": "A10-09",
+      "title": "collaboration persistence repeats Unix private-file and durable-replace mechanics (medium)",
+      "primary_task": "S03"
+    },
+    {
+      "id": "A10-10",
+      "title": "native codec dependency needs an intentional media backend boundary (low/architecture)",
+      "primary_task": "M01"
+    },
+    {
+      "id": "A10-11",
+      "title": "native tests are not consistently isolated to their actual backend (medium)",
+      "primary_task": "V01"
+    },
+    {
+      "id": "A11-01",
+      "title": "PipeWire graph backend and identifiers leak into the shared audio surface",
+      "primary_task": "M03"
+    },
+    {
+      "id": "A11-02",
+      "title": "Audio diagnostics own unguarded Unix process machinery; accessibility policy recognizes a backend sink name",
+      "primary_task": "M03"
+    },
+    {
+      "id": "A11-03",
+      "title": "GStreamer playback is already a backend but the public engine exports its native controls",
+      "primary_task": "M01"
+    },
+    {
+      "id": "A11-04",
+      "title": "DMA-BUF is the only GPU frame handle and is guarded as Unix rather than Linux",
+      "primary_task": "M01"
+    },
+    {
+      "id": "A11-05",
+      "title": "Codec capabilities and tuning are GStreamer adapter data embedded in shared encode/decode policy",
+      "primary_task": "M04"
+    },
+    {
+      "id": "A11-06",
+      "title": "Event sound selection and native playback belong in platform adapters",
+      "primary_task": "M03"
+    },
+    {
+      "id": "A11-07",
+      "title": "PDFium discovery and process-global native lifetime are duplicated backend responsibilities",
+      "primary_task": "E02"
+    },
+    {
+      "id": "A11-08",
+      "title": "OCR preparation is portable; Tesseract execution is a replaceable native engine adapter",
+      "primary_task": "E03"
+    },
+    {
+      "id": "A11-09",
+      "title": "Spellcheck combines portable English engine with native Hunspell, POSIX locale and XDG persistence",
+      "primary_task": "E03"
+    },
+    {
+      "id": "A11-10",
+      "title": "Workspace mount resolution and process identity hints belong to platform/session context",
+      "primary_task": "W02"
+    },
+    {
+      "id": "A11-11",
+      "title": "Native verification must move with adapters, and successful early returns do not verify DMA-BUF",
+      "primary_task": "V01"
+    },
+    {
+      "id": "A12-01",
+      "title": "Model gateway transport exposes Unix descriptors and Linux peer authentication",
+      "primary_task": "I02"
+    },
+    {
+      "id": "A12-02",
+      "title": "Local model provisioning already has a boundary, but daemon mixes hardware, Bootc and service management",
+      "primary_task": "H04"
+    },
+    {
+      "id": "A12-03",
+      "title": "Private model files and release signer need semantic secure-file operations",
+      "primary_task": "S03"
+    },
+    {
+      "id": "A12-04",
+      "title": "Format host's public transport module and configuration fallback leak local OS choices",
+      "primary_task": "I02"
+    },
+    {
+      "id": "A12-05",
+      "title": "Document blobstore chooses Linux-style cache root itself",
+      "primary_task": "L02"
+    },
+    {
+      "id": "A12-06",
+      "title": "Windows compatibility planning exposes the Linux capsule representation",
+      "primary_task": "B03"
+    },
+    {
+      "id": "A12-07",
+      "title": "Wine prefix store/DXVK deployment contain deliberate secure Unix filesystem implementations",
+      "primary_task": "B03"
+    },
+    {
+      "id": "A12-08",
+      "title": "Compatibility session authentication and fd-passing are Linux IPC",
+      "primary_task": "I02"
+    },
+    {
+      "id": "A12-09",
+      "title": "Compatibility audio, VM presentation and translated process lifecycle are native backend implementations",
+      "primary_task": "B03"
+    },
+    {
+      "id": "A12-10",
+      "title": "Developer tooling can stay host-specific, but its reusable library/build consumers inherit it",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A13-01",
+      "title": "FUSE dependency and native mount lifecycle must become an explicit backend (high)",
+      "primary_task": "W03"
+    },
+    {
+      "id": "A13-02",
+      "title": "Namespace and business operations expose FUSE/POSIX representations (high)",
+      "primary_task": "W01"
+    },
+    {
+      "id": "A13-03",
+      "title": "Multiple local protocols hard-code Unix sockets and Unix authorization (high)",
+      "primary_task": "I02"
+    },
+    {
+      "id": "A13-04",
+      "title": "Deployment paths, system identity selection and systemd activation belong at host composition (medium)",
+      "primary_task": "G02"
+    },
+    {
+      "id": "A13-05",
+      "title": "Predictive hydration probes Linux network/power and POSIX storage directly (high)",
+      "primary_task": "H01"
+    },
+    {
+      "id": "A13-06",
+      "title": "Private storage, file identity and durable directory flush need shared platform semantics (high)",
+      "primary_task": "S03"
+    },
+    {
+      "id": "A13-07",
+      "title": "Recipient mounting is coupled to spawning the filesystem CLI (medium)",
+      "primary_task": "W03"
+    },
+    {
+      "id": "A13-08",
+      "title": "Native integration tests need an explicit Linux test lane; current guards are insufficient (high)",
+      "primary_task": "V01"
+    },
+    {
+      "id": "A14-01",
+      "title": "Control clients encode Unix transport and filesystem endpoint discovery throughout automation",
+      "primary_task": "I03"
+    },
+    {
+      "id": "A14-02",
+      "title": "Shared harness process-lifetime helper silently loses its Linux guarantee",
+      "primary_task": "C01"
+    },
+    {
+      "id": "A14-03",
+      "title": "Generic build/benchmark entry points carry host diagnostics and GNU tool assumptions",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A14-04",
+      "title": "Fuzz harness manifest ties independent wire fuzzing to Linux sandbox dependencies",
+      "primary_task": "V01"
+    },
+    {
+      "id": "A14-05",
+      "title": "Privileged Linux service, hardware, session and appliance helpers are existing backend entry points",
+      "primary_task": "B02"
+    },
+    {
+      "id": "A14-06",
+      "title": "Fedora images, native packages and toolchain flags are intentionally target-specific",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A14-07",
+      "title": "Native browser engine build wiring is application-owned and must follow backend extraction",
+      "primary_task": "E01"
+    },
+    {
+      "id": "A15-01",
+      "title": "Destination is a proposed facade plus focused service crates, not an existing monolithic platform crate",
+      "primary_task": "G01"
+    },
+    {
+      "id": "A15-02",
+      "title": "Tilo-specific Wayland drag/drop includes storage policy inside the vendor backend",
+      "primary_task": "D03"
+    },
+    {
+      "id": "A15-03",
+      "title": "Gesture normalization is an intentional vendor platform boundary",
+      "primary_task": "G03"
+    },
+    {
+      "id": "A15-04",
+      "title": "Opt-in Metal presentation feedback must retain its asynchronous native contract",
+      "primary_task": "G03"
+    },
+    {
+      "id": "A15-05",
+      "title": "Site platform choices are release/provisioning contracts, not runtime detection to move into Rust",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A15-06",
+      "title": "Media capture has intentional Linux host escape/tool discovery, outside app runtime",
+      "primary_task": "V02"
+    },
+    {
+      "id": "A15-07",
+      "title": "Portable renderer patches and compiler compatibility are false positives for OS extraction",
+      "primary_task": "G03"
+    },
+    {
+      "id": "X01",
+      "title": "Settings account mutation journal, recovery exclusion and phase-aware compensation",
+      "primary_task": "S03"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "G01",
+      "title": "Framework ownership and support contract",
+      "contract": "Each platform capability has one framework owner, explicit unsupported behavior, and declared host coverage."
+    },
+    {
+      "id": "G02",
+      "title": "Scoped host service composition",
+      "contract": "Applications receive semantic host services through scoped composition; OS-specific implementations remain in framework backends."
+    },
+    {
+      "id": "G03",
+      "title": "SDK surface and no-new-leaks enforcement",
+      "contract": "The application SDK exposes semantic contracts without leaking native APIs, target conditionals, or backend features into app packages."
+    },
+    {
+      "id": "G04",
+      "title": "Target and feature dependency gates",
+      "contract": "Target and feature resolution produces valid platform graphs without unintended native dependency leakage."
+    },
+    {
+      "id": "L01",
+      "title": "Known folders, locale and time zones",
+      "contract": "Known folders, locale, and time-zone data come from host providers with explicit unavailable states and stable semantic values."
+    },
+    {
+      "id": "L02",
+      "title": "Private locations and state migration",
+      "contract": "Private data, state, configuration, cache, and runtime locations preserve isolation and remain discoverable across upgrades."
+    },
+    {
+      "id": "L03",
+      "title": "Host architecture and executable capability selection",
+      "contract": "Package selection uses the executable host architecture and usable instruction set without treating unknown architecture as a default."
+    },
+    {
+      "id": "S01",
+      "title": "Private and durable filesystem primitives",
+      "contract": "Private filesystem operations preserve no-follow, ownership, atomic publication, durability, and cleanup semantics across supported hosts."
+    },
+    {
+      "id": "S02",
+      "title": "Cross-process locks and process incarnation",
+      "contract": "Cross-process exclusion binds locks and leases to process incarnation so stale owners cannot retain or regain authority."
+    },
+    {
+      "id": "S03",
+      "title": "Migrate durable storage consumers",
+      "contract": "Durable storage consumers retain existing on-disk formats while using framework-owned storage, recovery, and cleanup primitives."
+    },
+    {
+      "id": "I01",
+      "title": "Owned authenticated local connections",
+      "contract": "Local connections authenticate both endpoints, scope authority to the intended service, and reject stale or inherited handles."
+    },
+    {
+      "id": "I02",
+      "title": "Migrate brokers and typed service clients",
+      "contract": "Brokers and service clients use typed framework transports while preserving protocol authorization and bounded framing."
+    },
+    {
+      "id": "I03",
+      "title": "Control and session activity transport",
+      "contract": "Control and session activity use one authenticated transport with stable command, cancellation, and lifecycle semantics."
+    },
+    {
+      "id": "C01",
+      "title": "Managed process trees and tools",
+      "contract": "Managed tools have bounded output, cancellation, descendant cleanup, and explicit failure when required lifetime control is unavailable."
+    },
+    {
+      "id": "C02",
+      "title": "Terminal session service",
+      "contract": "Terminal sessions preserve PTY resize, input, output, exit, and confinement semantics through a host-owned service."
+    },
+    {
+      "id": "D01",
+      "title": "Host-native choose, open and reveal",
+      "contract": "Choose, open, and reveal requests preserve grants, cancellation, and error distinctions through native host providers."
+    },
+    {
+      "id": "D02",
+      "title": "Application discovery, launch and semantic shortcuts",
+      "contract": "Application discovery and launch use stable identities, authorized working context, and semantic shortcuts without shell-string handoff."
+    },
+    {
+      "id": "D03",
+      "title": "Trash and owned drag artifacts",
+      "contract": "Trash and drag artifacts retain native identity and ownership, and temporary artifacts are released exactly once."
+    },
+    {
+      "id": "K01",
+      "title": "Credential custody and scoped secrets",
+      "contract": "Secrets remain scoped to the intended app, profile, and origin; locked or denied custody never silently falls back."
+    },
+    {
+      "id": "K02",
+      "title": "Host trust and SSH identity discovery",
+      "contract": "Host trust and SSH identity discovery preserve native trust policy, private-file protections, and explicit changed-key approval."
+    },
+    {
+      "id": "H01",
+      "title": "Read-only system observations",
+      "contract": "System observations distinguish unavailable data from false or empty values and bind process actions to verified incarnation."
+    },
+    {
+      "id": "H02",
+      "title": "Hardware and desktop service providers",
+      "contract": "Hardware and desktop services expose owned sessions with native authorization, revocation, and hotplug behavior."
+    },
+    {
+      "id": "H03",
+      "title": "Firewall and VPN operations",
+      "contract": "Firewall and VPN operations use fixed semantic operations with explicit privilege, availability, and rollback outcomes."
+    },
+    {
+      "id": "H04",
+      "title": "Package, container, model and enrollment administration",
+      "contract": "Administrative package, container, model, and enrollment operations use bounded helpers and explicit caller authority."
+    },
+    {
+      "id": "M01",
+      "title": "Portable media and native-frame contract",
+      "contract": "Media contracts use portable sample and frame semantics while native resource handles remain opaque and backend-owned."
+    },
+    {
+      "id": "M02",
+      "title": "Capture and device sessions",
+      "contract": "Capture sessions are consent-bound, revocable, and own their camera, microphone, or screen resources for their full lifetime."
+    },
+    {
+      "id": "M03",
+      "title": "Playback, audio graphs and desktop media sessions",
+      "contract": "Playback and desktop media sessions preserve seek, gain, device, and now-playing behavior through one semantic interface."
+    },
+    {
+      "id": "M04",
+      "title": "Decode, waveform and export jobs",
+      "contract": "Decode, waveform, and export jobs are bounded, cancellable, and retain media timing and output fidelity."
+    },
+    {
+      "id": "E01",
+      "title": "Browser engine, private instances and bundle ownership",
+      "contract": "The browser engine, private instances, helper IPC, sandbox, and installed bundle form one framework-owned backend."
+    },
+    {
+      "id": "E02",
+      "title": "One native PDF engine owner",
+      "contract": "PDF rendering and text extraction use one native engine owner with bounded documents and explicit unavailable behavior."
+    },
+    {
+      "id": "E03",
+      "title": "Speech, OCR, spellcheck and model assets",
+      "contract": "Speech, OCR, spellcheck, and model assets use shared providers with declared availability and owned model data."
+    },
+    {
+      "id": "W01",
+      "title": "Filesystem semantics independent of FUSE",
+      "contract": "Filesystem semantics use stable resource identity, checked operations, and authorization independent of any FUSE projection."
+    },
+    {
+      "id": "W02",
+      "title": "App workspace clients and hydration",
+      "contract": "Workspace clients distinguish projected metadata from hydrated content and preserve identity, cursor, and access-control checks."
+    },
+    {
+      "id": "W03",
+      "title": "Native projections and filesystem service lifecycle",
+      "contract": "Native projections have an authenticated lifecycle, bounded recovery, and no framework dependency on application code."
+    },
+    {
+      "id": "N01",
+      "title": "Imager profile codec and authorized media service",
+      "contract": "Imager media operations use an authorized service and a stable profile codec shared by build and runtime consumers."
+    },
+    {
+      "id": "N02",
+      "title": "Imager private cache and migration storage",
+      "contract": "Imager caches and migrations preserve private ownership, verified content, durable receipts, and native names."
+    },
+    {
+      "id": "N03",
+      "title": "Imager connected-folder transaction closure",
+      "contract": "Connected-folder changes use witnessed transactions, leases, idempotent recovery, and durable endpoint identity."
+    },
+    {
+      "id": "N04",
+      "title": "Desktop and Bootc installation providers",
+      "contract": "Desktop and Bootc installation use explicit host providers with authenticated artifacts and rollback-aware state."
+    },
+    {
+      "id": "B01",
+      "title": "Sandbox and compositor backend boundaries",
+      "contract": "Sandbox and compositor backends retain confinement, resource ownership, and explicit capability availability."
+    },
+    {
+      "id": "B02",
+      "title": "Login, boot, update and privileged deployment",
+      "contract": "Login, boot, update, and privileged deployment preserve authenticated state transitions and recoverable publication."
+    },
+    {
+      "id": "B03",
+      "title": "Compatibility, VM and projection backends",
+      "contract": "Compatibility, VM, and projection backends expose stable semantic boundaries without leaking guest or helper internals."
+    },
+    {
+      "id": "V01",
+      "title": "Portable and native verification suites",
+      "contract": "Portable contract tests run independently of native backend tests, which exercise real behavior only on capable hosts."
+    },
+    {
+      "id": "V02",
+      "title": "Framework distribution and host tooling",
+      "contract": "Framework distribution includes the required host tools and assets with stable installed paths and target-specific packaging."
+    },
+    {
+      "id": "V03",
+      "title": "Closure audit and final support certification",
+      "contract": "Release certification requires an owner for each retained finding and satisfaction of the declared support matrix."
+    }
+  ]
+}

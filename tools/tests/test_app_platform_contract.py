@@ -37,7 +37,7 @@ class AppPlatformContractTests(unittest.TestCase):
         return root
 
     def write_register(self, root: Path) -> None:
-        register = root / "docs/superpowers/plans/2026-09-18-cross-platform-framework/finding-register.json"
+        register = root / "tools/policy/app_platform_findings.json"
         register.parent.mkdir(parents=True, exist_ok=True)
         register.write_text(
             json.dumps(
@@ -393,7 +393,10 @@ class AppPlatformContractTests(unittest.TestCase):
                 bad[field] = invalid
                 self.write_baseline(root, [bad])
                 violations, _ = contract.audit(root)
-                self.assertIn("does not exist in finding-register.json", self.reasons(violations))
+                self.assertIn(
+                    "does not exist in app_platform_findings.json",
+                    self.reasons(violations),
+                )
 
     def test_malformed_and_duplicate_baseline_entries_are_rejected(self):
         root = self.fixture("fn leak() { nix::a(); }\n")

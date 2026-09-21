@@ -23,9 +23,7 @@ from typing import Iterator
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path("tools/policy/app_platform_baseline.json")
-REGISTER = Path(
-    "docs/superpowers/plans/2026-09-18-cross-platform-framework/finding-register.json"
-)
+REGISTER = Path("tools/policy/app_platform_findings.json")
 EXCLUDED_PARTS = {
     "target",
     ".git",
@@ -737,7 +735,7 @@ def _validate_register(root: Path, entries: list[dict]) -> list[Violation]:
                 _config_violation(
                     root,
                     BASELINE,
-                    f"finding ID {entry['finding_id']} does not exist in finding-register.json",
+                    f"finding ID {entry['finding_id']} does not exist in {REGISTER.name}",
                 )
             )
         if entry["removal_task"] not in tasks:
@@ -745,7 +743,7 @@ def _validate_register(root: Path, entries: list[dict]) -> list[Violation]:
                 _config_violation(
                     root,
                     BASELINE,
-                    f"removal task {entry['removal_task']} does not exist in finding-register.json",
+                    f"removal task {entry['removal_task']} does not exist in {REGISTER.name}",
                 )
             )
     return violations
