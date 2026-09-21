@@ -213,9 +213,7 @@ pub(super) struct ContinuationRuntime {
 }
 
 impl ContinuationRuntime {
-    pub(super) fn new(
-        pending_restore: Option<crate::collaboration::ContinuationMetadata>,
-    ) -> Self {
+    pub(super) fn new(pending_restore: Option<crate::collaboration::ContinuationMetadata>) -> Self {
         Self {
             last_published: None,
             pending_restore,
