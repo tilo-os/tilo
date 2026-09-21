@@ -2,13 +2,13 @@
 //! `cargo run -p ui --example manual-composition-shots -- /tmp/manual-composition`
 use std::path::PathBuf;
 use taffy::Size;
-use ui::headless::FrameHarness;
-use ui::tokens::TextRole;
-use ui::widget::{
+use tilo_ui::headless::FrameHarness;
+use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::{
     Actions, Button, Checkbox, Container, Element, Field, Form, FormPage, FormSection, Manual,
     ManualContext, MeasureConstraint as M, Scrollable, Text, TextInput, WidgetLayoutError,
 };
-use ui::{State, Theme};
+use tilo_ui::{State, Theme};
 use vello::kurbo::Rect;
 const NAME: &str = "Full name";
 const EMAIL: &str = "Email address for account recovery";
@@ -172,7 +172,7 @@ fn manual_account(scale: f32) -> Element {
         .child(Box::new(
             Text::new(EMAIL_ERROR)
                 .with_role(TextRole::Caption)
-                .with_live(ui::a11y::Politeness::Polite),
+                .with_live(tilo_ui::a11y::Politeness::Polite),
         ))
         .child(Box::new(
             Text::new("Preferences")

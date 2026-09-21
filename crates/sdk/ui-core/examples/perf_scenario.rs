@@ -149,7 +149,7 @@ pub fn run(args: &[String]) {
             "method": "persisted_scroll_offset_direction_per_step",
             "verified_steps": count,
             "rows": 200,
-            "viewport": ui::headless::DEFAULT_VIEWPORT,
+            "viewport": tilo_ui::headless::DEFAULT_VIEWPORT,
             "display_validated": false,
         });
         println!(
@@ -201,10 +201,10 @@ mod tests {
 
     #[test]
     fn outside_pointer_scroll_cannot_return_a_successful_measurement() {
-        ui::i18n::I18nManager::init("en-US");
+        tilo_ui::i18n::I18nManager::init("en-US");
         let offset = Rc::new(Cell::new((0.0, 256.0)));
         let (state, root) = list_app(200, Rc::clone(&offset));
-        let mut driver = Driver::new(state, root, ui::headless::DEFAULT_VIEWPORT);
+        let mut driver = Driver::new(state, root, tilo_ui::headless::DEFAULT_VIEWPORT);
         driver.send(&WindowEvent::CursorMoved {
             device_id: DeviceId::dummy(),
             position: PhysicalPosition::new(-100.0, -100.0),
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn repeated_direction_reversals_produce_one_moving_frame_per_step() {
-        ui::i18n::I18nManager::init("en-US");
+        tilo_ui::i18n::I18nManager::init("en-US");
         let report = verified_list_scroll(40).expect("verified scrolling");
         assert_eq!(report.frames, 40);
     }

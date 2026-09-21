@@ -9,7 +9,7 @@
 //!
 //! Naming is retroactive (click `[Name]`, or shift-click a run to name it).
 //! The widget has no document, so naming only fires [`NameGroupCallback`];
-//! the host persists it through `ui::history_source::groups`.
+//! the host persists it through `tilo_ui::history_source::groups`.
 //!
 //! The filter chip strip's grouping is computed over the *unfiltered*
 //! history, so toggling a chip narrows the list without re-chunking it under
@@ -462,7 +462,7 @@ impl ActivityTimeline {
     }
 
     /// The widget has no document; the host reads names
-    /// (`ui::history_source::groups`) and pushes them here.
+    /// (`tilo_ui::history_source::groups`) and pushes them here.
     pub fn set_named_ranges(&mut self, named: Vec<NamedRange>) {
         if self.named != named {
             self.named = named;

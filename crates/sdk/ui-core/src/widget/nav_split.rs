@@ -282,7 +282,7 @@ pub struct NavSplit {
     /// Whether the user toggled this frame (so the host re-syncs).
     dirty: bool,
     /// Wall-clock anchor of the last `draw`, so the slide self-ticks off a
-    /// `dt` from inside the draw path — `ui::App` never calls
+    /// `dt` from inside the draw path — `tilo_ui::App` never calls
     /// `Widget::update()`, so the flap must advance here. `None` until the
     /// first draw, which therefore advances by `0` and never jumps.
     last_tick: Option<Instant>,
@@ -638,7 +638,7 @@ impl NavSplit {
 
     /// Advance the reveal + push animations off a wall-clock delta,
     /// recomputing the child rects when something moved. Driven from `draw`
-    /// (NOT `update`, which `ui::App` never calls) so the slide
+    /// (NOT `update`, which `tilo_ui::App` never calls) so the slide
     /// plays. The first draw sees `dt == 0` (no prior `Instant`), so the
     /// flap never teleports; later deltas are clamped to [`MAX_FRAME_DT`] so
     /// a parked event loop can't skip the slide.

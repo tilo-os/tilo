@@ -8,7 +8,7 @@
 //! QOS_SHOTS_THEME=light cargo run -p ui --example ui-lab -- channel_browser --shots o.png
 //! ```
 //!
-//! `--shots` mounts the sheet in a [`ui::headless::FrameHarness`] under the
+//! `--shots` mounts the sheet in a [`tilo_ui::headless::FrameHarness`] under the
 //! `QOS_SHOTS_THEME` palette (`dark` by default), composites it on the
 //! theme's background and writes `o.png` plus `o.inspection.json` — the
 //! rects `scripts/ux-bench/usability.py`'s `geometry_audit` lints.

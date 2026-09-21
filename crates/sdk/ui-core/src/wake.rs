@@ -143,7 +143,7 @@ impl Drop for WakeScope {
 /// A thread-affine construction/dispatch guard, independent of an App borrow.
 ///
 /// ```compile_fail
-/// let scope = ui::wake::WakeScope::new();
+/// let scope = tilo_ui::wake::WakeScope::new();
 /// let guard = scope.enter();
 /// std::thread::spawn(move || drop(guard));
 /// ```

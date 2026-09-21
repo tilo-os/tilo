@@ -459,9 +459,9 @@ impl AccessNode {
     /// UUID.
     ///
     /// ```
-    /// # use ui::a11y::{AccessNode, Role};
+    /// # use tilo_ui::a11y::{AccessNode, Role};
     /// let clip = AccessNode::new(Role::ListItem).with_hashed_key("clip-intro");
-    /// assert_eq!(clip.key, Some(ui::a11y::hash_key(&"clip-intro")));
+    /// assert_eq!(clip.key, Some(tilo_ui::a11y::hash_key(&"clip-intro")));
     /// ```
     pub fn with_hashed_key(mut self, key: impl std::hash::Hash) -> Self {
         self.key = Some(hash_key(&key));

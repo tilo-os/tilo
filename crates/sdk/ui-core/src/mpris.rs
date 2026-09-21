@@ -76,7 +76,7 @@ impl MprisConfig {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag mirrors one independent MPRIS `CanXxx` property; \
-              `apps/music` and `ui::widget::video_player` construct this by \
+              `apps/music` and `tilo_ui::widget::video_player` construct this by \
               field name, so reshaping it into flags is out of scope for a \
               lint fix"
 )]

@@ -89,7 +89,7 @@ fn render(
 const PICKER_INSET: f64 = 20.0;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
-    ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
+    tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
 }
 
 /// HIG §9.5 "Rest edges": the picker's outermost pixel row is a derived
@@ -109,9 +109,9 @@ fn assert_panel_edge_registers(rgba: &[u8], w: u32, theme_name: &str) {
     let delta = (luminance_of(edge) - luminance_of(inside)).abs();
     eprintln!("{theme_name}: panel edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
     assert!(
-        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+        delta >= tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA,
         "{theme_name}: the picker's panel edge {edge:?} does not register against its fill          {inside:?} (Δlum={delta:.4} < {})",
-        ui::tokens::colors::HAIRLINE_MIN_DELTA
+        tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA
     );
 }
 

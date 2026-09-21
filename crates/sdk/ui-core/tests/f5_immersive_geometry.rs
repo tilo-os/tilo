@@ -25,14 +25,14 @@ use accesskit::Role;
 use vello::Scene;
 use vello::kurbo::Affine;
 
-use ui::State;
-use ui::headless::FrameHarness;
-use ui::icons::Icon;
-use ui::offscreen::OffscreenRenderer;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::video_player::PlayerSetting;
-use ui::widget::{CaptureMode, CaptureStudio, ScreenshotMarkup, VideoPlayer, Widget};
+use tilo_ui::State;
+use tilo_ui::headless::FrameHarness;
+use tilo_ui::icons::Icon;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::video_player::PlayerSetting;
+use tilo_ui::widget::{CaptureMode, CaptureStudio, ScreenshotMarkup, VideoPlayer, Widget};
 
 /// HIG §9.6: minimum pointer target.
 const MIN_TARGET: f64 = 32.0;
@@ -160,7 +160,7 @@ fn video_player_controls_are_reachable_targets_on_their_control_rows() {
 /// band-bound tag can be seen, not only asserted.
 #[test]
 fn presence_pills_and_edge_tags_render_at_one_and_two_x() {
-    use ui::presence::{PeerCursor, draw_peer_presence};
+    use tilo_ui::presence::{PeerCursor, draw_peer_presence};
     use vello::peniko::Color;
     let dir = out_dir();
     let theme = Theme::dark();

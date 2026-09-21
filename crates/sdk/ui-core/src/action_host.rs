@@ -4,7 +4,7 @@
 //! bookkeeping so an app declares only its own action domain.
 //!
 //! ```ignore
-//! struct MyApp { actions: ui::ActionHost, /* … */ }
+//! struct MyApp { actions: tilo_ui::ActionHost, /* … */ }
 //!
 //! // At every affordance that mutates shared state:
 //! self.actions.dispatch(doc, MY_ACTION_TYPE, &action);
