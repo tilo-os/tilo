@@ -1518,9 +1518,11 @@ pub fn catalogue() -> Vec<Scenario> {
         host_desktop_first_login(),
         lock_screen_states(),
         capture_studio(),
+        capture_multi_selection(),
         capture_selection_editing(),
         capture_countdown(),
         capture_screenshot_receipt(),
+        capture_screenshot_copied_receipt(),
         capture_screenshot_markup(),
         capture_screenshot_markup_full_app(),
         capture_screenshot_full_app(),
@@ -2708,6 +2710,44 @@ fn capture_studio() -> Scenario {
     }
 }
 
+fn capture_multi_selection() -> Scenario {
+    Scenario {
+        name: "capture_multi_selection",
+        description: "Multi-region capture replaces by default, extends with Shift, and keeps selection chrome out of the chosen pixels.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::ClickNamed("capture.multi"),
+            Action::Drag {
+                from: Point::new(180.0, 170.0),
+                to: Point::new(500.0, 350.0),
+                steps: 7,
+            },
+            Action::Snapshot("multi-single"),
+            Action::Drag {
+                from: Point::new(530.0, 210.0),
+                to: Point::new(740.0, 390.0),
+                steps: 7,
+            },
+            Action::Snapshot("multi-replaced"),
+            Action::Modifiers(ModifiersState::SHIFT),
+            Action::Drag {
+                from: Point::new(70.0, 400.0),
+                to: Point::new(300.0, 590.0),
+                steps: 7,
+            },
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Snapshot("multi-shift-added"),
+            Action::MoveCursorNamed("capture.selection.0.remove"),
+            Action::Snapshot("multi-remove-hover"),
+            Action::ClickNamed("capture.selection.0.remove"),
+            Action::Snapshot("multi-removed"),
+        ],
+    }
+}
+
 fn capture_selection_editing() -> Scenario {
     Scenario {
         name: "capture_selection_editing",
@@ -2796,6 +2836,27 @@ fn capture_screenshot_receipt() -> Scenario {
             Action::Snapshot("receipt-reveal-hover"),
             Action::ClickNamed("capture.dismiss-screenshot"),
             Action::Snapshot("receipt-dismissed"),
+        ],
+    }
+}
+
+fn capture_screenshot_copied_receipt() -> Scenario {
+    Scenario {
+        name: "capture_screenshot_copied_receipt",
+        description: "A copied screenshot settles into one uncrowded top-bar status line.",
+        actions: vec![
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(12),
+            Action::Drag {
+                from: Point::new(180.0, 170.0),
+                to: Point::new(620.0, 540.0),
+                steps: 8,
+            },
+            Action::CaptureScreenshotFinished { copied: true },
+            Action::CaptureScreenshotTransition(1_000),
+            Action::Snapshot("receipt-copied"),
         ],
     }
 }
@@ -3283,11 +3344,13 @@ fn capture_pip_multi() -> Scenario {
                 to: Point::new(500.0, 330.0),
                 steps: 7,
             },
+            Action::Modifiers(ModifiersState::SHIFT),
             Action::Drag {
                 from: Point::new(520.0, 300.0),
                 to: Point::new(740.0, 470.0),
                 steps: 7,
             },
+            Action::Modifiers(ModifiersState::empty()),
             Action::ClickNamed("capture.pip.grid"),
             Action::Snapshot("pip-multi-grid"),
             Action::CaptureExecutionEnabled(true),
