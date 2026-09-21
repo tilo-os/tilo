@@ -36,33 +36,7 @@ use ui::theme::Theme;
 use ui::widget::{Dropdown, TextInput, Widget};
 
 use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
-use crate::model::{Filesystem, InstallProfile};
-
-const LOCALES: &[&str] = &[
-    "ar_SA.UTF-8",
-    "cs_CZ.UTF-8",
-    "da_DK.UTF-8",
-    "de_DE.UTF-8",
-    "en_GB.UTF-8",
-    "en_US.UTF-8",
-    "es_ES.UTF-8",
-    "fi_FI.UTF-8",
-    "fr_FR.UTF-8",
-    "it_IT.UTF-8",
-    "ja_JP.UTF-8",
-    "ko_KR.UTF-8",
-    "nb_NO.UTF-8",
-    "nl_NL.UTF-8",
-    "pl_PL.UTF-8",
-    "pt_BR.UTF-8",
-    "pt_PT.UTF-8",
-    "ru_RU.UTF-8",
-    "sv_SE.UTF-8",
-    "tr_TR.UTF-8",
-    "uk_UA.UTF-8",
-    "zh_CN.UTF-8",
-    "zh_TW.UTF-8",
-];
+use crate::model::{Filesystem, InstallProfile, installer_locales};
 
 const KEYBOARDS: &[(&str, &str)] = &[
     ("English (US)", "us"),
@@ -252,7 +226,7 @@ impl CustomizePanel {
             keyboard: field(),
             filesystem: field(),
             locale_choice: Dropdown::from_state(
-                LOCALES.iter().map(|value| (*value).to_string()).collect(),
+                installer_locales().map(str::to_string).collect(),
                 &locale_state,
             )
             .with_id("imager.locale.choice")
@@ -331,7 +305,9 @@ impl CustomizePanel {
                 .into_iter()
                 .find(|filesystem| filesystem.label() == displayed)
                 .map(|filesystem| filesystem.key().to_string()),
-            CzField::Locale => LOCALES.contains(&displayed).then(|| displayed.to_string()),
+            CzField::Locale => installer_locales()
+                .any(|locale| locale == displayed)
+                .then(|| displayed.to_string()),
             CzField::Timezone => Some(displayed.to_string()),
             _ => None,
         }
@@ -342,7 +318,7 @@ impl CustomizePanel {
             return false;
         };
         match f {
-            CzField::Locale => LOCALES.contains(&value),
+            CzField::Locale => installer_locales().any(|locale| locale == value),
             CzField::Timezone => self.timezone_catalog.iter().any(|zone| zone == value),
             CzField::Keyboard => keyboard_id(value).is_some(),
             CzField::Filesystem => Filesystem::all()
@@ -356,7 +332,9 @@ impl CustomizePanel {
     /// visible choosers expose. Free-text identity fields remain unchanged.
     pub(crate) fn canonical_value(&self, f: CzField, value: &str) -> Option<String> {
         match f {
-            CzField::Locale => LOCALES.contains(&value).then(|| value.to_string()),
+            CzField::Locale => installer_locales()
+                .any(|locale| locale == value)
+                .then(|| value.to_string()),
             CzField::Timezone => self
                 .timezone_catalog
                 .iter()
@@ -552,7 +530,10 @@ impl CustomizePanel {
 
     // ---- drawing ----------------------------------------------------------
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "text drawing keeps the renderer, scene, style, position, width, and weight explicit at each call site"
+    )]
     fn txt(
         tr: &mut TextRenderer,
         scene: &mut Scene,
@@ -616,7 +597,10 @@ impl CustomizePanel {
     }
 
     /// Draw + hit-forward one text field (box + label + the shared input glyphs).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one field draw forwards the shared render context plus its field identity and geometry"
+    )]
     fn draw_field(
         &mut self,
         scene: &mut Scene,
@@ -690,7 +674,10 @@ impl CustomizePanel {
     }
 
     /// Render the whole panel into `content` for the given profile snapshot.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the embedded panel receives the host render context and reviewed profile without owning duplicate state"
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -731,7 +718,10 @@ impl CustomizePanel {
     }
 
     /// The IDENTITY section: hostname, name, username and time zone.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the section renderer forwards one shared render context to each identity field"
+    )]
     fn draw_identity_fields(
         &mut self,
         scene: &mut Scene,
@@ -797,7 +787,10 @@ impl CustomizePanel {
 
     /// The REGION section contains the last host-side preference. Security,
     /// storage target and destructive choices are completed on the device.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the section renderer forwards one shared render context plus reviewed install context"
+    )]
     fn draw_region_and_options(
         &mut self,
         scene: &mut Scene,
@@ -882,7 +875,10 @@ impl CustomizePanel {
     /// Route a winit event into the panel. Text edits and toggles dispatch
     /// their [`ImagerAction`] through `host`; the returned [`CzResponse`] tells
     /// the host whether the event was consumed and whether export was asked for.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "widget event dispatch must forward the toolkit event context and the authoritative action host"
+    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -935,7 +931,10 @@ impl CustomizePanel {
 
     /// Track the pointer and forward it to a focused field so drag-selection
     /// tracks along.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pointer routing keeps toolkit event state and action dispatch explicit"
+    )]
     fn handle_cursor_moved(
         &mut self,
         event: &WindowEvent,
@@ -979,7 +978,10 @@ impl CustomizePanel {
 
     /// A left click: focus a field and forward the press for caret placement,
     /// dispatch a toggle, request export, or (on empty space) drop focus.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "click routing keeps geometry, toolkit event state, and action dispatch explicit"
+    )]
     fn handle_left_click(
         &mut self,
         event: &WindowEvent,
@@ -1065,7 +1067,10 @@ impl CustomizePanel {
 
     /// A key press while a field is focused: Enter/Escape blur it, anything
     /// else routes to the input and dispatches its fresh value.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keyboard routing keeps modifiers, toolkit event state, and action dispatch explicit"
+    )]
     fn handle_key_event(
         &mut self,
         event: &WindowEvent,
@@ -1167,7 +1172,10 @@ impl CustomizePanel {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "focus transfer synchronizes the chosen field with toolkit state and the authoritative profile action"
+    )]
     fn focus_field(
         &mut self,
         f: CzField,
