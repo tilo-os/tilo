@@ -8026,32 +8026,47 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
-    app.input.tooltip_host.tick(Instant::now());
-    if let Some((text, anchor)) = app
-        .input
-        .tooltip_host
-        .visible()
-        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
-    {
-        let win_w = f64::from(width) / f64::from(scale_factor);
-        let win_h = f64::from(height) / f64::from(scale_factor);
-        let viewport = KurboRect::new(0.0, 0.0, win_w, win_h);
-        crate::widget::tooltip::draw_hover_tooltip(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            anchor,
-            &text,
-            viewport,
-        );
-    }
+    draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
 
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
     }
     let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
     (transform, window_rect, t_draw_us)
+}
+
+fn draw_visible_tooltip(
+    app: &mut App,
+    scene: &mut Scene,
+    transform: Affine,
+    width: u32,
+    height: u32,
+    scale_factor: f32,
+) {
+    app.input.tooltip_host.tick(Instant::now());
+    let Some((text, anchor)) = app
+        .input
+        .tooltip_host
+        .visible()
+        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
+    else {
+        return;
+    };
+    let viewport = KurboRect::new(
+        0.0,
+        0.0,
+        f64::from(width) / f64::from(scale_factor),
+        f64::from(height) / f64::from(scale_factor),
+    );
+    crate::widget::tooltip::draw_hover_tooltip(
+        scene,
+        transform,
+        &mut app.text_renderer,
+        &app.theme,
+        anchor,
+        &text,
+        viewport,
+    );
 }
 
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
