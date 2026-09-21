@@ -271,7 +271,7 @@ impl RowMetrics {
             line2_y,
             badge_h,
             btn_h,
-            connect_w: 100.0_f64.max(connect_label + 24.0),
+            connect_w: 100.0_f64.max(connect_label + 18.0),
             edit_w: 76.0_f64.max(w(tr, "Edit", 13.0) + 24.0),
             actions_top,
             row_h: ROW_H.max(actions_top),
