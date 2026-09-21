@@ -518,9 +518,9 @@ wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[
 # session before we ever reach the desktop.
 "$vm" stop
 if [ "$software_tpm" -eq 1 ]; then
-  "$vm" boot-target --gl --tpm
+  "$vm" boot-target "$display_arg" --tpm
 else
-  "$vm" boot-target --gl --no-tpm
+  "$vm" boot-target "$display_arg" --no-tpm
 fi
 wait_screen 10-oobe-backup-resumed 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity' 120 2 \
   || die "OOBE did not resume after an interrupted first boot"
