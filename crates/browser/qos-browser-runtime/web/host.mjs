@@ -242,6 +242,13 @@ export async function mountDesktop(target,options={}) {
 
     const hiddenKeyOwner={};
     const dispatchCanvasKey=key=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key}));};
+    // Canvas clicks are hit-tested by the runtime. Page chrome is outside that
+    // surface, so route dismissal to the current search owner without stealing
+    // focus or consuming the external control's pointer event.
+    on(document,'pointerdown',event=>{
+      if(!active()||surface.contains(event.target))return;
+      if(inputScope.capture()?.owner==='system-search')dispatchCanvasKey('Escape');
+    },{capture:true});
     onEditor('keydown',event=>{
       inputScope.capture();if(!active())return;
       hiddenKeys.keydown(hiddenKeyOwner,event,composing);

@@ -52,6 +52,17 @@ async function fixture({standalone=false,legacy=false}={}){
  const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:standalone?'writer':'desktop'});await tick();
  return {host,document,delivered,deliveredOwners,get ownershipReads(){return ownershipReads;},disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
 }
+test('outside pointer press dismisses only the current system search and preserves the external click',async()=>{
+ const f=await fixture();
+ const keys=[];f.host.canvas.addEventListener('keydown',event=>keys.push(event.key));f.host.canvas.addEventListener('keyup',event=>keys.push(event.key));
+ const outside=new Node('button');f.document.body.append(outside);
+ f.state={...f.state,sequence:'2',owner:'system-search'};
+ f.host.canvas.dispatchEvent(new DomEvent('pointerdown'));assert.deepEqual(keys,[]);
+ const event=new DomEvent('pointerdown');outside.dispatchEvent(event);
+ assert.deepEqual(keys,['Escape','Escape']);assert.equal(event.defaultPrevented,false);assert.equal(event.stopped,undefined);
+ keys.length=0;f.state={...f.state,sequence:'3',owner:'writer'};
+ outside.dispatchEvent(new DomEvent('pointerdown'));assert.deepEqual(keys,[]);
+});
 test('mounted activation focuses latest destination and preserves a later external gesture',async()=>{
  const f=await fixture();
  await f.host.navigation.dispatch({kind:'select',generation:'g',route:'writer'});assert.equal(f.document.activeElement,f.host.editor);assert.deepEqual(f.host.editor.focusOptions,{preventScroll:true});

@@ -321,12 +321,13 @@ impl FrameHarness {
         palette.set_query_placeholder("Search apps, content and actions");
         palette.open();
         palette.set_query(query);
+        let hover = self.system_search_pointer_position();
         self.system_search.overlay = Some(Overlay {
             palette,
             filters: SearchFilters::default(),
             scope: SearchScope::All,
             wanted: vec![],
-            hover: None,
+            hover,
         });
         self.refresh_system_search();
         self.relayout();
@@ -687,12 +688,20 @@ impl FrameHarness {
         self.refresh_system_search();
     }
     pub(super) fn system_search_event(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::CursorMoved { position, .. } if !self.dispatching_touch_pointer => {
+                self.host_pointer_position = Some(*position);
+            }
+            WindowEvent::CursorLeft { .. } => self.host_pointer_position = None,
+            _ => {}
+        }
         if self.system_search.overlay.is_none() {
             return false;
         }
         if let WindowEvent::Touch(touch) = event {
             // Use the same touch recognizer as the document driver, while
             // retaining capture through the release that closes this overlay.
+            self.dispatching_touch_pointer = true;
             for pointer in self.touch_pointer.events(touch) {
                 let event = match pointer {
                     crate::interaction::TouchPointerEvent::Move(position) => {
@@ -721,14 +730,37 @@ impl FrameHarness {
                 };
                 self.system_search_event(&event);
             }
+            self.dispatching_touch_pointer = false;
             return true;
         }
+        let pointer_position = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                Some(self.system_search_position(*position))
+            }
+            WindowEvent::CursorLeft { .. } => None,
+            _ => self.system_search_pointer_position(),
+        };
         let overlay = self.system_search.overlay.as_mut().unwrap();
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            overlay.hover = Some(Point::new(
-                position.x / self.input_scale,
-                position.y / self.input_scale,
-            ));
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. }
+        ) || (!self.dispatching_touch_pointer && matches!(event, WindowEvent::MouseInput { .. }))
+        {
+            overlay.hover = pointer_position;
+        }
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) && overlay
+            .hover
+            .is_some_and(|point| !overlay.get_rect().contains(point))
+        {
+            self.close_system_search();
+            self.relayout();
+            return true;
         }
         if matches!(
             event,
@@ -764,6 +796,15 @@ impl FrameHarness {
         self.finish_system_search();
         self.relayout();
         true // This modal surface owns *all* input, including unhandled keys/releases.
+    }
+
+    fn system_search_pointer_position(&self) -> Option<Point> {
+        self.host_pointer_position
+            .map(|position| self.system_search_position(position))
+    }
+
+    fn system_search_position(&self, position: winit::dpi::PhysicalPosition<f64>) -> Point {
+        Point::new(position.x / self.input_scale, position.y / self.input_scale)
     }
     pub(super) fn draw_system_search(&mut self) {
         let Some(overlay) = self.system_search.overlay.as_mut() else {
