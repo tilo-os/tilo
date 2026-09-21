@@ -224,7 +224,7 @@ impl Session {
         if let Some(data) = editor.apply_foreign(action)? {
             self.link.send_to_route(
                 RouteSpec::app(route_app_id.as_str(), self.cfg.cluster),
-                &CollabRequest::DocumentIncremental { data },
+                &CollabRequest::document_incremental(data),
             )?;
         }
         Ok(())

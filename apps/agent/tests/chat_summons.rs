@@ -13,9 +13,9 @@ use chat::{
     doc::ChatDoc,
     model::{AgentRoute, AgentStepOutcome, AgentWorkState},
 };
-use qos_agent::{Config, Session};
 use std::time::{Duration, Instant};
 use tilo_actions::Action;
+use tilo_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 mod typed_peer;
 use typed_peer::{TypedPeer, send};
@@ -230,15 +230,13 @@ fn scenario_outcome(
         if owner_released {
             send(
                 &mut owner,
-                &CollabRequest::DocumentSnapshot {
-                    data: document.save(),
-                },
+                &CollabRequest::document_snapshot(document.save()),
             )
             .unwrap();
         }
         send(
             &mut chat_peer,
-            &CollabRequest::DocumentSnapshot { data: chat.save() },
+            &CollabRequest::document_snapshot(chat.save()),
         )
         .unwrap();
         let deadline = Instant::now() + Duration::from_secs(4);
@@ -252,9 +250,7 @@ fn scenario_outcome(
                     } if id == WP && owner_released => {
                         send(
                             &mut owner,
-                            &CollabRequest::DocumentSnapshot {
-                                data: document.save(),
-                            },
+                            &CollabRequest::document_snapshot(document.save()),
                         )
                         .unwrap();
                     }
@@ -335,9 +331,7 @@ fn scenario_outcome(
                 );
                 send(
                     &mut owner,
-                    &CollabRequest::DocumentSnapshot {
-                        data: document.save(),
-                    },
+                    &CollabRequest::document_snapshot(document.save()),
                 )
                 .unwrap();
             }
