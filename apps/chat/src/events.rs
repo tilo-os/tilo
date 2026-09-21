@@ -3267,7 +3267,10 @@ mod tests {
             .expect("the main composer remains semantic");
         assert_eq!(
             composer.text_selection,
-            Some(ui::a11y::AccessibleTextSelection { anchor: 9, focus: 4 }),
+            Some(ui::a11y::AccessibleTextSelection {
+                anchor: 9,
+                focus: 4
+            }),
             "the semantic bridge must retain the anchor at the right edge while Shift+Left moves focus backward"
         );
     }
