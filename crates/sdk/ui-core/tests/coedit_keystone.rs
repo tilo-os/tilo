@@ -5,7 +5,7 @@
 //!
 //! Runs against the production typed protocol: two real
 //! `CollaborationManager`s over Cap'n Proto Unix sockets, real `automerge` documents, and the real
-//! `ui::widget::TextInput` render pass — no mocks of the thing under test.
+//! `tilo_ui::widget::TextInput` render pass — no mocks of the thing under test.
 //!
 //! Three proofs: converged co-edit renders identically on both peers
 //! (`peer_edit_converges_...`), a caret round-trips through the real
@@ -30,13 +30,13 @@ use std::time::Duration;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 
-use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::{PermissionContext, UserId};
-use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use tilo_ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::permissions::{PermissionContext, UserId};
+use tilo_ui::presence::{PathSegment, PresenceCtx, PresenceKey};
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{TextInput, Widget};
 
 use crate::support::typed_collab::TypedBroker;
 use vello::Scene;

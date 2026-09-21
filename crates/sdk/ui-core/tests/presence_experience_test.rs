@@ -16,12 +16,12 @@
 
 use std::time::{Instant, SystemTime};
 
-use ui::app::App;
-use ui::collaboration::{CollabEvent, PresencePayload};
-use ui::permissions::UserId;
-use ui::presence::PresenceKey;
-use ui::state::State;
-use ui::widget::Container;
+use tilo_ui::app::App;
+use tilo_ui::collaboration::{CollabEvent, PresencePayload};
+use tilo_ui::permissions::UserId;
+use tilo_ui::presence::PresenceKey;
+use tilo_ui::state::State;
+use tilo_ui::widget::Container;
 use vello::kurbo::{Point, Rect};
 
 fn app() -> App {
@@ -48,7 +48,10 @@ fn room_status_arrives_with_honest_provenance_and_can_be_cleared() {
         .status_for(&bob, SystemTime::now())
         .expect("status should be visible in the universal room model");
     assert_eq!(status.text, "Reconciling forecast against actuals");
-    assert!(matches!(status.origin, ui::StatusOrigin::Inferred { .. }));
+    assert!(matches!(
+        status.origin,
+        tilo_ui::StatusOrigin::Inferred { .. }
+    ));
 
     a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
         user_id: bob.0.clone(),
@@ -72,7 +75,7 @@ fn room_status_arrives_with_honest_provenance_and_can_be_cleared() {
 fn remote_typing_event_records_fading_tint() {
     let mut a = app();
     let key = PresenceKey::Widget {
-        path: vec![ui::presence::PathSegment::Index(2)],
+        path: vec![tilo_ui::presence::PathSegment::Index(2)],
     };
     a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
         user_id: "alice".into(),
@@ -185,8 +188,8 @@ fn caret_only_peer_still_gets_a_highlight() {
     let mut a = app();
     let key = PresenceKey::Widget {
         path: vec![
-            ui::presence::PathSegment::Field("wp_block".into()),
-            ui::presence::PathSegment::Field("b1".into()),
+            tilo_ui::presence::PathSegment::Field("wp_block".into()),
+            tilo_ui::presence::PathSegment::Field("b1".into()),
         ],
     };
     // Caret before the edit, then after it; the delta between them is what
@@ -223,7 +226,7 @@ fn caret_only_peer_still_gets_a_highlight() {
 fn toolkit_peer_sending_both_tints_once() {
     let mut a = app();
     let key = PresenceKey::Widget {
-        path: vec![ui::presence::PathSegment::Index(7)],
+        path: vec![tilo_ui::presence::PathSegment::Index(7)],
     };
     a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
         user_id: "alice".into(),
@@ -260,7 +263,7 @@ fn toolkit_peer_sending_both_tints_once() {
 fn retreating_caret_marks_nothing() {
     let mut a = app();
     let key = PresenceKey::Widget {
-        path: vec![ui::presence::PathSegment::Index(1)],
+        path: vec![tilo_ui::presence::PathSegment::Index(1)],
     };
     for pos in [9usize, 4] {
         a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
@@ -285,7 +288,7 @@ fn retreating_caret_marks_nothing() {
 fn a_caret_moving_without_an_edit_marks_nothing() {
     let mut a = app();
     let key = PresenceKey::Widget {
-        path: vec![ui::presence::PathSegment::Index(3)],
+        path: vec![tilo_ui::presence::PathSegment::Index(3)],
     };
     // A long forward sweep, exactly as reading produces it, with no
     // document change anywhere near it.
@@ -314,7 +317,7 @@ fn a_caret_moving_without_an_edit_marks_nothing() {
 fn an_explicit_typing_report_needs_no_edit_pulse() {
     let mut a = app();
     let key = PresenceKey::Widget {
-        path: vec![ui::presence::PathSegment::Index(5)],
+        path: vec![tilo_ui::presence::PathSegment::Index(5)],
     };
     a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
         user_id: "alice".into(),
@@ -337,7 +340,7 @@ fn an_explicit_typing_report_needs_no_edit_pulse() {
 fn an_absurd_caret_jump_is_a_click_and_not_a_run() {
     let mut a = app();
     let key = PresenceKey::Widget {
-        path: vec![ui::presence::PathSegment::Index(4)],
+        path: vec![tilo_ui::presence::PathSegment::Index(4)],
     };
     a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
         user_id: "bob".into(),
@@ -368,7 +371,7 @@ fn your_own_edits_do_not_highlight_on_your_own_screen() {
     let mut a = app();
     a.presence_ctx_mut().set_own_identity(["me"]);
     let key = PresenceKey::Widget {
-        path: vec![ui::presence::PathSegment::Index(9)],
+        path: vec![tilo_ui::presence::PathSegment::Index(9)],
     };
 
     a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
