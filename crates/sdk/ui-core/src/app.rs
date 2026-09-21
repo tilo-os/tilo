@@ -1697,6 +1697,40 @@ impl App {
         }
     }
 
+    /// Let the focused widget see directional input first. Only an unconsumed
+    /// arrow may move host focus, using the same modal/focus-trap fence as Tab.
+    fn handle_unconsumed_directional_key(
+        &mut self,
+        event: &WindowEvent,
+        modal_rect: Option<KurboRect>,
+        require_alt: bool,
+        handled: &mut bool,
+    ) {
+        if *handled
+            || (require_alt && !self.modifiers.state().alt_key())
+            || !self.keyboard_nav_allowed(modal_rect)
+        {
+            return;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key: winit::keyboard::Key::Named(named),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return;
+        };
+        let Some(direction) = Direction::from_key(*named) else {
+            return;
+        };
+        self.navigate_focus(direction);
+        *handled = true;
+    }
+
     fn initial_presence_context() -> PresenceCtx {
         // Own identity, in preference order: the handle announced on `Hello`,
         // then the fallback app id. Anything else is somebody else and gets
@@ -12082,34 +12116,6 @@ impl AppHandler {
             handled = true;
         }
 
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(logical_key),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let dir = match logical_key {
-                winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                _ => None,
-            };
-            if let (Some(d), true, true) = (
-                dir,
-                app.modifiers.state().alt_key(),
-                app.keyboard_nav_allowed(modal_rect),
-            ) {
-                app.navigate_focus(d);
-                handled = true;
-            }
-        }
-
         // Two-finger swipe / edge pull; delivered via `on_nav_gesture`.
         if !handled && !self.dispatching_touch_pointer {
             use crate::gesture::GesturePhase;
@@ -12217,6 +12223,12 @@ impl AppHandler {
             }
         }
 
+        // Alt+Arrow remains host directional navigation when the focused
+        // widget leaves it unhandled. Running this after widget dispatch lets
+        // editors consume platform word/selection shortcuts first, while
+        // keeping Alt navigation ahead of the plain range-control fallback.
+        app.handle_unconsumed_directional_key(&event, modal_rect, true, &mut handled);
+
         // If no widget consumed Enter/Space (text inputs do), activate
         // the focused control the same way a mouse click would.
         app.handle_unconsumed_activation_key(&event, &mut handled);
@@ -12274,30 +12286,7 @@ impl AppHandler {
             }
         }
 
-        if !handled
-            && app.keyboard_nav_allowed(modal_rect)
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(logical_key),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let dir = match logical_key {
-                winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                _ => None,
-            };
-            if let Some(d) = dir {
-                app.navigate_focus(d);
-                handled = true;
-            }
-        }
+        app.handle_unconsumed_directional_key(&event, modal_rect, false, &mut handled);
 
         if app.dispatch_control_invocations() != 0 {
             handled = true;
@@ -15536,6 +15525,63 @@ mod action_palette_tests {
             event,
             is_synthetic: false,
         }
+    }
+
+    #[test]
+    fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
+        use crate::widget::{Column, TextInput};
+        use winit::keyboard::ModifiersState;
+
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(
+                Column::new()
+                    .push(Box::new(
+                        TextInput::local().with_id("editor").with_initial_value("x"),
+                    ))
+                    .push(Box::new(Button::new("done", "Done", None))),
+            ),
+        );
+        app.init_layout();
+        let root = app.layout.root_node.unwrap();
+        run_layout_pass(&mut app, root, 320, 180, 1.0, false, None).unwrap();
+        let editor = app.focusable_order[0];
+        let done = app.focusable_order[1];
+        app.set_focused_node(Some(editor));
+
+        let mut left = synth_enter();
+        if let WindowEvent::KeyboardInput { event, .. } = &mut left {
+            event.logical_key = Key::Named(NamedKey::ArrowLeft);
+        }
+        app.modifiers = winit::event::Modifiers::from(ModifiersState::ALT | ModifiersState::SHIFT);
+        let mut handled = false;
+        let mut focus = None;
+        app.presentation_handle_event(&left, 1.0, &mut handled, &mut focus);
+        assert!(handled, "the focused editor consumes exact Alt+Shift+Left");
+        if let Some(focus) = focus {
+            app.set_focused_node(Some(focus));
+        }
+        app.handle_unconsumed_directional_key(&left, None, true, &mut handled);
+        assert_eq!(app.focused_node, Some(editor));
+        assert_eq!(
+            app.inspect_node(editor, |widget| widget.get_state())
+                .unwrap(),
+            Some("0:b:1".into()),
+            "Shift+Left extends the editor selection instead of moving host focus"
+        );
+
+        let mut down = synth_enter();
+        if let WindowEvent::KeyboardInput { event, .. } = &mut down {
+            event.logical_key = Key::Named(NamedKey::ArrowDown);
+        }
+        app.modifiers = winit::event::Modifiers::from(ModifiersState::ALT);
+        let mut handled = false;
+        let mut focus = None;
+        app.presentation_handle_event(&down, 1.0, &mut handled, &mut focus);
+        assert!(!handled, "single-line editor leaves Alt+Down to the host");
+        app.handle_unconsumed_directional_key(&down, None, true, &mut handled);
+        assert!(handled);
+        assert_eq!(app.focused_node, Some(done));
     }
 
     #[test]

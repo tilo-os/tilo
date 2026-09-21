@@ -3977,35 +3977,6 @@ impl FrameHarness {
                 self.relayout();
                 return;
             }
-            if navigation
-                && self.modifiers.state().alt_key()
-                && let Key::Named(named) = key.logical_key
-                && let Some(direction) = crate::focus_navigation::Direction::from_key(named)
-            {
-                let order = self.focus_order();
-                let next = match self.focused {
-                    Some(current) => self
-                        .inspect_node(current, |widget| widget.get_rect())
-                        .ok()
-                        .and_then(|rect| {
-                            crate::focus_navigation::next(
-                                (current, rect),
-                                order.iter().filter_map(|&id| {
-                                    self.inspect_node(id, |widget| widget.get_rect())
-                                        .ok()
-                                        .map(|rect| (id, rect))
-                                }),
-                                direction,
-                            )
-                        }),
-                    None => order.first().copied(),
-                };
-                if let Some(next) = next {
-                    self.set_focused(Some(next));
-                    self.relayout();
-                }
-                return;
-            }
             if modal.is_none()
                 && (self.active_input_instance.is_none() || self.focused.is_some())
                 && let Key::Character(character) = &key.logical_key
@@ -4047,11 +4018,19 @@ impl FrameHarness {
                 }
             }
         }
-        self.send(event);
+        let host_navigation_allowed = crate::focus_navigation::keyboard_nav_allowed(
+            self.root.modal_capture(),
+            self.focus_trap_active,
+        );
+        self.send_with_host_navigation(event, host_navigation_allowed);
     }
 
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
+        self.send_with_host_navigation(event, false);
+    }
+
+    fn send_with_host_navigation(&mut self, event: &WindowEvent, host_navigation_allowed: bool) {
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             self.modifiers = *modifiers;
         }
@@ -4211,6 +4190,40 @@ impl FrameHarness {
         // becomes the focused node, so subsequent keystrokes route to it.
         if let Some(t) = focus_target {
             self.set_focused(Some(t));
+        }
+        if host_navigation_allowed
+            && !handled
+            && !history_input
+            && self.modifiers.state().alt_key()
+            && let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+            && let Key::Named(named) = key.logical_key
+            && let Some(direction) = crate::focus_navigation::Direction::from_key(named)
+        {
+            let order = self.focus_order();
+            let next = match self.focused {
+                Some(current) => self
+                    .inspect_node(current, |widget| widget.get_rect())
+                    .ok()
+                    .and_then(|rect| {
+                        crate::focus_navigation::next(
+                            (current, rect),
+                            order.iter().filter_map(|&id| {
+                                self.inspect_node(id, |widget| widget.get_rect())
+                                    .ok()
+                                    .map(|rect| (id, rect))
+                            }),
+                            direction,
+                        )
+                    }),
+                None => order.first().copied(),
+            };
+            if let Some(next) = next {
+                self.set_focused(Some(next));
+            }
+            // Host directional navigation owns recognized Alt+Arrow input even
+            // when no focus target exists, matching the live App contract.
+            handled = true;
         }
         if history_handled {
             if let Err(error) = self.history_tick() {
@@ -7004,6 +7017,24 @@ mod tests {
             ElementState::Pressed,
         ));
         assert!(frame.access_node_named("name", None).unwrap().state.focused);
+        frame.send_host_event(&WindowEvent::ModifiersChanged(
+            winit::event::Modifiers::from(
+                winit::keyboard::ModifiersState::ALT | winit::keyboard::ModifiersState::SHIFT,
+            ),
+        ));
+        frame.send_host_event(&key_event(
+            &Key::Named(winit::keyboard::NamedKey::ArrowLeft),
+            ElementState::Pressed,
+        ));
+        let name = frame.access_node_named("name", None).unwrap();
+        assert!(name.state.focused);
+        assert_eq!(
+            name.text_selection,
+            Some(crate::a11y::AccessibleTextSelection {
+                anchor: 1,
+                focus: 0,
+            })
+        );
         let mut document = super::dispatched_action_driver_tests::action_driver();
         document.set_platform_conventions(crate::platform::PlatformConventions::new(
             crate::platform::Platform::MacOs,
