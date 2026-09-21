@@ -45,6 +45,11 @@ class BuilderPlanTests(unittest.TestCase):
         self.assertEqual(mode, "build")
         self.assertIn("replicate-builder-index.py", reason)
 
+    def test_aws_cli_installation_change_runs_publication(self):
+        mode, reason = plan.choose("push", ["os/dev/install-aws-cli.sh"])
+        self.assertEqual(mode, "build")
+        self.assertIn("install-aws-cli.sh", reason)
+
     def test_native_build_contract_change_rebuilds(self):
         self.assertEqual(plan.choose("push", [plan.WORKFLOW], workflow(), workflow(build="echo changed"))[0], "build")
 
