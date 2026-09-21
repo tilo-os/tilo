@@ -343,6 +343,7 @@ accesskit_winit = "0.34.0"
 tokio = { workspace = true, features = ["full"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+chrono = { workspace = true, features = ["wasmbind"] }
 getrandom = { workspace = true, features = ["js"] }
 uuid = { workspace = true, features = ["js"] }
 web-time = "1"
