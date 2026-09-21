@@ -1,6 +1,6 @@
 //! The native primary channel addresses one canonical record, not App's outer
 //! scratch document. A fresh broker epoch starts a fresh delivery frontier.
-use super::*;
+use super::{App, Widget};
 use crate::bound_dispatch::CallbackBinding;
 use crate::collaboration::PrimaryRouteWitness;
 use crate::state::DocumentFrontier;
