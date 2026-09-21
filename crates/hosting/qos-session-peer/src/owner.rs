@@ -149,6 +149,21 @@ pub struct SessionOwner {
     peer: StatePeer,
     workspace_id: u64,
 }
+
+#[cfg(test)]
+std::thread_local! {
+    static DOCUMENT_CAUSAL_PROOFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_document_causal_proofs() {
+    DOCUMENT_CAUSAL_PROOFS.set(0);
+}
+
+#[cfg(test)]
+fn document_causal_proofs() -> usize {
+    DOCUMENT_CAUSAL_PROOFS.get()
+}
 fn encode(aggregate: &Aggregate, identity: &Identity) -> Result<Vec<u8>> {
     encode_with_timing(aggregate, identity, None)
 }
@@ -758,6 +773,11 @@ impl SessionOwner {
     }
     fn validate_admission(&self, candidate: &StatePeer, directory: &[u8]) -> Result<()> {
         fn preserves_document(before: &[u8], after: &[u8]) -> Result<()> {
+            if before == after {
+                return Ok(());
+            }
+            #[cfg(test)]
+            DOCUMENT_CAUSAL_PROOFS.set(DOCUMENT_CAUSAL_PROOFS.get() + 1);
             let mut before = ui::automerge::AutoCommit::load(before)?;
             let mut after = ui::automerge::AutoCommit::load(after)?;
             if before
@@ -880,6 +900,91 @@ impl SessionOwner {
             peer,
             workspace_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod admission_validation_tests {
+    use super::*;
+    use ui::automerge::{ROOT, transaction::Transactable};
+
+    #[test]
+    fn unchanged_documents_skip_causal_decode_while_changed_documents_keep_the_proof() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        let app = "dev.qos.validation";
+        let record = "record";
+        let mut document = ui::automerge::AutoCommit::new();
+        document.put(ROOT, "value", 1_u64).unwrap();
+        document.commit();
+        let mut initial = owner.peer().clone();
+        initial
+            .publish_document(
+                app,
+                record,
+                document.save(),
+                &owner.identity.native,
+                SystemTime::now(),
+            )
+            .unwrap();
+        owner
+            .commit_mutation_candidate(initial, owner.directory().to_vec())
+            .unwrap();
+
+        reset_document_causal_proofs();
+        owner
+            .validate_admission(owner.peer(), owner.directory())
+            .unwrap();
+        assert_eq!(
+            document_causal_proofs(),
+            0,
+            "byte-identical admitted documents must not be decoded again"
+        );
+
+        let mut changed_document =
+            ui::automerge::AutoCommit::load(&owner.peer().document(app, record).unwrap()).unwrap();
+        let heads = changed_document.get_heads();
+        changed_document.put(ROOT, "value", 2_u64).unwrap();
+        changed_document.commit();
+        let mut changed = owner.peer().clone();
+        changed
+            .publish_incremental(
+                app,
+                record,
+                changed_document.save_after(&heads),
+                &owner.identity.native,
+                SystemTime::now(),
+            )
+            .unwrap();
+        reset_document_causal_proofs();
+        owner
+            .commit_mutation_candidate(changed, owner.directory().to_vec())
+            .unwrap();
+        assert_eq!(
+            document_causal_proofs(),
+            1,
+            "a changed document must retain the causal-head proof"
+        );
+
+        let mut revocations = tilo_user_identity::RevocationList::new();
+        for entry in owner.peer().revocations() {
+            revocations.insert(entry).unwrap();
+        }
+        let missing = StatePeer::new(
+            owner.peer().room(),
+            owner.peer().authority().clone(),
+            owner.peer().certificates(),
+            revocations,
+            SystemTime::now(),
+        )
+        .unwrap();
+        assert!(
+            owner
+                .validate_admission(&missing, owner.directory())
+                .unwrap_err()
+                .to_string()
+                .contains("admission removes existing record")
+        );
     }
 }
 
