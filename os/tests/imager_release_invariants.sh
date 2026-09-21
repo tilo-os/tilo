@@ -433,9 +433,9 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'qemu-system-aarch64' "$workflow" \
   && grep -Fq 'qemu-efi-aarch64 qemu-system-arm' "$workflow" \
   && grep -Fq 'edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core' "$workflow" \
-  && grep -Fq 'dosfstools e2fsprogs fdisk imagemagick mtools ntfs-3g' "$workflow" \
-  && grep -Fq 'ImageMagick mtools ntfs-3g util-linux' "$workflow" \
-  && grep -Fq 'debugfs mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat mtype ntfscp' "$workflow" \
+  && grep -Fq 'clang dosfstools e2fsprogs fdisk imagemagick lld mtools ntfs-3g' "$workflow" \
+  && grep -Fq 'clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux' "$workflow" \
+  && grep -Fq 'clang debugfs ld.lld mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat' "$workflow" \
   && grep -Fq 'qemu-img "$qemu_binary" sfdisk socat tesseract' "$workflow" \
   && grep -Fq 'name: tilo-installer-full-cycle-${{ matrix.arch }}' "$workflow" \
   && grep -Fxq 'os/tests/installer_cycle_graphics.py' "$repo/tools/security-boundary-invariants.txt" \
@@ -457,6 +457,11 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'Linux filesystem bytes changed during alongside install' "$cycle" \
   && grep -Fq 'Windows EFI loader bytes changed during alongside install' "$cycle" \
   && grep -Fq 'Linux EFI loader bytes changed during alongside install' "$cycle" \
+  && grep -Fq 'build-foreign-boot-fixture.sh' "$cycle" \
+  && grep -Fq 'Windows fixture entry never executed from the installed boot menu' "$cycle" \
+  && grep -Fq 'Linux fixture entry never executed from the installed boot menu' "$cycle" \
+  && grep -Fq 'real_windows_boot_verified=false' "$cycle" \
+  && grep -Fq 'real_linux_distribution_boot_verified=false' "$cycle" \
   && grep -Fq 'foreign shared EFI partition changed during guided alongside install' "$cycle" \
   && grep -Fq 'tilo-windows.conf' "$cycle" \
   && grep -Fq 'tilo-linux-fedora.conf' "$cycle" \
