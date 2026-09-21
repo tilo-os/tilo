@@ -20,7 +20,7 @@ pub(super) struct FloatingRuntime {
 }
 
 impl FloatingRuntime {
-    fn new(client: Option<FloatingSurfaceServiceClient>) -> Self {
+    pub(super) fn new(client: Option<FloatingSurfaceServiceClient>) -> Self {
         Self {
             client,
             presentations: HashMap::new(),
@@ -34,40 +34,80 @@ impl FloatingRuntime {
 }
 
 impl App {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the service pump keeps one ordered lifecycle transaction in a single function"
-    )]
     fn pump_floating_surface_service(&mut self) -> bool {
         let active_ids = self
             .root_widget
             .active_floating_surface_ids()
             .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let Some(client) = self.floating.client.as_mut() else {
-            let mut changed = false;
-            // Outside a Tilo session there is no trusted shell chooser to
-            // open. Drain the edge so reconnecting later cannot replay a
-            // stale user gesture.
-            while self.root_widget.take_capture_studio_request().is_some() {}
-            while let Some(request) = self.root_widget.take_floating_surface_request() {
-                let message = crate::floating_surface::FloatingSurfaceHostMessage::Reattach {
-                    id: request.id,
-                };
-                self.root_widget.on_floating_surface_host_message(&message);
-                self.floating.host_messages.push(message);
-                changed = true;
-            }
-            let _ = self.root_widget.take_floating_surface_source_updates();
-            self.floating.active_ids = self
-                .root_widget
-                .active_floating_surface_ids()
-                .into_iter()
-                .collect();
-            return changed;
+            .collect::<HashSet<_>>();
+        let Some(mut client) = self.floating.client.take() else {
+            return self.drain_unhosted_floating_requests();
         };
 
         let mut changed = false;
+        if let Err(error) = self.send_pending_floating_requests(&mut client, &mut changed) {
+            tracing::warn!(%error, "floating-surface request failed; keeping app UI local");
+            self.reattach_after_floating_service_loss();
+            return changed;
+        }
+        if let Err(error) = self.dismiss_inactive_generic_surfaces(&mut client, &active_ids) {
+            tracing::warn!(%error, "floating-surface dismiss failed");
+            self.reattach_after_floating_service_loss();
+            return changed;
+        }
+        let geometry_changed = match self.reconcile_floating_presentations(&mut client, &active_ids)
+        {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::warn!(%error, "floating-surface lifecycle update failed");
+                self.reattach_after_floating_service_loss();
+                return changed;
+            }
+        };
+        let messages = match client.pump() {
+            Ok(messages) => messages,
+            Err(error) => {
+                tracing::warn!(%error, "floating-surface service disconnected; keeping app UI local");
+                self.reattach_after_floating_service_loss();
+                return changed;
+            }
+        };
+        changed |= self.apply_floating_host_messages(messages);
+        self.floating.active_ids = self
+            .root_widget
+            .active_floating_surface_ids()
+            .into_iter()
+            .collect();
+        self.floating.client = Some(client);
+        changed || geometry_changed
+    }
+
+    fn drain_unhosted_floating_requests(&mut self) -> bool {
+        // Outside a Tilo session there is no trusted shell chooser to open.
+        // Drain the edge so reconnecting later cannot replay a stale gesture.
+        while self.root_widget.take_capture_studio_request().is_some() {}
+        let mut changed = false;
+        while let Some(request) = self.root_widget.take_floating_surface_request() {
+            let message =
+                crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request.id };
+            self.root_widget.on_floating_surface_host_message(&message);
+            self.floating.host_messages.push(message);
+            changed = true;
+        }
+        let _ = self.root_widget.take_floating_surface_source_updates();
+        self.floating.active_ids = self
+            .root_widget
+            .active_floating_surface_ids()
+            .into_iter()
+            .collect();
+        changed
+    }
+
+    fn send_pending_floating_requests(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+        changed: &mut bool,
+    ) -> Result<(), String> {
         while let Some(mode) = self.root_widget.take_capture_studio_request() {
             let mode = match mode {
                 crate::widget::CaptureMode::Screenshot => {
@@ -80,78 +120,82 @@ impl App {
                     crate::floating_surface::CaptureStudioProtocolMode::PictureInPicture
                 }
             };
-            if let Err(error) = client.send(
+            client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::OpenCaptureStudio { mode },
-            ) {
-                tracing::warn!(%error, "shell capture-studio request failed");
-                self.floating.client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
-            changed = true;
+            )?;
+            *changed = true;
         }
         while let Some(request) = self.root_widget.take_floating_surface_request() {
             self.floating.suspended_ids.remove(&request.id);
-            let message = crate::floating_surface::FloatingSurfaceClientMessage::Present {
-                request: (&request).into(),
-            };
-            if let Err(error) = client.send(&message) {
-                tracing::warn!(%error, "floating-surface service send failed; keeping app UI local");
-                self.floating.client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::Present {
+                    request: (&request).into(),
+                },
+            )?;
         }
         for (id, region) in self.root_widget.take_floating_surface_source_updates() {
-            if let Err(error) = client.send(
+            client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::UpdateRegion {
                     id,
                     region: crate::floating_surface::protocol_rect_array(region),
                 },
-            ) {
-                tracing::warn!(%error, "floating-surface source update failed");
-                self.floating.client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
+            )?;
         }
+        Ok(())
+    }
 
-        // Generic live mirrors have no `FloatingSurfacePresentation`: their
-        // pixels live in the shell capture host. The stable activity-ID edge
-        // is therefore their authoritative close/toggle signal.
+    fn dismiss_inactive_generic_surfaces(
+        &self,
+        client: &mut FloatingSurfaceServiceClient,
+        active_ids: &HashSet<String>,
+    ) -> Result<(), String> {
+        // Generic live mirrors have no native presentation: their pixels live
+        // in the shell capture host, so the activity-ID edge closes them.
         for id in generic_floating_ids_to_dismiss(
             &self.floating.active_ids,
-            &active_ids,
+            active_ids,
             &self.floating.presentations,
             &self.floating.suspended_ids,
         ) {
-            if let Err(error) =
-                client.send(&crate::floating_surface::FloatingSurfaceClientMessage::Dismiss { id })
-            {
-                tracing::warn!(%error, "floating-surface dismiss failed");
-                self.floating.client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
+            client.send(&crate::floating_surface::FloatingSurfaceClientMessage::Dismiss { id })?;
         }
+        Ok(())
+    }
 
+    fn reconcile_floating_presentations(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+        active_ids: &HashSet<String>,
+    ) -> Result<bool, String> {
         let presentations = self
             .root_widget
             .floating_surface_presentations()
             .into_iter()
             .map(|presentation| (presentation.id.clone(), presentation))
-            .collect::<std::collections::HashMap<_, _>>();
-        for (id, presentation) in &presentations {
+            .collect::<HashMap<_, _>>();
+        self.publish_prepared_presentations(client, &presentations)?;
+        self.retire_missing_presentations(client, active_ids, &presentations)?;
+        let geometry_changed = presentations != self.floating.presentations;
+        self.floating.presentations = presentations;
+        Ok(geometry_changed)
+    }
+
+    fn publish_prepared_presentations(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+        presentations: &HashMap<String, FloatingSurfacePresentation>,
+    ) -> Result<(), String> {
+        for (id, presentation) in presentations {
             if !self.floating.prepared_ids.contains(id) {
                 continue;
             }
-            let changed = self
+            if self
                 .floating
                 .presentations
                 .get(id)
-                .is_none_or(|previous| previous != presentation);
-            if changed
-                && let Err(error) = client.send(
+                .is_none_or(|previous| previous != presentation)
+            {
+                client.send(
                     &crate::floating_surface::FloatingSurfaceClientMessage::SurfaceGeometry {
                         id: id.clone(),
                         rect: crate::floating_surface::protocol_rect_array(
@@ -161,16 +205,11 @@ impl App {
                             presentation.content_rect,
                         ),
                     },
-                )
-            {
-                tracing::warn!(%error, "floating-surface geometry send failed");
-                self.floating.client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
+                )?;
             }
             if presentation.returning_to_app && !self.floating.suspended_ids.contains(id) {
                 self.floating.suspended_ids.insert(id.clone());
-                if let Err(error) = client.send(
+                client.send(
                     &crate::floating_surface::FloatingSurfaceClientMessage::Suspend {
                         id: id.clone(),
                         rect: crate::floating_surface::protocol_rect_array(
@@ -180,24 +219,22 @@ impl App {
                             presentation.content_rect,
                         ),
                     },
-                ) {
-                    tracing::warn!(%error, "floating-surface return handoff failed");
-                    self.floating.client = None;
-                    self.reattach_after_floating_service_loss();
-                    return changed;
-                }
+                )?;
             }
         }
-        for id in self.floating.presentations.keys() {
-            if presentations.contains_key(id) {
+        Ok(())
+    }
+
+    fn retire_missing_presentations(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+        active_ids: &HashSet<String>,
+        presentations: &HashMap<String, FloatingSurfacePresentation>,
+    ) -> Result<(), String> {
+        for (id, previous) in &self.floating.presentations {
+            if presentations.contains_key(id) || self.floating.suspended_ids.contains(id) {
                 continue;
             }
-            if self.floating.suspended_ids.contains(id) {
-                continue;
-            }
-            let Some(previous) = self.floating.presentations.get(id) else {
-                continue;
-            };
             let message = if active_ids.contains(id) {
                 self.floating.suspended_ids.insert(id.clone());
                 crate::floating_surface::FloatingSurfaceClientMessage::Suspend {
@@ -210,15 +247,11 @@ impl App {
             } else {
                 crate::floating_surface::FloatingSurfaceClientMessage::Dismiss { id: id.clone() }
             };
-            if let Err(error) = client.send(&message) {
-                tracing::warn!(%error, "floating-surface lifecycle send failed");
-                self.floating.client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
+            client.send(&message)?;
         }
-        // The activity can end while its native surface is already suspended,
-        // so no presentation edge remains to trigger permanent cleanup.
+
+        // A generic activity may end after its native surface was suspended,
+        // when no presentation edge remains to trigger permanent cleanup.
         let ended_suspended = self
             .floating
             .suspended_ids
@@ -227,38 +260,26 @@ impl App {
             .cloned()
             .collect::<Vec<_>>();
         for id in ended_suspended {
-            if let Err(error) = client.send(
+            client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss { id: id.clone() },
-            ) {
-                tracing::warn!(%error, "floating-surface dismiss send failed");
-                self.floating.client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
+            )?;
             self.floating.suspended_ids.remove(&id);
         }
-        let geometry_changed = presentations != self.floating.presentations;
-        self.floating.presentations = presentations;
+        Ok(())
+    }
 
-        let messages = match client.pump() {
-            Ok(messages) => messages,
-            Err(error) => {
-                tracing::warn!(%error, "floating-surface service disconnected; keeping app UI local");
-                self.floating.client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
-        };
+    fn apply_floating_host_messages(&mut self, messages: Vec<FloatingSurfaceHostMessage>) -> bool {
+        let changed = !messages.is_empty();
         for message in messages {
             match &message {
-                crate::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                FloatingSurfaceHostMessage::PrepareSurface {
                     id,
                     coordinate_offset,
                     ..
                 } => {
                     self.floating.coordinate_offsets.insert(
                         id.clone(),
-                        vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
+                        Vec2::new(coordinate_offset[0], coordinate_offset[1]),
                     );
                     if self.floating.prepared_ids.insert(id.clone()) {
                         // Force one geometry publication on the next pump,
@@ -266,48 +287,36 @@ impl App {
                         self.floating.presentations.remove(id);
                     }
                 }
-                crate::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. } => {
+                FloatingSurfaceHostMessage::Adopted { id, .. } => {
                     if self.floating.prepared_ids.insert(id.clone()) {
                         self.floating.presentations.remove(id);
                     }
                 }
-                crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
-                | crate::floating_surface::FloatingSurfaceHostMessage::Closed { id } => {
+                FloatingSurfaceHostMessage::Reattach { id }
+                | FloatingSurfaceHostMessage::Closed { id } => {
                     self.floating.prepared_ids.remove(id);
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.remove(id);
                 }
-                crate::floating_surface::FloatingSurfaceHostMessage::Suspended { id } => {
+                FloatingSurfaceHostMessage::Suspended { id } => {
                     self.floating.prepared_ids.remove(id);
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.insert(id.clone());
                 }
-                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. } => {}
-            }
-            if let crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { bounds } =
-                &message
-            {
-                match crate::floating_surface::protocol_rect(*bounds) {
-                    Ok(bounds) => {
-                        self.root_widget.set_floating_surface_bounds(bounds);
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "shell sent invalid floating-surface bounds");
+                FloatingSurfaceHostMessage::DesktopBounds { bounds } => {
+                    match crate::floating_surface::protocol_rect(*bounds) {
+                        Ok(bounds) => self.root_widget.set_floating_surface_bounds(bounds),
+                        Err(error) => {
+                            tracing::warn!(%error, "shell sent invalid floating-surface bounds");
+                        }
                     }
                 }
             }
             self.root_widget.on_floating_surface_host_message(&message);
             self.floating.host_messages.push(message);
-            changed = true;
         }
-        self.floating.active_ids = self
-            .root_widget
-            .active_floating_surface_ids()
-            .into_iter()
-            .collect();
-        changed || geometry_changed
+        changed
     }
-
     fn reattach_after_floating_service_loss(&mut self) {
         let ids = self
             .floating
