@@ -71,6 +71,7 @@ pub struct DesktopSurface {
     workspace_ids: Vec<crate::WorkspaceId>,
     selected_workspace: usize,
     selected_strip: usize,
+    structure_dirty: bool,
 }
 fn child<'a>(root: &'a dyn Widget, path: &[usize]) -> Option<&'a dyn Widget> {
     match path.split_first() {
@@ -281,6 +282,7 @@ impl DesktopSurface {
                 .position(|w| w.id == tree.active)
                 .unwrap_or(0),
             selected_strip: active_strip,
+            structure_dirty: false,
             tiles: tree
                 .active_workspace()
                 .into_iter()
@@ -734,6 +736,7 @@ impl DesktopSurface {
         next.close_reports.extend(reports);
         next.failures.extend(failures);
         *self = next;
+        self.structure_dirty = true;
         inherited.retain(|wake| std::sync::Arc::strong_count(wake) > 1);
         self.retained_wakes = inherited;
     }
@@ -791,7 +794,9 @@ impl Widget for DesktopSurface {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.root.build_layout(tree, theme, map)
+        let node = self.root.build_layout(tree, theme, map);
+        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.root.apply_layout(tree, node, origin);
@@ -831,10 +836,10 @@ impl Widget for DesktopSurface {
         self.root.focus_requested(target, tree);
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.root.as_ref()]
+        self.root.children()
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.root.as_mut()]
+        self.root.children_mut()
     }
     fn name(&self) -> &str {
         "DesktopSurface"
@@ -843,7 +848,9 @@ impl Widget for DesktopSurface {
         self.root.get_rect()
     }
     fn take_structure_dirty(&mut self) -> bool {
-        self.root.take_structure_dirty()
+        let rebuilt = std::mem::take(&mut self.structure_dirty);
+        let inner = self.root.take_structure_dirty();
+        rebuilt || inner
     }
     fn wants_pointer_capture(&self) -> bool {
         self.root.wants_pointer_capture()
