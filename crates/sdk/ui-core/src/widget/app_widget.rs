@@ -114,9 +114,9 @@ mod component_adapter {
     use crate::application::AppComponent;
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AutoCommit, CaptureMode, Continuable,
-        ControlBindingMetadata, DragPayload, HashMap, HashSet, Instant, NodeId, ObjId,
-        PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart, Scene, TaffyTree,
-        TaffyTreeExt, TextRenderer, Theme, WindowEvent,
+        ControlBindingMetadata, DragPayload, FloatingSurfaceProvider, FloatingSurfaceWidgetExt,
+        HashMap, HashSet, Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey,
+        ResourceOperationStart, Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
     pub(crate) struct BoundAppWidget {
@@ -160,6 +160,116 @@ mod component_adapter {
         }
     }
 
+    impl FloatingSurfaceProvider for BoundAppWidget {
+        fn take_floating_surface_request(
+            &mut self,
+        ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            self.component
+                .root
+                .as_deref_mut()?
+                .take_floating_surface_request()
+        }
+
+        fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            self.component
+                .root
+                .as_deref_mut()?
+                .take_capture_studio_request()
+        }
+
+        fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return Vec::new();
+            };
+            self.component
+                .root
+                .as_deref_mut()
+                .map_or_else(
+                    Vec::new,
+                    FloatingSurfaceWidgetExt::take_floating_surface_source_updates,
+                )
+        }
+
+        fn draw_floating_surfaces(
+            &mut self,
+            scene: &mut vello::Scene,
+            transform: vello::kurbo::Affine,
+            text_renderer: &mut crate::text_render::TextRenderer,
+            theme: &crate::theme::Theme,
+            presence: &crate::presence::PresenceCtx,
+        ) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+            }
+        }
+
+        fn floating_surface_presentations(
+            &self,
+        ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return Vec::new();
+            };
+            self.component
+                .root
+                .as_deref()
+                .map_or_else(
+                    Vec::new,
+                    FloatingSurfaceWidgetExt::floating_surface_presentations,
+                )
+        }
+
+        fn active_floating_surface_ids(&self) -> Vec<String> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return Vec::new();
+            };
+            self.component
+                .root
+                .as_deref()
+                .map_or_else(
+                    Vec::new,
+                    FloatingSurfaceWidgetExt::active_floating_surface_ids,
+                )
+        }
+
+        fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.set_floating_surface_bounds(bounds);
+            }
+        }
+
+        fn on_floating_surface_host_message(
+            &mut self,
+            message: &crate::floating_surface::FloatingSurfaceHostMessage,
+        ) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.on_floating_surface_host_message(message);
+            }
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "existing Widget callback signatures"
@@ -170,6 +280,14 @@ mod component_adapter {
         }
 
         fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+            Some(self)
+        }
+
+        fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+            Some(self)
+        }
+
+        fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
             Some(self)
         }
 
@@ -515,96 +633,6 @@ mod component_adapter {
                 return vello::kurbo::Rect::ZERO;
             };
             root.get_rect()
-        }
-        fn take_floating_surface_request(
-            &mut self,
-        ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref_mut()?;
-            root.take_floating_surface_request()
-        }
-        fn take_capture_studio_request(&mut self) -> Option<CaptureMode> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref_mut()?;
-            root.take_capture_studio_request()
-        }
-        fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return Vec::new();
-            };
-            root.take_floating_surface_source_updates()
-        }
-        fn draw_floating_surfaces(
-            &mut self,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text_renderer: &mut crate::text_render::TextRenderer,
-            theme: &crate::theme::Theme,
-            presence: &crate::presence::PresenceCtx,
-        ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
-        }
-        fn floating_surface_presentations(
-            &self,
-        ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Vec::new();
-            };
-            root.floating_surface_presentations()
-        }
-        fn active_floating_surface_ids(&self) -> Vec<String> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Vec::new();
-            };
-            root.active_floating_surface_ids()
-        }
-        fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_floating_surface_bounds(bounds);
-        }
-        fn on_floating_surface_host_message(
-            &mut self,
-            message: &crate::floating_surface::FloatingSurfaceHostMessage,
-        ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.on_floating_surface_host_message(message);
         }
         fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
             let binding = self.component.callback_binding();
