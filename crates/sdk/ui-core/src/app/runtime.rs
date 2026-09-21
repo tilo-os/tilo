@@ -87,16 +87,9 @@ pub(super) struct ActionRuntime {
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
     pub(super) bound_record_sync: Option<super::bound_record_sync::BoundRecordSync>,
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
-    pub(super) bound_directory_route: Option<crate::collaboration::PrimaryRouteWitness>,
     pub(super) last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
     #[cfg(test)]
     pub(super) bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
-    pub(super) bound_directory_stamp: Option<(
-        Vec<crate::bound_dispatch::BoundDirectoryWitness>,
-        u64,
-        Vec<String>,
-        String,
-    )>,
     pub(super) action_directory_stamp:
         Option<(super::action_directory_snapshot::DirectoryWitness, String)>,
     pub(super) action_directory_snapshot:
@@ -140,11 +133,9 @@ impl ActionRuntime {
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
             bound_record_sync: None,
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
-            bound_directory_route: None,
             last_published_bound_route: None,
             #[cfg(test)]
             bound_broker_route_for_test: None,
-            bound_directory_stamp: None,
             action_directory_stamp: None,
             action_directory_snapshot: None,
             bound_invocations: std::collections::HashMap::new(),
