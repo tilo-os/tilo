@@ -47,7 +47,7 @@ fn child(stage: &str, dir: &std::path::Path, kind: &str) {
             .env("QOS_PHOTOS_TEST_HOME", dir)
             .env("XDG_DATA_HOME", dir)
             .env("XDG_CONFIG_HOME", dir)
-            .env("QOS_BLOB_STORE", dir.join("blobs"))
+            .env("TILO_BLOB_STORE", dir.join("blobs"))
             .env("TILO_PACKAGE_ID", "dev.tilo.photos"),
     );
     assert!(
@@ -62,7 +62,7 @@ fn binary(dir: &std::path::Path, actions: serde_json::Value, import: bool) {
     command
         .env("XDG_DATA_HOME", dir)
         .env("XDG_CONFIG_HOME", dir)
-        .env("QOS_BLOB_STORE", dir.join("blobs"))
+        .env("TILO_BLOB_STORE", dir.join("blobs"))
         .env("TILO_PACKAGE_ID", "dev.tilo.photos")
         .args([
             "--headless-drive",

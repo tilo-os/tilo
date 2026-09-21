@@ -2734,7 +2734,11 @@ mod tests {
             "size still fits in a wide enlarged-text pane"
         );
         assert!(v.show_modified(), "modified still fits at desktop width");
-        assert_eq!(v.row_h(), LIST_ROW_H, "text scale is not item zoom");
+        assert_eq!(
+            v.row_h(),
+            LIST_ROW_H * 2.0,
+            "large text needs a taller row without changing the item zoom"
+        );
         assert_eq!(
             v.header_col_rect(2).width(),
             MOD_COL_W * 2.0,
