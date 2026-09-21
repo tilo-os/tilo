@@ -9970,12 +9970,30 @@ mod tests {
             .collect();
 
         assert_eq!(segments.len(), TextAlign::ALL.len());
-        assert_eq!(segments[0].x0, chrome.inspector.x0 + 16.0);
-        assert_eq!(segments.last().unwrap().x1, chrome.inspector.x1 - 16.0);
-        let width = segments[0].width();
-        for pair in segments.windows(2) {
-            assert_eq!(pair[0].x1, pair[1].x0, "segments meet without gaps");
-            assert_eq!(pair[1].width(), width, "segments divide the row evenly");
+        let mut rows: Vec<Vec<Rect>> = Vec::new();
+        for segment in segments {
+            if let Some(row) = rows
+                .iter_mut()
+                .find(|row| (row[0].y0 - segment.y0).abs() < 1.0)
+            {
+                row.push(segment);
+            } else {
+                rows.push(vec![segment]);
+            }
+        }
+        assert_eq!(rows.len(), 2, "the four controls wrap into two rows");
+        assert!(
+            rows.iter().all(|row| row.len() == 2),
+            "each row retains both of its alignment controls"
+        );
+        for row in rows {
+            assert_eq!(row[0].x0, chrome.inspector.x0 + 16.0);
+            assert_eq!(row.last().unwrap().x1, chrome.inspector.x1 - 16.0);
+            let width = row[0].width();
+            for pair in row.windows(2) {
+                assert_eq!(pair[0].x1, pair[1].x0, "segments meet without gaps");
+                assert_eq!(pair[1].width(), width, "segments divide their row evenly");
+            }
         }
     }
 
