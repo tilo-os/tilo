@@ -323,6 +323,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
                 base_url: registry.base_url(),
                 owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
                 enabled: true,
+                channel: pkg::version::ReleaseChannel::Stable,
             }],
         })
         .unwrap(),
@@ -422,6 +423,7 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
                 base_url: registry.base_url(),
                 owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
                 enabled: true,
+                channel: pkg::version::ReleaseChannel::Stable,
             }],
         })
         .unwrap(),
@@ -538,6 +540,7 @@ fn publish_and_install(
                 base_url: registry.base_url(),
                 owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
                 enabled: true,
+                channel: pkg::version::ReleaseChannel::Stable,
             }],
         })
         .unwrap(),
