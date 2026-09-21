@@ -1142,7 +1142,28 @@ mod tests {
         let mut runtime =
             ActionHost::start(&owner, authority.clone(), signing.clone(), sender).unwrap();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !runtime.ready() {
+        let room = owner.peer().room().to_owned();
+        let expected_surface =
+            |surface: &qos_action_broker::collab_broker_capnp::PublishedSurface| {
+                surface.live
+                    && surface.app_id == "dev.qos.word-processor"
+                    && surface.route.app_id == "dev.qos.word-processor"
+                    && surface.route.record_id == "tab:0000000000000001"
+                    && surface.route.cluster_id == room
+            };
+        while !runtime.ready()
+            || !runtime
+                .broker
+                .published_action_surfaces()
+                .iter()
+                .filter(|surface| expected_surface(surface))
+                .any(|surface| {
+                    surface
+                        .actions
+                        .iter()
+                        .any(|action| action.action == "insert-table")
+                })
+        {
             runtime.pump(&owner).unwrap();
             tokio::select! {
                 Some(pending) = signatures.recv() => {
@@ -1166,6 +1187,7 @@ mod tests {
             .broker
             .published_action_surfaces()
             .into_iter()
+            .filter(|surface| expected_surface(surface))
             .find_map(|surface| {
                 surface
                     .actions
