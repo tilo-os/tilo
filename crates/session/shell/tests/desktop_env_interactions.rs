@@ -19,11 +19,13 @@
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
+use shell::shell::chrome_state::Chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
+use shell::shell::topbar_chrome::TopBarChrome;
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -168,6 +170,26 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
         root_node,
         child_node: child,
     }
+}
+
+fn laid_out_topbar_height(chrome: Chrome) -> f64 {
+    let tree = chrome.borrow().tree().clone();
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+    taffy
+        .compute_layout(
+            node,
+            Size {
+                width: AvailableSpace::Definite(W),
+                height: AvailableSpace::Definite(H),
+            },
+        )
+        .expect("compute top-bar layout");
+    bar.apply_layout(&taffy, node, Point::ORIGIN);
+    bar.get_rect().height()
 }
 
 fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
@@ -619,11 +641,10 @@ fn tab_search_chip_opens_palette_scoped_to_that_app() {
     );
 }
 
-/// Clicking a tab's Expand chip must go full screen: sidebar
-/// wheel and top bar both get out of the way, and the promoted group
-/// covers the whole output.
+/// Clicking a tab's Expand chip maximizes it inside the desktop work area:
+/// the top bar stays available while the sidebar wheel gets out of the way.
 #[test]
-fn expand_takes_the_group_genuinely_fullscreen() {
+fn expand_maximizes_beneath_the_top_bar() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
@@ -658,8 +679,7 @@ fn expand_takes_the_group_genuinely_fullscreen() {
     );
     assert!(
         chrome.borrow().is_fullscreen(),
-        "an expanded window must hold the whole output, so the shell suppresses \
-         the wheel + top bar (both gate on ChromeState::is_fullscreen)",
+        "the promoted group must still suppress the sidebar wheel",
     );
 
     // The sidebar wheel must now be zero-area so nothing paints over the
@@ -673,6 +693,11 @@ fn expand_takes_the_group_genuinely_fullscreen() {
         0.0,
         "the radial workspace switcher must be collapsed to zero area while a \
          window is expanded; got {sidebar:?}",
+    );
+    let topbar_height = laid_out_topbar_height(chrome.clone());
+    assert!(
+        topbar_height > 10.0,
+        "maximize must preserve the OS-owned top bar; got height {topbar_height}",
     );
     let _ = &layout2;
 }
