@@ -959,13 +959,16 @@ trap 'rm -f -- "$source" "$destination"' EXIT HUP INT TERM
 test ! -e "$destination" && test ! -L "$destination"
 install -m 0600 -- "$source" "$destination"
 test -s "$destination"
-exec "$@"
+set +e
+"$@"
+status=$?
+exit "$status"
 '''
     inputs={'registry-auth':auth,'verification-inputs':_canonical_json(values)}
     output=detached_job(context,disk,'disk','installed-verification',
       ['sh','-ceu',cleanup,'sh','/usr/bin/unshare','--mount','--propagation','private','--',*argv],
       operation=operation or 'verify-'+hashlib.sha256(disk['pod_uid'].encode()).hexdigest()[:12],
-      inputs=inputs,timeout=7200)
+      inputs=inputs,cleanup_paths=('/work/registry-auth.json',),timeout=7200)
     return output.decode()
 
 
@@ -1041,6 +1044,8 @@ def atomic(path, value):
 private_regular(contract_path)
 with open(contract_path,'rb') as stream: contract_bytes=stream.read()
 contract=json.loads(contract_bytes); contract_sha256=hashlib.sha256(contract_bytes).hexdigest()
+with open(sys.argv[0],'rb') as stream:
+ if hashlib.sha256(stream.read()).hexdigest()!=contract['runner_sha256']: raise RuntimeError('detached runner differs from contract')
 started=time.time_ns(); stdout=b''; stderr=b''; returncode=125; error=None; secrets=[]
 try:
  for path in contract['secret_paths']:
@@ -1061,6 +1066,15 @@ finally:
    else: cleaned=False
   except FileNotFoundError: pass
   except OSError: cleaned=False
+ for path in contract['cleanup_paths']:
+  try:
+   value=os.lstat(path)
+   if stat.S_ISREG(value.st_mode) and not stat.S_ISLNK(value.st_mode) and value.st_uid == 0 and value.st_gid == 0 and value.st_nlink == 1 and stat.S_IMODE(value.st_mode) == 0o600: os.unlink(path)
+   else: cleaned=False
+  except FileNotFoundError: pass
+  except OSError: cleaned=False
+ for path in contract['cleanup_paths']:
+  if os.path.lexists(path): cleaned=False
  for secret in secrets:
   if secret and (secret in stdout or secret in stderr): error='worker output contained a staged secret'; returncode=125; stdout=b''; stderr=b''
  out,out_truncated=stdout[:limit],len(stdout)>limit
@@ -1073,7 +1087,7 @@ finally:
 '''
 
 
-DETACHED_JOB_STATUS = r'''import json, os, stat, sys, time
+DETACHED_JOB_STATUS = r'''import hashlib, json, os, stat, sys, time
 root=sys.argv[1]
 def regular(path):
  try:
@@ -1084,10 +1098,16 @@ receipt=root+'/receipt.json'; state=root+'/state.json'; claim=root+'/claim'
 if regular(receipt): print(json.dumps({'state':'finished','receipt':open(receipt).read()})); raise SystemExit
 if regular(state):
  value=json.loads(open(state).read()); pid=value.get('pid')
- if type(pid) is not int or pid <= 1: raise SystemExit(2)
+ if set(value)!={'pid','start_time','cmdline_sha256','cgroup_sha256'} or type(pid) is not int or pid <= 1 or not isinstance(value['start_time'],str) or not isinstance(value['cmdline_sha256'],str) or not isinstance(value['cgroup_sha256'],str): raise SystemExit(2)
  try: os.kill(pid,0)
  except ProcessLookupError: print(json.dumps({'state':'dead'}))
- else: print(json.dumps({'state':'running'}))
+ else:
+  try:
+   start=open('/proc/'+str(pid)+'/stat').read().split()[21]
+   cmd=hashlib.sha256(open('/proc/'+str(pid)+'/cmdline','rb').read()).hexdigest()
+   cgroup=hashlib.sha256(open('/proc/'+str(pid)+'/cgroup','rb').read()).hexdigest()
+   print(json.dumps({'state':'running' if (start,cmd,cgroup)==(value['start_time'],value['cmdline_sha256'],value['cgroup_sha256']) else 'dead'}))
+  except (FileNotFoundError,IndexError): print(json.dumps({'state':'dead'}))
  raise SystemExit
 if os.path.isdir(claim): print(json.dumps({'state':'starting' if time.time()-os.stat(claim).st_mtime < 60 else 'dead'}))
 else: print(json.dumps({'state':'absent'}))
@@ -1098,7 +1118,7 @@ def _canonical_json(value):
     return json.dumps(value,sort_keys=True,separators=(',',':')).encode()
 
 
-def _detached_job_contract(operation, worker, container, argv, inputs, root):
+def _detached_job_contract(operation, worker, container, argv, inputs, root, cleanup_paths=()):
     required={'pod','pod_uid','namespace','node','node_uid','spec','image_id'}
     if (not re.fullmatch(r'[a-z0-9][a-z0-9-]{2,64}',operation) or set(worker)!=required
             or not digest_reference(worker['image_id']) or not isinstance(argv,list) or not argv
@@ -1109,20 +1129,25 @@ def _detached_job_contract(operation, worker, container, argv, inputs, root):
         if (not re.fullmatch(r'[a-z][a-z0-9-]{0,63}',name) or not isinstance(value,bytes)
                 or len(value)>1024*1024): raise ValueError('invalid detached job input')
         identities[name]={'sha256':hashlib.sha256(value).hexdigest(),'size':len(value)}
+    if (not isinstance(cleanup_paths,tuple) or len(set(cleanup_paths))!=len(cleanup_paths)
+            or any(path!='/work/registry-auth.json' for path in cleanup_paths)):
+        raise ValueError('invalid detached job cleanup path')
     binding={key:worker[key] for key in ('pod','pod_uid','namespace','node','node_uid','image_id')}
     paths=[root+'/private/'+name for name in sorted(inputs)]
     contract={'schema':1,'purpose':'tilo-supervised-detached-job','operation':operation,
       'worker':binding,'container':container,'argv':argv,
       'argv_sha256':hashlib.sha256(_canonical_json(argv)).hexdigest(),
-      'input_identities':identities,'secret_paths':paths}
+      'runner_sha256':hashlib.sha256(DETACHED_JOB_RUNNER.encode()).hexdigest(),
+      'input_identities':identities,'secret_paths':paths,'cleanup_paths':list(cleanup_paths)}
     return contract,_canonical_json(contract)+b'\n'
 
 
-def _detached_job_root(operation, worker, container, argv, inputs):
+def _detached_job_root(operation, worker, container, argv, inputs, cleanup_paths=()):
     stable={'operation':operation,
       'worker':{key:worker[key] for key in ('pod','pod_uid','namespace','node','node_uid','image_id')},
       'container':container,'argv':argv,
-      'inputs':{name:hashlib.sha256(value).hexdigest() for name,value in sorted(inputs.items())}}
+      'inputs':{name:hashlib.sha256(value).hexdigest() for name,value in sorted(inputs.items())},
+      'cleanup_paths':list(cleanup_paths),'runner_sha256':hashlib.sha256(DETACHED_JOB_RUNNER.encode()).hexdigest()}
     return '/work/.tilo-detached-jobs/'+hashlib.sha256(_canonical_json(stable)).hexdigest()
 
 
@@ -1170,7 +1195,8 @@ def _validate_detached_receipt(value, contract, contract_bytes):
     expected={'schema':1,'purpose':'tilo-supervised-detached-job',
       'contract_sha256':hashlib.sha256(contract_bytes).hexdigest(),'operation':contract['operation'],
       'worker':contract['worker'],'container':contract['container'],
-      'argv_sha256':contract['argv_sha256'],'input_identities':contract['input_identities']}
+      'argv_sha256':contract['argv_sha256'],'runner_sha256':contract['runner_sha256'],
+      'input_identities':contract['input_identities']}
     permitted=set(expected)|{'output_sha256','output_bytes','stdout_base64','stderr_base64',
       'stdout_truncated','stderr_truncated','returncode','secrets_cleaned','started_at_ns',
       'finished_at_ns','status','error'}
@@ -1209,7 +1235,11 @@ test ! -e "$state" && test ! -L "$state"; test ! -e "$log" && test ! -L "$log"
 setsid python3 "$runner" "$root" 131072 </dev/null >"$log" 2>&1 &
 pid=$!
 temporary="$root/.state.$$"
-printf '{"pid":%s}\n' "$pid" > "$temporary"
+test -r "/proc/$pid/stat" && test -r "/proc/$pid/cmdline" && test -r "/proc/$pid/cgroup"
+start=$(awk '{print $22}' "/proc/$pid/stat")
+cmd=$(sha256sum "/proc/$pid/cmdline" | awk '{print $1}')
+cgroup=$(sha256sum "/proc/$pid/cgroup" | awk '{print $1}')
+printf '{"pid":%s,"start_time":"%s","cmdline_sha256":"%s","cgroup_sha256":"%s"}\n' "$pid" "$start" "$cmd" "$cgroup" > "$temporary"
 chmod 0600 "$temporary"
 mv -f -- "$temporary" "$state"
 '''
@@ -1217,7 +1247,7 @@ mv -f -- "$temporary" "$state"
       '--','sh','-ceu',script,'sh',root),timeout=30)
 
 
-def detached_job(context, worker, container, purpose, argv, *, operation, inputs, timeout,
+def detached_job(context, worker, container, purpose, argv, *, operation, inputs, timeout, cleanup_paths=(),
                  poll_seconds=DETACHED_JOB_POLL_SECONDS, sleeper=time.sleep):
     """Run a worker-owned process and adopt the bound receipt after reconnect."""
     if (not re.fullmatch(r'[a-z][a-z0-9-]{0,63}',purpose)
@@ -1225,12 +1255,13 @@ def detached_job(context, worker, container, purpose, argv, *, operation, inputs
             or not isinstance(inputs,dict) or timeout<=0 or poll_seconds<1):
         raise ValueError('invalid detached job parameters')
     full_operation=operation+'-'+purpose
-    root=_detached_job_root(full_operation,worker,container,argv,inputs)
-    contract,contract_bytes=_detached_job_contract(full_operation,worker,container,argv,inputs,root)
+    root=_detached_job_root(full_operation,worker,container,argv,inputs,cleanup_paths)
+    contract,contract_bytes=_detached_job_contract(full_operation,worker,container,argv,inputs,root,cleanup_paths)
     require_same_worker(context,worker)
     started=time.monotonic(); retry_delay=1
     while True:
         try:
+            require_same_worker(context,worker)
             status=_detached_job_status(context,worker,container,root)
             retry_delay=1
         except ControllerTransportError:
@@ -1244,12 +1275,21 @@ def detached_job(context, worker, container, purpose, argv, *, operation, inputs
             return _validate_detached_receipt(receipt,contract,contract_bytes)
         if status['state']=='dead': raise ValueError('detached job died without a receipt')
         if status['state']=='absent':
-            stream_file(context,worker['namespace'],worker['pod'],container,root+'/contract.json',contract_bytes)
-            stream_file(context,worker['namespace'],worker['pod'],container,root+'/runner.py',DETACHED_JOB_RUNNER.encode())
-            for name in sorted(inputs):
-                _stage_detached_input(context,worker,container,root+'/private/'+name,inputs[name],
-                  contract['input_identities'][name]['sha256'])
-            _launch_detached_job(context,worker,container,root)
+            try:
+                require_same_worker(context,worker)
+                stream_file(context,worker['namespace'],worker['pod'],container,root+'/contract.json',contract_bytes)
+                require_same_worker(context,worker)
+                stream_file(context,worker['namespace'],worker['pod'],container,root+'/runner.py',DETACHED_JOB_RUNNER.encode())
+                for name in sorted(inputs):
+                    require_same_worker(context,worker)
+                    _stage_detached_input(context,worker,container,root+'/private/'+name,inputs[name],
+                      contract['input_identities'][name]['sha256'])
+                require_same_worker(context,worker)
+                _launch_detached_job(context,worker,container,root)
+            except ControllerTransportError:
+                # The next short status probe adopts a started job, or safely
+                # resumes only if the exact worker still reports it absent.
+                continue
         if time.monotonic()-started>=timeout: raise ValueError('detached job receipt did not arrive before its deadline')
         sleeper(poll_seconds)
 
