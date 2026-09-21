@@ -3367,7 +3367,10 @@ impl MapsApp {
     /// matching the map markers), the name, a "Category · detail" subtitle, and a
     /// trailing distance chip. The whole row selects the POI (centre + info card)
     /// and highlights while its marker is the open one.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "POI row painting needs the shared render inputs plus row and map geometry"
+    )]
     fn draw_poi_row(
         &mut self,
         scene: &mut Scene,
