@@ -43,6 +43,7 @@ def step_script(text, step_id):
 class EnabledImagerPlatforms(unittest.TestCase):
     def setUp(self):
         self.workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
+        self.winget_monitor = (ROOT / ".forgejo/workflows/monitor-winget.yml").read_text()
 
     def test_full_native_and_tags_require_both_macos_architectures(self):
         macos = section(self.workflow, "macos", 2)
@@ -106,6 +107,77 @@ class EnabledImagerPlatforms(unittest.TestCase):
         for arch in ("x86_64", "aarch64"):
             for ext in ("dmg", "zip"):
                 self.assertIn(f"tilo-imager-macos-{arch}.{ext}", script)
+
+    def test_release_signing_and_publication_are_oidc_broker_only(self):
+        combined = self.workflow + "\n" + self.winget_monitor
+        retired_interfaces = (
+            "IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP",
+            "IMAGER_LINUX_SIGNING_KEY_B64",
+            "IMAGER_LINUX_SIGNING_KEY_ID",
+            "IMAGER_WINDOWS_CERT_PFX_B64",
+            "IMAGER_WINDOWS_CERT_PASSWORD",
+            "IMAGER_WINDOWS_SIGNER",
+            "IMAGER_MAC_CERT_P12_B64",
+            "IMAGER_MAC_CERT_PASSWORD",
+            "IMAGER_MAC_SIGNING_IDENTITY",
+            "IMAGER_APPLE_ID",
+            "IMAGER_APPLE_TEAM_ID",
+            "IMAGER_APPLE_APP_PASSWORD",
+            "secrets.HOMEBREW_TAP_TOKEN",
+            "secrets.WINGET_GITHUB_TOKEN",
+            "secrets.SITE_RELEASE_TOKEN",
+        )
+        for interface in retired_interfaces:
+            with self.subTest(interface=interface):
+                self.assertNotIn(interface, combined)
+
+        signing_brokers = {
+            "linux": "IMAGER_LINUX_CREDENTIAL_BROKER",
+            "windows": "IMAGER_WINDOWS_CREDENTIAL_BROKER",
+            "macos": "IMAGER_MACOS_CREDENTIAL_BROKER",
+        }
+        for job, variable in signing_brokers.items():
+            with self.subTest(job=job):
+                native = section(self.workflow, job, 2)
+                self.assertIn(f"vars.{variable}", native)
+                self.assertIn("enable-openid-connect: true", native)
+                self.assertIn("release signing is OIDC-broker-only", native)
+                self.assertNotIn("secrets.", native)
+
+        publication_brokers = {
+            "publish": ("IMAGER_RELEASE_CREDENTIAL_BROKER", "release"),
+            "homebrew": ("IMAGER_HOMEBREW_CREDENTIAL_BROKER", "homebrew"),
+            "winget": ("IMAGER_WINGET_CREDENTIAL_BROKER", "winget"),
+            "site-downloads": ("IMAGER_SITE_CREDENTIAL_BROKER", "site"),
+        }
+        for job, (variable, mode) in publication_brokers.items():
+            with self.subTest(job=job):
+                publication = section(self.workflow, job, 2)
+                self.assertIn(f"vars.{variable}", publication)
+                self.assertIn("enable-openid-connect: true", publication)
+                self.assertNotIn("secrets.", publication)
+                self.assertRegex(
+                    publication,
+                    rf"acquire-release-token\.sh\s+\\?\s*{mode}\s+\"\$CREDENTIAL_BROKER\"",
+                )
+
+        self.assertIn("vars.IMAGER_SITE_CREDENTIAL_BROKER != ''", self.winget_monitor)
+        self.assertIn("enable-openid-connect: true", self.winget_monitor)
+        self.assertNotIn("secrets.", self.winget_monitor)
+        self.assertRegex(
+            self.winget_monitor,
+            r'acquire-release-token\.sh\s+\\?\s*site\s+"\$CREDENTIAL_BROKER"',
+        )
+
+    def test_manual_full_native_dispatch_remains_a_non_publishing_rehearsal(self):
+        self.assertIn("full_native:", self.workflow)
+        for job in ("windows", "macos"):
+            native = section(self.workflow, job, 2)
+            self.assertIn("github.event.inputs.full_native == 'true'", native)
+        for job in ("publish", "homebrew", "winget", "site-downloads"):
+            publication = section(self.workflow, job, 2)
+            self.assertIn("if: startsWith(github.ref, 'refs/tags/imager-v')", publication)
+            self.assertNotIn("full_native", publication)
 
 
 if __name__ == "__main__":
