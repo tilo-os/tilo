@@ -249,36 +249,64 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
 }
 
 #[test]
-fn one_large_touched_record_compacts_by_bytes_without_limiting_canonical_history() {
+fn multiple_bounded_records_compact_by_aggregate_bytes_and_reconstruct_exactly() {
     let temp = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
     let baseline = owner.publication_baseline();
     let key = owner_key(&owner);
-    let mut candidate = owner.peer().clone();
-    let app = "dev.qos.word-processor";
-    let record = "tab:0000000000000001";
-    let mut doc = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
-    // Incompressible, deterministic bytes exercise the byte threshold before the count threshold.
-    let mut large = Vec::new();
-    for index in 0u64..140_000 {
-        large.extend_from_slice(blake3::hash(&index.to_le_bytes()).as_bytes());
+    let touched = owner.peer().rows();
+    assert_eq!(touched.len(), 3, "fixture requires three canonical records");
+    // Distinct valid per-message mutations exercise aggregate byte compaction
+    // while every incremental and reconnect snapshot remains transport-bounded.
+    for (chunk, row) in touched.iter().enumerate() {
+        let mut candidate = owner.peer().clone();
+        let mut doc =
+            AutoCommit::load(&candidate.document(&row.app_id, &row.record_id).unwrap()).unwrap();
+        let heads = doc.get_heads();
+        let mut bytes = Vec::new();
+        for index in 0u64..48_000 {
+            bytes.extend_from_slice(
+                blake3::hash(
+                    &(chunk as u64)
+                        .wrapping_mul(48_000)
+                        .wrapping_add(index)
+                        .to_le_bytes(),
+                )
+                .as_bytes(),
+            );
+        }
+        doc.put(
+            ROOT,
+            format!("large_record_{chunk}"),
+            ui::automerge::ScalarValue::Bytes(bytes),
+        )
+        .unwrap();
+        doc.commit();
+        let incremental = doc.save_after(&heads);
+        assert!(
+            incremental.len() < 3 * 1024 * 1024,
+            "fixture mutation must remain below the production transport cap"
+        );
+        assert!(
+            doc.save().len() < 3 * 1024 * 1024,
+            "fixture snapshot must remain below the production transport cap"
+        );
+        candidate
+            .publish_incremental(
+                &row.app_id,
+                &row.record_id,
+                incremental,
+                &key,
+                SystemTime::now(),
+            )
+            .unwrap();
+        owner
+            .commit_mutation_candidate(candidate, owner.directory().to_vec())
+            .unwrap();
     }
-    doc.put(
-        ROOT,
-        "large_record",
-        ui::automerge::ScalarValue::Bytes(large),
-    )
-    .unwrap();
-    doc.commit();
-    candidate
-        .publish_document(app, record, doc.save(), &key, SystemTime::now())
-        .unwrap();
-    owner
-        .commit_mutation_candidate(candidate, owner.directory().to_vec())
-        .unwrap();
     assert!(
         owner.publication_baseline().0 > baseline.0,
-        "one large snapshot must trigger byte compaction"
+        "bounded causal mutations must trigger aggregate byte compaction"
     );
     assert_eq!(owner.publication_baseline().1, owner.outgoing().len());
     assert!(
@@ -307,5 +335,28 @@ fn one_large_touched_record_compacts_by_bytes_without_limiting_canonical_history
         now,
     );
     assert_eq!(fresh.rows(), owner.peer().rows());
-    assert!(fresh.durable_covers_current(app, record).unwrap());
+    for row in touched {
+        assert_eq!(
+            fresh.document(&row.app_id, &row.record_id),
+            owner.peer().document(&row.app_id, &row.record_id),
+            "the compacted baseline reconstructs the exact canonical document for {}/{}",
+            row.app_id,
+            row.record_id
+        );
+        assert_eq!(
+            fresh.document_heads(&row.app_id, &row.record_id),
+            owner.peer().document_heads(&row.app_id, &row.record_id),
+            "the compacted baseline reconstructs the exact canonical heads for {}/{}",
+            row.app_id,
+            row.record_id
+        );
+        assert!(
+            fresh
+                .durable_covers_current(&row.app_id, &row.record_id)
+                .unwrap(),
+            "the compacted baseline does not cover {}/{}",
+            row.app_id,
+            row.record_id
+        );
+    }
 }
