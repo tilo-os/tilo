@@ -42,9 +42,12 @@ class InstallerBootcHelperTests(unittest.TestCase):
             "schema": 1, "purpose": helper.PURPOSE,
             "architecture": "aarch64", "bootc_version": helper.BOOTC_VERSION,
             "source_tag": helper.SOURCE_TAG, "source_commit": helper.SOURCE_COMMIT,
+            "source_cargo_lock_sha256": helper.SOURCE_CARGO_LOCK_SHA256,
             "patch_sha256": helper.PATCH_SHA256, "binary_sha256": digest,
             "binary_build_id": (b"b" * 20).hex(),
             "rustc_version": "rustc 1.91.0", "cargo_version": "cargo 1.91.0",
+            "rust_toolchain": helper.RUST_TOOLCHAIN,
+            "build_image": helper.BUILD_IMAGE,
             "build_target": helper.TARGETS["aarch64"],
             "build_command": helper.BUILD_COMMAND,
         }
@@ -97,7 +100,10 @@ class InstallerBootcHelperTests(unittest.TestCase):
         pin = json.loads((DEV.parent / "external-assets/bootc/source.json").read_text())
         self.assertEqual(pin["source_tag"], helper.SOURCE_TAG)
         self.assertEqual(pin["source_commit"], helper.SOURCE_COMMIT)
+        self.assertEqual(pin["source_cargo_lock_sha256"], helper.SOURCE_CARGO_LOCK_SHA256)
         self.assertEqual(pin["patch_sha256"], helper.PATCH_SHA256)
+        self.assertEqual(pin["rust_toolchain"], helper.RUST_TOOLCHAIN)
+        self.assertEqual(pin["build_image"], helper.BUILD_IMAGE)
         self.assertEqual(pin["build_command"], helper.BUILD_COMMAND)
 
 
