@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1.7
+
+# The release job uploads already-built artifacts and assembles metadata. Keep
+# compilers and build headers out of its credential-bearing environment.
+FROM registry.fedoraproject.org/fedora-minimal:42@sha256:09a2061e2cfb85ac8e7fa7f2234d0ace6ad4f2b7dfdf0f257c90405e4f07577d
+
+RUN microdnf install -y --setopt=install_weak_deps=0 \
+      bash ca-certificates coreutils curl diffutils findutils gawk git-core \
+      grep gzip jq nodejs python3 sed tar \
+    && microdnf clean all \
+    && rm -rf /var/cache/dnf /var/log/dnf* \
+    && for compiler in cargo rustc cc gcc clang; do \
+         ! command -v "$compiler" || { echo "unexpected compiler: $compiler" >&2; exit 1; }; \
+       done \
+    && for tool in awk bash cmp curl find git grep gzip jq node python3 sed sha256sum tar; do \
+         command -v "$tool" >/dev/null || { echo "missing release tool: $tool" >&2; exit 1; }; \
+       done
+
+LABEL org.opencontainers.image.title="Tilo release metadata tools" \
+      org.opencontainers.image.description="Compiler-free tooling for publishing prebuilt Tilo artifacts" \
+      org.opencontainers.image.source="https://code.sandbox.example/qos/qos"

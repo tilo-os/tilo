@@ -10,8 +10,8 @@
 
 use std::time::{Duration, Instant};
 
-use ui::animation::{Animated, Curve, Spring};
-use ui::tokens::SpringParams;
+use tilo_ui::animation::{Animated, Curve, Spring};
+use tilo_ui::tokens::SpringParams;
 
 #[test]
 fn spring_converges_to_target() {

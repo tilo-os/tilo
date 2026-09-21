@@ -218,9 +218,23 @@ fn fetch_and_inspect(
 }
 
 fn fetch_error(version: &RegistryVersion, error: &reqwest::Error) -> BundleReviewError {
+    let mut reason = format!(
+        "{error} [connect={}, timeout={}, request={}, body={}]",
+        error.is_connect(),
+        error.is_timeout(),
+        error.is_request(),
+        error.is_body(),
+    );
+    let mut source = std::error::Error::source(error);
+    for _ in 0..4 {
+        let Some(cause) = source else { break };
+        reason.push_str(": ");
+        reason.push_str(&cause.to_string());
+        source = cause.source();
+    }
     BundleReviewError::Fetch {
         url: version.qpkg_url.clone(),
-        reason: error.to_string(),
+        reason,
     }
 }
 

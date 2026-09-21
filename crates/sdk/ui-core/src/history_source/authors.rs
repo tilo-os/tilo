@@ -6,7 +6,7 @@
 //! Three shapes occur in documents: a raw 32-byte public key (the
 //! only cryptographically meaningful one, joining to a
 //! `collab_types::Identity`); a self-declared handle
-//! (`ActorId::from(app_id.as_bytes())`, the same key `ui::presence::user_color`
+//! (`ActorId::from(app_id.as_bytes())`, the same key `tilo_ui::presence::user_color`
 //! and the per-character `author` marks already use, but **unverified**); and
 //! a random id (`ActorId::random()`, which resolves to nobody).
 //!
@@ -16,6 +16,7 @@
 //! stranger keeps the same colour across sessions.
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::path::PathBuf;
 
 use crate::widget::history::HistoryAuthor;
@@ -159,6 +160,7 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
 /// `$XDG_CONFIG_HOME/tilo/identity/primary.json`, else
 /// `$HOME/.config/tilo/identity/primary.json`. Mirrors the resolution in
 /// `shell::firstboot::resolve_identity_dir`, which is what writes the file.
+#[cfg(unix)]
 fn config_identity_path() -> Option<PathBuf> {
     let base = match std::env::var("XDG_CONFIG_HOME") {
         Ok(v) if !v.is_empty() => PathBuf::from(v),
@@ -214,6 +216,7 @@ pub fn stable_hue(actor_hex: &str) -> f32 {
 /// RGB → hue in degrees. Saturation/value are fixed by
 /// `crate::widget::history::hue_to_rgb`, so only the hue survives —
 /// deliberate, it keeps the dots a coherent family.
+#[cfg(any(unix, test))]
 fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
     let red = f32::from(rgb[0]) / 255.0;
     let green = f32::from(rgb[1]) / 255.0;
@@ -240,6 +243,7 @@ fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
     (hue * 60.0).rem_euclid(360.0)
 }
 
+#[cfg(unix)]
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len().saturating_mul(2));
@@ -432,11 +436,11 @@ mod tests {
         (bytes, derived)
     }
 
-    fn secure_test_identity(path: &std::path::Path) {
+    fn secure_test_identity(_path: &std::path::Path) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            std::fs::set_permissions(_path, std::fs::Permissions::from_mode(0o600))
                 .expect("secure identity permissions");
         }
     }
@@ -492,7 +496,7 @@ mod tests {
     ///
     /// The record is minted by the writer `shell::firstboot` calls. This schema
     /// is declared twice on purpose
-    /// (`ui::widget::identity_flow::IdentityRecord` serialises it,
+    /// (`tilo_ui::widget::identity_flow::IdentityRecord` serialises it,
     /// `runtime_identity` re-declares it rather than depending on `ui`), so
     /// so the fixture checks that the reader accepts the writer's output.
     #[test]

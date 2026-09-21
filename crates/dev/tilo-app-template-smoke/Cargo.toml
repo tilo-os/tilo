@@ -1,0 +1,23 @@
+[package]
+name = "tilo-app-template-smoke"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+
+[build-dependencies]
+tilo-app-cli = { path = "../tilo-app-cli" }
+
+# The smoke crate compiles sources emitted by tilo-app through `include!`, so
+# cargo-machete cannot observe these dependencies in the crate's handwritten
+# source or its build script even though removing them breaks the compile.
+[package.metadata.cargo-machete]
+ignored = ["tilo-actions", "tilo-app-cli", "serde", "serde_json"]
+
+[lints]
+workspace = true
