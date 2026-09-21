@@ -114,19 +114,30 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
     if !v.trust.is_offerable() {
         return None;
     }
+    entry_to_app_for_channel(v, registry_name, pkg::version::ReleaseChannel::Stable)
+}
+
+/// Select versions within the user's explicit release channel.
+pub fn entry_to_app_for_channel(
+    v: &VerifiedEntry,
+    registry_name: &str,
+    channel: pkg::version::ReleaseChannel,
+) -> Option<CatalogueApp> {
+    if !v.trust.is_offerable() {
+        return None;
+    }
     // Artifact version orders releases. A later publication timestamp must
     // not make an older semantic/CalVer artifact the offered update.
     let newest = v
         .entry
         .versions
         .iter()
-        .filter(|version| !version.qpkg_url.trim().is_empty() && target_supported(version))
-        .max_by(|a, b| {
-            numeric_version_key(&a.version)
-                .cmp(&numeric_version_key(&b.version))
-                .then_with(|| a.version.cmp(&b.version))
-                .then_with(|| a.qpkg_root_hash_hex.cmp(&b.qpkg_root_hash_hex))
-        })?;
+        .filter(|version| {
+            !version.qpkg_url.trim().is_empty()
+                && target_supported(version)
+                && channel.accepts(&version.version)
+        })
+        .max_by(|a, b| pkg::version::compare(&a.version, &b.version))?;
     let target = newest.target.as_ref()?;
     let display_name = if v.entry.name.trim().is_empty() {
         launcher::registry::display_name_for_package_id(&v.entry.package_id)
@@ -159,13 +170,6 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
             TrustLevel::Untrusted => "untrusted".into(),
         },
     })
-}
-
-fn numeric_version_key(version: &str) -> Option<Vec<u64>> {
-    version
-        .split('.')
-        .map(|component| component.parse::<u64>().ok())
-        .collect()
 }
 
 fn target_supported(version: &registry_types::RegistryVersion) -> bool {
@@ -271,7 +275,7 @@ pub fn available() -> CatalogueListing {
             Ok(result) => match result {
                 Ok(entries) => {
                     for v in &entries {
-                        if let Some(app) = entry_to_app(v, &reg.name) {
+                        if let Some(app) = entry_to_app_for_channel(v, &reg.name, reg.channel) {
                             apps.push(app);
                         }
                     }
@@ -452,6 +456,43 @@ mod tests {
         assert_eq!(app.version, "2027.01");
         assert_eq!(app.download_url, "https://apps.example/timeline-new.qpkg");
         assert_eq!(app.qpkg_size_bytes, 20);
+    }
+
+    #[test]
+    fn catalogue_channels_separate_stable_and_continuous_updates() {
+        use pkg::version::ReleaseChannel;
+        let mut e = entry("dev.tilo.channel-test", "Channel", vec![]);
+        let template = e.versions[0].clone();
+        e.versions = ["0.1.0", "0.1.1-dev.9+gffff", "0.1.1-dev.10+gaaaa"]
+            .into_iter()
+            .map(|version| RegistryVersion {
+                version: version.into(),
+                ..template.clone()
+            })
+            .collect();
+        sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+        let current = verified(e.clone());
+        assert_eq!(entry_to_app(&current, "main").unwrap().version, "0.1.0");
+        assert_eq!(
+            entry_to_app_for_channel(&current, "main", ReleaseChannel::Development)
+                .unwrap()
+                .version,
+            "0.1.1-dev.10+gaaaa"
+        );
+        e.versions.push(RegistryVersion {
+            version: "0.1.1".into(),
+            ..template
+        });
+        sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+        let promoted = verified(e);
+        for channel in [ReleaseChannel::Stable, ReleaseChannel::Development] {
+            assert_eq!(
+                entry_to_app_for_channel(&promoted, "main", channel)
+                    .unwrap()
+                    .version,
+                "0.1.1"
+            );
+        }
     }
 
     #[test]

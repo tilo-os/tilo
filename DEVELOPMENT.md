@@ -312,9 +312,13 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `libclang` (shared library) | `clang-libs` | bindgen for PipeWire and FFmpeg bindings; Python 3 checks that it can load |
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
 | `rust-analyzer` (binary) | `rustup component add rust-analyzer` | the code editor's language-server test drives a real server |
+| `cryptsetup` (binary) | `cryptsetup` | rollback mechanism tests drive a real LUKS2 header |
+| `swtpm` `swtpm_setup` (binaries) | `swtpm` `swtpm-tools` | rollback mechanism tests drive an isolated software TPM |
+| `tpm2_getcap` (binary) | `tpm2-tools` | rollback mechanism tests exercise production TPM policy commands |
 
-The sandbox and language-server tests require `bwrap` and `rust-analyzer`.
-Install them where Cargo runs, including inside a build container.
+The sandbox, language-server, and rollback mechanism tests require the binary
+tools listed above. Install them where Cargo runs, including inside a build
+container.
 
 ### Native Windows Imager builds
 
@@ -900,7 +904,7 @@ or `cycle`, log out and back in through the VM's UI to test session cleanup.
 
 The VM needs the `tilo-session-devel` developer entry once, and **"Tilo (my
 build)"** must be selected in its greeter once.  `deploy shell` writes the
-marked debug binary to `~/.local/share/tilo-dev/shell` and updates the existing
+marked debug binary to `~/.local/share/tilo-app/shell` and updates the existing
 developer-session config, so later cycles do not install an RPM.  Change the
 remote account/location with `TILO_VM_USER`, `TILO_VM_HOST`, and
 `TILO_VM_DEV_ROOT`; `TILO_VM_SSH_PORT` is always mandatory. Build an app or
@@ -1061,7 +1065,7 @@ $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-0.1.0-1.fc43.x86_64.rpm
 
 $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-devel-0.1.0-1.fc43.x86_64.rpm
 /usr/libexec/tilo-session-dev
-/usr/share/wayland-sessions/tilo-dev.desktop
+/usr/share/wayland-sessions/tilo-app.desktop
 ```
 
 GDM reads session entries from `/usr/share/wayland-sessions/`. On an ostree host,
