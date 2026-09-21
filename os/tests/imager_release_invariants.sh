@@ -533,11 +533,15 @@ grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
   && [ "$(grep -Fc 'pull_request:' "$workflow")" -eq 0 ] \
   && grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
   && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
+  && grep -Fq 'runner":"runner-disk-100g"' "$workflow" \
+  && grep -Fq 'runner":"runner-disk-100g-arm64"' "$workflow" \
+  && grep -Fq 'matrix: ${{ fromJSON(needs.plan.outputs.medium-matrix) }}' "$workflow" \
+  && grep -Fq "if: github.event.inputs.installer_only != 'true'" "$workflow" \
   && grep -Fq './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' "$workflow" \
   && grep -Fq 'TILO_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}' "$workflow" \
   && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE"' "$workflow" \
   && ! grep -Fq 'TILO_REGISTRY_CREDS:' "$workflow" \
-  && ok 'installer media runs only on explicit, architecture-matched native release hosts' \
+  && ok 'installer media runs only on explicit, architecture-matched native release or rehearsal hosts' \
   || bad 'installer-medium event, architecture, or registry-auth boundary is incomplete'
 
 grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}-' "$workflow" \

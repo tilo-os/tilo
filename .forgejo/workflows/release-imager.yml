@@ -14,6 +14,11 @@ on:
         type: boolean
         required: false
         default: false
+      installer_only:
+        description: "Run installer-media cycles only; skip host-app packaging and publication jobs."
+        type: boolean
+        required: false
+        default: false
       published_os_image:
         description: "Optional signed Tilo manifest-list digest; empty uses vars.TILO_INSTALLER_OS_IMAGE."
         type: string
@@ -41,6 +46,7 @@ jobs:
     runs-on: runner
     outputs:
       linux-matrix: ${{ steps.lanes.outputs.linux-matrix }}
+      medium-matrix: ${{ steps.lanes.outputs.medium-matrix }}
     steps:
       - name: Select native Linux lanes
         id: lanes
@@ -52,6 +58,13 @@ jobs:
           else
             echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"}]}' >> "$GITHUB_OUTPUT"
           fi
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
+          elif [[ ${FULL_NATIVE:-false} == true ]]; then
+            echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-disk-100g-arm64"}]}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}' >> "$GITHUB_OUTPUT"
+          fi
 
   medium:
     timeout-minutes: 240
@@ -60,7 +73,7 @@ jobs:
     # DRI and must never be eligible for this job.
     needs: plan
     strategy:
-      matrix: ${{ fromJSON(needs.plan.outputs.linux-matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.medium-matrix) }}
     runs-on: ${{ matrix.runner }}
     enable-openid-connect: true
     env:
@@ -298,6 +311,7 @@ jobs:
 
   linux:
     timeout-minutes: 240
+    if: github.event.inputs.installer_only != 'true'
     needs: catalog
     # Forgejo injects ACTIONS_ID_TOKEN_REQUEST_* only when this native setting
     # is enabled; GitHub's `permissions: id-token: write` is not sufficient.
@@ -459,7 +473,7 @@ jobs:
 
   windows:
     timeout-minutes: 240
-    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
+    if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     enable-openid-connect: true
     strategy:
@@ -572,7 +586,7 @@ jobs:
 
   macos:
     timeout-minutes: 240
-    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
+    if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     enable-openid-connect: true
     strategy:
