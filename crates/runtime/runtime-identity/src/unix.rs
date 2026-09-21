@@ -45,7 +45,7 @@
 
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
