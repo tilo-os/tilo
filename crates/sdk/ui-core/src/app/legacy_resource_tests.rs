@@ -278,8 +278,9 @@ static EFFECT_HISTORY: crate::history_mode::HistoryDefinition =
 #[test]
 fn native_legacy_effect_capture_keeps_exact_accepted_owner_hidden_poll_cancel_and_view() {
     for cancel in [false, true] {
-        let mut a = Fixture::new(if cancel { 542 } else { 540 });
-        let mut b = Fixture::new(if cancel { 543 } else { 541 });
+        let room = uuid::Uuid::new_v4();
+        let mut a = Fixture::in_room(if cancel { 542 } else { 540 }, &room.to_string());
+        let mut b = Fixture::in_room(if cancel { 543 } else { 541 }, &room.to_string());
         *a.probe.spec.borrow_mut() = tilo_actions::ActionSpec::operation(
             "set",
             "Controlled effect",
@@ -303,6 +304,29 @@ fn native_legacy_effect_capture_keeps_exact_accepted_owner_hidden_poll_cancel_an
         app.init_layout();
         let outer = app.state.doc.save();
         if cancel {
+            // Directed delivery requires an admitted document route before its
+            // terminal can cross the publication gate. This peer proves queue
+            // admission only; the local-control arm remains disconnected.
+            app.collaboration.manager =
+                CollaborationManager::with_peer_transport(DocumentRouteTransport);
+            app.actions.bound_broker_route_for_test =
+                Some(crate::collaboration::PrimaryRouteWitness {
+                    route: crate::collaboration::RouteSpec::app("controlled-shell", room),
+                    epoch: uuid::Uuid::new_v4(),
+                });
+            app.publish_owned_documents();
+            assert_eq!(app.document_routes.sent.len(), 2);
+            for record in [&a.checkout.id, &b.checkout.id] {
+                let expected = crate::collaboration::RouteSpec::record(
+                    "dev.qos.controlled",
+                    room,
+                    record.as_str(),
+                );
+                assert!(app.document_routes.sent.iter().any(|(route, request)| {
+                    route == &expected && matches!(request, CollabRequest::Document { .. })
+                }));
+            }
+            assert!(app.action_publication_failure.is_none());
             app.invoke_published_action(
                 777,
                 None,
@@ -345,6 +369,7 @@ fn native_legacy_effect_capture_keeps_exact_accepted_owner_hidden_poll_cancel_an
         if cancel {
             app.request_invocation_cancellation(777);
             assert!(app.poll_directed_invocations());
+            assert!(app.action_publication_failure.is_none());
             assert!(app.actions.directed_invocations.is_empty());
             assert_eq!(a.probe.invocation.get(), None);
         } else {
