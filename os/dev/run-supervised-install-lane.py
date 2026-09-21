@@ -365,7 +365,7 @@ def validate_creator_failure(document):
                 'stdout_base64','stderr_base64','stdout_truncated','stderr_truncated'}
     if (set(document) != required or document['schema'] != 1
             or document['purpose'] != 'tilo-supervised-bootc-install-failure'
-            or document['stage'] != 'bootc-install-to-disk'
+            or document['stage'] != 'bootc-install-to-filesystem'
             or not re.fullmatch(r'[0-9a-f]{64}', document['argv_sha256'])
             or type(document['returncode']) is not int or document['returncode'] == 0
             or type(document['stdout_truncated']) is not bool

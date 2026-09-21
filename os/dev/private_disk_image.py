@@ -6,10 +6,13 @@ process: a privileged installer opening a pathname must still be trusted.
 Call validate() immediately before passing path to that installer. retain()
 requests retention on successful context exit, which validates once more.
 """
+from contextlib import contextmanager
 import os
 from pathlib import Path
+import re
 import stat
 import sys
+import time
 
 
 def _identity(info):
@@ -35,6 +38,89 @@ def _directory(path):
     except BaseException:
         os.close(descriptor)
         raise
+
+
+@contextmanager
+def loop_partition_nodes(loop, partition_numbers=(1, 2), *, devices=Path('/dev'),
+                         sys_class=Path('/sys/class/block'), timeout=5.0,
+                         sleep=time.sleep):
+    """Materialize only the exact partitions of an already-held loop device.
+
+    Minimal container and Kata ``/dev`` filesystems do not run udev, even though
+    the kernel exposes newly scanned partitions in sysfs.  Read their kernel
+    identities directly, create no other device nodes, and remove the exact
+    nodes again before the caller detaches the loop device.
+    """
+    match = re.fullmatch(r'/dev/(loop[0-9]+)', str(loop))
+    numbers = tuple(partition_numbers)
+    if (match is None or not numbers or len(set(numbers)) != len(numbers)
+            or any(type(number) is not int or number <= 0 for number in numbers)
+            or timeout <= 0):
+        raise ValueError('invalid loop partition node request')
+    base = match.group(1)
+    base_sysfs = sys_class / base
+    parent_major_minor = base_sysfs.joinpath('dev').read_text().strip()
+    if not re.fullmatch(r'[0-9]+:[0-9]+', parent_major_minor):
+        raise ValueError('loop device has invalid kernel identity')
+    parent_major = int(parent_major_minor.split(':', 1)[0])
+    expected = {f'{base}p{number}': number for number in numbers}
+    deadline = time.monotonic() + timeout
+    while True:
+        observed = {
+            path.name for path in sys_class.glob(f'{base}p*')
+            if path.joinpath('partition').is_file()
+        }
+        if observed == set(expected):
+            break
+        if time.monotonic() >= deadline:
+            raise ValueError('loop partition sysfs inventory differs')
+        sleep(0.05)
+
+    held = []
+    try:
+        for name, number in sorted(expected.items(), key=lambda item: item[1]):
+            entry = sys_class / name
+            if entry.resolve(strict=True).parent != base_sysfs.resolve(strict=True):
+                raise ValueError('loop partition has an unexpected sysfs parent')
+            if entry.joinpath('partition').read_text().strip() != str(number):
+                raise ValueError('loop partition number differs')
+            major_minor = entry.joinpath('dev').read_text().strip()
+            if not re.fullmatch(r'[0-9]+:[0-9]+', major_minor):
+                raise ValueError('loop partition has invalid kernel identity')
+            major, minor = map(int, major_minor.split(':', 1))
+            if major != parent_major:
+                raise ValueError('loop partition major differs from its parent')
+            node = devices / name
+            expected_device = os.makedev(major, minor)
+            owned = False
+            try:
+                info = node.lstat()
+            except FileNotFoundError:
+                os.mknod(node, stat.S_IFBLK | 0o600, expected_device)
+                owned = True
+                info = node.lstat()
+            if (not stat.S_ISBLK(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_uid != 0 or info.st_gid != 0
+                    or info.st_rdev != expected_device or info.st_nlink != 1):
+                raise ValueError('loop partition node differs from kernel identity')
+            held.append((node, info.st_dev, info.st_ino, info.st_rdev, owned))
+        yield [devices / name for name, _ in sorted(expected.items(), key=lambda item: item[1])]
+    finally:
+        cleanup_error = None
+        for node, device, inode, raw_device, owned in reversed(held):
+            try:
+                info = node.lstat()
+                if ((info.st_dev, info.st_ino, info.st_rdev) != (device, inode, raw_device)
+                        or not stat.S_ISBLK(info.st_mode)
+                        or stat.S_IMODE(info.st_mode) != 0o600
+                        or info.st_uid != 0 or info.st_gid != 0 or info.st_nlink != 1):
+                    raise ValueError('loop partition node changed before cleanup')
+                if owned:
+                    node.unlink()
+            except BaseException as error:
+                cleanup_error = cleanup_error or error
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 class PrivateDiskImage:
