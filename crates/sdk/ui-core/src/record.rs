@@ -29,11 +29,15 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 /// Key, in a record's own document, of the map holding its identity.
 const META: &str = "tilo:record";
+/// Deployed qOS metadata namespace. Existing documents retain this exact key.
+const LEGACY_META: &str = "qos:record";
 /// Key in a record document for the room that owns this local replica.
 /// `RecordId` is a user/application name; it is not an authority boundary.
 const ROOM: &str = "room";
 /// Key, in a room's index document, of the map of record references.
 const INDEX: &str = "tilo:records";
+/// Deployed qOS room-index namespace. Existing indexes retain this exact key.
+const LEGACY_INDEX: &str = "qos:records";
 
 /// Upper bound for the records an app learns from one room index at once.
 /// This is deliberately small: the index is replicated input, not a request
@@ -305,22 +309,85 @@ impl RecordCheckout {
     }
 }
 
-/// `None` only if `put_object` on the document root itself fails, which
-/// does not happen for a document this call has exclusive access to.
+enum ObjectAt {
+    Missing,
+    Object(ObjId),
+    Invalid,
+}
+
+enum StringAt {
+    Missing,
+    String(String),
+    Invalid,
+}
+
+fn object_at(doc: &AutoCommit, object: &ObjId, key: &str, kind: ObjType) -> ObjectAt {
+    let Ok(mut values) = doc.get_all(object, key) else {
+        return ObjectAt::Invalid;
+    };
+    if values.is_empty() {
+        return ObjectAt::Missing;
+    }
+    if values.len() != 1 {
+        return ObjectAt::Invalid;
+    }
+    match values.pop() {
+        Some((Value::Object(found), id)) if found == kind => ObjectAt::Object(id),
+        _ => ObjectAt::Invalid,
+    }
+}
+
+fn selected_root_object(doc: &AutoCommit, current: &str, legacy: &str) -> ObjectAt {
+    let current = object_at(doc, &ROOT, current, ObjType::Map);
+    let legacy = object_at(doc, &ROOT, legacy, ObjType::Map);
+    match (current, legacy) {
+        (ObjectAt::Missing, ObjectAt::Missing) => ObjectAt::Missing,
+        (ObjectAt::Object(object), ObjectAt::Missing)
+        | (ObjectAt::Missing, ObjectAt::Object(object)) => ObjectAt::Object(object),
+        _ => ObjectAt::Invalid,
+    }
+}
+
+fn string_at(doc: &AutoCommit, object: &ObjId, key: &str) -> StringAt {
+    let Ok(mut values) = doc.get_all(object, key) else {
+        return StringAt::Invalid;
+    };
+    if values.is_empty() {
+        return StringAt::Missing;
+    }
+    if values.len() != 1 {
+        return StringAt::Invalid;
+    }
+    match values.pop() {
+        Some((Value::Scalar(value), _)) => match value.as_ref() {
+            ScalarValue::Str(value) => StringAt::String(value.to_string()),
+            _ => StringAt::Invalid,
+        },
+        _ => StringAt::Invalid,
+    }
+}
+
+/// Select the document's one existing metadata namespace, or create the
+/// current namespace only when neither frozen key exists.
 fn meta_obj(doc: &mut AutoCommit) -> Option<ObjId> {
-    match doc.get(&ROOT, META) {
-        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-        _ => doc.put_object(&ROOT, META, ObjType::Map).ok(),
+    match selected_root_object(doc, META, LEGACY_META) {
+        ObjectAt::Missing => doc.put_object(&ROOT, META, ObjType::Map).ok(),
+        ObjectAt::Object(object) => Some(object),
+        ObjectAt::Invalid => None,
+    }
+}
+
+fn meta_ro(doc: &AutoCommit) -> Option<ObjId> {
+    match selected_root_object(doc, META, LEGACY_META) {
+        ObjectAt::Object(object) => Some(object),
+        ObjectAt::Missing | ObjectAt::Invalid => None,
     }
 }
 
 fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => Some(s.to_string()),
-            _ => None,
-        },
-        _ => None,
+    match string_at(doc, obj, key) {
+        StringAt::String(value) => Some(value),
+        StringAt::Missing | StringAt::Invalid => None,
     }
 }
 
@@ -355,32 +422,42 @@ pub fn init_scoped(
         // The document's root object is gone — nothing to stamp.
         return false;
     };
-    if str_at(doc, &m, "id").is_some_and(|existing| existing != id.as_str())
-        || str_at(doc, &m, "kind").is_some_and(|existing| existing != kind.as_str())
-        || room.is_some_and(|scope| str_at(doc, &m, ROOM).is_some_and(|existing| existing != scope))
+    let existing_id = string_at(doc, &m, "id");
+    let existing_kind = string_at(doc, &m, "kind");
+    let existing_home = string_at(doc, &m, "home");
+    let existing_room = string_at(doc, &m, ROOM);
+    let existing_refs = object_at(doc, &m, "refs", ObjType::List);
+    if matches!(&existing_id, StringAt::String(existing) if existing != id.as_str())
+        || matches!(&existing_id, StringAt::Invalid)
+        || matches!(&existing_kind, StringAt::String(existing) if existing != kind.as_str())
+        || matches!(&existing_kind, StringAt::Invalid)
+        || matches!(&existing_home, StringAt::String(existing) if existing.is_empty())
+        || matches!(&existing_home, StringAt::Invalid)
+        || matches!(&existing_room, StringAt::Invalid)
+        || room.is_some_and(
+            |scope| matches!(&existing_room, StringAt::String(existing) if existing != scope),
+        )
+        || matches!(&existing_refs, ObjectAt::Invalid)
     {
         return false;
     }
-    if str_at(doc, &m, "id").is_none() {
+    if matches!(&existing_id, StringAt::Missing) {
         let _ = doc.put(&m, "id", id.as_str());
     }
-    if str_at(doc, &m, "kind").is_none() {
+    if matches!(&existing_kind, StringAt::Missing) {
         let _ = doc.put(&m, "kind", kind.as_str());
     }
     // Home is the room that minted the record; never rewritten on a later
     // open, or the last room to open it would become the owner.
-    if str_at(doc, &m, "home").is_none() {
+    if matches!(&existing_home, StringAt::Missing) {
         let _ = doc.put(&m, "home", home);
     }
     if let Some(room) = room
-        && str_at(doc, &m, ROOM).is_none()
+        && matches!(&existing_room, StringAt::Missing)
     {
         let _ = doc.put(&m, ROOM, room);
     }
-    if !matches!(
-        doc.get(&m, "refs"),
-        Ok(Some((Value::Object(ObjType::List), _)))
-    ) {
+    if matches!(&existing_refs, ObjectAt::Missing) {
         let _ = doc.put_object(&m, "refs", ObjType::List);
     }
     true
@@ -388,19 +465,16 @@ pub fn init_scoped(
 
 /// The identity stamped into `doc`, if it holds a record.
 pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
-    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
-        return None;
-    };
+    let m = meta_ro(doc)?;
     let id = RecordId::parse(&str_at(doc, &m, "id")?)?;
-    let kind = RecordKind::new(str_at(doc, &m, "kind").unwrap_or_default());
-    Some(RecordCheckout::new(id, kind))
+    let kind = RecordKind::new(str_at(doc, &m, "kind")?);
+    let checkout = RecordCheckout::new(id, kind);
+    checkout.is_valid().then_some(checkout)
 }
 
 /// The room this record was minted in.
 pub fn home(doc: &AutoCommit) -> Option<String> {
-    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
-        return None;
-    };
+    let m = meta_ro(doc)?;
     str_at(doc, &m, "home")
 }
 
@@ -409,9 +483,7 @@ pub fn home(doc: &AutoCommit) -> Option<String> {
 /// with [`init_scoped`], but must never treat an explicit different room as
 /// interchangeable.
 pub fn room_scope(doc: &AutoCommit) -> Option<String> {
-    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
-        return None;
-    };
+    let m = meta_ro(doc)?;
     str_at(doc, &m, ROOM)
 }
 
@@ -419,9 +491,10 @@ pub fn room_scope(doc: &AutoCommit) -> Option<String> {
 /// [`meta_obj`].
 fn refs_obj(doc: &mut AutoCommit) -> Option<ObjId> {
     let m = meta_obj(doc)?;
-    match doc.get(&m, "refs") {
-        Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
-        _ => doc.put_object(&m, "refs", ObjType::List).ok(),
+    match object_at(doc, &m, "refs", ObjType::List) {
+        ObjectAt::Missing => doc.put_object(&m, "refs", ObjType::List).ok(),
+        ObjectAt::Object(object) => Some(object),
+        ObjectAt::Invalid => None,
     }
 }
 
@@ -450,10 +523,10 @@ pub fn add_reference(doc: &mut AutoCommit, r: &RecordRef) -> bool {
 
 /// Every record this one references.
 pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
-    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
+    let Some(m) = meta_ro(doc) else {
         return Vec::new();
     };
-    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&m, "refs") else {
+    let ObjectAt::Object(list) = object_at(doc, &m, "refs", ObjType::List) else {
         return Vec::new();
     };
     (0..doc.length(&list))
@@ -484,23 +557,25 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
 /// flowing; it cannot un-share bytes a peer already synced.
 pub mod room {
     use super::{
-        AutoCommit, INDEX, ObjId, ObjType, ROOT, ReadDoc, RecordCheckout, RecordId, RecordKind,
-        RecordSet, Transactable, Value, str_at,
+        AutoCommit, INDEX, LEGACY_INDEX, ObjId, ObjType, ObjectAt, ROOT, ReadDoc, RecordCheckout,
+        RecordId, RecordKind, RecordSet, StringAt, Transactable, object_at, selected_root_object,
+        str_at, string_at,
     };
 
-    /// `None` only if `put_object` on the document root itself fails, which
-    /// does not happen for a document this call has exclusive access to.
+    /// Select one exact room-index namespace. Malformed, conflicted, or dual
+    /// metadata fails closed; only an entirely absent index creates Tilo.
     fn index_obj(doc: &mut AutoCommit) -> Option<ObjId> {
-        match doc.get(&ROOT, INDEX) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-            _ => doc.put_object(&ROOT, INDEX, ObjType::Map).ok(),
+        match selected_root_object(doc, INDEX, LEGACY_INDEX) {
+            ObjectAt::Missing => doc.put_object(&ROOT, INDEX, ObjType::Map).ok(),
+            ObjectAt::Object(object) => Some(object),
+            ObjectAt::Invalid => None,
         }
     }
 
     fn index_ro(doc: &AutoCommit) -> Option<ObjId> {
-        match doc.get(&ROOT, INDEX) {
-            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
-            _ => None,
+        match selected_root_object(doc, INDEX, LEGACY_INDEX) {
+            ObjectAt::Object(object) => Some(object),
+            ObjectAt::Missing | ObjectAt::Invalid => None,
         }
     }
 
@@ -515,23 +590,27 @@ pub mod room {
         let Some(idx) = index_obj(doc) else {
             return false;
         };
-        let existing = match doc.get(&idx, id.as_str()) {
-            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
-            _ => None,
-        };
-        if let Some(obj) = existing {
-            // Refresh the type only if it actually differs, so
-            // re-opening a record is not itself an edit.
-            if str_at(doc, &obj, "kind").as_deref() != Some(kind.as_str()) {
-                let _ = doc.put(&obj, "kind", kind.as_str());
+        match object_at(doc, &idx, id.as_str(), ObjType::Map) {
+            ObjectAt::Object(object) => {
+                // Refresh the type only if it actually differs, so
+                // re-opening a record is not itself an edit.
+                match string_at(doc, &object, "kind") {
+                    StringAt::String(existing) if existing == kind.as_str() => {}
+                    StringAt::String(_) => {
+                        let _ = doc.put(&object, "kind", kind.as_str());
+                    }
+                    StringAt::Missing | StringAt::Invalid => return false,
+                }
+                false
             }
-            false
-        } else {
-            let Ok(entry) = doc.put_object(&idx, id.as_str(), ObjType::Map) else {
-                return false;
-            };
-            let _ = doc.put(&entry, "kind", kind.as_str());
-            true
+            ObjectAt::Missing => {
+                let Ok(entry) = doc.put_object(&idx, id.as_str(), ObjType::Map) else {
+                    return false;
+                };
+                let _ = doc.put(&entry, "kind", kind.as_str());
+                true
+            }
+            ObjectAt::Invalid => false,
         }
     }
 
@@ -541,16 +620,22 @@ pub mod room {
         let Some(idx) = index_ro(doc) else {
             return false;
         };
-        if matches!(doc.get(&idx, id.as_str()), Ok(Some(_))) {
-            doc.delete(&idx, id.as_str()).is_ok()
-        } else {
-            false
+        match object_at(doc, &idx, id.as_str(), ObjType::Map) {
+            ObjectAt::Object(_) => doc.delete(&idx, id.as_str()).is_ok(),
+            ObjectAt::Missing | ObjectAt::Invalid => false,
         }
     }
 
     /// Whether this room references `id`.
     pub fn holds(doc: &AutoCommit, id: &RecordId) -> bool {
-        index_ro(doc).is_some_and(|idx| matches!(doc.get(&idx, id.as_str()), Ok(Some(_))))
+        index_ro(doc).is_some_and(|idx| {
+            let ObjectAt::Object(entry) = object_at(doc, &idx, id.as_str(), ObjType::Map) else {
+                return false;
+            };
+            str_at(doc, &entry, "kind")
+                .map(RecordKind::new)
+                .is_some_and(|kind| kind.is_valid())
+        })
     }
 
     /// Every well-formed record this room references.  This is retained for
@@ -564,12 +649,11 @@ pub mod room {
             .keys(&idx)
             .filter_map(|k| {
                 let id = RecordId::parse(&k)?;
-                let kind = match doc.get(&idx, k.as_str()) {
-                    Ok(Some((Value::Object(ObjType::Map), obj))) => {
-                        RecordKind::new(str_at(doc, &obj, "kind").unwrap_or_default())
-                    }
-                    _ => return None,
+                let ObjectAt::Object(object) = object_at(doc, &idx, k.as_str(), ObjType::Map)
+                else {
+                    return None;
                 };
+                let kind = RecordKind::new(str_at(doc, &object, "kind")?);
                 let checkout = RecordCheckout::new(id, kind);
                 checkout.is_valid().then_some(checkout)
             })
@@ -592,7 +676,7 @@ pub mod room {
             .take(super::MAX_ROOM_INDEX_KEYS_SCANNED)
             .filter_map(|key| {
                 let id = RecordId::parse(&key)?;
-                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&idx, key.as_str())
+                let ObjectAt::Object(entry) = object_at(doc, &idx, key.as_str(), ObjType::Map)
                 else {
                     return None;
                 };
@@ -853,7 +937,9 @@ impl RecordSet {
         if self.active.is_none() && !state.doc.get_heads().is_empty() {
             let adopted = std::mem::replace(&mut state.doc, AutoCommit::new());
             state.adopt_doc(adopted);
-            let autosave = self.persist_for(&want.id, &mut state.doc);
+            let Ok(autosave) = self.persist_for(want, &mut state.doc) else {
+                return false;
+            };
             let history = crate::state::UndoLog::new(&mut state.doc);
             self.open.insert(
                 want.id.clone(),
@@ -867,6 +953,17 @@ impl RecordSet {
             );
             return self.finish_checkout(state, room, want);
         }
+
+        // A malformed incoming legacy document must fail before custody of
+        // the valid active document moves into a parked slot.
+        let prepared = if self.open.contains_key(&want.id) {
+            None
+        } else {
+            let Ok(prepared) = self.load(want) else {
+                return false;
+            };
+            Some(prepared)
+        };
 
         if let Some(prev) = self.active.take() {
             let outgoing = std::mem::replace(&mut state.doc, AutoCommit::new());
@@ -883,7 +980,7 @@ impl RecordSet {
         let incoming = if let Some(slot) = self.open.get_mut(&want.id) {
             slot.doc.take().unwrap_or_else(AutoCommit::new)
         } else {
-            let (mut doc, autosave) = self.load(&want.id);
+            let (mut doc, autosave) = prepared.expect("unopened record was prepared");
             let history = crate::state::UndoLog::new(&mut doc);
             self.open.insert(
                 want.id.clone(),
@@ -943,10 +1040,21 @@ impl RecordSet {
     }
 
     /// Open a record's stored document, and the writer for it.
-    fn load(&self, id: &RecordId) -> (AutoCommit, Option<crate::persist::Autosave>) {
+    fn load(
+        &self,
+        want: &RecordCheckout,
+    ) -> Result<(AutoCommit, Option<crate::persist::Autosave>), RecordOpenError> {
+        if self.persistent && self.home.is_empty() {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
         let mut doc = AutoCommit::new();
-        let autosave = self.persist_for(id, &mut doc);
-        (doc, autosave)
+        let autosave = self.persist_for(want, &mut doc)?;
+        if self.persistent
+            && !init_scoped(&mut doc, &want.id, &want.kind, &self.home, Some(&self.home))
+        {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        Ok((doc, autosave))
     }
 
     /// Attach `doc` to this record's file: merge in what's stored, and
@@ -954,12 +1062,17 @@ impl RecordSet {
     /// content survives. The writer is seeded from the **stored** heads,
     /// not merged — seeding from merged heads would mark adopted content
     /// as already saved.
-    fn persist_for(&self, id: &RecordId, doc: &mut AutoCommit) -> Option<crate::persist::Autosave> {
+    fn persist_for(
+        &self,
+        want: &RecordCheckout,
+        doc: &mut AutoCommit,
+    ) -> Result<Option<crate::persist::Autosave>, RecordOpenError> {
+        let id = &want.id;
         if !self.persistent {
-            return None;
+            return Ok(None);
         }
         if self.home.is_empty() {
-            return None;
+            return Ok(None);
         }
         let record_key = id.storage_key();
         let mut store = match app_state::DocStore::open_room_record(
@@ -974,9 +1087,9 @@ impl RecordSet {
                     error = %e,
                     "record store unavailable; writes refused"
                 );
-                return Some(crate::persist::Autosave::disabled(format!(
+                return Ok(Some(crate::persist::Autosave::disabled(format!(
                     "record {id} store unavailable: {e}"
-                )));
+                ))));
             }
         };
         let stored = match store.load() {
@@ -987,41 +1100,59 @@ impl RecordSet {
                     error = %e,
                     "stored record could not be read; original bytes retained and writes refused"
                 );
-                return Some(crate::persist::Autosave::disabled(format!(
+                return Ok(Some(crate::persist::Autosave::disabled(format!(
                     "stored record {id} could not be read: {e}"
-                )));
+                ))));
             }
         };
         // The old package-global record file is a read-only migration source.
         // It remains on disk until a later explicit cleanup, so a crash before
         // the first scoped autosave cannot lose it.
         let mut adopted_legacy = false;
-        let stored = stored.or_else(|| {
+        let stored = if stored.is_some() {
+            stored
+        } else {
             let legacy =
-                app_state::DocStore::legacy_record_document_path(&self.package_id, &record_key)
-                    .ok()?;
-            if !legacy.is_file()
-                || !app_state::DocStore::claim_legacy_record_migration(
-                    &self.package_id,
-                    &self.home,
-                    &record_key,
-                )
-                .ok()?
-            {
-                return None;
+                app_state::DocStore::legacy_record_document_path(&self.package_id, &record_key)?;
+            if !legacy.is_file() {
+                None
+            } else {
+                let mut legacy_store =
+                    app_state::DocStore::open_record(&self.package_id, &record_key)?;
+                let mut legacy_doc = legacy_store.load()?.ok_or_else(|| {
+                    app_state::StoreError::EmptyExistingDocument {
+                        path: legacy.clone(),
+                    }
+                })?;
+                if identity(&legacy_doc)
+                    .is_none_or(|found| found.id != want.id || found.kind != want.kind)
+                    || home(&legacy_doc).as_deref() != Some(self.home.as_str())
+                    || room_scope(&legacy_doc).is_some_and(|scope| scope != self.home)
+                    || !init_scoped(
+                        &mut legacy_doc,
+                        &want.id,
+                        &want.kind,
+                        &self.home,
+                        Some(&self.home),
+                    )
+                    || !app_state::DocStore::claim_legacy_record_migration(
+                        &self.package_id,
+                        &self.home,
+                        &record_key,
+                    )?
+                {
+                    return Err(RecordOpenError::IdentityMismatch);
+                }
+                tracing::info!(
+                    record = %id,
+                    room = %self.home,
+                    from = %legacy.display(),
+                    "adopting a legacy package-global record into a room"
+                );
+                adopted_legacy = true;
+                Some(legacy_doc)
             }
-            let mut legacy_store =
-                app_state::DocStore::open_record(&self.package_id, &record_key).ok()?;
-            let legacy_doc = legacy_store.load().ok().flatten()?;
-            tracing::info!(
-                record = %id,
-                room = %self.home,
-                from = %legacy.display(),
-                "adopting a legacy package-global record into a room"
-            );
-            adopted_legacy = true;
-            Some(legacy_doc)
-        });
+        };
         // Merge transactionally. Automerge may have applied part of a failed
         // merge; never publish or enqueue that partial result to the writer.
         let mut merged = doc.clone();
@@ -1030,9 +1161,18 @@ impl RecordSet {
             && let Err(error) = merged.merge(stored)
         {
             tracing::error!(record = %id, %error, "record merge refused; original stored bytes retained");
-            return Some(crate::persist::Autosave::disabled(format!(
+            return Ok(Some(crate::persist::Autosave::disabled(format!(
                 "stored record {id} could not be merged: {error}"
-            )));
+            ))));
+        }
+        if !init_scoped(
+            &mut merged,
+            &want.id,
+            &want.kind,
+            &self.home,
+            Some(&self.home),
+        ) {
+            return Err(RecordOpenError::IdentityMismatch);
         }
         // The package actor belongs to its index, and a bootstrap fork actor
         // belongs to pre-admission edits. All subsequent canonical record
@@ -1049,7 +1189,7 @@ impl RecordSet {
                 autosave.seed(&mut stored);
             }
         }
-        Some(autosave)
+        Ok(Some(autosave))
     }
 
     // A host showing several records at once: none can be "checked out"
@@ -1070,7 +1210,9 @@ impl RecordSet {
         }
         let fresh = !self.open.contains_key(&want.id);
         if fresh {
-            let (mut doc, autosave) = self.load(&want.id);
+            let Ok((mut doc, autosave)) = self.load(want) else {
+                return false;
+            };
             if self.persistent && self.home.is_empty() {
                 tracing::error!(record = %want.id, "refusing to open a persistent record without a room scope");
                 return false;
@@ -1422,13 +1564,19 @@ pub enum RecordOpenError {
 }
 
 fn primary_document(doc: &AutoCommit) -> bool {
-    match doc.get(ROOT, META) {
-        Ok(Some((Value::Object(ObjType::Map), object))) => {
-            matches!(doc.get(&object, "id"), Ok(None))
-                && matches!(doc.get(&object, "kind"), Ok(None))
+    match selected_root_object(doc, META, LEGACY_META) {
+        ObjectAt::Missing => true,
+        ObjectAt::Object(object) => {
+            matches!(string_at(doc, &object, "id"), StringAt::Missing)
+                && matches!(string_at(doc, &object, "kind"), StringAt::Missing)
+                && !matches!(string_at(doc, &object, "home"), StringAt::Invalid)
+                && !matches!(string_at(doc, &object, ROOM), StringAt::Invalid)
+                && !matches!(
+                    object_at(doc, &object, "refs", ObjType::List),
+                    ObjectAt::Invalid
+                )
         }
-        Ok(None) => true,
-        _ => false,
+        ObjectAt::Invalid => false,
     }
 }
 
@@ -1437,6 +1585,20 @@ fn validate_identity(
     want: &RecordCheckout,
     workspace: &str,
 ) -> Result<(), RecordOpenError> {
+    match selected_root_object(doc, META, LEGACY_META) {
+        ObjectAt::Object(metadata) => {
+            if matches!(
+                object_at(doc, &metadata, "refs", ObjType::List),
+                ObjectAt::Invalid
+            ) {
+                return Err(RecordOpenError::IdentityMismatch);
+            }
+        }
+        ObjectAt::Missing if want.id.is_package_primary() => {}
+        ObjectAt::Missing | ObjectAt::Invalid => {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+    }
     if want.id.is_package_primary() {
         return if primary_document(doc)
             && !want.kind.as_str().is_empty()
@@ -2020,12 +2182,12 @@ impl RecordStore {
                 if identity(&doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
                     || home(&doc).as_deref() != Some(set.home.as_str())
                     || room_scope(&doc).is_some_and(|scope| scope != set.home)
+                    || !init_scoped(&mut doc, &want.id, &want.kind, &set.home, Some(&set.home))
                     || !app_state::DocStore::claim_legacy_record_migration(
                         &set.package_id,
                         &set.home,
                         &key,
                     )?
-                    || !init_scoped(&mut doc, &want.id, &want.kind, &set.home, Some(&set.home))
                 {
                     return Err(RecordOpenError::IdentityMismatch);
                 }
@@ -2890,6 +3052,103 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(state_dir_env)]
+    fn malformed_qos_migration_source_never_claims_a_room() {
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_DATA_HOME");
+        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
+        let room = "11111111-1111-4111-8111-111111111111";
+        let other_room = "22222222-2222-4222-8222-222222222222";
+
+        for malformed in ["room", "refs"] {
+            let package = format!("dev.qos.malformed-{malformed}");
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            let key = checkout.id.storage_key();
+            let mut owner = app_state::DocStore::open_record(&package, &key).unwrap();
+            let mut doc = owner.new_document();
+            let metadata = doc.put_object(ROOT, LEGACY_META, ObjType::Map).unwrap();
+            doc.put(&metadata, "id", checkout.id.as_str()).unwrap();
+            doc.put(&metadata, "kind", checkout.kind.as_str()).unwrap();
+            doc.put(&metadata, "home", room).unwrap();
+            match malformed {
+                "room" => doc.put(&metadata, ROOM, other_room).unwrap(),
+                "refs" => doc.put(&metadata, "refs", "not a list").unwrap(),
+                _ => unreachable!(),
+            }
+            owner.save(&mut doc).unwrap();
+
+            let store = RecordStore::new(RecordSet::open(&package).with_home(room));
+            assert!(matches!(
+                store.open_existing_record_checked(&checkout),
+                Err(RecordOpenError::IdentityMismatch)
+            ));
+            assert!(
+                app_state::DocStore::claim_legacy_record_migration(&package, other_room, &key)
+                    .unwrap(),
+                "a rejected {malformed} source must not leave a durable room claim"
+            );
+        }
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(state_dir_env)]
+    fn rejected_qos_checkout_preserves_the_active_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_DATA_HOME");
+        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
+
+        let package = "dev.qos.rejected-checkout";
+        let room = "11111111-1111-4111-8111-111111111111";
+        let active = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let rejected = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let mut room_doc = AutoCommit::new();
+        let mut set = RecordSet::open(package).with_home(room);
+        let mut state = State::new();
+        assert!(set.checkout(&mut state, Some(&mut room_doc), &active));
+        put_text(&mut state.doc, "body", "keep this content");
+
+        let key = rejected.id.storage_key();
+        let mut owner = app_state::DocStore::open_room_record(package, room, &key).unwrap();
+        let mut malformed = owner.new_document();
+        let metadata = malformed
+            .put_object(ROOT, LEGACY_META, ObjType::Map)
+            .unwrap();
+        malformed
+            .put(&metadata, "id", rejected.id.as_str())
+            .unwrap();
+        malformed
+            .put(&metadata, "kind", rejected.kind.as_str())
+            .unwrap();
+        malformed.put(&metadata, "home", room).unwrap();
+        malformed
+            .put(&metadata, ROOM, "22222222-2222-4222-8222-222222222222")
+            .unwrap();
+        owner.save(&mut malformed).unwrap();
+
+        assert!(!set.checkout(&mut state, Some(&mut room_doc), &rejected));
+        assert_eq!(set.active.as_ref(), Some(&active.id));
+        assert_eq!(
+            text(&state.doc, "body").as_deref(),
+            Some("keep this content")
+        );
+        assert!(!set.open.contains_key(&rejected.id));
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+    }
+
+    #[test]
     fn history_new_record_creation_refuses_reuse_and_preserves_the_live_graph() {
         let store = RecordStore::in_memory();
         let checkout = RecordCheckout::new(RecordId::for_tab(404), RecordKind::new("tab"));
@@ -3201,6 +3460,211 @@ mod tests {
 #[cfg(test)]
 mod portable_tests {
     use super::*;
+
+    fn qos_record(id: &RecordId, kind: &RecordKind, home: &str, room: Option<&str>) -> AutoCommit {
+        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![7; 32]));
+        doc.put(
+            ROOT,
+            app_state::SCHEMA_VERSION_KEY,
+            u64::from(app_state::SCHEMA_VERSION),
+        )
+        .unwrap();
+        let meta = doc.put_object(ROOT, "qos:record", ObjType::Map).unwrap();
+        doc.put(&meta, "id", id.as_str()).unwrap();
+        doc.put(&meta, "kind", kind.as_str()).unwrap();
+        doc.put(&meta, "home", home).unwrap();
+        if let Some(room) = room {
+            doc.put(&meta, ROOM, room).unwrap();
+        }
+        doc.put_object(&meta, "refs", ObjType::List).unwrap();
+        doc.put(ROOT, "body", "deployed qOS bytes").unwrap();
+        doc.commit();
+        doc
+    }
+
+    #[test]
+    fn portable_store_reopens_and_updates_qos_metadata_without_renaming_it() {
+        let cache =
+            crate::portable_storage::PortableStorage::new("legacy-profile", "device").unwrap();
+        let package = "dev.qos.notes";
+        let workspace = "legacy-room";
+        let checkout = RecordCheckout::new(RecordId::for_tab(9), RecordKind::new("notes.notebook"));
+        let mut frozen = qos_record(&checkout.id, &checkout.kind, workspace, Some(workspace));
+        let original_heads = frozen.base_heads().to_vec();
+        let actor = frozen.get_actor().to_bytes().to_vec();
+        cache
+            .hydrate(
+                StorageKey::Record {
+                    package: package.into(),
+                    workspace: workspace.into(),
+                    record: checkout.id.as_str().into(),
+                },
+                frozen.save(),
+                Some(actor),
+            )
+            .unwrap();
+
+        let store = RecordOwners::portable(cache.clone())
+            .open(package, workspace)
+            .unwrap();
+        store.try_open_record(&checkout).unwrap();
+        store.read(&checkout.id, |doc| {
+            assert_eq!(doc.base_heads(), original_heads);
+            assert_eq!(
+                str_at(doc, &doc.get(ROOT, "qos:record").unwrap().unwrap().1, "id").as_deref(),
+                Some(checkout.id.as_str())
+            );
+            assert!(doc.get(ROOT, "tilo:record").unwrap().is_none());
+            assert_eq!(
+                str_at(doc, &ROOT, "body").as_deref(),
+                Some("deployed qOS bytes")
+            );
+        });
+
+        let referenced = RecordRef::new(RecordId::for_tab(10), "attached-to");
+        assert_eq!(
+            store.with(&checkout.id, |doc| add_reference(doc, &referenced)),
+            Some(true)
+        );
+        store.read(&checkout.id, |doc| {
+            assert_eq!(references(doc), vec![referenced]);
+            assert!(doc.get(ROOT, "qos:record").unwrap().is_some());
+            assert!(doc.get(ROOT, "tilo:record").unwrap().is_none());
+        });
+
+        let rejected =
+            RecordCheckout::new(RecordId::for_tab(13), RecordKind::new("notes.notebook"));
+        let mut malformed = qos_record(&rejected.id, &rejected.kind, workspace, Some(workspace));
+        let metadata = malformed.get(ROOT, LEGACY_META).unwrap().unwrap().1;
+        malformed.put(&metadata, "refs", "not a list").unwrap();
+        malformed.commit();
+        let actor = malformed.get_actor().to_bytes().to_vec();
+        cache
+            .hydrate(
+                StorageKey::Record {
+                    package: package.into(),
+                    workspace: workspace.into(),
+                    record: rejected.id.as_str().into(),
+                },
+                malformed.save(),
+                Some(actor),
+            )
+            .unwrap();
+        assert!(matches!(
+            store.try_open_record(&rejected),
+            Err(RecordOpenError::IdentityMismatch)
+        ));
+    }
+
+    #[test]
+    fn qos_metadata_cannot_cross_room_pass_as_primary_or_mix_with_tilo() {
+        let id = RecordId::for_tab(12);
+        let kind = RecordKind::new("note");
+        let mut roomless = qos_record(&id, &kind, "room-a", None);
+        assert!(init_scoped(
+            &mut roomless,
+            &id,
+            &kind,
+            "room-a",
+            Some("room-a")
+        ));
+        assert_eq!(room_scope(&roomless).as_deref(), Some("room-a"));
+        assert!(roomless.get(ROOT, "tilo:record").unwrap().is_none());
+
+        let mut wrong_room = qos_record(&id, &kind, "room-a", Some("room-a"));
+        assert!(!init_scoped(
+            &mut wrong_room,
+            &id,
+            &kind,
+            "room-b",
+            Some("room-b")
+        ));
+        assert!(wrong_room.get(ROOT, "tilo:record").unwrap().is_none());
+        assert!(matches!(
+            validate_identity(
+                &wrong_room,
+                &RecordCheckout::package_primary(RecordKind::new("primary")),
+                "room-a"
+            ),
+            Err(RecordOpenError::IdentityMismatch)
+        ));
+
+        let mut mixed = qos_record(&id, &kind, "room-a", Some("room-a"));
+        let current = mixed.put_object(ROOT, "tilo:record", ObjType::Map).unwrap();
+        mixed.put(&current, "id", id.as_str()).unwrap();
+        mixed.put(&current, "kind", kind.as_str()).unwrap();
+        assert!(identity(&mixed).is_none());
+        assert!(!init_scoped(
+            &mut mixed,
+            &id,
+            &kind,
+            "room-a",
+            Some("room-a")
+        ));
+
+        let mut malformed = AutoCommit::new();
+        malformed.put(ROOT, "qos:record", "not a map").unwrap();
+        assert!(!init_scoped(
+            &mut malformed,
+            &id,
+            &kind,
+            "room-a",
+            Some("room-a")
+        ));
+        assert!(malformed.get(ROOT, "tilo:record").unwrap().is_none());
+
+        let mut base = qos_record(&id, &kind, "room-a", None);
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).unwrap();
+        left.set_actor(automerge::ActorId::from(vec![8; 32]));
+        let left_meta = left.get(ROOT, "qos:record").unwrap().unwrap().1;
+        left.put(&left_meta, ROOM, "room-a").unwrap();
+        let mut right = AutoCommit::load(&bytes).unwrap();
+        right.set_actor(automerge::ActorId::from(vec![9; 32]));
+        let right_meta = right.get(ROOT, "qos:record").unwrap().unwrap().1;
+        right.put(&right_meta, ROOM, "room-b").unwrap();
+        left.merge(&mut right).unwrap();
+        assert_eq!(left.get_all(&left_meta, ROOM).unwrap().len(), 2);
+        assert!(!init_scoped(
+            &mut left,
+            &id,
+            &kind,
+            "room-a",
+            Some("room-a")
+        ));
+    }
+
+    #[test]
+    fn qos_room_index_is_read_and_updated_in_its_original_namespace() {
+        let mut doc = AutoCommit::new();
+        let index = doc.put_object(ROOT, "qos:records", ObjType::Map).unwrap();
+        let first = RecordCheckout::new(RecordId::for_tab(1), RecordKind::new("note"));
+        let entry = doc
+            .put_object(&index, first.id.as_str(), ObjType::Map)
+            .unwrap();
+        doc.put(&entry, "kind", first.kind.as_str()).unwrap();
+        assert_eq!(room::references(&doc), vec![first.clone()]);
+        let updated_kind = RecordKind::new("updated-note");
+        assert!(!room::reference(&mut doc, &first.id, &updated_kind));
+        assert_eq!(room::references(&doc)[0].kind, updated_kind);
+
+        let second = RecordCheckout::new(RecordId::for_tab(2), RecordKind::new("note"));
+        assert!(room::reference(&mut doc, &second.id, &second.kind));
+        assert!(room::holds(&doc, &second.id));
+        assert!(doc.get(ROOT, "qos:records").unwrap().is_some());
+        assert!(doc.get(ROOT, "tilo:records").unwrap().is_none());
+
+        let duplicate = doc.put_object(ROOT, "tilo:records", ObjType::Map).unwrap();
+        doc.put_object(&duplicate, RecordId::for_tab(3).as_str(), ObjType::Map)
+            .unwrap();
+        assert!(room::references(&doc).is_empty());
+        assert!(!room::reference(
+            &mut doc,
+            &RecordId::for_tab(4),
+            &RecordKind::new("note")
+        ));
+    }
+
     #[test]
     fn portable_owner_preserves_reservation_identity_actor_and_durability() {
         let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();

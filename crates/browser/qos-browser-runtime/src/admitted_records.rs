@@ -199,7 +199,7 @@ mod tests {
         )
         .unwrap();
         use automerge::ReadDoc;
-        let (_, metadata) = writer.get(automerge::ROOT, "qos:record").unwrap().unwrap();
+        let (_, metadata) = writer.get(automerge::ROOT, "tilo:record").unwrap().unwrap();
         writer.put(metadata, "room", "wrong-room").unwrap();
         writer.commit();
         state
