@@ -1306,13 +1306,14 @@ impl VideoPlayer {
         );
 
         let mute_x0 = time_x + f64::from(time_w) + pad;
+        let mute_extent = (icon * 0.8).max(MIN_TARGET);
         let mute = Rect::new(
             mute_x0,
-            mid_y - icon * 0.4,
-            (mute_x0 + icon * 0.8).min(cluster_x0 - pad),
-            mid_y + icon * 0.4,
+            mid_y - mute_extent * 0.5,
+            (mute_x0 + mute_extent).min(cluster_x0 - pad),
+            mid_y + mute_extent * 0.5,
         );
-        self.mute_button_rect = if mute.width() >= 18.0 {
+        self.mute_button_rect = if mute.width() >= MIN_TARGET {
             mute
         } else {
             Rect::ZERO
@@ -1328,14 +1329,13 @@ impl VideoPlayer {
         }
         let volume_x0 = self.mute_button_rect.x1 + pad * 0.5;
         let volume_x1 = cluster_x0 - pad;
-        if volume_x1 - volume_x0 >= 24.0 {
+        if volume_x1 - volume_x0 >= MIN_TARGET {
             let track = Rect::new(
                 volume_x0,
                 mid_y - SCRUB_TRACK_HEIGHT * 0.5,
                 volume_x1,
                 mid_y + SCRUB_TRACK_HEIGHT * 0.5,
             );
-            self.volume_track_rect = track;
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1355,6 +1355,12 @@ impl VideoPlayer {
                 accent,
                 None,
                 &RoundedRect::from_rect(filled, SCRUB_TRACK_HEIGHT * 0.5),
+            );
+            self.volume_track_rect = Rect::new(
+                volume_x0,
+                mid_y - MIN_TARGET * 0.5,
+                volume_x1,
+                mid_y + MIN_TARGET * 0.5,
             );
         } else {
             self.volume_track_rect = Rect::ZERO;

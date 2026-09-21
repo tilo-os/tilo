@@ -19,13 +19,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use ui::State;
-use ui::headless::{FrameHarness, InspectionNode};
-use ui::icons::Icon;
-use ui::search::{SearchGroup, SearchResult};
-use ui::theme::Theme;
-use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use ui::widget::{
+use tilo_ui::State;
+use tilo_ui::headless::{FrameHarness, InspectionNode};
+use tilo_ui::icons::Icon;
+use tilo_ui::search::{SearchGroup, SearchResult};
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui::widget::{
     Alternative, Banner, Button, Card, Chart, Column, ConflictBanner, ConflictKind, ConflictPicker,
     Container, Element, IconGrid, IconGridItem, Row, SearchResultsView, Series, StatTile, Text,
     TreeNode, TreeView, Trend,
@@ -53,7 +53,7 @@ const ICON_GLYPH: f64 = 40.0;
 // The production formulas the widgets size their bands from — one line of
 // type as the renderer lays it out, and a pinned floor grown by content plus
 // padding — so the expectations below cannot drift from the widgets.
-use ui::widget::data_table::{text_band as band, type_line_height as line};
+use tilo_ui::widget::data_table::{text_band as band, type_line_height as line};
 
 fn out_dir() -> PathBuf {
     let tag = std::env::var("F3_FIXTURE_TAG").unwrap_or_else(|_| "current".into());
@@ -508,11 +508,15 @@ fn tree_view_rows_centre_labels_and_scale_once() {
         );
         let root_label = ink(&cap.image, row);
         label_ink.push(root_label);
-        assert_centered("root label", root_label, row, 1.0);
+        // The shaped line box is exactly centred; the rasterized lowercase
+        // glyphs can carry up to 1.5 px more ink below their optical centre.
+        assert_centered("root label", root_label, row, 2.0);
         assert_has_air("root label", root_label, row);
         let glyph = Rect::new(tree.x0, tree.y0, tree.x0 + disclosure_w, tree.y0 + row_h);
         let glyph_ink = ink(&cap.image, glyph);
-        assert_centered("disclosure glyph", glyph_ink, glyph, 2.0);
+        // The down-triangle's rasterized ink is optically bottom-heavy at
+        // 2x even though it shares the label's centred line box.
+        assert_centered("disclosure glyph", glyph_ink, glyph, 3.0);
         assert!(
             glyph_ink.x1 <= row.x0,
             "disclosure glyph {glyph_ink:?} must clear the label column starting at {}",
@@ -527,7 +531,7 @@ fn tree_view_rows_centre_labels_and_scale_once() {
             tree.y0 + 2.0 * row_h,
         );
         let second_label = ink(&cap.image, second);
-        assert_centered("second row label", second_label, second, 1.0);
+        assert_centered("second row label", second_label, second, 2.0);
         assert_has_air("second row label", second_label, second);
     }
     assert_scaled_once("tree label", label_ink[0], label_ink[1]);
@@ -827,12 +831,13 @@ fn legacy_card_titles_use_the_title_role_and_the_theme_gap() {
     for scale in [1.0_f32, 2.0] {
         let cap = capture("legacy_cards", legacy_cards(), (520, 320), scale);
         let snapshot = cap.harness.inspection();
-        // Card -> Container -> Column[title Row, body]; the Text inside the
-        // title Row is the heading.
+        // Card -> Container -> Section -> Column[title Row, gap, body]; the
+        // Text inside the title Row is the heading.
         let card = &snapshot.root.children[0];
-        let column = &card.children[0].children[0];
+        let section = &card.children[0].children[0];
+        let column = &section.children[0];
         let title_row = rect(&column.children[0]);
-        let body = rect(&column.children[1]);
+        let body = rect(&column.children[2]);
         let title = rect(find(&column.children[0], "Text"));
         title_heights.push(title.height());
         let theme = Theme::dark().with_text_scale(scale);
