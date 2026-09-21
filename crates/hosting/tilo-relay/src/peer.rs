@@ -46,6 +46,10 @@ pub enum PeerError {
     /// for a workspace it never Subscribed to).
     #[error("peer protocol violation: {0}")]
     Protocol(String),
+    /// A newer connection for the same device replaced this connection's
+    /// subscriber slot while its replay capture was queued.
+    #[error("superseded by a newer connection for this device")]
+    Superseded,
 }
 
 /// Handle to the set of workspaces the daemon owns.
@@ -422,19 +426,12 @@ where
         result = writing => result,
     };
 
-    if crate::persistence::correlated_diagnostics() {
-        tracing::info!(phase = "peer_end", device = %hex::encode(&peer.device_public_key[..4]), outcome = ?outcome, workspaces = ?subscribed);
-    }
     connection_live
         .0
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    if let Err(error) = &outcome {
-        metrics.inc_subscriber_dropped();
-        tracing::warn!(
-            device = %hex::encode(&peer.device_public_key[..4]),
-            %error,
-            "peer session ended with error"
-        );
+    let outcome = finish_peer_outcome(outcome, &metrics, &peer.device_public_key);
+    if crate::persistence::correlated_diagnostics() {
+        tracing::info!(phase = "peer_end", device = %hex::encode(&peer.device_public_key[..4]), outcome = ?outcome, workspaces = ?subscribed);
     }
     let wsmap = workspaces.lock().await;
     for id in &subscribed {
@@ -446,6 +443,26 @@ where
     }
     drop(wsmap);
     outcome
+}
+
+fn finish_peer_outcome(
+    outcome: Result<(), PeerError>,
+    metrics: &crate::metrics::Metrics,
+    device: &[u8; 32],
+) -> Result<(), PeerError> {
+    match outcome {
+        Err(PeerError::Superseded) => Ok(()),
+        Err(error) => {
+            metrics.inc_subscriber_dropped();
+            tracing::warn!(
+                device = %hex::encode(&device[..4]),
+                %error,
+                "peer session ended with error"
+            );
+            Err(error)
+        }
+        Ok(()) => Ok(()),
+    }
 }
 
 struct ConnectionLease(Arc<std::sync::atomic::AtomicBool>);
@@ -1149,28 +1166,43 @@ async fn handle_subscribe(
     let bind = ticket.authority.clone();
     let catchup = Arc::new(ReplayCatchup::new());
     let session_catchup = catchup.clone();
+    enum SubscribeReplayCompletion {
+        Ready(ReplayHandle),
+        Superseded,
+    }
+
     let rx = owner
         .submit_replay_resumable_wait(
             true,
             1,
             async { Ok(()) },
-            move |state, _| state.capture_replay(&capture),
+            move |state, _| match state.capture_replay(&capture)? {
+                Step::More => Ok(Step::More),
+                Step::Done(handle) => Ok(Step::Done(SubscribeReplayCompletion::Ready(handle))),
+            },
             move |result| async move {
-                let result = result?;
+                let SubscribeReplayCompletion::Ready(handle) = result? else {
+                    unreachable!("only replay completion can classify a subscriber as superseded")
+                };
                 let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
-                let unchanged = match (
-                    expected.as_ref(),
-                    wr.subscribers.get(&source.peer.device_public_key),
-                ) {
+                let current = wr.subscribers.get(&source.peer.device_public_key);
+                let unchanged = match (expected.as_ref(), current) {
                     (Some(expected), Some(current)) => expected.same_channel(&current.tx),
                     (None, None) => true,
                     _ => false,
                 };
-                if !source.alive()
-                    || !source.cert(&source.peer)
-                    || !state_member(&wr, &source.peer)
-                    || !unchanged
+                if !source.alive() || !source.cert(&source.peer) || !state_member(&wr, &source.peer)
                 {
+                    return Err(crate::persistence::error(
+                        "replay subscriber authorization changed",
+                    ));
+                }
+                let replaced = current.is_some_and(|current| !current.tx.same_channel(&source.tx))
+                    && !unchanged;
+                if replaced {
+                    return Ok(SubscribeReplayCompletion::Superseded);
+                }
+                if !unchanged {
                     return Err(crate::persistence::error(
                         "replay subscriber authorization changed",
                     ));
@@ -1203,11 +1235,14 @@ async fn handle_subscribe(
                     },
                 );
                 drop(wr);
-                Ok(result)
+                Ok(SubscribeReplayCompletion::Ready(handle))
             },
         )
         .await?;
-    let handle = crate::persistence::receipt(rx).await?;
+    let handle = match crate::persistence::receipt(rx).await? {
+        SubscribeReplayCompletion::Ready(handle) => handle,
+        SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
+    };
     *replay = Some((workspace_id, ticket, handle, catchup));
     if !subscribed.contains(&workspace_id) {
         subscribed.push(workspace_id);

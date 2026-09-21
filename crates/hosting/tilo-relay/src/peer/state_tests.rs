@@ -1088,7 +1088,9 @@ async fn retained_transactions_release_global_workers_between_quanta() {
 }
 
 impl Fixture {
-    async fn subscribe_ticket(&self) -> (u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>) {
+    async fn subscribe_result(
+        &self,
+    ) -> Result<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>), PeerError> {
         let (state_tx, _state_rx) = mpsc::channel(32);
         let session = SessionCtx {
             workspaces: &self.registry,
@@ -1112,10 +1114,135 @@ impl Fixture {
             &mut replay,
             self.store.workspace_id(),
         )
-        .await
-        .unwrap();
-        replay.unwrap()
+        .await?;
+        replay.ok_or_else(|| PeerError::Protocol("subscribe produced no replay".into()))
     }
+
+    async fn subscribe_ticket(&self) -> (u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>) {
+        self.subscribe_result().await.unwrap()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_completion_only_classifies_a_valid_replacement_as_superseded() {
+    enum Mutation {
+        Replacement,
+        Revocation,
+        MembershipRemoval,
+        SlotRemoval,
+        ReplacementAndRevocation,
+    }
+
+    for mutation in [
+        Mutation::Replacement,
+        Mutation::Revocation,
+        Mutation::MembershipRemoval,
+        Mutation::SlotRemoval,
+        Mutation::ReplacementAndRevocation,
+    ] {
+        let fixture = Arc::new(Fixture::new());
+        let device = fixture.recipient.device_public_key;
+        let (release, reached) =
+            crate::store::test_barrier::install(fixture.store.root(), "replay-prepare");
+        let subscribing = fixture.clone();
+        let task = tokio::spawn(async move { subscribing.subscribe_result().await });
+        reached.await.unwrap();
+
+        let replacement = if matches!(
+            mutation,
+            Mutation::Replacement | Mutation::ReplacementAndRevocation
+        ) {
+            let (replacement, receiver) = mpsc::channel(32);
+            fixture.workspace.lock().await.add_subscriber(Subscriber {
+                device_public_key: device,
+                role: PeerRole::Device,
+                tx: replacement.clone(),
+                disconnect: fixture.source.disconnect.clone(),
+            });
+            Some((replacement, receiver))
+        } else {
+            None
+        };
+        if matches!(
+            mutation,
+            Mutation::Revocation | Mutation::ReplacementAndRevocation
+        ) {
+            let mut entry = tilo_user_identity::RevocationEntry {
+                user_public_key: fixture.source.own_user,
+                revoked_device_public_key: device,
+                revoked_at_ns: 1,
+                reason: tilo_user_identity::RevocationReason::Lost,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
+            fixture
+                .source
+                .revocations
+                .write()
+                .unwrap()
+                .insert(entry)
+                .unwrap();
+        }
+        if matches!(mutation, Mutation::MembershipRemoval) {
+            fixture
+                .workspace
+                .lock()
+                .await
+                .store
+                .save_membership(&[fixture.source.peer.device_public_key])
+                .unwrap();
+        }
+        if matches!(mutation, Mutation::SlotRemoval) {
+            fixture.workspace.lock().await.remove_subscriber(&device);
+        }
+
+        drop(release);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap();
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("mutated replay completion unexpectedly registered"),
+        };
+        if matches!(mutation, Mutation::Replacement) {
+            assert!(matches!(error, PeerError::Superseded));
+        } else {
+            assert!(
+                matches!(error, PeerError::Store(_)),
+                "authorization loss was hidden by stale-session classification: {error}"
+            );
+        }
+        if let Some((replacement, _receiver)) = replacement {
+            assert!(
+                fixture
+                    .workspace
+                    .lock()
+                    .await
+                    .subscribers
+                    .get(&device)
+                    .is_some_and(|current| current.tx.same_channel(&replacement)),
+                "obsolete replay completion removed the replacement session"
+            );
+        }
+    }
+}
+
+#[test]
+fn superseded_peer_outcome_is_quiet_but_protocol_failure_is_counted() {
+    let metrics = crate::metrics::Metrics::default();
+    assert!(finish_peer_outcome(Err(PeerError::Superseded), &metrics, &[7; 32]).is_ok());
+    assert_eq!(metrics.snapshot().subscriber_dropped, 0);
+
+    assert!(
+        finish_peer_outcome(
+            Err(PeerError::Protocol("authorization changed".into())),
+            &metrics,
+            &[7; 32],
+        )
+        .is_err()
+    );
+    assert_eq!(metrics.snapshot().subscriber_dropped, 1);
 }
 
 #[tokio::test]
