@@ -2,11 +2,11 @@
 use crate::support::application::*;
 use automerge::{ROOT, transaction::Transactable};
 use std::rc::Rc;
-use ui::application::{ApplicationCatalog, HostContext, LaunchTarget, RestoreInput};
-use ui::application_view::{InstanceViewStore, SavedInstanceView};
-use ui::launch::LaunchError;
-use ui::record::RecordId;
-use ui::view::{FocusView, FrozenApp, ThawError, View};
+use tilo_ui::application::{ApplicationCatalog, HostContext, LaunchTarget, RestoreInput};
+use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
+use tilo_ui::launch::LaunchError;
+use tilo_ui::record::RecordId;
+use tilo_ui::view::{FocusView, FrozenApp, ThawError, View};
 
 #[test]
 fn new_instances_are_distinct_and_catalogue_never_fabricates_apps() {
@@ -422,7 +422,7 @@ fn invalid_factory_view_retains_new_ready_record_without_saving_view() {
 
 #[test]
 fn permission_revocation_between_prepare_and_factory_is_enforced() {
-    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    use tilo_ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     let host = ProbeHost::new();
     let mut definition = definition(probe_factory);
     definition.required.push(denied_scope());
@@ -683,7 +683,7 @@ fn failed_initializer_returns_original_typed_error_without_publishing_empty_reco
         .err()
         .unwrap();
     assert!(
-        matches!(error, LaunchError::Record(ui::record::RecordOpenError::Initialization(reason)) if reason == "schema initialization refused")
+        matches!(error, LaunchError::Record(tilo_ui::record::RecordOpenError::Initialization(reason)) if reason == "schema initialization refused")
     );
     assert!(!host.records.is_ready(&record.id));
     assert!(host.records.reserve_record(&record).is_ok());
@@ -723,7 +723,7 @@ fn invalid_save_never_replaces_a_valid_local_envelope() {
     reason = "fault matrix keeps last-owner transfer, pending-history comparison and repair in one auditable scenario"
 )]
 fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
-    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    use tilo_ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     for case in ["definition", "target", "foreign", "malformed", "revoked"] {
         let host = ProbeHost::new();
         let mut component =
@@ -764,7 +764,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
                 doc.put(ROOT, "body", "pending edit").unwrap();
             })
             .unwrap();
-        let snapshot = |doc: &mut automerge::AutoCommit, history: &mut ui::state::UndoLog| {
+        let snapshot = |doc: &mut automerge::AutoCommit, history: &mut tilo_ui::state::UndoLog| {
             let last = history.peek_last_undo().unwrap();
             (
                 doc.pending_ops(),
@@ -941,14 +941,14 @@ fn prepared_driver_semantic_outputs_use_the_canonical_document() {
     let dump = host.temp.path().join("output/document.json");
     let inspect = host.temp.path().join("output/inspect.json");
     let targets = host.temp.path().join("output/targets.json");
-    let spec = ui::headless::Spec {
+    let spec = tilo_ui::headless::Spec {
         dump: Some(dump.clone()),
         inspect: Some(inspect.clone()),
         targets: Some(targets.clone()),
         ..Default::default()
     };
     assert_eq!(
-        ui::headless::run_component(&spec, component, runner_inputs()),
+        tilo_ui::headless::run_component(&spec, component, runner_inputs()),
         0
     );
     let document: serde_json::Value =
@@ -979,11 +979,11 @@ fn prepared_runner_mount_failure_retains_close_recovery() {
         std::fs::create_dir_all(&path).unwrap();
         drop(host.views);
         let error = if native {
-            ui::App::from_component(component, runner_inputs())
+            tilo_ui::App::from_component(component, runner_inputs())
                 .err()
                 .unwrap()
         } else {
-            ui::headless::Driver::from_component(component, (320, 180), runner_inputs())
+            tilo_ui::headless::Driver::from_component(component, (320, 180), runner_inputs())
                 .err()
                 .unwrap()
         };
@@ -1022,18 +1022,18 @@ fn prepared_headless_action_and_output_failure_keep_exit_one_and_close() {
         let output = host.root().join("output-is-directory");
         std::fs::create_dir_all(&output).unwrap();
         let spec = if output_failure {
-            ui::headless::Spec {
+            tilo_ui::headless::Spec {
                 dump: Some(output),
                 ..Default::default()
             }
         } else {
-            ui::headless::Spec {
-                actions: vec![ui::headless::Action::ClickNamed("absent".into())],
+            tilo_ui::headless::Spec {
+                actions: vec![tilo_ui::headless::Action::ClickNamed("absent".into())],
                 ..Default::default()
             }
         };
         assert_eq!(
-            ui::headless::run_component(&spec, component, runner_inputs()),
+            tilo_ui::headless::run_component(&spec, component, runner_inputs()),
             1
         );
         assert!(!writer.try_set("after runner close".into()));
@@ -1072,7 +1072,11 @@ fn prepared_headless_flush_failure_is_durability_exit_with_original_bytes() {
         })
         .unwrap();
     assert_eq!(
-        ui::headless::run_component(&ui::headless::Spec::default(), component, runner_inputs()),
+        tilo_ui::headless::run_component(
+            &tilo_ui::headless::Spec::default(),
+            component,
+            runner_inputs()
+        ),
         3
     );
     assert_eq!(std::fs::read(&retained).unwrap(), original);
@@ -1082,7 +1086,7 @@ fn prepared_headless_flush_failure_is_durability_exit_with_original_bytes() {
     host.records.try_flush().unwrap();
     assert_eq!(
         host.records.save_status(&checkout.id).unwrap(),
-        ui::record::RecordSaveStatus::Saved
+        tilo_ui::record::RecordSaveStatus::Saved
     );
 }
 
@@ -1098,7 +1102,7 @@ fn record_save_status_is_delivered_after_document_loan() {
 mod save_status_fixture {
     use super::*;
     use std::cell::RefCell;
-    use ui::{
+    use tilo_ui::{
         Widget,
         record::{RecordCheckout, RecordOpenError, RecordSaveStatus, RecordStore},
         widget::{AppKind, AppWidget, IconDescriptor, TileHost},
@@ -1117,7 +1121,7 @@ mod save_status_fixture {
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
-            _: &ui::Theme,
+            _: &tilo_ui::Theme,
             _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             tree.new_leaf(taffy::Style::default()).unwrap()
@@ -1133,9 +1137,9 @@ mod save_status_fixture {
             &mut self,
             _: &mut vello::Scene,
             _: vello::kurbo::Affine,
-            _: &mut ui::TextRenderer,
-            _: &ui::Theme,
-            _: &ui::presence::PresenceCtx,
+            _: &mut tilo_ui::TextRenderer,
+            _: &tilo_ui::Theme,
+            _: &tilo_ui::presence::PresenceCtx,
         ) {
         }
         fn handle_event(
@@ -1190,7 +1194,7 @@ mod save_status_fixture {
         mut context: HostContext,
         target: &LaunchTarget,
         _: RestoreInput,
-    ) -> Result<ui::application::AppComponent, LaunchError> {
+    ) -> Result<tilo_ui::application::AppComponent, LaunchError> {
         if matches!(target, LaunchTarget::New) {
             context
                 .initialize_new_record(|_| Ok(()))
@@ -1201,7 +1205,7 @@ mod save_status_fixture {
             checkout: context.record().clone(),
             edits: 0,
         };
-        Ok(ui::application::AppComponent::new(
+        Ok(tilo_ui::application::AppComponent::new(
             context,
             Box::new(root),
             tilo_actions::ActionRegistry::new(),
@@ -1454,10 +1458,10 @@ mod paired_local {
     use super::*;
     use automerge::{AutoCommit, ObjId, ReadDoc};
     use std::cell::RefCell;
-    use ui::application::{AppComponent, ApplicationDefinition};
-    use ui::application_view::{ApplicationFocusRestore, ApplicationLocalView};
-    use ui::view::ViewContribution;
-    use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+    use tilo_ui::application::{AppComponent, ApplicationDefinition};
+    use tilo_ui::application_view::{ApplicationFocusRestore, ApplicationLocalView};
+    use tilo_ui::view::ViewContribution;
+    use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
     #[derive(Default)]
     #[allow(
@@ -1480,7 +1484,7 @@ mod paired_local {
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
-            _: &ui::Theme,
+            _: &tilo_ui::Theme,
             _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             tree.new_leaf(taffy::Style::default()).unwrap()
@@ -1496,9 +1500,9 @@ mod paired_local {
             &mut self,
             _: &mut vello::Scene,
             _: vello::kurbo::Affine,
-            _: &mut ui::TextRenderer,
-            _: &ui::Theme,
-            _: &ui::presence::PresenceCtx,
+            _: &mut tilo_ui::TextRenderer,
+            _: &tilo_ui::Theme,
+            _: &tilo_ui::presence::PresenceCtx,
         ) {
         }
         fn handle_event(
@@ -1744,7 +1748,7 @@ mod paired_local {
 
 #[test]
 fn v2_application_envelope_roundtrips_and_default_hook_refuses_payload() {
-    use ui::application_view::ApplicationLocalView;
+    use tilo_ui::application_view::ApplicationLocalView;
     let host = ProbeHost::new();
     let mut first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
     let mut saved = first.close().recovery.unwrap();
@@ -1814,7 +1818,7 @@ fn native_close_refusal_preserves_live_owner_and_retry_persists_later_edits() {
     std::fs::create_dir(&document_path).unwrap();
     let view_path = host.view_path(11);
     std::fs::create_dir_all(&view_path).unwrap();
-    let mut app = ui::App::from_component(component, runner_inputs()).unwrap();
+    let mut app = tilo_ui::App::from_component(component, runner_inputs()).unwrap();
     host.records
         .with(&checkout.id, |doc| {
             doc.put(ROOT, "body", "before refused close").unwrap();
@@ -1834,9 +1838,20 @@ fn native_close_refusal_preserves_live_owner_and_retry_persists_later_edits() {
     );
     std::fs::remove_dir(&document_path).unwrap();
     std::fs::remove_dir(&view_path).unwrap();
+    app.refresh_semantic_tree();
+    let retry = app
+        .semantic_tree()
+        .iter()
+        .find(|node| node.action("retry").is_some())
+        .map(|node| node.id.clone())
+        .expect("failed close publishes an actionable Retry decision");
+    assert!(
+        app.invoke_semantic_action(&retry, "retry", None).unwrap(),
+        "the public semantic action must retry the retained owners"
+    );
     assert!(
         app.request_close(),
-        "repair must retry the same live record and view owners"
+        "successful retry leaves the same live owners ready for native close"
     );
     assert_eq!(body(&host.records, &checkout), "edited after refusal");
     let saved = automerge::AutoCommit::load(&std::fs::read(&document_path).unwrap()).unwrap();

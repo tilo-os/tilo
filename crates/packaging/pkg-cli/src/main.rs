@@ -846,7 +846,7 @@ fn same_version_identity(
     left: &registry_types::RegistryVersion,
     right: &registry_types::RegistryVersion,
 ) -> bool {
-    left.version == right.version
+    pkg::version::compare(&left.version, &right.version).is_eq()
         && left
             .target
             .as_ref()
@@ -871,28 +871,18 @@ fn compare_registry_versions(
     left: &registry_types::RegistryVersion,
     right: &registry_types::RegistryVersion,
 ) -> std::cmp::Ordering {
-    let semantic = numeric_version_key(&right.version).cmp(&numeric_version_key(&left.version));
-    semantic
-        .then_with(|| right.version.cmp(&left.version))
-        .then_with(|| {
-            left.target
-                .as_ref()
-                .map(|target| target.architecture.as_str())
-                .cmp(
-                    &right
-                        .target
-                        .as_ref()
-                        .map(|target| target.architecture.as_str()),
-                )
-        })
-        .then_with(|| left.qpkg_root_hash_hex.cmp(&right.qpkg_root_hash_hex))
-}
-
-fn numeric_version_key(version: &str) -> Option<Vec<u64>> {
-    version
-        .split('.')
-        .map(|component| component.parse::<u64>().ok())
-        .collect()
+    let semantic = pkg::version::compare(&right.version, &left.version);
+    semantic.then_with(|| {
+        left.target
+            .as_ref()
+            .map(|target| target.architecture.as_str())
+            .cmp(
+                &right
+                    .target
+                    .as_ref()
+                    .map(|target| target.architecture.as_str()),
+            )
+    })
 }
 
 fn cmd_entry(
@@ -946,4 +936,37 @@ fn cmd_entry(
     let version = entry.versions.first().map_or("?", |v| v.version.as_str());
     eprintln!("entry: {}@{version} -> {url}", entry.package_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod version_identity_tests {
+    use super::*;
+
+    fn version(value: &str) -> registry_types::RegistryVersion {
+        registry_types::RegistryVersion {
+            version: value.into(),
+            qpkg_url: String::new(),
+            qpkg_root_hash_hex: String::new(),
+            qpkg_size_bytes: 0,
+            released_at_unix: 0,
+            qpkg_blake3_hex: None,
+            target: None,
+        }
+    }
+
+    #[test]
+    fn source_hash_cannot_create_a_second_artifact_at_the_same_precedence() {
+        assert!(same_version_identity(
+            &version("0.1.1-dev.10+g111"),
+            &version("0.1.1-dev.10+g222")
+        ));
+        assert!(!same_version_identity(
+            &version("0.1.1-dev.10+g111"),
+            &version("0.1.1-dev.11+g000")
+        ));
+        assert!(
+            compare_registry_versions(&version("0.1.1-dev.10+g111"), &version("0.1.1-dev.9+gzzz"))
+                .is_lt()
+        );
+    }
 }

@@ -3,10 +3,10 @@ use crate::support::application::{ProbeHost, author, existing, instantiate_probe
 use automerge::ReadDoc;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use std::collections::HashMap;
-use ui::application::{LaunchTarget, RestoreInput};
-use ui::bound_dispatch::{BoundNodeMap, invoke_bound_node};
-use ui::state::UndoLog;
-use ui::widget::{TileHost, Widget};
+use tilo_ui::application::{LaunchTarget, RestoreInput};
+use tilo_ui::bound_dispatch::{BoundNodeMap, invoke_bound_node};
+use tilo_ui::state::UndoLog;
+use tilo_ui::widget::{TileHost, Widget};
 
 struct BoundProbe {
     _tile: Box<TileHost>,
@@ -16,11 +16,11 @@ struct BoundProbe {
     _tree: taffy::TaffyTree<()>,
 }
 impl BoundProbe {
-    fn new(component: ui::application::AppComponent) -> Self {
+    fn new(component: tilo_ui::application::AppComponent) -> Self {
         let mut tile = Box::new(TileHost::from_component(component));
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
-        let layout = tile.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
+        let layout = tile.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
         // Select the actual probe leaf, not a nondeterministic retained wrapper.
         let node = *nodes
             .keys()
@@ -43,7 +43,7 @@ impl BoundProbe {
         &mut self,
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut dyn Widget, &mut AutoCommit, &automerge::ObjId) -> R,
-    ) -> Result<R, ui::bound_dispatch::BoundDispatchError> {
+    ) -> Result<R, tilo_ui::bound_dispatch::BoundDispatchError> {
         // SAFETY: exclusive self owns the stable, live tile and both admission maps.
         unsafe {
             invoke_bound_node(
@@ -174,7 +174,7 @@ fn unwind_restores_owned_history_and_cross_record_entry_refuses_before_delivery(
         a.invoke(&mut outer, |_, doc, _| {
             assert!(matches!(
                 c.invoke(doc, |_, _, _| panic!("cross-record delivery")),
-                Err(ui::bound_dispatch::BoundDispatchError::CrossRecordReentry)
+                Err(tilo_ui::bound_dispatch::BoundDispatchError::CrossRecordReentry)
             ));
             doc.put(ROOT, "a", "survives unwind").unwrap();
             panic!("controlled mutation unwind");
@@ -305,7 +305,7 @@ fn bound_history_selection_skips_newer_foreign_and_unattributed_entries() {
     assert!(history.next_undo_in(&author(), 11).is_none());
     assert!(
         history
-            .next_undo_in(&ui::permissions::UserId("other".into()), 12)
+            .next_undo_in(&tilo_ui::permissions::UserId("other".into()), 12)
             .is_none()
     );
     assert_eq!(
@@ -327,7 +327,7 @@ fn another_instance_mutation_finalizes_the_original_record_boundary() {
     for (tile, value) in [(&mut first, "a1"), (&mut second, "b1")] {
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
-        let layout = tile.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
+        let layout = tile.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
         let mut bindings = BoundNodeMap::new();
         let node = *nodes.keys().next().unwrap();
         // SAFETY: this test exclusively owns the matching live tree and node map.

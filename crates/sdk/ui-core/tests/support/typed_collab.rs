@@ -30,9 +30,9 @@ use runtime_collab::raw::{
     action_catalogue_stream, action_stream, channel_handle, collab_service, context_stream,
     presence_event, presence_handle, presence_payload, presence_stream, stream,
 };
+use tilo_ui::collaboration::CollaborationManager;
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use ui::collaboration::CollaborationManager;
 use uuid::Uuid;
 
 const TEST_APP_ID: &str = "ui-integration-test";
@@ -178,7 +178,7 @@ impl TypedBroker {
     /// SDK action subscription without adding a toolkit-only request variant.
     pub fn inject_action(&self, author: &str, type_id: &str, payload: &[u8]) {
         let channel =
-            ui::collaboration::channel_key::format(TEST_APP_ID, &Uuid::nil().to_string(), "");
+            tilo_ui::collaboration::channel_key::format(TEST_APP_ID, &Uuid::nil().to_string(), "");
         self.hub.fanout_action(
             &channel,
             u64::MAX,
