@@ -415,7 +415,9 @@ def validate_creator_job_status(value, binding):
                 or type(value['launched_at']) is not int or value['launched_at'] <= 0):
             raise ValueError('creator launch status has unexpected fields')
         return
-    expected = base | {'process', 'log_bytes', 'log_truncated'}
+    expected = base | {'process'}
+    if value['state'] in {'succeeded', 'failed'}:
+        expected |= {'log_bytes', 'log_truncated'}
     if value['state'] == 'succeeded':
         expected |= {'creation_sha256'}
     if set(value) != expected:
@@ -426,10 +428,12 @@ def validate_creator_job_status(value, binding):
             or type(process['pid']) is not int or process['pid'] <= 1
             or not isinstance(process['start'], str) or not process['start'].isdigit()
             or any(not isinstance(process[key], str) or not re.fullmatch(r'[0-9a-f]{64}', process[key])
-                   for key in ('argv_sha256', 'cgroup_sha256', 'request_sha256'))
-            or type(value['log_bytes']) is not int or not 0 <= value['log_bytes'] <= 256 * 1024
-            or type(value['log_truncated']) is not bool):
+                   for key in ('argv_sha256', 'cgroup_sha256', 'request_sha256'))):
         raise ValueError('creator job process identity is invalid')
+    if value['state'] in {'succeeded', 'failed'} and (
+            type(value['log_bytes']) is not int or not 0 <= value['log_bytes'] <= 256 * 1024
+            or type(value['log_truncated']) is not bool):
+        raise ValueError('creator job log identity is invalid')
     if value['state'] == 'succeeded' and not re.fullmatch(r'[0-9a-f]{64}', value['creation_sha256']):
         raise ValueError('creator job success receipt is invalid')
 

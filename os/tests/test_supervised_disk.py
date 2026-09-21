@@ -271,7 +271,7 @@ class DetachedCreatorJob(unittest.TestCase):
                 'cgroup_sha256':'b'*64,'request_sha256':'c'*64}
 
     def test_poll_reconnects_after_transport_loss_then_accepts_bound_success(self):
-        running=self.status('running',process=self.process(),log_bytes=0,log_truncated=False)
+        running=self.status('running',process=self.process())
         success=self.status('succeeded',process=self.process(),log_bytes=12,log_truncated=False,
                             creation_sha256='d'*64)
         pauses=[]
