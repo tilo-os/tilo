@@ -455,12 +455,9 @@ impl Fixture {
 }
 
 fn gen_rsa(priv_path: &Path, pub_path: &Path) {
-    let generated = tilo_crypto::generate_secure_boot_certificate("Tilo rollback test")
-        .expect("generate RSA key");
-    let public =
-        tilo_crypto::rsa_public_key_pem(&generated.private_key_pem).expect("derive RSA public key");
-    std::fs::write(priv_path, generated.private_key_pem.as_bytes()).expect("write private key");
-    std::fs::write(pub_path, public).expect("write public key");
+    let generated = tilo_crypto::generate_tpm_authority_key().expect("generate TPM authority key");
+    std::fs::write(priv_path, generated.private_key_pem().as_bytes()).expect("write private key");
+    std::fs::write(pub_path, generated.public_key_pem().as_bytes()).expect("write public key");
 }
 
 /// A LUKS2 image on a plain file, slot 0 holding `recovery`.
