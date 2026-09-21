@@ -1,19 +1,133 @@
 #!/usr/bin/env python3
 """Warm the exact registry path, then supervise bootc without a shell."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import signal
 import stat
 import subprocess
+import shutil
+import tempfile
 import threading
 import time
 import tomllib
 
 
 SOURCE = re.compile(r'docker://code\.podesta\.ai/[a-z0-9_./-]+@(sha256:[0-9a-f]{64})')
+
+
+class ForwardedSignal(Exception):
+    def __init__(self, signum):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def _private_directory(path):
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError(f'{path} is not a root-owned private directory')
+
+
+@contextmanager
+def private_source_store_view(lower=Path('/run/tilo-parent-containers'),
+                              target=Path('/var/lib/containers'),
+                              scratch=Path('/run/tilo-source-store-scratch')):
+    """Mount a private COW store after the parent created this container."""
+    lower_info = lower.lstat()
+    if (not stat.S_ISDIR(lower_info.st_mode) or lower_info.st_uid != 0
+            or lower_info.st_gid != 0 or stat.S_IMODE(lower_info.st_mode) & 0o022
+            or not os.statvfs(lower).f_flag & os.ST_RDONLY):
+        raise ValueError('parent source store is not a protected read-only directory')
+    _private_directory(scratch)
+    created_target = False
+    try:
+        target_info = target.lstat()
+    except FileNotFoundError:
+        parent_info = target.parent.lstat()
+        if (not stat.S_ISDIR(parent_info.st_mode) or parent_info.st_uid != 0
+                or parent_info.st_gid != 0
+                or stat.S_IMODE(parent_info.st_mode) not in (0o755, 0o775)):
+            raise ValueError('private source store parent is not protected')
+        target.mkdir(mode=0o700)
+        created_target = True
+        target_info = target.lstat()
+    if (not stat.S_ISDIR(target_info.st_mode) or target_info.st_uid != 0
+            or target_info.st_gid != 0 or stat.S_IMODE(target_info.st_mode) & 0o022):
+        raise ValueError('private source store mountpoint is not protected')
+    original = (target_info.st_dev, target_info.st_ino)
+    root = Path(tempfile.mkdtemp(prefix='tilo-source-store-', dir=scratch))
+    os.chmod(root, 0o700)
+    upper, work = (root / name for name in ('upper', 'work'))
+    for path in (upper, work):
+        path.mkdir(mode=0o700)
+        _private_directory(path)
+    process = None
+    mounted = False
+    cleanup_error = None
+    try:
+        process = subprocess.Popen(
+            ['/usr/bin/fuse-overlayfs', '-f', '-o',
+             f'lowerdir={lower},upperdir={upper},workdir={work}', str(target)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
+        for _ in range(100):
+            if process.poll() is not None:
+                raise ValueError('private source store view exited before mounting')
+            result = subprocess.run(
+                ['/usr/bin/findmnt', '-n', '-o', 'FSTYPE', '-T', str(target)],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
+            if result.returncode == 0 and result.stdout.strip() == b'fuse.fuse-overlayfs':
+                mounted = True
+                break
+            time.sleep(0.1)
+        if not mounted:
+            raise ValueError('private source store view did not mount')
+        yield
+    finally:
+        if mounted:
+            result = subprocess.run(
+                ['/usr/bin/fusermount3', '-u', str(target)], stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
+            if result.returncode:
+                result = subprocess.run(
+                    ['/usr/bin/fusermount3', '-uz', str(target)], stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
+                if result.returncode:
+                    cleanup_error = ValueError('private source store view did not unmount')
+        if process is not None:
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait(timeout=10)
+                cleanup_error = cleanup_error or ValueError(
+                    'private source store view did not stop after unmount')
+        try:
+            shutil.rmtree(root)
+        except OSError as error:
+            cleanup_error = cleanup_error or error
+        if created_target:
+            try:
+                target.rmdir()
+            except OSError as error:
+                cleanup_error = cleanup_error or error
+            if target.exists():
+                cleanup_error = cleanup_error or ValueError(
+                    'private source store mountpoint survived cleanup')
+        else:
+            current = target.lstat()
+            if (current.st_dev, current.st_ino) != original:
+                cleanup_error = cleanup_error or ValueError(
+                    'private source store view survived cleanup')
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 def require_private_udev():
@@ -150,9 +264,7 @@ def run_bootc(source, expected, argv, *, heartbeat_interval=30):
         for signum, handler in previous.items():
             signal.signal(signum, handler)
     if forwarded:
-        signal.signal(forwarded[0], signal.SIG_DFL)
-        os.kill(os.getpid(), forwarded[0])
-        raise AssertionError('signal propagation returned')
+        raise ForwardedSignal(forwarded[0])
     return returncode
 
 
@@ -164,7 +276,13 @@ def main():
     args = parser.parse_args()
     argv = args.bootc[1:] if args.bootc[:1] == ['--'] else args.bootc
     require_private_udev()
-    return run_bootc(args.source, args.expected_digest, argv)
+    try:
+        with private_source_store_view():
+            return run_bootc(args.source, args.expected_digest, argv)
+    except ForwardedSignal as forwarded:
+        signal.signal(forwarded.signum, signal.SIG_DFL)
+        os.kill(os.getpid(), forwarded.signum)
+        raise AssertionError('signal propagation returned')
 
 
 if __name__ == '__main__':
