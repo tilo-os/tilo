@@ -418,6 +418,7 @@ enum ContextEnvelope {
     FollowChanged {
         peer_id: Option<String>,
     },
+    SnapshotRequested,
 }
 
 /// Input contract published for one live application action.
@@ -4053,6 +4054,37 @@ impl CapnpBrokerState {
         }
         rx
     }
+
+    /// Direct a late-join snapshot request to one established subscriber on
+    /// the exact route. Lowest broker peer id makes selection deterministic;
+    /// the requester is excluded so it never snapshots its own empty state.
+    fn request_document_snapshot(&self, channel_id: &str, requester: u64) -> bool {
+        let Ok(mut channels) = self.channels.lock() else {
+            return false;
+        };
+        let Some(channel) = channels.get_mut(channel_id) else {
+            return false;
+        };
+        channel.context.sort_by_key(|subscriber| subscriber.peer_id);
+        let Some(index) = channel
+            .context
+            .iter()
+            .position(|subscriber| subscriber.peer_id != requester)
+        else {
+            return false;
+        };
+        if channel.context.get(index).is_some_and(|subscriber| {
+            subscriber
+                .tx
+                .send(ContextEnvelope::SnapshotRequested)
+                .is_ok()
+        }) {
+            true
+        } else {
+            channel.context.remove(index);
+            false
+        }
+    }
 }
 
 /// Postcard-encode [`PresenceKey::pointer_default`]; cheap enough not
@@ -4272,6 +4304,23 @@ fn delegate_realtime_command(
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    fn request_document_snapshot(
+        self: Rc<Self>,
+        _params: channel_handle::RequestDocumentSnapshotParams,
+        _results: channel_handle::RequestDocumentSnapshotResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let _ = self
+            .state
+            .request_document_snapshot(&self.channel_id, self.peer_id);
+        Promise::ok(())
+    }
+
     fn realtime_command(
         self: Rc<Self>,
         params: channel_handle::RealtimeCommandParams,
@@ -6982,6 +7031,10 @@ impl context_stream::Server for ContextStreamServer {
                     ctx.set_follow_target(peer_id.as_deref().unwrap_or(""));
                     return Ok(());
                 }
+                ContextEnvelope::SnapshotRequested => {
+                    ctx.set_snapshot_requested(true);
+                    return Ok(());
+                }
             };
             let collab_count = u32::try_from(collaborators.len()).map_err(|_| {
                 capnp::Error::failed("context: too many collaborators to encode".into())
@@ -9148,6 +9201,40 @@ pub mod tests {
                 .expect("live-only direct catalogue")
                 .contains("new-window"),
             "archived launchable descriptors are not directly invokable through this protocol"
+        );
+    }
+
+    #[test]
+    fn late_join_snapshot_request_selects_exactly_one_existing_holder() {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let channel = "dev.tilo.notes#room:test#record:daily";
+        let mut first = state.subscribe_context(channel, 7);
+        let mut second = state.subscribe_context(channel, 9);
+        let _requester = state.subscribe_context(channel, 12);
+
+        assert!(state.request_document_snapshot(channel, 12));
+        assert!(matches!(
+            first.try_recv(),
+            Ok(ContextEnvelope::SnapshotRequested)
+        ));
+        assert!(second.try_recv().is_err(), "only one holder may respond");
+        let requester_only_channel = "dev.tilo.notes#room:test#record:empty";
+        let mut requester_only = state.subscribe_context(requester_only_channel, 12);
+        assert!(
+            !state.request_document_snapshot(requester_only_channel, 12),
+            "the requester cannot answer from its own empty state"
+        );
+        assert!(requester_only.try_recv().is_err());
+        assert!(
+            !state.request_document_snapshot("missing", 12),
+            "a route without a holder is retryable, not falsely acknowledged"
         );
     }
 
