@@ -591,9 +591,12 @@ impl CollabEvent {
         else {
             return None;
         };
-        Some(DocumentMutation::decode(
-            decrypted_payload.as_deref().unwrap_or(&envelope.payload),
-        ))
+        Some(
+            DocumentMutation::decode_versioned(
+                decrypted_payload.as_deref().unwrap_or(&envelope.payload),
+            )
+            .map(|decoded| decoded.mutation),
+        )
     }
 }
 
@@ -4656,7 +4659,7 @@ fn decrypt_document_payload(
             .decrypt(&envelope.payload)
             .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?;
         drop(guard);
-        let _mutation = collab_types::DocumentMutation::decode(&plaintext)?;
+        let _mutation = collab_types::DocumentMutation::decode_versioned(&plaintext)?;
         Ok(Some(plaintext))
     } else {
         if encryption
@@ -4668,7 +4671,7 @@ fn decrypt_document_payload(
             // active downgrade. There is no opportunistic fallback.
             return Err(collab_types::DocumentMutationError::RouteMismatch);
         }
-        let _mutation = collab_types::DocumentMutation::decode(&envelope.payload)?;
+        let _mutation = collab_types::DocumentMutation::decode_versioned(&envelope.payload)?;
         Ok(None)
     }
 }
@@ -6654,7 +6657,7 @@ mod tests {
         let bob =
             channel_crypto::ChannelGroup::process_welcome(channel, &welcome, bob_key).unwrap();
         let plaintext = DocumentMutation::Incremental(b"secret change".to_vec())
-            .encode()
+            .encode_for(collab_types::DocumentWireVersion::QosV1)
             .unwrap();
         let alice_endpoint = std::sync::Arc::new(std::sync::Mutex::new(Some(alice)));
         let (ciphertext, metadata) =

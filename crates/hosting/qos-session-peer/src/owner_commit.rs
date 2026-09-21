@@ -332,8 +332,23 @@ impl SessionOwner {
                 if outcome.deferred || outcome.incomplete.is_some() {
                     return Err("local publication admission incomplete".into());
                 }
-                let mutation = collab_types::DocumentMutation::decode(&envelope.payload)
-                    .map_err(|e| e.to_string())?;
+                let mutation = match collab_types::validate_document_payload_route_versioned(
+                    app,
+                    &request.room,
+                    record,
+                    envelope,
+                )
+                .map_err(|e| e.to_string())?
+                {
+                    collab_types::VersionedRoutedDocumentPayload::Cleartext(decoded) => {
+                        decoded.mutation
+                    }
+                    collab_types::VersionedRoutedDocumentPayload::Encrypted { .. } => {
+                        return Err(
+                            "local publication admission requires decrypted document state".into(),
+                        );
+                    }
+                };
                 let mut proof = AutoCommit::load(
                     &candidate
                         .document(app, record)

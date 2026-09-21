@@ -886,6 +886,168 @@ impl SessionOwner {
 #[cfg(test)]
 mod enrollment_migration_tests {
     use super::*;
+
+    fn retain_qos_v1_route(owner: &mut SessionOwner, app: &str, record: &str) {
+        let now = SystemTime::now();
+        let generation = owner.aggregate.generation + 1;
+        let mut source = owner.peer.clone();
+        let mut messages = source
+            .durable_bootstrap_messages(&owner.identity.native, now, generation)
+            .unwrap();
+        let target = messages
+            .iter_mut()
+            .find_map(|message| match message {
+                NeighbourMsg::AppDocument {
+                    app_id,
+                    record_id,
+                    envelope,
+                    ..
+                } if app_id == app && record_id == record => Some(envelope),
+                _ => None,
+            })
+            .expect("target checkpoint");
+        let mutation = collab_types::DocumentMutation::decode_versioned(&target.payload)
+            .unwrap()
+            .mutation;
+        let version = collab_types::DocumentWireVersion::QosV1;
+        target.payload = mutation.encode_for(version).unwrap();
+        target.artifact =
+            collab_types::document_artifact_id_for_version(version, app, owner.peer.room(), record);
+        target.attestation_id = collab_types::document_attestation_id_for_version(
+            version,
+            app,
+            owner.peer.room(),
+            record,
+        );
+        collab_types::sign_op(target, &owner.identity.native).unwrap();
+        let payload_hash = *blake3::hash(&target.payload).as_bytes();
+
+        let NeighbourMsg::SyncResp { changes, .. } = &messages[0] else {
+            panic!("room checkpoint first")
+        };
+        let mut room = qos_peer_state::room::candidate(None, changes).unwrap();
+        let route_key = qos_peer_state::coverage::route_key(app, record);
+        let mut coverage = qos_peer_state::coverage::entries(&room)
+            .unwrap()
+            .remove(&route_key)
+            .expect("target coverage");
+        coverage.payload_hash = payload_hash;
+        qos_peer_state::coverage::put(&mut room, coverage.clone()).unwrap();
+        let mut receipts = qos_peer_state::durability::entries(&room).unwrap();
+        receipts.insert(
+            route_key,
+            qos_peer_state::durability::DurableReceipt::new(coverage, generation).unwrap(),
+        );
+        qos_peer_state::durability::put(&mut room, receipts).unwrap();
+        messages[0] = NeighbourMsg::SyncResp {
+            changes: room
+                .get_changes(&[])
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+            room: owner.peer.room().into(),
+        };
+
+        let mut revocations = RevocationList::new();
+        for revocation in owner.peer.revocations() {
+            revocations.insert(revocation).unwrap();
+        }
+        let mut legacy = StatePeer::new(
+            owner.peer.room(),
+            owner.peer.authority().clone(),
+            owner.peer.certificates(),
+            revocations,
+            now,
+        )
+        .unwrap();
+        for message in &messages {
+            legacy
+                .receive_from(
+                    TransportOrigin::RetainedRelayDelta(owner.peer.authority().device_public_key),
+                    message.clone(),
+                    now,
+                )
+                .unwrap();
+        }
+        owner.aggregate.peer = legacy.durable().unwrap();
+        owner.aggregate.generation = generation;
+        owner.aggregate.outgoing = messages
+            .iter()
+            .map(postcard::to_stdvec)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        owner.aggregate.publication =
+            PublicationState::checkpoint(owner.aggregate.outgoing.len(), generation);
+        owner.peer = legacy;
+        owner
+            .store
+            .commit(&encode(&owner.aggregate, &owner.identity).unwrap())
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retained_qos_v1_precommit_and_owner_receipt_preserve_exact_wire() {
+        use qos_peer_state::owner_commit::{
+            CommitOperation, OwnerCommitRequest, OwnerCommitService,
+        };
+        use ui::automerge::transaction::Transactable;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("legacy-owner");
+        let mut owner = SessionOwner::initialize(&path).unwrap();
+        let app = "dev.qos.word-processor";
+        let record = "tab:0000000000000001";
+        retain_qos_v1_route(&mut owner, app, record);
+        drop(owner);
+
+        let mut owner = SessionOwner::open(&path).unwrap();
+        let mut document =
+            ui::automerge::AutoCommit::load(&owner.peer().document(app, record).unwrap()).unwrap();
+        let heads = document.get_heads();
+        document
+            .put(ui::automerge::ROOT, "legacy_receipt", true)
+            .unwrap();
+        document.commit();
+        let mut precommitted = owner.peer().clone();
+        let message = precommitted
+            .publish_incremental(
+                app,
+                record,
+                document.save_after(&heads),
+                &owner.identity.native,
+                SystemTime::now(),
+            )
+            .unwrap();
+        let NeighbourMsg::AppDocument { envelope, .. } = message else {
+            panic!("precommit emits document")
+        };
+        assert!(matches!(
+            collab_types::DocumentMutation::decode_versioned(&envelope.payload),
+            Ok(collab_types::DecodedDocumentMutation {
+                version: collab_types::DocumentWireVersion::QosV1,
+                mutation: collab_types::DocumentMutation::Incremental(_),
+            })
+        ));
+        let request = OwnerCommitRequest {
+            room: owner.peer().room().into(),
+            operation: CommitOperation::Document {
+                app: app.into(),
+                record: record.into(),
+                envelope,
+            },
+        };
+        let (service, mut mailbox) = crate::owner_commit::OwnerCommitMailbox::bounded(2);
+        let expected = request.clone();
+        let waiting = tokio::spawn(async move { service.commit(request).await });
+        let receipt = mailbox.recv().await.unwrap().apply(&mut owner).unwrap();
+        receipt.validate_for(&expected).unwrap();
+        let returned = waiting.await.unwrap().unwrap();
+        returned.validate_for(&expected).unwrap();
+        assert_eq!(returned.binding, receipt.binding);
+        assert_eq!(returned.generation, receipt.generation);
+        assert_eq!(returned.aggregate_hash, receipt.aggregate_hash);
+        assert!(owner.status().generation > 1);
+    }
     #[test]
     fn empty_publication_rebuilds_once_and_reconnects_from_the_committed_basis() {
         let temp = tempfile::tempdir().unwrap();

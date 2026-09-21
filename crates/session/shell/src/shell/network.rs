@@ -5509,17 +5509,14 @@ impl ShellNetwork {
             .iter()
             .find(|workspace| workspace.room == room)?;
         let role = workspace.role_of(&person)?;
-        let artifact = collab_types::document_artifact_id(app_id, cluster_id, record_id);
-        if envelope.artifact != artifact
-            || envelope.attestation_id
-                != collab_types::document_attestation_id(app_id, cluster_id, record_id)
-            || collab_types::validate_document_payload_route(
-                app_id, cluster_id, record_id, envelope,
-            )
-            .is_err()
+        if collab_types::validate_document_payload_route_versioned(
+            app_id, cluster_id, record_id, envelope,
+        )
+        .is_err()
         {
             return None;
         }
+        let artifact = envelope.artifact;
         let actor = collab_types::Actor::person(Some(role), person)
             .with_principal(collab_types::Principal::App(app_id.to_string()))
             .in_room(cluster_id.to_string());
@@ -8387,6 +8384,62 @@ mod tests {
                 &envelope,
             ),
             Some(collab_types::Role::Editor),
+        );
+        let legacy_version = collab_types::DocumentWireVersion::QosV1;
+        let mut legacy = envelope.clone();
+        legacy.payload = collab_types::DocumentMutation::Incremental(b"legacy change".to_vec())
+            .encode_for(legacy_version)
+            .expect("legacy typed mutation");
+        legacy.artifact = collab_types::document_artifact_id_for_version(
+            legacy_version,
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+        );
+        legacy.attestation_id = collab_types::document_attestation_id_for_version(
+            legacy_version,
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+        );
+        collab_types::sign_op(&mut legacy, &signing).expect("signed retained legacy mutation");
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &legacy,
+            ),
+            Some(collab_types::Role::Editor),
+            "an authenticated retained legacy route keeps its exact namespace",
+        );
+        let mut mixed = legacy.clone();
+        mixed.attestation_id = collab_types::document_attestation_id(
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+        );
+        collab_types::sign_op(&mut mixed, &signing).expect("re-signed mixed namespace mutation");
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+                &mixed,
+            ),
+            None,
+        );
+        assert_eq!(
+            net.peer_document_role(
+                &origin,
+                &route.cluster_id,
+                &route.app_id,
+                "foreign-record",
+                &legacy,
+            ),
+            None,
         );
         assert!(net.peer_room_allows(
             &origin,

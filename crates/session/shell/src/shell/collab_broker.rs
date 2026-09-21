@@ -403,18 +403,24 @@ impl DrainQueues {
             let envelope = *entry.envelope;
             let artifact = envelope.artifact;
             let route = CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
-            let mutation = validate_document_route(&route, &envelope);
-            let validation = if let Err(reason) = &mutation {
-                Err(reason.clone())
-            } else {
+            let payload = validate_document_route(&route, &envelope);
+            let validation = if let Ok(payload) = &payload {
                 let Ok(mut ch) = self.channels.lock() else {
                     return false;
                 };
-                let channel = collab_types::document_channel_id(
-                    &entry.app_id,
-                    &entry.cluster_id,
-                    &entry.record_id,
-                );
+                let channel = match payload {
+                    collab_types::VersionedRoutedDocumentPayload::Cleartext(decoded) => {
+                        collab_types::document_channel_id_for_version(
+                            decoded.version,
+                            &entry.app_id,
+                            &entry.cluster_id,
+                            &entry.record_id,
+                        )
+                    }
+                    collab_types::VersionedRoutedDocumentPayload::Encrypted { channel, .. } => {
+                        *channel
+                    }
+                };
                 if ch.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
                     let state = ch.state_for(artifact);
                     state.artifacts.insert(artifact, ArtifactKind::Note);
@@ -429,8 +435,10 @@ impl DrainQueues {
                 } else {
                     Err(ValidationError::DocumentRouteMismatch)
                 }
+            } else {
+                Err(payload.as_ref().expect_err("checked error").clone())
             };
-            match (mutation, validation) {
+            match (payload, validation) {
                 (Ok(_), Ok(())) => {
                     self.accept_signed_op(envelope, entry.peer, &route, labels, announced);
                 }
@@ -612,8 +620,8 @@ impl DrainQueues {
 fn validate_document_route(
     route: &CrdtRoute,
     envelope: &collab_types::SignedOp,
-) -> Result<collab_types::RoutedDocumentPayload, ValidationError> {
-    collab_types::validate_document_payload_route(
+) -> Result<collab_types::VersionedRoutedDocumentPayload, ValidationError> {
+    collab_types::validate_document_payload_route_versioned(
         &route.app_id,
         &route.cluster_id,
         &route.record_id,
@@ -926,9 +934,60 @@ mod tests {
 
         assert!(matches!(
             validate_document_route(&route, &envelope),
-            Ok(collab_types::RoutedDocumentPayload::Cleartext(DocumentMutation::Snapshot(data)))
-                if data == b"whole document"
+            Ok(collab_types::VersionedRoutedDocumentPayload::Cleartext(
+                collab_types::DecodedDocumentMutation {
+                    version: collab_types::DocumentWireVersion::TiloV2,
+                    mutation: DocumentMutation::Snapshot(data),
+                }
+            )) if data == b"whole document"
         ));
+        let legacy = collab_types::DocumentWireVersion::QosV1;
+        let mut legacy_envelope = collab_types::SignedOp::new_unsigned(
+            DocumentMutation::Incremental(b"retained legacy edit".to_vec())
+                .encode_for(legacy)
+                .expect("legacy mutation"),
+            collab_types::document_artifact_id_for_version(
+                legacy,
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            ),
+            envelope.author,
+            collab_types::document_attestation_id_for_version(
+                legacy,
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            ),
+            OpClass::Splice,
+            std::time::SystemTime::now(),
+            2,
+        );
+        collab_types::sign_op(&mut legacy_envelope, &signing).expect("signed legacy edit");
+        assert!(
+            matches!(
+                validate_document_route(&route, &legacy_envelope),
+                Ok(collab_types::VersionedRoutedDocumentPayload::Cleartext(
+                    collab_types::DecodedDocumentMutation {
+                        version: collab_types::DocumentWireVersion::QosV1,
+                        mutation: DocumentMutation::Incremental(data),
+                    }
+                )) if data == b"retained legacy edit"
+            ),
+            "authenticated receive preserves a retained legacy route"
+        );
+        legacy_envelope.attestation_id = collab_types::document_attestation_id(
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+        );
+        collab_types::sign_op(&mut legacy_envelope, &signing)
+            .expect("re-signed mixed namespace edit");
+        assert_eq!(
+            validate_document_route(&route, &legacy_envelope),
+            Err(ValidationError::DocumentRouteMismatch),
+            "authenticated receive still rejects a mixed route namespace",
+        );
         assert_eq!(
             validate_document_route(
                 &CrdtRoute::record("dev.qos.notes", "room-1", "record-2"),
@@ -965,7 +1024,7 @@ mod tests {
         );
         assert_eq!(
             validate_document_route(&route, &envelope),
-            Ok(collab_types::RoutedDocumentPayload::Encrypted {
+            Ok(collab_types::VersionedRoutedDocumentPayload::Encrypted {
                 channel: expected_channel,
                 epoch: 9,
             })
@@ -974,6 +1033,54 @@ mod tests {
         assert_eq!(
             validate_document_route(&route, &envelope),
             Err(ValidationError::DocumentRouteMismatch)
+        );
+
+        let legacy = collab_types::DocumentWireVersion::QosV1;
+        let legacy_channel = collab_types::document_channel_id_for_version(
+            legacy,
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+        );
+        let mut legacy_envelope = collab_types::SignedOp::new_unsigned_with_encryption(
+            b"opaque-legacy-mls-frame".to_vec(),
+            collab_types::document_artifact_id_for_version(
+                legacy,
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            ),
+            author,
+            collab_types::document_attestation_id_for_version(
+                legacy,
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            ),
+            OpClass::Splice,
+            std::time::SystemTime::now(),
+            2,
+            collab_types::EncryptionMetadata {
+                epoch: 10,
+                channel: legacy_channel,
+            },
+        );
+        assert_eq!(
+            validate_document_route(&route, &legacy_envelope),
+            Ok(collab_types::VersionedRoutedDocumentPayload::Encrypted {
+                channel: legacy_channel,
+                epoch: 10,
+            })
+        );
+        legacy_envelope
+            .encryption
+            .as_mut()
+            .expect("legacy encryption metadata")
+            .channel = expected_channel;
+        assert_eq!(
+            validate_document_route(&route, &legacy_envelope),
+            Err(ValidationError::DocumentRouteMismatch),
+            "a retained legacy artifact cannot select the current governance channel",
         );
     }
 

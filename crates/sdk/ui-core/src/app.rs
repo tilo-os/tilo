@@ -6850,24 +6850,33 @@ impl App {
     /// bounds its names before exposing them to the app.
     fn apply_room_index_document_envelope(
         &mut self,
+        route: &crate::collaboration::RouteSpec,
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) -> bool {
+        let Some(payload) = crate::app::document_routes::validated_route_payload(route, envelope)
+        else {
+            tracing::warn!("collab: broker delivered a room-index op outside its joined route");
+            return false;
+        };
+        let mutation = match crate::app::document_routes::decode_routed_mutation(
+            route,
+            payload,
+            decrypted_payload,
+        ) {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                tracing::warn!(%error, "collab: broker delivered an invalid room-index mutation");
+                return false;
+            }
+        };
         let Some(room) = self.room_index.as_mut() else {
             return false;
         };
-        let applied = match collab_types::DocumentMutation::decode(
-            decrypted_payload.unwrap_or(&envelope.payload),
-        ) {
-            Ok(collab_types::DocumentMutation::Snapshot(data)) => {
-                room.merge_snapshot(&data).is_ok()
-            }
-            Ok(collab_types::DocumentMutation::Incremental(data)) => {
+        let applied = match mutation {
+            collab_types::DocumentMutation::Snapshot(data) => room.merge_snapshot(&data).is_ok(),
+            collab_types::DocumentMutation::Incremental(data) => {
                 room.load_incremental(&data).is_ok()
-            }
-            Err(error) => {
-                tracing::warn!(%error, "collab: broker delivered an untyped room-index op");
-                false
             }
         };
         if applied
@@ -6886,6 +6895,9 @@ impl App {
         let Some(manager) = self.room_collab_manager.as_mut() else {
             return false;
         };
+        let Some(route) = manager.primary_route().map(|witness| witness.route.clone()) else {
+            return false;
+        };
         let events = manager.poll();
         let mut any = false;
         for event in events {
@@ -6896,6 +6908,7 @@ impl App {
                     ..
                 } => {
                     any |= self.apply_room_index_document_envelope(
+                        &route,
                         &envelope,
                         decrypted_payload.as_deref(),
                     );
@@ -6907,6 +6920,7 @@ impl App {
                 } => {
                     for (index, envelope) in ops.into_iter().enumerate() {
                         any |= self.apply_room_index_document_envelope(
+                            &route,
                             &envelope,
                             decrypted_payloads
                                 .get(index)

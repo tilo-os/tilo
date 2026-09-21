@@ -37,13 +37,12 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-#[cfg(test)]
-use collab_types::DocumentMutation;
 use collab_types::{
     Actor, ArtifactId, ArtifactKind, CapDecision, RedactedMarker, ResourceRef, SignedOp,
-    ValidationError, Verb, document_artifact_id, document_attestation_id, role_permits,
-    validate_admitted_inbound_op,
+    ValidationError, Verb, role_permits, validate_admitted_inbound_op,
 };
+#[cfg(test)]
+use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::raw::{
     OpKind, action_catalogue_stream, action_directory, action_input, channel_handle,
     collab_service, context_stream, invocation_stream, presence_event, presence_handle,
@@ -60,6 +59,13 @@ use crate::policy::WorkspacePolicy as _;
 use crate::services::{HostServices, WorkspaceAuthorityHandle as WorkspaceTreeHandle};
 use collab_types::{Principal, Role as CapRole};
 use qos_desktop::{WorkspaceTaskStatus, WorkspaceTree};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AuthorizedDocumentRoute {
+    artifact: ArtifactId,
+    channel: collab_types::ChannelId,
+    payload: collab_types::VersionedRoutedDocumentPayload,
+}
 
 /// Launcher preambles are deliberately tiny: they only bind a socket to the
 /// shell's already-created process record. The cert presented by the
@@ -3725,20 +3731,13 @@ impl CapnpBrokerState {
         route: &CrdtRoute,
         admitted: &AdmittedJoinIdentity,
         envelope: &SignedOp,
-    ) -> Result<collab_types::RoutedDocumentPayload, capnp::Error> {
-        let expected_artifact =
-            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
-        let expected_attestation =
-            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id);
-        if route.app_id.is_empty()
-            || envelope.artifact != expected_artifact
-            || envelope.attestation_id != expected_attestation
-        {
+    ) -> Result<AuthorizedDocumentRoute, capnp::Error> {
+        if route.app_id.is_empty() {
             return Err(capnp::Error::failed(
                 "certified document operation does not match its joined route".into(),
             ));
         }
-        let mutation = collab_types::validate_document_payload_route(
+        let payload = collab_types::validate_document_payload_route_versioned(
             &route.app_id,
             &route.cluster_id,
             &route.record_id,
@@ -3749,8 +3748,17 @@ impl CapnpBrokerState {
                 "certified document operation has an invalid routed payload: {error}"
             ))
         })?;
-        let channel =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
+        let channel = match &payload {
+            collab_types::VersionedRoutedDocumentPayload::Cleartext(decoded) => {
+                collab_types::document_channel_id_for_version(
+                    decoded.version,
+                    &route.app_id,
+                    &route.cluster_id,
+                    &route.record_id,
+                )
+            }
+            collab_types::VersionedRoutedDocumentPayload::Encrypted { channel, .. } => *channel,
+        };
         let broker_channels = self.broker_channels.lock().map_err(|_| {
             capnp::Error::failed("collaboration governance state is unavailable".into())
         })?;
@@ -3777,7 +3785,7 @@ impl CapnpBrokerState {
         let resource = ResourceRef::Artifact {
             app: Some(route.app_id.clone()),
             kind: ArtifactKind::Note,
-            instance: expected_artifact,
+            instance: envelope.artifact,
         };
         let required = collab_types::caps::verb_for_opclass(envelope.op_class);
         let decision = workspace.decide(&actor, &resource, required);
@@ -3788,7 +3796,11 @@ impl CapnpBrokerState {
                 "current workspace capability denies this document action".into(),
             ));
         }
-        Ok(mutation)
+        Ok(AuthorizedDocumentRoute {
+            artifact: envelope.artifact,
+            channel,
+            payload,
+        })
     }
 
     fn publisher(&self) -> &Arc<PeerPublisher> {
@@ -4609,8 +4621,16 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .await?;
             }
             let current_identity = state.revalidate_admission(&route, &verified_identity)?;
-            state.authorize_certified_document(&route, &current_identity, &envelope)?;
-            handle_signed_op_send(&state, peer_id, &route, &current_identity, envelope);
+            let authorized =
+                state.authorize_certified_document(&route, &current_identity, &envelope)?;
+            handle_authorized_signed_op_send(
+                &state,
+                peer_id,
+                &route,
+                &current_identity,
+                authorized,
+                envelope,
+            );
             Ok(())
         })
     }
@@ -6304,6 +6324,7 @@ fn workspace_control_role_allowed(role: collab_types::Role) -> bool {
 /// Apply a signed op arriving via capnp `send`: same validation /
 /// audit / redaction / compaction pipeline, then
 /// fans out via the shared [`FanoutState`].
+#[cfg(test)]
 fn handle_signed_op_send(
     state: &Arc<CapnpBrokerState>,
     peer_id: u64,
@@ -6312,6 +6333,24 @@ fn handle_signed_op_send(
     envelope: SignedOp,
 ) {
     let artifact = envelope.artifact;
+    handle_signed_op_send_for_artifact(
+        state,
+        peer_id,
+        route,
+        verified_identity,
+        artifact,
+        envelope,
+    );
+}
+
+fn handle_signed_op_send_for_artifact(
+    state: &Arc<CapnpBrokerState>,
+    peer_id: u64,
+    route: &CrdtRoute,
+    verified_identity: &AdmittedJoinIdentity,
+    artifact: ArtifactId,
+    envelope: SignedOp,
+) {
     let validation = {
         let Ok(mut ch) = state.broker_channels.lock() else {
             return;
@@ -6409,6 +6448,39 @@ fn handle_signed_op_send(
             }
         }
     }
+}
+
+fn handle_authorized_signed_op_send(
+    state: &Arc<CapnpBrokerState>,
+    peer_id: u64,
+    route: &CrdtRoute,
+    verified_identity: &AdmittedJoinIdentity,
+    authorized: AuthorizedDocumentRoute,
+    envelope: SignedOp,
+) {
+    debug_assert_eq!(authorized.artifact, envelope.artifact);
+    debug_assert_eq!(
+        authorized.channel,
+        match &authorized.payload {
+            collab_types::VersionedRoutedDocumentPayload::Cleartext(decoded) => {
+                collab_types::document_channel_id_for_version(
+                    decoded.version,
+                    &route.app_id,
+                    &route.cluster_id,
+                    &route.record_id,
+                )
+            }
+            collab_types::VersionedRoutedDocumentPayload::Encrypted { channel, .. } => *channel,
+        }
+    );
+    handle_signed_op_send_for_artifact(
+        state,
+        peer_id,
+        route,
+        verified_identity,
+        authorized.artifact,
+        envelope,
+    );
 }
 
 /// Read a page of scrollback ops for `artifact`, encoded as postcard
@@ -7227,16 +7299,34 @@ pub(super) fn spawn_configured(
                         let directories = directories.clone();
                         let peer_id = state.next_peer_id();
                         tokio::task::spawn_local(async move {
-                            let stream = tokio::net::UnixStream::from_std(worker.stream)
-                                .map_err(capnp::Error::from)?;
-                            drive_connection(
-                                stream,
-                                state,
-                                directories,
-                                peer_id,
-                                Some(worker.binding),
-                            )
-                            .await
+                            let result = async {
+                                let stream = tokio::net::UnixStream::from_std(worker.stream)
+                                    .map_err(capnp::Error::from)?;
+                                drive_connection(
+                                    stream,
+                                    state,
+                                    directories,
+                                    peer_id,
+                                    Some(worker.binding),
+                                )
+                                .await
+                            }
+                            .await;
+                            if let Err(error) = result {
+                                let error_class = match error.kind {
+                                    capnp::ErrorKind::Failed => "failed",
+                                    capnp::ErrorKind::Overloaded => "overloaded",
+                                    capnp::ErrorKind::Disconnected => "disconnected",
+                                    capnp::ErrorKind::Unimplemented => "unimplemented",
+                                    _ => "protocol",
+                                };
+                                tracing::warn!(
+                                    peer_id,
+                                    phase = "local_worker_rpc",
+                                    error_class,
+                                    "capnp broker: local worker disconnected"
+                                );
+                            }
                         });
                     }
                     state.drain_action_directory_bridge(&directories);
@@ -8581,10 +8671,10 @@ pub mod tests {
             1,
         );
         sign_op(&mut op, &device).expect("device signs document op");
-        state
+        let authorized = state
             .authorize_certified_document(&route, &admitted, &op)
             .expect("live owner may edit the joined document");
-        handle_signed_op_send(&state, 1, &route, &admitted, op.clone());
+        handle_authorized_signed_op_send(&state, 1, &route, &admitted, authorized, op.clone());
 
         let delivered = received.try_recv().expect("snapshot fanout");
         assert_eq!(delivered.kind, OpKind::Signed);
@@ -8604,6 +8694,82 @@ pub mod tests {
         );
         assert_published_snapshot(&sink, &route);
 
+        let legacy_version = collab_types::DocumentWireVersion::QosV1;
+        let legacy_artifact = collab_types::document_artifact_id_for_version(
+            legacy_version,
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+        );
+        let mut legacy = SignedOp::new_unsigned(
+            DocumentMutation::Incremental(b"legacy retained edit".to_vec())
+                .encode_for(legacy_version)
+                .expect("legacy typed mutation"),
+            legacy_artifact,
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            collab_types::document_attestation_id_for_version(
+                legacy_version,
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            ),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            2,
+        );
+        sign_op(&mut legacy, &device).expect("device signs retained legacy edit");
+        let authorized = state
+            .authorize_certified_document(&route, &admitted, &legacy)
+            .expect("authenticated retained legacy route remains writable");
+        assert!(matches!(
+            &authorized.payload,
+            collab_types::VersionedRoutedDocumentPayload::Cleartext(
+                collab_types::DecodedDocumentMutation {
+                    version: collab_types::DocumentWireVersion::QosV1,
+                    mutation: DocumentMutation::Incremental(bytes),
+                }
+            ) if bytes == b"legacy retained edit"
+        ));
+        handle_authorized_signed_op_send(&state, 1, &route, &admitted, authorized, legacy.clone());
+        assert_eq!(
+            postcard::from_bytes::<SignedOp>(&received.try_recv().expect("legacy fanout").op_bytes)
+                .expect("legacy signed envelope"),
+            legacy,
+            "fanout must preserve the exact authenticated legacy envelope"
+        );
+        assert_eq!(
+            broker_channels
+                .lock()
+                .expect("broker channels")
+                .state_for(legacy_artifact)
+                .op_log
+                .len(),
+            1,
+            "legacy and current durable artifacts remain distinct"
+        );
+
+        let mut mixed = legacy.clone();
+        mixed.attestation_id =
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id);
+        sign_op(&mut mixed, &device).expect("re-sign mixed namespace envelope");
+        assert!(
+            state
+                .authorize_certified_document(&route, &admitted, &mixed)
+                .is_err(),
+            "artifact and attestation must select one exact route namespace"
+        );
+        let mut mixed = legacy.clone();
+        mixed.payload = DocumentMutation::Incremental(b"mixed payload".to_vec())
+            .encode()
+            .expect("current typed mutation");
+        sign_op(&mut mixed, &device).expect("re-sign mixed payload envelope");
+        assert!(
+            state
+                .authorize_certified_document(&route, &admitted, &mixed)
+                .is_err(),
+            "legacy route ids cannot carry a current payload"
+        );
+
         let expected_channel =
             collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
         let mut encrypted = SignedOp::new_unsigned_with_encryption(
@@ -8620,11 +8786,12 @@ pub mod tests {
             },
         );
         sign_op(&mut encrypted, &device).expect("device signs opaque MLS envelope");
+        let authorized = state
+            .authorize_certified_document(&route, &admitted, &encrypted)
+            .expect("broker authorizes signed clear metadata without decrypting");
         assert!(matches!(
-            state
-                .authorize_certified_document(&route, &admitted, &encrypted)
-                .expect("broker authorizes signed clear metadata without decrypting"),
-            collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
+            authorized.payload,
+            collab_types::VersionedRoutedDocumentPayload::Encrypted { channel, epoch: 7 }
                 if channel == expected_channel
         ));
         handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
@@ -8644,6 +8811,47 @@ pub mod tests {
                 .authorize_certified_document(&route, &admitted, &wrong_channel)
                 .is_err(),
             "validly signed ciphertext for another MLS channel must not be routed"
+        );
+
+        let legacy_channel = collab_types::document_channel_id_for_version(
+            legacy_version,
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+        );
+        let mut legacy_encrypted = SignedOp::new_unsigned_with_encryption(
+            b"opaque legacy MLS application frame".to_vec(),
+            legacy_artifact,
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            collab_types::document_attestation_id_for_version(
+                legacy_version,
+                &route.app_id,
+                &route.cluster_id,
+                &route.record_id,
+            ),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            3,
+            collab_types::EncryptionMetadata {
+                epoch: 8,
+                channel: legacy_channel,
+            },
+        );
+        sign_op(&mut legacy_encrypted, &device).expect("device signs legacy MLS envelope");
+        state
+            .authorize_certified_document(&route, &admitted, &legacy_encrypted)
+            .expect("exact legacy MLS channel is admitted");
+        legacy_encrypted
+            .encryption
+            .as_mut()
+            .expect("legacy encryption metadata")
+            .channel = expected_channel;
+        sign_op(&mut legacy_encrypted, &device).expect("re-sign cross-namespace MLS envelope");
+        assert!(
+            state
+                .authorize_certified_document(&route, &admitted, &legacy_encrypted)
+                .is_err(),
+            "legacy route ids cannot select the current MLS governance channel"
         );
 
         assert_replay_and_forgery_are_audited(&state, &broker_channels, &route, &admitted, &op);

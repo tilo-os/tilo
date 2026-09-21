@@ -11,14 +11,48 @@ thread_local! {
     pub(crate) static DOCUMENT_ROUTE_REFRESHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+#[cfg(test)]
 fn matches_route(route: &RouteSpec, envelope: &collab_types::SignedOp) -> bool {
-    collab_types::validate_document_payload_route(
+    validated_route_payload(route, envelope).is_some()
+}
+
+pub(super) fn validated_route_payload(
+    route: &RouteSpec,
+    envelope: &collab_types::SignedOp,
+) -> Option<collab_types::VersionedRoutedDocumentPayload> {
+    collab_types::validate_document_payload_route_versioned(
         &route.app_id,
         &route.cluster_id.to_string(),
         route.record.as_deref().unwrap_or(""),
         envelope,
     )
-    .is_ok()
+    .ok()
+}
+
+pub(super) fn decode_routed_mutation(
+    route: &RouteSpec,
+    payload: collab_types::VersionedRoutedDocumentPayload,
+    decrypted_payload: Option<&[u8]>,
+) -> Result<collab_types::DocumentMutation, collab_types::DocumentMutationError> {
+    match payload {
+        collab_types::VersionedRoutedDocumentPayload::Cleartext(decoded) => Ok(decoded.mutation),
+        collab_types::VersionedRoutedDocumentPayload::Encrypted { channel, .. } => {
+            let decrypted_payload =
+                decrypted_payload.ok_or(collab_types::DocumentMutationError::RouteMismatch)?;
+            let decoded = collab_types::DocumentMutation::decode_versioned(decrypted_payload)?;
+            let record = route.record.as_deref().unwrap_or("");
+            if collab_types::document_channel_id_for_version(
+                decoded.version,
+                &route.app_id,
+                &route.cluster_id.to_string(),
+                record,
+            ) != channel
+            {
+                return Err(collab_types::DocumentMutationError::RouteMismatch);
+            }
+            Ok(decoded.mutation)
+        }
+    }
 }
 impl App {
     pub(super) fn forward_session_notification(&mut self, event: &CollabEvent) {
@@ -320,7 +354,14 @@ impl App {
         // Before the first record checkout the launcher's unqualified route
         // carries room-index discovery, never the editable record document.
         if self.records.is_some() && self.room_collab_manager.is_none() {
-            let _ = self.apply_room_index_document_envelope(envelope, decrypted_payload);
+            if let Some(route) = self
+                .collab_manager
+                .primary_route()
+                .map(|witness| witness.route.clone())
+            {
+                let _ =
+                    self.apply_room_index_document_envelope(&route, envelope, decrypted_payload);
+            }
             return;
         }
         self.refresh_document_routes();
@@ -334,29 +375,34 @@ impl App {
             .document_routes
             .owners
             .iter()
-            .position(|entry| matches_route(&entry.route, envelope));
-        let primary_matches = matches_route(&witness.route, envelope)
-            && !self.document_routes.retired_route(&witness.route)
-            && match witness.route.record.as_deref() {
-                Some(record) => self
-                    .records
-                    .as_ref()
-                    .and_then(|set| set.active())
-                    .is_some_and(|id| id.as_str() == record),
-                None => self
-                    .records
-                    .as_ref()
-                    .is_none_or(|set| set.active().is_none()),
-            };
-        if owned.is_none() && !primary_matches {
+            .enumerate()
+            .find_map(|(index, entry)| {
+                validated_route_payload(&entry.route, envelope)
+                    .map(|payload| (index, entry.route.clone(), payload))
+            });
+        let primary = validated_route_payload(&witness.route, envelope).and_then(|payload| {
+            let active = !self.document_routes.retired_route(&witness.route)
+                && match witness.route.record.as_deref() {
+                    Some(record) => self
+                        .records
+                        .as_ref()
+                        .and_then(|set| set.active())
+                        .is_some_and(|id| id.as_str() == record),
+                    None => self
+                        .records
+                        .as_ref()
+                        .is_none_or(|set| set.active().is_none()),
+                };
+            active.then(|| (witness.route.clone(), payload))
+        });
+        let (owned, route, payload) = if let Some((index, route, payload)) = owned {
+            (Some(index), route, payload)
+        } else if let Some((route, payload)) = primary {
+            (None, route, payload)
+        } else {
             return;
-        }
-        if envelope.encryption.is_some() && decrypted_payload.is_none() {
-            return;
-        }
-        let mutation = match collab_types::DocumentMutation::decode(
-            decrypted_payload.unwrap_or(&envelope.payload),
-        ) {
+        };
+        let mutation = match decode_routed_mutation(&route, payload, decrypted_payload) {
             Ok(mutation) => mutation,
             Err(error) => {
                 tracing::warn!(%error, "collab: invalid routed document mutation");
@@ -377,5 +423,141 @@ impl App {
             tracing::warn!(status = ?queue.failure, "collab: routed document deferred queue refused update; resynchronization required");
         }
         self.drain_document_routes_after_refresh();
+    }
+}
+
+#[cfg(test)]
+mod legacy_route_tests {
+    use super::*;
+
+    #[test]
+    fn authenticated_legacy_document_route_is_not_rewritten_to_current() {
+        let route = RouteSpec::record(
+            "dev.qos.calculator",
+            uuid::Uuid::new_v4(),
+            "tab:5f7c000000000013",
+        );
+        let workspace = route.cluster_id.to_string();
+        let record = route.record.as_deref().expect("record route");
+        let version = collab_types::DocumentWireVersion::QosV1;
+        let envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Incremental(b"retained legacy edit".to_vec())
+                .encode_for(version)
+                .expect("legacy mutation"),
+            collab_types::document_artifact_id_for_version(
+                version,
+                &route.app_id,
+                &workspace,
+                record,
+            ),
+            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            collab_types::document_attestation_id_for_version(
+                version,
+                &route.app_id,
+                &workspace,
+                record,
+            ),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        assert!(matches_route(&route, &envelope));
+
+        let mut mixed = envelope;
+        mixed.attestation_id =
+            collab_types::document_attestation_id(&route.app_id, &workspace, record);
+        assert!(!matches_route(&route, &mixed));
+        assert!(!matches_route(
+            &RouteSpec::record(route.app_id.clone(), uuid::Uuid::new_v4(), record),
+            &mixed,
+        ));
+
+        let room_index = RouteSpec::app("dev.qos.calculator", uuid::Uuid::new_v4());
+        let workspace = room_index.cluster_id.to_string();
+        let room_index_envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(b"legacy room index".to_vec())
+                .encode_for(version)
+                .expect("legacy room-index mutation"),
+            collab_types::document_artifact_id_for_version(
+                version,
+                &room_index.app_id,
+                &workspace,
+                "",
+            ),
+            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            collab_types::document_attestation_id_for_version(
+                version,
+                &room_index.app_id,
+                &workspace,
+                "",
+            ),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+        );
+        assert!(
+            matches_route(&room_index, &room_index_envelope),
+            "the acknowledged unqualified route binds a retained room index"
+        );
+        assert!(
+            !matches_route(&route, &room_index_envelope),
+            "a room-index envelope cannot enter a record route"
+        );
+    }
+
+    #[test]
+    fn decrypted_legacy_mutation_must_match_its_signed_mls_namespace() {
+        let route = RouteSpec::record(
+            "dev.qos.calculator",
+            uuid::Uuid::new_v4(),
+            "tab:5f7c000000000013",
+        );
+        let workspace = route.cluster_id.to_string();
+        let record = route.record.as_deref().expect("record route");
+        let legacy = collab_types::DocumentWireVersion::QosV1;
+        let channel = collab_types::document_channel_id_for_version(
+            legacy,
+            &route.app_id,
+            &workspace,
+            record,
+        );
+        let envelope = collab_types::SignedOp::new_unsigned_with_encryption(
+            vec![1],
+            collab_types::document_artifact_id_for_version(
+                legacy,
+                &route.app_id,
+                &workspace,
+                record,
+            ),
+            collab_types::Ed25519PublicKey::from_bytes([7; 32]),
+            collab_types::document_attestation_id_for_version(
+                legacy,
+                &route.app_id,
+                &workspace,
+                record,
+            ),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+            collab_types::EncryptionMetadata { epoch: 3, channel },
+        );
+        let payload = validated_route_payload(&route, &envelope).expect("legacy MLS route");
+        let legacy_clear = collab_types::DocumentMutation::Incremental(b"legacy".to_vec())
+            .encode_for(legacy)
+            .expect("legacy cleartext");
+        assert_eq!(
+            decode_routed_mutation(&route, payload.clone(), Some(&legacy_clear)),
+            Ok(collab_types::DocumentMutation::Incremental(
+                b"legacy".to_vec()
+            ))
+        );
+        let current_clear = collab_types::DocumentMutation::Incremental(b"current".to_vec())
+            .encode()
+            .expect("current cleartext");
+        assert_eq!(
+            decode_routed_mutation(&route, payload, Some(&current_clear)),
+            Err(collab_types::DocumentMutationError::RouteMismatch),
+            "decrypted current payload cannot cross a legacy signed MLS channel"
+        );
     }
 }
