@@ -636,6 +636,33 @@ mod tests {
         );
     }
 
+    /// Settings is the recovery surface for networking, accounts, displays,
+    /// and the rest of the OS.  A device without the optional local-model
+    /// stack must still be able to open it; the Agent Models pane handles an
+    /// unavailable backend in-app.
+    #[test]
+    fn shipped_settings_does_not_require_model_services_to_open() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("workspace root above crates/packaging/launcher");
+        let manifest = read_manifest(&repo.join("apps/settings/tilo-app.toml"))
+            .expect("shipped Settings manifest parses through installed-app schema");
+
+        for service in ["models", "model-gateway"] {
+            let requirement = manifest
+                .sandbox
+                .services
+                .get(service)
+                .unwrap_or_else(|| panic!("Settings declares the {service} integration"));
+            assert_eq!(
+                ServiceReq::parse(requirement).expect("valid service requirement"),
+                ServiceReq::Optional(1),
+                "Settings must open when {service} is not running"
+            );
+        }
+    }
+
     /// Case and a leading dot are packaging noise, not meaning.
     #[test]
     fn declared_extensions_are_normalised() {
