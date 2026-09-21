@@ -1,4 +1,4 @@
-//! Offscreen shots for the editable [`ui::widget::table::Table`].
+//! Offscreen shots for the editable [`tilo_ui::widget::table::Table`].
 //!
 //! Renders four frames through the widget's real five-pass pipeline and its
 //! real event handler (no private-field pokes):
@@ -26,12 +26,12 @@ use vello::kurbo::{Affine, Point};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
-use ui::widget::table::{self, Table};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Widget;
+use tilo_ui::widget::table::{self, Table};
 
 const MARGIN: f64 = 28.0;
 const LEFT_GUTTER: f64 = 24.0;
@@ -235,11 +235,11 @@ pub fn run(_args: &[String]) {
 
 /// `QOS_SHOTS_THEME` picks the palette (`dark` by default) and
 /// `QOS_SHOTS_TEXT_SCALE` the text scale — the switches every app's `--shots`
-/// honours through `ui::launch::shot_theme`, whose `LaunchArgs` an example
+/// honours through `tilo_ui::launch::shot_theme`, whose `LaunchArgs` an example
 /// cannot construct. An unknown theme name is an error, never a silent dark
 /// shot: a capture that cannot observe its subject must fail.
 fn shot_theme() -> Theme {
-    ui::launch::shot_theme_from_env().unwrap_or_else(|error| {
+    tilo_ui::launch::shot_theme_from_env().unwrap_or_else(|error| {
         eprintln!("ui-shots: {error}");
         std::process::exit(2)
     })

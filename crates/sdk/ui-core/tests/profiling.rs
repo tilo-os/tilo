@@ -1,7 +1,7 @@
 //! The perf harness runs a scripted scenario against an app's **real** five
 //! passes and produces per-pass frame-time statistics — the production path,
-//! not a mock. These tests drive [`ui::profiling::run_scenario_on`], which
-//! stands up the same headless [`ui::headless::Driver`] the persistence
+//! not a mock. These tests drive [`tilo_ui::profiling::run_scenario_on`], which
+//! stands up the same headless [`tilo_ui::headless::Driver`] the persistence
 //! harness uses.
 
 #![allow(
@@ -14,9 +14,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::profiling::{FRAME_BUDGET_US, PerfScenario, PerfStep, run_scenario_on};
-use ui::state::State;
-use ui::widget::{Column, Scrollable, Text, Widget};
+use tilo_ui::profiling::{FRAME_BUDGET_US, PerfScenario, PerfStep, run_scenario_on};
+use tilo_ui::state::State;
+use tilo_ui::widget::{Column, Scrollable, Text, Widget};
 
 /// A tall scrollable list: content overflows the viewport, so wheel scrolls
 /// actually move it, and each frame rebuilds + draws real widgets.

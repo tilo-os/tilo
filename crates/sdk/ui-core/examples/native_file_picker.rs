@@ -1,6 +1,6 @@
 //! Exercise the host dialog and the same asynchronous result path apps use.
 //! `cargo run -p ui --example native-file-picker --features portal -- open`
-use ui::portal::{FileFilter, MultiOutcome, PickRequest, PortalOutcome};
+use tilo_ui::portal::{FileFilter, MultiOutcome, PickRequest, PortalOutcome};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "open".into());

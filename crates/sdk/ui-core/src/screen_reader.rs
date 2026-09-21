@@ -206,8 +206,8 @@ mod phrase {
 /// position-in-set and hierarchy level. Empty segments are dropped.
 ///
 /// ```
-/// use ui::a11y::{AccessNode, AccessState, Role};
-/// use ui::screen_reader::describe;
+/// use tilo_ui::a11y::{AccessNode, AccessState, Role};
+/// use tilo_ui::screen_reader::describe;
 ///
 /// let node = AccessNode::new(Role::Checkbox)
 ///     .with_name("Accept")

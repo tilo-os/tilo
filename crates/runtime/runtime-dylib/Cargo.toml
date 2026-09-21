@@ -24,7 +24,7 @@ cli = { path = "../cli" }
 # A Rust dylib's exported symbol names contain the dependency crate hash; if an
 # app enables a UI feature absent here, Cargo builds a second `ui` instance and
 # the app can link successfully but fail at runtime with undefined symbols.
-ui = { path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"] }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"] }
 # Heavy document engines belong in the versioned runtime rather than each qpkg.
 typst = "0.14"
 typst-render = "0.14"
