@@ -55,6 +55,20 @@ class CreatorControllerFailure(ValueError):
     """The creator controller ran and failed before producing remote evidence."""
 
 
+def kubectl_transport_error(stderr):
+    """Whether kubectl's bounded, nonzero response is safe to resume."""
+    text = stderr.lower()
+    return any(marker in text for marker in (
+        'unable to connect', 'connection refused', 'connection reset',
+        'context deadline', 'i/o timeout', 'tls handshake timeout',
+        'server has asked for the client to provide', 'timed out waiting',
+        'unexpected eof', 'client.timeout exceeded', 'request canceled',
+        'server closed idle connection', 'http2: client connection lost',
+        'transport is closing', 'network is unreachable', 'no route to host',
+        'the request timed out', 'timeout: request did not complete',
+        'creator status poll lost transport', 'kubectl transport failed'))
+
+
 class CreatorBinding(TypedDict):
     pod: str
     pod_uid: str
@@ -203,11 +217,7 @@ def command(argv, payload=None, *, timeout=120, text=True):
         raise
     if result.returncode:
         stderr = result.stderr if isinstance(result.stderr, str) else result.stderr.decode(errors='replace')
-        transport = ('unable to connect','connection refused','connection reset','context deadline',
-                     'i/o timeout','tls handshake timeout','server has asked for the client to provide',
-                     'timed out waiting','unexpected eof','creator status poll lost transport',
-                     'kubectl transport failed')
-        if Path(argv[0]).name == 'kubectl' and any(row in stderr.lower() for row in transport):
+        if Path(argv[0]).name == 'kubectl' and kubectl_transport_error(stderr):
             raise ControllerTransportError(f'kubectl failed (exit {result.returncode})')
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
     return result.stdout
@@ -243,9 +253,7 @@ def optional_api_json(context, *args):
         stderr=result.stderr.lower()
         if 'notfound' in stderr or 'not found' in stderr:
             return None
-        transport=('unable to connect','connection refused','connection reset','context deadline',
-                   'i/o timeout','tls handshake timeout','timed out waiting','unexpected eof')
-        if any(row in stderr for row in transport):
+        if kubectl_transport_error(stderr):
             raise ControllerTransportError(f'kubectl failed (exit {result.returncode})')
         raise ValueError(f'kubectl failed (exit {result.returncode})')
     return json.loads(result.stdout)

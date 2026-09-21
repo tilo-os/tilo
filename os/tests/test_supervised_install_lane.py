@@ -156,6 +156,14 @@ class LaneAdmission(unittest.TestCase):
             with self.assertRaises(lane.ControllerTransportError):
                 lane.creator_inputs_ready('ctx',worker,*inputs)
 
+    def test_kubectl_client_timeout_preserves_creator_for_resume(self):
+        result=SimpleNamespace(returncode=1,stdout='',stderr=(
+            'net/http: request canceled while waiting for connection '
+            '(Client.Timeout exceeded while awaiting headers)'))
+        with patch.object(lane.subprocess,'run',return_value=result):
+            with self.assertRaises(lane.ControllerTransportError):
+                lane.command(['kubectl','--context','ctx','get','pods'],timeout=30)
+
     def test_gui_evidence_requires_desktop_and_rendered_local_browser_page(self):
         html='<!doctype html><h1>Tilo browser offline ready</h1>\n'
         good={'oobe_intro':'Create your local identity',
