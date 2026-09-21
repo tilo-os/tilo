@@ -41,16 +41,16 @@ jobs:
           cargo deny --version
           cargo machete --version
 
+      - name: Require reasons for Rust lint exceptions in changed files
+        run: >-
+          python3 tools/ci/check_changed_rust_allows.py
+          '${{ github.event.pull_request.base.sha }}'
+          '${{ github.event.before }}'
+
       - name: Check formatting of changed Rust files
         shell: bash
         run: >-
           bash tools/ci/check-changed-rustfmt.sh
-          '${{ github.event.pull_request.base.sha }}'
-          '${{ github.event.before }}'
-
-      - name: Require reasons for Rust lint exceptions in changed files
-        run: >-
-          python3 tools/ci/check_changed_rust_allows.py
           '${{ github.event.pull_request.base.sha }}'
           '${{ github.event.before }}'
 
