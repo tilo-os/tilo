@@ -706,6 +706,43 @@ fn expand_maximizes_beneath_the_top_bar() {
     let _ = &layout2;
 }
 
+/// Restoring an expanded group must rebuild the sidebar from the cleared
+/// fullscreen-presentation state, rather than leaving its taffy node at
+/// `display:none` from the maximized frame.
+#[test]
+fn restore_brings_back_the_workspace_switcher() {
+    let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
+    tree.workspaces[0].strips[0].window_groups[0].maximized = true;
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+
+    let maximized_layout = lay_out_host(&mut host);
+    assert!(chrome.borrow().is_fullscreen());
+    assert_approx_eq!(
+        host.sidebar_rect_for_tests().unwrap().area(),
+        0.0,
+        "the switcher starts suppressed while the group is expanded",
+    );
+
+    // Queue the same one-shot toggle the Restore button publishes, then
+    // dispatch once so `WindowGroup` drains it into the shell harvest path.
+    host.group_at_for_tests(strip_id, 0)
+        .expect("maximized group")
+        .publish_maximize_intent_for_tests();
+    cursor(
+        &mut host,
+        &maximized_layout,
+        Point::new(f64::from(W) - 1.0, f64::from(H) - 1.0),
+    );
+    host.tick_pending_maximize_harvest_for_tests();
+
+    assert!(!chrome.borrow().is_fullscreen());
+    let _restored_layout = lay_out_host(&mut host);
+    assert!(
+        host.sidebar_rect_for_tests().unwrap().area() > 0.0,
+        "the radial workspace switcher must return on the first restored layout",
+    );
+}
+
 /// A lone window group has no *inter*-group handle, so its only resize
 /// affordance is the grip on its own right edge — dragging it must widen
 /// the group on screen and in the persisted tree.
