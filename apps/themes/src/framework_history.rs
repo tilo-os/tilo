@@ -19,7 +19,7 @@ use vello::{
 };
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.themes",
+    app_id: "so.tilo.themes",
     scopes: &[HistoryScopeDefinition {
         key: "library",
         title: "Theme library (Apply separately)",

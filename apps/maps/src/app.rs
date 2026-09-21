@@ -323,7 +323,7 @@ impl MapsApp {
                 title: "Active navigation".into(),
                 role: ui::floating_surface::FloatingRole::Navigation,
                 source: ui::floating_surface::FloatingSource::AppElement {
-                    app_id: "dev.tilo.maps".into(),
+                    app_id: "so.tilo.maps".into(),
                     element_id: "active-navigation".into(),
                     region: source_region,
                 },
@@ -8071,7 +8071,7 @@ mod local_layout_tests {
                 ref app_id,
                 ref element_id,
                 ..
-            } if app_id == "dev.tilo.maps" && element_id == "active-navigation"
+            } if app_id == "so.tilo.maps" && element_id == "active-navigation"
         ));
     }
 

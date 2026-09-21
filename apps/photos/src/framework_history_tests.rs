@@ -89,7 +89,7 @@ fn frozen_input(
         HistoryResource::new(
             "test",
             "photos",
-            "dev.tilo.photos",
+            "so.tilo.photos",
             ui::RecordId::for_tab(55),
         ),
         doc,
@@ -697,7 +697,7 @@ fn supported_conflict_branches_preview_without_flattening_but_restore_refuses_co
     doc.merge(&mut peer).unwrap();
     let heads = doc.get_heads();
     let mut controller = HistoryController::new(
-        HistoryResource::new("p", "r", "dev.tilo.photos", ui::RecordId::for_tab(8)),
+        HistoryResource::new("p", "r", "so.tilo.photos", ui::RecordId::for_tab(8)),
         &doc,
     )
     .unwrap();

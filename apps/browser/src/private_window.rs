@@ -69,7 +69,7 @@ mod tests {
                 .env("QOS_TEST_PRIVATE_LAUNCH_PARENT", "1")
                 .env("QOS_SVC_COLLAB_FD", "998")
                 .env("QOS_SVC_IDENTITY_FD", "999")
-                .env("QOS_RUNTIME_RESUME_LIVE", "dev.tilo.browser")
+                .env("QOS_RUNTIME_RESUME_LIVE", "so.tilo.browser")
                 .env("QOS_RUNTIME_PROFILE", "/fixture/runtime")
                 .env("QOS_RUNTIME_BINARY", "/fixture/qos-runtime-mcp")
                 .output()

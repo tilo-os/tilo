@@ -5,7 +5,7 @@ use ui::history_mode::{HistoryDefinition, HistoryPresentation, HistoryScopeDefin
 pub const LIMITATION: &str = "Monitor process lists, metrics, charts, signals, and prior machine state are live system observations and are not recorded as document versions. Restore is unavailable.";
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.monitor",
+    app_id: "so.tilo.monitor",
     scopes: &[HistoryScopeDefinition {
         key: "system-observations",
         title: "System observations (not recorded)",
