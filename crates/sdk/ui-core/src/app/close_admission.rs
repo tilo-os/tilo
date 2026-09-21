@@ -48,7 +48,7 @@ impl App {
                 "close-title",
                 "close-unsaved",
                 &[Choice::Save, Choice::Discard, Choice::KeepEditing],
-                self.platform,
+                self.input.platform,
             );
             self.invalidate_close_presentation();
             return false;
@@ -59,7 +59,7 @@ impl App {
                 "close-save-failed",
                 &errors.join("\n"),
                 &[Choice::Retry, Choice::KeepEditing],
-                self.platform,
+                self.input.platform,
             );
             self.invalidate_close_presentation();
             return false;
@@ -179,7 +179,7 @@ impl App {
             "close-title",
             "close-saving",
             &[Choice::KeepEditing],
-            self.platform,
+            self.input.platform,
         );
         self.invalidate_close_presentation();
         let before: std::collections::HashSet<_> =
@@ -311,7 +311,7 @@ impl App {
                         "close-save-failed",
                         &message,
                         &[Choice::Retry, Choice::KeepEditing],
-                        self.platform,
+                        self.input.platform,
                     );
                     self.invalidate_close_presentation();
                 }
@@ -353,7 +353,7 @@ impl App {
             self.rebuild_structure();
         }
         if let winit::event::WindowEvent::ModifiersChanged(modifiers) = event {
-            self.modifiers = *modifiers;
+            self.input.modifiers = *modifiers;
         }
         let mut handled = self.handle_screen_reader_key(event);
         if !handled && let winit::event::WindowEvent::KeyboardInput { event, .. } = event {
@@ -361,7 +361,7 @@ impl App {
                 use winit::keyboard::{Key, NamedKey};
                 match &event.logical_key {
                     Key::Named(NamedKey::Tab) => {
-                        self.focus_tab(self.modifiers.state().shift_key());
+                        self.focus_tab(self.input.modifiers.state().shift_key());
                         handled = true;
                     }
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
@@ -399,7 +399,7 @@ impl App {
             dialog.handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 &mut handled,
@@ -678,7 +678,7 @@ mod tests {
             "close-title",
             "close-unsaved",
             &[Choice::Save, Choice::Discard, Choice::KeepEditing],
-            app.platform,
+            app.input.platform,
         );
         let resources = app.close_admission.resources();
         let action = resources[0]
@@ -908,7 +908,7 @@ mod tests {
             "close-title",
             "close-unsaved",
             &[Choice::Save, Choice::Discard, Choice::KeepEditing],
-            app.platform,
+            app.input.platform,
         );
         app.init_layout();
         let modal = app.close_admission.dialog.as_deref().unwrap() as &dyn Widget;
