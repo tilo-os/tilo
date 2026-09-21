@@ -6945,7 +6945,7 @@ impl App {
         // thread.
         self.pump_action_directory_requests();
         self.pump_document_routes();
-        for request in self.root_widget.take_collab_requests() {
+        for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collab_manager.send(request);
         }
         let events = self.collab_manager.poll();
@@ -18498,6 +18498,34 @@ mod bound_component_tests {
     thread_local! {
         static PAGED_SEARCH_COUNTS: RefCell<Option<Rc<[Cell<usize>; 2]>>> = const { RefCell::new(None) };
     }
+    thread_local! {
+        static COLLABORATION_OBSERVATIONS: RefCell<Option<(Rc<Cell<usize>>, Rc<RefCell<Vec<crate::WakeHandle>>>)>> = const { RefCell::new(None) };
+    }
+
+    fn collaboration_probe_factory(
+        mut context: HostContext,
+        _: LaunchTarget,
+        _: RestoreInput,
+    ) -> Result<AppComponent, crate::launch::LaunchError> {
+        context
+            .initialize_new_record(|_| Ok(()))
+            .map_err(crate::launch::LaunchError::Record)?;
+        let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            "bound-collaboration",
+            "fixture.bound-collaboration",
+        );
+        COLLABORATION_OBSERVATIONS.with_borrow_mut(|slot| {
+            *slot = Some((
+                Rc::clone(&probe.collab_events),
+                Rc::clone(&probe.collab_wake_handles),
+            ));
+        });
+        Ok(AppComponent::new(
+            context,
+            probe.root,
+            tilo_actions::ActionRegistry::new(),
+        ))
+    }
     struct PagedProbe {
         catalog: crate::search::SearchCatalog,
         resolutions: Rc<[Cell<usize>; 2]>,
@@ -20728,6 +20756,61 @@ mod bound_component_tests {
                 .app
                 .resolve_publication_resource(&alias, "follow-up")
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
+        let host = crate::application_test_support::ProbeHost::new();
+        let definition = crate::application_test_support::definition(collaboration_probe_factory);
+        let target = LaunchTarget::New;
+        let context = host
+            .prepare_with_permissions(
+                &definition,
+                91,
+                &target,
+                crate::application_test_support::runner_permissions(),
+            )
+            .unwrap();
+        let component = definition
+            .instantiate(context, target, RestoreInput::None)
+            .unwrap();
+        let binding = component.callback_binding();
+        let mut app =
+            App::from_component(component, crate::application_test_support::runner_inputs())
+                .unwrap();
+        let (events, wake_handles) =
+            COLLABORATION_OBSERVATIONS.with_borrow(|slot| slot.clone().unwrap());
+
+        crate::widget::handle_collab_event(
+            app.root_widget.as_mut(),
+            &CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(events.get(), 1);
+        assert_eq!(wake_handles.borrow().len(), 1);
+        assert!(wake_handles.borrow()[0].is_active());
+
+        assert_eq!(
+            app.root_widget.children().len(),
+            1,
+            "fixture retains its root"
+        );
+        binding.closing.set(true);
+        crate::widget::handle_collab_event(
+            app.root_widget.as_mut(),
+            &CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(
+            events.get(),
+            1,
+            "closing owner cannot be reentered by tree traversal"
+        );
+        assert_eq!(wake_handles.borrow().len(), 1);
+        binding.closing.set(false);
+        app.close_components();
+        assert!(
+            !wake_handles.borrow()[0].is_active(),
+            "callback captured the component lifetime, not detached execution"
         );
     }
 

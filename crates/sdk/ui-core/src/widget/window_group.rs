@@ -1645,17 +1645,11 @@ impl Widget for WindowGroup {
         }
         reports
     }
-    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.hosts
             .iter_mut()
-            .map(|(_, host)| host)
-            .flat_map(Widget::take_collab_requests)
+            .map(|(_, host)| host as &mut dyn Widget)
             .collect()
-    }
-    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
-        for child in self.hosts.iter_mut().map(|(_, host)| host) {
-            child.handle_collab_event(event);
-        }
     }
 
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
@@ -2305,6 +2299,38 @@ mod tests {
         fn permission_hint(&self) -> Option<AppKind> {
             None
         }
+    }
+
+    #[test]
+    fn inactive_tabs_retain_session_collaboration_delivery() {
+        let active = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            "active-session",
+            "fixture.active-session",
+        );
+        let inactive = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            "inactive-session",
+            "fixture.inactive-session",
+        );
+        let active_events = std::rc::Rc::clone(&active.collab_events);
+        let inactive_events = std::rc::Rc::clone(&inactive.collab_events);
+        let tabs = vec![
+            (
+                TabDescriptor::new(1, "Active"),
+                TileContent::App(active.root),
+            ),
+            (
+                TabDescriptor::new(2, "Inactive"),
+                TileContent::App(inactive.root),
+            ),
+        ];
+        let mut group = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+
+        crate::widget::handle_collab_event(
+            &mut group,
+            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(active_events.get(), 1);
+        assert_eq!(inactive_events.get(), 1);
     }
 
     #[test]

@@ -1450,16 +1450,11 @@ impl Widget for GroupRow {
         }
         reports
     }
-    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.groups
             .iter_mut()
-            .flat_map(Widget::take_collab_requests)
+            .map(|group| group as &mut dyn Widget)
             .collect()
-    }
-    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
-        for child in self.groups.iter_mut() {
-            child.handle_collab_event(event);
-        }
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -5347,6 +5342,44 @@ mod tests {
             2,
             "resize handles rebuilt on fullscreen exit",
         );
+    }
+
+    #[test]
+    fn hidden_row_retains_session_collaboration_delivery() {
+        let first = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            "hidden-session-a",
+            "fixture.hidden-session-a",
+        );
+        let second = crate::history_mode::isolation_tests::native_effect_probe_parts(
+            "hidden-session-b",
+            "fixture.hidden-session-b",
+        );
+        let first_events = std::rc::Rc::clone(&first.collab_events);
+        let second_events = std::rc::Rc::clone(&second.collab_events);
+        let first_group = WindowGroup::new(
+            100,
+            vec![(TabDescriptor::new(1, "First"), TileContent::App(first.root))],
+            1,
+            WindowWidth::Normal,
+        );
+        let second_group = WindowGroup::new(
+            200,
+            vec![(
+                TabDescriptor::new(2, "Second"),
+                TileContent::App(second.root),
+            )],
+            2,
+            WindowWidth::Normal,
+        );
+        let mut row = GroupRow::new(vec![first_group, second_group]);
+        row.set_fullscreen(None, true);
+
+        crate::widget::handle_collab_event(
+            &mut row,
+            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(first_events.get(), 1);
+        assert_eq!(second_events.get(), 1);
     }
 
     #[test]

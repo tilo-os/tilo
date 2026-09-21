@@ -476,6 +476,18 @@ pub trait Continuable {
     ) -> bool;
 }
 
+/// Optional session collaboration capability for widgets that own live
+/// broker-backed activity.
+pub trait Collaborative {
+    /// Drain session-local requests for the authenticated collaboration host.
+    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+        Vec::new()
+    }
+
+    /// Receive one session-local broker event.
+    fn handle_collab_event(&mut self, _event: &crate::collaboration::CollabEvent) {}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowCloseAdmission {
     Allow,
@@ -716,22 +728,17 @@ pub trait Widget {
         Ok(())
     }
 
-    /// Session-local broker requests emitted by an application widget. These
-    /// are never document mutations; the host drains them onto its already
-    /// authenticated collaboration channel.
-    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        self.children_mut()
-            .into_iter()
-            .flat_map(Widget::take_collab_requests)
-            .collect()
+    /// Expose session collaboration only for widgets that own it.
+    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+        None
     }
 
-    /// Receive session-local broker events. The default recursively forwards
-    /// them so only the application owning a session id consumes it.
-    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
-        for child in self.children_mut() {
-            child.handle_collab_event(event);
-        }
+    /// Retained session topology. Presentation children are the ordinary
+    /// default; owners with hidden or inactive live sessions override this
+    /// without exposing those descendants to drawing or input traversal.
+    #[doc(hidden)]
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.children_mut()
     }
 
     /// Attach native child views after the host window exists. The default
@@ -2080,6 +2087,40 @@ pub trait Widget {
     }
 }
 
+/// Drain explicit collaboration capabilities through their retained session
+/// topology. A closed bound owner is a hard traversal boundary.
+pub(crate) fn take_collab_requests(
+    widget: &mut dyn Widget,
+) -> Vec<crate::collaboration::CollabRequest> {
+    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+        return Vec::new();
+    };
+    let mut requests = widget
+        .collaborative_mut()
+        .map_or_else(Vec::new, Collaborative::take_collab_requests);
+    for child in widget.collaboration_children_mut() {
+        requests.extend(take_collab_requests(child));
+    }
+    requests
+}
+
+/// Deliver one session event to each explicit collaboration capability once.
+/// Bound callback context remains entered for the complete descendant walk.
+pub(crate) fn handle_collab_event(
+    widget: &mut dyn Widget,
+    event: &crate::collaboration::CollabEvent,
+) {
+    let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+        return;
+    };
+    if let Some(collaborative) = widget.collaborative_mut() {
+        collaborative.handle_collab_event(event);
+    }
+    for child in widget.collaboration_children_mut() {
+        handle_collab_event(child, event);
+    }
+}
+
 /// Panic-free node construction, used by every `build_layout` implementation
 /// in this module. `TaffyTree::new_leaf` and `new_with_children` are typed
 /// `-> TaffyResult<NodeId>` for API generality, but taffy 0.10's
@@ -2499,6 +2540,102 @@ mod a11y_tree_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct CollaborationProbe {
+        events: std::rc::Rc<std::cell::Cell<u32>>,
+        child: Option<Box<dyn Widget>>,
+    }
+
+    impl Collaborative for CollaborationProbe {
+        fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+            vec![crate::collaboration::CollabRequest::ClearContinuation {
+                app_id: "probe".into(),
+            }]
+        }
+
+        fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
+            self.events.set(self.events.get().saturating_add(1));
+        }
+    }
+
+    impl Widget for CollaborationProbe {
+        fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+            Some(self)
+        }
+
+        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _: &Theme,
+            _: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.leaf_node(taffy::Style::default())
+        }
+
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
+
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+
+        fn handle_event(
+            &mut self,
+            _: &WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            _: &mut AutoCommit,
+            _: &ObjId,
+            _: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
+        ) {
+        }
+
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            let Some(child) = self.child.as_mut() else {
+                return Vec::new();
+            };
+            let child: &mut (dyn Widget + '_) = child.as_mut();
+            vec![child]
+        }
+
+        fn name(&self) -> &'static str {
+            "CollaborationProbe"
+        }
+
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
+    }
+
+    #[test]
+    fn collaboration_capabilities_visit_parent_and_child_exactly_once() {
+        let events = std::rc::Rc::new(std::cell::Cell::new(0));
+        let child = CollaborationProbe {
+            events: std::rc::Rc::clone(&events),
+            child: None,
+        };
+        let mut root = CollaborationProbe {
+            events: std::rc::Rc::clone(&events),
+            child: Some(Box::new(child)),
+        };
+
+        assert_eq!(take_collab_requests(&mut root).len(), 2);
+        handle_collab_event(
+            &mut root,
+            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(events.get(), 2);
+    }
 
     #[test]
     fn ordinary_window_close_defaults_to_immediate_exit() {

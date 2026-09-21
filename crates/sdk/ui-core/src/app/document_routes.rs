@@ -28,7 +28,7 @@ impl App {
             event,
             CollabEvent::Document { .. } | CollabEvent::ScrollbackBatch { .. }
         ) {
-            self.root_widget.handle_collab_event(event);
+            crate::widget::handle_collab_event(self.root_widget.as_mut(), event);
         }
     }
     #[allow(

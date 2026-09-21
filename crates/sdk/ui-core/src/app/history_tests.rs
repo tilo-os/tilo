@@ -2945,6 +2945,64 @@ fn live_legacy_callback_first_emits_after_return_and_preview_remains_inert() {
 }
 
 #[test]
+fn history_preview_keeps_session_notifications_on_the_live_owner_exactly_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
+    let store = owners
+        .open(HISTORY.app_id, "history-collaboration")
+        .unwrap();
+    let checkout = crate::record::RecordCheckout::new(
+        crate::RecordId::for_tab(945),
+        crate::record::RecordKind::new("note"),
+    );
+    store
+        .reserve_record(&checkout)
+        .unwrap()
+        .initialize(|doc| {
+            doc.put(ROOT, "body", "live").unwrap();
+            Ok(())
+        })
+        .unwrap();
+    let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
+        "history-live-session",
+        "fixture.history-live-session",
+    );
+    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(probe.root));
+    tile.bind_record(store, checkout);
+    tile.register_document_history(&HISTORY).unwrap();
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(tile));
+    layout(&mut app);
+    let history = named(&mut app, "History");
+    app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
+    layout(&mut app);
+
+    let visual_names = app
+        .root_widget
+        .children_mut()
+        .into_iter()
+        .map(|child| child.name().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        !visual_names.iter().any(|name| name == "Live owner"),
+        "active History presentation hides the live owner from visual traversal",
+    );
+    let session_names = app
+        .root_widget
+        .collaboration_children_mut()
+        .into_iter()
+        .map(|child| child.name().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(session_names, ["Live owner"]);
+
+    app.apply_collab_event_for_test(CollabEvent::FollowChanged { peer_id: None });
+    assert_eq!(
+        probe.collab_events.get(),
+        1,
+        "History presentation must keep the live session owner notified once",
+    );
+}
+
+#[test]
 fn document_envelopes_never_enter_generic_widget_notification_before_custody() {
     let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
         "observer",

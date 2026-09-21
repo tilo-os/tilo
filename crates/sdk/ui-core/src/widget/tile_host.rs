@@ -1588,16 +1588,10 @@ impl Widget for TileHost {
             live.native_view_frame_start();
         }
     }
-    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        if let TileContent::App(live) = &mut self.content {
-            live.take_collab_requests()
-        } else {
-            vec![]
-        }
-    }
-    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
-        if let TileContent::App(live) = &mut self.content {
-            live.handle_collab_event(event);
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        match &mut self.content {
+            TileContent::App(live) => vec![live.as_mut()],
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
         }
     }
     fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {

@@ -189,6 +189,7 @@ struct LiveOwner {
     completions: Rc<Cell<usize>>,
     local_events: Rc<Cell<usize>>,
     collab_events: Rc<Cell<usize>>,
+    collab_wake_handles: Rc<RefCell<Vec<crate::WakeHandle>>>,
     bracket: Rc<RefCell<Option<Vec<automerge::ChangeHash>>>>,
     undo_request: Rc<Cell<Option<crate::undo::UndoRequest>>>,
     active: Option<tilo_actions::InvocationId>,
@@ -197,7 +198,19 @@ struct LiveOwner {
     prompted: bool,
     mutable_identity: Option<Rc<MutableContinuationIdentity>>,
 }
+impl crate::widget::Collaborative for LiveOwner {
+    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
+        self.collab_events.set(self.collab_events.get() + 1);
+        self.collab_wake_handles
+            .borrow_mut()
+            .push(crate::WakeHandle::new());
+    }
+}
 impl Widget for LiveOwner {
+    fn collaborative_mut(&mut self) -> Option<&mut dyn crate::widget::Collaborative> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         "Live owner"
     }
@@ -256,9 +269,6 @@ impl Widget for LiveOwner {
     }
     fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
         self.undo_request.take()
-    }
-    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
-        self.collab_events.set(self.collab_events.get() + 1);
     }
     fn handle_local_undo_request(&mut self, _: crate::undo::UndoRequest) -> bool {
         self.local_events.set(self.local_events.get() + 1);
@@ -338,6 +348,7 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
         completions: completions.clone(),
         local_events: local_events.clone(),
         collab_events: Rc::new(Cell::new(0)),
+        collab_wake_handles: Rc::new(RefCell::new(Vec::new())),
         bracket: Rc::new(RefCell::new(None)),
         undo_request: Rc::new(Cell::new(None)),
         active: None,
@@ -470,6 +481,7 @@ fn retained_phrase_confirmation_requires_fresh_visible_input_and_preserves_argum
         completions: Rc::new(Cell::new(0)),
         local_events: Rc::new(Cell::new(0)),
         collab_events: Rc::new(Cell::new(0)),
+        collab_wake_handles: Rc::new(RefCell::new(Vec::new())),
         bracket: Rc::new(RefCell::new(None)),
         undo_request: Rc::new(Cell::new(None)),
         active: None,
@@ -567,6 +579,7 @@ fn retained_identity_fixture(
         completions: Rc::new(Cell::new(0)),
         local_events: Rc::new(Cell::new(0)),
         collab_events: Rc::new(Cell::new(0)),
+        collab_wake_handles: Rc::new(RefCell::new(Vec::new())),
         bracket: Rc::new(RefCell::new(None)),
         undo_request: Rc::new(Cell::new(None)),
         active: None,
@@ -655,6 +668,7 @@ pub(crate) struct EffectProbe {
     pub(crate) finish: Rc<Cell<bool>>,
     pub(crate) completions: Rc<Cell<usize>>,
     pub(crate) collab_events: Rc<Cell<usize>>,
+    pub(crate) collab_wake_handles: Rc<RefCell<Vec<crate::WakeHandle>>>,
     pub(crate) bracket: Rc<RefCell<Option<Vec<automerge::ChangeHash>>>>,
     pub(crate) undo_request: Rc<Cell<Option<crate::undo::UndoRequest>>>,
 }
@@ -666,6 +680,7 @@ pub(crate) fn native_effect_probe_parts(id: &'static str, operation: &'static st
         tilo_actions::ActionBinding::unit_for(&resource_for(id, operation), "export").unwrap(),
     )));
     let collab_events = Rc::new(Cell::new(0));
+    let collab_wake_handles = Rc::new(RefCell::new(Vec::new()));
     let bracket = Rc::new(RefCell::new(None));
     let undo_request = Rc::new(Cell::new(None));
     let root = Box::new(LiveOwner {
@@ -679,6 +694,7 @@ pub(crate) fn native_effect_probe_parts(id: &'static str, operation: &'static st
         finish: finish.clone(),
         completions: completions.clone(),
         collab_events: collab_events.clone(),
+        collab_wake_handles: collab_wake_handles.clone(),
         local_events: Rc::new(Cell::new(0)),
         active: None,
         manual: Rc::new(RefCell::new(None)),
@@ -693,6 +709,7 @@ pub(crate) fn native_effect_probe_parts(id: &'static str, operation: &'static st
         finish,
         completions,
         collab_events,
+        collab_wake_handles,
         bracket,
         undo_request,
     }
