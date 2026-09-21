@@ -218,7 +218,7 @@ pub struct NoteTreeView {
     /// floating ghost, the live reflow gap, and the insertion index; the
     /// model is only mutated on drop (or not at all on cancel).
     drag: DragController<PageId>,
-    drag_hover: Option<(PageId, std::time::Instant)>,
+    drag_hover: Option<(PageId, ui::clock::Instant)>,
     /// Right-click context menu on a page row.
     menu: ContextMenu,
     /// The page the open context menu targets. Its rows map back to
@@ -1818,12 +1818,12 @@ impl NoteTreeView {
             }
             let metrics = self.list_metrics();
             self.drag.pointer_moved(pt, &metrics);
-            self.update_drag_hover(pt, std::time::Instant::now());
+            self.update_drag_hover(pt, ui::clock::Instant::now());
             self.dirty = true;
         }
     }
 
-    fn update_drag_hover(&mut self, pt: Point, now: std::time::Instant) {
+    fn update_drag_hover(&mut self, pt: Point, now: ui::clock::Instant) {
         let target = self
             .drag
             .is_active()

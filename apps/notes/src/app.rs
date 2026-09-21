@@ -303,7 +303,7 @@ pub struct NotesApp {
     /// the editor spans to the window bottom.
     status_bubble: ui::StatusBubble,
     transfer_toasts: ui::widget::toast::ToastStack,
-    last_toast_tick: std::time::Instant,
+    last_toast_tick: ui::clock::Instant,
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
     /// Shot-only override for the real save progress/failure presentation.
@@ -623,7 +623,7 @@ impl NotesApp {
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
-            last_toast_tick: std::time::Instant::now(),
+            last_toast_tick: ui::clock::Instant::now(),
             shots_status: false,
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
@@ -4038,7 +4038,7 @@ impl Widget for NotesApp {
         // Transient floating status bubble (bottom-right), in place of the
         // old permanent bottom status strip.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         self.transfer_toasts
             .tick(now.saturating_duration_since(self.last_toast_tick));
         self.last_toast_tick = now;
@@ -5342,7 +5342,7 @@ mod tests {
     fn reduced_motion_stops_notes_owned_status_bubble_frames() {
         let tmp = TempDir::new().unwrap();
         let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
-        app.status_bubble.poke(std::time::Instant::now());
+        app.status_bubble.poke(ui::clock::Instant::now());
         assert!(app.needs_animation_frame(), "normal fade requests frames");
 
         Widget::set_motion_reduced(&mut app, true);
