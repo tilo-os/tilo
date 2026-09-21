@@ -73,7 +73,7 @@ test -f "$disk"
 test "$(stat -c %s "$disk")" -eq 68719476736
 test "$(( $(stat -c %b "$disk") * 512 ))" -gt 0
 sudo sync
-sudo sgdisk -v "$disk"
+sudo sfdisk --verify "$disk"
 '@
 & ssh.exe @sshOptions $guestPreflight
 if ($LASTEXITCODE -ne 0) {
