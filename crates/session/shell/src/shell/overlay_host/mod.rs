@@ -3533,7 +3533,7 @@ impl ShellOverlayHost {
                 // SAFETY: stable Box<GroupRow> contract; this is a shared
                 // read and cannot race a workspace reconciliation sweep.
                 let row: &GroupRow = unsafe { &**ptr };
-                Widget::active_floating_surface_ids(row)
+                ui::widget::FloatingSurfaceWidgetExt::active_floating_surface_ids(row)
             })
             .collect()
     }
@@ -3546,7 +3546,7 @@ impl ShellOverlayHost {
             // SAFETY: same stable Box<GroupRow> contract as the request
             // harvesters; the host owns exclusive access for dispatch.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            Widget::on_floating_surface_host_message(row, message);
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(row, message);
         }
     }
 
@@ -7129,7 +7129,9 @@ impl ShellOverlayHost {
             // SAFETY: same stable `Box<GroupRow>` contract as
             // `capture_targets`; update holds exclusive access to the host.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            if let Some(request) = Widget::take_floating_surface_request(row) {
+            if let Some(request) =
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(row)
+            {
                 let already_queued = self
                     .pending_floating_surfaces
                     .iter()
@@ -7145,7 +7147,9 @@ impl ShellOverlayHost {
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: same stable Box<GroupRow> contract as request harvest.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            for update in Widget::take_floating_surface_source_updates(row) {
+            for update in
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_source_updates(row)
+            {
                 if let Some(existing) = self
                     .pending_floating_surface_updates
                     .iter_mut()
@@ -7168,7 +7172,8 @@ impl ShellOverlayHost {
             // SAFETY: same stable Box<GroupRow> contract as the floating
             // surface harvester immediately above.
             let row: &mut GroupRow = unsafe { &mut *ptr };
-            requested = requested.or_else(|| Widget::take_capture_studio_request(row));
+            requested = requested
+                .or_else(|| ui::widget::FloatingSurfaceWidgetExt::take_capture_studio_request(row));
         }
         if let Some(mode) = requested {
             let _ = self.open_capture_studio(mode);
@@ -14062,7 +14067,7 @@ impl Widget for ShellOverlayHost {
                 // combined-output coordinate space. Push the real boundary
                 // before child layout so both sides resolve one identical
                 // rect on the ownership-transfer frame.
-                Widget::set_floating_surface_bounds(row, self.rect);
+                ui::widget::FloatingSurfaceWidgetExt::set_floating_surface_bounds(row, self.rect);
             }
         }
         let Ok(children) = taffy.children(node) else {
