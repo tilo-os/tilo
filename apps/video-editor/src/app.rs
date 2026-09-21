@@ -89,8 +89,6 @@ const GOTO_CARD_W: f64 = 260.0;
 
 const ADD_TRACK_H: f64 = 24.0;
 
-const TOPBAR_CONTROL_Y: f64 = (TOPBAR_H - TOPBAR_TOUCH_TARGET) / 2.0;
-
 const TOPBAR_BTN_W: f64 = 110.0;
 
 const PANE_HEADING_Y0: f64 = 6.0;
@@ -146,20 +144,6 @@ const MAX_SCRUBBER_W: f64 = 560.0;
 /// a curtain. Deliberately a number here rather than the alpha of
 /// `surfaces.scrim`: that token is opaque in every theme.
 const SCRIM_ALPHA: f64 = 0.55;
-/// How dark the export modal's backdrop gets. Heavier than the bin flap's
-/// veil — a modal really does take the whole app — but still a veil: the user
-/// keeps their place in the timeline behind it.
-const MODAL_SCRIM_ALPHA: f64 = 0.72;
-/// Vertical space the export card's header (title + filename) needs before
-/// the first section label can start.
-const EXPORT_HEADER_H: f64 = 76.0;
-/// Space the card's footer needs: size estimate, status line, buttons.
-const EXPORT_FOOTER_H: f64 = 104.0;
-/// A section label's own height, above its row of segments.
-const EXPORT_LABEL_H: f64 = 18.0;
-/// The least a label-plus-segments group can be squeezed to.
-const EXPORT_GROUP_H: f64 = 50.0;
-
 /// What the editor says, in plain words, when a source's bytes are not on this
 /// device — the reference replicated but the content has not been hydrated
 /// from the FUSE (or the file is gone). One string so the bin row, the clip
@@ -2040,6 +2024,7 @@ impl VideoEditorApp {
     /// on a 46px audio lane. Centring the pills also put them across the row
     /// that now carries the fader's reading, which is why that row had no
     /// width to state it in.
+    #[cfg(test)]
     fn mute_pill_rect(&self, header: Rect) -> Rect {
         self.track_head_layout(header).mute
     }
@@ -2075,16 +2060,19 @@ impl VideoEditorApp {
     /// is decided in these 128 pixels, and a level you have to open a panel to
     /// see is a level nobody looks at. Full width, so a glance down the
     /// gutter reads every lane at once.
+    #[cfg(test)]
     fn track_meter_rect(&self, header: Rect) -> Rect {
         self.track_head_layout(header).meter
     }
 
     /// The lock pill rect, immediately left of the mute pill.
+    #[cfg(test)]
     fn lock_pill_rect(&self, header: Rect) -> Rect {
         self.track_head_layout(header).lock
     }
 
     /// The solo pill rect, immediately left of the lock pill.
+    #[cfg(test)]
     fn solo_pill_rect(&self, header: Rect) -> Rect {
         self.track_head_layout(header).solo
     }
@@ -7551,14 +7539,6 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
         ],
     ),
 ];
-
-/// Where the shortcut table starts inside its card, below the title and the
-/// "Esc or ? to close" line.
-const HELP_TOP: f64 = 76.0;
-/// One group header, one row, and the gap after a group, in pixels.
-const HELP_HEADER_H: f64 = 20.0;
-const HELP_ROW_H: f64 = 19.0;
-const HELP_GROUP_GAP: f64 = 10.0;
 
 /// How tall each shortcut group draws.
 fn help_group_h(rows: usize, m: HelpMetrics) -> f64 {
