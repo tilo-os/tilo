@@ -445,10 +445,9 @@ jobs:
     # verify either target archive without executing its application payloads.
     runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
     container:
-      image: ${{ needs.plan.outputs.builder_image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      # This public, immutable image is pulled before any release authorization.
+      # It contains no compiler or build toolchain and needs no registry secret.
+      image: code.sandbox.example/public/tilo-release-tools@sha256:a59c9b664bc4aa09da7a747b77aa72c965608d6da9fa5659a3e70e01810b764b
     timeout-minutes: 60
     enable-openid-connect: true
     steps:
