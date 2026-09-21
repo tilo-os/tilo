@@ -10857,13 +10857,15 @@ impl AppHandler {
                     let current_focus_idx = app
                         .focused_node
                         .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-                    let owned_target = app
-                        .focused_node
-                        .is_some_and(|node| app.bindings.owns_document(node));
-                    let entry = if let Some(binding) = app
+                    let binding = app
                         .focused_node
                         .and_then(|node| app.bindings.binding_for(node))
-                    {
+                        .or_else(|| app.root_widget.callback_binding());
+                    let owned_target = binding.is_some()
+                        || app
+                            .focused_node
+                            .is_some_and(|node| app.bindings.owns_document(node));
+                    let entry = if let Some(binding) = binding {
                         binding
                             .history_request(&mut app.state.doc, request)
                             .ok()
