@@ -635,6 +635,25 @@ class LaneAdmission(unittest.TestCase):
                 lane.controller(Path('/root'),args,disk,agent,False)
         failure.assert_not_called()
 
+    def test_generic_creator_controller_failure_writes_bounded_redacted_receipt(self):
+        disk={'namespace':'kata-system','pod':'tilo-disk-run1','pod_uid':'pod-uid',
+              'node':'disk','node_uid':'node-uid'}
+        agent={'metadata':{'name':'kata-deploy'}}
+        args=SimpleNamespace(context='ctx',host_pins=Path('/pins'),disk_args=Path('/args'),
+            operation_dir=None,helper_revision='a'*40,acceptance_id='run1')
+        result=SimpleNamespace(returncode=1,stdout='',
+                               stderr='Traceback\nAuthorization: Bearer supersecret\n')
+        with tempfile.TemporaryDirectory() as directory:
+            args.operation_dir=Path(directory)
+            with patch.object(lane.subprocess,'run',return_value=result), \
+                    patch.object(lane,'collect_creator_failure',return_value=False):
+                with self.assertRaises(lane.CreatorControllerFailure):
+                    lane.controller(Path('/root'),args,disk,agent,False)
+            receipt=json.loads((Path(directory)/'creator-controller-failure.json').read_text())
+            lane.validate_creator_controller_failure(receipt)
+            self.assertEqual(receipt['creator'],disk)
+            self.assertNotIn('supersecret',base64.b64decode(receipt['stderr_base64']).decode())
+
     def test_resume_pending_creator_adopts_only_bound_worker(self):
         with tempfile.TemporaryDirectory() as directory:
             args,_,disk_node,creator,_,_=self.resumable_fixture(directory)

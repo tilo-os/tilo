@@ -51,6 +51,10 @@ class ControllerTransportError(ValueError):
     """The local controller lost its path to Kubernetes."""
 
 
+class CreatorControllerFailure(ValueError):
+    """The creator controller ran and failed before producing remote evidence."""
+
+
 class CreatorBinding(TypedDict):
     pod: str
     pod_uid: str
@@ -880,6 +884,60 @@ def validate_creator_failure(document):
             raise ValueError('creator failure evidence stream exceeds bound')
 
 
+CONTROLLER_STDERR_LIMIT = 64 * 1024
+
+
+def sanitize_controller_stderr(value):
+    """Keep useful controller diagnostics without persisting credentials."""
+    text = value if isinstance(value, str) else value.decode(errors='replace')
+    text = re.sub(
+        r'(?i)(authorization|bearer|token|password|passwd|secret|credential|'
+        r'dockerconfigjson)(?:\s*[:=]\s*|\s+)(?:bearer\s+)?[^\s,;]+',
+        r'\1=[REDACTED]', text)
+    text = ''.join(character if character in '\t\n\r' or ord(character) >= 32
+                   else '\ufffd' for character in text)
+    encoded = text.encode('utf-8', errors='replace')
+    return encoded[:CONTROLLER_STDERR_LIMIT], len(encoded) > CONTROLLER_STDERR_LIMIT
+
+
+def validate_creator_controller_failure(document):
+    required = {'schema', 'purpose', 'acceptance_id', 'creator', 'returncode',
+                'stderr_sha256', 'stderr_base64', 'stderr_truncated'}
+    if (set(document) != required or document['schema'] != 1
+            or document['purpose'] != 'tilo-supervised-creator-controller-failure'
+            or not re.fullmatch(r'[a-z0-9][a-z0-9-]{2,24}', document['acceptance_id'])
+            or type(document['creator']) is not dict
+            or type(document['returncode']) is not int or document['returncode'] == 0
+            or not re.fullmatch(r'[0-9a-f]{64}', document['stderr_sha256'])
+            or type(document['stderr_truncated']) is not bool):
+        raise ValueError('creator controller failure has invalid metadata')
+    try:
+        stderr = base64.b64decode(document['stderr_base64'], validate=True)
+    except (ValueError, TypeError) as error:
+        raise ValueError('creator controller failure has invalid stderr encoding') from error
+    if len(stderr) > CONTROLLER_STDERR_LIMIT:
+        raise ValueError('creator controller failure stderr exceeds bound')
+
+
+def write_creator_controller_failure(args, disk, returncode, stderr):
+    """Persist bounded diagnostics so a generic pre-job failure is resumable."""
+    excerpt, truncated = sanitize_controller_stderr(stderr)
+    document = {
+        'schema': 1,
+        'purpose': 'tilo-supervised-creator-controller-failure',
+        'acceptance_id': args.acceptance_id,
+        'creator': disk,
+        'returncode': returncode,
+        'stderr_sha256': hashlib.sha256(
+            stderr if isinstance(stderr, bytes) else stderr.encode()).hexdigest(),
+        'stderr_base64': base64.b64encode(excerpt).decode('ascii'),
+        'stderr_truncated': truncated,
+    }
+    validate_creator_controller_failure(document)
+    write_private(args.operation_dir/'creator-controller-failure.json',
+                  (json.dumps(document, indent=2, sort_keys=True) + '\n').encode())
+
+
 def collect_creator_failure(args, disk):
     remote = '/work/disk-output/bootc-install.failure.json'
     script = r'''import os,stat,sys
@@ -937,21 +995,19 @@ def controller(root, args, disk, agent, inspect_only, evidence_name='creator-env
         if registry_auth_bytes is not None:
             argv.append('--registry-auth-stdin')
     try:
-        try:
-            result=subprocess.run(argv,input=registry_auth_bytes,capture_output=True,
-                                  text=registry_auth_bytes is None,timeout=7200)
-        except (OSError,subprocess.TimeoutExpired) as error:
-            raise ControllerTransportError('creator controller process lost transport') from error
-        if result.returncode:
-            stderr=result.stderr if isinstance(result.stderr,str) else result.stderr.decode(errors='replace')
-            if result.returncode==75 and stderr.strip().endswith('TILO_CREATOR_CONTROLLER_TRANSPORT'):
-                raise ControllerTransportError('creator controller reported transport loss')
+        result=subprocess.run(argv,input=registry_auth_bytes,capture_output=True,
+                              text=registry_auth_bytes is None,timeout=7200)
+    except (OSError,subprocess.TimeoutExpired) as error:
+        raise ControllerTransportError('creator controller process lost transport') from error
+    if result.returncode:
+        stderr=result.stderr if isinstance(result.stderr,str) else result.stderr.decode(errors='replace')
+        if result.returncode==75 and stderr.strip().endswith('TILO_CREATOR_CONTROLLER_TRANSPORT'):
+            raise ControllerTransportError('creator controller reported transport loss')
+        if not inspect_only and collect_creator_failure(args, disk):
             raise ValueError(f'creator controller failed (exit {result.returncode})')
-        return result.stdout if isinstance(result.stdout,str) else result.stdout.decode()
-    except ValueError as error:
-        if not inspect_only and not isinstance(error, ControllerTransportError):
-            collect_creator_failure(args, disk)
-        raise
+        write_creator_controller_failure(args, disk, result.returncode, stderr)
+        raise CreatorControllerFailure(f'creator controller failed before remote evidence (exit {result.returncode})')
+    return result.stdout if isinstance(result.stdout,str) else result.stdout.decode()
 
 
 def prepare_disk_output(context, disk):
@@ -2669,6 +2725,15 @@ def main():
               (json.dumps({'schema':1,'purpose':'tilo-supervised-creator-recovery',
                            'acceptance_id':args.acceptance_id,'creator':disk,
                            'state':'transport-interrupted'},indent=2,sort_keys=True)+'\n').encode())
+            raise
+        except CreatorControllerFailure:
+            write_private(args.operation_dir/'creator-recovery.json',
+              (json.dumps({'schema':1,'purpose':'tilo-supervised-creator-recovery',
+                           'acceptance_id':args.acceptance_id,'creator':disk,
+                           'state':'controller-failure'},indent=2,sort_keys=True)+'\n').encode())
+            # The staged inputs and exact worker are the retry checkpoint.  A
+            # generic controller failure has no trusted remote failure receipt,
+            # so deleting the worker would turn a cheap resume into a rebuild.
             raise
         except BaseException:
             delete_worker(args.context,disk)
