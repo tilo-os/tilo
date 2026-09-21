@@ -5,10 +5,22 @@ import json
 import os
 from pathlib import Path
 import re
+import resource
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
+import tempfile
+
+
+HISTORY_BACKTRACE_OPERATION = 'history-backtrace'
+HISTORY_BACKTRACE_PACKAGE = 'qos-browser-runtime'
+HISTORY_BACKTRACE_CASES = (
+    'desktop_host::tests::external_history_opens_retained_framework_without_changing_heads',
+    'desktop_host::tests::workspace_navigation_document_history_interlock_preserves_exact_owner',
+)
+HISTORY_BACKTRACE_RUNNER = 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER'
 
 
 def request(env):
@@ -19,8 +31,9 @@ def request(env):
         raise ValueError('source must be a full lowercase commit SHA')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', values['PACKAGE']):
         raise ValueError('package must be a Cargo package name')
-    if values['OPERATION'] not in ('test', 'test-lib', 'check-tests', 'inspect-native'):
-        raise ValueError('operation must be test, test-lib, check-tests or inspect-native')
+    if values['OPERATION'] not in ('test', 'test-lib', 'check-tests', 'inspect-native',
+                                   HISTORY_BACKTRACE_OPERATION):
+        raise ValueError('operation must be test, test-lib, check-tests, inspect-native or history-backtrace')
     if values['OPERATION'] == 'test-lib':
         if values['TEST_TARGET']:
             raise ValueError('test-lib does not accept an integration target')
@@ -29,7 +42,12 @@ def request(env):
         values['TARGET_KIND'] = 'lib'
     if values['TARGET_KIND'] not in ('integration', 'lib'):
         raise ValueError('target kind must be integration or lib')
-    if values['OPERATION'] in ('test', 'test-lib'):
+    if values['OPERATION'] == HISTORY_BACKTRACE_OPERATION:
+        if (values['PACKAGE'] != HISTORY_BACKTRACE_PACKAGE or values['TARGET_KIND'] != 'lib'
+                or values['TEST_TARGET'] or values['TEST_NAME'] or values['TEST_NAMES']):
+            raise ValueError('history-backtrace is fixed to qos-browser-runtime lib history cases')
+        values['TEST_CASES'] = list(HISTORY_BACKTRACE_CASES)
+    elif values['OPERATION'] in ('test', 'test-lib'):
         if values['TARGET_KIND'] == 'integration' and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', values['TEST_TARGET']):
             raise ValueError('an integration test target is required')
         if values['TARGET_KIND'] == 'lib' and values['TEST_TARGET']:
@@ -82,6 +100,54 @@ def inspect_native_environment(root=Path('/')):
             'nested_privileged_container_tested': False}
 
 
+def history_test_binary(path, root):
+    try:
+        binary = Path(path).resolve(strict=True)
+    except OSError as error:
+        raise ValueError('Cargo runner supplied an unavailable test binary') from error
+    target = (root / 'target').resolve()
+    try:
+        binary.relative_to(target)
+    except ValueError as error:
+        raise ValueError('Cargo runner supplied a binary outside the source target directory') from error
+    mode = binary.stat().st_mode
+    if not stat.S_ISREG(mode) or not mode & 0o111:
+        raise ValueError('Cargo runner supplied a non-executable test binary')
+    return binary
+
+
+def history_gdb_runner(arguments, root):
+    if not arguments:
+        raise ValueError('Cargo runner did not supply a test binary')
+    binary = history_test_binary(arguments[0], root)
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    command = [
+        'gdb', '--nx', '--batch', '--return-child-result',
+        '-ex', 'set pagination off',
+        '-ex', 'set print frame-arguments none',
+        '-ex', 'run', '-ex', 'thread apply all bt', '--args', str(binary), *arguments[1:],
+    ]
+    print('TILO_HISTORY_GDB ' + json.dumps({'command': command}, sort_keys=True), flush=True)
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print(result.stdout, end='', flush=True)
+    if result.returncode == 0 and re.search(
+            r'^(?:Program received signal|Program terminated with signal|Thread [0-9]+ .* received signal)\b',
+            result.stdout, re.MULTILINE):
+        return 1
+    return result.returncode
+
+
+def history_runner_wrapper(root):
+    directory = Path(tempfile.mkdtemp(prefix='tilo-history-gdb-'))
+    wrapper = directory / 'cargo-runner'
+    wrapper.write_text(
+        '#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' -I '
+        + shlex.quote(str(Path(__file__).resolve())) + ' history-gdb-runner "$@"\n',
+        encoding='utf-8')
+    wrapper.chmod(0o700)
+    return wrapper
+
+
 def execute(root, values, outcomes=None):
     # Cargo merges configuration from ancestors. The workflow helper checkout
     # must be a sibling, never a parent supplying another revision's settings.
@@ -131,7 +197,21 @@ def execute(root, values, outcomes=None):
         print(json.dumps({'source_sha': actual, 'command': command}), flush=True)
         # Every case uses this job's same target tree; Cargo reuses the target
         # compiled by --list. Keep Cargo's runtime library path setup intact.
-        result = subprocess.run(command, cwd=root, text=True, stdout=subprocess.PIPE)
+        wrapper = None
+        run_options = {'cwd': root, 'text': True, 'stdout': subprocess.PIPE}
+        if values['OPERATION'] == HISTORY_BACKTRACE_OPERATION:
+            wrapper = history_runner_wrapper(root)
+            environment = os.environ.copy()
+            environment[HISTORY_BACKTRACE_RUNNER] = str(wrapper)
+            environment['TILO_HISTORY_SOURCE_ROOT'] = str(root.resolve())
+            run_options['env'] = environment
+        try:
+            result = subprocess.run(command, **run_options)
+        finally:
+            if wrapper is not None:
+                wrapper.unlink(missing_ok=True)
+                if wrapper.parent.name.startswith('tilo-history-gdb-'):
+                    wrapper.parent.rmdir()
         print(result.stdout, end='', flush=True)
         executed = bool(re.search(r'test result: (?:ok|FAILED)\. (?:1 passed; 0 failed|0 passed; 1 failed); 0 ignored;', result.stdout))
         passed = result.returncode == 0 and bool(re.search(
@@ -145,11 +225,19 @@ def execute(root, values, outcomes=None):
     return code
 
 
-def main():
+def main(arguments=None):
+    arguments = sys.argv[1:] if arguments is None else arguments
+    if arguments[:1] == ['history-gdb-runner']:
+        try:
+            return history_gdb_runner(arguments[1:],
+                                      Path(os.environ['TILO_HISTORY_SOURCE_ROOT']).resolve())
+        except (KeyError, OSError, ValueError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=('validate', 'run'))
     parser.add_argument('--root', type=Path, default=Path('source'))
-    args = parser.parse_args()
+    args = parser.parse_args(arguments)
     receipt = {'schema': 'tilo.focused-test/v1', 'workflow_sha': os.environ.get('GITHUB_SHA'),
                'builder_image': os.environ.get('BUILDER_IMAGE')}
     code = 1

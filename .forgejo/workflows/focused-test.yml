@@ -16,11 +16,11 @@ on:
         required: true
         type: string
       operation:
-        description: 'Exact tests, package test compilation, or fixed read-only native observations'
+        description: 'Exact tests, package test compilation, fixed native observations, or history backtraces'
         required: true
         default: test
         type: choice
-        options: [test, check-tests, inspect-native]
+        options: [test, check-tests, inspect-native, history-backtrace]
       test_target:
         description: 'Integration target, e.g. it; empty for lib or check-tests'
         required: false
@@ -125,6 +125,13 @@ jobs:
           mkdir -p /tmp/tilo-focused-runtime
           chmod 700 /tmp/tilo-focused-runtime
           bash control/tools/ensure-headless-audio.sh
+      - name: Install ephemeral debugger for fixed browser history diagnosis
+        if: github.event.inputs.operation == 'history-backtrace'
+        run: |
+          dnf install -y --setopt=install_weak_deps=False gdb
+          package=$(rpm -q --qf 'gdb-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' gdb)
+          printf 'TILO_HISTORY_GDB_PACKAGE %s\n' "$package"
+          printf 'TILO_HISTORY_GDB_PACKAGE %s\n' "$package" >> "$GITHUB_STEP_SUMMARY"
       - name: Execute focused request
         if: github.event.inputs.operation != 'inspect-native'
         env:
