@@ -2881,10 +2881,11 @@ mod tests {
         assert_external_frame_idle(&mut frame, "hidden Notes strip");
 
         let hidden_title = "Hidden update";
+        let hidden_notes_instance = (5_u64 << 48) | 12;
         frame
             .invoke_bound_action(
                 &ui::bound_dispatch::BoundActionAddress {
-                    instance_id: (5 << 48) | 12,
+                    instance_id: hidden_notes_instance,
                     address: tilo_actions::ActionAddress::new("notes.notebook", "new-page"),
                 },
                 serde_json::json!({"value": hidden_title})
@@ -2901,7 +2902,10 @@ mod tests {
             .records
             .borrow()
             .values()
-            .find(|record| record.app == notes::definition().app_id)
+            .find(|record| {
+                record.app == "dev.qos.notes"
+                    && record.checkout.id == ui::record::RecordId::for_tab(hidden_notes_instance)
+            })
             .unwrap()
             .clone();
         assert!(

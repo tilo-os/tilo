@@ -415,9 +415,18 @@ mod tests {
         route: RouteFixture,
         bytes: Vec<u8>,
         watermarks: Vec<([u8; 32], u64)>,
+        wire_version: Option<DocumentWireVersionFixture>,
         encryption_required: bool,
         covered: BTreeMap<String, u64>,
         covered_snapshot: Option<Vec<u8>>,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    enum DocumentWireVersionFixture {
+        QosV1,
+        QosV2,
+        TiloV1,
+        TiloV2,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -543,6 +552,13 @@ mod tests {
 
         let mut durable: DurableFixture =
             postcard::from_bytes(&admitted.durable().unwrap()).unwrap();
+        assert_eq!(durable.version, 3);
+        assert!(
+            durable
+                .documents
+                .iter()
+                .all(|document| document.wire_version == Some(DocumentWireVersionFixture::TiloV2))
+        );
         durable.room_bytes = None;
         let restored = StatePeer::restore(
             &postcard::to_allocvec(&durable).unwrap(),
