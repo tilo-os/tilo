@@ -618,6 +618,12 @@ impl GroupRow {
     /// `travel` is total signed scroll travel since Begin (positive moves
     /// toward later groups). Legal canvas tracks 1:1; beyond either end the
     /// shared iOS-style curve supplies continuously increasing resistance.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the shared rubber-band token accepts f32 screen-pixel distances; viewport-sized \
+                  f64 values are safely representable at sub-pixel precision and the result is \
+                  immediately widened back into the row's f64 geometry"
+    )]
     pub fn update_strip_pan(&mut self, travel: f64) -> bool {
         let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
         let requested = origin + travel;
