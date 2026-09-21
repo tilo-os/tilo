@@ -116,7 +116,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-supervised-helper-') as d:
  sys.path.insert(0,d)
  spec=importlib.util.spec_from_file_location('disk_creator',pathlib.Path(d,'create-development-disk.py'));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
  args=p['args']
- for name in ('public_bundle','output'):args[name]=pathlib.Path(args[name])
+ for name in ('public_bundle','output','installer_bootc_directory'):args[name]=pathlib.Path(args[name])
  auth=None
  if p.get('registry_auth') is not None:
   auth=pathlib.Path(d,'registry-auth.json');auth.write_bytes(base64.b64decode(p['registry_auth']));auth.chmod(0o600)

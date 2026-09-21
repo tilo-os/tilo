@@ -27,6 +27,7 @@ import time
 import development_prediction as prediction
 import hardware_profile as hardware
 import installed_material_audit as material
+import installer_bootc_helper
 from private_disk_image import _directory
 
 spec = importlib.util.spec_from_file_location('installed_source', Path(__file__).with_name('verify-development-source.py'))
@@ -323,6 +324,68 @@ def require_private_namespace():
         raise ValueError('mount namespace must have private propagation')
 
 
+def _assert_digest_absent(paths, forbidden):
+    scanned = 0
+    for root in paths:
+        for directory, names, files in os.walk(root, followlinks=False):
+            for name in files:
+                path = Path(directory) / name
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                scanned += 1
+                if installer_bootc_helper.sha256_file(path) == forbidden:
+                    raise ValueError('installer helper leaked into installed mutable state or ESP')
+    return scanned
+
+
+def verify_installer_helper_isolation(creation, source_root, installed_root,
+                                      mutable_paths, esp, architecture):
+    helper = creation.get('installer_bootc_helper')
+    if not isinstance(helper, dict) or set(helper) != {'artifact', 'source_binary', 'runtime'}:
+        raise ValueError('creation receipt lacks installer helper isolation evidence')
+    artifact, original = helper['artifact'], helper['source_binary']
+    expected_artifact = {
+        'schema': 1, 'purpose': installer_bootc_helper.PURPOSE,
+        'architecture': architecture,
+        'bootc_version': installer_bootc_helper.BOOTC_VERSION,
+        'source_tag': installer_bootc_helper.SOURCE_TAG,
+        'source_commit': installer_bootc_helper.SOURCE_COMMIT,
+        'patch_sha256': installer_bootc_helper.PATCH_SHA256,
+        'build_target': installer_bootc_helper.TARGETS[architecture],
+        'build_command': installer_bootc_helper.BUILD_COMMAND,
+    }
+    if (not isinstance(artifact, dict)
+            or set(artifact) != installer_bootc_helper.RECEIPT_KEYS
+            or any(artifact.get(key) != value for key, value in expected_artifact.items())
+            or not isinstance(original, dict)
+            or artifact.get('binary_sha256') == original.get('sha256')):
+        raise ValueError('creation receipt has invalid installer helper identities')
+    helper_identity = {'architecture': architecture,
+                       'sha256': artifact['binary_sha256'],
+                       'build_id': artifact['binary_build_id']}
+    runtime = helper['runtime']
+    if (not isinstance(runtime, dict) or runtime.get('schema') != 1
+            or runtime.get('purpose') != 'tilo-installer-bootc-runtime'
+            or runtime.get('binary') != helper_identity
+            or not isinstance(runtime.get('mount'), dict)
+            or runtime['mount'].get('mount_point') != '/run/tilo-installer-bootc'
+            or runtime['mount'].get('read_only') is not True):
+        raise ValueError('creation receipt lacks bound installer helper runtime evidence')
+    fresh_source = installer_bootc_helper.binary_identity(
+        source_root / 'usr/bin/bootc', architecture)
+    installed = installer_bootc_helper.binary_identity(
+        installed_root / 'usr/bin/bootc', architecture)
+    if fresh_source != original or installed != original:
+        raise ValueError('installed bootc differs from the original source binary')
+    if installed['sha256'] == artifact['binary_sha256']:
+        raise ValueError('installer helper replaced the installed bootc')
+    scanned = _assert_digest_absent([*mutable_paths, esp], artifact['binary_sha256'])
+    return {'source_binary': original, 'installed_binary': installed,
+            'helper_sha256': artifact['binary_sha256'],
+            'mutable_and_esp_files_scanned': scanned, 'helper_absent': True}
+
+
 def verify(args):
     if os.getuid() != 0 or os.geteuid() != 0 or args.architecture != 'aarch64':
         raise ValueError('requires root on the native ARM verification guest')
@@ -394,6 +457,10 @@ def verify(args):
             shared_var = hardware.trusted_path(root, Path('state/os/default/var'), regular=False)
             if not var_link.is_symlink() or var_link.resolve(strict=True) != shared_var:
                 raise ValueError('deployment var does not bind expected shared state')
+            helper_isolation = verify_installer_helper_isolation(
+                receipt, verified.root, view,
+                [hardware.trusted_path(root, Path(deploy), regular=False), shared_var],
+                esp, args.architecture)
             material_receipt = audit_material(root, esp, uki, args.composefs_digest, args.architecture)
     return {'schema': 1, 'purpose': 'tilo-installed-boot-and-root-verification',
         'source': verified.receipt, 'boot': boot, 'file_identity': access['file_identity'],
@@ -403,8 +470,10 @@ def verify(args):
         'checks': {'read_only_disk': True, 'disk_receipt_binding': True,
                    'selected_uki_matches_source': True,
                    'installed_origin': True, 'verity_mounted_root': True, 'effective_policy': True,
-                   'introduced_private_material_policy': True},
+                   'introduced_private_material_policy': True,
+                   'installer_bootc_isolation': True},
         'material_audit': material_receipt,
+        'installer_bootc_isolation': helper_isolation,
         'loader': loader_receipt,
         'composefs_mount_type': mounted['fstype'], 'installed_bytes_verified': False,
         'remaining': ['independent source OCI layer private-material audit receipt', 'VM boot acceptance'],

@@ -21,6 +21,8 @@ import tarfile
 import tempfile
 import time
 
+import installer_bootc_helper
+
 
 DISK_IMAGE = ('code.sandbox.example/qos/tilo-development-finalization-tools-aarch64@'
               'sha256:a8481a3265c2f4e47287a11163ab8cc13f31b070bba3566d62191c173b54d612')
@@ -248,6 +250,41 @@ def public_archive(root):
     return out.getvalue()
 
 
+def installer_bootc_archive(root, expected_sha256):
+    root = Path(root).resolve()
+    if not root.is_dir() or {path.name for path in root.iterdir()} != {'bootc', 'receipt.json'}:
+        raise ValueError('installer bootc artifact must contain exactly bootc and receipt.json')
+    binary, receipt_path = root / 'bootc', root / 'receipt.json'
+    info, receipt_info = binary.lstat(), receipt_path.lstat()
+    if not stat.S_ISREG(receipt_info.st_mode) or receipt_info.st_mode & 0o022:
+        raise ValueError('installer bootc receipt is not a protected regular file')
+    receipt = json.loads(receipt_path.read_text())
+    if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022
+            or not info.st_mode & stat.S_IXUSR
+            or installer_bootc_helper.elf_architecture(binary) != 'aarch64'
+            or installer_bootc_helper.elf_build_id(binary)
+               != receipt.get('binary_build_id')
+            or installer_bootc_helper.sha256_file(binary) != expected_sha256):
+        raise ValueError('installer bootc artifact differs from admitted native binary')
+    expected = {'schema': 1, 'purpose': installer_bootc_helper.PURPOSE,
+                'architecture': 'aarch64',
+                'bootc_version': installer_bootc_helper.BOOTC_VERSION,
+                'source_tag': installer_bootc_helper.SOURCE_TAG,
+                'source_commit': installer_bootc_helper.SOURCE_COMMIT,
+                'patch_sha256': installer_bootc_helper.PATCH_SHA256,
+                'binary_sha256': expected_sha256,
+                'build_target': installer_bootc_helper.TARGETS['aarch64'],
+                'build_command': installer_bootc_helper.BUILD_COMMAND}
+    if (set(receipt) != installer_bootc_helper.RECEIPT_KEYS
+            or any(receipt.get(key) != value for key, value in expected.items())):
+        raise ValueError('installer bootc artifact receipt differs from admitted provenance')
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode='w') as archive:
+        archive.add(binary, arcname='bootc', recursive=False)
+        archive.add(receipt_path, arcname='receipt.json', recursive=False)
+    return out.getvalue()
+
+
 def git_archive(root, revision):
     if not re.fullmatch(r'[0-9a-f]{40}', revision):
         raise ValueError('helper revision must be a full Git commit')
@@ -296,12 +333,15 @@ def registry_auth(args):
 def validate_disk_args(value):
     required = {'source','target','architecture','revision','manifest_sha256','composefs_digest',
       'systemd_version','public_bundle','output','generation','size_bytes','offline_key_signature',
-      'disposable_guest','boot_profile','source_live_uki'}
+      'disposable_guest','boot_profile','source_live_uki','installer_bootc_directory',
+      'installer_bootc_sha256'}
     if set(value) != required:
         raise ValueError('disk arguments contain missing or additional fields')
     if (not digest_reference(value['source']) or value['architecture'] != 'aarch64'
             or value['public_bundle'] != '/work/public-trust'
             or value['output'] != '/work/disk-output/disk.raw'
+            or value['installer_bootc_directory'] != '/work/installer-bootc-helper'
+            or not re.fullmatch(r'[0-9a-f]{64}', value['installer_bootc_sha256'])
             or value['size_bytes'] != 64*1024**3 or value['boot_profile'] != 'installer-media'
             or value['disposable_guest'] is not True or value['offline_key_signature'] is not True):
         raise ValueError('disk arguments differ from the admitted ARM installer-media lane')
@@ -726,6 +766,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--context',required=True);p.add_argument('--operation-dir',type=Path,required=True)
     p.add_argument('--disk-args',type=Path,required=True);p.add_argument('--public-bundle',type=Path,required=True)
+    p.add_argument('--installer-bootc-helper',type=Path,required=True)
     p.add_argument('--host-pins',type=Path,required=True);p.add_argument('--helper-revision',required=True)
     p.add_argument('--acceptance-id',required=True);p.add_argument('--disk-node');p.add_argument('--verifier-node');p.add_argument('--vm-node')
     auth=p.add_mutually_exclusive_group(required=True)
@@ -739,6 +780,8 @@ def main():
     values=json.loads(args.disk_args.read_text());validate_disk_args(values)
     root=Path(__file__).resolve().parents[2]; helpers=git_archive(root,args.helper_revision)
     public=public_archive(args.public_bundle); auth_bytes=registry_auth(args)
+    installer_bootc = installer_bootc_archive(
+        args.installer_bootc_helper, values['installer_bootc_sha256'])
     write_private(args.operation_dir/'registry-auth.json',auth_bytes)
     auth_path=args.operation_dir/'registry-auth.json'
     cleanup_auth=lambda: auth_path.unlink(missing_ok=True)
@@ -752,6 +795,8 @@ def main():
     agent=host_agent(args.context,disk['node'])
     stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/helpers',helpers)
     stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/public-trust',public)
+    stream_tree(args.context,disk['namespace'],disk['pod'],'disk',
+                '/work/installer-bootc-helper',installer_bootc)
     create_on_worker(root,args,disk,agent)
     creation=(args.operation_dir/'creation.json').read_bytes()
     freeze_raw(args.context,disk)

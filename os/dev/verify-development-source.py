@@ -92,6 +92,22 @@ def image_identity(raw, source, architecture, revision):
     return info['Id']
 
 
+def oci_evidence(raw, source):
+    images = json.loads(raw, object_pairs_hook=trust.unique_object)
+    if not isinstance(images, list) or len(images) != 1:
+        raise ValueError('expected exactly one native image')
+    info = images[0]
+    layers = (info.get('RootFS') or {}).get('Layers')
+    if (not isinstance(layers, list) or not layers
+            or any(not isinstance(layer, str)
+                   or not re.fullmatch(r'sha256:[0-9a-f]{64}', layer)
+                   for layer in layers)):
+        raise ValueError('native image lacks exact OCI layer identities')
+    config = 'sha256:' + info['Id'].removeprefix('sha256:')
+    return {'manifest_digest': source.split('@')[1], 'config_digest': config,
+            'layer_digests': layers}
+
+
 def mounted_identity(root, target, manifest_digest, architecture):
     pending = root / hardware.DEVELOPMENT_PATH / 'initramfs-rebind-required.json'
     if pending.exists() or pending.is_symlink():
@@ -150,11 +166,13 @@ def verified_source(args):
         if args.offline_key_signature:
             verify_command += ['--insecure-ignore-tlog=true']
         verify_command += [args.source]
-        signature_payloads(command(verify_command, env), args.source)
+        signature_raw = command(verify_command, env)
+        signature_payloads(signature_raw, args.source)
         command(['podman', 'pull', '--platform', 'linux/' + ARCHITECTURES[args.architecture],
                  '--tls-verify=' + str(selected['tls_required']).lower(), args.source], env)
-        image_id = image_identity(command(['podman', 'image', 'inspect', args.source], env),
-                                  args.source, args.architecture, args.revision)
+        inspect_raw = command(['podman', 'image', 'inspect', args.source], env)
+        image_id = image_identity(inspect_raw, args.source, args.architecture, args.revision)
+        oci = oci_evidence(inspect_raw, args.source)
         root_text = command(['podman', 'image', 'mount', image_id], env).strip()
         try:
             root = Path(root_text)
@@ -167,6 +185,12 @@ def verified_source(args):
                        'architecture': args.architecture, 'revision': args.revision,
                        'manifest_sha256': args.manifest_sha256, 'hardware_profile': profile,
                        'image_id': canonical_id,
+                       'oci': oci,
+                       'signature': {
+                           'verified_payload_sha256': hashlib.sha256(
+                               signature_raw.encode()).hexdigest(),
+                           'transparency_log_required': not args.offline_key_signature,
+                       },
                        'transparency_log_required': not args.offline_key_signature}
             yield VerifiedSource(canonical_id, root, bundle, receipt, auth)
         finally:

@@ -12,3 +12,6 @@ crates/sdk/ui-core/assets/fonts/manifest.toml text eol=lf
 tools/windows/gstreamer-licenses/*.txt -text
 tools/windows/gstreamer-licenses/*-COPYING -text
 tools/windows/gstreamer-licenses/*-LICENSE -text
+
+# Stored upstream mail patches retain unified-diff context markers.
+os/external-assets/bootc/*.patch whitespace=-blank-at-eol,-blank-at-eof

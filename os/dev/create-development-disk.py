@@ -28,6 +28,7 @@ import tempfile
 import time
 
 import development_prediction as prediction
+import installer_bootc_helper
 import installer_target_artifacts
 from private_disk_image import PrivateDiskImage
 
@@ -301,10 +302,24 @@ def _create_verified_disk(args):
     if getattr(args, 'boot_profile', 'installed-target') not in ('installed-target', 'installer-media'):
         raise ValueError('unsupported disk boot profile')
     media_receipt = None
+    helper_binary, helper_artifact = installer_bootc_helper.verify_artifact(
+        args.installer_bootc_directory, args.installer_bootc_sha256,
+        args.architecture)
+    helper_identity = {
+        'architecture': helper_artifact['architecture'],
+        'sha256': helper_artifact['binary_sha256'],
+        'build_id': helper_artifact['binary_build_id'],
+    }
+    helper_runtime = None
+    source_bootc_identity = None
     if media:
         inspector.require_private_namespace()
     with ExitStack() as disks:
         with source.verified_source(args) as verified:
+            source_bootc_identity = installer_bootc_helper.binary_identity(
+                verified.root / 'usr/bin/bootc', args.architecture)
+            if source_bootc_identity['sha256'] == helper_identity['sha256']:
+                raise ValueError('installer helper must differ from source bootc')
             auth_args = []
             if verified.auth_file is not None:
                 # skopeo honors REGISTRY_AUTH_FILE while bootc's OSTree
@@ -321,9 +336,10 @@ def _create_verified_disk(args):
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', verified.image_id):
                 raise ValueError('source verifier did not return an immutable local image ID')
             run = ['/usr/bin/podman', '--remote=false', 'run', '--rm', '--pull=never',
-                   '--ipc=private']
+                   '--ipc=private', '--volume',
+                   f'{helper_binary}:/run/tilo-installer-bootc:ro']
             help_text = bootc_help([*run, '--network=none', '--cap-drop=ALL',
-                                    '--entrypoint=/usr/bin/bootc', verified.image_id,
+                                    '--entrypoint=/run/tilo-installer-bootc', verified.image_id,
                                     'install', 'to-disk', '--help'])
             if any(not re.search(r'(?<![\w-])' + re.escape(flag) + r'(?![\w-])', help_text)
                    for flag in FLAGS):
@@ -335,24 +351,36 @@ def _create_verified_disk(args):
             if source_match is None:
                 raise ValueError('bootc warmup requires the expected immutable registry source')
             wrapper = Path(__file__).with_name('bootc-registry-wrapper.py')
+            helper_module = Path(__file__).with_name('installer_bootc_helper.py')
             # Only a newly allocated file is bound, never the guest root. The
             # operator must provision this VM without device passthrough;
             # privileged Podman still has access to the VM's own devices.
             with private_source_store_scratch() as store_scratch:
+                runtime_receipt = store_scratch / 'installer-bootc-runtime.json'
+                runtime_receipt.touch(mode=0o600)
                 bootc_install([*run, '--privileged', '--network=host',
                     '--tmpfs', '/run/udev:ro,nosuid,nodev,noexec,mode=0755', *auth_args,
                     '--volume', '/var/lib/containers:/run/tilo-parent-containers:ro',
                     '--volume', f'{store_scratch}:/run/tilo-source-store-scratch:rw',
                     '--volume', f'{path}:/output/disk.raw:rw',
                     '--volume', f'{wrapper}:/run/tilo-bootc-registry-wrapper.py:ro',
+                    '--volume', f'{helper_module}:/run/installer_bootc_helper.py:ro',
+                    '--volume', f'{runtime_receipt}:/run/tilo-installer-bootc-runtime.json:rw',
                     '--entrypoint=/usr/bin/python3', args.source,
-                    '/run/tilo-bootc-registry-wrapper.py', 'docker://' + args.source,
-                    source_match.group(1), '--', '/usr/bin/bootc', 'install', 'to-disk',
+                    '/run/tilo-bootc-registry-wrapper.py',
+                    '--installer-bootc-sha256', helper_identity['sha256'],
+                    '--installer-bootc-architecture', args.architecture,
+                    '--installer-bootc-runtime-receipt',
+                    '/run/tilo-installer-bootc-runtime.json',
+                    'docker://' + args.source, source_match.group(1), '--',
+                    '/run/tilo-installer-bootc', 'install', 'to-disk',
                     '--via-loopback', '--generic-image',
                     '--composefs-backend', '--bootloader=systemd', '--filesystem=btrfs',
                     '--target-imgref=' + args.target,
                     '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'], disk,
                     args.output.with_name('bootc-install.failure.json'))
+                helper_runtime = installer_bootc_helper.verify_runtime_receipt(
+                    runtime_receipt, helper_identity)
             disk.validate()
             if media:
                 media_receipt = materialize_created_media(disk, verified, args)
@@ -364,6 +392,11 @@ def _create_verified_disk(args):
             'file_identity': file_identity,
             'boot_profile': getattr(args, 'boot_profile', 'installed-target'),
             'target_materialization': media_receipt,
+            'installer_bootc_helper': {
+                'artifact': helper_artifact,
+                'source_binary': source_bootc_identity,
+                'runtime': helper_runtime,
+            },
             'size_bytes': args.size_bytes, 'disk_created': True,
             'installed_bytes_verified': False, 'vm_boot_verified': False, 'installable': False}
 
@@ -399,6 +432,8 @@ def main():
         parser.add_argument('--' + name, required=True)
     for name in ('public-bundle', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--installer-bootc-directory', type=Path, required=True)
+    parser.add_argument('--installer-bootc-sha256', required=True)
     for name in ('generation', 'size-bytes'):
         parser.add_argument('--' + name, type=int, required=True)
     parser.add_argument('--offline-key-signature', action='store_true')
