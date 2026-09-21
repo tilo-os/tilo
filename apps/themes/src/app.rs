@@ -2192,7 +2192,7 @@ mod tests {
             app.narrow_tabs
                 .invoke_resource_operation_v2(
                     tilo_actions::OperationKind::View,
-                    "qos.ui.segmented.select",
+                    "tilo.ui.segmented.select",
                     &payload,
                     &state.doc,
                     &state.root,
