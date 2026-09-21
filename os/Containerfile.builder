@@ -48,7 +48,7 @@ RUN dnf install -y \
       google-noto-sans-arabic-fonts google-noto-sans-hebrew-fonts \
       google-noto-sans-devanagari-fonts google-noto-sans-bengali-fonts \
       google-noto-sans-thai-fonts \
-      fuse3-devel dbus-devel \
+      fuse3-devel dbus-devel dbus-daemon xdg-dbus-proxy \
       nasm \
       vulkan-loader mesa-vulkan-drivers \
       bubblewrap gnome-text-editor \
