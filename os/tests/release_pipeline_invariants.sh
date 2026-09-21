@@ -100,14 +100,16 @@ else
 fi
 
 kernel_workflow="$workflows/build-kernel.yml"
-if grep -Fq 'apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio "$apt_qemu"' "$kernel_workflow" \
-   && grep -Fq 'dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm "$fedora_qemu"' "$kernel_workflow" \
+if grep -Fq 'apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio zstd "$apt_qemu"' "$kernel_workflow" \
+   && grep -Fq 'dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm zstd "$fedora_qemu"' "$kernel_workflow" \
    && grep -Fq 'export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"' "$repo/os/kernel/tests/test-rpm.sh" \
    && grep -Fq 'command -v modinfo >/dev/null' "$repo/os/kernel/tests/test-rpm.sh" \
-   && grep -Fq 'modinfo -F name' "$repo/os/kernel/tests/test-rpm.sh"; then
-  ok 'native kernel acceptance installs and resolves modinfo on apt and dnf runners'
+   && grep -Fq 'modinfo -F name' "$repo/os/kernel/tests/test-rpm.sh" \
+   && grep -Fq 'command -v zstd >/dev/null' "$repo/os/kernel/tests/boot-smoke.sh" \
+   && grep -Fq 'kernel/drivers/net/dummy.ko.zst' "$repo/os/kernel/tests/boot-smoke.sh"; then
+  ok 'native kernel acceptance handles compressed signed modules on apt and dnf runners'
 else
-  bad 'native kernel acceptance can invoke modinfo without installing or resolving kmod'
+  bad 'native kernel acceptance lacks its kmod or compressed-module tooling'
 fi
 
 if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
