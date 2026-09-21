@@ -31,6 +31,14 @@ const SNAP_ANIM_MS: u32 = 200;
 /// at the same moment, so the two read as one event.
 const MAKE_SPACE_ANIM_MS: u32 = 420;
 
+/// Empty canvas kept after the final group at the legal end of a strip.
+/// A fifth of the viewport is enough breathing room to make the end legible
+/// without letting the focused app feel abandoned in the middle of the screen.
+const TRAILING_REVEAL_FRAC: f64 = 0.20;
+/// Maximum *additional* visual give while a three-finger pan pulls beyond a
+/// legal end. The shared rubber-band curve approaches this asymptotically.
+const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
+
 /// Touchpad px per wheel detent for the discrete jump gestures; also the
 /// scale for hi-res wheel notches reported as pixel deltas.
 pub const JUMP_PX_PER_DETENT: f64 = 50.0;
@@ -160,8 +168,12 @@ pub struct GroupRow {
     /// "drop here" here. Cleared on release or when no child is dragging.
     hover_gap_idx: Option<usize>,
     /// Horizontal scroll offset (px): each child renders at `-scroll_x`.
-    /// Clamped to `[0, max(0, content_w - viewport_w)]` after each layout.
+    /// At rest it is bounded by [`Self::pan_max_scroll_x`]; an active direct
+    /// gesture may hold a resisted transient value just outside either end.
     scroll_x: f64,
+    /// Scroll offset at the start of the current direct-manipulation gesture.
+    /// Gesture updates carry total travel, so this remains fixed until End.
+    strip_pan_origin: Option<f64>,
     /// Total content width incl. gaps; cached so the wheel handler can
     /// clamp `scroll_x` without re-summing children.
     content_w: f64,
@@ -308,6 +320,7 @@ impl GroupRow {
             structure_dirty: false,
             hover_gap_idx: None,
             scroll_x: 0.0,
+            strip_pan_origin: None,
             content_w: 0.0,
             group_left_edges: Vec::new(),
             last_wheel_at: None,
@@ -582,6 +595,65 @@ impl GroupRow {
 
     pub fn max_scroll_x(&self) -> f64 {
         (self.content_w - self.rect.width()).max(0.0)
+    }
+
+    /// Furthest legal resting offset for direct strip panning. Unlike the
+    /// content-tight focus bound, this leaves a deliberate glimpse of canvas
+    /// after the final app. Content which already fits stays pinned at home.
+    pub fn pan_max_scroll_x(&self) -> f64 {
+        let viewport = self.rect.width().max(1.0);
+        (self.content_w + viewport * TRAILING_REVEAL_FRAC - viewport).max(0.0)
+    }
+
+    /// Track a three-finger horizontal gesture in direct-manipulation space.
+    /// `travel` is total signed scroll travel since Begin (positive moves
+    /// toward later groups). Legal canvas tracks 1:1; beyond either end the
+    /// shared iOS-style curve supplies continuously increasing resistance.
+    pub fn update_strip_pan(&mut self, travel: f64) -> bool {
+        let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
+        let requested = origin + travel;
+        let max = self.pan_max_scroll_x();
+        let reach = self.rect.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC;
+        let next = if requested < 0.0 {
+            -f64::from(crate::tokens::rubber_band(
+                (-requested) as f32,
+                reach as f32,
+            ))
+        } else if requested > max {
+            max + f64::from(crate::tokens::rubber_band(
+                (requested - max) as f32,
+                reach as f32,
+            ))
+        } else {
+            requested
+        };
+        if (next - self.scroll_x).abs() <= f64::EPSILON {
+            return false;
+        }
+        self.scroll_x = next;
+        self.scroll_dirty = true;
+        self.snap_anim = None;
+        self.last_wheel_at = None;
+        true
+    }
+
+    /// Release/cancel direct manipulation. In-range positions remain exactly
+    /// where the fingers left them; only elastic overpull settles to an end.
+    pub fn end_strip_pan(&mut self, now: Instant) -> bool {
+        self.strip_pan_origin = None;
+        let target = self.scroll_x.clamp(0.0, self.pan_max_scroll_x());
+        if (target - self.scroll_x).abs() <= 0.5 {
+            self.scroll_x = target;
+            return false;
+        }
+        self.snap_anim = Some(SnapAnim {
+            from: self.scroll_x,
+            to: target,
+            started: now,
+        });
+        self.last_wheel_at = None;
+        self.scroll_dirty = true;
+        true
     }
 
     /// A group focused the same frame it was spliced in hasn't been
@@ -1513,17 +1585,12 @@ impl Widget for GroupRow {
         if self.shift_hold.is_none() && self.shift_anim.is_some() && self.shift_anim_t() >= 1.0 {
             self.shift_anim = None;
         }
-        // Same widened upper bound the wheel handler uses (max_scroll_x
-        // OR three viewports past the rightmost group) — clamping to
-        // `max_scroll_x` alone would reset scroll every frame on a
-        // single-group strip, killing the "scroll into empty space" feel.
-        let viewport = self.rect.width().max(1.0);
-        let upper = self.max_scroll_x().max(viewport * 3.0);
-        if self.scroll_x > upper {
-            self.scroll_x = upper;
-        }
-        if self.scroll_x < 0.0 {
-            self.scroll_x = 0.0;
+        // Preserve transient rubber-band travel while fingers are down or a
+        // release settle is in flight. At rest, geometry changes clamp to the
+        // deliberate trailing allowance instead of the old three-viewports
+        // of unbounded empty canvas.
+        if self.strip_pan_origin.is_none() && self.snap_anim.is_none() {
+            self.scroll_x = self.scroll_x.clamp(0.0, self.pan_max_scroll_x());
         }
         if spans_aligned {
             self.reframe_on_geometry_change(spans);
@@ -4156,6 +4223,85 @@ mod tests {
                 "group rects must not shift after a bare wheel"
             );
         }
+    }
+
+    #[test]
+    fn direct_pan_keeps_a_fifth_viewport_after_the_last_app() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        row.set_content_w_for_test(2200.0);
+
+        assert_eq!(
+            row.max_scroll_x(),
+            1200.0,
+            "focus-follow stays content-tight"
+        );
+        assert_eq!(
+            row.pan_max_scroll_x(),
+            1400.0,
+            "direct pan reveals 20% of the viewport beyond the last app"
+        );
+
+        row.set_content_w_for_test(700.0);
+        assert_eq!(
+            row.pan_max_scroll_x(),
+            0.0,
+            "a strip which already fits must not drift into empty canvas"
+        );
+    }
+
+    #[test]
+    fn direct_pan_tracks_reversals_and_only_settles_elastic_overpull() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        row.set_content_w_for_test(2200.0);
+
+        assert!(row.update_strip_pan(450.0));
+        assert!((row.scroll_x() - 450.0).abs() < 0.01);
+        assert!(row.update_strip_pan(320.0));
+        assert!(
+            (row.scroll_x() - 320.0).abs() < 0.01,
+            "total gesture travel must reverse without rebasing its origin"
+        );
+        assert!(
+            !row.end_strip_pan(Instant::now()),
+            "an in-range release must not snap away from the fingers"
+        );
+        assert!((row.scroll_x() - 320.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn direct_pan_overpull_has_diminishing_gain_and_returns_to_resting_end() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        row.set_content_w_for_test(2200.0);
+        let end = row.pan_max_scroll_x();
+
+        assert!(row.update_strip_pan(end));
+        let mut previous = row.scroll_x();
+        let mut previous_gain = f64::INFINITY;
+        for extra in [100.0, 200.0, 300.0, 400.0] {
+            assert!(row.update_strip_pan(end + extra));
+            let gain = row.scroll_x() - previous;
+            assert!(
+                gain > 0.0 && gain < previous_gain,
+                "each equal pull must still move, but less than the one before: {gain} >= {previous_gain}"
+            );
+            assert!(
+                row.scroll_x() < end + 280.0,
+                "the 28%-viewport asymptote is never crossed"
+            );
+            previous = row.scroll_x();
+            previous_gain = gain;
+        }
+
+        let now = Instant::now();
+        assert!(row.end_strip_pan(now));
+        row.tick_snap_at(now + Duration::from_millis(u64::from(SNAP_ANIM_MS) + 1));
+        assert!(
+            (row.scroll_x() - end).abs() < 0.01,
+            "release must return exactly to the legal trailing rest"
+        );
     }
 
     #[test]
