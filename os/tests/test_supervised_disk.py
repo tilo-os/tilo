@@ -198,6 +198,14 @@ class ControllerAdmission(unittest.TestCase):
             with self.assertRaises((ValueError,OSError)):
                 controller.private_input(link,limit=1024)
 
+    def test_kubectl_client_timeout_is_reconnectable_before_creator_launch(self):
+        result=SimpleNamespace(returncode=1,stdout='',stderr=(
+            'net/http: request canceled while waiting for connection '
+            '(Client.Timeout exceeded while awaiting headers)'))
+        with patch.object(controller.subprocess,'run',return_value=result):
+            with self.assertRaises(controller.ControllerTransportError):
+                controller.checked(['kubectl','--context','fixture','get','pods'])
+
     def test_creation_receipt_is_private_and_atomic(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'evidence'/'creation.json'

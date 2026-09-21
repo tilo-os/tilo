@@ -24,6 +24,19 @@ class ControllerTransportError(ValueError):
     """A reconnectable Kubernetes control-plane request did not complete."""
 
 
+def kubectl_transport_error(stderr):
+    """Recognize kubectl client failures that leave a remote job ambiguous."""
+    text = stderr.lower()
+    return any(marker in text for marker in (
+        'unable to connect', 'connection refused', 'connection reset',
+        'context deadline', 'i/o timeout', 'tls handshake timeout',
+        'server has asked for the client to provide', 'timed out waiting',
+        'unexpected eof', 'client.timeout exceeded', 'request canceled',
+        'server closed idle connection', 'http2: client connection lost',
+        'transport is closing', 'network is unreachable', 'no route to host',
+        'the request timed out', 'timeout: request did not complete'))
+
+
 # Runs in the host namespace through the existing kata-deploy agent. Never reads
 # process environments or registry configuration. OCI process/env is omitted.
 HOST_INSPECT = r'''
@@ -264,6 +277,8 @@ def checked(argv, payload=None):
         raise ControllerTransportError(f'{Path(argv[0]).name} transport failed') from error
     if result.returncode:
         # Kubernetes and registry errors can contain sensitive configuration.
+        if Path(argv[0]).name == 'kubectl' and kubectl_transport_error(result.stderr):
+            raise ControllerTransportError(f'kubectl transport failed (exit {result.returncode})')
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
     return result.stdout
 
