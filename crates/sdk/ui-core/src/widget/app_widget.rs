@@ -190,13 +190,10 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return Vec::new();
             };
-            self.component
-                .root
-                .as_deref_mut()
-                .map_or_else(
-                    Vec::new,
-                    FloatingSurfaceWidgetExt::take_floating_surface_source_updates,
-                )
+            self.component.root.as_deref_mut().map_or_else(
+                Vec::new,
+                FloatingSurfaceWidgetExt::take_floating_surface_source_updates,
+            )
         }
 
         fn draw_floating_surfaces(
@@ -223,13 +220,10 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return Vec::new();
             };
-            self.component
-                .root
-                .as_deref()
-                .map_or_else(
-                    Vec::new,
-                    FloatingSurfaceWidgetExt::floating_surface_presentations,
-                )
+            self.component.root.as_deref().map_or_else(
+                Vec::new,
+                FloatingSurfaceWidgetExt::floating_surface_presentations,
+            )
         }
 
         fn active_floating_surface_ids(&self) -> Vec<String> {
@@ -237,13 +231,10 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return Vec::new();
             };
-            self.component
-                .root
-                .as_deref()
-                .map_or_else(
-                    Vec::new,
-                    FloatingSurfaceWidgetExt::active_floating_surface_ids,
-                )
+            self.component.root.as_deref().map_or_else(
+                Vec::new,
+                FloatingSurfaceWidgetExt::active_floating_surface_ids,
+            )
         }
 
         fn set_floating_surface_bounds(&mut self, bounds: vello::kurbo::Rect) {
