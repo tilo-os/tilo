@@ -248,7 +248,7 @@ fn portable_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use automerge::ROOT;
-    use ui::widget::Widget;
+    use ui::widget::{Continuable, Widget};
 
     use super::*;
 
@@ -265,7 +265,7 @@ mod tests {
         app.call.join("c_huddle");
         app.call.muted = true;
         app.call.sharing = true;
-        let metadata = Widget::continuation_metadata(&app, &doc, &ROOT).unwrap();
+        let metadata = Continuable::continuation_metadata(&app, &doc, &ROOT).unwrap();
         let json = String::from_utf8(metadata.bytes.clone()).unwrap();
         assert!(json.contains("c_huddle") && json.contains("ws_acme"));
         for forbidden in [
@@ -288,9 +288,9 @@ mod tests {
     fn restore_is_inert_and_requires_a_real_synced_voice_channel() {
         let (mut source, source_doc) = app_and_doc();
         source.call.join("c_huddle");
-        let metadata = Widget::continuation_metadata(&source, &source_doc, &ROOT).unwrap();
+        let metadata = Continuable::continuation_metadata(&source, &source_doc, &ROOT).unwrap();
         let (mut target, mut target_doc) = app_and_doc();
-        assert!(Widget::restore_continuation_metadata(
+        assert!(Continuable::restore_continuation_metadata(
             &mut target,
             &metadata,
             &mut target_doc,
@@ -305,7 +305,7 @@ mod tests {
             schema_version: CHAT_CONTINUATION_SCHEMA,
             bytes: serde_json::to_vec(&unknown).unwrap(),
         };
-        assert!(!Widget::restore_continuation_metadata(
+        assert!(!Continuable::restore_continuation_metadata(
             &mut target,
             &unknown,
             &mut target_doc,
