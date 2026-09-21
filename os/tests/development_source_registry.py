@@ -53,7 +53,7 @@ def main():
             listener.bind(('127.0.0.1', 0))
             port = listener.getsockname()[1]
         target = f'127.0.0.1:{port}/tilo-development/os:fixture'
-        registry_name = 'tilo-dev-fixture-' + uuid.uuid4().hex
+        registry_name = 'tilo-app-fixture-' + uuid.uuid4().hex
         images = []
         try:
             run('podman', 'run', '--detach', '--name', registry_name, '--network=host',

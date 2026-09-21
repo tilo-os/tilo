@@ -2,8 +2,8 @@
 //! the HUD can be inspected without opening a window.
 //!
 //! `TILO_PROFILE=1` draws the HUD live, but the live path needs a display. This
-//! example reproduces exactly what `ui::App` does — run the real five passes,
-//! record each into a [`ui::profiling::FrameProfiler`], commit a per-frame
+//! example reproduces exactly what `tilo_ui::App` does — run the real five passes,
+//! record each into a [`tilo_ui::profiling::FrameProfiler`], commit a per-frame
 //! sample — for a rolling window of frames, then composites the production
 //! [`FrameProfiler::draw_hud`] over the final frame and rasterises a PNG. The
 //! HUD you see here is pixel-for-pixel the one the live app paints; only the
@@ -22,13 +22,13 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::profiling::{FrameProfiler, Pass};
-use ui::state::State;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::profiling::{FrameProfiler, Pass};
+use tilo_ui::state::State;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Widget;
 
 use super::gallery_scene;
 
@@ -36,7 +36,7 @@ const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 
 pub fn run(_args: &[String]) {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
 
     let out = std::env::var("PERF_HUD_OUT").unwrap_or_else(|_| "/tmp/perf_hud/hud.png".to_string());
     let out = PathBuf::from(out);

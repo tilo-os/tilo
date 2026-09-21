@@ -9,7 +9,7 @@
 )]
 
 use std::sync::{Arc, Mutex};
-use ui::widget::command_palette::{CommandEntry, CommandPalette};
+use tilo_ui::widget::command_palette::{CommandEntry, CommandPalette};
 
 #[test]
 fn command_palette_filters_by_query() {
