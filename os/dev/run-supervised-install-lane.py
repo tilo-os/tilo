@@ -10,11 +10,13 @@ import atexit
 import base64
 from contextlib import contextmanager
 import hashlib
+import ipaddress
 import io
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import selectors
 import stat
 import subprocess
@@ -1009,20 +1011,244 @@ rm -rf /work/vm-preflight
     command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu','--',*argv),timeout=120)
 
 
-def sparse_transfer(context, source_worker, target_worker, *, target_container, target_directory, target_name):
-    source = subprocess.Popen(kubectl(context,'-n',source_worker['namespace'],'exec',source_worker['pod'],'-c','disk',
-      '--','tar','--sparse','-C','/work/disk-output','-cf','-','disk.raw'),stdout=subprocess.PIPE)
-    script = 'set -eu; umask 077; mkdir -p "$1"; test ! -e "$1/$2"; tar --sparse --no-same-owner -C "$1" -xf -; if [ "$2" != disk.raw ]; then mv "$1/disk.raw" "$1/$2"; fi'
-    target = subprocess.Popen(kubectl(context,'-n',target_worker['namespace'],'exec','-i',target_worker['pod'],'-c',target_container,
-      '--','sh','-ceu',script,'sh',target_directory,target_name),stdin=source.stdout,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-    source.stdout.close()
+DIRECT_RECEIVER_SCRIPT = r'''import hashlib,json,os,secrets,signal,socket,stat,struct,sys,time
+directory,name,bind_ip,source_ip,operation,source_uid,target_uid,size_text,digest=sys.argv[1:]
+size=int(size_text);deadline=time.monotonic()+7200;complete=False;final_created=False
+if not secrets.compare_digest(digest.lower(),digest) or len(digest)!=64:raise SystemExit('invalid expected digest')
+token=sys.stdin.readline().strip()
+if len(token)!=64:raise SystemExit('invalid capability')
+parent,name_dir=os.path.split(directory)
+if not os.path.isabs(directory) or not name or '/' in name or not name_dir:raise SystemExit('invalid destination')
+parent_fd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+dir_fd=None;temp_name='.incoming-'+secrets.token_hex(12);fd=None;listener=None;connection=None
+def alarm(*_):raise TimeoutError('transfer deadline exceeded')
+signal.signal(signal.SIGALRM,alarm);signal.alarm(7230)
+def exact(sock,count):
+ value=bytearray()
+ while len(value)<count:
+  block=sock.recv(count-len(value))
+  if not block:raise EOFError('truncated transfer')
+  value.extend(block)
+ return bytes(value)
+try:
+ parent_info=os.fstat(parent_fd)
+ if parent_info.st_uid or not stat.S_ISDIR(parent_info.st_mode) or stat.S_IMODE(parent_info.st_mode)&0o022:
+  raise SystemExit('unsafe destination parent')
+ try:os.mkdir(name_dir,0o700,dir_fd=parent_fd)
+ except FileExistsError:pass
+ dir_fd=os.open(name_dir,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent_fd)
+ info=os.fstat(dir_fd)
+ if info.st_uid or stat.S_IMODE(info.st_mode)!=0o700:raise SystemExit('unsafe destination directory')
+ try:os.stat(name,dir_fd=dir_fd,follow_symlinks=False);raise SystemExit('destination already exists')
+ except FileNotFoundError:pass
+ fd=os.open(temp_name,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=dir_fd)
+ os.ftruncate(fd,size)
+ listener=socket.socket();listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,0)
+ listener.bind((bind_ip,0));listener.listen(1);listener.settimeout(30)
+ print(json.dumps({'schema':1,'status':'ready','port':listener.getsockname()[1]}),flush=True)
+ connection,peer=listener.accept();listener.close();listener=None
+ if peer[0]!=source_ip:raise PermissionError('source IP rejected')
+ connection.settimeout(120)
+ header_size=struct.unpack('>I',exact(connection,4))[0]
+ if not 1<=header_size<=4096:raise ValueError('invalid handshake size')
+ handshake=json.loads(exact(connection,header_size))
+ expected={'version':1,'operation':operation,'source_uid':source_uid,'target_uid':target_uid,
+           'size':size,'sha256':digest,'capability':token}
+ if (set(handshake)!=set(expected)
+     or any(handshake[key]!=value for key,value in expected.items() if key!='capability')
+     or not isinstance(handshake.get('capability'),str)
+     or not secrets.compare_digest(handshake['capability'],token)):
+  raise PermissionError('handshake rejected')
+ token=None;handshake['capability']=None;position=0;frames=0;written=0
+ while True:
+  kind=exact(connection,1)
+  if kind==b'E':break
+  if kind!=b'D':raise ValueError('invalid extent frame')
+  offset,length=struct.unpack('>QQ',exact(connection,16));frames+=1
+  if frames>1048576 or length<=0 or offset<position or offset+length>size:
+   raise ValueError('invalid extent bounds')
+  position=offset+length;remaining=length;cursor=offset
+  while remaining:
+   block=exact(connection,min(1024*1024,remaining))
+   count=os.pwrite(fd,block,cursor)
+   if count!=len(block):raise OSError('short destination write')
+   cursor+=count;remaining-=count;written+=count
+ os.fsync(fd);os.close(fd);fd=None
+ check=os.open(temp_name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=dir_fd);actual=hashlib.sha256()
+ try:
+  while True:
+   block=os.read(check,8*1024*1024)
+   if not block:break
+   actual.update(block)
+ finally:os.close(check)
+ if actual.hexdigest()!=digest:raise ValueError('destination digest differs')
+ os.link(temp_name,name,src_dir_fd=dir_fd,dst_dir_fd=dir_fd,follow_symlinks=False);final_created=True
+ os.unlink(temp_name,dir_fd=dir_fd);os.fsync(dir_fd)
+ receipt={'schema':1,'purpose':'tilo-direct-sparse-transfer','operation':operation,
+          'source_pod_uid':source_uid,'target_pod_uid':target_uid,'size':size,
+          'sha256':digest,'path':directory+'/'+name,'data_bytes':written,'extent_frames':frames}
+ encoded=json.dumps(receipt,sort_keys=True,separators=(',',':')).encode()
+ connection.sendall(struct.pack('>I',len(encoded))+encoded);connection.shutdown(socket.SHUT_WR)
+ print(json.dumps(receipt,sort_keys=True),flush=True);complete=True
+finally:
+ signal.alarm(0);token=None
+ for item in (connection,listener):
+  if item is not None:
+   try:item.close()
+   except OSError:pass
+ if fd is not None:os.close(fd)
+ if dir_fd is not None:
+  try:os.unlink(temp_name,dir_fd=dir_fd)
+  except FileNotFoundError:pass
+  if final_created and not complete:
+   try:os.unlink(name,dir_fd=dir_fd)
+   except FileNotFoundError:pass
+  os.close(dir_fd)
+ os.close(parent_fd)
+'''
+
+
+DIRECT_SENDER_SCRIPT = r'''import errno,json,os,signal,socket,stat,struct,sys
+path,target_ip,port_text,operation,source_uid,target_uid,size_text,digest,source_ip=sys.argv[1:]
+size=int(size_text);token=sys.stdin.readline().strip()
+if len(token)!=64:raise SystemExit('invalid capability')
+fd=os.open(path,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW);sock=None
+def alarm(*_):raise TimeoutError('transfer deadline exceeded')
+signal.signal(signal.SIGALRM,alarm);signal.alarm(7200)
+def send(value):sock.sendall(value)
+def exact(count):
+ value=bytearray()
+ while len(value)<count:
+  block=sock.recv(count-len(value))
+  if not block:raise EOFError('truncated transfer acknowledgement')
+  value.extend(block)
+ return bytes(value)
+try:
+ info=os.fstat(fd)
+ if not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_size!=size or stat.S_IMODE(info.st_mode)!=0o400:
+  raise SystemExit('source file admission failed')
+ extents=[];position=0;unsupported={errno.EINVAL,errno.ENOSYS}
+ if hasattr(errno,'ENOTSUP'):unsupported.add(errno.ENOTSUP)
+ sparse=hasattr(os,'SEEK_DATA') and hasattr(os,'SEEK_HOLE')
+ if sparse:
+  try:
+   while position<size:
+    try:start=os.lseek(fd,position,os.SEEK_DATA)
+    except OSError as error:
+     if error.errno==errno.ENXIO:break
+     raise
+    end=min(os.lseek(fd,start,os.SEEK_HOLE),size)
+    if end<=start or len(extents)>=1048576:raise SystemExit('invalid source extent')
+    extents.append((start,end));position=end
+  except OSError as error:
+   if error.errno not in unsupported:raise
+   extents=[(0,size)]
+ else:extents=[(0,size)]
+ handshake={'version':1,'operation':operation,'source_uid':source_uid,'target_uid':target_uid,
+            'size':size,'sha256':digest,'capability':token}
+ encoded=json.dumps(handshake,sort_keys=True,separators=(',',':')).encode();token=None
+ sock=socket.socket();sock.settimeout(120);sock.bind((source_ip,0));sock.connect((target_ip,int(port_text)))
+ send(struct.pack('>I',len(encoded))+encoded);encoded=b''
+ for start,end in extents:
+  if end<=start or end>size:raise SystemExit('invalid source extent')
+  send(b'D'+struct.pack('>QQ',start,end-start));cursor=start
+  while cursor<end:
+   block=os.pread(fd,min(1024*1024,end-cursor),cursor)
+   if not block:raise SystemExit('short source read')
+   send(block);cursor+=len(block)
+ send(b'E');sock.shutdown(socket.SHUT_WR)
+ length=struct.unpack('>I',exact(4))[0]
+ if not 1<=length<=4096:raise SystemExit('invalid transfer acknowledgement')
+ body=bytearray()
+ while len(body)<length:
+  body.extend(exact(length-len(body)))
+ receipt=json.loads(body)
+ expected={'schema':1,'purpose':'tilo-direct-sparse-transfer','operation':operation,
+           'source_pod_uid':source_uid,'target_pod_uid':target_uid,'size':size,
+           'sha256':digest,'path':None,'data_bytes':None,'extent_frames':None}
+ if any(receipt.get(key)!=value for key,value in expected.items() if value is not None):
+  raise SystemExit('transfer acknowledgement binding differs')
+ print(json.dumps(receipt,sort_keys=True))
+finally:
+ signal.alarm(0);token=None
+ if sock is not None:sock.close()
+ os.close(fd)
+'''
+
+
+def transfer_pod_binding(context, worker):
+    pod=api_json(context,'-n',worker['namespace'],'get','pod',worker['pod'],'--request-timeout=15s')
+    node=api_json(context,'get','node',worker['node'],'--request-timeout=15s')
+    if binding(pod,node)!=worker:
+        raise ValueError('transfer worker identity changed')
+    address=pod.get('status',{}).get('podIP','')
+    try:parsed=ipaddress.ip_address(address)
+    except ValueError as error:raise ValueError('transfer worker lacks a valid pod IP') from error
+    if parsed.version!=4 or parsed.is_loopback or parsed.is_unspecified or parsed.is_multicast:
+        raise ValueError('transfer worker pod IP is not routable')
+    return {'pod_uid':worker['pod_uid'],'pod_ip':address}
+
+
+def _control_process(argv, token):
+    process=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE,text=True)
+    process.stdin.write(token+'\n');process.stdin.flush();process.stdin.close();process.stdin=None
+    return process
+
+
+def _ready_line(process, timeout=30):
+    selector=selectors.DefaultSelector();selector.register(process.stdout,selectors.EVENT_READ)
     try:
-        target.communicate(timeout=7200);source_rc=source.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        target.kill();source.kill();target.wait();source.wait()
-        raise ValueError('sparse media transfer exceeded deadline')
-    if source_rc or target.returncode:
-        raise ValueError(f'sparse media transfer failed ({source_rc}, {target.returncode})')
+        if not selector.select(timeout):raise ValueError('direct transfer receiver readiness timed out')
+        line=process.stdout.readline()
+    finally:selector.close()
+    try:value=json.loads(line)
+    except json.JSONDecodeError as error:raise ValueError('direct transfer receiver readiness is invalid') from error
+    if set(value)!={'schema','status','port'} or value.get('schema')!=1 or value.get('status')!='ready' \
+            or type(value.get('port')) is not int or not 1024<=value['port']<=65535:
+        raise ValueError('direct transfer receiver readiness is invalid')
+    return value['port']
+
+
+def sparse_transfer(context, source_worker, target_worker, *, target_container,
+                    target_directory, target_name, operation, identity):
+    source=transfer_pod_binding(context,source_worker);target=transfer_pod_binding(context,target_worker)
+    token=secrets.token_hex(32)
+    receiver_argv=kubectl(context,'-n',target_worker['namespace'],'exec','-i',target_worker['pod'],
+      '-c',target_container,'--','python3','-c',DIRECT_RECEIVER_SCRIPT,target_directory,target_name,
+      target['pod_ip'],source['pod_ip'],operation,source['pod_uid'],target['pod_uid'],
+      str(identity['size']),identity['sha256'])
+    receiver=_control_process(receiver_argv,token);sender=None
+    try:
+        port=_ready_line(receiver)
+        sender_argv=kubectl(context,'-n',source_worker['namespace'],'exec','-i',source_worker['pod'],
+          '-c','disk','--','python3','-c',DIRECT_SENDER_SCRIPT,'/work/disk-output/disk.raw',
+          target['pod_ip'],str(port),operation,source['pod_uid'],target['pod_uid'],
+          str(identity['size']),identity['sha256'],source['pod_ip'])
+        sender=_control_process(sender_argv,token);token=None
+        sender_out,sender_error=sender.communicate(timeout=7200)
+        receiver_out,receiver_error=receiver.communicate(timeout=60)
+        if sender.returncode or receiver.returncode:
+            raise ValueError(f'direct sparse transfer failed ({sender.returncode}, {receiver.returncode})')
+        sent=json.loads(sender_out);received=json.loads(receiver_out)
+        if sent!=received:
+            raise ValueError('direct sparse transfer acknowledgements differ')
+        expected_values={'schema':1,'purpose':'tilo-direct-sparse-transfer','operation':operation,
+          'source_pod_uid':source['pod_uid'],'target_pod_uid':target['pod_uid'],
+          'size':identity['size'],'sha256':identity['sha256'],'path':target_directory+'/'+target_name}
+        if (set(received)!=(set(expected_values)|{'data_bytes','extent_frames'})
+                or any(received.get(key)!=value for key,value in expected_values.items())
+                or type(received.get('data_bytes')) is not int or not 0<=received['data_bytes']<=identity['size']
+                or type(received.get('extent_frames')) is not int or not 0<=received['extent_frames']<=1048576):
+            raise ValueError('direct sparse transfer receipt is invalid')
+        if transfer_pod_binding(context,source_worker)!=source or transfer_pod_binding(context,target_worker)!=target:
+            raise ValueError('transfer worker binding changed during copy')
+        return received
+    except BaseException:
+        for process in (sender,receiver):
+            if process is not None and process.poll() is None:process.kill();process.wait()
+        raise
+    finally:token=None
 
 
 def convert_and_cycle(context, vm, identity, acceptance_id):
@@ -1396,7 +1622,8 @@ def handoff_creator_to_verifier(root,args,nodes,checkpoint,disk_node,vm_node,dis
             controller(root,args,verifier,verifier_agent,True,'verifier-environment.json')
             require_same_worker(args.context,disk);require_same_worker(args.context,verifier)
             sparse_transfer(args.context,disk,verifier,target_container='disk',
-                            target_directory='/work/disk-output',target_name='disk.raw')
+                            target_directory='/work/disk-output',target_name='disk.raw',
+                            operation=args.acceptance_id,identity=identity)
             verifier_identity=raw_identity(args.context,verifier)
             if verifier_identity!=identity:
                 raise ValueError('independent verifier received different raw media')
@@ -1555,7 +1782,8 @@ def main():
                       (json.dumps({'creator':disk,'verifier':verifier,'vm':vm},indent=2,sort_keys=True)+'\n').encode())
         require_same_worker(args.context,verifier);require_same_worker(args.context,vm)
         sparse_transfer(args.context,verifier,vm,target_container='qemu',
-                        target_directory='/work/verified',target_name='installer.raw')
+                        target_directory='/work/verified',target_name='installer.raw',
+                        operation=args.acceptance_id,identity=identity)
         if raw_identity(args.context,vm,'qemu','/work/verified/installer.raw')!=identity:
             raise ValueError('KVM worker received different verified raw media')
         delete_worker(args.context,verifier)
