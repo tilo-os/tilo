@@ -7,6 +7,9 @@ import re
 import shlex
 from pathlib import Path, PureWindowsPath
 
+MAX_RESPONSE_DEPTH = 4
+MAX_RESPONSE_CHARS = 1_000_000
+
 
 def completed_successfully(response: object) -> bool:
     """Accept a terminal result or Codex's completed output-only exec envelope.
@@ -20,10 +23,10 @@ def completed_successfully(response: object) -> bool:
 
     def collect(value: object, depth: int = 0) -> bool:
         nonlocal wrapper_completed
-        if depth > 4:
+        if depth > MAX_RESPONSE_DEPTH:
             return False
         if isinstance(value, str):
-            if len(value) > 1_000_000:
+            if len(value) > MAX_RESPONSE_CHARS:
                 return False
             try:
                 return collect(json.loads(value), depth + 1)
@@ -189,7 +192,7 @@ def pushes_current_branch(arguments: list[str], branch: str) -> bool:
     if args[:1] in (["-u"], ["--set-upstream"]):
         args.pop(0)
     return args in (
-        [], ["origin"], ["origin", branch], ["origin", "HEAD"],
+        ["origin", branch], ["origin", "HEAD"],
         ["origin", f"HEAD:refs/heads/{branch}"],
         ["origin", f"HEAD:{branch}"],
     )

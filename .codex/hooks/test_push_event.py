@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from push_event import literal_call, push_target, pushes_current_branch
+from push_event import push_target, pushes_current_branch
 
 SPEC = importlib.util.spec_from_file_location("watch_ci", Path(__file__).with_name("watch_ci.py"))
 watch_ci = importlib.util.module_from_spec(SPEC)
@@ -43,9 +43,18 @@ class PushEventTests(unittest.TestCase):
             self.assertTrue(pushes_current_branch(target[1], branch))
 
     def test_plain_exec_command(self):
-        event = self.event()
-        event.update(tool_name="functions.exec_command", tool_input={"cmd": "git push", "workdir": "C:/repo"})
-        self.assertEqual(str(push_target(event)[0]).replace("\\", "/"), "C:/repo")
+        for tool_name in ("exec_command", "functions.exec_command"):
+            with self.subTest(tool_name=tool_name):
+                event = self.event()
+                event.update(tool_name=tool_name, tool_input={"cmd": "git push", "workdir": "C:/repo"})
+                self.assertEqual(str(push_target(event)[0]).replace("\\", "/"), "C:/repo")
+
+    def test_exec_tool_name_spellings(self):
+        for tool_name in ("exec", "functions.exec"):
+            with self.subTest(tool_name=tool_name):
+                event = self.event()
+                event["tool_name"] = tool_name
+                self.assertIsNotNone(push_target(event))
 
     def test_ambiguous_and_dynamic_code_is_not_interpreted(self):
         for code in [
@@ -116,10 +125,10 @@ class PushEventTests(unittest.TestCase):
             self.assertNotIn(secret, str(error.exception))
         event = self.event()
         with patch.object(watch_ci, "run", side_effect=ValueError(f"https://user:{secret}@host")), patch.object(watch_ci, "deliver") as deliver, patch("sys.stdin", io.StringIO(json.dumps(event))):
-            self.assertEqual(watch_ci.main(), 0)
+            self.assertEqual(watch_ci.launch(), 0)
             self.assertNotIn(secret, deliver.call_args.args[1])
 
-    def test_main_delivers_to_author_once_with_nested_workdir(self):
+    def test_launcher_snapshots_nested_worktree_before_returning(self):
         event = self.event()
         with tempfile.TemporaryDirectory() as directory:
             calls = []
@@ -134,24 +143,65 @@ class PushEventTests(unittest.TestCase):
                 else:
                     self.fail(f"Unexpected command: {args}")
                 return subprocess.CompletedProcess(args, 0, output, "")
-            with patch.object(watch_ci, "run", side_effect=run), patch.object(watch_ci, "branch_is_on_remote", return_value=True), patch.object(watch_ci, "forgejo_target", return_value=("code.sandbox.example", "qos/qos")), patch.object(watch_ci, "watch", return_value=("complete", [{"status": "success", "index_in_repo": 42}] )) as watch, patch.object(watch_ci, "deliver") as deliver:
+            with patch.object(watch_ci, "run", side_effect=run), patch.object(watch_ci, "forgejo_target", return_value=("code.sandbox.example", "qos/qos")), patch.object(watch_ci, "spawn_worker") as spawn:
+                with patch("sys.stdin", io.StringIO(json.dumps(event))):
+                    self.assertEqual(watch_ci.launch(), 0)
+                self.assertEqual(spawn.call_count, 1)
+                args = spawn.call_args.kwargs
+                self.assertEqual(args["sha"], "0fcfa04598dc324fa17875497a987570a372232a")
+                self.assertEqual(args["branch"], "codex/dev-package-identity")
+                self.assertEqual(str(args["cwd"]).replace("\\", "/"), "C:/Users/user/qos-registry-submission")
+
+    def test_worker_delivers_to_author_once(self):
+        event = self.event()
+        with tempfile.TemporaryDirectory() as directory:
+            parameters = {
+                "session_id": event["session_id"],
+                "cwd": Path("C:/Users/user/qos-registry-submission"),
+                "sha": "0fcfa04598dc324fa17875497a987570a372232a",
+                "branch": "codex/dev-package-identity",
+                "host": "code.sandbox.example",
+                "repo": "qos/qos",
+                "receipt_directory": Path(directory),
+            }
+            with patch.object(watch_ci, "branch_is_on_remote", return_value=True), patch.object(watch_ci, "watch", return_value=("complete", [{"status": "success", "index_in_repo": 42}] )) as watch, patch.object(watch_ci, "deliver") as deliver:
                 for _ in range(2):
-                    with patch("sys.stdin", io.StringIO(json.dumps(event))):
-                        self.assertEqual(watch_ci.main(), 0)
+                    self.assertEqual(watch_ci.worker(**parameters), 0)
                 self.assertEqual(watch.call_count, 1)
                 self.assertEqual(deliver.call_count, 1)
                 self.assertEqual(deliver.call_args.args[0], event["session_id"])
-                self.assertTrue(all(cwd.replace("\\", "/") == "C:/Users/user/qos-registry-submission" for _, cwd in calls))
-                receipt = next((Path(directory) / "codex-ci-watch").glob("*.json"))
+                receipt = next(Path(directory).glob("*.json"))
                 self.assertEqual(json.loads(receipt.read_text())["state"], "reported")
-                event["session_id"] = "a-second-task"
+                parameters["session_id"] = "a-second-task"
                 secret = "dummy-secret-never-persist"
                 watch.side_effect = ValueError(f"https://user:{secret}@host")
-                with patch("sys.stdin", io.StringIO(json.dumps(event))):
-                    self.assertEqual(watch_ci.main(), 0)
+                self.assertEqual(watch_ci.worker(**parameters), 0)
                 self.assertNotIn(secret, deliver.call_args.args[1])
-                for receipt in (Path(directory) / "codex-ci-watch").glob("*.json"):
+                for receipt in Path(directory).glob("*.json"):
                     self.assertNotIn(secret, receipt.read_text())
+
+    def test_worker_retains_failed_delivery_for_inspection(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            watch_ci, "branch_is_on_remote", return_value=True
+        ), patch.object(
+            watch_ci,
+            "watch",
+            return_value=("complete", [{"status": "success", "index_in_repo": 42}]),
+        ), patch.object(watch_ci, "deliver", return_value=False):
+            self.assertEqual(
+                watch_ci.worker(
+                    session_id="task",
+                    cwd=Path("C:/repo"),
+                    sha="0fcfa04598dc324fa17875497a987570a372232a",
+                    branch="topic",
+                    host="code.sandbox.example",
+                    repo="qos/qos",
+                    receipt_directory=Path(directory),
+                ),
+                0,
+            )
+            receipt = next(Path(directory).glob("*.json"))
+            self.assertEqual(json.loads(receipt.read_text())["state"], "delivery_failed")
 
 
 if __name__ == "__main__":

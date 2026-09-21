@@ -8,8 +8,8 @@
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/watch_ci.py\"",
-            "async": true,
-            "timeout": 1800
+            "async": false,
+            "timeout": 30
           }
         ]
       }
