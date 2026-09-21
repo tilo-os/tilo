@@ -16,7 +16,7 @@
     </p>
   </description>
   <launchable type="desktop-id">org.tilo.Imager.desktop</launchable>
-  <url type="homepage">https://code.sandbox.example/qos/releases</url>
+  <url type="homepage">https://github.com/tilo-os/releases</url>
   <provides>
     <binary>tilo-imager</binary>
   </provides>
