@@ -20,12 +20,12 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use ui::State;
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{Column, Row, ScrollAxis, Scrollable, Text, Widget};
+use tilo_ui::State;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{Column, Row, ScrollAxis, Scrollable, Text, Widget};
 
 const WIDTH: u32 = 460;
 const HEIGHT: u32 = 620;
@@ -150,7 +150,7 @@ fn shoot(theme: &Theme, out: &Path, active: bool, both: bool) {
 }
 
 pub fn run(_args: &[String]) {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
     let dir =
         std::env::var("SCROLLBAR_SHOTS_OUT").unwrap_or_else(|_| "/tmp/scrollbar_shots".to_string());
     if let Err(e) = std::fs::create_dir_all(&dir) {

@@ -20,7 +20,7 @@
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use ui::collaboration::{local_app_id, local_user_id};
+use tilo_ui::collaboration::{local_app_id, local_user_id};
 
 fn env_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

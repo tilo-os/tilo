@@ -8,7 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::presence::{PointerOwner, PresenceCtx, RemoteCursor};
+use tilo_ui::presence::{PointerOwner, PresenceCtx, RemoteCursor};
 
 #[test]
 fn presence_ctx_holds_remote_cursors() {

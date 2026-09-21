@@ -5302,9 +5302,9 @@ dependencies = [
  "bounded-command",
  "greetd_ipc",
  "taffy",
+ "tilo-ui",
  "tracing",
  "tracing-subscriber",
- "ui",
  "vello",
  "winit",
  "zeroize",
@@ -6099,6 +6099,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
@@ -6842,8 +6843,8 @@ dependencies = [
  "taffy",
  "tempfile",
  "tilo-power-mgmt",
+ "tilo-ui",
  "tracing-subscriber",
- "ui",
  "uuid",
  "vello",
  "winit",
@@ -9777,8 +9778,6 @@ dependencies = [
 [[package]]
 name = "openh264-sys2"
 version = "0.9.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa9e072e9b270f3b291c80488dc160abc31ecc214ab3bfde937213cfd8c83b32"
 dependencies = [
  "cc",
  "nasm-rs",
@@ -12112,6 +12111,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -12366,7 +12366,6 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnp-rpc",
- "capnpc",
  "postcard",
  "runtime-portal",
  "serde",
@@ -12418,13 +12417,13 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-model-gateway",
  "tilo-relay",
+ "tilo-ui",
  "tilo-user-identity",
  "tiny-skia",
  "typst",
  "typst-assets",
  "typst-pdf",
  "typst-render",
- "ui",
  "vte",
  "xattr",
 ]
@@ -13542,13 +13541,13 @@ dependencies = [
  "tilo-projector",
  "tilo-relay",
  "tilo-startup-metrics",
+ "tilo-ui",
  "tilo-user-identity",
  "tokio",
  "tokio-util",
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
- "ui",
  "uuid",
  "vello",
  "vello_encoding",
@@ -14828,7 +14827,38 @@ dependencies = [
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
- "ui",
+ "tilo-ui",
+]
+
+[[package]]
+name = "tilo-app-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fluent",
+ "fluent-syntax",
+ "image",
+ "libc",
+ "notify",
+ "pkg",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+ "tempfile",
+ "tilo-headless-schema",
+ "tilo-ui-graph",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "tilo-app-template-smoke"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-app-cli",
 ]
 
 [[package]]
@@ -14908,37 +14938,6 @@ dependencies = [
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "tilo-dev"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "fluent",
- "fluent-syntax",
- "image",
- "libc",
- "notify",
- "pkg",
- "serde",
- "serde_json",
- "syn 2.0.117",
- "tempfile",
- "tilo-headless-schema",
- "tilo-ui-graph",
- "toml 0.8.23",
-]
-
-[[package]]
-name = "tilo-dev-template-smoke"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-app",
- "tilo-dev",
 ]
 
 [[package]]
@@ -15087,11 +15086,102 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ui"
+version = "0.1.0"
+dependencies = [
+ "accesskit",
+ "accesskit_winit",
+ "adblock",
+ "app-state",
+ "arboard",
+ "ash",
+ "ashpd",
+ "atomic-file",
+ "automerge",
+ "base32",
+ "blake3",
+ "capnp",
+ "capnp-rpc",
+ "chacha20poly1305",
+ "channel-crypto",
+ "chrono",
+ "collab-types",
+ "cosmic-text",
+ "dirs 6.0.0",
+ "ed25519-dalek 2.2.0",
+ "fluent",
+ "form_urlencoded",
+ "hex",
+ "hmac 0.12.1",
+ "hypher",
+ "icu_segmenter",
+ "image",
+ "libc",
+ "media",
+ "mime_guess",
+ "open",
+ "openh264",
+ "percent-encoding",
+ "pkg-config",
+ "png 0.18.1",
+ "pollster",
+ "postcard",
+ "private-fs",
+ "qdoc",
+ "qrcode",
+ "rand_core 0.6.4",
+ "regex",
+ "runtime-collab",
+ "runtime-identity",
+ "runtime-portal",
+ "rustls",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "serial_test",
+ "settings-store",
+ "sha2 0.10.9",
+ "skrifa 0.40.0",
+ "smithay-client-toolkit 0.20.0",
+ "smithay-clipboard",
+ "spellcheck",
+ "syntect",
+ "taffy",
+ "tempfile",
+ "thiserror 2.0.18",
+ "threshold-identity",
+ "tilo-actions",
+ "tilo-headless-schema",
+ "tilo-startup-metrics",
+ "tilo-ui-graph",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "tts",
+ "unic-langid",
+ "unicode-linebreak",
+ "unicode-script",
+ "unicode-segmentation",
+ "url",
+ "uuid",
+ "vello",
+ "vello_encoding",
+ "wgpu",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
+ "winit",
+ "zbus 4.4.0",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-ui-builder"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
- "ui",
+ "tilo-ui",
 ]
 
 [[package]]
@@ -16184,97 +16274,6 @@ dependencies = [
  "memoffset",
  "tempfile",
  "winapi",
-]
-
-[[package]]
-name = "ui"
-version = "0.1.0"
-dependencies = [
- "accesskit",
- "accesskit_winit",
- "adblock",
- "app-state",
- "arboard",
- "ash",
- "ashpd",
- "atomic-file",
- "automerge",
- "base32",
- "blake3",
- "capnp",
- "capnp-rpc",
- "chacha20poly1305",
- "channel-crypto",
- "chrono",
- "collab-types",
- "cosmic-text",
- "dirs 6.0.0",
- "ed25519-dalek 2.2.0",
- "fluent",
- "form_urlencoded",
- "hex",
- "hmac 0.12.1",
- "hypher",
- "icu_segmenter",
- "image",
- "libc",
- "media",
- "mime_guess",
- "open",
- "openh264",
- "percent-encoding",
- "pkg-config",
- "png 0.18.1",
- "pollster",
- "postcard",
- "private-fs",
- "qdoc",
- "qrcode",
- "rand_core 0.6.4",
- "regex",
- "runtime-collab",
- "runtime-identity",
- "runtime-portal",
- "rustls",
- "serde",
- "serde_bytes",
- "serde_json",
- "serial_test",
- "settings-store",
- "sha2 0.10.9",
- "skrifa 0.40.0",
- "smithay-client-toolkit 0.20.0",
- "smithay-clipboard",
- "spellcheck",
- "syntect",
- "taffy",
- "tempfile",
- "thiserror 2.0.18",
- "threshold-identity",
- "tilo-actions",
- "tilo-headless-schema",
- "tilo-startup-metrics",
- "tilo-ui-graph",
- "tokio",
- "tokio-util",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "tts",
- "unic-langid",
- "unicode-linebreak",
- "unicode-script",
- "unicode-segmentation",
- "url",
- "uuid",
- "vello",
- "vello_encoding",
- "wgpu",
- "windows 0.62.2",
- "windows-sys 0.61.2",
- "winit",
- "zbus 4.4.0",
- "zeroize",
 ]
 
 [[package]]

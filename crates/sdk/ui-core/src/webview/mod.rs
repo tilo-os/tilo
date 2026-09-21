@@ -247,7 +247,7 @@ pub struct MediaElementInfo {
 #[derive(Debug)]
 #[cfg(unix)]
 pub struct DmabufPlane {
-    pub fd: std::os::fd::OwnedFd,
+    pub fd: media::dmabuf::DmabufHandle,
     pub stride: u32,
     pub offset: u32,
 }

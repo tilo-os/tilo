@@ -23,11 +23,11 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::a11y::contrast_ratio;
-use ui::color_compat::ColorCompat;
-use ui::theme::Theme;
-use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
-use ui::widget::{
+use tilo_ui::a11y::contrast_ratio;
+use tilo_ui::color_compat::ColorCompat;
+use tilo_ui::theme::Theme;
+use tilo_ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
+use tilo_ui::widget::{
     ButtonInteract, ButtonStyle, SegmentedStyle, ToggleInteract, face_colors, segment_colors,
     toggle_face_colors,
 };

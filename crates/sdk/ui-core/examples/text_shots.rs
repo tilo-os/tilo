@@ -1,7 +1,7 @@
 //! Offscreen shots for the shared text-input primitives that slides / docs /
-//! sheets adopt: [`ui::widget::TextInput`] with a live selection highlight,
-//! the click-to-type [`ui::widget::NumberInput`] (value + steppers), and the
-//! embeddable [`ui::widget::ColorPicker`].
+//! sheets adopt: [`tilo_ui::widget::TextInput`] with a live selection highlight,
+//! the click-to-type [`tilo_ui::widget::NumberInput`] (value + steppers), and the
+//! embeddable [`tilo_ui::widget::ColorPicker`].
 //!
 //! Every widget is exercised through its real five-pass pipeline and event
 //! handler — no private-field pokes. The point is a picture you can eyeball
@@ -22,11 +22,11 @@ use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{Modifiers, WindowEvent};
 
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{ColorPicker, NumberInput, TextInput, Widget};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{ColorPicker, NumberInput, TextInput, Widget};
 
 /// Lay a single widget out at `origin` through the real taffy pass and return
 /// nothing (the widget stores its own rect). Used for the widgets whose
