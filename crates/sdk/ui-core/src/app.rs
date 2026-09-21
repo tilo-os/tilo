@@ -6,6 +6,9 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
+#[cfg(test)]
+use std::cell::{Cell, RefCell};
+
 mod bound_record_sync;
 mod close_admission;
 mod document_history;
