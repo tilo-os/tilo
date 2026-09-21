@@ -1356,7 +1356,7 @@ pub struct ShellOverlayHost {
     content: Box<dyn Widget>,
     /// Exact production root layers, supplied only by `build_workspace_root`. This is a
     /// capability, not an invalidation hint: section drawing invokes these same widgets in their
-    /// established backdrop → topbar → workspace order.
+    /// established backdrop → workspace → topbar order.
     workspace_scene_parts: Option<crate::shell::WorkspaceSceneParts>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
@@ -12914,15 +12914,6 @@ impl ShellOverlayHost {
                 st.quick_settings.push_level(level);
                 st.bump();
             }
-            RootAction::OpenNotifications => {
-                let mut st = chrome.borrow_mut();
-                st.quick_settings
-                    .push_level(crate::shell::quick_settings::QsLevel::Notifications);
-                st.bump();
-                drop(st);
-                self.qs_notification_history_start = 0;
-                self.qs_notification_wheel_remainder = 0.0;
-            }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
                 self.dispatch_quick_settings_toggle_actions(
@@ -12956,43 +12947,9 @@ impl ShellOverlayHost {
                 // policy; opening it as a fallback would silently change the
                 // meaning of this personal/device-settings action.
             }
-            RootAction::Privacy | RootAction::OpenPowerMenu => {
+            RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
-                match action {
-                    RootAction::Privacy => {
-                        let active = st.quick_settings.privacy.active_media.clone();
-                        if active.is_empty() {
-                            let privacy = &st.quick_settings.privacy;
-                            let camera = format!("camera: {:?}", privacy.camera_kill);
-                            let microphone = format!("microphone: {:?}", privacy.microphone_kill);
-                            st.push_notification("Privacy", format!("{camera} · {microphone}"));
-                        } else {
-                            let mut failed = Vec::new();
-                            let mut seen = std::collections::BTreeSet::new();
-                            for use_ in &active {
-                                if seen.insert(use_.client_id)
-                                    && os_actions::revoke_media_client(use_.client_id).is_err()
-                                {
-                                    failed.push(use_.label.clone());
-                                }
-                            }
-                            if failed.is_empty() {
-                                st.quick_settings.privacy.active_media.clear();
-                                st.push_notification(
-                                    "Camera and microphone access stopped",
-                                    "The active PipeWire clients were disconnected.",
-                                );
-                            } else {
-                                st.push_notification(
-                                    "Could not stop all access",
-                                    format!("Still active: {}", failed.join(", ")),
-                                );
-                            }
-                        }
-                    }
-                    RootAction::OpenPowerMenu => self.power_menu.open(),
-                    _ => return,
-                }
+                self.power_menu.open();
                 st.overlays.quick_settings = false;
                 st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
                 st.bump();
@@ -16109,9 +16066,22 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Keep dense painting independent from segmented retained drawing: this is the oracle.
-        self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+        // Match the compositor's retained section order in the dense oracle:
+        // app content cannot cover OS-owned anchored chrome that extends
+        // below the reserved top-bar band.
+        if let Some(parts) = self.workspace_scene_parts {
+            // SAFETY: these pointers refer to distinct boxed children owned
+            // by `content`; this is the same sequential traversal used by
+            // `draw_workspace_sections`, only composed in final layer order.
+            unsafe {
+                (&mut *parts.backdrop).draw(scene, transform, text_renderer, theme, presence);
+                (&mut *parts.workspace).draw(scene, transform, text_renderer, theme, presence);
+                (&mut *parts.topbar).draw(scene, transform, text_renderer, theme, presence);
+            }
+        } else {
+            self.content
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
         self.draw_desktop_extras(scene, transform, text_renderer, theme, presence);
     }
 
@@ -16192,7 +16162,7 @@ impl ShellOverlayHost {
     }
 
     /// The production root has no painting container of its own, so its three typed children
-    /// may be recorded separately without changing the dense draw order. Unrecognised roots are
+    /// may be recorded separately without changing the final compositor layer order. Unrecognised roots are
     /// recorded as one opaque section.
     #[allow(
         clippy::too_many_arguments,

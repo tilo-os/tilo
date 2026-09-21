@@ -15,7 +15,7 @@ use chrono::Local;
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Brush, ColorStop, Extend, Fill, Gradient};
+use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
 use ui::color_compat::ColorCompat;
@@ -30,20 +30,15 @@ use crate::shell::chrome_state::Chrome;
 use crate::shell::state::WorkspaceTree;
 use settings_store::hardware::{TopBarWidget, TopBarWidgetsConfig};
 
-/// Persistent chrome is deliberately a little taller than the original
-/// concept's 40 px sketch.  Forty pixels forced the navigation and status
-/// controls down to 18--22 px targets; 48 px leaves a consistent 32 px target
-/// while retaining substantially more room for content than a conventional
-/// desktop panel.
-pub const TOPBAR_HEIGHT_PX: f32 = 48.0;
+/// The top bar reserves a compact strip, while its edge targets can still use
+/// the full allocation independently of the smaller floating control bodies.
+pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
+
+/// Every floating top-bar surface shares this height, leaving exactly four
+/// logical pixels above and below it in the 40 px bar.
+const TOPBAR_CONTROL_HEIGHT_PX: f64 = 32.0;
 
 const CLOCK_OVERLAY_HEIGHT: f64 = 150.0;
-
-/// The toolkit's shared chrome opacity, so the bar cannot drift from the
-/// popovers hanging off it. [`TopBarChrome::draw`] fills `surfaces.overlay`
-/// directly and never consults this constant, which is why the dark bar
-/// is darker than the desktop while a panel is lighter.
-pub const TOP_BAR_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 
 /// Low enough that the sparkline reads as backdrop, not a fourth element
 /// competing with the three metric labels.
@@ -473,6 +468,9 @@ pub struct TopBarChrome {
     down_btn_rect: Rect,
     ws_pill_rect: Rect,
     tray_pill_rect: Rect,
+    /// Interaction geometry is deliberately larger than the painted pill:
+    /// the screen's top-right edge must remain an easy Quick Settings target.
+    tray_hit_rect: Rect,
     media_indicator_rect: Rect,
     media_signature: Vec<(u32, u8, String)>,
     media_started: Option<Instant>,
@@ -711,6 +709,7 @@ impl TopBarChrome {
             down_btn_rect: Rect::ZERO,
             ws_pill_rect: Rect::ZERO,
             tray_pill_rect: Rect::ZERO,
+            tray_hit_rect: Rect::ZERO,
             media_indicator_rect: Rect::ZERO,
             media_signature: Vec::new(),
             media_started: None,
@@ -942,7 +941,13 @@ impl TopBarChrome {
     /// Restore the accepted vertical carousel indicator from `7d58e7146`.
     /// The unequal active/inactive diameters are included in the layout so
     /// both visual gaps remain equal and the column stays centred.
-    fn center_dot_layout(band: Rect, bar: Rect, active: usize) -> [CenterDot; 3] {
+    fn center_dot_layout(
+        band: Rect,
+        bar: Rect,
+        active: usize,
+        visible_count: usize,
+    ) -> [CenterDot; 3] {
+        let visible_count = visible_count.clamp(1, 3);
         let radius_of = |i: usize| {
             if i == active {
                 Self::DOT_ACTIVE_RADIUS
@@ -950,32 +955,45 @@ impl TopBarChrome {
                 Self::DOT_INACTIVE_RADIUS
             }
         };
-        let ink: f64 = (0..3).map(|i| radius_of(i) * 2.0).sum();
-        let gap = ((band.height() - Self::DOT_COLUMN_MARGIN * 2.0 - ink) / 2.0).max(1.0);
-        let column_h = ink + gap * 2.0;
+        let ink: f64 = (0..visible_count).map(|i| radius_of(i) * 2.0).sum();
+        let gaps = visible_count.saturating_sub(1);
+        let gap = if gaps == 0 {
+            0.0
+        } else {
+            ((band.height() - Self::DOT_COLUMN_MARGIN * 2.0 - ink) / small_count_to_f64(gaps))
+                .max(1.0)
+        };
+        let column_h = ink + gap * small_count_to_f64(gaps);
         let mut edge = band.center().y - column_h / 2.0;
         let mut centers = [0.0; 3];
         let mut radii = [0.0; 3];
-        for i in 0..3 {
+        for i in 0..visible_count {
             let radius = radius_of(i);
             radii[i] = radius;
             centers[i] = edge + radius;
             edge += radius * 2.0 + gap;
         }
         let boundary = |a: usize, b: usize| (centers[a] + radii[a] + centers[b] - radii[b]) / 2.0;
-        let cuts = [boundary(0, 1), boundary(1, 2)];
         let x = Self::dot_column_x(band);
-        let edges = [bar.y0, cuts[0], cuts[1], bar.y1];
-        std::array::from_fn(|i| CenterDot {
-            center: Point::new(x, centers[i]),
-            radius: radii[i],
-            slot: Rect::new(
-                x - Self::DOT_SLOT_HALF_W,
-                edges[i],
-                x + Self::DOT_SLOT_HALF_W,
-                edges[i + 1],
-            ),
-        })
+        let mut dots = [CenterDot {
+            center: Point::ZERO,
+            radius: 0.0,
+            slot: Rect::ZERO,
+        }; 3];
+        for i in 0..visible_count {
+            let y0 = if i == 0 { bar.y0 } else { boundary(i - 1, i) };
+            let y1 = if i + 1 == visible_count {
+                bar.y1
+            } else {
+                boundary(i, i + 1)
+            };
+            dots[i] = CenterDot {
+                center: Point::new(x, centers[i]),
+                radius: radii[i],
+                slot: Rect::new(x - Self::DOT_SLOT_HALF_W, y0, x + Self::DOT_SLOT_HALF_W, y1),
+            };
+        }
+        dots
     }
 
     fn dot_column_x(band: Rect) -> f64 {
@@ -1011,6 +1029,82 @@ impl TopBarChrome {
     const CONTROL_QUICK_SETTINGS: &'static str = "topbar:quick-settings";
     const CONTROL_COLLABORATORS: &'static str = "topbar:collaborators";
     const CONTROL_MEDIA: &'static str = "topbar:media";
+    const CONTROL_REMOVE_CLOCK: &'static str = "topbar:editor:remove-clock";
+    const CONTROL_REMOVE_MONITOR: &'static str = "topbar:editor:remove-system-monitor";
+    const CONTROL_REMOVE_CALENDAR: &'static str = "topbar:editor:remove-calendar";
+    const CONTROL_ADD_CLOCK: &'static str = "topbar:editor:add-clock";
+    const CONTROL_ADD_MONITOR: &'static str = "topbar:editor:add-system-monitor";
+    const CONTROL_ADD_CALENDAR: &'static str = "topbar:editor:add-calendar";
+
+    fn center_control(widget: TopBarWidget) -> &'static str {
+        match widget {
+            TopBarWidget::Clock => Self::CONTROL_CENTER_CLOCK,
+            TopBarWidget::SystemMonitor => Self::CONTROL_CENTER_MONITOR,
+            TopBarWidget::Calendar => Self::CONTROL_CENTER_CALENDAR,
+        }
+    }
+
+    fn editor_control(widget: TopBarWidget, present: bool) -> &'static str {
+        match (widget, present) {
+            (TopBarWidget::Clock, true) => Self::CONTROL_REMOVE_CLOCK,
+            (TopBarWidget::SystemMonitor, true) => Self::CONTROL_REMOVE_MONITOR,
+            (TopBarWidget::Calendar, true) => Self::CONTROL_REMOVE_CALENDAR,
+            (TopBarWidget::Clock, false) => Self::CONTROL_ADD_CLOCK,
+            (TopBarWidget::SystemMonitor, false) => Self::CONTROL_ADD_MONITOR,
+            (TopBarWidget::Calendar, false) => Self::CONTROL_ADD_CALENDAR,
+        }
+    }
+
+    fn editor_widget(target: &str) -> Option<(TopBarWidget, bool)> {
+        match target {
+            Self::CONTROL_REMOVE_CLOCK => Some((TopBarWidget::Clock, true)),
+            Self::CONTROL_REMOVE_MONITOR => Some((TopBarWidget::SystemMonitor, true)),
+            Self::CONTROL_REMOVE_CALENDAR => Some((TopBarWidget::Calendar, true)),
+            Self::CONTROL_ADD_CLOCK => Some((TopBarWidget::Clock, false)),
+            Self::CONTROL_ADD_MONITOR => Some((TopBarWidget::SystemMonitor, false)),
+            Self::CONTROL_ADD_CALENDAR => Some((TopBarWidget::Calendar, false)),
+            _ => None,
+        }
+    }
+
+    fn configured_center_widget(&self, index: usize) -> Option<CenterWidget> {
+        self.widget_config
+            .widgets
+            .get(index)
+            .copied()
+            .map(Into::into)
+    }
+
+    fn center_dot_rect(&self, widget: TopBarWidget) -> Rect {
+        self.widget_config
+            .widgets
+            .iter()
+            .position(|candidate| *candidate == widget)
+            .and_then(|index| self.center_dot_rects.get(index).copied())
+            .unwrap_or(Rect::ZERO)
+    }
+
+    fn cycle_center_widget(&mut self, forward: bool) {
+        let widgets = &self.widget_config.widgets;
+        if widgets.is_empty() {
+            return;
+        }
+        let Some(current) = widgets
+            .iter()
+            .position(|widget| *widget == TopBarWidget::from(self.center_widget))
+        else {
+            if let Some(first) = widgets.first().copied() {
+                self.center_widget = first.into();
+            }
+            return;
+        };
+        let next = if forward {
+            (current + 1) % widgets.len()
+        } else {
+            current.checked_sub(1).unwrap_or(widgets.len() - 1)
+        };
+        self.center_widget = widgets[next].into();
+    }
 
     fn collaborators_visible(&self) -> bool {
         !self.collaborator_initials.is_empty()
@@ -1200,11 +1294,22 @@ impl TopBarChrome {
             Self::CONTROL_WORKSPACE_UP,
             Self::CONTROL_WORKSPACE_DOWN,
             Self::CONTROL_WORKSPACE_SETTINGS,
-            Self::CONTROL_CENTER_CLOCK,
-            Self::CONTROL_CENTER_MONITOR,
-            Self::CONTROL_CENTER_CALENDAR,
-            Self::CONTROL_QUICK_SETTINGS,
         ];
+        controls.extend(
+            self.widget_config
+                .widgets
+                .iter()
+                .copied()
+                .map(Self::center_control),
+        );
+        controls.push(Self::CONTROL_QUICK_SETTINGS);
+        if self.widget_editing {
+            controls.extend(TopBarWidget::ALL.into_iter().filter_map(|widget| {
+                let present = self.widget_config.widgets.contains(&widget);
+                (!present || self.widget_config.widgets.len() > 1)
+                    .then_some(Self::editor_control(widget, present))
+            }));
+        }
         if self.collaborators_visible() {
             controls.push(Self::CONTROL_COLLABORATORS);
         }
@@ -1223,17 +1328,14 @@ impl TopBarChrome {
             Self::CONTROL_CENTER_CLOCK
             | Self::CONTROL_CENTER_MONITOR
             | Self::CONTROL_CENTER_CALENDAR => {
-                let index = match target {
-                    Self::CONTROL_CENTER_CLOCK => 0,
-                    Self::CONTROL_CENTER_MONITOR => 1,
-                    _ => 2,
+                let widget = match target {
+                    Self::CONTROL_CENTER_CLOCK => TopBarWidget::Clock,
+                    Self::CONTROL_CENTER_MONITOR => TopBarWidget::SystemMonitor,
+                    _ => TopBarWidget::Calendar,
                 };
-                self.center_dot_rects
-                    .get(index)
-                    .copied()
-                    .unwrap_or(Rect::ZERO)
+                self.center_dot_rect(widget)
             }
-            Self::CONTROL_QUICK_SETTINGS => self.tray_pill_rect,
+            Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
             Self::CONTROL_COLLABORATORS => {
                 if self.avatar_stack_rect.is_zero_area() {
                     self.sharing_indicator_rect
@@ -1244,6 +1346,9 @@ impl TopBarChrome {
                 }
             }
             Self::CONTROL_MEDIA => self.media_indicator_rect,
+            target if Self::editor_widget(target).is_some() => Self::editor_widget(target)
+                .map(|(widget, present)| self.widget_editor_action_rect(widget, present))
+                .unwrap_or(Rect::ZERO),
             _ => Rect::ZERO,
         }
     }
@@ -1289,6 +1394,21 @@ impl TopBarChrome {
                 }
             }
             Self::CONTROL_MEDIA => "Privacy settings for active capture".into(),
+            target if Self::editor_widget(target).is_some() => {
+                let Some((widget, present)) = Self::editor_widget(target) else {
+                    return "Top bar editor control".into();
+                };
+                let label = match widget {
+                    TopBarWidget::Clock => "clock",
+                    TopBarWidget::SystemMonitor => "system monitor",
+                    TopBarWidget::Calendar => "calendar",
+                };
+                if present {
+                    format!("Remove {label} from top bar")
+                } else {
+                    format!("Add {label} to top bar")
+                }
+            }
             _ => "Top bar control".into(),
         }
     }
@@ -1301,6 +1421,34 @@ impl TopBarChrome {
             target,
             Self::CONTROL_WORKSPACE_DOWN if !self.can_switch_down()
         )
+    }
+
+    fn activate_editor_control(&mut self, target: &str) -> bool {
+        let Some((widget, remove)) = Self::editor_widget(target) else {
+            return false;
+        };
+        if remove {
+            if self.widget_config.widgets.len() <= 1 {
+                return false;
+            }
+            let Some(index) = self
+                .widget_config
+                .widgets
+                .iter()
+                .position(|candidate| *candidate == widget)
+            else {
+                return false;
+            };
+            self.widget_config.widgets.remove(index);
+        } else {
+            if self.widget_config.widgets.contains(&widget) {
+                return false;
+            }
+            self.widget_config.widgets.push(widget);
+        }
+        let _ = self.widget_config.save();
+        self.cache_fp = CacheFingerprint::default();
+        true
     }
 
     /// Bold, so it reads as the chrome's focal glance value.
@@ -1345,12 +1493,6 @@ impl TopBarChrome {
 
     pub fn overview_btn_rect(&self) -> Rect {
         self.overview_btn_rect
-    }
-
-    /// See [`TOP_BAR_SURFACE_ALPHA`]; pinned by `shell_chrome_test` so
-    /// the bar can't drift from the constant the popovers share.
-    pub fn top_bar_alpha() -> f32 {
-        TOP_BAR_SURFACE_ALPHA
     }
 
     pub fn tray_pill_rect(&self) -> Rect {
@@ -1445,61 +1587,6 @@ impl TopBarChrome {
     // The following `draw_*` helpers exist only to keep `Widget::draw`
     // under the line budget; none is meaningful on its own.
 
-    /// Bar surface fill, bottom border hairline, and the soft drop-shadow
-    /// band beneath the bar.
-    fn draw_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &self.rect,
-        );
-
-        let border_rect = Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.border_standard,
-            None,
-            &border_rect,
-        );
-
-        // Masks the abrupt topbar → backdrop transition via a 28px fade.
-        let shadow_h = 28.0_f64;
-        let shadow_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y1,
-            self.rect.x1,
-            self.rect.y1 + shadow_h,
-        );
-        let shadow_grad = Gradient::new_linear(
-            Point::new(0.0, self.rect.y1),
-            Point::new(0.0, self.rect.y1 + shadow_h),
-        )
-        .with_extend(Extend::Pad)
-        .with_stops(
-            &[
-                ColorStop {
-                    offset: 0.0,
-                    color: Color::from_rgba8(0, 0, 0, 46).into(), // ≈ 0.18
-                },
-                ColorStop {
-                    offset: 1.0,
-                    color: Color::from_rgba8(0, 0, 0, 0).into(),
-                },
-            ][..],
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            &Brush::Gradient(shadow_grad),
-            None,
-            &shadow_rect,
-        );
-    }
-
     /// Overview icon, divider, and up/down workspace chevrons. Returns
     /// the x cursor position immediately after the down chevron, where
     /// the workspace name pill begins.
@@ -1518,7 +1605,7 @@ impl TopBarChrome {
         let colors = &tokens.colors;
         let pad_x = f64::from(tokens.spacing.s3);
         let icon_size = 18.0_f64;
-        let control = 32.0_f64;
+        let control = TOPBAR_CONTROL_HEIGHT_PX;
 
         let mut x = self.rect.x0 + pad_x;
         let switch_w = 32.0_f64;
@@ -1692,9 +1779,9 @@ impl TopBarChrome {
         let ws_y = center_y - f64::from(ws_h) / 2.0;
         let ws_pill_outer = Rect::new(
             x - 6.0,
-            center_y - 16.0,
+            center_y - TOPBAR_CONTROL_HEIGHT_PX / 2.0,
             x + f64::from(ws_w) + 28.0,
-            center_y + 16.0,
+            center_y + TOPBAR_CONTROL_HEIGHT_PX / 2.0,
         );
         self.ws_pill_rect = ws_pill_outer;
         if let Some(chrome) = self.chrome.as_ref() {
@@ -1775,7 +1862,7 @@ impl TopBarChrome {
     ) -> (f64, f64, f64) {
         let colors = &theme.tokens.colors;
         let band_w = self.center_band_width(theme);
-        let band_h = 34.0_f64;
+        let band_h = TOPBAR_CONTROL_HEIGHT_PX;
         let band_cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let band = Rect::new(
             band_cx - band_w / 2.0,
@@ -1813,7 +1900,7 @@ impl TopBarChrome {
             .iter()
             .position(|widget| *widget == TopBarWidget::from(self.center_widget))
             .unwrap_or(0);
-        let dots = Self::center_dot_layout(band, self.rect, active_dot);
+        let dots = Self::center_dot_layout(band, self.rect, active_dot, widgets.len());
         self.center_dot_rects = [Rect::ZERO; 3];
         for (i, dot) in dots.iter().take(widgets.len()).enumerate() {
             let active = active_dot == i;
@@ -1842,6 +1929,46 @@ impl TopBarChrome {
             self.widget_editor_rect.x1 - 14.0,
             top + 42.0,
         )
+    }
+
+    fn widget_editor_remove_rect(&self, index: usize) -> Rect {
+        let row = self.widget_editor_row(index);
+        Rect::new(row.x1 - 76.0, row.y0 + 5.0, row.x1 - 5.0, row.y1 - 5.0)
+    }
+
+    fn widget_editor_add_rect(&self, widget: TopBarWidget) -> Rect {
+        let Some(index) = TopBarWidget::ALL
+            .into_iter()
+            .filter(|candidate| !self.widget_config.widgets.contains(candidate))
+            .position(|candidate| candidate == widget)
+        else {
+            return Rect::ZERO;
+        };
+        let x = self.widget_editor_rect.x0 + 16.0 + small_count_to_f64(index) * 82.0;
+        Rect::new(
+            x,
+            self.widget_editor_rect.y1 - 48.0,
+            x + 78.0,
+            self.widget_editor_rect.y1 - 8.0,
+        )
+    }
+
+    fn widget_editor_action_rect(&self, widget: TopBarWidget, present: bool) -> Rect {
+        if !self.widget_editing {
+            return Rect::ZERO;
+        }
+        if present {
+            if self.widget_config.widgets.len() <= 1 {
+                return Rect::ZERO;
+            }
+            self.widget_config
+                .widgets
+                .iter()
+                .position(|candidate| *candidate == widget)
+                .map_or(Rect::ZERO, |index| self.widget_editor_remove_rect(index))
+        } else {
+            self.widget_editor_add_rect(widget)
+        }
     }
 
     fn draw_widget_editor(
@@ -1949,14 +2076,19 @@ impl TopBarChrome {
                 at(transform, (row.x0 + 40.0, row.y0 + 12.0)),
                 None,
             );
-            text.draw_text(
-                scene,
-                "Remove",
-                theme.tokens.typography.scale.xs,
-                theme.tokens.colors.semantic.danger,
-                at(transform, (row.x1 - 60.0, row.y0 + 13.0)),
-                None,
-            );
+            if self.widget_config.widgets.len() > 1 {
+                let remove = self.widget_editor_remove_rect(index);
+                ui::widget::Button::paint(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    &ui::widget::ButtonFace::new(remove, "Remove")
+                        .danger()
+                        .hovered(self.last_cursor.is_some_and(|point| remove.contains(point)))
+                        .text_size(theme.tokens.typography.scale.xs),
+                );
+            }
         }
         if let Some(ghost) =
             self.widget_edit_drag
@@ -1974,8 +2106,6 @@ impl TopBarChrome {
             );
         }
         if available > 0 {
-            let y = panel.y1 - 40.0;
-            let mut x = panel.x0 + 16.0;
             for widget in TopBarWidget::ALL {
                 if self.widget_config.widgets.contains(&widget) {
                     continue;
@@ -1985,15 +2115,17 @@ impl TopBarChrome {
                     TopBarWidget::SystemMonitor => "+ Monitor",
                     TopBarWidget::Calendar => "+ Calendar",
                 };
-                text.draw_text(
+                let add = self.widget_editor_add_rect(widget);
+                ui::widget::Button::paint(
                     scene,
-                    label,
-                    theme.tokens.typography.scale.xs,
-                    theme.tokens.colors.accent[5],
-                    at(transform, (x, y)),
-                    None,
+                    transform,
+                    text,
+                    theme,
+                    &ui::widget::ButtonFace::new(add, label)
+                        .ghost()
+                        .hovered(self.last_cursor.is_some_and(|point| add.contains(point)))
+                        .text_size(theme.tokens.typography.scale.xs),
                 );
-                x += 82.0;
             }
         }
     }
@@ -2249,7 +2381,7 @@ impl TopBarChrome {
 
         // Sizes itself to what's actually knowable; an unarrived
         // reading contributes nothing rather than a plausible default.
-        let tray_h = 32.0_f64;
+        let tray_h = TOPBAR_CONTROL_HEIGHT_PX;
         let tray_slot = 24.0_f64;
         let tray_pad = 8.0_f64;
         let tray_gap = 4.0_f64;
@@ -2303,6 +2435,12 @@ impl TopBarChrome {
             center_y - tray_h / 2.0,
             rx,
             center_y + tray_h / 2.0,
+        );
+        self.tray_hit_rect = Rect::new(
+            self.tray_pill_rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1,
         );
         let tray = RoundedRect::from_rect(
             self.tray_pill_rect,
@@ -2953,12 +3091,14 @@ impl TopBarChrome {
         }
         // Dot clicks jump directly — local widget state, no chrome needed.
         if let Some(p) = self.last_cursor {
-            for (i, rect) in self.center_dot_rects.iter().enumerate() {
-                if rect.contains(p) {
-                    self.center_widget = CenterWidget::from_index(i);
-                    *handled = true;
-                    return;
-                }
+            let clicked = self
+                .center_dot_rects
+                .iter()
+                .position(|rect| rect.contains(p));
+            if let Some(widget) = clicked.and_then(|i| self.configured_center_widget(i)) {
+                self.center_widget = widget;
+                *handled = true;
+                return;
             }
         }
         let Some(chrome) = self.chrome.clone() else {
@@ -2992,7 +3132,7 @@ impl TopBarChrome {
             *handled = true;
             return;
         }
-        if self.tray_pill_rect.contains(p) {
+        if self.tray_hit_rect.contains(p) {
             state.toggle_quick_settings();
             *handled = true;
             return;
@@ -3321,6 +3461,9 @@ impl TopBarChrome {
     fn activate_control(&mut self, target: &str) -> bool {
         if self.control_is_disabled(target) {
             return false;
+        }
+        if Self::editor_widget(target).is_some() {
+            return self.activate_editor_control(target);
         }
         match target {
             Self::CONTROL_CENTER_CLOCK
@@ -3880,8 +4023,6 @@ impl Widget for TopBarChrome {
         let transform = Affine::IDENTITY;
         let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
 
-        self.draw_backdrop(scene, transform, theme);
-
         let after_chevrons = self.draw_workspace_nav(scene, transform, theme, center_y);
         self.draw_workspace_pill(
             scene,
@@ -3969,6 +4110,16 @@ impl Widget for TopBarChrome {
     ) {
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == winit::event::ElementState::Pressed
+            && key.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+            && self.widget_editing
+        {
+            self.widget_editing = false;
+            self.cache_fp = CacheFingerprint::default();
+            *handled = true;
+            return;
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
             && self
                 .chrome
                 .as_ref()
@@ -4027,14 +4178,14 @@ impl Widget for TopBarChrome {
                 if self.center_scroll_accum < 1.0 {
                     break;
                 }
-                self.center_widget = self.center_widget.next();
+                self.cycle_center_widget(true);
                 self.center_scroll_accum -= 1.0;
             }
             for _ in 0..16 {
                 if self.center_scroll_accum > -1.0 {
                     break;
                 }
-                self.center_widget = self.center_widget.prev();
+                self.cycle_center_widget(false);
                 self.center_scroll_accum += 1.0;
             }
             *handled = true;
@@ -4042,6 +4193,21 @@ impl Widget for TopBarChrome {
         }
         self.handle_keyboard(event, handled);
         if *handled {
+            return;
+        }
+        if let WindowEvent::MouseInput {
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Right,
+            ..
+        } = event
+            && self
+                .last_cursor
+                .is_some_and(|point| self.center_rect.contains(point))
+        {
+            self.widget_editing = true;
+            self.cache_fp = CacheFingerprint::default();
+            *handled = true;
+            *focus_target = Some(node_id);
             return;
         }
         if let WindowEvent::MouseInput {
@@ -4084,11 +4250,13 @@ impl Widget for TopBarChrome {
                     if !row.contains(point) {
                         continue;
                     }
-                    if point.x > row.x1 - 78.0 && self.widget_config.widgets.len() > 1 {
-                        self.widget_config.widgets.remove(index);
-                        let _ = self.widget_config.save();
+                    let widget = self.widget_config.widgets[index];
+                    if self.widget_config.widgets.len() > 1
+                        && self.widget_editor_remove_rect(index).contains(point)
+                    {
+                        let _ = self.activate_editor_control(Self::editor_control(widget, true));
                     } else {
-                        let id = self.widget_config.widgets[index];
+                        let id = widget;
                         self.widget_edit_drag
                             .begin(id, index, point.y - row.y0, point);
                         self.widget_edit_pressed = Some(index);
@@ -4097,26 +4265,23 @@ impl Widget for TopBarChrome {
                     *handled = true;
                     return;
                 }
-                let mut x = self.widget_editor_rect.x0 + 16.0;
                 for widget in TopBarWidget::ALL {
                     if self.widget_config.widgets.contains(&widget) {
                         continue;
                     }
-                    let add = Rect::new(
-                        x,
-                        self.widget_editor_rect.y1 - 48.0,
-                        x + 78.0,
-                        self.widget_editor_rect.y1 - 8.0,
-                    );
+                    let add = self.widget_editor_add_rect(widget);
                     if add.contains(point) {
-                        self.widget_config.widgets.push(widget);
-                        let _ = self.widget_config.save();
-                        self.cache_fp = CacheFingerprint::default();
+                        let _ = self.activate_editor_control(Self::editor_control(widget, false));
                         *handled = true;
                         return;
                     }
-                    x += 82.0;
                 }
+                *handled = true;
+                return;
+            }
+            if self.widget_editing {
+                self.widget_editing = false;
+                self.cache_fp = CacheFingerprint::default();
                 *handled = true;
                 return;
             }
@@ -4183,6 +4348,7 @@ impl Widget for TopBarChrome {
             ),
             ("topbar_workspace_pill".to_string(), self.ws_pill_rect),
             ("topbar_tray_pill".to_string(), self.tray_pill_rect),
+            ("topbar_tray_hit".to_string(), self.tray_hit_rect),
             (
                 "topbar_media_indicator".to_string(),
                 self.media_indicator_rect,
@@ -4192,14 +4358,41 @@ impl Widget for TopBarChrome {
                 "topbar_sharing_indicator".to_string(),
                 self.sharing_indicator_rect,
             ),
-            ("topbar_center_clock".to_string(), self.center_dot_rects[0]),
+            (
+                "topbar_center_clock".to_string(),
+                self.center_dot_rect(TopBarWidget::Clock),
+            ),
             (
                 "topbar_center_system_monitor".to_string(),
-                self.center_dot_rects[1],
+                self.center_dot_rect(TopBarWidget::SystemMonitor),
             ),
             (
                 "topbar_center_calendar".to_string(),
-                self.center_dot_rects[2],
+                self.center_dot_rect(TopBarWidget::Calendar),
+            ),
+            (
+                "topbar_editor_remove_clock".to_string(),
+                self.control_rect(Self::CONTROL_REMOVE_CLOCK),
+            ),
+            (
+                "topbar_editor_remove_system_monitor".to_string(),
+                self.control_rect(Self::CONTROL_REMOVE_MONITOR),
+            ),
+            (
+                "topbar_editor_remove_calendar".to_string(),
+                self.control_rect(Self::CONTROL_REMOVE_CALENDAR),
+            ),
+            (
+                "topbar_editor_add_clock".to_string(),
+                self.control_rect(Self::CONTROL_ADD_CLOCK),
+            ),
+            (
+                "topbar_editor_add_system_monitor".to_string(),
+                self.control_rect(Self::CONTROL_ADD_MONITOR),
+            ),
+            (
+                "topbar_editor_add_calendar".to_string(),
+                self.control_rect(Self::CONTROL_ADD_CALENDAR),
             ),
         ]
     }
@@ -4702,6 +4895,74 @@ mod tests {
         handled
     }
 
+    fn dispatch_topbar_event(bar: &mut TopBarChrome, event: &WindowEvent) -> bool {
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).expect("test leaf");
+        let mut state = AutoCommit::new();
+        let mut handled = false;
+        let mut focus = None;
+        bar.handle_event(
+            event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        handled
+    }
+
+    #[test]
+    fn center_editor_opens_by_secondary_click_and_dismisses_conventionally() {
+        let mut bar = sample_chrome();
+        lay_out_and_draw(&mut bar, 1280.0);
+        bar.last_cursor = Some(bar.center_rect.center());
+        let secondary = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Right,
+        };
+        assert!(dispatch_topbar_event(&mut bar, &secondary));
+        assert!(bar.widget_editing);
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert!(
+            bar.test_rects()
+                .iter()
+                .any(|(name, rect)| name == "topbar_editor_remove_clock" && rect.area() > 0.0)
+        );
+        assert!(bar.accessibility().is_some_and(|node| {
+            node.children.iter().any(|child| {
+                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_REMOVE_CLOCK)
+            })
+        }));
+
+        let mut key_event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        key_event.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+        key_event.state = winit::event::ElementState::Pressed;
+        let escape = WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: key_event,
+            is_synthetic: false,
+        };
+        assert!(dispatch_topbar_event(&mut bar, &escape));
+        assert!(!bar.widget_editing);
+
+        bar.last_cursor = Some(bar.center_rect.center());
+        assert!(dispatch_topbar_event(&mut bar, &secondary));
+        lay_out_and_draw(&mut bar, 1280.0);
+        bar.last_cursor = Some(Point::new(2.0, 2.0));
+        let outside = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        };
+        assert!(dispatch_topbar_event(&mut bar, &outside));
+        assert!(!bar.widget_editing);
+    }
+
     fn two_workspace_tree() -> WorkspaceTree {
         let first = Workspace::new(WorkspaceId::new(), "A");
         let second = Workspace::new(WorkspaceId::new(), "B");
@@ -4965,7 +5226,7 @@ mod tests {
         let bar = Rect::new(0.0, 0.0, 1600.0, f64::from(TOPBAR_HEIGHT_PX));
         let band = Rect::new(620.0, 3.0, 980.0, 37.0);
         for active in 0..3 {
-            let dots = TopBarChrome::center_dot_layout(band, bar, active);
+            let dots = TopBarChrome::center_dot_layout(band, bar, active, 3);
             assert_eq!(dots[0].center.x, dots[1].center.x);
             assert_eq!(dots[1].center.x, dots[2].center.x);
             for pair in dots.windows(2) {
@@ -4981,6 +5242,49 @@ mod tests {
                 assert!(dot.center.y + dot.radius <= band.y1);
             }
         }
+    }
+
+    #[test]
+    fn configured_carousel_order_drives_wheel_dots_and_semantics() {
+        let mut bar = sample_chrome();
+        bar.widget_config = TopBarWidgetsConfig {
+            widgets: vec![TopBarWidget::Calendar, TopBarWidget::Clock],
+        };
+        bar.center_widget = CenterWidget::Calendar;
+        lay_out_and_draw(&mut bar, 1280.0);
+
+        bar.cycle_center_widget(true);
+        assert_eq!(bar.center_widget, CenterWidget::Clock);
+        bar.cycle_center_widget(true);
+        assert_eq!(bar.center_widget, CenterWidget::Calendar);
+        bar.cycle_center_widget(false);
+        assert_eq!(bar.center_widget, CenterWidget::Clock);
+
+        bar.last_cursor = Some(bar.center_dot_rects[0].center());
+        let mut handled = false;
+        bar.handle_left_click(&mut handled);
+        assert!(handled);
+        assert_eq!(bar.center_widget, CenterWidget::Calendar);
+
+        let targets = bar.control_targets();
+        let calendar = targets
+            .iter()
+            .position(|target| *target == TopBarChrome::CONTROL_CENTER_CALENDAR)
+            .expect("configured calendar target");
+        let clock = targets
+            .iter()
+            .position(|target| *target == TopBarChrome::CONTROL_CENTER_CLOCK)
+            .expect("configured clock target");
+        assert!(calendar < clock, "semantic order follows configured order");
+        assert!(!targets.contains(&TopBarChrome::CONTROL_CENTER_MONITOR));
+        assert_eq!(
+            bar.control_rect(TopBarChrome::CONTROL_CENTER_CALENDAR),
+            bar.center_dot_rects[0]
+        );
+        assert_eq!(
+            bar.control_rect(TopBarChrome::CONTROL_CENTER_CLOCK),
+            bar.center_dot_rects[1]
+        );
     }
 
     #[test]
@@ -5451,12 +5755,8 @@ mod tests {
         assert!(chrome.borrow().overlays.collaborators);
     }
 
-    /// The topbar's shadow is its only linear-gradient fill, so pinning
-    /// `LINEAR_GRADIENT` guards against a refactor silently dropping it.
     #[test]
-    fn topbar_paints_a_bottom_shadow_below_its_rect() {
-        use vello_encoding::DrawTag;
-
+    fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
         let mut tree = WorkspaceTree {
             workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
             active: WorkspaceId::from(0),
@@ -5500,25 +5800,26 @@ mod tests {
         let presence = PresenceCtx::default();
         bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-        let gradient_fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::LINEAR_GRADIENT)
-            .count();
-        assert!(
-            gradient_fills >= 1,
-            "topbar must emit at least one linear-gradient fill (the soft \
-             drop-shadow band below its rect); got {gradient_fills}",
-        );
-
-        // Shadow rect spans `[rect.y1, rect.y1 + 28]`.
         let bar_bottom = bar.rect.y1;
-        assert!(bar_bottom > 0.0, "topbar rect must have non-zero y1");
         assert!(
             (bar_bottom - f64::from(TOPBAR_HEIGHT_PX)).abs() < 0.5,
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
         );
+        assert_eq!(TOPBAR_HEIGHT_PX, 40.0);
+        for (label, rect) in [
+            ("overview", bar.overview_btn_rect),
+            ("workspace", bar.ws_pill_rect),
+            ("center", bar.center_rect),
+            ("tray", bar.tray_pill_rect),
+        ] {
+            assert_eq!(rect.y0 - bar.rect.y0, 4.0, "{label} top inset");
+            assert_eq!(bar.rect.y1 - rect.y1, 4.0, "{label} bottom inset");
+        }
+        assert_eq!(bar.tray_hit_rect.y0, bar.rect.y0);
+        assert_eq!(bar.tray_hit_rect.y1, bar.rect.y1);
+        assert_eq!(bar.tray_hit_rect.x1, bar.rect.x1);
+        assert!(bar.tray_hit_rect.contains(Point::new(799.0, 1.0)));
+        assert!(!bar.tray_pill_rect.contains(Point::new(799.0, 1.0)));
     }
 
     /// Both states asserted together, since a stack that's empty (or
