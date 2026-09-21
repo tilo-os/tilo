@@ -13,7 +13,7 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 | `imager-macos-aarch64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
 
 Use Forgejo 15 or newer and Forgejo Runner 12.5 or newer. Register every host at
-**repository scope** (`tilo/tilo`), select ephemeral mode, expose exactly one of
+**repository scope** (`qos/qos`), select ephemeral mode, expose exactly one of
 the labels above as `<label>:host`, and start it with `forgejo-runner one-job`.
 The registration is invalidated after that one job; the VM must be destroyed,
 not returned to a warm pool. The practical autoscaling sequence is:
@@ -47,7 +47,7 @@ destruction instruction, not permission to return the VM to a pool. Run the
 PowerShell launcher directly on Windows; do not use a Unix compatibility layer
 as the release host.
 
-The repository runner page is `/tilo/tilo/settings/actions/runners`. Forgejo's
+The repository runner page is `/qos/qos/settings/actions/runners`. Forgejo's
 [runner-registration guide](https://forgejo.org/docs/latest/admin/actions/registration/)
 documents both the UI/API registration response and offline administrator CLI;
 its [Actions security guide](https://forgejo.org/docs/latest/admin/actions/security/)
@@ -64,7 +64,7 @@ private key or cloud credential on the native fleet.
 Installer media never allocate an OS generation. Set the protected
 `TILO_INSTALLER_OS_IMAGE` variable to one already-published, cosign-signed Tilo
 multi-architecture manifest-list reference of the form
-`code.podesta.ai/tilo/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
+`code.podesta.ai/qos/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
 verify that same digest and its SLSA provenance, require its immutable `genN`
 tag to bind the exact digest, pull their native manifest,
 and require the generation embedded in the image to equal the single generation
@@ -107,14 +107,14 @@ Configure the external secret broker with all of these claim checks:
 
 - issuer: `https://code.podesta.ai/api/actions`
 - audience: a dedicated value such as `tilo-release-signing`
-- `repository == tilo/tilo` and the pinned immutable `repository_id`
+- `repository == qos/qos` and the pinned immutable `repository_id`
 - `event_name == push`, `ref_type == tag`, `ref` matches only
   `refs/tags/imager-vMAJOR.MINOR.PATCH`, and `ref_protected == "true"`
-- `workflow == release-imager.yml`, and `workflow_ref` belongs to `tilo/tilo`
+- `workflow == release-imager.yml`, and `workflow_ref` belongs to `qos/qos`
 - `sub` equals the instance's actual protected-tag subject. Forgejo 16 may add
   immutable numeric owner/repository IDs to this string, so capture one denied
   bootstrap token and pin the exact format instead of assuming the older
-  `repo:tilo/tilo:ref:...` form.
+  `repo:qos/qos:ref:...` form.
 
 Validate JWT signature, `exp`, `nbf`, and `iat` against the issuer's discovery
 document/JWKS. Reject replay by `run_id` + `run_attempt` + platform, and never
@@ -209,14 +209,14 @@ newline-terminated `NAME=value` per line:
   certificate into a temporary keychain and storing a scoped App Store Connect
   API credential in that profile.
 - Homebrew: for the `homebrew` platform, write a 5–15 minute Forgejo token as
-  the complete raw output. Pre-create public repository `tilo/homebrew-tilo`, give
+  the complete raw output. Pre-create public repository `qos/homebrew-tilo`, give
   the release bot write access to only that repository, and mint the token for
   that bot. Repository creation is supported by the script for bootstrap, but
   should not be part of the steady-state lease.
 - Release: for the `release` platform, write a 5–15 minute Forgejo token as the
-  complete raw output. Pre-create `tilo/releases` as a public repository with a
+  complete raw output. Pre-create `qos/releases` as a public repository with a
   `main` branch. The token may create/update releases and attachments only in
-  that repository; it must have no write access to the private `tilo/tilo`
+  that repository; it must have no write access to the private `qos/qos`
   source repository, the Homebrew tap, or the website. The publisher checks
   the target's exact full name and public/non-archived state before uploading,
   reads every attachment back byte-for-byte, and publishes only a complete
@@ -234,7 +234,7 @@ newline-terminated `NAME=value` per line:
   token only after Forgejo OIDC validation, and revoke it after submission when
   supported.
 - Site: for the `site` platform, write a 5–15 minute Forgejo token as the
-  complete raw output. Give its bot write access only to `tilo/website`. After all
+  complete raw output. Give its bot write access only to `qos/site`. After all
   native and package-index gates pass, the workflow updates only
   `src/data/imager-release.json`, including its exact public `releaseRoot`, runs
   the site's release contract and full production build, and pushes that
@@ -329,9 +329,9 @@ administrators):
 | Variable | Required value |
 |---|---|
 | the seven `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
-| `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional public binary repository in `OWNER/REPOSITORY` form; omit for `tilo/releases` |
+| `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional public binary repository in `OWNER/REPOSITORY` form; omit for `qos/releases` |
 | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex Tilo-main registry-owner Ed25519 public key |
-| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.podesta.ai/tilo/tilo@sha256:...` manifest-list reference used by installer media |
+| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.podesta.ai/qos/tilo@sha256:...` manifest-list reference used by installer media |
 | `TILO_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
 | `TILO_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the firmware-trusted release certificate |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
@@ -403,7 +403,7 @@ environment without validating the signed JWT is not conforming.
 `TILO_WPE_SIGNER` must resolve to an executable, non-symlink, root-owned path
 outside the checkout and job temporary directory. It receives one argument:
 the immutable
-`code.podesta.ai/tilo/tilo-wpe-buildroot@sha256:...` reference. The wrapper must
+`code.podesta.ai/qos/tilo-wpe-buildroot@sha256:...` reference. The wrapper must
 hold or acquire a non-exportable KMS/HSM signing lease, reject every other
 repository/reference shape, sign at most once for its build lease, upload the
 transparency-log entry, and return only after signing succeeds. CI immediately
@@ -414,16 +414,16 @@ Configure this broker with a dedicated audience such as
 `tilo-wpe-buildroot-snapshot` and the same JWT signature/time/replay checks
 described above, but with a policy specific to this workflow:
 
-- `repository == tilo/tilo` and the pinned immutable repository ID;
+- `repository == qos/qos` and the pinned immutable repository ID;
 - `event_name` is `push` or an authorized `workflow_dispatch`, `ref_type` is
   `branch`, `ref == refs/heads/main`, and main is protected;
-- `workflow == snapshot-wpe-buildroot.yml`, with `workflow_ref` in `tilo/tilo`;
+- `workflow == snapshot-wpe-buildroot.yml`, with `workflow_ref` in `qos/qos`;
 - the requested mode is exactly one of the two `resolve-*`, two `publish-*`, or
   `promote` modes above, and `(run_id, run_attempt, mode)` has not already
   received a lease.
 
 Give resolve-mode registry leases pull access, publish-mode leases push access,
-and promotion-mode leases pull access only to `tilo/tilo-wpe-buildroot`. The
+and promotion-mode leases pull access only to `qos/tilo-wpe-buildroot`. The
 promotion job explicitly gives `actions/checkout` Forgejo's job-scoped
 `github.token` for its atomic main-branch pin commit, so the broker does not
 mint a repository PAT.
@@ -437,7 +437,7 @@ buildroots accept only the broker-returned non-exportable signer.
 
 ## Package indexes
 
-`publish-homebrew-tap.sh` creates `tilo/homebrew-tilo` when needed, renders the
+`publish-homebrew-tap.sh` creates `qos/homebrew-tilo` when needed, renders the
 formula and cask from release digests, audits them, and pushes `main`. Configure
 the broker's `homebrew` exchange as described above. `HOMEBREW_TAP_TOKEN` is
 accepted only when the explicit static-bootstrap switch is enabled.
@@ -462,7 +462,7 @@ after Microsoft's public index serves the exact identifier and version.
 After first publication users install with:
 
 ```text
-brew tap tilo/tilo https://code.podesta.ai/tilo/homebrew-tilo.git
+brew tap tilo/tilo https://code.podesta.ai/qos/homebrew-tilo.git
 brew install tilo-imager
 winget install Tilo.Imager
 ```
