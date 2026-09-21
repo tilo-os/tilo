@@ -57,7 +57,7 @@ const INTRO_PANEL_HEIGHT: f32 = 500.0;
 /// confirmation, next-step explanation, and backup guidance a stable canvas
 /// on ordinary laptop displays; the inner viewport still scrolls when large
 /// text or a short window cannot fit that content.
-const READY_PANEL_PREFERRED_HEIGHT: f32 = 560.0;
+const READY_PANEL_PREFERRED_HEIGHT: f32 = 552.0;
 const VIEWPORT_GUTTER: f32 = 24.0;
 /// A 40 px action plus the footer's 17 px bottom inset. The gap above the
 /// footer belongs to the parent column and must not be reserved twice; doing
@@ -958,7 +958,16 @@ impl OnboardingView {
         // hid the acknowledgement/Continue action below a subtle scrollbar,
         // making a fresh login look stuck. Reserve the same persistent footer
         // contract here and keep only explanatory/form content scrollable.
-        let footer_gap = spacing.s3;
+        // Ready is exactly the full safe height on an 800x600 display. Its
+        // two column gaps use s2 so the complete hand-off fits without an
+        // ornamental 8 px scroll range; the footer still retains the 8 px
+        // separation required by the interaction contract.
+        let composition_gap = if self.identity_ready_page {
+            spacing.s2
+        } else {
+            spacing.s3
+        };
+        let footer_gap = composition_gap;
         let backup_in_scroll = self.flow.screen() == Screen::Done && !self.identity_ready_page;
         let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery);
         let backup_form_visible =
@@ -1010,7 +1019,11 @@ impl OnboardingView {
         let scroll = scroll
             // Keep a clean terminal edge even on Backup's in-flow decision
             // block, so the last control is not painted against the clip.
-            .with_bottom_content_inset(spacing.s3)
+            .with_bottom_content_inset(if self.identity_ready_page {
+                0.0
+            } else {
+                spacing.s3
+            })
             // A 960×540 large-text/high-contrast dialog resolves to a 492 px
             // scroll viewport. Keep its first frame's edge in the gap between
             // the form card and recovery copy; the full-height 672 px dialog
@@ -1024,7 +1037,7 @@ impl OnboardingView {
         };
         let composition = Column::new()
             .with_no_padding()
-            .with_gap(spacing.s3)
+            .with_gap(composition_gap)
             .push(Box::new(progress))
             .push(Box::new(scroll));
         if backup_in_scroll {
@@ -2703,8 +2716,10 @@ impl Widget for OnboardingView {
         // the sticky action on top of its scrolling sibling.
         let composition_height = if accessibility_expanded {
             ACCESSIBLE_PANEL_HEIGHT
-        } else if dense_identity_page || ready_identity_page {
+        } else if dense_identity_page {
             DENSE_PANEL_PREFERRED_HEIGHT
+        } else if ready_identity_page {
+            READY_PANEL_PREFERRED_HEIGHT
         } else {
             panel_height
         };
