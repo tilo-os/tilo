@@ -387,6 +387,8 @@ mod tests {
 
         {
             let store = RecordStore::open(PACKAGE);
+            store.create_record(&scratch_tab_record(TAB_A)).unwrap();
+            store.create_record(&scratch_tab_record(TAB_B)).unwrap();
             let mut shared = AutoCommit::new();
             let mut a = Tile::notes(TAB_A, &store);
             let mut b = Tile::notes(TAB_B, &store);
