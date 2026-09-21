@@ -201,7 +201,7 @@ fn remotes_heading_hugs_its_first_card() {
 fn compact_detail_hero_keeps_one_section_gap_between_artwork_and_title() {
     let sp = spacing();
     let mut app = store::shots::seeded_app();
-    app.focus_detail_for_shot("dev.tilo.notes");
+    app.focus_detail_for_shot("so.tilo.notes");
     lay_out(&mut app, (480.0, 900.0));
     let artwork = by_widget_name(&app, "StoreArtwork")[0];
     let title = first_named(&app, "Notes");

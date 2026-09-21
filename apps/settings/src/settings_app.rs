@@ -1504,7 +1504,7 @@ impl Widget for SettingsApp {
                     && r[3].as_f64() > r[1].as_f64()
             });
         Some(serde_json::json!({
-            "app": "dev.tilo.settings",
+            "app": "so.tilo.settings",
             "search_id": "settings.search",
             "ready": valid(self.rect) && search_ready,
             "local_search_text": self.search_state.with(Clone::clone),

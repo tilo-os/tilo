@@ -1372,7 +1372,7 @@ mod tests {
         doc.commit();
 
         assert!(
-            (for_app_id("dev.tilo.photos")
+            (for_app_id("so.tilo.photos")
                 .expect("Photos contract")
                 .product)(&View::default(), &doc)
             .is_none(),

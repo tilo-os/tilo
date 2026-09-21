@@ -2387,8 +2387,8 @@ mod tests {
         };
         use tilo_actions::{ActionOutput, ResourceProvider, ResultSpec};
 
-        const PHOTOS: &str = "dev.tilo.photos";
-        const WRITER: &str = "dev.tilo.word-processor";
+        const PHOTOS: &str = "so.tilo.photos";
+        const WRITER: &str = "so.tilo.word-processor";
         const PRODUCE: &str = "export-edited-content";
         const RECORD: &str = "file:/handoff-sequence.docx";
         static SERIAL: Mutex<()> = Mutex::new(());
