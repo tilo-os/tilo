@@ -39,7 +39,7 @@ fn app() -> App {
 }
 fn layout(app: &mut App) {
     app.init_layout();
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     assert!(run_layout_pass(app, root, 900, 650, 1.0, true, None).is_some());
 }
 #[test]
@@ -72,7 +72,8 @@ fn named(app: &mut App, label: &str) -> accesskit::NodeId {
         .unwrap()
 }
 fn node_for_test_id(app: &App, id: &str) -> NodeId {
-    app.node_map
+    app.layout
+        .node_map
         .keys()
         .copied()
         .find(|node| {
@@ -96,8 +97,8 @@ fn native_key(app: &mut App, key: &str) {
             "the complete History key frame is intercepted: {key} {state:?}"
         );
         app.dispatch_framework_history_event(&event, 1.0);
-        let root = app.root_node.unwrap();
-        let _ = run_layout_pass(app, root, 900, 650, 1.0, app.structure_dirty, None);
+        let root = app.layout.root_node.unwrap();
+        let _ = run_layout_pass(app, root, 900, 650, 1.0, app.layout.structure_dirty, None);
     }
 }
 #[test]
@@ -983,7 +984,7 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
         })
         .unwrap();
     app.bindings.clear();
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.focused_node = None;
     // App owns this stable boxed root exclusively, and raw descendant maps
     // were discarded before the supported owner rebind.
@@ -1229,7 +1230,7 @@ fn native_admitted_legacy_effect_cannot_poll_replacement_or_closed_owner() {
         )
         .unwrap();
         assert_eq!(probe.starts.get(), 1);
-        app.node_map.clear();
+        app.layout.node_map.clear();
         app.bindings.clear();
         // The retained allocation stays owned by App; no borrowed widget/map
         // references survive the supported close/rebind operation.
@@ -1602,7 +1603,7 @@ fn native_queued_remote_cannot_retarget_same_id_new_legacy_store() {
     let before = replacement
         .read_checked(&checkout.id, |doc| doc.base_heads())
         .unwrap();
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.bindings.clear();
     unsafe {
         (*pointer).bind_record(replacement.clone(), checkout.clone());
@@ -1760,7 +1761,12 @@ fn native_history_tab_shift_tab_release_and_ime_keep_pending_live_editor_isolate
     layout(&mut app);
     native_key(&mut app, "Tab");
     let tabbed = app.focused_node;
-    assert!(tabbed.is_some_and(|node| app.history.as_ref().unwrap().owns_node(node, &app.taffy)));
+    assert!(tabbed.is_some_and(|node| {
+        app.history
+            .as_ref()
+            .unwrap()
+            .owns_node(node, &app.layout.taffy)
+    }));
     app.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
     native_key(&mut app, "Tab");
     app.modifiers = winit::event::Modifiers::default();
@@ -1904,7 +1910,7 @@ fn round1_top_level_native_history_preserves_legacy_custody_and_stale_at_refusal
     app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("denied".into()));
     assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit");
     app.set_permission_ctx(allowed);
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.bindings.clear();
     // Exclusive App retains the box; old maps cannot be dereferenced while rebinding.
     unsafe {
@@ -2009,7 +2015,7 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
         1.0,
     );
     app.init_layout();
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
     assert!(
@@ -2020,7 +2026,7 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
     );
     let target = named(&mut app, "History");
     app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     assert!(
         app.history.as_ref().unwrap().live_visible(),
@@ -2038,7 +2044,7 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
     );
     let target = named(&mut app, "History");
     app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
     assert_eq!(native.mounts.get(), 2);

@@ -88,7 +88,7 @@ impl App {
             self.collab_manager.join_route(route);
         }
         if self.document_sync_status() != before.as_deref() {
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
         }
     }
     fn send_owned_document(&mut self, route: RouteSpec, request: CollabRequest) {
@@ -201,7 +201,7 @@ impl App {
         if changed {
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
         }
     }
     pub(super) fn apply_signed_document_envelope(
@@ -265,7 +265,7 @@ impl App {
         };
         let accepted = queue.admit(mutation);
         if !accepted {
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
             tracing::warn!(status = ?queue.failure, "collab: routed document deferred queue refused update; resynchronization required");
         }
         self.drain_document_routes();

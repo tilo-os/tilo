@@ -640,6 +640,41 @@ pub struct ActionUiRoute {
     pub disabled: bool,
 }
 
+/// Host-owned state for retained layout and widget lookup.
+///
+/// Keeping these values together makes invalidation and layout solving one
+/// responsibility instead of a collection of loosely related `App` fields.
+struct LayoutRuntime {
+    taffy: TaffyTree<()>,
+    root_node: Option<NodeId>,
+    node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
+    layout_dirty: bool,
+    /// Set when a widget reports `take_structure_dirty()`: without a taffy
+    /// rebuild before the next layout pass, runtime-spawned widgets have no
+    /// `NodeId` and `apply_layout` skips them.
+    structure_dirty: bool,
+    /// Diffed against `inner_size()` in `about_to_wait` to catch a resize
+    /// that arrived without a `Resized` event.
+    last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
+    /// Last successfully settled logical viewport. Scale changes count even
+    /// when physical pixels stay fixed; scroll-only frames reuse the solve.
+    last_layout_logical: Option<(f64, f64)>,
+}
+
+impl LayoutRuntime {
+    fn new() -> Self {
+        Self {
+            taffy: TaffyTree::new(),
+            root_node: None,
+            node_map: std::collections::HashMap::new(),
+            layout_dirty: true,
+            structure_dirty: false,
+            last_frame_size: None,
+            last_layout_logical: None,
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -659,24 +694,11 @@ pub struct App {
     history_focus: Option<crate::widget::layout::CompositionFocus>,
     text_renderer: TextRenderer,
     palette_source: PaletteSource,
-    taffy: TaffyTree<()>,
-    root_node: Option<NodeId>,
-    node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
+    layout: LayoutRuntime,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     close_admission: crate::close_admission::Admission,
-    layout_dirty: bool,
-    /// Set when a widget reports `take_structure_dirty()`: without a taffy
-    /// rebuild before the next layout pass, runtime-spawned widgets (e.g. a
-    /// tab-drop split) have no `NodeId` and `apply_layout` skips them.
-    structure_dirty: bool,
     needs_sync: bool,
-    /// Diffed against `inner_size()` in `about_to_wait` to catch a resize
-    /// that arrived without a `Resized` event.
-    last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
-    /// Last successfully settled logical viewport. Scale changes count even
-    /// when physical pixels stay fixed; scroll-only frames reuse the solve.
-    last_layout_logical: Option<(f64, f64)>,
     pub theme: Theme,
     pub debug_mode: bool,
     pub focused_node: Option<NodeId>,
@@ -1104,7 +1126,7 @@ impl App {
         self.component_close_reports
             .extend(self.root_widget.take_component_close_reports());
         self.bindings.clear();
-        self.node_map.clear();
+        self.layout.node_map.clear();
     }
     fn close_native_content(&mut self) {
         self.close_components();
@@ -1132,7 +1154,7 @@ impl App {
         unsafe {
             crate::bound_dispatch::inspect_bound_node(
                 &self.bindings,
-                &self.node_map,
+                &self.layout.node_map,
                 node,
                 callback,
             )
@@ -1145,7 +1167,12 @@ impl App {
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
         // SAFETY: exclusive App access prevents overlapping target references/rebuild.
         unsafe {
-            crate::bound_dispatch::mutate_bound_node(&self.bindings, &self.node_map, node, callback)
+            crate::bound_dispatch::mutate_bound_node(
+                &self.bindings,
+                &self.layout.node_map,
+                node,
+                callback,
+            )
         }
     }
     fn dispatch_semantic_node<R>(
@@ -1159,7 +1186,7 @@ impl App {
         unsafe {
             crate::bound_dispatch::invoke_bound_semantic_node(
                 &self.bindings,
-                &self.node_map,
+                &self.layout.node_map,
                 node,
                 &mut self.state.doc,
                 &self.state.root,
@@ -1179,7 +1206,7 @@ impl App {
         unsafe {
             crate::bound_dispatch::invoke_bound_node(
                 &self.bindings,
-                &self.node_map,
+                &self.layout.node_map,
                 node,
                 &mut self.state.doc,
                 &self.state.root,
@@ -1219,7 +1246,7 @@ impl App {
         if activated {
             *handled = true;
             self.needs_sync = true;
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
         }
     }
 
@@ -1468,19 +1495,12 @@ impl App {
             history_focus: None,
             text_renderer: inputs.text_renderer.resolve(),
             palette_source: inputs.palette_source,
-            taffy: TaffyTree::new(),
-            root_node: None,
-            node_map: std::collections::HashMap::new(),
+            layout: LayoutRuntime::new(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             component_close_reports: vec![],
             close_admission: crate::close_admission::Admission::default(),
-            layout_dirty: true,
-            structure_dirty: false,
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
             needs_sync: true,
-            // Finalised below, once base_theme/a11y/text_scale all exist.
-            last_frame_size: None,
-            last_layout_logical: None,
             theme: configured_theme.clone(),
             debug_mode: (inputs.debug_mode)(),
             focused_node: None,
@@ -2083,7 +2103,7 @@ impl App {
         let mut semantics = crate::a11y_tree::SemanticTree::new();
         semantics.refresh_bound(
             self.root_widget.as_ref(),
-            &self.node_map,
+            &self.layout.node_map,
             self.focused_node,
             &[],
         );
@@ -3821,7 +3841,7 @@ impl App {
                 Some(crate::permissions::UserId(actor.to_string())),
             );
             self.needs_sync = true;
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
             self.invalidate_widget_resource_cache();
         }
         Ok(started)
@@ -3960,7 +3980,7 @@ impl App {
         // A post-delivery fault retains canonical writes and must still refresh
         // the host projection. Generation is advanced by the checked frame.
         self.needs_sync = true;
-        self.layout_dirty = true;
+        self.layout.layout_dirty = true;
         self.invalidate_widget_resource_cache();
         let started = started?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
@@ -4201,7 +4221,7 @@ impl App {
                 self.commit_action();
             }
             self.needs_sync = true;
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
             if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
                 self.collab_manager.send(CollabRequest::RecordLocalEffect {
                     address: address.clone(),
@@ -4278,7 +4298,7 @@ impl App {
         // Effect/view operations are allowed to switch presentation-only
         // resources without touching Automerge.
         self.invalidate_widget_resource_cache();
-        self.layout_dirty = true;
+        self.layout.layout_dirty = true;
         Ok(started)
     }
 
@@ -4819,7 +4839,7 @@ impl App {
             if let Err(error) = result {
                 tracing::warn!(%error, "resource operation failed");
             } else {
-                self.layout_dirty = true;
+                self.layout.layout_dirty = true;
             }
         }
         // A content row may have fired: hand its id to the app to navigate,
@@ -4845,7 +4865,7 @@ impl App {
                 }
             }
             self.needs_sync = true;
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
         }
         // If the palette closed (Escape, or a non-prompted selection), drop it.
         if self.action_palette.as_ref().is_some_and(|p| !p.is_open()) {
@@ -4976,8 +4996,8 @@ impl App {
         let _entry = self.enter_wake_scope();
         self.text_scale = factor;
         self.rebuild_theme();
-        self.layout_dirty = true;
-        self.structure_dirty = true;
+        self.layout.layout_dirty = true;
+        self.layout.structure_dirty = true;
     }
 
     pub fn ui_scale(&self) -> f32 {
@@ -4988,8 +5008,8 @@ impl App {
         let _entry = self.enter_wake_scope();
         self.ui_scale = factor;
         self.rebuild_theme();
-        self.layout_dirty = true;
-        self.structure_dirty = true;
+        self.layout.layout_dirty = true;
+        self.layout.structure_dirty = true;
     }
 
     /// Override the host-detected input environment. Useful for platform
@@ -5005,7 +5025,7 @@ impl App {
         self.interaction = environment;
         self.root_widget.set_interaction_environment(environment);
         self.invalidate_widget_resource_cache();
-        self.layout_dirty = true;
+        self.layout.layout_dirty = true;
     }
 
     pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
@@ -5022,7 +5042,7 @@ impl App {
         self.platform = conventions;
         self.root_widget.set_platform_conventions(conventions);
         self.invalidate_widget_resource_cache();
-        self.layout_dirty = true;
+        self.layout.layout_dirty = true;
     }
 
     pub fn platform_conventions(&self) -> crate::platform::PlatformConventions {
@@ -5041,8 +5061,8 @@ impl App {
         }
         self.a11y.high_contrast = on;
         self.rebuild_theme();
-        self.layout_dirty = true;
-        self.structure_dirty = true;
+        self.layout.layout_dirty = true;
+        self.layout.structure_dirty = true;
     }
 
     pub fn toggle_high_contrast(&mut self) -> bool {
@@ -5070,8 +5090,8 @@ impl App {
         let _entry = self.enter_wake_scope();
         self.base_theme = theme;
         self.rebuild_theme();
-        self.layout_dirty = true;
-        self.structure_dirty = true;
+        self.layout.layout_dirty = true;
+        self.layout.structure_dirty = true;
     }
 
     /// Disabling stops in-flight speech and returns every narration call
@@ -5276,7 +5296,7 @@ impl App {
         self.fullscreen_active = actual;
         self.root_widget.on_fullscreen_changed(actual);
         self.needs_sync = true;
-        self.layout_dirty = true;
+        self.layout.layout_dirty = true;
         true
     }
 
@@ -5312,8 +5332,8 @@ impl App {
         }
         if changed {
             self.rebuild_theme();
-            self.layout_dirty = true;
-            self.structure_dirty = true;
+            self.layout.layout_dirty = true;
+            self.layout.structure_dirty = true;
         }
         changed
     }
@@ -5350,8 +5370,8 @@ impl App {
         self.theme_store_stamp = stamp;
         apply(self);
         self.rebuild_theme();
-        self.layout_dirty = true;
-        self.structure_dirty = true;
+        self.layout.layout_dirty = true;
+        self.layout.structure_dirty = true;
         true
     }
 
@@ -5375,7 +5395,7 @@ impl App {
     /// private child storage.
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
         let mut best: Option<(f64, CursorIcon)> = None;
-        for &node in self.node_map.keys() {
+        for &node in self.layout.node_map.keys() {
             let Ok((rect, icon)) = self.inspect_node(node, |widget| {
                 (widget.get_rect(), widget.cursor_shape(point))
             }) else {
@@ -5401,7 +5421,7 @@ impl App {
             return None;
         }
         let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
-        for &node in self.node_map.keys() {
+        for &node in self.layout.node_map.keys() {
             let Ok(target) = self.inspect_node(node, |widget| widget.tooltip_target_at(point))
             else {
                 continue;
@@ -5525,7 +5545,7 @@ impl App {
         self.open_resource_search_cache.get_mut().take();
         self.last_control_availability = None;
         self.refresh_control_action_availability();
-        self.layout_dirty = true;
+        self.layout.layout_dirty = true;
     }
 
     /// The server attributes the broadcast to this user's id automatically,
@@ -5740,7 +5760,7 @@ impl App {
                 scroll: view.scroll.clone(),
                 view_mode: view.view_mode,
             });
-        self.layout_dirty = true;
+        self.layout.layout_dirty = true;
         self.needs_sync = true;
     }
 
@@ -6092,7 +6112,7 @@ impl App {
                 Some(crate::permissions::UserId(from_user_id.to_string())),
             );
             self.needs_sync = true;
-            self.structure_dirty = true;
+            self.layout.structure_dirty = true;
         }
     }
 
@@ -6285,7 +6305,9 @@ impl App {
             return;
         }
         self.focusable_order.clear();
-        let Some(root) = self.root_node else { return };
+        let Some(root) = self.layout.root_node else {
+            return;
+        };
 
         let (trap_active, order) = self
             .with_native_presentation(|widget, _, _, taffy| {
@@ -6414,7 +6436,7 @@ impl App {
             self.last_stable_focus_idx = None;
             self.last_stable_metadata = None;
         }
-        self.layout_dirty = true;
+        self.layout.layout_dirty = true;
         self.needs_sync = true;
         self.invalidate_widget_resource_cache();
     }
@@ -6434,14 +6456,14 @@ impl App {
             crate::undo::record_dispatched_action_bound(
                 &mut self.state,
                 std::ptr::from_mut(self.root_widget.as_mut()),
-                &self.node_map,
+                &self.layout.node_map,
                 &self.bindings,
                 &self.local_author,
                 &self.permission_ctx,
             )
         };
         let mut visited = std::collections::HashSet::new();
-        for (&node, pointer) in &self.node_map {
+        for (&node, pointer) in &self.layout.node_map {
             if !visited.insert(pointer.cast::<()>()) {
                 continue;
             }
@@ -6450,7 +6472,7 @@ impl App {
             let request = unsafe {
                 crate::bound_dispatch::mutate_bound_node(
                     &self.bindings,
-                    &self.node_map,
+                    &self.layout.node_map,
                     node,
                     |widget| widget.take_undo_request(),
                 )
@@ -6513,7 +6535,7 @@ impl App {
             let _ = unsafe {
                 crate::bound_dispatch::mutate_bound_node(
                     &self.bindings,
-                    &self.node_map,
+                    &self.layout.node_map,
                     node,
                     |widget| widget.set_undo_status(&mut status),
                 )
@@ -6548,7 +6570,7 @@ impl App {
         }
         if self.service_history() {
             self.needs_sync = true;
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
         }
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
@@ -6601,7 +6623,7 @@ impl App {
                     }
                 }
             }
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
             self.needs_sync = true;
             self.invalidate_widget_resource_cache();
         }
@@ -6881,7 +6903,7 @@ impl App {
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&mut self, scale: f64) -> accesskit::TreeUpdate {
         let _entry = self.enter_wake_scope();
-        let exported = self.bindings.exported_nodes(&self.node_map);
+        let exported = self.bindings.exported_nodes(&self.layout.node_map);
         if let Some(history) = &self.history {
             let resources = if history.live_interactive() {
                 self.collect_declared_resources()
@@ -6906,7 +6928,7 @@ impl App {
         .unwrap_or_else(|_| {
             crate::accesskit_bridge::build_tree_update_with_resources_bound(
                 self.root_widget.as_ref(),
-                &self.node_map,
+                &self.layout.node_map,
                 self.focused_node,
                 scale,
                 &self.collect_declared_resources(),
@@ -6990,13 +7012,13 @@ impl App {
                     .is_ok()
                 {
                     self.needs_sync = true;
-                    self.layout_dirty = true;
+                    self.layout.layout_dirty = true;
                 }
                 return None;
             }
         }
 
-        let exported = self.bindings.exported_nodes(&self.node_map);
+        let exported = self.bindings.exported_nodes(&self.layout.node_map);
         let resolved = if self.history.is_some() {
             self.history_presentation_roots()
                 .into_iter()
@@ -7019,11 +7041,11 @@ impl App {
         let framework = crate::history_mode::embedded::owns_node(
             self.root_widget.as_ref(),
             taffy_id,
-            &self.taffy,
+            &self.layout.taffy,
         ) || self
             .history
             .as_ref()
-            .is_some_and(|history| history.owns_node(taffy_id, &self.taffy));
+            .is_some_and(|history| history.owns_node(taffy_id, &self.layout.taffy));
         let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
             &self.framework_input,
             framework || self.bindings.owns_document(taffy_id),
@@ -7059,10 +7081,10 @@ impl App {
             self.dispatch_control_invocations();
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
             if framework {
                 self.refresh_framework_history(
-                    self.last_layout_logical.map_or(900.0, |size| size.0),
+                    self.layout.last_layout_logical.map_or(900.0, |size| size.0),
                 );
             }
             return None;
@@ -7107,7 +7129,7 @@ impl App {
     /// behavior as hardware input instead of reporting a false success.
     fn dispatch_semantic_click(&mut self, x: f64, y: f64) -> bool {
         self.refresh_control_action_availability();
-        if self.root_node.is_none() {
+        if self.layout.root_node.is_none() {
             return false;
         }
         let events = [
@@ -7143,7 +7165,7 @@ impl App {
         if handled_any {
             self.dispatch_control_invocations();
             self.needs_sync = true;
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
         }
         handled_any
     }
@@ -7172,7 +7194,7 @@ impl App {
             .unwrap_or_else(|_| {
                 tree.refresh_components(
                     self.root_widget.as_ref(),
-                    &self.node_map,
+                    &self.layout.node_map,
                     self.focused_node,
                     &self.collect_declared_resources(),
                     &components,
@@ -7264,7 +7286,7 @@ impl App {
                     // Semantic owners use the same lifetime-scoped aliases as
                     // native accessibility. Resolve only current admissions;
                     // an expired alias must never fall back to a raw layout id.
-                    let exported = self.bindings.exported_nodes(&self.node_map);
+                    let exported = self.bindings.exported_nodes(&self.layout.node_map);
                     let Some(crate::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported
                         .resolve(
                             self.root_widget.as_ref(),
@@ -7298,7 +7320,7 @@ impl App {
                         }
                         self.invalidate_widget_resource_cache();
                         self.needs_sync = true;
-                        self.layout_dirty = true;
+                        self.layout.layout_dirty = true;
                         return Ok(true);
                     }
                     // A custom-painted widget may expose stable semantic
@@ -7342,7 +7364,7 @@ impl App {
         if dispatched.mutated_local() {
             self.state.record_committed_action(before, None, None);
             self.needs_sync = true;
-            self.layout_dirty = true;
+            self.layout.layout_dirty = true;
             self.invalidate_widget_resource_cache();
         }
         Ok(true)
@@ -7356,7 +7378,7 @@ impl App {
         self.component_close_reports
             .extend(self.root_widget.take_component_close_reports());
         self.bindings.clear();
-        self.node_map.clear();
+        self.layout.node_map.clear();
         self.build_history_presentation();
         self.update_focusable_order();
         if let Some(view) = self.pending_continuation_view.take() {
@@ -7398,7 +7420,8 @@ impl App {
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
-        let topology_changed = self.structure_dirty || self.root_widget.take_structure_dirty();
+        let topology_changed =
+            self.layout.structure_dirty || self.root_widget.take_structure_dirty();
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {
@@ -7423,14 +7446,14 @@ impl App {
         // without dispatching through its potentially invalid pointer, so a
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
-        self.taffy = TaffyTree::new();
+        self.layout.taffy = TaffyTree::new();
         self.component_close_reports
             .extend(self.root_widget.take_component_close_reports());
         self.bindings.clear();
-        self.node_map.clear();
+        self.layout.node_map.clear();
         self.build_history_presentation();
-        self.structure_dirty = false;
-        self.layout_dirty = true;
+        self.layout.structure_dirty = false;
+        self.layout.layout_dirty = true;
         self.update_focusable_order();
 
         // A focus trap already placed focus inside its subtree in
@@ -7464,9 +7487,9 @@ impl App {
         self.needs_sync = false;
         if self.root_widget.take_structure_dirty() {
             // Fresh sync can replace delegates. Rebuild before any map access.
-            self.structure_dirty = true;
+            self.layout.structure_dirty = true;
             self.bindings.clear();
-            self.node_map.clear();
+            self.layout.node_map.clear();
         }
         self.invalidate_widget_resource_cache();
     }
@@ -7493,11 +7516,11 @@ impl App {
             .checked_add(1)
             .expect("autosave generation exhausted");
         if let Some(history) = &mut self.history {
-            self.node_map.clear();
+            self.layout.node_map.clear();
             self.bindings.clear();
             self.focused_node = None;
             history.invalidate_owner();
-            self.structure_dirty = true;
+            self.layout.structure_dirty = true;
         }
         self.autosave = Some(autosave);
         self
@@ -7592,11 +7615,11 @@ impl App {
             .checked_add(1)
             .expect("document generation exhausted");
         if let Some(history) = &mut self.history {
-            self.node_map.clear();
+            self.layout.node_map.clear();
             self.bindings.clear();
             self.focused_node = None;
             history.invalidate_owner();
-            self.structure_dirty = true;
+            self.layout.structure_dirty = true;
         }
         // Learn the current room grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
@@ -7647,11 +7670,11 @@ impl App {
                     .checked_add(1)
                     .expect("document generation exhausted");
                 if let Some(history) = &mut self.history {
-                    self.node_map.clear();
+                    self.layout.node_map.clear();
                     self.bindings.clear();
                     self.focused_node = None;
                     history.invalidate_owner();
-                    self.structure_dirty = true;
+                    self.layout.structure_dirty = true;
                 }
                 self.state.rebase_outbound();
                 // Preserve the launcher's unqualified route for the room
@@ -7675,7 +7698,7 @@ impl App {
                     "switched document collaboration route"
                 );
                 self.needs_sync = true;
-                self.layout_dirty = true;
+                self.layout.layout_dirty = true;
                 // Presence announces the location; document catch-up is an
                 // independently directed broker request on the new route.
                 if let Some(scope) = self.presence_broadcast_scope.clone() {
@@ -7883,7 +7906,7 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         self.bindings.clear();
-        self.node_map.clear();
+        self.layout.node_map.clear();
         self.close_wake_scope();
         let _entry = self.enter_wake_scope();
         let root = std::mem::replace(
@@ -8388,8 +8411,8 @@ fn draw_frame_content(
             &app.presence_ctx,
         ) {
             tracing::debug!(?error, "history frame refused");
-            app.structure_dirty = true;
-            app.layout_dirty = true;
+            app.layout.structure_dirty = true;
+            app.layout.layout_dirty = true;
         }
     }
     if let Some(ap) = app.action_palette.as_mut() {
@@ -8598,17 +8621,17 @@ fn run_layout_pass(
         return Some((true, 0, 0));
     }
     app.refresh_framework_history(logical.0);
-    let viewport_changed = app.last_layout_logical != Some(logical);
+    let viewport_changed = app.layout.last_layout_logical != Some(logical);
     if app.history_chrome_enabled {
         if (app.history_viewport_width >= 900.0) != (logical.0 >= 900.0) {
-            app.structure_dirty = true;
+            app.layout.structure_dirty = true;
         }
         app.history_viewport_width = logical.0;
         let _ = app.history_local_resources();
         app.document_history
             .sync(&mut app.state.doc, &app.state.root);
     }
-    if !app.layout_dirty && !viewport_changed {
+    if !app.layout.layout_dirty && !viewport_changed {
         return Some((false, 0, 0));
     }
     let mut t_compute_us = 0u128;
@@ -8618,20 +8641,20 @@ fn run_layout_pass(
     let view = app.root_widget.view_state();
     // A pending structural rebuild means the old map may already contain
     // removed controls. Capture only from an admitted, unchanged topology.
-    app.structure_dirty |= app.root_widget.take_structure_dirty();
-    let focus = if app.structure_dirty {
+    app.layout.structure_dirty |= app.root_widget.take_structure_dirty();
+    let focus = if app.layout.structure_dirty {
         CompositionFocus::capture_live(app.root_widget.as_ref())
     } else {
         // SAFETY: the admitted maps belong to App's unchanged exclusive tree.
-        unsafe { CompositionFocus::capture(app.focused_node, &app.node_map, &app.bindings) }
+        unsafe { CompositionFocus::capture(app.focused_node, &app.layout.node_map, &app.bindings) }
     };
     let must_compute = structure_rebuilt
-        || app.structure_dirty
+        || app.layout.structure_dirty
         || viewport_changed
         || scroll_opt_disabled()
         || app.root_widget.layout_needs_measure();
     let result = settle_widget_composition(viewport_changed, |rebuild| {
-        if rebuild || app.structure_dirty {
+        if rebuild || app.layout.structure_dirty {
             recomposed = true;
             // Capture before build replaces controls. Shared view hooks carry
             // root-owned scroll/mode; persisted Scrollable offsets also survive.
@@ -8644,7 +8667,7 @@ fn run_layout_pass(
             }
             // Sync may legitimately replace newly mounted delegates. Never
             // inspect or measure stale raw pointers from that build.
-            if app.structure_dirty {
+            if app.layout.structure_dirty {
                 return Ok((None, true));
             }
             if let Some(focus) = &focus {
@@ -8652,7 +8675,11 @@ fn run_layout_pass(
                 // A trap narrows eligible targets; it must not bypass identity
                 // restoration or send saved selection to a fallback control.
                 app.focused_node = unsafe {
-                    focus.restore(&app.node_map, &app.bindings, Some(&app.focusable_order))
+                    focus.restore(
+                        &app.layout.node_map,
+                        &app.bindings,
+                        Some(&app.focusable_order),
+                    )
                 };
                 if app.focus_trap_active && app.focused_node.is_none() {
                     app.set_focused_node(app.focusable_order.first().copied());
@@ -8662,13 +8689,14 @@ fn run_layout_pass(
                 // current admitted focus path; the old NodeId is invalid here.
                 app.focused_node = unsafe {
                     CompositionFocus::current(
-                        &app.node_map,
+                        &app.layout.node_map,
                         &app.bindings,
                         Some(&app.focusable_order),
                     )
                 };
             }
             current_root = app
+                .layout
                 .root_node
                 .ok_or(crate::widget::WidgetLayoutError::CompositionDidNotSettle)?;
         }
@@ -8681,13 +8709,13 @@ fn run_layout_pass(
             // SAFETY: App exclusively owns this exact stable tree and maps.
             unsafe {
                 crate::widget::compute_widget_layout(
-                    &mut app.taffy,
+                    &mut app.layout.taffy,
                     current_root,
                     taffy::Size {
                         width: AvailableSpace::Definite(logical.0 as f32),
                         height: AvailableSpace::Definite(logical.1 as f32),
                     },
-                    &app.node_map,
+                    &app.layout.node_map,
                     &app.bindings,
                     &mut app.text_renderer,
                 )?;
@@ -8700,7 +8728,7 @@ fn run_layout_pass(
         let dirty = app.root_widget.take_structure_dirty();
         // Translation-only frames avoid both composition and a tree snapshot.
         let geometry = if viewport_changed {
-            composition_geometry(&app.taffy, current_root)?
+            composition_geometry(&app.layout.taffy, current_root)?
         } else {
             vec![]
         };
@@ -8708,12 +8736,12 @@ fn run_layout_pass(
     });
     if let Err(error) = result {
         tracing::error!(?error, "widget layout did not settle; skipping frame");
-        app.layout_dirty = true;
-        app.last_layout_logical = None;
+        app.layout.layout_dirty = true;
+        app.layout.last_layout_logical = None;
         return None;
     }
     if app.settle_history_presentation() {
-        let root = app.root_node?;
+        let root = app.layout.root_node?;
         return run_layout_pass(app, root, width, height, scale_factor, true, native_host);
     }
     // NativeView measurement is independent of platform attachment. Mount only
@@ -8734,8 +8762,8 @@ fn run_layout_pass(
     {
         app.root_widget.unmount_native_views();
     }
-    app.last_layout_logical = Some(logical);
-    app.layout_dirty = false;
+    app.layout.last_layout_logical = Some(logical);
+    app.layout.layout_dirty = false;
     if must_compute || recomposed {
         app.update_focusable_order();
     }
@@ -9064,7 +9092,7 @@ impl AppHandler {
             render_init: None,
         });
         self.app.root_widget.on_audience_presentation_changed(true);
-        self.app.layout_dirty = true;
+        self.app.layout.layout_dirty = true;
         presenter.request_redraw();
     }
 
@@ -9081,7 +9109,7 @@ impl AppHandler {
             render.shutdown_and_join();
         }
         self.app.root_widget.on_audience_presentation_changed(false);
-        self.app.layout_dirty = true;
+        self.app.layout.layout_dirty = true;
     }
 
     /// Paint one audience frame without running a second widget layout or
@@ -9597,7 +9625,7 @@ impl AppHandler {
         let Some(root_node) = app
             .history_layout
             .map(|layout| layout.app)
-            .or(app.root_node)
+            .or(app.layout.root_node)
         else {
             return;
         };
@@ -9613,7 +9641,7 @@ impl AppHandler {
             &mut handled,
             &mut focus_target,
             root_node,
-            &app.taffy,
+            &app.layout.taffy,
         );
         // `handle_event` may change presentation-only resource declarations
         // without touching the CRDT (selected tab, open media, local mode).
@@ -9624,7 +9652,7 @@ impl AppHandler {
         if handled {
             app.commit_action();
             app.needs_sync = true;
-            app.layout_dirty |= app.root_widget.is_layout_dirty();
+            app.layout.layout_dirty |= app.root_widget.is_layout_dirty();
             if let Some(primary) = self.window.as_ref() {
                 primary.request_redraw();
             }
@@ -9809,9 +9837,9 @@ impl AppHandler {
             reason = "scale factor is intentionally narrowed to f32 for the render pipeline; identical to today's output"
         )]
         let scale_factor = window.scale_factor() as f32;
-        app.last_frame_size = Some(inner);
+        app.layout.last_frame_size = Some(inner);
         let mut floating_content_changed =
-            app.layout_dirty || app.structure_dirty || app.needs_sync;
+            app.layout.layout_dirty || app.layout.structure_dirty || app.needs_sync;
         let mut full_redraw_required = floating_content_changed;
 
         // Records first: if the root widget opened a different
@@ -9833,7 +9861,7 @@ impl AppHandler {
             full_redraw_required = true;
             app.invalidate_widget_resource_cache();
             app.needs_sync = true;
-            app.layout_dirty = true;
+            app.layout.layout_dirty = true;
         }
         mark_first_frame("first-frame-update-done");
         mark_first_frame("first-frame-sync-start");
@@ -9861,14 +9889,14 @@ impl AppHandler {
         // taffy tree from scratch so new widgets get node ids the
         // layout pass below can see.
         mark_first_frame("first-frame-build-layout-start");
-        app.structure_dirty |= app.root_widget.take_structure_dirty();
+        app.layout.structure_dirty |= app.root_widget.take_structure_dirty();
         // Captured BEFORE `rebuild_structure` clears it — a fresh
         // taffy tree always needs a full solve regardless of the
         // scroll fast path below.
-        let structure_rebuilt = app.structure_dirty;
+        let structure_rebuilt = app.layout.structure_dirty;
         floating_content_changed |= structure_rebuilt;
         let __prof_build = app.profiler.as_ref().map(|_| std::time::Instant::now());
-        if app.structure_dirty {
+        if app.layout.structure_dirty {
             app.rebuild_structure();
         }
         if let Some(p) = app.profiler.as_mut() {
@@ -9883,7 +9911,7 @@ impl AppHandler {
         } else {
             None
         };
-        let Some(root_node) = app.root_node else {
+        let Some(root_node) = app.layout.root_node else {
             tracing::error!("root_node unset during a redraw; skipping frame");
             return;
         };
@@ -10469,7 +10497,7 @@ impl AppHandler {
                     if let Some(entry) = entry {
                         if owned_target {
                             app.needs_sync = true;
-                            app.layout_dirty = true;
+                            app.layout.layout_dirty = true;
                         } else {
                             app.apply_undo_entry(entry);
                         }
@@ -10588,7 +10616,7 @@ impl AppHandler {
             }
         }
 
-        if !handled && app.root_node.is_some() {
+        if !handled && app.layout.root_node.is_some() {
             app.refresh_control_action_availability();
             let scale_factor = window.scale_factor();
             let presentation_was_floating =
@@ -10697,7 +10725,7 @@ impl AppHandler {
                 if any {
                     handled = true;
                     app.needs_sync = true;
-                    app.layout_dirty = true;
+                    app.layout.layout_dirty = true;
                 }
             }
         }
@@ -10730,14 +10758,14 @@ impl AppHandler {
         if app.dispatch_control_invocations() != 0 {
             handled = true;
             app.needs_sync = true;
-            app.layout_dirty = true;
+            app.layout.layout_dirty = true;
             window.request_redraw();
         }
 
         if let Some(address) = app.root_widget.take_action_palette_request()
             && app.open_action_palette_at(&address)
         {
-            app.layout_dirty = true;
+            app.layout.layout_dirty = true;
             window.request_redraw();
         }
 
@@ -10767,7 +10795,7 @@ impl AppHandler {
             // redraw when nothing's dirty.
             let is_pointer_move = matches!(&event, WindowEvent::CursorMoved { .. });
             if !is_pointer_move || app.root_widget.is_layout_dirty() {
-                app.layout_dirty = true;
+                app.layout.layout_dirty = true;
             }
             if !is_pointer_move
                 || floating_pointer_needs_redraw
@@ -10959,7 +10987,7 @@ impl AppHandler {
                     if handled {
                         self.app.commit_action();
                         self.app.needs_sync = true;
-                        self.app.layout_dirty = true;
+                        self.app.layout.layout_dirty = true;
                         if let Some(primary) = self.window.as_ref() {
                             primary.request_redraw();
                         }
@@ -11066,7 +11094,7 @@ impl AppHandler {
             WindowEvent::Resized(_size) => {
                 // Handled lazily on the worker via the next `RenderRequest`'s
                 // dimensions; main only needs to drive a redraw.
-                self.app.layout_dirty = true;
+                self.app.layout.layout_dirty = true;
                 window.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -11078,7 +11106,7 @@ impl AppHandler {
                         &window,
                         self.app.platform,
                     ));
-                self.app.layout_dirty = true;
+                self.app.layout.layout_dirty = true;
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, &window),
@@ -11416,7 +11444,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window.set_visible(true);
         tilo_startup_metrics::mark("primary-window-show-done");
 
-        self.app.layout_dirty = true;
+        self.app.layout.layout_dirty = true;
         // GPU init deferred to first `RedrawRequested` (`init_render`): the
         // ~50ms surface+device init here would block `resumed`'s seat
         // wiring — on mutter that intermittently left the toplevel
@@ -11579,7 +11607,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
-            self.app.layout_dirty = true;
+            self.app.layout.layout_dirty = true;
             request_primary_redraw();
         }
         if self.apply_floating_host_messages(event_loop) {
@@ -11624,10 +11652,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Catches a compositor reconfigure that changes `inner_size()`
         // without delivering `Resized`.
-        if let Some(prev) = app.last_frame_size
+        if let Some(prev) = app.layout.last_frame_size
             && window.inner_size() != prev
         {
-            app.layout_dirty = true;
+            app.layout.layout_dirty = true;
             request_primary_redraw();
         }
         if app.pump_collab_presence() {
@@ -11635,7 +11663,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         if app.poll_directed_invocations() {
             app.needs_sync = true;
-            app.layout_dirty = true;
+            app.layout.layout_dirty = true;
             request_primary_redraw();
         }
         app.publish_playback_handoff();
@@ -11651,13 +11679,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         if app.dispatch_control_invocations() != 0 {
             app.needs_sync = true;
-            app.layout_dirty = true;
+            app.layout.layout_dirty = true;
             request_primary_redraw();
         }
 
         if app.service_history() {
             app.needs_sync = true;
-            app.layout_dirty = true;
+            app.layout.layout_dirty = true;
             request_primary_redraw();
         }
 
@@ -11719,7 +11747,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Flag drained by the draw handler, not here — just pump a redraw.
         if app.root_widget.take_structure_dirty() {
-            app.structure_dirty = true;
+            app.layout.structure_dirty = true;
             request_primary_redraw();
         }
 
@@ -11752,7 +11780,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             app.needs_sync = true;
             // Forces `apply_layout` since an animation tick (e.g. momentum
             // fling) can reposition content without an input event.
-            app.layout_dirty = true;
+            app.layout.layout_dirty = true;
             request_primary_redraw();
             for surface in &self.floating_windows {
                 if auxiliary_redraw_allowed(surface.render.as_ref()) {
@@ -12346,7 +12374,7 @@ mod rebuild_focus_tests {
 
     fn caret(app: &App) -> Option<String> {
         let id = app.focused_node?;
-        let w = *app.node_map.get(&id)?;
+        let w = *app.layout.node_map.get(&id)?;
         unsafe { (*w).get_state() }
     }
 
@@ -12360,7 +12388,7 @@ mod rebuild_focus_tests {
 
         let id = app.focused_node.expect("input focused at startup");
         unsafe {
-            (*(*app.node_map.get(&id).unwrap())).set_state("3");
+            (*(*app.layout.node_map.get(&id).unwrap())).set_state("3");
         }
         assert_eq!(caret(&app).as_deref(), Some("3"));
 
@@ -12395,7 +12423,7 @@ mod rebuild_focus_tests {
 
         let id = app.focused_node.unwrap();
         unsafe {
-            (*(*app.node_map.get(&id).unwrap())).set_state("3");
+            (*(*app.layout.node_map.get(&id).unwrap())).set_state("3");
         }
 
         let mut tmp = AutoCommit::new();
@@ -12813,7 +12841,7 @@ mod screen_reader_tests {
         assert!(pre.is_some(), "focused text input yields a review snapshot");
         rec.0.borrow_mut().reset(); // forget the autofocus narration
         unsafe {
-            (*(*app.node_map.get(&id).unwrap())).set_state("2");
+            (*(*app.layout.node_map.get(&id).unwrap())).set_state("2");
         }
         app.announce_text_review(pre);
         assert_eq!(
@@ -12829,7 +12857,7 @@ mod screen_reader_tests {
         let pre = app.text_review_snapshot();
         rec.0.borrow_mut().reset(); // forget the autofocus narration
         unsafe {
-            (*(*app.node_map.get(&id).unwrap())).set_state("0");
+            (*(*app.layout.node_map.get(&id).unwrap())).set_state("0");
         }
         app.announce_text_review(pre);
         assert_eq!(
@@ -13266,7 +13294,7 @@ mod low_vision_tests {
         assert_eq!(a.text_scale(), 2.0);
         assert!((a.theme.tokens.typography.scale.base - base * 2.0).abs() < 1e-3);
         // A scale change must re-run layout so the larger text doesn't clip.
-        assert!(a.layout_dirty);
+        assert!(a.layout.layout_dirty);
     }
 
     #[test]
@@ -13333,7 +13361,7 @@ mod low_vision_tests {
             "type grows"
         );
         // A UI-scale change must re-run layout so the whole interface re-flows.
-        assert!(a.layout_dirty);
+        assert!(a.layout.layout_dirty);
     }
 
     #[test]
@@ -13469,7 +13497,10 @@ mod low_vision_tests {
         // Spacing grew by the UI factor; type by UI × text.
         assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-1);
         assert!((a.theme.tokens.typography.scale.base - base_type * 1.5 * 1.2).abs() < 1e-1);
-        assert!(a.layout_dirty, "a live appearance change re-runs layout");
+        assert!(
+            a.layout.layout_dirty,
+            "a live appearance change re-runs layout"
+        );
         assert!(
             !a.reconcile_appearance(),
             "unchanged intent does not re-theme"
@@ -13585,10 +13616,10 @@ mod fullscreen_tests {
         let (root, _changes) = FsRoot::new(Some(true));
         let mut app = App::new(State::new(), Box::new(root));
         app.needs_sync = false;
-        app.layout_dirty = false;
+        app.layout.layout_dirty = false;
         assert!(app.note_actual_fullscreen(true));
         assert!(app.needs_sync);
-        assert!(app.layout_dirty);
+        assert!(app.layout.layout_dirty);
     }
 }
 
@@ -13936,7 +13967,7 @@ mod action_palette_tests {
         assert!(app.state.doc.get(&ROOT, "flipped").unwrap().is_none());
         assert!(app.state.peek_last_undo().is_none());
         app.needs_sync = false;
-        app.layout_dirty = false;
+        app.layout.layout_dirty = false;
 
         // Enter selects the top row (the action) and dispatches it.
         let consumed = app.action_palette_handle_key(&synth_enter());
@@ -13958,7 +13989,10 @@ mod action_palette_tests {
             "the dispatched action is undoable"
         );
         assert!(app.needs_sync, "dispatch marks the app for re-sync");
-        assert!(app.layout_dirty, "dispatch marks the app for relayout");
+        assert!(
+            app.layout.layout_dirty,
+            "dispatch marks the app for relayout"
+        );
         assert!(
             app.action_palette().is_none(),
             "palette closed after selection"
@@ -14061,7 +14095,7 @@ mod action_palette_tests {
 
         assert!(app.state.doc.get(&ROOT, "navigated").unwrap().is_none());
         app.needs_sync = false;
-        app.layout_dirty = false;
+        app.layout.layout_dirty = false;
 
         let consumed = app.action_palette_handle_key(&synth_enter());
         assert!(consumed, "the open palette consumed the Enter key");
@@ -14082,7 +14116,7 @@ mod action_palette_tests {
             "navigation closes the palette"
         );
         assert!(
-            app.needs_sync && app.layout_dirty,
+            app.needs_sync && app.layout.layout_dirty,
             "navigation marks a redraw"
         );
     }
@@ -14215,6 +14249,7 @@ impl crate::view::FreezeThaw for App {
             })
         });
         let viewport = self
+            .layout
             .last_frame_size
             .map(|s| crate::view::ViewRect {
                 x: 0.0,
@@ -14241,7 +14276,7 @@ impl crate::view::FreezeThaw for App {
             });
         }
 
-        self.layout_dirty = true;
+        self.layout.layout_dirty = true;
         self.needs_sync = true;
     }
 }
@@ -14460,7 +14495,7 @@ mod view_presence_tests {
             resource: Some("record:stable-photo".into()),
             rect: KurboRect::ZERO,
         });
-        sender.last_frame_size = Some(winit::dpi::PhysicalSize::new(900, 600));
+        sender.layout.last_frame_size = Some(winit::dpi::PhysicalSize::new(900, 600));
         let view = <App as FreezeThaw>::capture_view(&sender);
         let metadata = crate::collaboration::ContinuationMetadata {
             schema_version: GENERIC_VIEW_CONTINUATION_SCHEMA,
@@ -14623,7 +14658,7 @@ mod view_presence_tests {
             resource: Some(file_record.into()),
             rect: KurboRect::ZERO,
         });
-        sender.last_frame_size = Some(winit::dpi::PhysicalSize::new(1024, 768));
+        sender.layout.last_frame_size = Some(winit::dpi::PhysicalSize::new(1024, 768));
 
         let captured: Arc<Mutex<Vec<(PresenceKey, PresencePayload)>>> =
             Arc::new(Mutex::new(Vec::new()));
@@ -15314,7 +15349,7 @@ mod semantic_tree_app_tests {
 
     fn activate_bound_button(app: &mut App) {
         let node = app.focusable_order[0];
-        let pointer = app.node_map[&node];
+        let pointer = app.layout.node_map[&node];
         assert!(unsafe {
             (*pointer).perform_action(
                 &crate::a11y::Action::Activate,
@@ -15944,7 +15979,7 @@ mod semantic_tree_app_tests {
     fn permission_revocation_and_restore_refresh_bound_control_presentation() {
         let mut app = app();
         let node = app.focusable_order[0];
-        let pointer = app.node_map[&node];
+        let pointer = app.layout.node_map[&node];
         assert!(unsafe { (*pointer).is_enabled() });
 
         app.set_permission_ctx(PermissionContext::from_capabilities(
@@ -16191,7 +16226,7 @@ mod semantic_tree_app_tests {
             .expect("virtual root row");
         let route = crate::accesskit_bridge::resolve_node_id(
             app.root_widget.as_ref(),
-            &app.node_map,
+            &app.layout.node_map,
             root_row,
         )
         .expect("root row route");
@@ -17599,8 +17634,8 @@ mod bound_component_tests {
             accesskit::NodeId(u64::from(leaf).saturating_add(1)),
             &crate::a11y::Action::Focus,
         );
-        let layout_root = app.root_node.unwrap();
-        app.layout_dirty = true;
+        let layout_root = app.layout.root_node.unwrap();
+        app.layout.layout_dirty = true;
         run_layout_pass(&mut app, layout_root, 400, 300, 1.0, true, None).unwrap();
         assert!(
             tilo_actions::door::resolve(
@@ -17711,7 +17746,8 @@ mod bound_component_tests {
             .unwrap();
         let pending = fixture.app.state.doc.pending_ops();
         let focus_for = |app: &App, instance| {
-            app.node_map
+            app.layout
+                .node_map
                 .keys()
                 .copied()
                 .find(|node| {
@@ -17761,7 +17797,7 @@ mod bound_component_tests {
     fn document_history_does_not_fall_back_when_component_closes() {
         let mut fixture = ActionFixture::new();
         let binding = &fixture.bindings[0];
-        fixture.app.focused_node = fixture.app.node_map.keys().copied().find(|node| {
+        fixture.app.focused_node = fixture.app.layout.node_map.keys().copied().find(|node| {
             fixture
                 .app
                 .bindings
@@ -19201,8 +19237,8 @@ mod bound_component_tests {
 #[cfg(test)]
 pub(crate) fn draw_prepared_component_test_frame(app: &mut App) {
     app.init_layout();
-    let root = app.root_node.unwrap();
-    app.layout_dirty = true;
+    let root = app.layout.root_node.unwrap();
+    app.layout.layout_dirty = true;
     run_layout_pass(app, root, 800, 600, 1.0, true, None).unwrap();
     let mut scene = Scene::new();
     draw_frame_content(app, &mut scene, 800, 600, 1.0, None);
@@ -19289,8 +19325,8 @@ mod prepared_runner_tests {
             (1500, stamp, 2, 1, false),
             (2250, None, 3, 2, true),
         ] {
-            app.layout_dirty = false;
-            app.structure_dirty = false;
+            app.layout.layout_dirty = false;
+            app.layout.structure_dirty = false;
             let changed = app.reconcile_configured_theme_with(
                 start + Duration::from_millis(millis),
                 || {
@@ -19305,8 +19341,8 @@ mod prepared_runner_tests {
             assert_eq!(changed, expected_changed);
             assert_eq!(checks.get(), expected_checks);
             assert_eq!(applies.get(), expected_applies);
-            assert_eq!(app.layout_dirty, expected_changed);
-            assert_eq!(app.structure_dirty, expected_changed);
+            assert_eq!(app.layout.layout_dirty, expected_changed);
+            assert_eq!(app.layout.structure_dirty, expected_changed);
             assert!(app.screen_reader.is_none());
         }
         assert!(app.theme_store_stamp.is_none());
@@ -19973,8 +20009,17 @@ mod card_grid_host_tests {
     }
 
     fn layout(app: &mut App, width: u32) {
-        app.layout_dirty = true;
-        run_layout_pass(app, app.root_node.unwrap(), width, 2000, 1.0, false, None).unwrap();
+        app.layout.layout_dirty = true;
+        run_layout_pass(
+            app,
+            app.layout.root_node.unwrap(),
+            width,
+            2000,
+            1.0,
+            false,
+            None,
+        )
+        .unwrap();
     }
 
     fn button_rects(app: &App) -> Vec<KurboRect> {
@@ -20114,8 +20159,8 @@ mod card_grid_host_tests {
         let child = std::mem::replace(&mut app.root_widget, Box::new(Column::new()));
         app.root_widget = Box::new(crate::widget::Scrollable::new_vertical().with_child(child));
         app.init_layout();
-        app.layout_dirty = true;
-        let root_node = app.root_node.unwrap();
+        app.layout.layout_dirty = true;
+        let root_node = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, root_node, 200, 190, 1.0, true, None).unwrap();
         let root = app.root_widget.children()[0];
         assert_eq!(root.children()[0].get_rect().height(), 1160.0);
@@ -20227,12 +20272,12 @@ mod card_grid_host_tests {
         app.root_widget.sync(&mut app.state.doc, &app.state.root);
         assert!(app.root_widget.take_structure_dirty());
         app.rebuild_structure();
-        let root = app.root_node.unwrap();
+        let root = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, root, 300, 2000, 1.0, true, None).unwrap();
         assert_eq!(button_keys(&app), vec!["row-1", "row-2", "row-3"]);
         // Rebuilding and post-build sync must preserve actual delegate geometry.
         for node in &app.focusable_order {
-            assert!(app.taffy.layout(*node).unwrap().size.height > 0.0);
+            assert!(app.layout.taffy.layout(*node).unwrap().size.height > 0.0);
             assert!(
                 app.inspect_node(*node, |widget| widget.get_rect().height())
                     .unwrap()
@@ -20381,7 +20426,7 @@ mod card_grid_host_tests {
         assert!(app.root_widget.update(&mut app.state.doc, &app.state.root));
         assert!(app.root_widget.take_structure_dirty());
         app.rebuild_structure();
-        let root = app.root_node.unwrap();
+        let root = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, root, 300, 2000, 1.0, true, None).unwrap();
         assert_eq!(app.focusable_order.len(), 2);
         let rects = app
@@ -20635,8 +20680,17 @@ mod viewport_composition_tests {
         }
     }
     fn frame(app: &mut App, width: u32) {
-        app.layout_dirty = true;
-        run_layout_pass(app, app.root_node.unwrap(), width, 400, 1.0, false, None).unwrap();
+        app.layout.layout_dirty = true;
+        run_layout_pass(
+            app,
+            app.layout.root_node.unwrap(),
+            width,
+            400,
+            1.0,
+            false,
+            None,
+        )
+        .unwrap();
     }
     #[test]
     fn legacy_composition_matches_fresh_at_multiple_viewports_before_paint() {
@@ -20692,12 +20746,12 @@ mod viewport_composition_tests {
         );
         app.init_layout();
         frame(&mut app, 1200);
-        let node = app.root_node.unwrap();
+        let node = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, node, 1200, 400, 2.0, false, None).unwrap();
         assert_eq!(app.root_widget.children().len(), 1);
         let before = builds.get();
-        let node = app.root_node.unwrap();
-        app.layout_dirty = true;
+        let node = app.layout.root_node.unwrap();
+        app.layout.layout_dirty = true;
         run_layout_pass(&mut app, node, 600, 200, 1.0, false, None).unwrap();
         assert_eq!(
             builds.get(),
@@ -20714,7 +20768,7 @@ mod viewport_composition_tests {
         );
         app.init_layout();
         frame(&mut app, 1200);
-        app.structure_dirty = true;
+        app.layout.structure_dirty = true;
         frame(&mut app, 1200);
         assert_eq!(app.root_widget.get_rect().width(), 1200.0);
         assert!(
@@ -20879,10 +20933,10 @@ mod viewport_composition_tests {
         let builds = root.builds.clone();
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
-        let root = app.root_node.unwrap();
+        let root = app.layout.root_node.unwrap();
         assert!(run_layout_pass(&mut app, root, 1200, 400, 1.0, false, None).is_none());
         assert!(builds.get() <= 8);
-        assert!(app.last_layout_logical.is_none());
+        assert!(app.layout.last_layout_logical.is_none());
     }
     #[derive(Clone, Debug, PartialEq)]
     enum NativeCall {
@@ -20992,8 +21046,8 @@ mod viewport_composition_tests {
                 .iter()
                 .filter(|call| matches!(call, NativeCall::Mount(_)))
                 .count();
-            app.layout_dirty = true;
-            let node = app.root_node.unwrap();
+            app.layout.layout_dirty = true;
+            let node = app.layout.root_node.unwrap();
             run_layout_pass(&mut app, node, width, 400, 1.0, false, Some(&host)).unwrap();
             let final_generation = builds.get();
             assert_eq!(
@@ -21031,8 +21085,8 @@ mod viewport_composition_tests {
             .filter(|call| matches!(call, NativeCall::Mount(_)))
             .count();
         oscillate.set(true);
-        app.layout_dirty = true;
-        let node = app.root_node.unwrap();
+        app.layout.layout_dirty = true;
+        let node = app.layout.root_node.unwrap();
         assert!(run_layout_pass(&mut app, node, 600, 400, 1.0, false, Some(&host)).is_none());
         assert_eq!(
             calls
@@ -21044,7 +21098,7 @@ mod viewport_composition_tests {
             "failed intermediate compositions never attach"
         );
         oscillate.set(false);
-        let node = app.root_node.unwrap();
+        let node = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, node, 920, 400, 1.0, false, Some(&host)).unwrap();
         assert_eq!(
             app.root_widget.get_rect().width(),
@@ -21089,6 +21143,7 @@ mod viewport_composition_tests {
             "fallback editor keeps its own caret and no selection"
         );
         let outside = app
+            .layout
             .node_map
             .keys()
             .copied()
@@ -21376,7 +21431,7 @@ mod legacy_owner_routing_tests {
             alias >= (1 << 47),
             "fixture must exercise a legacy lifetime alias"
         );
-        assert!(!app.node_map.contains_key(&NodeId::from(alias)));
+        assert!(!app.layout.node_map.contains_key(&NodeId::from(alias)));
         assert!(
             app.invoke_semantic_action(&named.id, "activate", None)
                 .unwrap()
@@ -21388,7 +21443,7 @@ mod legacy_owner_routing_tests {
         let focused = app
             .focused_node
             .expect("focus uses the actual admitted owner");
-        assert!(app.node_map.contains_key(&focused));
+        assert!(app.layout.node_map.contains_key(&focused));
         assert_ne!(u64::from(focused), alias);
         assert!(
             app.invoke_semantic_action(&keyed, "activate", None)

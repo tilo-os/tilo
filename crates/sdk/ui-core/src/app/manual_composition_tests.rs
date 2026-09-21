@@ -61,8 +61,17 @@ fn manual_and_mixed_hosts_preserve_focus_selection_and_authored_clicks_on_resize
         let mut app = App::new_with_controlled_inputs(State::new(), root);
         app.init_layout();
         let run = |app: &mut App, width| {
-            app.layout_dirty = true;
-            run_layout_pass(app, app.root_node.unwrap(), width, 800, 1.0, false, None).unwrap();
+            app.layout.layout_dirty = true;
+            run_layout_pass(
+                app,
+                app.layout.root_node.unwrap(),
+                width,
+                800,
+                1.0,
+                false,
+                None,
+            )
+            .unwrap();
         };
         run(&mut app, 900);
         app.set_focused_node(Some(app.focusable_order[0]));
@@ -115,12 +124,12 @@ fn removing_last_manual_region_restores_host_default_rounding() {
     });
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(manual));
     app.init_layout();
-    let node = app.root_node.unwrap();
+    let node = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, node, 500, 300, 1.0, false, None).unwrap();
     app.root_widget = Box::new(Button::new("ordinary", "Ordinary", None).with_size(100.25, 40.25));
-    app.structure_dirty = true;
-    app.layout_dirty = true;
-    let node = app.root_node.unwrap();
+    app.layout.structure_dirty = true;
+    app.layout.layout_dirty = true;
+    let node = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, node, 500, 300, 1.0, false, None).unwrap();
     assert_eq!(app.root_widget.get_rect().width(), 100.0);
     assert_eq!(app.root_widget.get_rect().height(), 40.0);
@@ -169,8 +178,17 @@ fn manual_policy_input_moves_clean_same_viewport_frame_without_replacing_childre
         let mut app = App::new_with_controlled_inputs(State::new(), root);
         app.init_layout();
         let run = |app: &mut App| {
-            app.layout_dirty = true;
-            run_layout_pass(app, app.root_node.unwrap(), 900, 800, 1.0, false, None).unwrap();
+            app.layout.layout_dirty = true;
+            run_layout_pass(
+                app,
+                app.layout.root_node.unwrap(),
+                900,
+                800,
+                1.0,
+                false,
+                None,
+            )
+            .unwrap();
         };
         let paint = |app: &mut App| {
             draw_frame_content(app, &mut vello::Scene::new(), 900, 800, 1.0, None);
