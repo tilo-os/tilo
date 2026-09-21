@@ -34,7 +34,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py",
             "tools/apps/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
-            "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
+            "tools/apps/dev_app_versions.py", "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())
         self.write("bin/cargo", """#!/usr/bin/env python3

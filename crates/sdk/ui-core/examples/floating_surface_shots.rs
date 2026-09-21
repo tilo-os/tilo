@@ -4,12 +4,12 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-use ui::ColorCompat;
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
-use ui::widget::{FloatingWindow, Widget};
+use tilo_ui::ColorCompat;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::{TextRenderer, TextWeight};
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{FloatingWindow, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;

@@ -4,7 +4,7 @@ The shortest path from an idea to an app running in the live development loop
 is one command:
 
 ```bash
-cargo run -p tilo-dev -- new reading-list --dev
+cargo run -p tilo-app-cli --bin tilo-app -- new reading-list --dev
 ```
 
 Creation is atomic. Once the app exists, `--dev` runs its structural preflight,
@@ -15,18 +15,18 @@ waits for the next save. Press Ctrl-C to stop.
 The same stages remain available separately for automation and focused work:
 
 ```bash
-cargo run -p tilo-dev -- new reading-list
-cargo run -p tilo-dev -- check apps/reading-list
-cargo run -p tilo-dev -- certify apps/reading-list
-cargo run -p tilo-dev -- test apps/reading-list
-cargo run -p tilo-dev -- dev apps/reading-list
-cargo run -p tilo-dev -- run apps/reading-list
-cargo run -p tilo-dev -- shot apps/reading-list
-cargo run -p tilo-dev -- inspect apps/reading-list
-cargo run -p tilo-dev -- package apps/reading-list
+cargo run -p tilo-app-cli --bin tilo-app -- new reading-list
+cargo run -p tilo-app-cli --bin tilo-app -- check apps/reading-list
+cargo run -p tilo-app-cli --bin tilo-app -- certify apps/reading-list
+cargo run -p tilo-app-cli --bin tilo-app -- test apps/reading-list
+cargo run -p tilo-app-cli --bin tilo-app -- dev apps/reading-list
+cargo run -p tilo-app-cli --bin tilo-app -- run apps/reading-list
+cargo run -p tilo-app-cli --bin tilo-app -- shot apps/reading-list
+cargo run -p tilo-app-cli --bin tilo-app -- inspect apps/reading-list
+cargo run -p tilo-app-cli --bin tilo-app -- package apps/reading-list
 ```
 
-If `tilo-dev` is installed, omit `cargo run -p tilo-dev --` from these commands.
+If `tilo-app` is installed, omit `cargo run -p tilo-app-cli --bin tilo-app --` from these commands.
 The app-aware commands find the app root from any file or directory inside it,
 run the same structural checks as `doctor`, and invoke Cargo with the app's
 manifest explicitly. They therefore behave the same for an app in this
@@ -34,7 +34,7 @@ workspace and for a standalone app. Arguments after `--` are sent to the app
 or test harness:
 
 ```bash
-tilo-dev test -- --nocapture
+tilo-app test -- --nocapture
 ```
 
 ## The Tilo-native contract
@@ -131,16 +131,16 @@ history and collaboration.
 Run the same gates explicitly from an app directory:
 
 ```bash
-tilo-dev check
-tilo-dev certify
-tilo-dev certify . --workspace --responsive-artifacts target/responsive-acceptance
+tilo-app check
+tilo-app certify
+tilo-app certify . --workspace --responsive-artifacts target/responsive-acceptance
 ```
 
-`tilo-dev check` runs structural checks, app-only formatting verification,
+`tilo-app check` runs structural checks, app-only formatting verification,
 Clippy, Rust/generated accessibility tests, production-root native
-certification, and audited saved scenarios. `tilo-dev certify` is the focused
+certification, and audited saved scenarios. `tilo-app certify` is the focused
 runtime proof against the production app root; from a checkout,
-`tilo-dev certify --workspace` certifies every graphical app. Certification is
+`tilo-app certify --workspace` certifies every graphical app. Certification is
 an app boundary, not a warning budget: one legacy callback, stale binding,
 missing semantic route, or invalid operation contract fails it.
 
@@ -172,7 +172,7 @@ so reviewers see clipped labels and fixed-width assumptions before catalogs are
 complete. The text-scale pass exercises the supported 200% accessibility size.
 Pseudo-localization is a layout audit mode, not a language presented to users.
 
-`tilo-dev check` is the copyable local/CI quality gate. It reports the complete
+`tilo-app check` is the copyable local/CI quality gate. It reports the complete
 structural `doctor` result, verifies formatting for only the app package, runs
 Clippy over every app target with warnings denied and dependencies excluded,
 runs the app's Rust and generated accessibility tests, then executes every
@@ -192,7 +192,7 @@ display/form factory's typed props with the screen path and node id in the
 diagnostic. A customized router context is reported as app-owned and therefore
 not statically verifiable; generated contexts fail early on missing factories.
 
-With no name, `tilo-dev new` runs as a small terminal wizard for the package
+With no name, `tilo-app new` runs as a small terminal wizard for the package
 name, window title, application ID, and starter shape. It presents nine
 numbered templates with their intended use; numbers, full names, and shortcuts
 are accepted. Invalid package names, IDs, and template choices are explained
@@ -205,16 +205,16 @@ With a name and flags the command is deterministic and suitable for scripts;
 omitted `--template` defaults to `starter` outside an interactive terminal:
 
 ```bash
-cargo run -p tilo-dev -- new log-browser \
+cargo run -p tilo-app-cli --bin tilo-app -- new log-browser \
   --id org.example.log-browser \
   --title "Log Browser" \
   --template data
 
-cargo run -p tilo-dev -- new activity-feed --template list
-cargo run -p tilo-dev -- new qr-code --template qr
-cargo run -p tilo-dev -- new repo-scan --template async
-cargo run -p tilo-dev -- new notes --template document
-cargo run -p tilo-dev -- new project-workspace --template workspace
+cargo run -p tilo-app-cli --bin tilo-app -- new activity-feed --template list
+cargo run -p tilo-app-cli --bin tilo-app -- new qr-code --template qr
+cargo run -p tilo-app-cli --bin tilo-app -- new repo-scan --template async
+cargo run -p tilo-app-cli --bin tilo-app -- new notes --template document
+cargo run -p tilo-app-cli --bin tilo-app -- new project-workspace --template workspace
 ```
 
 Use `--template workspace` for a composed professional starting point rather
@@ -239,7 +239,7 @@ registration as one rollback-safe operation. A validation, write, or
 registration failure therefore leaves neither a partial app nor a stray
 workspace member; an explicitly supplied empty destination is restored with
 its original permissions if publication fails. Outside a checkout, the tool
-discovers `ui` from `TILO_UI_PATH`, the running `tilo-dev` binary's source tree,
+discovers `ui` from `TILO_UI_PATH`, the running `tilo-app` binary's source tree,
 or the checkout it was built from. The interactive wizard shows that path as
 an editable default, validates it before the review screen, and re-prompts on
 a bad path. For a pinned or relocated toolkit, set `TILO_UI_PATH` or pass
@@ -248,26 +248,26 @@ a bad path. For a pinned or relocated toolkit, set `TILO_UI_PATH` or pass
 Grow an existing app from any directory inside it with `add`:
 
 ```bash
-tilo-dev add
-tilo-dev add component profile-card --template form
-tilo-dev add component activity-card --mount main \
+tilo-app add
+tilo-app add component profile-card --template form
+tilo-app add component activity-card --mount main \
   --props '{"title":"Recent activity","detail":"Nothing pending"}'
-tilo-dev add component profile-form --template form --mount main \
+tilo-app add component profile-form --template form --mount main \
   --props '{"value_path":"profile-name","enabled_path":"profile-enabled"}'
-tilo-dev add component project-tree --template tree
-tilo-dev add component activity-list --template list
-tilo-dev add component results-table --template table
-tilo-dev add component article-body --template text
-tilo-dev add screen account-settings --template settings --link-from main
-tilo-dev add screen new-project --template form --link-from account-settings
-tilo-dev add screen first-run --template empty-state
-tilo-dev add scenario settings-smoke --screen account-settings
-tilo-dev scenario run
-tilo-dev add locale de-DE
-tilo-dev locale sync
+tilo-app add component project-tree --template tree
+tilo-app add component activity-list --template list
+tilo-app add component results-table --template table
+tilo-app add component article-body --template text
+tilo-app add screen account-settings --template settings --link-from main
+tilo-app add screen new-project --template form --link-from account-settings
+tilo-app add screen first-run --template empty-state
+tilo-app add scenario settings-smoke --screen account-settings
+tilo-app scenario run
+tilo-app add locale de-DE
+tilo-app locale sync
 ```
 
-With no subcommand, `tilo-dev add` opens a terminal wizard that discovers the
+With no subcommand, `tilo-app add` opens a terminal wizard that discovers the
 containing app and offers a screen, reusable Rust component, semantic scenario,
 or locale. Screen setup includes its title, starter shape, and an optional
 source route (defaulting to `main` when present). Component setup offers a
@@ -427,7 +427,7 @@ under [Text layout and typography](#text-layout-and-typography).
 
 `screen` writes a validated object graph to
 `ui/account-settings.json`, registers it in the generated `src/screens.rs`,
-and prints the `tilo-dev ui edit` command that opens it. The registry exposes a
+and prints the `tilo-app ui edit` command that opens it. The registry exposes a
 typed Rust-name function for direct construction, a name-based lookup, and a
 history-aware router over every registered screen:
 
@@ -467,7 +467,7 @@ created with `--template graph`. The named screen must be directly
 reachable from `main`, which keeps the generated setup deterministic. Omit
 `--screen` when you want an empty action file to author by hand. In both cases
 the artifact is written under `tests/scenarios/` and the printed next command
-runs it with `tilo-dev scenario run`.
+runs it with `tilo-app scenario run`.
 
 `locale` writes a valid Fluent catalog under `locales/` whose complete set of
 source messages, terms, attributes, variables, and starter values mirrors
@@ -485,8 +485,8 @@ After adding or changing messages in `en-US`, synchronize every translation—or
 one named translation—without overwriting translated values:
 
 ```bash
-tilo-dev locale sync
-tilo-dev locale sync de-DE --dry-run
+tilo-app locale sync
+tilo-app locale sync de-DE --dry-run
 ```
 
 The command copies missing messages, terms, values, and attributes from the
@@ -502,7 +502,7 @@ Run a fast structural diagnosis without compiling the workspace when you want
 the checks without starting Cargo:
 
 ```bash
-cargo run -p tilo-dev -- doctor apps/reading-list
+cargo run -p tilo-app-cli --bin tilo-app -- doctor apps/reading-list
 ```
 
 `doctor` finds the app from any descendant path, parses the Cargo manifest,
@@ -525,8 +525,8 @@ it does not prevent an otherwise healthy app from running.
 Use `dev` for the edit-build-run loop:
 
 ```bash
-tilo-dev dev
-tilo-dev dev apps/reading-list --app-only
+tilo-app dev
+tilo-app dev apps/reading-list --app-only
 ```
 
 It watches the app recursively and, when `ui` is a local path dependency, the
@@ -549,10 +549,10 @@ live startup, persisted
 CRDT state, argument validation, and headless driving. It also starts with the
 minimum sandbox declaration, a package manifest, and a runnable semantic app
 test in `tests/app.rs`. Every generated template also includes an initial
-accessibility-contract test, so ordinary `tilo-dev test` fails on unlabeled
+accessibility-contract test, so ordinary `tilo-app test` fails on unlabeled
 controls, invalid virtual-collection metadata, or unstable synthetic identity
 without requiring a separate audit command. Interaction-specific states remain
-covered by `tilo-dev scenario run --audit`.
+covered by `tilo-app scenario run --audit`.
 `starter` demonstrates a
 complete local input-to-state-to-output loop; `data` begins with a selectable
 `DataTable` with a 100-million-row sparse model, a background page
@@ -588,8 +588,8 @@ second screenshot-only tree is required. `shot` writes `preview.png` in the
 app root by default:
 
 ```bash
-tilo-dev shot --viewport 1280x800
-tilo-dev shot --output artifacts/empty.png --scenario empty
+tilo-app shot --viewport 1280x800
+tilo-app shot --output artifacts/empty.png --scenario empty
 ```
 
 Arguments after `--` are forwarded as app-defined screenshot options. Use
@@ -600,9 +600,9 @@ production widget tree at the requested viewport and active shot theme.
 Build an installable package from the same app root with:
 
 ```bash
-tilo-dev package
-tilo-dev package --identity publisher.json
-tilo-dev package --output dist/reading-list.qpkg --force
+tilo-app package
+tilo-app package --identity publisher.json
+tilo-app package --output dist/reading-list.qpkg --force
 ```
 
 `package` runs the structural checks, builds every entrypoint declared in
@@ -851,11 +851,11 @@ intentionally unlabeled control; validation rejects specifying both.
 Start an app on this format directly, or add a graph to an existing app:
 
 ```bash
-tilo-dev new project-maker --template graph
-tilo-dev ui init ui/settings.json --title "Settings"
-tilo-dev ui edit ui/settings.json
-tilo-dev ui tree ui/settings.json
-tilo-dev ui validate ui/settings.json
+tilo-app new project-maker --template graph
+tilo-app ui init ui/settings.json --title "Settings"
+tilo-app ui edit ui/settings.json
+tilo-app ui tree ui/settings.json
+tilo-app ui validate ui/settings.json
 ```
 
 `ui edit` opens the native builder. Select a node in the hierarchy and the
@@ -889,9 +889,9 @@ For typed display and form components, generate both the Rust component and its
 validated graph adapter, then insert an instance without writing JSON by hand:
 
 ```bash
-tilo-dev add component profile-card --mount main \
+tilo-app add component profile-card --mount main \
   --props '{"title":"Ada","detail":"Workspace owner"}'
-tilo-dev add component profile-form --template form --mount main \
+tilo-app add component profile-form --template form --mount main \
   --props '{"value_path":"profile-name","enabled_path":"profile-enabled"}'
 ```
 
@@ -906,7 +906,7 @@ Rust-native style/engine values, so generate those templates without `--mount`.
 For an existing component, or an app-owned router context, insert only the node:
 
 ```bash
-tilo-dev ui component ui/main.json profile-card \
+tilo-app ui component ui/main.json profile-card \
   --props '{"title":"Ada","detail":"Workspace owner"}'
 ```
 
@@ -931,7 +931,7 @@ The generated display `from_ui_graph` function converts `title` and `detail`
 into the same typed `ProfileCardProps` used by ordinary Rust callers. The form
 adapter validates non-empty `value_path` and `enabled_path` strings, then builds
 the controls with the same document bindings used by built-in graph inputs and
-checkboxes. Both return precise field errors, and `tilo-dev doctor` checks those
+checkboxes. Both return precise field errors, and `tilo-app doctor` checks those
 generated prop contracts before compilation. Already-generated v1 form adapters
 and their snapshot props remain recognized by `doctor`; regenerating a form uses
 document bindings. Older generated graph roots are migrated when their original
@@ -952,12 +952,12 @@ The standalone builder cannot load application code, so it displays a named,
 accessible placeholder while still allowing the component name and JSON props
 to be edited, moved, saved, undone, and inspected. The app replaces that
 placeholder through its `UiBuildContext` at runtime. Component names use the
-same lowercase kebab-case convention as `tilo-dev add component`.
+same lowercase kebab-case convention as `tilo-app add component`.
 
 The center preview is the real `LiveUi` widget tree, so focus, keyboard input,
 accessibility, bindings, layout, and theme behavior do not diverge from the
-app. In a source checkout, `tilo-dev` builds the workspace builder on first use.
-Installed tools look for `tilo-ui-builder` beside `tilo-dev` and then on `PATH`;
+app. In a source checkout, `tilo-app` builds the workspace builder on first use.
+Installed tools look for `tilo-ui-builder` beside `tilo-app` and then on `PATH`;
 set `TILO_UI_BUILDER` to override that executable.
 
 The builder's Undo and Redo controls operate on history owned by the shared
@@ -981,16 +981,16 @@ loading or saving when that document should become a new history boundary.
 Structural commands accept either an inline node object or `--node-file`:
 
 ```bash
-tilo-dev ui insert ui/settings.json --parent root --index 1 \
+tilo-app ui insert ui/settings.json --parent root --index 1 \
   --node '{"type":"button","id":"save","label":"Save","style":"primary"}'
-tilo-dev ui move ui/settings.json --id save --parent actions --index 0
-tilo-dev ui replace ui/settings.json --id save --node-file nodes/publish.json
-tilo-dev ui remove ui/settings.json --id obsolete-help
-tilo-dev ui set ui/settings.json --id title --property text.value --value "Account settings"
-tilo-dev ui set ui/settings.json --id panel --property fill_height --value true
-tilo-dev ui set ui/settings.json --id title --property size --unset
-tilo-dev ui apply ui/settings.json ui/settings.edits.json
-tilo-dev ui format ui/settings.json
+tilo-app ui move ui/settings.json --id save --parent actions --index 0
+tilo-app ui replace ui/settings.json --id save --node-file nodes/publish.json
+tilo-app ui remove ui/settings.json --id obsolete-help
+tilo-app ui set ui/settings.json --id title --property text.value --value "Account settings"
+tilo-app ui set ui/settings.json --id panel --property fill_height --value true
+tilo-app ui set ui/settings.json --id title --property size --unset
+tilo-app ui apply ui/settings.json ui/settings.edits.json
+tilo-app ui format ui/settings.json
 ```
 
 `ui set` changes one serialized property without copying and replacing the
@@ -1270,7 +1270,7 @@ For a small app with one launchable resource, wrap its ordinary retained root
 with `ui::widget::resource_actions::immediate` or `background`. The toolkit
 owns the forwarding widget, operation dispatch, pending-job bookkeeping, and
 failure conversion; the app supplies only its resource contract and operation
-closure. `tilo-dev new` uses this path and imports action types through
+closure. `tilo-app new` uses this path and imports action types through
 `ui::tilo_actions`, so a generated project contains no copied host
 implementation and needs no direct internal actions dependency.
 
@@ -1476,15 +1476,15 @@ undo behavior.
 
 ### Localization
 
-`tilo-dev new` creates `locales/en-US.ftl` and an embedded locale registry used
+`tilo-app new` creates `locales/en-US.ftl` and an embedded locale registry used
 from `app_root`. Add a catalog and wire it into that registry in one command:
 
 ```bash
-tilo-dev add locale de-DE
+tilo-app add locale de-DE
 ```
 
 The generated `src/locales.rs` uses `include_str!`, so packaging cannot omit a
-registered catalog. `tilo-dev` only rewrites a registry carrying its generated
+registered catalog. `tilo-app` only rewrites a registry carrying its generated
 header. It recognizes and migrates the previous generated inline
 `install_catalog` block, but an app-owned localization module is left untouched
 and must register additional catalogs in its own setup.
@@ -1890,7 +1890,7 @@ layout heights feed back into scrolling and hit testing. The built-in
 scrollbar, keyboard navigation, and key-based selection all use the same
 viewport.
 
-Use `tilo-dev new activity-feed --template list` to start from the sparse-model
+Use `tilo-app new activity-feed --template list` to start from the sparse-model
 form instead. The generated `ActivityModel` reports 100 million stable keys
 without allocating their rows, mixes measured 44px and 72px delegates, embeds
 an independently actionable button in each mounted row, and ships with a
@@ -2145,7 +2145,7 @@ accessibility tree directly. `inspect` writes `inspect.json` in the app root by
 default; `--targets` additionally writes the addressable-widget index:
 
 ```bash
-tilo-dev inspect --viewport 1280x800 --targets targets.json
+tilo-app inspect --viewport 1280x800 --targets targets.json
 ```
 
 The JSON combines the retained widget hierarchy, stable test ids, logical
@@ -2168,8 +2168,8 @@ app root:
 ```
 
 ```bash
-tilo-dev inspect --actions tests/headless-actions.json --output after.json
-tilo-dev inspect --audit --audit-report target/audit/report.json \
+tilo-app inspect --actions tests/headless-actions.json --output after.json
+tilo-app inspect --audit --audit-report target/audit/report.json \
   --actions tests/headless-actions.json --output after.json
 ```
 
@@ -2192,10 +2192,10 @@ Run saved interaction scenarios directly, or retain the exact post-action
 state of each case for debugging and CI review:
 
 ```bash
-tilo-dev scenario run
-tilo-dev scenario run settings-smoke --viewport 1024x768
-tilo-dev scenario run --artifacts target/scenario-artifacts
-tilo-dev scenario run --audit --artifacts target/scenario-artifacts
+tilo-app scenario run
+tilo-app scenario run settings-smoke --viewport 1024x768
+tilo-app scenario run --artifacts target/scenario-artifacts
+tilo-app scenario run --audit --artifacts target/scenario-artifacts
 ```
 
 With no name, the conventional `tests/headless-actions.json` case runs first,

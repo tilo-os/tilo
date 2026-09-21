@@ -51,8 +51,8 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    EditOutcome, EditableLabel, FlapState, Slider, SliderFace, SplitLayout, Toggle, ToggleFace,
-    Widget,
+    Continuable, EditOutcome, EditableLabel, FlapState, Slider, SliderFace, SplitLayout, Toggle,
+    ToggleFace, Widget,
 };
 
 use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
@@ -4521,7 +4521,7 @@ impl BooksApp {
     }
 }
 
-impl Widget for BooksApp {
+impl Continuable for BooksApp {
     fn continuation_metadata(
         &self,
         _doc: &AutoCommit,
@@ -4583,6 +4583,16 @@ impl Widget for BooksApp {
         self.chapter = chapter;
         self.page = page;
         true
+    }
+}
+
+impl Widget for BooksApp {
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {

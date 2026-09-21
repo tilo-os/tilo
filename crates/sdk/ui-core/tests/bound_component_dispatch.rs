@@ -1,8 +1,8 @@
 //! Controlled callback routing fixtures: in-memory widgets, explicit persistence only.
 use automerge::ROOT;
 use std::collections::HashMap;
-use ui::bound_dispatch::{BoundDispatchError, BoundNodeMap, invoke_bound_node};
-use ui::widget::{Button, Widget};
+use tilo_ui::bound_dispatch::{BoundDispatchError, BoundNodeMap, invoke_bound_node};
+use tilo_ui::widget::{Button, Widget};
 
 #[test]
 fn owned_search_provider_methods_and_early_drop_enter_the_originating_component() {
@@ -29,7 +29,7 @@ fn owned_search_provider_methods_and_early_drop_enter_the_originating_component(
         "name is inert copied metadata"
     );
     assert_eq!(provider.action_directory_generation(), Some(4));
-    assert!(provider.action_directory_cursor_is_current(&ui::search::SearchCursor::default()));
+    assert!(provider.action_directory_cursor_is_current(&tilo_ui::search::SearchCursor::default()));
     assert_eq!(provider.search("").len(), 1);
     assert!(provider.search_limited("", 0).is_empty());
     let page = provider.search_page("", None, 1, 1);
@@ -73,7 +73,9 @@ fn provider_payload_drops_on_close_even_when_the_proxy_outlives_replacement() {
     let provider = &providers[0];
     assert_eq!(provider.name(), "Probe");
     assert_eq!(provider.action_directory_generation(), None);
-    assert!(!provider.action_directory_cursor_is_current(&ui::search::SearchCursor::default()));
+    assert!(
+        !provider.action_directory_cursor_is_current(&tilo_ui::search::SearchCursor::default())
+    );
     assert!(provider.search("").is_empty());
     assert!(provider.search_limited("", 1).is_empty());
     let page = provider.search_page("", None, 1, 1);
@@ -123,7 +125,7 @@ fn cleared_or_unadmitted_nodes_never_dispatch_as_outer_widgets() {
     let mut root = Button::new("probe", "Probe", None);
     let mut tree = taffy::TaffyTree::new();
     let mut nodes = HashMap::new();
-    let node = root.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
+    let node = root.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
     let mut bindings = BoundNodeMap::new();
     let mut outer = automerge::AutoCommit::new();
     // SAFETY: the exclusive test owns this unchanged live layout and no widget borrow escapes.
@@ -184,9 +186,9 @@ fn cleared_or_unadmitted_nodes_never_dispatch_as_outer_widgets() {
 use crate::support::application::{ProbeHost, definition};
 use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
-use ui::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
-use ui::local_state::LocalState;
-use ui::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
+use tilo_ui::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use tilo_ui::local_state::LocalState;
+use tilo_ui::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
 type RefusedNode = (
     BoundNodeMap,
     HashMap<taffy::NodeId, *mut dyn Widget>,
@@ -194,15 +196,15 @@ type RefusedNode = (
 );
 thread_local! {
     static CAPTURES: RefCell<Vec<(String, &'static str, LocalState<u32>)>> = const { RefCell::new(vec![]) };
-    static TASKS: RefCell<Vec<ui::LatestTask<u32>>> = const { RefCell::new(vec![]) };
+    static TASKS: RefCell<Vec<tilo_ui::LatestTask<u32>>> = const { RefCell::new(vec![]) };
     static LAYOUT_ONLY: Cell<bool> = const { Cell::new(false) };
     static PANIC_CANCEL: Cell<bool> = const { Cell::new(false) };
     static FINISH_OPERATION: Cell<bool> = const { Cell::new(false) };
     static REENTRY: RefCell<Option<RefusedNode>> = const { RefCell::new(None) };
     static QUEUED_CONTROL: RefCell<Option<tilo_actions::ControlInvocation>> = const { RefCell::new(None) };
     static LEGACY_INVOKED: Cell<bool> = const { Cell::new(false) };
-    static LEGACY_INTENT: RefCell<Option<ui::record::RecordCheckout>> = const { RefCell::new(None) };
-    static LEGACY_SCOPES: RefCell<Vec<ui::record::RecordId>> = const { RefCell::new(vec![]) };
+    static LEGACY_INTENT: RefCell<Option<tilo_ui::record::RecordCheckout>> = const { RefCell::new(None) };
+    static LEGACY_SCOPES: RefCell<Vec<tilo_ui::record::RecordId>> = const { RefCell::new(vec![]) };
     static LEGACY_MUTABLE: Cell<bool> = const { Cell::new(false) };
     static LEGACY_DOCUMENTS: RefCell<Vec<(String, bool)>> = const { RefCell::new(vec![]) };
     static LEGACY_START: Cell<Option<bool>> = const { Cell::new(None) };
@@ -224,7 +226,7 @@ impl Leaf {
         CAPTURES.with_borrow_mut(|captures| {
             captures.push((self.record.clone(), label, LocalState::new(0)));
         });
-        TASKS.with_borrow_mut(|tasks| tasks.push(ui::LatestTask::new(0)));
+        TASKS.with_borrow_mut(|tasks| tasks.push(tilo_ui::LatestTask::new(0)));
     }
     fn edit(&self, doc: &mut AutoCommit, label: &'static str) {
         assert_eq!(
@@ -246,7 +248,7 @@ impl Widget for Leaf {
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
-        _: &ui::Theme,
+        _: &tilo_ui::Theme,
         nodes: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.capture("build");
@@ -259,7 +261,7 @@ impl Widget for Leaf {
         &mut self,
         _: taffy::Size<Option<f32>>,
         _: taffy::Size<taffy::AvailableSpace>,
-        _: &mut ui::TextRenderer,
+        _: &mut tilo_ui::TextRenderer,
     ) -> taffy::Size<f32> {
         self.capture("measure");
         taffy::Size {
@@ -274,9 +276,9 @@ impl Widget for Leaf {
         &mut self,
         _: &mut vello::Scene,
         _: vello::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::PresenceCtx,
+        _: &mut tilo_ui::TextRenderer,
+        _: &tilo_ui::Theme,
+        _: &tilo_ui::PresenceCtx,
     ) {
         self.capture("draw");
     }
@@ -323,31 +325,36 @@ impl Widget for Leaf {
         self.capture("ime");
         Some(self.rect)
     }
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui::a11y::AccessNode> {
         self.capture("accessibility");
         Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+            tilo_ui::a11y::AccessNode::new(tilo_ui::a11y::Role::Button)
                 .with_name("Bound leaf")
                 .with_children(vec![
-                    ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                    tilo_ui::a11y::AccessNode::new(tilo_ui::a11y::Role::Button)
                         .with_name("Synthetic probe")
                         .with_key(42),
                 ]),
         )
     }
-    fn perform_action(&mut self, _: &ui::a11y::Action, doc: &mut AutoCommit, _: &ObjId) -> bool {
+    fn perform_action(
+        &mut self,
+        _: &tilo_ui::a11y::Action,
+        doc: &mut AutoCommit,
+        _: &ObjId,
+    ) -> bool {
         self.edit(doc, "action");
         true
     }
     fn perform_action_at(
         &mut self,
-        action: &ui::a11y::Action,
+        action: &tilo_ui::a11y::Action,
         path: &[u64],
         doc: &mut AutoCommit,
         _: &ObjId,
     ) -> bool {
         assert_eq!(path, &[42]);
-        assert_eq!(action, &ui::a11y::Action::Focus);
+        assert_eq!(action, &tilo_ui::a11y::Action::Focus);
         self.edit(doc, "synthetic-action");
         true
     }
@@ -371,14 +378,14 @@ impl Widget for Leaf {
         _: &[u8],
         doc: &AutoCommit,
         _: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
             Some(self.record.as_str())
         );
         self.capture("operation-start");
         self.operation_state = Some(LocalState::new(0));
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(Some(tilo_ui::widget::ResourceOperationStart::Accepted))
     }
     fn poll_resource_operation(
         &mut self,
@@ -444,16 +451,16 @@ impl Drop for Leaf {
 struct Root(Column, String, bool);
 impl Root {
     fn mark(&self, label: &'static str) {
-        TASKS.with_borrow_mut(|tasks| tasks.push(ui::LatestTask::new(0)));
+        TASKS.with_borrow_mut(|tasks| tasks.push(tilo_ui::LatestTask::new(0)));
         CAPTURES
             .with_borrow_mut(|captures| captures.push((self.1.clone(), label, LocalState::new(0))));
     }
 }
 impl Widget for Root {
-    fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
+    fn record_intent(&self) -> Option<tilo_ui::record::RecordCheckout> {
         LEGACY_INTENT.with_borrow(Clone::clone)
     }
-    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+    fn set_record_scope(&mut self, record: &tilo_ui::record::RecordId) {
         if LEGACY_MUTABLE.get() {
             LEGACY_SCOPES.with_borrow_mut(|scopes| scopes.push(record.clone()));
         }
@@ -467,7 +474,7 @@ impl Widget for Root {
         payload: &[u8],
         doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
         if !LEGACY_MUTABLE.get() {
             return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
         }
@@ -479,7 +486,7 @@ impl Widget for Root {
         LEGACY_DOCUMENTS.with_borrow_mut(|seen| seen.push((marker, path == &ROOT)));
         doc.put(ROOT, "legacy-follow-up", true)
             .map_err(|e| e.to_string())?;
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
     }
@@ -510,7 +517,7 @@ impl Widget for Root {
     fn build_layout(
         &mut self,
         t: &mut taffy::TaffyTree<()>,
-        h: &ui::Theme,
+        h: &tilo_ui::Theme,
         m: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.0.build_layout(t, h, m)
@@ -522,9 +529,9 @@ impl Widget for Root {
         &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
-        renderer: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::PresenceCtx,
+        renderer: &mut tilo_ui::TextRenderer,
+        theme: &tilo_ui::Theme,
+        presence: &tilo_ui::PresenceCtx,
     ) {
         self.0.draw(scene, transform, renderer, theme, presence);
     }
@@ -548,21 +555,21 @@ impl Widget for Root {
         &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
+        text: &mut tilo_ui::TextRenderer,
+        theme: &tilo_ui::Theme,
+        presence: &tilo_ui::PresenceCtx,
+        permissions: &tilo_ui::permissions::PermissionContext,
     ) {
         assert!(
-            permissions.check(&ui::permissions::PermissionScope::workspace(
-                ui::permissions::Verb::Write
+            permissions.check(&tilo_ui::permissions::PermissionScope::workspace(
+                tilo_ui::permissions::Verb::Write
             )) == EXPECTED_WRITE.get(),
             "draw received outer authority"
         );
         self.mark("draw-permissions");
         self.0.draw(scene, transform, text, theme, presence);
     }
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+    fn search_providers(&self) -> Vec<Box<dyn tilo_ui::search::SearchProvider>> {
         self.mark("provider-create");
         vec![]
     }
@@ -584,7 +591,7 @@ impl Widget for Root {
         self.mark("control-drain");
         QUEUED_CONTROL.with_borrow_mut(Option::take)
     }
-    fn mount_native_views(&mut self, host: &ui::widget::native_view::NativeViewHost<'_>) {
+    fn mount_native_views(&mut self, host: &tilo_ui::widget::native_view::NativeViewHost<'_>) {
         assert!(host.window().is_none());
         self.mark("native-mount");
     }
@@ -594,19 +601,19 @@ impl Widget for Root {
     fn unmount_native_views(&mut self) {
         self.mark("native-unmount");
     }
-    fn view_state(&self) -> Option<ui::view::ViewContribution> {
+    fn view_state(&self) -> Option<tilo_ui::view::ViewContribution> {
         assert!(!PANIC_VIEW.replace(false), "controlled capture unwind");
         self.mark("capture-view");
         Some(if INVALID_VIEW.get() {
-            ui::view::ViewContribution {
+            tilo_ui::view::ViewContribution {
                 scroll: vec![f64::NAN],
                 ..Default::default()
             }
         } else {
-            ui::view::ViewContribution::default()
+            tilo_ui::view::ViewContribution::default()
         })
     }
-    fn restore_view_state(&mut self, _: &ui::view::ViewContribution) {
+    fn restore_view_state(&mut self, _: &tilo_ui::view::ViewContribution) {
         self.mark("restore-view");
     }
     fn test_id(&self) -> Option<&str> {
@@ -642,16 +649,16 @@ impl AppWidget for Root {
     fn permission_hint(&self) -> Option<AppKind> {
         None
     }
-    fn commands(&self) -> Vec<ui::AppCommand> {
+    fn commands(&self) -> Vec<tilo_ui::AppCommand> {
         COMMAND_CALLS.set(COMMAND_CALLS.get().saturating_add(1));
-        vec![ui::AppCommand {
+        vec![tilo_ui::AppCommand {
             id: "legacy".into(),
             label: "Legacy".into(),
             shortcut: None,
             invoke: Box::new(|_, _| LEGACY_INVOKED.set(true)),
         }]
     }
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+    fn take_host_intent(&mut self) -> Option<tilo_ui::widget::AppHostIntent> {
         self.mark("host-intent");
         None
     }
@@ -661,7 +668,7 @@ fn factory(
     mut context: HostContext,
     target: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, ui::launch::LaunchError> {
+) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
     let record = context.record().id.as_str().to_string();
     if matches!(target, LaunchTarget::New) {
         context
@@ -669,7 +676,7 @@ fn factory(
                 doc.put(ROOT, "marker", record.clone())
                     .map_err(|e| e.to_string())
             })
-            .map_err(ui::launch::LaunchError::Record)?;
+            .map_err(tilo_ui::launch::LaunchError::Record)?;
     }
     let root = Root(
         Column::new().push(Box::new(Leaf {
@@ -713,7 +720,7 @@ fn component_raw_descendants_keep_the_record_and_mount_for_focus_ime_and_actions
     let mut tile = TileHost::from_component(component);
     let mut tree = taffy::TaffyTree::new();
     let mut nodes = HashMap::new();
-    let node = tile.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
+    let node = tile.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
     let mut bindings = BoundNodeMap::new();
     // SAFETY: the fixture owns the unchanged tree exclusively; only shared metadata is inspected.
     unsafe {
@@ -736,7 +743,7 @@ fn component_raw_descendants_keep_the_record_and_mount_for_focus_ime_and_actions
                     if widget.name() == "Leaf" {
                         widget.set_focus(true);
                         widget.ime_cursor_rect();
-                        widget.perform_action(&ui::a11y::Action::Focus, doc, root);
+                        widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, root);
                     }
                 },
             )
@@ -780,7 +787,7 @@ fn real_driver_measure_and_focus_walks_capture_only_the_component_mount() {
             sender.send(event).unwrap();
         })
         .unwrap();
-    let mut outer = ui::wake::WakeScope::new();
+    let mut outer = tilo_ui::wake::WakeScope::new();
     let (outer_sender, outer_receiver) = std::sync::mpsc::channel();
     outer
         .bind(move |event| {
@@ -788,22 +795,22 @@ fn real_driver_measure_and_focus_walks_capture_only_the_component_mount() {
         })
         .unwrap();
     let _outer = outer.enter();
-    let mut state = ui::State::new();
+    let mut state = tilo_ui::State::new();
     state.doc.put(ROOT, "marker", "shell").unwrap();
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+    let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
         "en-US",
     );
-    let renderer = ui::TextRenderer::with_font_catalog(&catalog).unwrap();
+    let renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
     CAPTURES.with_borrow_mut(Vec::clear);
     TASKS.with_borrow_mut(Vec::clear);
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+    let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
         state,
         Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
         (400, 300),
-        ui::Theme::dark(),
+        tilo_ui::Theme::dark(),
         renderer,
-        ui::permissions::UserId("probe-author".into()),
+        tilo_ui::permissions::UserId("probe-author".into()),
     );
     let _ = driver.focus_order();
     driver.tab(false);
@@ -823,10 +830,10 @@ fn real_driver_measure_and_focus_walks_capture_only_the_component_mount() {
         .unwrap()
         .0;
     driver
-        .perform_a11y_action(target, &ui::a11y::Action::Focus)
+        .perform_a11y_action(target, &tilo_ui::a11y::Action::Focus)
         .unwrap();
     driver
-        .perform_named("dispatch-leaf", &ui::a11y::Action::Focus)
+        .perform_named("dispatch-leaf", &tilo_ui::a11y::Action::Focus)
         .unwrap();
     let captures = CAPTURES.with_borrow_mut(std::mem::take);
     for label in [
@@ -891,7 +898,7 @@ fn same_record_reentry_reuses_the_borrow_and_cross_record_reentry_is_refused() {
         .push(Box::new(TileHost::from_component(third)));
     let mut tree = taffy::TaffyTree::new();
     let mut nodes = HashMap::new();
-    let node = root.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
+    let node = root.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
     let mut bindings = BoundNodeMap::new();
     let mut outer = AutoCommit::new();
     // SAFETY: this fixture exclusively owns an unchanged live tree; each target is a distinct leaf.
@@ -947,7 +954,9 @@ fn same_record_reentry_reuses_the_borrow_and_cross_record_reentry_is_refused() {
                     same[1],
                     doc,
                     &ROOT,
-                    |widget, doc, root| widget.perform_action(&ui::a11y::Action::Focus, doc, root),
+                    |widget, doc, root| {
+                        widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, root)
+                    },
                 )
                 .unwrap();
                 assert!(matches!(
@@ -973,7 +982,7 @@ fn replacement_cancels_admitted_work_and_refuses_the_old_node_before_dereference
     let mut tile = TileHost::from_component(component(&host, 1));
     let mut tree = taffy::TaffyTree::new();
     let mut nodes = HashMap::new();
-    let layout = tile.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
+    let layout = tile.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
     let mut bindings = BoundNodeMap::new();
     // SAFETY: admission inspects only this matching live layout.
     unsafe {
@@ -991,7 +1000,7 @@ fn replacement_cancels_admitted_work_and_refuses_the_old_node_before_dereference
             &ROOT
         )
         .unwrap(),
-        Some(ui::widget::ResourceOperationStart::Accepted)
+        Some(tilo_ui::widget::ResourceOperationStart::Accepted)
     ));
     CANCELLED.set(0);
     CLOSED_DROPS.set(0);
@@ -1023,21 +1032,21 @@ fn driver_retains_both_replacement_failures_and_retries_after_the_last_tile_drop
     let host = ProbeHost::new();
     let component = component(&host, 1);
     let checkout = component.record().clone();
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+    let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
         "en-US",
     );
     let replace = std::rc::Rc::new(Cell::new(false));
-    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
-        ui::State::new(),
+    let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        tilo_ui::State::new(),
         Box::new(ReplacingHost(
             TileHost::from_component(component),
             replace.clone(),
         )),
         (400, 300),
-        ui::Theme::dark(),
-        ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
-        ui::permissions::UserId("probe-author".into()),
+        tilo_ui::Theme::dark(),
+        tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
+        tilo_ui::permissions::UserId("probe-author".into()),
     );
     host.records.try_flush().unwrap();
     let record_path = app_state::DocStore::room_record_dir_at(
@@ -1130,7 +1139,7 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
             sender.send(event).unwrap();
         })
         .unwrap();
-    let mut outer = ui::wake::WakeScope::new();
+    let mut outer = tilo_ui::wake::WakeScope::new();
     let (tx, rx) = std::sync::mpsc::channel();
     outer
         .bind(move |event| {
@@ -1163,18 +1172,18 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
         TASKS.with_borrow_mut(Vec::clear);
         match callback {
             Callback::DrawPermissions => {
-                let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+                let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
                     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
                     "en-US",
                 );
-                let mut renderer = ui::TextRenderer::with_font_catalog(&catalog).unwrap();
+                let mut renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
                 tile.draw_with_presence(
                     &mut vello::Scene::new(),
                     vello::kurbo::Affine::IDENTITY,
                     &mut renderer,
-                    &ui::Theme::dark(),
-                    &ui::PresenceCtx::empty(),
-                    &ui::permissions::PermissionContext::permissive(),
+                    &tilo_ui::Theme::dark(),
+                    &tilo_ui::PresenceCtx::empty(),
+                    &tilo_ui::permissions::PermissionContext::permissive(),
                 );
             }
 
@@ -1201,8 +1210,8 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
                 tile.take_control_invocation();
             }
             Callback::Mount => {
-                tile.mount_native_views(&ui::widget::native_view::NativeViewHost::headless(
-                    ui::platform::PlatformConventions::default(),
+                tile.mount_native_views(&tilo_ui::widget::native_view::NativeViewHost::headless(
+                    tilo_ui::platform::PlatformConventions::default(),
                     1.0,
                 ));
             }
@@ -1211,7 +1220,9 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
             Callback::Capture => {
                 tile.view_state();
             }
-            Callback::Restore => tile.restore_view_state(&ui::view::ViewContribution::default()),
+            Callback::Restore => {
+                tile.restore_view_state(&tilo_ui::view::ViewContribution::default());
+            }
             Callback::HostIntent => {
                 tile.take_host_intent();
             }
@@ -1228,7 +1239,7 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
         }
     }
     COMMAND_CALLS.set(0);
-    let ui::widget::TileContent::App(root) = tile.content() else {
+    let tilo_ui::widget::TileContent::App(root) = tile.content() else {
         panic!("missing component")
     };
     assert!(root.commands().is_empty());
@@ -1238,12 +1249,12 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
         "canonical path consulted legacy producer"
     );
     assert!(!LEGACY_INVOKED.get());
-    let legacy = TileHost::new(ui::widget::TileContent::App(Box::new(Root(
+    let legacy = TileHost::new(tilo_ui::widget::TileContent::App(Box::new(Root(
         Column::new(),
         "legacy".into(),
         false,
     ))));
-    let ui::widget::TileContent::App(root) = legacy.content() else {
+    let tilo_ui::widget::TileContent::App(root) = legacy.content() else {
         panic!("missing legacy root")
     };
     let commands = root.commands();
@@ -1299,7 +1310,7 @@ fn layout_only_descendant_inherits_the_taffy_boundary_and_two_mounts_stay_indepe
         .push(Box::new(TileHost::from_component(second)));
     let mut tree = taffy::TaffyTree::new();
     let mut nodes = HashMap::new();
-    let layout = root.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
+    let layout = root.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
     let mut bindings = BoundNodeMap::new();
     let mut shell = AutoCommit::new();
     shell.put(ROOT, "marker", "shell").unwrap();
@@ -1316,7 +1327,7 @@ fn layout_only_descendant_inherits_the_taffy_boundary_and_two_mounts_stay_indepe
                 &ROOT,
                 |widget, doc, path| {
                     if widget.name() == "Leaf" {
-                        widget.perform_action(&ui::a11y::Action::Focus, doc, path);
+                        widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, path);
                     }
                 },
             )
@@ -1352,7 +1363,7 @@ fn cancellation_unwind_and_ordinary_drop_destroy_operation_captures_under_closed
         let mut tile = TileHost::from_component(component);
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
-        let node = tile.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
+        let node = tile.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
         let mut bindings = BoundNodeMap::new();
         // SAFETY: this admission uses the fixture's live matching topology.
         unsafe {
@@ -1420,14 +1431,14 @@ fn nested_factory(
     mut context: HostContext,
     _: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, ui::launch::LaunchError> {
+) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
     let record = context.record().id.as_str().to_owned();
     context
         .initialize_new_record(|doc| {
             doc.put(ROOT, "marker", record.clone())
                 .map_err(|e| e.to_string())
         })
-        .map_err(ui::launch::LaunchError::Record)?;
+        .map_err(tilo_ui::launch::LaunchError::Record)?;
     let child = NESTED.with_borrow_mut(Option::take).unwrap();
     let tile = TileHost::from_component(child);
     let child: Box<dyn Widget> = if let Some(replace) = NESTED_REPLACE.with_borrow_mut(Option::take)
@@ -1481,9 +1492,9 @@ fn factory_then_error(
     context: HostContext,
     target: LaunchTarget,
     restore: RestoreInput,
-) -> Result<AppComponent, ui::launch::LaunchError> {
+) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
     let _owned = factory(context, target, restore)?;
-    Err(ui::launch::LaunchError::Operation(
+    Err(tilo_ui::launch::LaunchError::Operation(
         "controlled post-owner error".into(),
     ))
 }
@@ -1495,7 +1506,7 @@ fn factory_then_unwind(
     context: HostContext,
     target: LaunchTarget,
     restore: RestoreInput,
-) -> Result<AppComponent, ui::launch::LaunchError> {
+) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
     let _owned = factory(context, target, restore)?;
     panic!("controlled post-owner unwind")
 }
@@ -1503,7 +1514,7 @@ fn factory_then_unwind(
 fn owned_factory_error_restore_error_suspend_and_unwind_keep_drop_captures_closed() {
     let host = ProbeHost::new();
     for create in [
-        factory_then_error as ui::application::ComponentFactory,
+        factory_then_error as tilo_ui::application::ComponentFactory,
         factory_then_unwind,
     ] {
         CLOSED_DROPS.set(0);
@@ -1569,17 +1580,18 @@ impl Widget for ReplacingHost {
     }
     fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
         if self.1.replace(false) {
-            self.0.replace_content(ui::widget::TileContent::Notice {
-                title: "Closed".into(),
-                detail: "Fixture replacement".into(),
-            });
+            self.0
+                .replace_content(tilo_ui::widget::TileContent::Notice {
+                    title: "Closed".into(),
+                    detail: "Fixture replacement".into(),
+                });
         }
         self.0.update(doc, path)
     }
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
-        theme: &ui::Theme,
+        theme: &tilo_ui::Theme,
         nodes: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         let child = self.0.build_layout(tree, theme, nodes);
@@ -1599,9 +1611,9 @@ impl Widget for ReplacingHost {
         &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::PresenceCtx,
+        text: &mut tilo_ui::TextRenderer,
+        theme: &tilo_ui::Theme,
+        presence: &tilo_ui::PresenceCtx,
     ) {
         self.0.draw(scene, transform, text, theme, presence);
     }
@@ -1641,7 +1653,7 @@ impl Widget for SameNameUnregisteredWrapper {
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
-        theme: &ui::Theme,
+        theme: &tilo_ui::Theme,
         nodes: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.0.build_layout(tree, theme, nodes)
@@ -1658,9 +1670,9 @@ impl Widget for SameNameUnregisteredWrapper {
         &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::PresenceCtx,
+        text: &mut tilo_ui::TextRenderer,
+        theme: &tilo_ui::Theme,
+        presence: &tilo_ui::PresenceCtx,
     ) {
         self.0.draw(scene, transform, text, theme, presence);
     }
@@ -1694,18 +1706,18 @@ impl Widget for SameNameUnregisteredWrapper {
     }
 }
 
-fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> ui::headless::Driver {
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> tilo_ui::headless::Driver {
+    let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
         "en-US",
     );
-    ui::headless::Driver::new_with_controlled_inputs(
-        ui::State::new(),
+    tilo_ui::headless::Driver::new_with_controlled_inputs(
+        tilo_ui::State::new(),
         root,
         viewport,
-        ui::Theme::dark(),
-        ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
-        ui::permissions::UserId("probe-author".into()),
+        tilo_ui::Theme::dark(),
+        tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
+        tilo_ui::permissions::UserId("probe-author".into()),
     )
 }
 
@@ -1738,7 +1750,7 @@ fn driver_tile_paint_observes_current_component_permissions() {
         CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
         "ordinary Driver paint did not reach the permission-aware root"
     );
-    *permissions.borrow_mut() = ui::permissions::PermissionContext::permissive();
+    *permissions.borrow_mut() = tilo_ui::permissions::PermissionContext::permissive();
     EXPECTED_WRITE.set(true);
     CAPTURES.with_borrow_mut(Vec::clear);
     driver.relayout();
@@ -1753,10 +1765,10 @@ fn fill_factory(
     mut context: HostContext,
     _: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, ui::launch::LaunchError> {
+) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
     context
         .initialize_new_record(|_| Ok(()))
-        .map_err(ui::launch::LaunchError::Record)?;
+        .map_err(tilo_ui::launch::LaunchError::Record)?;
     Ok(AppComponent::new(
         context,
         Box::new(Root(Column::new().with_no_padding(), String::new(), false)),
@@ -1781,11 +1793,13 @@ fn canonical_fill_geometry_matches_legacy_tile_at_multiple_viewports() {
             viewport,
         );
         let legacy = controlled_driver(
-            Box::new(
-                Column::new().push(Box::new(TileHost::new(ui::widget::TileContent::App(
-                    Box::new(Root(Column::new().with_no_padding(), String::new(), false)),
-                )))),
-            ),
+            Box::new(Column::new().push(Box::new(TileHost::new(
+                tilo_ui::widget::TileContent::App(Box::new(Root(
+                    Column::new().with_no_padding(),
+                    String::new(),
+                    false,
+                ))),
+            )))),
             viewport,
         );
         let actual = canonical.targets()["dispatch-root"];
@@ -1907,7 +1921,7 @@ fn nested_replacement_reports_reach_driver_while_parent_remains_open() {
     report.retry_view().unwrap();
     report.retry_record().unwrap();
     assert!(report.view_retry.is_none() && report.record_retry.is_none());
-    let mut owners = ui::record::RecordOwners::new(child_host.temp.path().join("state"));
+    let mut owners = tilo_ui::record::RecordOwners::new(child_host.temp.path().join("state"));
     let saved = owners
         .open(
             crate::support::application::APP,
@@ -1936,9 +1950,13 @@ fn mutable_container_traversal_invokes_legacy_fallback_once() {
     for accept in [true, false] {
         LEGACY_START.set(Some(accept));
         LEGACY_START_CALLS.set(0);
-        let mut tree = Column::new().push(Box::new(ui::widget::Row::new().push(Box::new(
-            ui::widget::Container::new().with_child(Box::new(TileHost::new(
-                ui::widget::TileContent::App(Box::new(Root(Column::new(), String::new(), false))),
+        let mut tree = Column::new().push(Box::new(tilo_ui::widget::Row::new().push(Box::new(
+            tilo_ui::widget::Container::new().with_child(Box::new(TileHost::new(
+                tilo_ui::widget::TileContent::App(Box::new(Root(
+                    Column::new(),
+                    String::new(),
+                    false,
+                ))),
             ))),
         ))));
         let result = tree
@@ -1964,9 +1982,9 @@ fn mutable_container_traversal_invokes_legacy_fallback_once() {
 #[test]
 fn legacy_bound_mutable_admission_edits_only_its_record_and_refuses_missing_or_busy() {
     let host = ProbeHost::new();
-    let checkout = ui::record::RecordCheckout::new(
-        ui::record::RecordId::minted(),
-        ui::record::RecordKind::new("probe"),
+    let checkout = tilo_ui::record::RecordCheckout::new(
+        tilo_ui::record::RecordId::minted(),
+        tilo_ui::record::RecordKind::new("probe"),
     );
     host.records
         .reserve_record(&checkout)
@@ -1976,9 +1994,9 @@ fn legacy_bound_mutable_admission_edits_only_its_record_and_refuses_missing_or_b
                 .map_err(|error| error.to_string())
         })
         .unwrap();
-    let missing = ui::record::RecordCheckout::new(
-        ui::record::RecordId::minted(),
-        ui::record::RecordKind::new("probe"),
+    let missing = tilo_ui::record::RecordCheckout::new(
+        tilo_ui::record::RecordId::minted(),
+        tilo_ui::record::RecordKind::new("probe"),
     );
     let mut outer = AutoCommit::new();
     outer.put(ROOT, "marker", "outer-A").unwrap();
@@ -1989,14 +2007,14 @@ fn legacy_bound_mutable_admission_edits_only_its_record_and_refuses_missing_or_b
     LEGACY_DOCUMENTS.with_borrow_mut(Vec::clear);
     let mut outcomes = vec![];
     for requested in [&checkout, &missing, &checkout] {
-        let mut tile = TileHost::new(ui::widget::TileContent::App(Box::new(Root(
+        let mut tile = TileHost::new(tilo_ui::widget::TileContent::App(Box::new(Root(
             Column::new(),
             String::new(),
             false,
         ))));
         tile.bind_record(host.records.clone(), requested.clone());
-        let mut tree = Column::new().push(Box::new(ui::widget::Row::new().push(Box::new(
-            ui::widget::Container::new().with_child(Box::new(tile)),
+        let mut tree = Column::new().push(Box::new(tilo_ui::widget::Row::new().push(Box::new(
+            tilo_ui::widget::Container::new().with_child(Box::new(tile)),
         ))));
         let mut invoke = || {
             tree.start_resource_operation_with_document(
@@ -2023,15 +2041,15 @@ fn legacy_bound_mutable_admission_edits_only_its_record_and_refuses_missing_or_b
     );
     assert!(matches!(
         outcomes[0],
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(_)))
+        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(_)))
     ));
     assert_eq!(
         outcomes[1].as_ref().unwrap_err(),
-        &ui::record::RecordOpenError::MissingRecord.to_string()
+        &tilo_ui::record::RecordOpenError::MissingRecord.to_string()
     );
     assert_eq!(
         outcomes[2].as_ref().unwrap_err(),
-        &ui::record::RecordOpenError::Busy.to_string()
+        &tilo_ui::record::RecordOpenError::Busy.to_string()
     );
     assert!(outer.get(ROOT, "legacy-follow-up").unwrap().is_none());
     assert!(
@@ -2054,17 +2072,17 @@ fn legacy_bound_mutable_admission_edits_only_its_record_and_refuses_missing_or_b
 )]
 fn legacy_mutable_admission_follows_new_intent_only_after_checked_resolution() {
     let host = ProbeHost::new();
-    let first = ui::record::RecordCheckout::new(
-        ui::record::RecordId::minted(),
-        ui::record::RecordKind::new("probe"),
+    let first = tilo_ui::record::RecordCheckout::new(
+        tilo_ui::record::RecordId::minted(),
+        tilo_ui::record::RecordKind::new("probe"),
     );
-    let next = ui::record::RecordCheckout::new(
-        ui::record::RecordId::minted(),
-        ui::record::RecordKind::new("probe"),
+    let next = tilo_ui::record::RecordCheckout::new(
+        tilo_ui::record::RecordId::minted(),
+        tilo_ui::record::RecordKind::new("probe"),
     );
-    let missing = ui::record::RecordCheckout::new(
-        ui::record::RecordId::minted(),
-        ui::record::RecordKind::new("probe"),
+    let missing = tilo_ui::record::RecordCheckout::new(
+        tilo_ui::record::RecordId::minted(),
+        tilo_ui::record::RecordKind::new("probe"),
     );
     for (checkout, marker) in [(&first, "bound-B"), (&next, "selected-C")] {
         host.records
@@ -2079,14 +2097,14 @@ fn legacy_mutable_admission_follows_new_intent_only_after_checked_resolution() {
     LEGACY_MUTABLE.set(true);
     LEGACY_DOCUMENTS.with_borrow_mut(Vec::clear);
     LEGACY_SCOPES.with_borrow_mut(Vec::clear);
-    let mut tile = TileHost::new(ui::widget::TileContent::App(Box::new(Root(
+    let mut tile = TileHost::new(tilo_ui::widget::TileContent::App(Box::new(Root(
         Column::new(),
         String::new(),
         false,
     ))));
     tile.bind_record(host.records.clone(), first.clone());
-    let mut tree = Column::new().push(Box::new(ui::widget::Row::new().push(Box::new(
-        ui::widget::Container::new().with_child(Box::new(tile)),
+    let mut tree = Column::new().push(Box::new(tilo_ui::widget::Row::new().push(Box::new(
+        tilo_ui::widget::Container::new().with_child(Box::new(tile)),
     ))));
     let mut outer = AutoCommit::new();
     outer.put(ROOT, "marker", "outer-A").unwrap();
@@ -2105,9 +2123,9 @@ fn legacy_mutable_admission_follows_new_intent_only_after_checked_resolution() {
     LEGACY_INTENT.with_borrow_mut(|intent| *intent = Some(missing));
     let absent = invoke();
     LEGACY_INTENT.with_borrow_mut(|intent| {
-        *intent = Some(ui::record::RecordCheckout::new(
+        *intent = Some(tilo_ui::record::RecordCheckout::new(
             next.id.clone(),
-            ui::record::RecordKind::new("wrong-kind"),
+            tilo_ui::record::RecordKind::new("wrong-kind"),
         ));
     });
     let mismatched = invoke();
@@ -2118,23 +2136,23 @@ fn legacy_mutable_admission_follows_new_intent_only_after_checked_resolution() {
     LEGACY_MUTABLE.set(false);
     assert!(matches!(
         selected,
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(_)))
+        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(_)))
     ));
     assert_eq!(
         absent.as_ref().unwrap_err(),
-        &ui::record::RecordOpenError::MissingRecord.to_string()
+        &tilo_ui::record::RecordOpenError::MissingRecord.to_string()
     );
     assert_eq!(
         mismatched.as_ref().unwrap_err(),
-        &ui::record::RecordOpenError::IdentityMismatch.to_string()
+        &tilo_ui::record::RecordOpenError::IdentityMismatch.to_string()
     );
     assert_eq!(
         busy.as_ref().unwrap_err(),
-        &ui::record::RecordOpenError::Busy.to_string()
+        &tilo_ui::record::RecordOpenError::Busy.to_string()
     );
     assert!(matches!(
         retained,
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(_)))
+        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(_)))
     ));
     assert_eq!(
         LEGACY_DOCUMENTS.with_borrow(Clone::clone),
@@ -2176,8 +2194,11 @@ fn task4_driver_qualified_equal_resource_ids_use_their_record_and_view_owner() {
     let host = ProbeHost::new();
     let definition = definition(action_probe_factory);
     let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "probe-author"),
+        tilo_ui::permissions::PermissionContext::from_capabilities(
+            tilo_ui::permissions::Actor::person(
+                Some(tilo_ui::permissions::Role::Owner),
+                "probe-author",
+            ),
             vec![],
         )
         .at_unix_time(100),
@@ -2200,12 +2221,12 @@ fn task4_driver_qualified_equal_resource_ids_use_their_record_and_view_owner() {
             RestoreInput::None,
         )
         .unwrap();
-    let column = ui::widget::Column::new()
+    let column = tilo_ui::widget::Column::new()
         .push(Box::new(TileHost::from_component(first)))
         .push(Box::new(TileHost::from_component(second)));
     let mut driver = controlled_driver(Box::new(column), (200, 100));
     let outer = driver.state_mut().doc.get_heads();
-    let address = |instance_id, action| ui::bound_dispatch::BoundActionAddress {
+    let address = |instance_id, action| tilo_ui::bound_dispatch::BoundActionAddress {
         instance_id,
         address: tilo_actions::ActionAddress::new("probe:shared", action),
     };
@@ -2281,14 +2302,14 @@ fn task4_driver_unqualified_control_selects_or_refuses_bound_targets() {
         let _subscriber = tracing::subscriber::set_default(subscriber);
         let host = ProbeHost::new();
         let definition = definition(action_probe_factory);
-        let mut column = ui::widget::Column::new();
+        let mut column = tilo_ui::widget::Column::new();
         let mut records = Vec::new();
         for instance in 11..13 {
             let allowed = instance < 11_u64.saturating_add(authorized);
             let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-                ui::permissions::PermissionContext::from_capabilities(
-                    ui::permissions::Actor::person(
-                        allowed.then_some(ui::permissions::Role::Owner),
+                tilo_ui::permissions::PermissionContext::from_capabilities(
+                    tilo_ui::permissions::Actor::person(
+                        allowed.then_some(tilo_ui::permissions::Role::Owner),
                         "probe-author",
                     ),
                     vec![],
@@ -2332,7 +2353,7 @@ fn task4_driver_unqualified_control_selects_or_refuses_bound_targets() {
         }
         let outer = driver.state_mut().doc.get_heads();
         driver
-            .perform_named("outer-edit", &ui::a11y::Action::Activate)
+            .perform_named("outer-edit", &tilo_ui::a11y::Action::Activate)
             .unwrap();
         for (index, checkout) in records.iter().enumerate() {
             host.records
@@ -2390,12 +2411,12 @@ fn assert_same_name_inline_wrapper_refused() {
     for id in ["ambiguous-wrapper", "ambiguous-child"] {
         assert!(
             driver
-                .perform_named(id, &ui::a11y::Action::Activate)
+                .perform_named(id, &tilo_ui::a11y::Action::Activate)
                 .is_err()
         );
         assert!(
             driver
-                .expect(&ui::headless::SemanticExpectation::named(id))
+                .expect(&tilo_ui::headless::SemanticExpectation::named(id))
                 .is_err()
         );
     }
@@ -2431,11 +2452,11 @@ fn prepared_runner_nested_mount_failure_retains_each_original_report_once() {
         let paths = [host.view_path(1), host.view_path(2)];
         drop(host.views);
         let error = if native {
-            ui::App::from_component(parent, crate::support::application::runner_inputs())
+            tilo_ui::App::from_component(parent, crate::support::application::runner_inputs())
                 .err()
                 .unwrap()
         } else {
-            ui::headless::Driver::from_component(
+            tilo_ui::headless::Driver::from_component(
                 parent,
                 (320, 180),
                 crate::support::application::runner_inputs(),
@@ -2443,7 +2464,7 @@ fn prepared_runner_nested_mount_failure_retains_each_original_report_once() {
             .err()
             .unwrap()
         };
-        let ui::launch::LaunchError::ComponentSetup { mut reports, .. } = error else {
+        let tilo_ui::launch::LaunchError::ComponentSetup { mut reports, .. } = error else {
             panic!("missing setup recovery");
         };
         assert_eq!(reports.len(), 2);
