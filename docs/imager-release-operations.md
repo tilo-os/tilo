@@ -12,6 +12,13 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 | `imager-macos-x86_64` | Intel macOS | Xcode CLI tools, Rust, Cap'n Proto compiler, `hdiutil`, `notarytool`, Homebrew |
 | `imager-macos-aarch64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
 
+Manual installer-only rehearsals do not need those release labels: dispatch
+`release-imager.yml` with `installer_only=true` and `full_native=true`. The
+workflow uses the native `runner-disk-100g` and `runner-disk-100g-arm64` KVM
+lanes for erase, prepared-alongside, and guided-alongside cycles, while skipping
+host packaging and every publication job. Tagged releases still require the
+dedicated six-platform fleet above.
+
 Use Forgejo 15 or newer and Forgejo Runner 12.5 or newer. Register every host at
 **repository scope** (`qos/qos`), select ephemeral mode, expose exactly one of
 the labels above as `<label>:host`, and start it with `forgejo-runner one-job`.

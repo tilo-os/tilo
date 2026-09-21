@@ -48,7 +48,7 @@ class EnabledImagerPlatforms(unittest.TestCase):
     def test_full_native_and_tags_require_both_macos_architectures(self):
         macos = section(self.workflow, "macos", 2)
         self.assertIn(
-            "    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'",
+            "    if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')",
             macos,
         )
         for arch in ("x86_64", "aarch64"):
