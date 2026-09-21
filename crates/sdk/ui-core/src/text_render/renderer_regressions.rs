@@ -453,7 +453,12 @@ fn clipped_rich_text_reduces_encoded_glyphs_and_preserves_exact_pixels() {
         candidate.encoding().resources.glyphs.len() * 4
             < reference.encoding().resources.glyphs.len()
     );
-    let mut gpu = crate::offscreen::OffscreenRenderer::new(220, 160);
+    // Exact byte equality requires deterministic path preprocessing. The
+    // production GPU path can vary a few antialiasing bytes as atomic segment
+    // allocation changes summation order; the matrix test below measures that
+    // mode separately against the reference's own observed range.
+    let mut gpu =
+        crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(220, 160, true).unwrap();
     let expected = gpu.render(&reference, Color::BLACK);
     let actual = gpu.render(&candidate, Color::BLACK);
     assert_eq!(
