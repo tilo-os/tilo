@@ -1306,6 +1306,7 @@ enum AccessibleOverlay {
     TabContextMenu,
     PowerMenu,
     CommandPalette,
+    Overview,
     MemberSheet,
     WorkspaceSettings,
     Collaborators,
@@ -1403,6 +1404,7 @@ impl TabContextMenu {
 struct OverlayInputs {
     search_registry: crate::shell::search::SearchRegistry,
     app_launcher: AppLauncher,
+    launch_lifecycle_enabled: bool,
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     collaboration_preferences: CollaborationPreferences,
     shortcut_config: settings_store::hardware::ShortcutConfig,
@@ -1489,6 +1491,10 @@ pub struct ShellOverlayHost {
     /// Starts an installed desktop app through the session launcher. Kept as
     /// an explicit service so fixture hosts can remain process-free.
     app_launcher: AppLauncher,
+    /// Whether this host owns the process-global launcher event and pending
+    /// notice lifecycle. Bare fixture hosts opt out unless a lifecycle test
+    /// explicitly enables this one service.
+    launch_lifecycle_enabled: bool,
     /// Backs the current palette entries, indexed in lock-step with
     /// `palette.entries` so Enter/click resolves by ordinal.
     search_results: Vec<crate::shell::search::SearchResult>,
@@ -2461,7 +2467,7 @@ impl ShellOverlayHost {
     }
 
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
-        let mut order = Vec::with_capacity(7);
+        let mut order = Vec::with_capacity(10);
         let flags = self.overlay_flags();
         if self.tab_menu.is_open() {
             order.push(AccessibleOverlay::TabContextMenu);
@@ -2475,6 +2481,9 @@ impl ShellOverlayHost {
         // leaving screen readers with only the obscured workspace.
         if self.palette_visible {
             order.push(AccessibleOverlay::CommandPalette);
+        }
+        if flags.overview {
+            order.push(AccessibleOverlay::Overview);
         }
         if self.workspace_settings_overlay.member_sheet_is_open() {
             order.push(AccessibleOverlay::MemberSheet);
@@ -2600,6 +2609,7 @@ impl ShellOverlayHost {
                         display_name,
                     );
                 }),
+                launch_lifecycle_enabled: true,
                 room_records,
                 collaboration_preferences: CollaborationPreferences::load(),
                 shortcut_config: settings_store::hardware::ShortcutConfig::load(),
@@ -2648,6 +2658,7 @@ impl ShellOverlayHost {
             OverlayInputs {
                 search_registry,
                 app_launcher: std::rc::Rc::new(|_, _, _| {}),
+                launch_lifecycle_enabled: false,
                 room_records,
                 collaboration_preferences: CollaborationPreferences::from_values(
                     &serde_json::Map::new(),
@@ -2715,6 +2726,7 @@ impl ShellOverlayHost {
             palette_visible: false,
             search_registry: inputs.search_registry,
             app_launcher: inputs.app_launcher,
+            launch_lifecycle_enabled: inputs.launch_lifecycle_enabled,
             search_results: Vec::new(),
             pending_palette_action: None,
             pending_action_admissions: Vec::new(),
@@ -2851,6 +2863,15 @@ impl ShellOverlayHost {
     #[must_use]
     pub fn with_onboarding(mut self, identity_dir: std::path::PathBuf) -> Self {
         self.onboarding = Some(crate::onboarding_view::OnboardingView::new(identity_dir));
+        self
+    }
+
+    /// Enable the real process-global launcher handoff on an otherwise
+    /// deterministic fixture host. Callers must serialize and clean the
+    /// launcher state they exercise.
+    #[cfg(test)]
+    fn with_launch_lifecycle_for_tests(mut self) -> Self {
+        self.launch_lifecycle_enabled = true;
         self
     }
 
@@ -5321,7 +5342,7 @@ impl ShellOverlayHost {
     /// launch/exit is silent — the window is the feedback). Returns whether
     /// anything was posted, so the caller can mark the frame dirty.
     pub(crate) fn drain_launch_events(&mut self) -> bool {
-        if self.desktop_controls.is_explicit() {
+        if !self.launch_lifecycle_enabled {
             return false;
         }
         use crate::shell::launcher::LaunchEventKind;
@@ -5499,7 +5520,7 @@ impl ShellOverlayHost {
     /// tab counts — what settles it is the app's first frame or placeholder
     /// card, whichever shows first, handing over to the window's own place.
     pub(crate) fn retire_notices_for_opened_windows(&self) -> bool {
-        if self.desktop_controls.is_explicit() {
+        if !self.launch_lifecycle_enabled {
             return false;
         }
         let pending = crate::shell::catalogue::pending_notices();
@@ -10986,6 +11007,9 @@ impl ShellOverlayHost {
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
+        if self.palette_visible || !self.overlay_flags().ws_settings {
+            return false;
+        }
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -15199,6 +15223,34 @@ impl Widget for ShellOverlayHost {
                         root.children.push(palette);
                     }
                 }
+                AccessibleOverlay::Overview => {
+                    let mut overview = AccessNode::new(Role::Dialog)
+                        .with_name("Workspace overview")
+                        .with_bounds(self.overview_panel_rect())
+                        .with_state(AccessState::new().modal(true));
+                    let cards = self.overview_cards();
+                    for (index, card) in cards.iter().enumerate() {
+                        let bounds = self.overview_row_rect(index);
+                        if self.hit_test_overview(bounds.center()) == Some(index) {
+                            overview.children.push(
+                                AccessNode::new(Role::Button)
+                                    .with_name(&card.name)
+                                    .with_bounds(bounds),
+                            );
+                        }
+                    }
+                    let add = self.overview_add_workspace_rect_for(cards.len());
+                    if add.y0 >= self.overview_list_top()
+                        && add.y1 <= self.overview_content_rect().y1
+                    {
+                        overview.children.push(
+                            AccessNode::new(Role::Button)
+                                .with_name("New workspace")
+                                .with_bounds(add),
+                        );
+                    }
+                    root.children.push(overview);
+                }
                 AccessibleOverlay::MemberSheet => root.children.push(
                     AccessNode::new(Role::Dialog)
                         .with_name("Workspace permission decision")
@@ -15210,6 +15262,7 @@ impl Widget for ShellOverlayHost {
                 AccessibleOverlay::WorkspaceSettings => {
                     let mut settings = AccessNode::new(Role::Dialog)
                         .with_name("Workspace settings")
+                        .with_bounds(self.workspace_settings_overlay.rect())
                         .with_description(
                             "Workspace identity, people, permissions, apps, files, and signed ownership governance.",
                         )
@@ -15218,6 +15271,7 @@ impl Widget for ShellOverlayHost {
                         settings.children.push(
                             AccessNode::new(Role::Button)
                                 .with_name("Manage workspace ownership")
+                                .with_bounds(self.workspace_settings_overlay.ownership_action_rect())
                                 .with_description(
                                     "Open the same signed ownership actions available to search and automation. Recipient acceptance immediately completes a pending transfer.",
                                 ),
@@ -15993,11 +16047,32 @@ impl Widget for ShellOverlayHost {
                 });
                 notification_action.or_else(|| self.qs_root.accessibility_rect_for_path(child_path))
             }
-            AccessibleOverlay::WorkspaceSettings => match child_path {
-                [] => Some(self.workspace_settings_overlay.rect()),
-                [0] => Some(self.workspace_settings_overlay.ownership_action_rect()),
-                _ => None,
-            },
+            AccessibleOverlay::WorkspaceSettings => {
+                let root = self.accessibility()?;
+                let mut node = root.children.get(overlay_index)?;
+                for index in child_path {
+                    node = node.children.get(*index)?;
+                }
+                (!node.state.hidden)
+                    .then(|| node.bounds.map(ui::AccessBounds::to_rect))
+                    .flatten()
+            }
+            AccessibleOverlay::Overview => {
+                let node = self
+                    .accessibility()?
+                    .children
+                    .into_iter()
+                    .find(|node| node.name.as_deref() == Some("Workspace overview"))?;
+                match child_path {
+                    [] => node.bounds.map(ui::AccessBounds::to_rect),
+                    [index] => node
+                        .children
+                        .get(*index)?
+                        .bounds
+                        .map(ui::AccessBounds::to_rect),
+                    _ => None,
+                }
+            }
             AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => None,
         }
     }
@@ -16066,14 +16141,41 @@ impl Widget for ShellOverlayHost {
                 }
             }
             AccessibleOverlay::WorkspaceSettings => {
-                matches!(child_path, [0])
-                    && self
-                        .workspace_settings_overlay
-                        .ownership_action_rect()
-                        .area()
-                        > 0.0
+                let ownership = self
+                    .workspace_settings_overlay
+                    .ownership_action_rect()
+                    .area()
+                    > 0.0;
+                if ownership && matches!(child_path, [0]) {
+                    return true;
+                }
+                let Some(chrome) = self.chrome.as_ref() else {
+                    return false;
+                };
+                let mut state = chrome.borrow_mut();
+                let name = self.workspace_settings_overlay.name_rect();
+                let body = self.workspace_settings_overlay.general_body_rect();
+                if child_path != [usize::from(ownership)]
+                    || name.y0 < body.y0
+                    || name.y1 > body.y1
+                    || !matches!(state.ws_settings_tab, WsTab::General)
+                {
+                    return false;
+                }
+                let name = state
+                    .tree()
+                    .active_workspace()
+                    .map(|workspace| workspace.name.clone())
+                    .unwrap_or_default();
+                state.editing_workspace_name_selection =
+                    ui::text_selection::Selection::collapsed(name.len());
+                state.editing_workspace_name = Some(name);
+                state.bump();
+                true
             }
-            AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => false,
+            AccessibleOverlay::Overview
+            | AccessibleOverlay::MemberSheet
+            | AccessibleOverlay::ShortcutHelp => false,
         }
     }
 
@@ -16874,8 +16976,14 @@ impl ShellOverlayHost {
         theme: &Theme,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
+        // These immediate-mode overlays use already-scaled theme tokens for
+        // both text and geometry. Do not apply the renderer's widget scale a
+        // second time; restore it before returning to ordinary child widgets.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
         self.draw_overview_overlay(scene, transform, text_renderer, theme, flags.overview);
         self.draw_ws_settings_overlay(scene, transform, text_renderer, theme, flags.ws_settings);
+        text_renderer.set_text_scale(renderer_scale);
     }
 
     /// The room-overview panel: scrim, scale/translate curve, then the
@@ -24051,6 +24159,12 @@ mod palette_dispatch_tests {
         (host, chrome)
     }
 
+    fn launch_lifecycle_host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome)
+    {
+        let (host, chrome) = host_with_chrome();
+        (host.with_launch_lifecycle_for_tests(), chrome)
+    }
+
     #[test]
     fn workspace_rename_owns_reserved_chords_in_production_dispatch() {
         let (mut host, chrome) = host_with_chrome();
@@ -24630,7 +24744,7 @@ mod palette_dispatch_tests {
     #[test]
     #[serial_test::serial(launch_events)]
     fn clean_launch_exit_retires_its_pending_open_notice() {
-        let (mut host, chrome) = host_with_chrome();
+        let (mut host, chrome) = launch_lifecycle_host_with_chrome();
         let package_id = "dev.qos.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,
@@ -25636,7 +25750,7 @@ mod palette_dispatch_tests {
     #[serial_test::serial(launch_events)]
     fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
         const SURFACE: u64 = 918_273;
-        let (h, chrome) = host_with_chrome();
+        let (h, chrome) = launch_lifecycle_host_with_chrome();
         let notice = {
             let mut st = chrome.borrow_mut();
             st.push_notification_full(crate::shell::notification::Notification::new(
@@ -25718,7 +25832,7 @@ mod palette_dispatch_tests {
     #[serial_test::serial(launch_events)]
     fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
         const SURFACE: u64 = 918_274;
-        let (h, chrome) = host_with_chrome();
+        let (h, chrome) = launch_lifecycle_host_with_chrome();
         let notice = {
             let mut st = chrome.borrow_mut();
             st.push_notification_full(crate::shell::notification::Notification::new(
@@ -30242,6 +30356,7 @@ mod tests {
             let st = h.chrome.borrow();
             let mut tree = st.tree_mut();
             for ws in &mut tree.workspaces {
+                ws.surrender_governance();
                 ws.set_owner("somebody-else".to_string());
             }
         }
@@ -30432,8 +30547,9 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         install_gui_fixture(tmp.path(), "dev.qos.zzyzx", "Zzyzx");
+        let previous_apps_data_dir = std::env::var_os("TILO_APPS_DATA_DIR");
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         crate::shell::launcher::invalidate_app_cache();
 
         let mut h = build_harness();
@@ -30490,8 +30606,13 @@ mod tests {
         assert_eq!(hit.id, "dev.qos.zzyzx");
         assert_eq!(hit.title, "Open Zzyzx");
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        // SAFETY: restore the process-wide override before releasing the serial lock.
+        unsafe {
+            match previous_apps_data_dir {
+                Some(value) => std::env::set_var("TILO_APPS_DATA_DIR", value),
+                None => std::env::remove_var("TILO_APPS_DATA_DIR"),
+            }
+        }
         crate::shell::launcher::invalidate_app_cache();
     }
 
