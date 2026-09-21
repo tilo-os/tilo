@@ -7745,30 +7745,6 @@ impl App {
         false
     }
 
-    /// Native Enter/Space fallback, after the focused widget has declined input.
-    fn activate_focused_control_key(&mut self, event: &WindowEvent) -> bool {
-        if !matches!(event, WindowEvent::KeyboardInput { event, .. }
-            if event.state == winit::event::ElementState::Pressed
-                && matches!(event.logical_key, winit::keyboard::Key::Named(
-                    winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space)))
-        {
-            return false;
-        }
-        let Some(fid) = self.focused_node else {
-            return false;
-        };
-        let did = self
-            .dispatch_node(fid, |widget, doc, root| {
-                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
-            })
-            .unwrap_or(false);
-        if did {
-            self.needs_sync = true;
-            self.layout_dirty = true;
-        }
-        did
-    }
-
     fn focus_tab(&mut self, shift: bool) -> bool {
         let len = self.focusable_order.len();
         if len == 0 {
@@ -15005,7 +14981,8 @@ mod action_palette_tests {
                     "focused chrome input must never reach consuming app content"
                 );
                 assert!(!handled, "Button leaves activation to the native fallback");
-                assert!(app.activate_focused_control_key(&event));
+                app.handle_unconsumed_activation_key(&event, &mut handled);
+                assert!(handled);
                 assert_eq!(app.dispatch_control_invocations(), 1);
                 assert_eq!(app.action_palette().is_some(), open_search);
                 assert_eq!(app.document_history.is_open(), !open_search);
