@@ -23,3 +23,10 @@ close-retry = Retry
 close-keep-editing = Keep Editing
 close-broker-disconnected = The save service disconnected. Your document is still open.
 terminal-find-scrollback = Find in scrollback
+
+# Authentication surfaces share the system theme and catalog.
+greeter-brand = Tilo Desktop
+greeter-welcome = Welcome back, { $name }
+greeter-sign-in = Sign in to continue
+greeter-passcode-intro = Enter your passcode to open your desktop.
+lock-welcome-back = Welcome back
