@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 from types import SimpleNamespace
 import threading
+import tempfile
 import time
 import unittest
 from unittest.mock import mock_open, patch
@@ -100,6 +101,61 @@ class RegistryWarmupTests(unittest.TestCase):
         self.assertEqual([call.args for call in sleep.call_args_list],[(2,),(5,)])
 
 
+class PrivateSourceStoreTests(unittest.TestCase):
+    class Endpoint:
+        def __init__(self,value):self.value=value
+        def __str__(self):return self.value
+        def __fspath__(self):return self.value
+        def lstat(self):
+            return SimpleNamespace(st_mode=wrapper.stat.S_IFDIR|0o755,st_uid=0,st_gid=0,
+                                   st_dev=42,st_ino=84)
+
+    class Process:
+        def poll(self):return None
+        def wait(self,timeout=None):return 0
+        def kill(self):pass
+
+    def test_mounts_after_container_start_and_cleans_private_view(self):
+        lower=self.Endpoint('/run/parent');target=self.Endpoint('/var/lib/containers')
+        readonly=SimpleNamespace(f_flag=wrapper.os.ST_RDONLY)
+        calls=[]
+        def invoke(argv,**kwargs):
+            calls.append(argv)
+            if argv[0]=='/usr/bin/findmnt':
+                return SimpleNamespace(returncode=0,stdout=b'fuse.fuse-overlayfs\n')
+            return SimpleNamespace(returncode=0,stdout=b'')
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(wrapper.os,'statvfs',return_value=readonly), \
+                patch.object(wrapper,'_private_directory'), \
+                patch.object(wrapper.subprocess,'Popen',return_value=self.Process()) as popen, \
+                patch.object(wrapper.subprocess,'run',side_effect=invoke):
+            with wrapper.private_source_store_view(lower,target,Path(tmp)):
+                self.assertTrue(any(Path(tmp).iterdir()))
+            self.assertEqual(list(Path(tmp).iterdir()),[])
+        argv=popen.call_args.args[0]
+        self.assertEqual(argv[0:3],['/usr/bin/fuse-overlayfs','-f','-o'])
+        self.assertIn('lowerdir=/run/parent',argv[3])
+        self.assertEqual(argv[-1],'/var/lib/containers')
+        self.assertEqual(calls[-1],["/usr/bin/fusermount3","-u","/var/lib/containers"])
+
+    def test_unmount_failure_is_fatal_but_private_upper_is_removed(self):
+        lower=self.Endpoint('/run/parent');target=self.Endpoint('/var/lib/containers')
+        readonly=SimpleNamespace(f_flag=wrapper.os.ST_RDONLY)
+        def invoke(argv,**kwargs):
+            if argv[0]=='/usr/bin/findmnt':
+                return SimpleNamespace(returncode=0,stdout=b'fuse.fuse-overlayfs\n')
+            return SimpleNamespace(returncode=1,stdout=b'')
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(wrapper.os,'statvfs',return_value=readonly), \
+                patch.object(wrapper,'_private_directory'), \
+                patch.object(wrapper.subprocess,'Popen',return_value=self.Process()), \
+                patch.object(wrapper.subprocess,'run',side_effect=invoke), \
+                self.assertRaisesRegex(ValueError,'did not unmount'):
+            with wrapper.private_source_store_view(lower,target,Path(tmp)):
+                pass
+        self.assertEqual(list(Path(tmp).iterdir()) if Path(tmp).exists() else [],[])
+
+
 class WrapperLifecycleTests(unittest.TestCase):
     class Child:
         def __init__(self,returncode=0,on_wait=None):
@@ -146,12 +202,11 @@ class WrapperLifecycleTests(unittest.TestCase):
         child=self.Child(on_wait=lambda:handlers[signal.SIGTERM](signal.SIGTERM,None))
         with patch.object(wrapper,'require_bound_source'), patch.object(wrapper,'warm',return_value=True), \
                 patch.object(wrapper.signal,'signal',side_effect=set_handler), \
-                patch.object(wrapper.os,'kill') as kill, \
                 patch.object(wrapper.subprocess,'Popen',return_value=child), \
-                self.assertRaisesRegex(AssertionError,'signal propagation returned'):
+                self.assertRaises(wrapper.ForwardedSignal) as raised:
             wrapper.run_bootc(SOURCE,DIGEST,['/usr/bin/bootc','install'])
         self.assertEqual(child.signals,[signal.SIGTERM])
-        kill.assert_called_once_with(os.getpid(),signal.SIGTERM)
+        self.assertEqual(raised.exception.signum,signal.SIGTERM)
 
     def test_failed_warmup_never_starts_bootc_or_heartbeat(self):
         with patch.object(wrapper,'require_bound_source'), patch.object(wrapper,'warm',return_value=False), \
