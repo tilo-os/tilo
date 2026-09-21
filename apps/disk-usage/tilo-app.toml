@@ -1,5 +1,5 @@
 [package]
-id = "dev.tilo.disk-usage"
+id = "so.tilo.disk-usage"
 name = "Disk Usage Analyzer"
 category = "System"
 version = "0.1.0"

@@ -88,7 +88,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.osk", shot_root)
+        &LaunchSpec::new_with_args("so.tilo.osk", shot_root)
             .shot_root(shot_root)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
             .allowed_live_flags(&["--input-method", "--no-input-method"])
@@ -169,7 +169,7 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
     // focus in the live session — driving it from a test harness would inject
     // keystrokes into the user's desktop.
 
-    let (state, autosave) = ui::persist::open("dev.tilo.osk");
+    let (state, autosave) = ui::persist::open("so.tilo.osk");
     let app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
         .with_autosave(autosave)
         .with_window_app_id(osk::KEYBOARD_APP_ID);

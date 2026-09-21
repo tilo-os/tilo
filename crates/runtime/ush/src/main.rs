@@ -3,6 +3,8 @@
 //! - `ush` / `dsh` on the host: build a guest and run a shell in it.
 //! - `pkg`, `perm`, `scan`, `guard`, `quarantine`, `restart` inside a guest:
 //!   the runtime's own commands, symlinks to this binary on the guest's `PATH`.
+//! - `tilo`, `app`, `store`, `system` inside a guest: brokered back to the
+//!   logged-in host session so they update real app/system state.
 //! - `tilo-ush serve`: the session supervisor an app asks for a guest.
 //!
 //! One binary because the guest has to run the *same* build that built its
@@ -49,6 +51,7 @@ fn main() -> ExitCode {
         "guard" => guest::guard(rest),
         "quarantine" => guest::quarantine(rest),
         "restart" => guest::restart(),
+        "tilo" | "app" | "store" | "system" => guest::host_cli(&prog_name, rest),
         "ush" => host(Profile::Ush, rest),
         "dsh" => host(Profile::Dsh, rest),
         _ => dispatch(rest),
@@ -101,6 +104,9 @@ On the host:
   tilo-ush serve [--socket PATH]         hand guests to apps that ask
 
 Inside a guest:
+  tilo update                       update installed apps and the system image
+  app update [APP]                  update apps (`store` is an alias)
+  system update                     update the Tilo system image
   pkg install [--one-time] PKG…    pkg remove PKG…    pkg list
   pkg diff                         pkg inspect PKG    pkg freeze
   pkg burn
@@ -258,6 +264,108 @@ mod guest {
                 println!("{other:?}");
                 0
             }
+        }
+    }
+
+    pub fn host_cli(program: &str, args: &[String]) -> anyhow::Result<i32> {
+        let request = management_request(program, args)?;
+        if requires_confirmation(&request) && !has_yes(args) {
+            use std::io::Write as _;
+            eprint!("Update the host system? [y/N] ");
+            std::io::stderr().flush()?;
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer)?;
+            if !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+                eprintln!("cancelled");
+                return Ok(1);
+            }
+        }
+        match ask(&request)? {
+            Response::Command {
+                code,
+                stdout,
+                stderr,
+            } => {
+                use std::io::Write as _;
+                std::io::stdout().write_all(stdout.as_bytes())?;
+                std::io::stderr().write_all(stderr.as_bytes())?;
+                Ok(code)
+            }
+            Response::Denied { reason } => anyhow::bail!("{reason}"),
+            other => anyhow::bail!("the broker returned an unexpected response: {other:?}"),
+        }
+    }
+
+    fn requires_confirmation(request: &Request) -> bool {
+        matches!(request, Request::SystemUpdate | Request::AllUpdates)
+    }
+
+    fn has_yes(args: &[String]) -> bool {
+        args.iter()
+            .any(|arg| matches!(arg.as_str(), "--yes" | "-y"))
+    }
+
+    fn optional_yes(args: &[String], command: &str) -> anyhow::Result<()> {
+        match args {
+            [] => Ok(()),
+            [flag] if matches!(flag.as_str(), "--yes" | "-y") => Ok(()),
+            _ => anyhow::bail!("{command} accepts only --yes (or -y)"),
+        }
+    }
+
+    fn optional_json(args: &[String], command: &str) -> anyhow::Result<bool> {
+        match args {
+            [] => Ok(false),
+            [flag] if flag == "--json" => Ok(true),
+            _ => anyhow::bail!("{command} accepts only --json"),
+        }
+    }
+
+    fn management_request(program: &str, args: &[String]) -> anyhow::Result<Request> {
+        let (verb, tail): (&str, &[String]) = args
+            .split_first()
+            .map_or(("", &[]), |(verb, tail)| (verb.as_str(), tail));
+        let package = |tail: &[String]| -> anyhow::Result<Option<String>> {
+            anyhow::ensure!(tail.len() <= 1, "update accepts at most one app name");
+            Ok(tail.first().cloned())
+        };
+        match (program, verb) {
+            ("app" | "store", "update" | "u" | "upgrade") => Ok(Request::AppUpdate {
+                package: package(tail)?,
+            }),
+            ("app" | "store", "list" | "ls" | "l") => Ok(Request::AppList {
+                json: optional_json(tail, "app list")?,
+            }),
+            ("app" | "store", "search" | "s" | "find") => match tail {
+                [query] => Ok(Request::AppSearch {
+                    query: query.clone(),
+                }),
+                _ => anyhow::bail!(
+                    "that host command is unavailable from ush; app discovery/update and system status/update are supported"
+                ),
+            },
+            ("app" | "store", "repo") if matches!(tail, [command] if command == "list") => {
+                Ok(Request::AppRepoList)
+            }
+            ("system", "update") => {
+                optional_yes(tail, "system update")?;
+                Ok(Request::SystemUpdate)
+            }
+            ("system", "status") => Ok(Request::SystemStatus {
+                json: optional_json(tail, "system status")?,
+            }),
+            ("tilo", "update") => {
+                optional_yes(tail, "tilo update")?;
+                Ok(Request::AllUpdates)
+            }
+            ("tilo", "status") => Ok(Request::SystemStatus {
+                json: optional_json(tail, "tilo status")?,
+            }),
+            ("tilo", "app" | "store") => management_request("app", tail),
+            ("tilo", "system") => management_request("system", tail),
+            _ => anyhow::bail!(
+                "that host command is unavailable from ush; app discovery/update and system status/update are supported"
+            ),
         }
     }
 
@@ -712,5 +820,86 @@ mod guest {
         // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
         unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
         Ok(0)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn argv(parts: &[&str]) -> Vec<String> {
+            parts.iter().map(|part| (*part).to_string()).collect()
+        }
+
+        #[test]
+        fn management_aliases_and_read_only_operations_are_typed() {
+            assert_eq!(
+                management_request("app", &argv(&["u", "browser"])).unwrap(),
+                Request::AppUpdate {
+                    package: Some("browser".into())
+                }
+            );
+            assert_eq!(
+                management_request("tilo", &argv(&["app", "u", "browser"])).unwrap(),
+                Request::AppUpdate {
+                    package: Some("browser".into())
+                }
+            );
+            assert_eq!(
+                management_request("store", &argv(&["repo", "list"])).unwrap(),
+                Request::AppRepoList
+            );
+            assert_eq!(
+                management_request("app", &argv(&["list", "--json"])).unwrap(),
+                Request::AppList { json: true }
+            );
+            assert_eq!(
+                management_request("app", &argv(&["search", "browser"])).unwrap(),
+                Request::AppSearch {
+                    query: "browser".into()
+                }
+            );
+        }
+
+        #[test]
+        fn system_updates_accept_both_yes_spellings_and_require_confirmation_otherwise() {
+            for flag in ["--yes", "-y"] {
+                let request = management_request("system", &argv(&["update", flag])).unwrap();
+                assert_eq!(request, Request::SystemUpdate);
+                assert!(requires_confirmation(&request));
+                assert!(has_yes(&argv(&["update", flag])));
+            }
+            let request = management_request("tilo", &argv(&["update"])).unwrap();
+            assert_eq!(request, Request::AllUpdates);
+            assert!(requires_confirmation(&request));
+            assert!(!has_yes(&argv(&["update"])));
+        }
+
+        #[test]
+        fn management_parser_rejects_ignored_extra_arguments() {
+            for (program, args) in [
+                ("app", argv(&["list", "--json", "extra"])),
+                ("system", argv(&["status", "--json", "extra"])),
+                ("system", argv(&["update", "--yes", "extra"])),
+                ("tilo", argv(&["update", "unexpected"])),
+                ("tilo", argv(&["status", "--yes"])),
+            ] {
+                assert!(
+                    management_request(program, &args).is_err(),
+                    "{program} {args:?} must not silently discard arguments"
+                );
+            }
+        }
+
+        #[test]
+        fn unsupported_mutations_never_become_broker_requests() {
+            for args in [
+                argv(&["install", "browser"]),
+                argv(&["remove", "browser"]),
+                argv(&["rollback"]),
+                argv(&["boot", "old-image"]),
+            ] {
+                assert!(management_request("tilo", &args).is_err());
+            }
+        }
     }
 }

@@ -2821,7 +2821,7 @@ fn created_contact_persists_across_a_restart() {
     }
 
     // First launch.
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc = store.load_or_new();
     let mut app = ContactsApp::new();
     app.sync(&mut doc, &ROOT);
@@ -2837,7 +2837,7 @@ fn created_contact_persists_across_a_restart() {
     drop((store, doc, app)); // the process exits here
 
     // Second launch ("reboot"): a new app over the reloaded document.
-    let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc2 = store2.load().unwrap().expect("the store has a document");
     let mut app2 = ContactsApp::new();
     app2.sync(&mut doc2, &ROOT);
@@ -2869,7 +2869,7 @@ fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
         std::env::set_var("XDG_DATA_HOME", home.path());
         std::env::remove_var("TILO_PACKAGE_ID");
     }
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc = store.new_document();
 
     // A shared ancestor: one contact both sides know about.
@@ -2898,7 +2898,7 @@ fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
     drop((store, doc));
 
     // Restart, then merge the peer that diverged before the save.
-    let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut restored = store2.load().unwrap().expect("the saved document");
     restored
         .merge(&mut peer)
@@ -2943,7 +2943,7 @@ fn a_legacy_address_book_is_imported_into_the_store() {
     let book = sample_contacts();
     crate::storage::save(&legacy, &book).unwrap();
 
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     assert!(
         store.migrate_from(&legacy).unwrap(),
         "the legacy file is imported"
@@ -3541,7 +3541,7 @@ fn deleting_a_contact_persists_the_removal() {
     // Seed a book into the store, then delete one contact and restart.
     let book = sample_contacts();
     let removed = book[0].id;
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc = store.new_document();
     for c in &book {
         ContactsDoc::upsert_contact(&mut doc, c);
@@ -3557,7 +3557,7 @@ fn deleting_a_contact_persists_the_removal() {
     drop((store, doc, app));
 
     // Reload from the store: the deletion stuck.
-    let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let doc2 = store2.load().unwrap().expect("document after restart");
     let reloaded = ContactsDoc::list_contacts(&doc2);
     assert_eq!(

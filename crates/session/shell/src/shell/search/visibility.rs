@@ -291,12 +291,12 @@ mod tests {
     #[test]
     fn launching_an_app_is_gated_on_that_app() {
         let (cap, verb) = required_capability(
-            &resource("applications", "dev.tilo.terminal"),
+            &resource("applications", "so.tilo.terminal"),
             &ResourceKind::Application,
         )
         .expect("launching must be gated");
         assert_eq!(verb, Verb::Write);
-        assert_eq!(cap, CapResource::App("dev.tilo.terminal".to_string()));
+        assert_eq!(cap, CapResource::App("so.tilo.terminal".to_string()));
     }
 
     /// End-to-end: an owner sees gated actions, a member holding nothing

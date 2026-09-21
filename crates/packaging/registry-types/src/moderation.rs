@@ -514,7 +514,7 @@ mod tests {
             20,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 category: "security".into(),
                 summary: "Unexpected network access".into(),
                 evidence_digest_hex: "aa".repeat(32),
@@ -539,7 +539,7 @@ mod tests {
             20,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 category: "quality".into(),
                 summary: "broken application".into(),
                 evidence_digest_hex: "bb".repeat(32),
@@ -550,7 +550,7 @@ mod tests {
         let mut event = ModerationEvent {
             sequence: 1,
             case_id: "case".into(),
-            package_id: "dev.tilo.notes".into(),
+            package_id: "so.tilo.notes".into(),
             publisher_pubkey_hex: "dd".repeat(32),
             recorded_at_unix: 1,
             actor_role: ModerationActorRole::Reporter,
@@ -583,7 +583,7 @@ mod tests {
             20,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 category: "security".into(),
                 summary: "unexpected network".into(),
                 evidence_digest_hex: "aa".repeat(32),
@@ -594,7 +594,7 @@ mod tests {
         let mut first = ModerationEvent {
             sequence: 1,
             case_id: "case-one".into(),
-            package_id: "dev.tilo.notes".into(),
+            package_id: "so.tilo.notes".into(),
             publisher_pubkey_hex: "44".repeat(32),
             recorded_at_unix: 11,
             actor_role: report.actor_role,
@@ -631,7 +631,7 @@ mod tests {
             let mut event = ModerationEvent {
                 sequence: 2,
                 case_id: "case-one".into(),
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 publisher_pubkey_hex: "44".repeat(32),
                 recorded_at_unix: 13,
                 actor_role: request.actor_role,

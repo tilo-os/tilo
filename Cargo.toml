@@ -25,7 +25,7 @@ default-members = [
     "crates/system/fs",
     "crates/session/shell",
     "crates/sdk/ui-core",
-    "crates/packaging/pkg",
+    "crates/packaging/tilo-app-package",
     "crates/runtime/runtime",
 ]
 members = [
@@ -136,15 +136,15 @@ members = [
     "crates/media/vision",
 
     # Packaging
-    "crates/packaging/app-catalogue",
+    "crates/packaging/app-cli",
     "crates/packaging/app-fs",
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
     "crates/packaging/launcher",
-    "crates/packaging/pkg",
-    "crates/packaging/pkg-cli",
+    "crates/packaging/tilo-app-package",
+    "crates/packaging/tilo-app-package-cli",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/runtime-bundle",

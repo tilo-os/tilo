@@ -40,7 +40,7 @@ class AcceptanceTests(unittest.TestCase):
                     'attempt': 2, 'task_id': 300, 'handle': 'current-task-handle'}
         archive = io.BytesIO()
         with tarfile.open(fileobj=archive, mode='w:gz') as tar:
-            for name, raw in [('index.json', b'{}'), ('qpkg/app.qpkg', b'signed-package'), ('runtime/bundle', b'signed-runtime')]:
+            for name, raw in [('index.json', b'{}'), ('tapp/app.tapp', b'signed-package'), ('runtime/bundle', b'signed-runtime')]:
                 member = tarfile.TarInfo(name)
                 member.size = len(raw)
                 tar.addfile(member, io.BytesIO(raw))

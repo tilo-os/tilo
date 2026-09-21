@@ -70,7 +70,7 @@ delegated administrator's capabilities cannot strand a half-applied edit.
 The first storage overview uses existing runtime boundaries rather than trying
 to infer ownership from arbitrary home-directory paths:
 
-- signed application payloads from the qpkg payload store;
+- signed application payloads from the tapp payload store;
 - app-owned data from the per-room runtime directories;
 - application caches from the Tilo cache root;
 - sync-replica bytes from the sync filesystem root.
