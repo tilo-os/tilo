@@ -469,6 +469,18 @@ pub trait Collaborative {
     fn handle_collab_event(&mut self, _event: &crate::collaboration::CollabEvent) {}
 }
 
+/// Optional lifecycle for widgets backed by a platform-native child view.
+pub trait NativeViewLifecycle {
+    /// Attach the native child after the host window exists.
+    fn mount_native_view(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>);
+
+    /// Tear the native child down while its parent window is still alive.
+    fn unmount_native_view(&mut self);
+
+    /// Hide the native child at the start of a frame until drawing reveals it.
+    fn native_view_frame_start(&mut self);
+}
+
 pub trait Widget {
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
@@ -557,28 +569,9 @@ pub trait Widget {
         None
     }
 
-    /// Attach native child views after the host window exists. The default
-    /// recursively reaches retained descendants; leaf adapters make mounting
-    /// idempotent so this can be repeated after a structural rebuild.
-    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
-        for child in self.children_mut() {
-            child.mount_native_views(host);
-        }
-    }
-
-    /// Tear native children down while their parent window is still alive.
-    fn unmount_native_views(&mut self) {
-        for child in self.children_mut() {
-            child.unmount_native_views();
-        }
-    }
-
-    /// Called before each live frame. Native adapters hide first, then their
-    /// normal draw call reveals only views actually present in this frame.
-    fn native_view_frame_start(&mut self) {
-        for child in self.children_mut() {
-            child.native_view_frame_start();
-        }
+    /// Expose platform-native child lifecycle only for widgets that own it.
+    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
+        None
     }
 
     /// Receive host-selected platform conventions. The default propagates to
@@ -1849,6 +1842,39 @@ pub(crate) fn handle_collab_event(
     }
     for child in widget.children_mut() {
         handle_collab_event(child, event);
+    }
+}
+
+/// Mount every native-view capability in a retained widget tree.
+pub(crate) fn mount_native_views(
+    widget: &mut dyn Widget,
+    host: &crate::widget::native_view::NativeViewHost<'_>,
+) {
+    if let Some(lifecycle) = widget.native_view_lifecycle_mut() {
+        lifecycle.mount_native_view(host);
+    }
+    for child in widget.children_mut() {
+        mount_native_views(child, host);
+    }
+}
+
+/// Unmount every native-view capability before the parent window disappears.
+pub(crate) fn unmount_native_views(widget: &mut dyn Widget) {
+    for child in widget.children_mut() {
+        unmount_native_views(child);
+    }
+    if let Some(lifecycle) = widget.native_view_lifecycle_mut() {
+        lifecycle.unmount_native_view();
+    }
+}
+
+/// Begin a frame for every native-view capability in the retained tree.
+pub(crate) fn native_view_frame_start(widget: &mut dyn Widget) {
+    if let Some(lifecycle) = widget.native_view_lifecycle_mut() {
+        lifecycle.native_view_frame_start();
+    }
+    for child in widget.children_mut() {
+        native_view_frame_start(child);
     }
 }
 
