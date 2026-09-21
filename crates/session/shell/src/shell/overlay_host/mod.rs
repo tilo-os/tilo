@@ -2531,7 +2531,8 @@ impl ShellOverlayHost {
         for row in rows {
             // SAFETY: identical sequential traversal to `Widget::draw` above.
             unsafe {
-                (&mut *row).draw_floating_surfaces(
+                ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+                    &mut *row,
                     &mut workspace,
                     transform,
                     text_renderer,
@@ -14202,7 +14203,8 @@ impl Widget for ShellOverlayHost {
             // owned by this host. Drawing is sequential and `&mut self`
             // prevents another traversal from aliasing these rows.
             unsafe {
-                (&mut *row).draw_floating_surfaces(
+                ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+                    &mut *row,
                     scene,
                     transform,
                     text_renderer,
