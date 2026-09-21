@@ -27,7 +27,9 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ActionEmitter, AuthoredExtent, NavSplit, SplitMode, VideoPlayer, Widget};
+use ui::widget::{
+    ActionEmitter, AuthoredExtent, FullscreenProvider, NavSplit, SplitMode, VideoPlayer, Widget,
+};
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
 use crate::api::{Request, Update, Worker};
