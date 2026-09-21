@@ -20,6 +20,7 @@ pub mod bridge;
 pub mod capture;
 #[cfg(target_os = "linux")]
 pub mod client_input;
+pub mod cursor;
 pub mod dev_env;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]

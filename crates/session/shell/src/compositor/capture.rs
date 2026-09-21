@@ -27,7 +27,7 @@ use ui::widget::{
     CapturePreview, PipLayout, RecordingCommand, ReplayCommand, ScreenshotCommand,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, Size, Stroke};
+use vello::kurbo::{Affine, Point, Rect, Size};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::compositor::frame::FrameBuilder;
@@ -1716,19 +1716,11 @@ fn render_capture_rgba(renderer: &mut OffscreenRenderer, scene: &Scene) -> Vec<u
 }
 
 fn draw_pointer(scene: &mut Scene, at: vello::kurbo::Point) {
-    let mut cursor = BezPath::new();
-    cursor.move_to((at.x, at.y));
-    cursor.line_to((at.x + 4.5, at.y + 20.0));
-    cursor.line_to((at.x + 9.0, at.y + 13.0));
-    cursor.line_to((at.x + 15.5, at.y + 13.0));
-    cursor.close_path();
-    scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &cursor);
-    scene.stroke(
-        &Stroke::new(2.0),
-        Affine::IDENTITY,
-        Color::BLACK,
-        None,
-        &cursor,
+    crate::compositor::cursor::draw_scene(
+        scene,
+        crate::compositor::cursor::CursorShape::Default,
+        24,
+        at,
     );
 }
 

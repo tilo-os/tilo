@@ -27,12 +27,13 @@ use smithay::backend::allocator::gbm::{GbmBufferFlags, GbmDevice};
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
 use super::xrgb_history::{XrgbHistoryCommit, XrgbTargetHistory};
 use crate::compositor::backend::OutputId;
+use crate::compositor::cursor::{self, CursorShape};
 use vello::{FineDamageRect, Scene};
 
 use super::outputs::DrmOutputKey;
 
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
-const CURSOR_DIM: u32 = 64;
+const CURSOR_DIM: u32 = cursor::PLANE_SIZE;
 
 /// Minimal owned-fd wrapper implementing the `drm` crate's device traits; fd comes from libseat (`Session::open`), privileged + DRM master while the session is active.
 struct Card(OwnedFd);
@@ -2219,54 +2220,24 @@ fn pick_configured_mode(
         .copied()
 }
 
-/// Classic left-pointing arrow cursor. `'#'` = black outline, `'.'` = white fill, space = transparent. The hot-spot is the top-left tip.
-const CURSOR: [&str; 18] = [
-    "#                ",
-    "##               ",
-    "#.#              ",
-    "#..#             ",
-    "#...#            ",
-    "#....#           ",
-    "#.....#          ",
-    "#......#         ",
-    "#.......#        ",
-    "#........#       ",
-    "#.........#      ",
-    "#......#####      ",
-    "#...#..#         ",
-    "#..# #..#        ",
-    "#.#  #..#        ",
-    "##    #..#       ",
-    "#     #..#       ",
-    "       ##        ",
-];
-
 /// Paint the arrow into a 64×64 ARGB8888 cursor buffer (`[B, G, R, A]`, little-endian), transparent where blank; `pitch` is the row stride in bytes.
 fn paint_cursor_argb(dst: &mut [u8], pitch: usize, cursor_size: u32) {
     for b in dst.iter_mut() {
         *b = 0;
     }
-    for (row, line) in CURSOR.iter().enumerate() {
-        for (col, ch) in line.bytes().enumerate() {
-            let (r, g, b) = match ch {
-                b'#' => (0u8, 0u8, 0u8),
-                b'.' => (0xFFu8, 0xFFu8, 0xFFu8),
-                _ => continue,
+    let bitmap = cursor::bitmap(CursorShape::Default, cursor_size);
+    for y in 0..bitmap.height {
+        for x in 0..bitmap.width {
+            let source = usize::try_from((y * bitmap.width + x) * 4).unwrap_or(usize::MAX);
+            let Some(pixel) = bitmap.rgba().get(source..source.saturating_add(4)) else {
+                continue;
             };
-            let scale = (cursor_size.clamp(24, CURSOR_DIM) as usize).div_ceil(24);
-            let y_start = row.saturating_mul(scale);
-            let y_end = y_start.saturating_add(scale);
-            let x_start = col.saturating_mul(scale);
-            let x_end = x_start.saturating_add(scale);
-            for yy in y_start..y_end {
-                for xx in x_start..x_end {
-                    let offset = yy
-                        .saturating_mul(pitch)
-                        .saturating_add(xx.saturating_mul(4));
-                    if let Some(pixel) = dst.get_mut(offset..offset.saturating_add(4)) {
-                        pixel.copy_from_slice(&[b, g, r, 0xFF]);
-                    }
-                }
+            let destination = usize::try_from(y)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(pitch)
+                .saturating_add(usize::try_from(x).unwrap_or(usize::MAX).saturating_mul(4));
+            if let Some(target) = dst.get_mut(destination..destination.saturating_add(4)) {
+                target.copy_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
             }
         }
     }
@@ -2282,44 +2253,8 @@ fn draw_cursor(
     py: i32,
     cursor_size: u32,
 ) {
-    let scale = (cursor_size.clamp(24, CURSOR_DIM) as usize).div_ceil(24);
-    let dh_i32 = i32::try_from(dh).unwrap_or(i32::MAX);
-    for (row, line) in CURSOR.iter().enumerate() {
-        // Coarse pre-check before scanning columns: scale >= 1, so the scaled per-pixel `y`
-        // computed below is always >= this unscaled estimate, so this never skips a row that
-        // would actually draw a pixel.
-        let row_estimate_y = py.saturating_add(i32::try_from(row).unwrap_or(i32::MAX));
-        if row_estimate_y < 0 || row_estimate_y >= dh_i32 {
-            continue;
-        }
-        for (col, ch) in line.bytes().enumerate() {
-            let (red, green, blue) = match ch {
-                b'#' => (0u8, 0u8, 0u8),
-                b'.' => (0xFFu8, 0xFFu8, 0xFFu8),
-                _ => continue,
-            };
-            for yy in 0..scale {
-                let y_off = row.saturating_mul(scale).saturating_add(yy);
-                let y = py.saturating_add(i32::try_from(y_off).unwrap_or(i32::MAX));
-                for xx in 0..scale {
-                    let x_off = col.saturating_mul(scale).saturating_add(xx);
-                    let x = px.saturating_add(i32::try_from(x_off).unwrap_or(i32::MAX));
-                    let (Ok(xu), Ok(yu)) = (usize::try_from(x), usize::try_from(y)) else {
-                        continue;
-                    };
-                    if xu >= dw || yu >= dh {
-                        continue;
-                    }
-                    let offset = yu
-                        .saturating_mul(pitch)
-                        .saturating_add(xu.saturating_mul(4));
-                    if let Some(pixel) = dst.get_mut(offset..offset.saturating_add(4)) {
-                        pixel.copy_from_slice(&[blue, green, red, 0xFF]);
-                    }
-                }
-            }
-        }
-    }
+    let bitmap = cursor::bitmap(CursorShape::Default, cursor_size);
+    cursor::composite_xrgb(dst, pitch, dw, dh, px, py, &bitmap);
 }
 
 /// Conservative clipped byte footprint of [`draw_cursor`]. The square bound intentionally covers
@@ -2332,14 +2267,13 @@ fn software_cursor_damage_rect(
     cursor_size: u32,
 ) -> Option<FineDamageRect> {
     let (px, py) = cursor?;
-    let scale = (cursor_size.clamp(24, CURSOR_DIM) as usize).div_ceil(24);
-    let span = usize::try_from(CURSOR_DIM)
-        .ok()
-        .and_then(|dimension| dimension.checked_mul(scale))?;
+    let bitmap = cursor::bitmap(CursorShape::Default, cursor_size);
+    let span_x = i32::try_from(bitmap.width).ok()?;
+    let span_y = i32::try_from(bitmap.height).ok()?;
     let x0 = pixel_coord(px);
     let y0 = pixel_coord(py);
-    let right = x0.saturating_add(i32::try_from(span).unwrap_or(i32::MAX));
-    let bottom = y0.saturating_add(i32::try_from(span).unwrap_or(i32::MAX));
+    let right = x0.saturating_add(span_x);
+    let bottom = y0.saturating_add(span_y);
     let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
     let height_i32 = i32::try_from(height).unwrap_or(i32::MAX);
     let left = x0.clamp(0, width_i32);
@@ -2708,8 +2642,15 @@ mod tests {
         let mut buf = vec![0xCDu8; pitch * CURSOR_DIM as usize];
         paint_cursor_argb(&mut buf, pitch, 24);
 
-        // Top-left pixel is the arrow tip ('#'): opaque black [B,G,R,A].
-        assert_eq!(&buf[0..4], &[0, 0, 0, 0xFF], "tip should be opaque black");
+        // The explicit (0,0) hotspot sits immediately beside the first
+        // antialiased black outline; it need not force an opaque corner.
+        assert_eq!(cursor::bitmap(CursorShape::Default, 24).hotspot, (0, 0));
+        assert!(
+            buf[..8 * pitch]
+                .chunks_exact(4)
+                .any(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] > 0),
+            "tip neighbourhood should contain the black outline"
+        );
 
         // A blank area (far bottom-right) stays fully transparent.
         let o = 60 * pitch + 60 * 4;
@@ -2733,9 +2674,10 @@ mod tests {
         let pitch = w * 4;
         let mut dst = vec![0u8; pitch * h];
         draw_cursor(&mut dst, pitch, w, h, 4, 4, 24);
-        // The tip pixel at (4,4) is black (outline) and opaque.
-        let o = 4 * pitch + 4 * 4;
-        assert_eq!(&dst[o..o + 4], &[0, 0, 0, 0xFF]);
+        assert!(
+            dst.chunks_exact(4).any(|pixel| pixel[3] == 0xFF),
+            "cursor should composite visible pixels"
+        );
         // A pixel far from the cursor is untouched (still zero).
         assert_eq!(&dst[0..4], &[0, 0, 0, 0]);
     }
