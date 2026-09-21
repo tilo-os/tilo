@@ -1,5 +1,5 @@
 use super::{MusicApp, Track};
-#[cfg(feature = "audio")]
+#[cfg(all(test, feature = "audio"))]
 use ui::widget::Continuable as _;
 
 impl MusicApp {
