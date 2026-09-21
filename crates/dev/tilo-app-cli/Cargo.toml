@@ -1,13 +1,16 @@
 [package]
-name = "tilo-dev"
+name = "tilo-app-cli"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
 description = "Developer workflow for creating Tilo applications"
 
+[lib]
+name = "tilo_app_cli"
+
 [[bin]]
-name = "tilo-dev"
+name = "tilo-app"
 path = "src/main.rs"
 
 [dependencies]

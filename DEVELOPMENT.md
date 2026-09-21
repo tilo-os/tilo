@@ -904,7 +904,7 @@ or `cycle`, log out and back in through the VM's UI to test session cleanup.
 
 The VM needs the `tilo-session-devel` developer entry once, and **"Tilo (my
 build)"** must be selected in its greeter once.  `deploy shell` writes the
-marked debug binary to `~/.local/share/tilo-dev/shell` and updates the existing
+marked debug binary to `~/.local/share/tilo-app/shell` and updates the existing
 developer-session config, so later cycles do not install an RPM.  Change the
 remote account/location with `TILO_VM_USER`, `TILO_VM_HOST`, and
 `TILO_VM_DEV_ROOT`; `TILO_VM_SSH_PORT` is always mandatory. Build an app or
@@ -1065,7 +1065,7 @@ $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-0.1.0-1.fc43.x86_64.rpm
 
 $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-devel-0.1.0-1.fc43.x86_64.rpm
 /usr/libexec/tilo-session-dev
-/usr/share/wayland-sessions/tilo-dev.desktop
+/usr/share/wayland-sessions/tilo-app.desktop
 ```
 
 GDM reads session entries from `/usr/share/wayland-sessions/`. On an ostree host,

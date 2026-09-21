@@ -12,6 +12,7 @@ REBUILD_PATHS = {
     "os/external-assets/github-assets.tsv",
     "os/dev/cache-github-assets.sh",
     "os/dev/install-cached-cosign.sh",
+    "os/dev/install-aws-cli.sh",
     "os/dev/promote-native-index.py",
     "os/dev/replicate-builder-index.py",
     "rust-toolchain.toml",

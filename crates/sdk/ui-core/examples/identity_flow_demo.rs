@@ -31,11 +31,11 @@ use std::os::unix::fs::PermissionsExt;
 use collab_types::{ChannelId, Role, generate_keypair};
 use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
-use ui::widget::identity_flow::{
+use tilo_ui::widget::identity_flow::{
     IdentityFlow, IdentityFlowError, IdentityFlowScreen, IdentityRecord, IdentityStore,
     InviteEnvelope, MemoryIdentityStore, mint_invite,
 };
-use ui::{App, State};
+use tilo_ui::{App, State};
 
 fn parse_screen_arg(name: &str) -> Option<IdentityFlowScreen> {
     Some(match name {
@@ -111,7 +111,7 @@ impl IdentityStore for DemoFileStore {
 }
 
 pub fn run(args: &[String]) {
-    let wake_scope = ui::wake::WakeScope::new();
+    let wake_scope = tilo_ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
     let screen = args
         .windows(2)
