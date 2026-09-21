@@ -1335,6 +1335,11 @@ impl RecordActionState {
     pub(crate) fn commit_for_save(&self, doc: &mut AutoCommit) {
         if let Some(pending) = &self.pending {
             qdoc::history::commit_stamped_with_message(doc, pending.context.change_message());
+        } else if doc.pending_ops() != 0 {
+            // Legacy widget input is not wrapped in a bound action frame.
+            // Persistence must still close that transaction or Autosave sees
+            // unchanged heads and silently writes only the earlier snapshot.
+            doc.commit();
         }
     }
     /// Explicit external mutable loans (merge/import/revision/legacy history)
