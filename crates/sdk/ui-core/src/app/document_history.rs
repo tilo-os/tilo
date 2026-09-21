@@ -43,23 +43,23 @@ impl App {
         if let Some(dialog) = self.close_admission.dialog.as_deref() {
             return Ok(visit(
                 dialog,
-                &self.node_map,
+                &self.layout.node_map,
                 self.focused_node,
-                &self.taffy,
+                &self.layout.taffy,
             ));
         }
         let Some(layout) = self.history_layout else {
             return Ok(visit(
                 self.root_widget.as_ref(),
-                &self.node_map,
+                &self.layout.node_map,
                 self.focused_node,
-                &self.taffy,
+                &self.layout.taffy,
             ));
         };
         let _ = self.history_local_resources();
         if layout.pane.is_some() != self.document_history.is_open() {
-            self.structure_dirty = true;
-            self.layout_dirty = true;
+            self.layout.structure_dirty = true;
+            self.layout.layout_dirty = true;
             return Err("History presentation requires layout".into());
         }
         let context = HistoryReadContext {
@@ -69,6 +69,7 @@ impl App {
             permissions: &self.permission_ctx,
         };
         let rect = self
+            .layout
             .taffy
             .layout(layout.root)
             .map(|layout| {
@@ -82,7 +83,12 @@ impl App {
             .unwrap_or_default();
         self.document_history
             .with_presentation(&context, self.root_widget.as_ref(), layout, rect, |root| {
-                visit(root, &self.node_map, self.focused_node, &self.taffy)
+                visit(
+                    root,
+                    &self.layout.node_map,
+                    self.focused_node,
+                    &self.layout.taffy,
+                )
             })
             .map_err(|error| format!("History is unavailable: {error:?}"))
     }
@@ -112,7 +118,7 @@ impl App {
             && let Some(root) = self
                 .history_layout
                 .map(|layout| layout.app)
-                .or(self.root_node)
+                .or(self.layout.root_node)
         {
             self.root_widget.handle_event(
                 event,
@@ -123,7 +129,7 @@ impl App {
                 handled,
                 focus,
                 root,
-                &self.taffy,
+                &self.layout.taffy,
             );
         }
         history_handled
@@ -319,30 +325,44 @@ impl App {
 
     pub(super) fn build_history_presentation(&mut self) {
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
-            self.taffy = taffy::TaffyTree::new();
+            self.layout.taffy = taffy::TaffyTree::new();
             dialog.sync(&mut self.state.doc, &self.state.root);
-            let root = dialog.build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
-            self.root_node = Some(root);
+            let root = dialog.build_layout(
+                &mut self.layout.taffy,
+                &self.theme,
+                &mut self.layout.node_map,
+            );
+            self.layout.root_node = Some(root);
             self.history_layout = None;
             // SAFETY: this modal is the sole presented root in this fresh
             // arena. The app tree remains alive, but cannot receive input.
             unsafe {
-                self.bindings
-                    .rebuild(dialog.as_ref(), &self.taffy, root, &self.node_map);
+                self.bindings.rebuild(
+                    dialog.as_ref(),
+                    &self.layout.taffy,
+                    root,
+                    &self.layout.node_map,
+                );
             }
             return;
         }
 
-        let app = self
-            .root_widget
-            .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
+        let app = self.root_widget.build_layout(
+            &mut self.layout.taffy,
+            &self.theme,
+            &mut self.layout.node_map,
+        );
         if !self.history_chrome_enabled {
             self.history_layout = None;
-            self.root_node = Some(app);
+            self.layout.root_node = Some(app);
             // SAFETY: these freshly built maps describe the exclusively owned app.
             unsafe {
-                self.bindings
-                    .rebuild(self.root_widget.as_ref(), &self.taffy, app, &self.node_map);
+                self.bindings.rebuild(
+                    self.root_widget.as_ref(),
+                    &self.layout.taffy,
+                    app,
+                    &self.layout.node_map,
+                );
             }
             return;
         }
@@ -352,12 +372,12 @@ impl App {
             .sync(&mut self.state.doc, &self.state.root);
         let layout = self.document_history.build_layout(
             app,
-            &mut self.taffy,
+            &mut self.layout.taffy,
             &self.theme,
-            &mut self.node_map,
+            &mut self.layout.node_map,
             self.history_viewport_width,
         );
-        self.root_node = Some(layout.root);
+        self.layout.root_node = Some(layout.root);
         self.history_layout = Some(layout);
         let context = HistoryReadContext {
             document: &self.state.doc,
@@ -381,7 +401,7 @@ impl App {
         // chrome is admitted separately and does not inherit app authority.
         unsafe {
             self.bindings
-                .rebuild_roots(&roots, &self.taffy, &self.node_map);
+                .rebuild_roots(&roots, &self.layout.taffy, &self.layout.node_map);
         }
     }
 
@@ -389,16 +409,16 @@ impl App {
         if let Some(layout) = self.history_layout {
             let origin = self.document_history.apply_layout(
                 layout,
-                &self.taffy,
+                &self.layout.taffy,
                 vello::kurbo::Point::ORIGIN,
             );
             if layout.app_visible {
                 self.root_widget
-                    .apply_layout(&self.taffy, layout.app, origin);
+                    .apply_layout(&self.layout.taffy, layout.app, origin);
             }
         } else {
             self.root_widget
-                .apply_layout(&self.taffy, root, vello::kurbo::Point::ORIGIN);
+                .apply_layout(&self.layout.taffy, root, vello::kurbo::Point::ORIGIN);
         }
     }
 
@@ -431,7 +451,7 @@ impl App {
             let _ = unsafe {
                 crate::bound_dispatch::invoke_bound_node(
                     &self.bindings,
-                    &self.node_map,
+                    &self.layout.node_map,
                     node,
                     &mut self.state.doc,
                     &self.state.root,
@@ -445,7 +465,7 @@ impl App {
                             handled,
                             focus,
                             node,
-                            &self.taffy,
+                            &self.layout.taffy,
                         )
                     },
                 )
@@ -462,7 +482,7 @@ impl App {
                 handled,
                 focus,
                 layout.toolbar,
-                &self.taffy,
+                &self.layout.taffy,
             );
         }
         if !*handled
@@ -478,7 +498,7 @@ impl App {
                 handled,
                 focus,
                 node,
-                &self.taffy,
+                &self.layout.taffy,
             );
         }
         let pane_focused = self
@@ -498,7 +518,7 @@ impl App {
                 handled,
                 focus,
                 node,
-                &self.taffy,
+                &self.layout.taffy,
             );
         }
         if !layout.app_visible && !keyboard {
@@ -524,7 +544,7 @@ impl App {
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| self.root_widget.callback_binding());
         if binding.is_none() {
-            for node in self.node_map.keys() {
+            for node in self.layout.node_map.keys() {
                 let Some(candidate) = self.bindings.binding_for(*node) else {
                     continue;
                 };
@@ -570,7 +590,7 @@ impl App {
             if next == node {
                 return true;
             }
-            if let Ok(children) = self.taffy.children(next) {
+            if let Ok(children) = self.layout.taffy.children(next) {
                 pending.extend(children);
             }
         }
@@ -596,15 +616,15 @@ impl App {
         self.history_chrome_enabled = true;
         self.document_history.enable_search(self.platform);
         self.remember_history_content();
-        self.structure_dirty = true;
-        self.layout_dirty = true;
+        self.layout.structure_dirty = true;
+        self.layout.layout_dirty = true;
     }
 
     pub(super) fn history_changed(&mut self, revision: u64, open: bool) {
         if revision != self.document_history.revision() {
             self.needs_sync = true;
-            self.layout_dirty = true;
-            self.structure_dirty |= open != self.document_history.is_open();
+            self.layout.layout_dirty = true;
+            self.layout.structure_dirty |= open != self.document_history.is_open();
             if !open && self.document_history.is_open() {
                 self.history_focus_pending = true;
             }
@@ -650,7 +670,11 @@ impl App {
         {
             // SAFETY: restoration runs only after building/admitting this tree.
             self.focused_node = unsafe {
-                focus.restore(&self.node_map, &self.bindings, Some(&self.focusable_order))
+                focus.restore(
+                    &self.layout.node_map,
+                    &self.bindings,
+                    Some(&self.focusable_order),
+                )
             };
         }
     }
@@ -777,7 +801,7 @@ mod tests {
         assert!(!app.document_history.is_open());
     }
     fn layout(app: &mut App, width: u32) {
-        let root = app.root_node.expect("initialized layout");
+        let root = app.layout.root_node.expect("initialized layout");
         assert!(super::super::run_layout_pass(app, root, width, 700, 1.0, false, None).is_some());
     }
 
@@ -904,13 +928,14 @@ mod tests {
         assert!(!app.history_layout.unwrap().app_visible);
         assert!(app.state.adopt_doc(automerge::AutoCommit::new()));
         assert!(app.history_needs_redraw());
-        assert!(app.structure_dirty);
+        assert!(app.layout.structure_dirty);
         layout(&mut app, 640);
         assert!(!app.document_history.is_open());
         assert!(app.history_layout.unwrap().app_visible);
     }
     fn native_click(app: &mut App, id: &str) {
         let node = *app
+            .layout
             .node_map
             .keys()
             .find(|node| {
@@ -1041,7 +1066,7 @@ mod tests {
         app.enable_document_history_chrome();
         app.init_layout();
         let toolbar = app.history_layout.unwrap().toolbar;
-        let admitted = app.node_map[&toolbar];
+        let admitted = app.layout.node_map[&toolbar];
         let mut moved = Box::new(app);
         let retained = std::ptr::from_mut(moved.document_history.toolbar_mut() as &mut dyn Widget);
         assert!(
@@ -1059,7 +1084,7 @@ mod tests {
         // The open pane and its inline children must remain stable too.
         moved.rebuild_structure();
         let pane = moved.history_layout.unwrap().pane.unwrap();
-        let admitted_pane = moved.node_map[&pane];
+        let admitted_pane = moved.layout.node_map[&pane];
         let mut moved_again = Box::new(*moved);
         let retained_pane =
             std::ptr::from_mut(moved_again.document_history.pane_mut().unwrap() as &mut dyn Widget);
