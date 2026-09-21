@@ -3,11 +3,13 @@ import base64
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import struct
 import sys
 import tempfile
+import tarfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -50,6 +52,33 @@ class LaneAdmission(unittest.TestCase):
         (root/'raw-identity.json').write_text(json.dumps(identity))
         checkpoint=lane.checkpoint_creator(args,creator,creator_node,creation,identity,expires_at)
         return args,checkpoint,creator_node,creator,creation,identity
+
+    def test_creator_inputs_share_one_transfer_but_retain_distinct_hashes(self):
+        inputs = (b'helper archive', b'public archive', b'installer archive')
+        outer, identities = lane.creator_input_archive(*inputs)
+        self.assertEqual(set(identities), {
+          'helpers.tar', 'public-trust.tar', 'installer-bootc-helper.tar'})
+        with tarfile.open(fileobj=io.BytesIO(outer), mode='r:') as archive:
+            members = archive.getmembers()
+            self.assertEqual([member.name for member in members], list(identities))
+            for member, expected in zip(members, inputs):
+                self.assertEqual(member.mode, 0o600)
+                self.assertEqual(archive.extractfile(member).read(), expected)
+                self.assertEqual(identities[member.name], hashlib.sha256(expected).hexdigest())
+
+        with patch.object(lane, 'command') as command:
+            lane.stream_creator_inputs('ctx', 'kata-system', 'pod', 'disk', *inputs)
+        self.assertEqual(command.call_count, 1)
+        argv, payload = command.call_args.args[:2]
+        self.assertEqual(argv[:8], ['kubectl', '--context', 'ctx', '-n', 'kata-system',
+                                    'exec', '-i', 'pod'])
+        self.assertEqual(payload, outer)
+        self.assertNotIn(b'registry-auth', payload)
+        self.assertEqual(argv[-3:], [identities[name] for name in identities])
+        script = argv[argv.index('-ceu') + 1]
+        self.assertIn('sha256sum -c -', script)
+        self.assertIn('mv -T -n', script)
+        self.assertIn('own_helpers=0; own_public=0; own_installer=0', script)
 
     def test_gui_evidence_requires_desktop_and_rendered_local_browser_page(self):
         html='<!doctype html><h1>Tilo browser offline ready</h1>\n'
