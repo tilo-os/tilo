@@ -85,6 +85,10 @@ impl StatePeer {
             .cloned()
             .collect::<Vec<_>>();
         for original in retained.clone() {
+            if matches!(&original, NeighbourMsg::AppDocument { cluster_id, .. } if cluster_id != candidate.room())
+            {
+                return Err("document outbox room mismatch".into());
+            }
             // A fresh envelope may already be impossible to deliver: renewing
             // its missing predecessor can put the governor's sequence floor
             // above it before its causal changes were ever materialized.
@@ -111,14 +115,17 @@ impl StatePeer {
                 continue;
             }
             collab_types::verify_op(envelope).map_err(|e| e.to_string())?;
-            let payload = collab_types::validate_document_payload_route(
+            let payload = collab_types::validate_document_payload_route_versioned(
                 app_id, cluster_id, record_id, envelope,
             )
             .map_err(|e| e.to_string())?;
-            let collab_types::RoutedDocumentPayload::Cleartext(DocumentMutation::Incremental(
-                bytes,
-            )) = payload
-            else {
+            let collab_types::VersionedRoutedDocumentPayload::Cleartext(decoded) = payload else {
+                continue;
+            };
+            if candidate.document_wire_version(app_id, record_id) != Some(decoded.version) {
+                return Err("document route cannot change its authenticated wire version".into());
+            }
+            let DocumentMutation::Incremental(bytes) = decoded.mutation else {
                 continue;
             };
             // A new authorized envelope, never a changed timestamp/signature on

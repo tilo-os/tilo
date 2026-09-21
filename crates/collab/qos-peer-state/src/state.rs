@@ -500,6 +500,7 @@ impl StatePeer {
     pub(crate) fn checkpoint_sequence_covers(&self, message: &NeighbourMsg) -> bool {
         let NeighbourMsg::AppDocument {
             app_id,
+            cluster_id,
             record_id,
             envelope,
             ..
@@ -507,6 +508,9 @@ impl StatePeer {
         else {
             return false;
         };
+        if cluster_id != &self.room {
+            return false;
+        }
         self.documents
             .get(&Route {
                 app: app_id.clone(),
@@ -522,6 +526,7 @@ impl StatePeer {
     pub fn covers(&self, message: &NeighbourMsg) -> bool {
         let NeighbourMsg::AppDocument {
             app_id,
+            cluster_id,
             record_id,
             envelope,
             ..
@@ -529,6 +534,9 @@ impl StatePeer {
         else {
             return false;
         };
+        if cluster_id != &self.room {
+            return false;
+        }
         let Some(document) = self.documents.get(&Route {
             app: app_id.clone(),
             record: record_id.clone(),
@@ -547,11 +555,17 @@ impl StatePeer {
         let Some(snapshot) = &document.covered_snapshot else {
             return false;
         };
-        let Ok(collab_types::RoutedDocumentPayload::Cleartext(DocumentMutation::Incremental(
-            bytes,
-        ))) =
-            collab_types::validate_document_payload_route(app_id, &self.room, record_id, envelope)
+        let Ok(collab_types::VersionedRoutedDocumentPayload::Cleartext(decoded)) =
+            collab_types::validate_document_payload_route_versioned(
+                app_id, cluster_id, record_id, envelope,
+            )
         else {
+            return false;
+        };
+        if document.wire_version != Some(decoded.version) {
+            return false;
+        }
+        let DocumentMutation::Incremental(bytes) = decoded.mutation else {
             return false;
         };
         let Ok(checkpoint) = snapshot.decoded() else {
@@ -579,6 +593,19 @@ impl StatePeer {
                     .collect(),
             })
             .collect()
+    }
+
+    pub(crate) fn document_wire_version(
+        &self,
+        app: &str,
+        record: &str,
+    ) -> Option<DocumentWireVersion> {
+        self.documents
+            .get(&Route {
+                app: app.into(),
+                record: record.into(),
+            })
+            .and_then(|document| document.wire_version)
     }
     /// Read the admitted document basis without serializing its contents.
     pub fn document_heads(&self, app: &str, record: &str) -> Option<Vec<automerge::ChangeHash>> {

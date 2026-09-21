@@ -1820,6 +1820,130 @@ fn legacy_v2_journal_restores_coverage_and_reemits_the_authenticated_wire_versio
         now,
     )
     .unwrap();
+    let mut renewal_governor = old_decoder.clone();
+    let mut renewal_client = restored.clone();
+    let mut dependent = AutoCommit::load(&renewal_client.document(app, record).unwrap()).unwrap();
+    let dependent_heads = dependent.get_heads();
+    dependent.put(ROOT, "dependent", "edit").unwrap();
+    dependent.commit();
+    let second = renewal_client
+        .publish_incremental(
+            app,
+            record,
+            dependent.save_after(&dependent_heads),
+            &member_key,
+            now,
+        )
+        .unwrap();
+    let outcome = renewal_governor
+        .receive(member_key.verifying_key().to_bytes(), second.clone(), now)
+        .unwrap();
+    assert!(
+        !outcome.changed,
+        "the governor cannot apply a dependent change before its predecessor"
+    );
+    let reconnect = now + Duration::from_secs(301);
+    for message in renewal_governor
+        .durable_bootstrap_messages(&authority_key, reconnect, 8)
+        .unwrap()
+    {
+        renewal_client
+            .receive(authority.device_public_key, message, reconnect)
+            .unwrap();
+    }
+    assert!(!renewal_client.covers(&emitted));
+    assert!(!renewal_client.covers(&second));
+
+    let mut mixed_version = emitted.clone();
+    let NeighbourMsg::AppDocument {
+        envelope: mixed_envelope,
+        ..
+    } = &mut mixed_version
+    else {
+        panic!("expected emitted document mutation")
+    };
+    mixed_envelope.payload = decoded
+        .mutation
+        .encode_for(collab_types::DocumentWireVersion::QosV2)
+        .unwrap();
+    collab_types::sign_op(mixed_envelope, &member_key).unwrap();
+    assert_eq!(
+        renewal_client
+            .reconcile_outbox(&[mixed_version], &member_key, reconnect)
+            .unwrap_err(),
+        "document route cannot change its authenticated wire version"
+    );
+
+    let foreign_room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let mut foreign_room_message = emitted.clone();
+    let NeighbourMsg::AppDocument {
+        cluster_id,
+        envelope: foreign_envelope,
+        ..
+    } = &mut foreign_room_message
+    else {
+        panic!("expected emitted document mutation")
+    };
+    *cluster_id = foreign_room.into();
+    foreign_envelope.artifact =
+        collab_types::document_artifact_id_for_version(version, app, foreign_room, record);
+    foreign_envelope.attestation_id =
+        collab_types::document_attestation_id_for_version(version, app, foreign_room, record);
+    collab_types::sign_op(foreign_envelope, &member_key).unwrap();
+    assert!(!renewal_client.covers(&foreign_room_message));
+    let unchanged = renewal_client.durable().unwrap();
+    assert_eq!(
+        renewal_client
+            .reconcile_outbox(&[foreign_room_message], &member_key, reconnect)
+            .unwrap_err(),
+        "document outbox room mismatch"
+    );
+    assert_eq!(renewal_client.durable().unwrap(), unchanged);
+
+    let renewed = renewal_client
+        .reconcile_outbox(&[emitted.clone(), second.clone()], &member_key, reconnect)
+        .unwrap();
+    assert_eq!(renewed.len(), 4);
+    for message in &renewed[2..] {
+        let NeighbourMsg::AppDocument {
+            cluster_id,
+            envelope,
+            ..
+        } = message
+        else {
+            panic!("expected renewed document mutation")
+        };
+        assert_eq!(cluster_id, room);
+        assert_eq!(
+            collab_types::DocumentMutation::decode_versioned(&envelope.payload)
+                .unwrap()
+                .version,
+            collab_types::DocumentWireVersion::QosV1
+        );
+        renewal_governor
+            .receive(
+                member_key.verifying_key().to_bytes(),
+                message.clone(),
+                reconnect,
+            )
+            .unwrap();
+    }
+    for message in renewal_governor
+        .durable_bootstrap_messages(&authority_key, reconnect, 9)
+        .unwrap()
+    {
+        renewal_client
+            .receive(authority.device_public_key, message, reconnect)
+            .unwrap();
+    }
+    assert!(
+        renewal_client
+            .reconcile_outbox(&renewed, &member_key, reconnect)
+            .unwrap()
+            .is_empty(),
+        "the governed legacy checkpoint must finally drain both original and renewed evidence"
+    );
+
     let mut mismatched = emitted.clone();
     let NeighbourMsg::AppDocument { envelope, .. } = &mut mismatched else {
         panic!("expected emitted document mutation")
@@ -1840,6 +1964,27 @@ fn legacy_v2_journal_restores_coverage_and_reemits_the_authenticated_wire_versio
             .receive(member_key.verifying_key().to_bytes(), emitted.clone(), now,)
             .unwrap()
             .changed
+    );
+
+    for message in old_decoder
+        .durable_bootstrap_messages(&authority_key, now, 8)
+        .unwrap()
+    {
+        restored
+            .receive(authority.device_public_key, message, now)
+            .unwrap();
+    }
+    assert!(
+        restored.covers(&emitted),
+        "the authenticated legacy checkpoint causally covers its legacy incremental"
+    );
+    assert_eq!(restored.outbox_status(&[emitted.clone()], now).pending, 0);
+    assert!(
+        restored
+            .reconcile_outbox(&[emitted.clone()], &member_key, now)
+            .unwrap()
+            .is_empty(),
+        "covered legacy evidence must retire without current-namespace renewal"
     );
 
     let unresolved_journal = receiver

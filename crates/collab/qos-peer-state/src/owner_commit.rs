@@ -87,8 +87,10 @@ impl OwnerCommitRequest {
                 record,
                 envelope,
             } => {
-                collab_types::validate_document_payload_route(app, &self.room, record, envelope)
-                    .map_err(|e| e.to_string())?;
+                collab_types::validate_document_payload_route_versioned(
+                    app, &self.room, record, envelope,
+                )
+                .map_err(|e| e.to_string())?;
                 (
                     CommitTarget::Document {
                         app: app.clone(),
@@ -145,4 +147,47 @@ impl OwnerCommitReceipt {
 pub trait OwnerCommitService: Send + Sync {
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
     fn health(&self) -> Result<(), String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use collab_types::{
+        DocumentMutation, DocumentWireVersion, Ed25519PublicKey, OpClass, SignedOp,
+        document_artifact_id_for_version, document_attestation_id_for_version,
+    };
+    use std::time::SystemTime;
+
+    #[test]
+    fn document_binding_accepts_one_exact_legacy_wire_namespace() {
+        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let app = "dev.qos.notes";
+        let record = "tab:1";
+        let version = DocumentWireVersion::QosV1;
+        let mutation = DocumentMutation::Incremental(vec![1, 2, 3]);
+        let mut envelope = SignedOp::new_unsigned(
+            mutation.encode_for(version).unwrap(),
+            document_artifact_id_for_version(version, app, room, record),
+            Ed25519PublicKey::from_bytes([7; 32]),
+            document_attestation_id_for_version(version, app, room, record),
+            OpClass::Splice,
+            SystemTime::UNIX_EPOCH,
+            1,
+        );
+        let request = |envelope: SignedOp| OwnerCommitRequest {
+            room: room.into(),
+            operation: CommitOperation::Document {
+                app: app.into(),
+                record: record.into(),
+                envelope: Box::new(envelope),
+            },
+        };
+        assert!(request(envelope.clone()).binding().is_ok());
+
+        envelope.payload = mutation.encode_for(DocumentWireVersion::TiloV1).unwrap();
+        assert!(
+            request(envelope).binding().is_err(),
+            "a current payload prefix cannot be spliced onto legacy route ids"
+        );
+    }
 }
