@@ -96,6 +96,19 @@ class ChangedRustfmtTests(unittest.TestCase):
         self.assertIn("crates/demo/vendor/local.rs:1:", result.stderr)
         self.assertNotIn("vendor/codec/src/lib.rs", result.stderr)
 
+    def test_checked_in_capnp_bindings_are_excluded(self) -> None:
+        generated = self.root / "crates/runtime/demo/src/generated/demo_capnp.rs"
+        generated.parent.mkdir(parents=True)
+        generated.write_text("// generated, intentionally not rustfmt input\n", encoding="utf-8")
+        ordinary = self.root / "crates/runtime/demo/src/lib.rs"
+        ordinary.write_text("fn checked() {}\n", encoding="utf-8")
+        self.commit("generated bindings")
+
+        self.run_check(self.base)
+        arguments = self.arguments.read_text(encoding="utf-8")
+        self.assertNotIn("<crates/runtime/demo/src/generated/demo_capnp.rs>", arguments)
+        self.assertIn("<crates/runtime/demo/src/lib.rs>", arguments)
+
     def test_push_zero_base_falls_back_to_parent(self) -> None:
         (self.root / "base.rs").write_text("fn changed() {}\n", encoding="utf-8")
         self.commit("change")
