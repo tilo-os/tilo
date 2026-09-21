@@ -22236,7 +22236,6 @@ mod tab_context_menu_tests {
     //! accessibility tree it publishes — what a reader observes.
     use super::overlay_event_absorb_tests::lay_out_host_with_theme;
     use super::*;
-    use crate::shell::build_tilo_overlay_host_with_chrome;
     use crate::shell::state::{
         AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
