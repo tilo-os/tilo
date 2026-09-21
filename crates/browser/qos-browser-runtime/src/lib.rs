@@ -74,3 +74,19 @@ mod semantics_status;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod report_text;
+
+#[cfg(any(target_arch = "wasm32", test))]
+const fn font_install_should_wake(peer_suspended: bool, hidden: bool) -> bool {
+    !peer_suspended && !hidden
+}
+
+#[cfg(test)]
+mod font_install_lifecycle_tests {
+    #[test]
+    fn suspended_or_hidden_mount_installs_without_waking_its_render_loop() {
+        assert!(super::font_install_should_wake(false, false));
+        assert!(!super::font_install_should_wake(true, false));
+        assert!(!super::font_install_should_wake(false, true));
+        assert!(!super::font_install_should_wake(true, true));
+    }
+}

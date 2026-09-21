@@ -510,7 +510,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let images = std::mem::take(&mut *loaders.borrow_mut());
     let checkout = component.record().clone();
     let system = ui::font_catalog::FontCatalog::product("", "en-US")
-        .load_bytes(|name| {
+        .load_browser_startup_bytes(|name| {
             Reflect::get(&fonts, &name.into())
                 .ok()
                 .filter(|v| !v.is_undefined())
@@ -538,7 +538,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         ),
         ComponentRunnerInputs {
             theme: ui::Theme::dark(),
-            text_renderer: ui::TextRenderer::with_font_system(system),
+            text_renderer: ui::TextRenderer::with_browser_font_system(system),
         },
         move || {
             let _ = wake.send_event(id);
@@ -608,7 +608,7 @@ fn begin_desktop(
     let storage = load_cache(&config.profile, &config.device, &hydrated)?;
     let permissions = crate::peer::permissions(peer).map_err(error)?;
     let system = ui::font_catalog::FontCatalog::product("", "en-US")
-        .load_bytes(|name| {
+        .load_browser_startup_bytes(|name| {
             Reflect::get(&fonts, &name.into())
                 .ok()
                 .filter(|v| !v.is_undefined())
@@ -649,7 +649,7 @@ fn begin_desktop(
             (size.height as f64 / dpr).max(1.0) as u32,
         ),
         ui::Theme::dark(),
-        ui::TextRenderer::with_font_system(system),
+        ui::TextRenderer::with_browser_font_system(system),
         UserId(config.author),
     );
     frame.set_input_scale(dpr).map_err(error)?;
@@ -1408,6 +1408,44 @@ pub async fn probe_pixels(id: u64) -> Result<String, JsValue> {
     drop(bytes);
     buffer.unmap();
     Ok(value.to_string())
+}
+
+#[wasm_bindgen]
+pub fn font_demands(id: u64) -> Result<String, JsValue> {
+    MOUNTS.with_borrow_mut(|mounts| {
+        let mount = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        serde_json::to_string(&mount.frame.take_browser_font_demands()).map_err(error)
+    })
+}
+
+#[wasm_bindgen]
+pub fn install_font(id: u64, name: &str, bytes: Vec<u8>) -> Result<bool, JsValue> {
+    let (changed, wake) = MOUNTS.with_borrow_mut(|mounts| {
+        let mount = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        let changed = mount
+            .frame
+            .install_browser_font(name, bytes)
+            .map_err(error)?;
+        let wake = changed && crate::font_install_should_wake(mount.peer_suspended, mount.hidden);
+        if wake {
+            mount.pending = true;
+            mount.window.request_redraw();
+        }
+        Ok::<_, JsValue>((changed, wake))
+    })?;
+    if wake {
+        proxy()?.send_event(id).map_err(error)?;
+    }
+    Ok(changed)
+}
+
+#[wasm_bindgen]
+pub fn font_failed(id: u64) -> Result<(), JsValue> {
+    MOUNTS.with_borrow_mut(|mounts| {
+        let mount = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        mount.frame.browser_font_failed();
+        Ok(())
+    })
 }
 
 #[wasm_bindgen]

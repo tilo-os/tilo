@@ -4,6 +4,7 @@ import {bindActionPalette} from './action-palette-bridge.mjs';
 import {bindDesktopCommands} from './desktop-command-bridge.mjs';
 import {commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
+import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/qos_browser_runtime.js';
 import {MountRegistry,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
 
@@ -13,11 +14,8 @@ import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
 let registry=new MountRegistry();
 const closures=new Set();
 const recoveryJobs=new Set();
-const fetchRequired=async url=>{const response=await fetch(url);if(!response.ok)throw Error(`asset HTTP ${response.status}`);return response;};
-const fonts=retryableMemo(async()=>{
- const names=await (await fetchRequired(new URL('./fonts.json',import.meta.url))).json();
- return Object.fromEntries(await Promise.all(names.map(async name=>[name,new Uint8Array(await (await fetchRequired(new URL(`./fonts/${name}`,import.meta.url))).arrayBuffer())])));
-});
+const fontLoader=createFontLoader({baseURL:import.meta.url});
+const fonts=retryableMemo(()=>fontLoader.startup());
 const ready=retryableMemo(()=>init());
 export async function mountDesktop(target,options={}) {
   const token=registry.begin(target);
@@ -45,7 +43,7 @@ export async function mountDesktop(target,options={}) {
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
   delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;
   let unsubscribeDesktopCommits;
-  let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,navigation,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
+  let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
   const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
     hiddenKeys?.invalidate();semanticKeys?.invalidate();composition?.cancel();semantic?.revokeInput();composing=false;editor.value='';pasteShift=false;
     replaceEditor();
@@ -82,6 +80,8 @@ export async function mountDesktop(target,options={}) {
     if(focused){const scope=inputScope.capture();if(scope)(scope.legacy||scope.ime?editor:canvas).focus({preventScroll:true});}
   }
   function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
+  const fontMountValid=()=>!closed&&registry.current(token)&&id!==undefined&&runtimeReady;
+  fontDemands=createFontDemandPump({loader:fontLoader,valid:fontMountValid,report,install:(name,bytes)=>runtime.install_font(id,name,bytes),failed:()=>runtime.font_failed(id)});
   function update(raw){
     if(closed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
@@ -90,6 +90,10 @@ export async function mountDesktop(target,options={}) {
       runtimeReady=true;
     }
     inputScope.capture();
+    if(runtimeReady&&runtime.font_demands){
+      const demanded=JSON.parse(runtime.font_demands(id));
+      if(demanded.length)void fontDemands(demanded);
+    }
     navigation?.refresh();
 
     if(desktopCommands)void desktopCommands.pump();

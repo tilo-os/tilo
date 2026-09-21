@@ -1766,7 +1766,8 @@ impl TextInput {
             &spans,
         );
         if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-            let mut layout = RichTextLayout::shape_styled_reusing(
+            let browser_emoji = tr.browser_color_emoji_installed();
+            let mut layout = RichTextLayout::shape_styled_reusing_browser(
                 &mut tr.font_system,
                 &spans,
                 &style,
@@ -1775,7 +1776,9 @@ impl TextInput {
                 Vec::new(),
                 Vec::new(),
                 self.single_layout.take(),
+                browser_emoji,
             );
+            tr.note_browser_rich_layout(&layout);
             if !self.preedit.is_empty() {
                 let start = self.cursor_pos.min(self.text.len());
                 layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -3851,12 +3854,15 @@ impl Widget for TextInput {
             let signature =
                 self.shaped_signature(&display, &style.family, style.size, Some(available_width));
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-                let mut layout = RichTextLayout::shape_plain(
+                let browser_emoji = text_renderer.browser_color_emoji_installed();
+                let mut layout = RichTextLayout::shape_plain_browser(
                     &mut text_renderer.font_system,
                     &display,
                     &style,
                     Some(available_width),
+                    browser_emoji,
                 );
+                text_renderer.note_browser_rich_layout(&layout);
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
                     layout.add_underline(start..start.saturating_add(self.preedit.len()));
@@ -4612,8 +4618,9 @@ impl TextInput {
                 Self::attributed_signature(base ^ Self::single_attributes_signature(a), &a.spans)
             });
             if self.single_layout.is_none() || self.shaped_layout_signature != signature {
+                let browser_emoji = text_renderer.browser_color_emoji_installed();
                 let mut layout = if let Some(attributes) = attributes {
-                    RichTextLayout::shape_styled(
+                    RichTextLayout::shape_styled_browser(
                         &mut text_renderer.font_system,
                         &self.insert_preedit_span(attributes.spans.clone()),
                         &style,
@@ -4621,15 +4628,18 @@ impl TextInput {
                         TextAlign::Left,
                         self.display_ranges(&attributes.underlines),
                         self.display_ranges(&attributes.strikes),
+                        browser_emoji,
                     )
                 } else {
-                    RichTextLayout::shape_plain(
+                    RichTextLayout::shape_plain_browser(
                         &mut text_renderer.font_system,
                         display,
                         &style,
                         None,
+                        browser_emoji,
                     )
                 };
+                text_renderer.note_browser_rich_layout(&layout);
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
                     layout.add_underline(start..start.saturating_add(self.preedit.len()));

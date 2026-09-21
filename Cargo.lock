@@ -15525,6 +15525,7 @@ dependencies = [
  "tts",
  "unic-langid",
  "unicode-linebreak",
+ "unicode-properties",
  "unicode-script",
  "unicode-segmentation",
  "url",

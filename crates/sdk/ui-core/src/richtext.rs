@@ -222,6 +222,16 @@ impl RichTextLayout {
         style: &crate::text_render::TextStyle,
         max_width: Option<f32>,
     ) -> Self {
+        Self::shape_plain_browser(fs, text, style, max_width, false)
+    }
+
+    pub(crate) fn shape_plain_browser(
+        fs: &mut FontSystem,
+        text: &str,
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        browser_emoji: bool,
+    ) -> Self {
         let line_height = style.line_height_px();
         let offset_map = if max_width.is_some() {
             style.hyphenation.offset_map(text)
@@ -236,12 +246,21 @@ impl RichTextLayout {
         let shaping_text = offset_map.shape_text(text);
         let mut buffer = Buffer::new(fs, Metrics::new(style.size, line_height));
         let attrs = style.cosmic_attrs();
-        buffer.set_text(
-            &shaping_text,
-            &attrs,
-            Shaping::Advanced,
-            style.align.to_cosmic(),
-        );
+        if browser_emoji && crate::text_render::browser_text_demands_emoji(&shaping_text) {
+            buffer.set_rich_text(
+                crate::text_render::browser_emoji_runs(&shaping_text, &attrs, true),
+                &attrs,
+                Shaping::Advanced,
+                style.align.to_cosmic(),
+            );
+        } else {
+            buffer.set_text(
+                &shaping_text,
+                &attrs,
+                Shaping::Advanced,
+                style.align.to_cosmic(),
+            );
+        }
         let layout_width = max_width.map(|width| (width - discretionary_hyphen_width).max(0.0));
         buffer.set_size(layout_width, None);
         buffer.set_wrap(if max_width.is_some() {
@@ -294,6 +313,35 @@ impl RichTextLayout {
         strikes: Vec<(usize, usize)>,
         line_height_mult: f32,
     ) -> Self {
+        Self::shape_browser(
+            fs,
+            spans,
+            base_bold,
+            size,
+            width,
+            align,
+            family,
+            underlines,
+            strikes,
+            line_height_mult,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn shape_browser(
+        fs: &mut FontSystem,
+        spans: &[RichSpan],
+        base_bold: bool,
+        size: f32,
+        width: f32,
+        align: TextAlign,
+        family: FontFamily,
+        underlines: Vec<(usize, usize)>,
+        strikes: Vec<(usize, usize)>,
+        line_height_mult: f32,
+        browser_emoji: bool,
+    ) -> Self {
         use crate::text_render::{FontChoice, TextStyle, TextWeight};
 
         let family = match family {
@@ -309,7 +357,16 @@ impl RichTextLayout {
                 TextWeight::Regular
             })
             .with_family(family);
-        Self::shape_styled(fs, spans, &style, Some(width), align, underlines, strikes)
+        Self::shape_styled_browser(
+            fs,
+            spans,
+            &style,
+            Some(width),
+            align,
+            underlines,
+            strikes,
+            browser_emoji,
+        )
     }
 
     /// Shape attributed spans with the same complete block style used by
@@ -331,6 +388,30 @@ impl RichTextLayout {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn shape_styled_browser(
+        fs: &mut FontSystem,
+        spans: &[RichSpan],
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        align: TextAlign,
+        underlines: Vec<(usize, usize)>,
+        strikes: Vec<(usize, usize)>,
+        browser_emoji: bool,
+    ) -> Self {
+        Self::shape_styled_reusing_browser(
+            fs,
+            spans,
+            style,
+            max_width,
+            align,
+            underlines,
+            strikes,
+            None,
+            browser_emoji,
+        )
+    }
+
     /// Reuse unchanged paragraphs from this renderer's previous layout.
     /// The caller must enforce the same font-system identity and generation;
     /// font replacement or locale changes require `previous = None`.
@@ -345,6 +426,23 @@ impl RichTextLayout {
         underlines: Vec<(usize, usize)>,
         strikes: Vec<(usize, usize)>,
         previous: Option<Self>,
+    ) -> Self {
+        Self::shape_styled_reusing_browser(
+            fs, spans, style, max_width, align, underlines, strikes, previous, false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn shape_styled_reusing_browser(
+        fs: &mut FontSystem,
+        spans: &[RichSpan],
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        align: TextAlign,
+        underlines: Vec<(usize, usize)>,
+        strikes: Vec<(usize, usize)>,
+        previous: Option<Self>,
+        browser_emoji: bool,
     ) -> Self {
         let full_text: String = spans.iter().map(|span| span.text.as_str()).collect();
         let offset_map = if max_width.is_some() {
@@ -370,14 +468,25 @@ impl RichTextLayout {
         let (built, backgrounds, baselines) =
             Self::build_rich_runs(spans, style, &offset_map, &base, size, line_height_mult);
 
-        buffer.set_rich_text(
-            built
-                .iter()
-                .map(|(text, attrs)| (text.as_ref(), attrs.clone())),
-            &base,
-            Shaping::Advanced,
-            align.to_cosmic(),
-        );
+        if browser_emoji {
+            buffer.set_rich_text(
+                built.iter().flat_map(|(text, attrs)| {
+                    crate::text_render::browser_emoji_runs(text.as_ref(), attrs, true)
+                }),
+                &base,
+                Shaping::Advanced,
+                align.to_cosmic(),
+            );
+        } else {
+            buffer.set_rich_text(
+                built
+                    .iter()
+                    .map(|(text, attrs)| (text.as_ref(), attrs.clone())),
+                &base,
+                Shaping::Advanced,
+                align.to_cosmic(),
+            );
+        }
         // cosmic-text 0.19's rich setter omits the final empty paragraph after
         // an LF, unlike its plain setter. Restore that line at this boundary so
         // attributed and plain layouts expose the same bytes and geometry.

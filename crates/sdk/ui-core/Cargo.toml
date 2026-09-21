@@ -191,6 +191,7 @@ sha2.workspace = true
 blake3.workspace = true
 toml.workspace = true
 unicode-script = "=0.5.8"
+unicode-properties = "=0.1.4"
 # Pairing-channel authentication. HMAC binds the round-1 broadcast to
 # the one-time pairing secret; XChaCha20-Poly1305 separately encrypts
 # and authenticates the exchanged DKG payloads.

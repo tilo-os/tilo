@@ -32,7 +32,10 @@ const tick=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
 async function fixture({standalone=false,legacy=false}={}){
  const document=new Node('document');document.body=new Node('body');document.append(document.body);document.activeElement=document.body;document.createElement=tag=>new Node(tag);globalThis.document=document;
  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{gpu:{},platform:'Mac'}});
- globalThis.KeyboardEvent=DomEvent;globalThis.FocusEvent=DomEvent;globalThis.fetch=async()=>({ok:true,json:async()=>[]});
+ globalThis.KeyboardEvent=DomEvent;globalThis.FocusEvent=DomEvent;globalThis.fetch=async url=>{
+  if(String(url).endsWith('fonts.json'))return {ok:true,json:async()=>({schema:1,catalog:'host-input-fixture',assets:[{name:'NotoSans[wght].ttf',bytes:1,sha256:'4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a',startup:true}]})};
+  return {ok:true,arrayBuffer:async()=>new Uint8Array([1]).buffer};
+ };
  let allocated=false,ownershipReads=0;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[],deliveredOwners=[];let update;
  const runtime={mount(_canvas,_config,_assets,_entries,callback){update=callback;setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},refresh_storage_lease(){},pending_writes:()=> '[]',asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
   desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop disposed');if(standalone)throw Error('Desktop navigation unavailable');return JSON.stringify(state);},desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,

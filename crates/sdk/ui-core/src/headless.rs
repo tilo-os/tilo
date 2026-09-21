@@ -1455,6 +1455,36 @@ impl FrameHarness {
         schedule(self.presentation_roots())
     }
 
+    /// Drain optional canonical font assets demanded by the most recent
+    /// authoritative shaping pass.
+    pub fn take_browser_font_demands(&mut self) -> Vec<String> {
+        self.text.take_browser_font_demands()
+    }
+
+    /// Install one verified optional font, invalidate text caches, then
+    /// rebuild layout before the browser is allowed to request a redraw.
+    /// # Errors
+    /// Propagates canonical font integrity and face-validation failures.
+    pub fn install_browser_font(
+        &mut self,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<bool, crate::font_catalog::FontCatalogError> {
+        let changed = self.text.install_browser_font(name, bytes)?;
+        if changed {
+            self.invalidate_layout_tree();
+            self.relayout();
+        }
+        Ok(changed)
+    }
+
+    /// Rearm shaping demand after a host fetch failed, without producing a
+    /// frame or mutating focus/document state on asynchronous completion.
+    pub fn browser_font_failed(&mut self) {
+        self.text.browser_font_failed();
+        self.invalidate_layout_tree();
+    }
+
     /// Diagnostic paths of dirty subtrees, without inspecting document content.
     /// Queried outside a measured frame; not part of normal scheduling.
     pub fn redraw_sources(&self) -> Vec<String> {
@@ -6700,6 +6730,42 @@ fn write_headless_output(
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
+
+    #[test]
+    fn late_browser_font_install_rebuilds_layout_without_mutating_document_or_focus() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+        let fonts = catalog
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut driver = Driver::new_with_controlled_inputs(
+            State::new(),
+            Box::new(crate::widget::Text::new("مَرْحَبًا")),
+            (400, 200),
+            Theme::dark(),
+            TextRenderer::with_browser_font_system(fonts),
+            crate::permissions::UserId("font-test".into()),
+        );
+        assert_eq!(
+            driver.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
+        );
+        let frames = driver.relayout_frames();
+        let heads = driver.state.doc.get_heads();
+        let focused = driver.focused;
+        assert!(
+            driver
+                .install_browser_font(
+                    "NotoSansArabic[wght].ttf",
+                    std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+                )
+                .unwrap()
+        );
+        assert_eq!(driver.relayout_frames(), frames + 1);
+        assert!(driver.last_relayout().rebuilt);
+        assert_eq!(driver.state.doc.get_heads(), heads);
+        assert_eq!(driver.focused, focused);
+    }
 
     static CONTROLLED_HISTORY: crate::history_mode::HistoryDefinition =
         crate::history_mode::HistoryDefinition {

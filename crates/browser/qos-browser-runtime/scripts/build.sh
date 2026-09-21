@@ -31,16 +31,24 @@ python3 - "$repo" "$out" <<'PY'
 import sys,pathlib,re,shutil,json
 repo,out=map(pathlib.Path,sys.argv[1:])
 source=repo/'crates/sdk/ui-core/assets/fonts'
-names=[]
-for block in (source/'manifest.toml').read_text().split('[[font]]')[1:]:
+text=(source/'manifest.toml').read_text()
+assets=[]
+for block in text.split('[[font]]')[1:]:
     block=block.split('[[license]]')[0]
     if re.search(r'^scope = "product"$',block,re.M):
         name=re.search(r'^file = "(.*?)"$',block,re.M)[1]
         shutil.copy2(source/name,out/'fonts'/name)
-        names.append(name)
+        assets.append(dict(
+            name=name,
+            bytes=int(re.search(r'^bytes = (\d+)$',block,re.M)[1]),
+            sha256=re.search(r'^sha256 = "([0-9a-f]{64})"$',block,re.M)[1],
+            startup=bool(re.search(r'^browser_startup = true$',block,re.M)),
+        ))
+assert any(asset['startup'] for asset in assets)
 shutil.copytree(source/'LICENSES',out/'fonts/LICENSES',dirs_exist_ok=True)
 shutil.copy2(source/'manifest.toml',out/'fonts/manifest.toml')
-(out/'fonts.json').write_text(json.dumps(names))
+catalog=re.search(r'^catalog_id = "(.*?)"$',text,re.M)[1]
+(out/'fonts.json').write_text(json.dumps(dict(schema=1,catalog=catalog,assets=assets),separators=(',',':'))+'\n')
 PY
 
 # Capture the actual tools/profile and output hashes; never infer a prebuilt profile.

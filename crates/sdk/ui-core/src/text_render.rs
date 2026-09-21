@@ -4,7 +4,7 @@ use cosmic_text::{
     Align, Attrs, Buffer, Family, FontFeatures as CosmicFontFeatures, FontSystem, Metrics, Shaping,
     Style as FontStyle, SwashCache, Wrap,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
@@ -21,6 +21,103 @@ pub const UI_SERIF_FAMILY: &str = "Noto Serif";
 pub const UI_MONOSPACE_FAMILY: &str = "Noto Sans Mono";
 /// Dedicated OpenType MATH face used by the shared formula compositor.
 pub const UI_MATH_FAMILY: &str = "Noto Sans Math";
+
+fn browser_assets_for_missing(character: char) -> &'static [&'static str] {
+    use unicode_script::{Script, UnicodeScript};
+    match character.script() {
+        Script::Arabic => &["NotoSansArabic[wght].ttf"],
+        Script::Hebrew => &["NotoSansHebrew[wght].ttf"],
+        Script::Devanagari => &["NotoSansDevanagari[wght].ttf"],
+        Script::Bengali => &["NotoSansBengali[wght].ttf"],
+        Script::Thai => &["NotoSansThai[wght].ttf"],
+        Script::Han | Script::Bopomofo | Script::Hangul | Script::Hiragana | Script::Katakana => {
+            &["NotoSansCJK-VF.ttc"]
+        }
+        Script::Common | Script::Inherited => {
+            let code = u32::from(character);
+            if matches!(code, 0x1F000..=0x1FAFF | 0x1FC00..=0x1FFFF) {
+                &["Noto-COLRv1.ttf"]
+            } else if matches!(
+                code,
+                0x2190..=0x22FF | 0x27C0..=0x27EF | 0x2980..=0x2AFF | 0x1D400..=0x1D7FF
+            ) {
+                &[
+                    "NotoSansMath-Regular.ttf",
+                    "NotoSansSymbols[wght].ttf",
+                    "NotoSansSymbols2-Regular.ttf",
+                ]
+            } else if matches!(
+                code,
+                0x2300..=0x26FF | 0x2700..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1F02F
+            ) {
+                &["NotoSansSymbols[wght].ttf", "NotoSansSymbols2-Regular.ttf"]
+            } else {
+                &[]
+            }
+        }
+        _ => &[],
+    }
+}
+
+pub(crate) fn browser_text_demands_emoji(text: &str) -> bool {
+    use unicode_segmentation::UnicodeSegmentation;
+    text.graphemes(true).any(browser_grapheme_demands_emoji)
+}
+
+fn browser_grapheme_demands_emoji(grapheme: &str) -> bool {
+    use unicode_properties::{EmojiStatus, UnicodeEmoji};
+    if grapheme.contains('\u{fe0e}') {
+        return false;
+    }
+    let emoji_sequence = grapheme.contains('\u{fe0f}')
+        || grapheme.contains('\u{20e3}')
+        || (grapheme.contains('\u{200d}') && grapheme.chars().any(char::is_emoji_char));
+    emoji_sequence
+        || grapheme.chars().any(|character| {
+            matches!(
+                character.emoji_status(),
+                EmojiStatus::EmojiPresentation
+                    | EmojiStatus::EmojiPresentationAndModifierBase
+                    | EmojiStatus::EmojiPresentationAndEmojiComponent
+                    | EmojiStatus::EmojiPresentationAndModifierAndEmojiComponent
+            )
+        })
+}
+
+pub(crate) fn browser_emoji_runs<'text, 'attrs>(
+    text: &'text str,
+    attrs: &Attrs<'attrs>,
+    enabled: bool,
+) -> Vec<(&'text str, Attrs<'attrs>)> {
+    use unicode_segmentation::UnicodeSegmentation;
+    if !enabled || !browser_text_demands_emoji(text) {
+        return vec![(text, attrs.clone())];
+    }
+    let mut runs = Vec::new();
+    let mut start = 0;
+    let mut emoji = None;
+    for (offset, grapheme) in text.grapheme_indices(true) {
+        let next = browser_grapheme_demands_emoji(grapheme);
+        if emoji.is_some_and(|current| current != next) {
+            let current = emoji.unwrap_or(false);
+            let run_attrs = if current {
+                attrs.clone().family(Family::Name("Noto Color Emoji"))
+            } else {
+                attrs.clone()
+            };
+            runs.push((&text[start..offset], run_attrs));
+            start = offset;
+        }
+        emoji = Some(next);
+    }
+    let run_attrs = if emoji.unwrap_or(false) {
+        attrs.clone().family(Family::Name("Noto Color Emoji"))
+    } else {
+        attrs.clone()
+    };
+    runs.push((&text[start..], run_attrs));
+    runs
+}
 
 #[cfg(test)]
 thread_local! {
@@ -1365,6 +1462,12 @@ pub struct TextRenderer {
     // Font/variation identity retains the randomized outer map.
     ink_bounds: HashMap<InkFontKey, rustc_hash::FxHashMap<u16, Option<Rect>>>,
     ink_bounds_entries: usize,
+    /// Missing canonical browser assets observed by actual cosmic-text
+    /// shaping. Native/full-catalog renderers leave this disabled.
+    browser_font_demands: Option<BTreeSet<String>>,
+    /// Successfully installed optional assets. Candidate fallback fonts are
+    /// requested one at a time so one glyph never downloads unused families.
+    browser_font_assets: HashSet<String>,
 }
 
 impl Default for TextRenderer {
@@ -1460,7 +1563,52 @@ impl TextRenderer {
             text_scale: 1.0,
             ink_bounds: HashMap::new(),
             ink_bounds_entries: 0,
+            browser_font_demands: None,
+            browser_font_assets: HashSet::new(),
         }
+    }
+
+    /// Construct a renderer over the verified browser startup catalog.
+    pub fn with_browser_font_system(font_system: FontSystem) -> Self {
+        let mut renderer = Self::with_font_system(font_system);
+        renderer.browser_font_demands = Some(BTreeSet::new());
+        renderer
+    }
+
+    /// Drain optional asset names demanded by missing glyphs in authoritative
+    /// shaping. The host may retry a failed name after later shaping reports it.
+    pub fn take_browser_font_demands(&mut self) -> Vec<String> {
+        self.browser_font_demands
+            .as_mut()
+            .map_or_else(Vec::new, |demands| {
+                std::mem::take(demands).into_iter().collect()
+            })
+    }
+
+    /// A host fetch failed. Clear cached fallback measurements so a later
+    /// frame that still shapes the affected text can re-report demand.
+    pub fn browser_font_failed(&mut self) {
+        if self.browser_font_demands.is_some() {
+            self.bump_generation();
+        }
+    }
+
+    /// Install one verified canonical optional asset and invalidate every
+    /// cached metric/layout identity before another frame can be drawn.
+    /// # Errors
+    /// Propagates canonical manifest, hash, size, and face validation errors.
+    pub fn install_browser_font(
+        &mut self,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<bool, crate::font_catalog::FontCatalogError> {
+        let catalog = crate::font_catalog::FontCatalog::product("", self.font_system.locale());
+        let changed = catalog.install_browser_asset(&mut self.font_system, name, bytes)?;
+        self.browser_font_assets.insert(name.to_owned());
+        if changed {
+            self.bump_generation();
+        }
+        Ok(changed)
     }
 
     /// Set the accessibility text multiplier used by subsequent measurement
@@ -1621,6 +1769,7 @@ impl TextRenderer {
         }
         let scaled_style = self.scaled_style(style);
         let style = &scaled_style;
+        self.note_browser_explicit_family(style);
 
         let key = self.make_measure_key(text, max_width, style);
         if let Some(cached) = self.measure_lookup(key) {
@@ -1636,12 +1785,22 @@ impl TextRenderer {
         let shaping_text = offset_map
             .as_ref()
             .map_or(std::borrow::Cow::Borrowed(text), |map| map.shape_text(text));
-        buffer.set_text(
-            &shaping_text,
-            &attrs,
-            Shaping::Advanced,
-            style.align.to_cosmic(),
-        );
+        let emoji = self.browser_font_assets.contains("Noto-COLRv1.ttf");
+        if emoji && browser_text_demands_emoji(&shaping_text) {
+            buffer.set_rich_text(
+                browser_emoji_runs(&shaping_text, &attrs, true),
+                &attrs,
+                Shaping::Advanced,
+                style.align.to_cosmic(),
+            );
+        } else {
+            buffer.set_text(
+                &shaping_text,
+                &attrs,
+                Shaping::Advanced,
+                style.align.to_cosmic(),
+            );
+        }
 
         let hyphen_width = if offset_map
             .as_ref()
@@ -1665,6 +1824,7 @@ impl TextRenderer {
                 layout_width.unwrap_or(0.0),
             );
         }
+        self.note_browser_font_demands(&buffer);
 
         let mut width = 0.0f32;
         let mut lines: usize = 0;
@@ -2028,6 +2188,7 @@ impl TextRenderer {
     /// Shapes `text` into a laid-out cosmic-text [`Buffer`], applying the
     /// same hyphenation/balance handling `measure_style` uses.
     fn shape_buffer(&mut self, text: &str, max_width: Option<f32>, style: &TextStyle) -> Buffer {
+        self.note_browser_explicit_family(style);
         let line_height = style.line_height_px();
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(style.size, line_height));
         let attrs = style.cosmic_attrs();
@@ -2035,12 +2196,22 @@ impl TextRenderer {
         let shaping_text = offset_map
             .as_ref()
             .map_or(std::borrow::Cow::Borrowed(text), |map| map.shape_text(text));
-        buffer.set_text(
-            &shaping_text,
-            &attrs,
-            Shaping::Advanced,
-            style.align.to_cosmic(),
-        );
+        let emoji = self.browser_font_assets.contains("Noto-COLRv1.ttf");
+        if emoji && browser_text_demands_emoji(&shaping_text) {
+            buffer.set_rich_text(
+                browser_emoji_runs(&shaping_text, &attrs, true),
+                &attrs,
+                Shaping::Advanced,
+                style.align.to_cosmic(),
+            );
+        } else {
+            buffer.set_text(
+                &shaping_text,
+                &attrs,
+                Shaping::Advanced,
+                style.align.to_cosmic(),
+            );
+        }
         let hyphen_width = if offset_map
             .as_ref()
             .is_some_and(OffsetMap::has_discretionary_hyphens)
@@ -2063,7 +2234,61 @@ impl TextRenderer {
                 layout_width.unwrap_or(0.0),
             );
         }
+        self.note_browser_font_demands(&buffer);
         buffer
+    }
+
+    pub(crate) fn note_browser_font_demands(&mut self, buffer: &Buffer) {
+        let Some(demands) = self.browser_font_demands.as_mut() else {
+            return;
+        };
+        for run in buffer.layout_runs() {
+            let emoji_presentation = browser_text_demands_emoji(run.text);
+            if emoji_presentation && !self.browser_font_assets.contains("Noto-COLRv1.ttf") {
+                demands.insert("Noto-COLRv1.ttf".to_owned());
+            }
+            for glyph in run.glyphs.iter().filter(|glyph| glyph.glyph_id == 0) {
+                let Some(text) = run.text.get(glyph.start..glyph.end) else {
+                    continue;
+                };
+                for character in text.chars() {
+                    let candidates = if emoji_presentation
+                        && unicode_properties::UnicodeEmoji::is_emoji_char(character)
+                    {
+                        &["Noto-COLRv1.ttf"][..]
+                    } else {
+                        browser_assets_for_missing(character)
+                    };
+                    if let Some(asset) = candidates
+                        .iter()
+                        .find(|asset| !self.browser_font_assets.contains(**asset))
+                    {
+                        demands.insert((*asset).to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    fn note_browser_explicit_family(&mut self, style: &TextStyle) {
+        let Some(demands) = self.browser_font_demands.as_mut() else {
+            return;
+        };
+        if matches!(&style.family, FontChoice::Named(name) if name == UI_MATH_FAMILY)
+            && !self
+                .browser_font_assets
+                .contains("NotoSansMath-Regular.ttf")
+        {
+            demands.insert("NotoSansMath-Regular.ttf".to_owned());
+        }
+    }
+
+    pub(crate) fn note_browser_rich_layout(&mut self, layout: &crate::richtext::RichTextLayout) {
+        self.note_browser_font_demands(&layout.buffer);
+    }
+
+    pub(crate) fn browser_color_emoji_installed(&self) -> bool {
+        self.browser_font_assets.contains("Noto-COLRv1.ttf")
     }
 
     /// Flatten a shaped [`Buffer`] into per-face contiguous runs, baking the
@@ -2146,6 +2371,7 @@ impl TextRenderer {
         max_width: Option<f32>,
         style: &TextStyle,
     ) -> Arc<Vec<GlyphRun>> {
+        self.note_browser_explicit_family(style);
         let key = self.make_shape_key(text, max_width, style);
         if let Some(runs) = self.shape_cache.get(&key) {
             self.shape_hits = self.shape_hits.saturating_add(1);
@@ -2637,6 +2863,179 @@ mod tests {
         assert!(first.0 > 0.0 && first.1 > 0.0);
         assert_eq!(renderer.hits, 1);
         assert_eq!(renderer.misses, 1);
+    }
+
+    #[test]
+    fn browser_missing_glyphs_demand_exact_assets_then_install_reshapes() {
+        let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let fonts = catalog
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let style = TextStyle::new(18.0);
+        for (text, expected) in [
+            ("مَرْحَبًا", "NotoSansArabic[wght].ttf"),
+            ("東京", "NotoSansCJK-VF.ttc"),
+            ("🙂", "Noto-COLRv1.ttf"),
+        ] {
+            let before = renderer.shape_buffer(text, None, &style);
+            assert!(
+                before
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs)
+                    .any(|glyph| glyph.glyph_id == 0),
+                "{text} must expose missing canonical glyphs before demand"
+            );
+            assert_eq!(renderer.take_browser_font_demands(), [expected]);
+            let old_generation = renderer.generation;
+            assert!(
+                renderer
+                    .install_browser_font(expected, std::fs::read(root.join(expected)).unwrap())
+                    .unwrap()
+            );
+            assert_ne!(
+                renderer.generation, old_generation,
+                "font install must invalidate shape/measure caches"
+            );
+            let after = renderer.shape_buffer(text, None, &style);
+            assert!(
+                after
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs)
+                    .all(|glyph| glyph.glyph_id != 0),
+                "{text} must reshape with the installed canonical font"
+            );
+            assert!(renderer.take_browser_font_demands().is_empty());
+        }
+    }
+
+    #[test]
+    fn browser_explicit_math_family_demands_its_face_while_core_emoji_stays_loaded() {
+        let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let fonts = catalog
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let math = TextStyle::new(18.0).with_family(FontChoice::Named(UI_MATH_FAMILY.to_owned()));
+        let before = renderer.shape_buffer("x", None, &math);
+        assert!(
+            before
+                .layout_runs()
+                .flat_map(|run| run.glyphs)
+                .all(|glyph| {
+                    renderer
+                        .font_system
+                        .db()
+                        .face(glyph.font_id)
+                        .is_none_or(|face| {
+                            !face
+                                .families
+                                .iter()
+                                .any(|family| family.0 == UI_MATH_FAMILY)
+                        })
+                })
+        );
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansMath-Regular.ttf"]
+        );
+        renderer
+            .install_browser_font(
+                "NotoSansMath-Regular.ttf",
+                std::fs::read(root.join("NotoSansMath-Regular.ttf")).unwrap(),
+            )
+            .unwrap();
+        let after = renderer.shape_buffer("x", None, &math);
+        assert!(after.layout_runs().flat_map(|run| run.glyphs).all(|glyph| {
+            renderer
+                .font_system
+                .db()
+                .face(glyph.font_id)
+                .is_some_and(|face| {
+                    face.families
+                        .iter()
+                        .any(|family| family.0 == UI_MATH_FAMILY)
+                })
+        }));
+        assert!(renderer.take_browser_font_demands().is_empty());
+
+        let core_emoji = renderer.shape_buffer("©®™", None, &TextStyle::new(18.0));
+        assert!(
+            core_emoji
+                .layout_runs()
+                .flat_map(|run| run.glyphs)
+                .all(|glyph| glyph.glyph_id != 0)
+        );
+        assert!(renderer.take_browser_font_demands().is_empty());
+        let core_emoji_presentation = renderer.shape_buffer("‼️", None, &TextStyle::new(18.0));
+        assert!(
+            core_emoji_presentation
+                .layout_runs()
+                .flat_map(|run| run.glyphs)
+                .any(|glyph| glyph.glyph_id != 0),
+            "a core glyph must not hide its requested emoji presentation"
+        );
+        assert_eq!(renderer.take_browser_font_demands(), ["Noto-COLRv1.ttf"]);
+        renderer.shape_buffer("✈️", None, &TextStyle::new(18.0));
+        assert_eq!(renderer.take_browser_font_demands(), ["Noto-COLRv1.ttf"]);
+        renderer.shape_buffer("⌚", None, &TextStyle::new(18.0));
+        assert_eq!(renderer.take_browser_font_demands(), ["Noto-COLRv1.ttf"]);
+        renderer
+            .install_browser_font(
+                "Noto-COLRv1.ttf",
+                std::fs::read(root.join("Noto-COLRv1.ttf")).unwrap(),
+            )
+            .unwrap();
+        for emoji in ["‼️", "✈️", "⌚"] {
+            let shaped = renderer.shape_buffer(emoji, None, &TextStyle::new(18.0));
+            let glyphs: Vec<_> = shaped
+                .layout_runs()
+                .flat_map(|run| run.glyphs)
+                .filter(|glyph| glyph.glyph_id != 0)
+                .collect();
+            assert!(!glyphs.is_empty(), "{emoji} must shape a visible glyph");
+            assert!(
+                glyphs.iter().all(|glyph| renderer
+                    .font_system
+                    .db()
+                    .face(glyph.font_id)
+                    .is_some_and(|face| face
+                        .families
+                        .iter()
+                        .any(|family| family.0 == "Noto Color Emoji"))),
+                "{emoji} must reshape through the installed emoji family"
+            );
+        }
+        assert!(renderer.take_browser_font_demands().is_empty());
+    }
+
+    #[test]
+    fn failed_browser_fetch_rearms_cached_text_for_a_later_relevant_shape() {
+        let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let fonts = catalog
+            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let style = TextStyle::new(18.0);
+        renderer.measure_style("مَرْحَبًا", None, &style);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
+        );
+        renderer.measure_style("مَرْحَبًا", None, &style);
+        assert!(
+            renderer.take_browser_font_demands().is_empty(),
+            "the cached measure does not spin demand"
+        );
+        renderer.browser_font_failed();
+        renderer.measure_style("مَرْحَبًا", None, &style);
+        assert_eq!(
+            renderer.take_browser_font_demands(),
+            ["NotoSansArabic[wght].ttf"]
+        );
     }
 
     struct EveryThirdByte;
