@@ -170,12 +170,12 @@ impl App {
         let snapshot = ActionDirectorySnapshot::build(resources, descriptors, |resource| {
             self.directory_explicit_visibility(resource)
         });
-        if self.action_directory_snapshot.as_ref() != Some(&snapshot) {
-            if let Some((_, revision)) = &mut self.action_directory_stamp {
+        if self.actions.action_directory_snapshot.as_ref() != Some(&snapshot) {
+            if let Some((_, revision)) = &mut self.actions.action_directory_stamp {
                 *revision = format!("v5:{}", uuid::Uuid::new_v4());
             }
-            self.action_directory_cursors.clear();
-            self.action_directory_snapshot = Some(snapshot);
+            self.actions.action_directory_cursors.clear();
+            self.actions.action_directory_snapshot = Some(snapshot);
         }
     }
 }

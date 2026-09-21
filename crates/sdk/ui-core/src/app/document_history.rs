@@ -51,6 +51,7 @@ impl App {
         let exported = self.bindings.exported_nodes(&self.layout.node_map);
         if self.history.is_some()
             || self
+                .actions
                 .action_palette
                 .as_deref()
                 .is_some_and(|palette| palette.is_presented())
@@ -394,6 +395,7 @@ impl App {
         // leaf as a separate presentation root so app/legacy authority and
         // inactive boundaries cannot leak into the host confirmation surface.
         let palette_node = self
+            .actions
             .action_palette
             .as_deref_mut()
             .filter(|palette| palette.is_presented())
@@ -416,7 +418,8 @@ impl App {
             let mut roots: Vec<(&dyn Widget, taffy::NodeId)> = vec![(history.as_ref(), root)];
             if let Some(node) = palette_node {
                 roots.push((
-                    self.action_palette
+                    self.actions
+                        .action_palette
                         .as_deref()
                         .expect("palette was just built"),
                     node,
@@ -445,7 +448,8 @@ impl App {
                 vec![(self.root_widget.as_ref(), app)];
             if let Some(node) = palette_node {
                 roots.push((
-                    self.action_palette
+                    self.actions
+                        .action_palette
                         .as_deref()
                         .expect("palette was just built"),
                     node,
@@ -491,7 +495,8 @@ impl App {
         );
         if let Some(node) = palette_node {
             roots.push((
-                self.action_palette
+                self.actions
+                    .action_palette
                     .as_deref()
                     .expect("palette was just built"),
                 node,

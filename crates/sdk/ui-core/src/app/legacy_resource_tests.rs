@@ -22,7 +22,7 @@ fn native_legacy_route_exact_owner_publication_and_repeat_idle_do_not_touch_sibl
     state.doc.put(ROOT, "outer-only", true).unwrap();
     state.commit_action(None, None);
     let mut app = App::new_with_controlled_inputs(state, Box::new(root));
-    app.action_registry = registry();
+    app.actions.action_registry = registry();
     app.init_layout();
     app.focused_node = app.layout.node_map.keys().copied().find(|id| {
         app.bindings
@@ -32,7 +32,7 @@ fn native_legacy_route_exact_owner_publication_and_repeat_idle_do_not_touch_sibl
     let original_a = a.snapshot();
     let original_b = b.snapshot();
     let outer = app.state.doc.save();
-    app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: crate::collaboration::RouteSpec::app("controlled-shell", room),
         epoch: uuid::Uuid::new_v4(),
     });
@@ -123,7 +123,7 @@ fn native_legacy_route_old_changed_and_noop_actionhost_edges_have_one_boundary_e
         assert!(!probe.needs_commit());
         let root = f.take_tile();
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
-        app.action_registry = registry();
+        app.actions.action_registry = registry();
         app.init_layout();
         let committed = f
             .store
@@ -195,7 +195,7 @@ fn native_legacy_route_replacement_transport_refuses_before_calls_and_unique_bar
     let before = f.snapshot();
     let root = f.take_tile();
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
-    app.action_registry = registry();
+    app.actions.action_registry = registry();
     app.init_layout();
     let calls = std::rc::Rc::new(std::cell::Cell::new(0));
     app.set_action_transport(Box::new(RejectTransport(calls.clone())));
@@ -219,7 +219,7 @@ fn native_legacy_route_replacement_transport_refuses_before_calls_and_unique_bar
     let mut fresh = Fixture::new(531);
     let root = fresh.take_tile();
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
-    app.action_registry = registry();
+    app.actions.action_registry = registry();
     app.init_layout();
     app.invoke_resource_action(
         &address(),
@@ -288,11 +288,11 @@ fn native_legacy_effect_capture_keeps_exact_accepted_owner_hidden_poll_cancel_an
                 "fixture-user",
                 None,
             );
-            assert_eq!(app.directed_invocations.len(), 1);
+            assert_eq!(app.actions.directed_invocations.len(), 1);
         } else {
             a.probe.offer();
             assert!(app.controlled_local_idle_for_test());
-            assert_eq!(app.local_invocations.len(), 1);
+            assert_eq!(app.actions.local_invocations.len(), 1);
         }
         assert_eq!(a.probe.starts.get(), 1);
         assert_eq!(b.probe.starts.get(), 0);
@@ -321,12 +321,12 @@ fn native_legacy_effect_capture_keeps_exact_accepted_owner_hidden_poll_cancel_an
         if cancel {
             app.request_invocation_cancellation(777);
             assert!(app.poll_directed_invocations());
-            assert!(app.directed_invocations.is_empty());
+            assert!(app.actions.directed_invocations.is_empty());
             assert_eq!(a.probe.invocation.get(), None);
         } else {
             a.probe.ready.set(true);
             assert!(app.poll_directed_invocations());
-            assert!(app.local_invocations.is_empty());
+            assert!(app.actions.local_invocations.is_empty());
         }
         assert!(!app.poll_directed_invocations());
         assert_eq!(a.probe.starts.get(), 1);
@@ -368,7 +368,7 @@ fn native_legacy_effect_capture_keeps_exact_accepted_owner_hidden_poll_cancel_an
         before.2.map(|g| g + 1),
         "existing TileHost mutable effect delivery increments generation once"
     );
-    assert!(app.local_invocations.is_empty());
+    assert!(app.actions.local_invocations.is_empty());
     assert!(!app.controlled_local_idle_for_test());
     assert_eq!(f.snapshot(), after);
 }
@@ -384,7 +384,7 @@ fn native_legacy_and_outer_colliding_controls_keep_their_captured_document() {
     state.doc.put(ROOT, "value", 10).unwrap();
     state.commit_action(None, None);
     let mut app = App::new_with_controlled_inputs(state, Box::new(root));
-    app.action_registry = registry();
+    app.actions.action_registry = registry();
     app.init_layout();
     let before = owner.snapshot();
     assert!(
@@ -456,10 +456,10 @@ fn native_legacy_effect_control_keeps_existing_confirmation_gate() {
     )
     .unwrap();
     assert_eq!(f.probe.starts.get(), 1);
-    assert_eq!(app.local_invocations.len(), 1);
+    assert_eq!(app.actions.local_invocations.len(), 1);
     f.probe.ready.set(true);
     assert!(app.poll_directed_invocations());
-    assert!(app.local_invocations.is_empty());
+    assert!(app.actions.local_invocations.is_empty());
 }
 
 #[test]
@@ -474,7 +474,7 @@ fn round1_native_drain_keeps_independent_document_and_disposable_view_controls()
                         view,
                     );
                 let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
-                app.action_registry = registry();
+                app.actions.action_registry = registry();
                 app.init_layout();
                 let outer = app.state.doc.save();
                 let before_b = b.snapshot();

@@ -6863,6 +6863,7 @@ mod tests {
             target_key.public().as_bytes(),
         ))
         .unwrap();
+        authenticated_personal_peer(&net, &root, &target_key);
         net.registered_home_device_ids
             .lock()
             .unwrap()

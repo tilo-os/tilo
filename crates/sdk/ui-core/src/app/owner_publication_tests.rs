@@ -42,6 +42,7 @@ fn owner_publication_blocked_checked_action_cannot_send_terminal() {
         fixture.app.publication_resources();
         let resource = fixture
             .app
+            .actions
             .bound_publication
             .alias(&fixture.bindings[0], "bound:probe")
             .unwrap();
@@ -76,6 +77,7 @@ fn owner_publication_blocked_checked_action_cannot_send_terminal() {
         if background {
             fixture
                 .app
+                .actions
                 .directed_invocations
                 .get_mut(&invocation)
                 .unwrap()
@@ -107,8 +109,20 @@ fn owner_publication_blocked_checked_action_cannot_send_terminal() {
                 .contains("outcome unknown")
         );
         if background {
-            assert!(fixture.app.directed_invocations.contains_key(&invocation));
-            assert!(fixture.app.bound_invocations.contains_key(&invocation));
+            assert!(
+                fixture
+                    .app
+                    .actions
+                    .directed_invocations
+                    .contains_key(&invocation)
+            );
+            assert!(
+                fixture
+                    .app
+                    .actions
+                    .bound_invocations
+                    .contains_key(&invocation)
+            );
         }
         let captures = CAPTURES.with_borrow(|items| items.len());
         fixture.app.invoke_published_action(

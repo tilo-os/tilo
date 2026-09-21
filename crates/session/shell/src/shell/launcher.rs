@@ -2851,9 +2851,11 @@ mod tests {
     }
     #[cfg(target_os = "linux")]
     #[test]
+    #[serial_test::serial(launch_events)]
     fn live_child_with_open_stderr_does_not_block_exit_supervision() {
         use std::os::unix::fs::PermissionsExt;
 
+        const PACKAGE_ID: &str = "dev.tilo.live-gui";
         let tmp = tempfile::tempdir().unwrap();
         let script = tmp.path().join("live-gui");
         std::fs::write(
@@ -2867,7 +2869,7 @@ mod tests {
 
         let _ = drain_events();
         spawn_launch(
-            "dev.tilo.live-gui".into(),
+            PACKAGE_ID.into(),
             "Live GUI".into(),
             LaunchCommand {
                 program: script,
@@ -2885,6 +2887,9 @@ mod tests {
         let mut saw_exit = false;
         while Instant::now() < deadline && !saw_exit {
             for event in drain_events() {
+                if event.package_id != PACKAGE_ID {
+                    continue;
+                }
                 match event.kind {
                     LaunchEventKind::Started { .. } => saw_started = true,
                     LaunchEventKind::Exited => saw_exit = true,

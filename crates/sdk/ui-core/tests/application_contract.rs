@@ -1838,9 +1838,20 @@ fn native_close_refusal_preserves_live_owner_and_retry_persists_later_edits() {
     );
     std::fs::remove_dir(&document_path).unwrap();
     std::fs::remove_dir(&view_path).unwrap();
+    app.refresh_semantic_tree();
+    let retry = app
+        .semantic_tree()
+        .iter()
+        .find(|node| node.action("retry").is_some())
+        .map(|node| node.id.clone())
+        .expect("failed close publishes an actionable Retry decision");
+    assert!(
+        app.invoke_semantic_action(&retry, "retry", None).unwrap(),
+        "the public semantic action must retry the retained owners"
+    );
     assert!(
         app.request_close(),
-        "repair must retry the same live record and view owners"
+        "successful retry leaves the same live owners ready for native close"
     );
     assert_eq!(body(&host.records, &checkout), "edited after refusal");
     let saved = automerge::AutoCommit::load(&std::fs::read(&document_path).unwrap()).unwrap();

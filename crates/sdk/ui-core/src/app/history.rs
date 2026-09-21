@@ -24,7 +24,12 @@ impl App {
         if let Some(history) = &self.history {
             roots.push(history.as_ref() as &dyn Widget);
         }
-        if let Some(palette) = self.action_palette.as_deref().filter(|p| p.is_presented()) {
+        if let Some(palette) = self
+            .actions
+            .action_palette
+            .as_deref()
+            .filter(|p| p.is_presented())
+        {
             roots.push(palette as &dyn Widget);
             return roots;
         }
@@ -56,31 +61,35 @@ impl App {
         });
         if captured {
             let address = self
+                .actions
                 .action_palette
                 .as_deref()
                 .filter(|palette| !palette.history_has_custody())
                 .and_then(crate::action_palette::ActionPalette::history_pending_address);
             let invocation = self
+                .actions
                 .action_palette
                 .as_deref()
                 .and_then(crate::action_palette::ActionPalette::history_pending_invocation);
             let original_arguments = self
+                .actions
                 .action_palette
                 .as_deref()
                 .and_then(|palette| palette.history_pending_continuation_arguments());
             let custody = address.as_ref().map(|address| {
                 let original = self
+                    .actions
                     .action_palette
                     .as_deref()
                     .and_then(|p| p.ordinary_request());
                 if let Some(original) = original {
                     original.validate_owner(&self.control_domain)?;
                 }
-                let target = if let Some(original) = original {
-                    original.target.clone()
-                } else {
-                    match self
-                        .action_palette
+                let target =
+                    if let Some(original) = original {
+                        original.target.clone()
+                    } else {
+                        match self.actions.action_palette
                         .as_deref()
                         .and_then(|palette| palette.history_pending_bound_target())
                     {
@@ -95,7 +104,7 @@ impl App {
                             address,
                         )?,
                     }
-                };
+                    };
                 let witness = invocation.as_ref().zip(original_arguments.as_ref()).map(
                     |(invocation, original_arguments)| {
                         crate::bound_dispatch::control_witness_with_arguments(
@@ -123,7 +132,7 @@ impl App {
                 };
                 Ok::<_, tilo_actions::DoorError>((target, identity, witness))
             });
-            if let Some(palette) = self.action_palette.as_deref_mut() {
+            if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                 palette.suspend_for_history();
                 if let Some(custody) = custody {
                     match custody {
@@ -214,7 +223,7 @@ impl App {
                 history.finish_return_to_live();
                 history.flush_pending_toolbar();
             }
-            if let Some(palette) = self.action_palette.as_deref_mut() {
+            if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                 palette.resume_after_history();
             }
         }
