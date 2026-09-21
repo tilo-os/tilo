@@ -256,7 +256,7 @@ mod launch_tests {
     fn production_argument_aware_launch_spec_installs_the_root_history_definition() {
         let spec = launch_spec(inert_root).open_app_global_state(memory_state);
         spec.validate_history_declaration().unwrap();
-        let app = spec.build_controlled_app_for_test().unwrap();
+        let mut app = spec.build_controlled_app_for_test().unwrap();
         let (installed, root) = app.controlled_history_definitions_for_test();
         assert!(std::ptr::eq(
             installed.unwrap(),

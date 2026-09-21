@@ -1148,6 +1148,7 @@ name = "backups"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "backups",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2584,6 +2585,7 @@ dependencies = [
  "automerge",
  "blake3",
  "bounded-command",
+ "containers",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -17071,6 +17073,7 @@ dependencies = [
  "tilo-app",
  "tracing",
  "vello",
+ "video-player",
  "winit",
 ]
 

@@ -94,7 +94,7 @@ mod launch_tests {
     #[test]
     fn production_launch_installs_backups_history() {
         let spec = launch_spec(inert_root).open_app_global_state(memory_state);
-        let app = spec.build_controlled_app_for_test().unwrap();
+        let mut app = spec.build_controlled_app_for_test().unwrap();
         let (installed, root) = app.controlled_history_definitions_for_test();
         assert!(std::ptr::eq(
             installed.unwrap(),

@@ -42,6 +42,7 @@ taffy.workspace = true
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+video-player = { path = ".", default-features = false, features = ["test-support"] }
 
 # Portal-only (feature-gated; never compiled for the default hermetic build).
 
