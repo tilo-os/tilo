@@ -325,12 +325,11 @@ def _create_verified_disk(args):
                 '--tmpfs', '/run/udev:ro,nosuid,nodev,noexec,mode=0755', *auth_args,
                 '--volume', f'{path}:/output/disk.raw:rw',
                 '--volume', f'{wrapper}:/run/tilo-bootc-registry-wrapper.py:ro',
-                '--entrypoint=/usr/bin/python3', verified.image_id,
+                '--entrypoint=/usr/bin/python3', args.source,
                 '/run/tilo-bootc-registry-wrapper.py', 'docker://' + args.source,
                 source_match.group(1), '--', '/usr/bin/bootc', 'install', 'to-disk',
                 '--via-loopback', '--generic-image',
                 '--composefs-backend', '--bootloader=systemd', '--filesystem=btrfs',
-                '--source-imgref=docker://' + args.source,
                 '--target-imgref=' + args.target,
                 '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'], disk,
                 args.output.with_name('bootc-install.failure.json'))
