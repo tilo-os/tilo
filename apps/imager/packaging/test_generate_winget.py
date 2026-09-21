@@ -15,14 +15,14 @@ class ManifestTests(unittest.TestCase):
     def setUp(self):
         environment = patch.dict(os.environ, {
             "GITHUB_SERVER_URL": "https://code.sandbox.example",
-            "TILO_RELEASE_REPOSITORY": "tilo/releases",
+            "TILO_RELEASE_REPOSITORY": "qos/releases",
         })
         environment.start()
         self.addCleanup(environment.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.url = "https://code.sandbox.example/tilo/releases/releases/download/imager-v1.2.3"
+        self.url = "https://code.sandbox.example/qos/releases/releases/download/imager-v1.2.3"
         for arch in ("x86_64", "aarch64"):
             directory = self.root / arch
             directory.mkdir()

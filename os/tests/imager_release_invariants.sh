@@ -31,6 +31,8 @@ bash "$repo/os/tests/forgejo_release_publication.sh" \
   || bad 'Forgejo release publication is not idempotent and immutable'
 bash "$repo/os/tests/public_release_origin.sh" \
   || bad 'installer catalog is not bound to the configured public release origin'
+bash "$repo/os/tests/winget_publication_idempotency.sh" \
+  || bad 'WinGet publication retry does not recognize exact accepted manifests'
 bash "$repo/os/tests/winget_acceptance_monitor.sh" \
   || bad 'WinGet acceptance monitor is not fail-closed and version-bound'
 
@@ -137,7 +139,7 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
   || bad 'release credential outputs or signing identities are insufficiently constrained'
 
 publisher="$repo/apps/imager/packaging/publish-forgejo-release.sh"
-if grep -Fq "release_repository=\"\${TILO_RELEASE_REPOSITORY:-tilo/releases}\"" "$publisher" \
+if grep -Fq "release_repository=\"\${TILO_RELEASE_REPOSITORY:-qos/releases}\"" "$publisher" \
    && grep -Fq 'release repository must be public' "$publisher" \
    && grep -Fq 'release repository must be separate from the source repository' "$publisher" \
    && grep -Fq 'release "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
@@ -337,7 +339,9 @@ grep -Fq 'tilo-imager-linux-aarch64.tar.gz' \
   && ok 'Homebrew selects native Linux and macOS artifacts by architecture' \
   || bad 'Homebrew does not cover the requested Linux/macOS architectures'
 
-grep -Fq 'tilo/homebrew-tilo' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
+grep -Fq 'qos/homebrew-tilo' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
+  && [ "$(grep -Fc 'brew tap tilo/tilo https://code.sandbox.example/qos/homebrew-tilo.git' "$workflow")" -eq 2 ] \
+  && ! grep -Fq 'code.sandbox.example/tilo/homebrew-tilo.git' "$workflow" \
   && grep -Fq 'microsoft/winget-pkgs/pulls' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq -- '--retry 6 --retry-all-errors --retry-max-time 180' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq 'state=open&base=master&head=' "$repo/apps/imager/packaging/publish-winget.sh" \
