@@ -6013,7 +6013,6 @@ impl App {
             any = true;
             action_surface_may_have_changed |= Self::collab_event_may_change_action_surface(&event);
             self.forward_session_notification(&event);
-            crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
             match event {
                 CollabEvent::Context { collaborators, .. } => {
                     self.apply_collab_context(collaborators);
@@ -6260,7 +6259,6 @@ impl App {
         let _entry = self.enter_wake_scope();
         let action_surface_may_have_changed = Self::collab_event_may_change_action_surface(&event);
         self.forward_session_notification(&event);
-        crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
         match event {
             CollabEvent::RemotePresenceUpdate {
                 user_id,
