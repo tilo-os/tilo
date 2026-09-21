@@ -559,10 +559,15 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     violations: list[Violation] = []
     # This is a Tilo framework invariant, not a requirement on the isolated
     # miniature app repositories used below and by third-party SDK consumers.
-    # Only the authoritative workspace owns crates/sdk/ui-core/src/app.rs.
+    # Only the authoritative workspace owns the App host implementation. Keep
+    # this invariant spanning its focused implementation modules so moving
+    # action/resource code out of app.rs cannot disable the audit.
     if root.resolve() == ROOT.resolve():
         app_host_path = root / "crates" / "sdk" / "ui-core" / "src" / "app.rs"
+        app_action_path = app_host_path.parent / "app" / "actions.rs"
         app_host = rust_code_only(app_host_path.read_text(encoding="utf-8"))
+        if app_action_path.is_file():
+            app_host += "\n" + rust_code_only(app_action_path.read_text(encoding="utf-8"))
         if not FRAMEWORK_RESOURCE_SEARCH_BUILD.search(
             app_host
         ) or not FRAMEWORK_RESOURCE_SEARCH_INSTALL.search(app_host):
