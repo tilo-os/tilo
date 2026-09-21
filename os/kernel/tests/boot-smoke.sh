@@ -27,19 +27,40 @@ test -n "$interpreter"
 mkdir -p "$out/rootfs$(dirname "$interpreter")"
 cp -L "$interpreter" "$out/rootfs$interpreter"
 python3 - "$stage" "$release" "$out" <<'PY'
-import hashlib, json, struct, sys, tarfile
+import hashlib, json, struct, subprocess, sys, tarfile
 from pathlib import Path
 stage, release, output = sys.argv[1:]
 out = Path(output)
 with tarfile.open(stage) as archive:
     prefix = f"./lib/modules/{release}/"
     # Read only named regular files; never extract archive paths or symlinks.
-    for source, target in (("vmlinuz", "Image"),
-                           ("kernel/drivers/net/dummy.ko", "rootfs/signed.ko")):
-        member = archive.getmember(prefix + source)
+    member = archive.getmember(prefix + "vmlinuz")
+    if not member.isfile():
+        raise ValueError(f"not a regular file: {member.name}")
+    (out / "Image").write_bytes(archive.extractfile(member).read())
+
+    module_members = []
+    for source in ("kernel/drivers/net/dummy.ko",
+                   "kernel/drivers/net/dummy.ko.zst"):
+        try:
+            member = archive.getmember(prefix + source)
+        except KeyError:
+            continue
         if not member.isfile():
             raise ValueError(f"not a regular file: {member.name}")
-        (out / target).write_bytes(archive.extractfile(member).read())
+        module_members.append(member)
+    if len(module_members) != 1:
+        raise ValueError(f"expected one packaged dummy module, found {len(module_members)}")
+    member = module_members[0]
+    data = archive.extractfile(member).read()
+    if member.name.endswith(".zst"):
+        data = subprocess.run(
+            ["zstd", "-q", "--decompress", "--stdout"],
+            input=data,
+            stdout=subprocess.PIPE,
+            check=True,
+        ).stdout
+    (out / "rootfs/signed.ko").write_bytes(data)
 data = (out / "rootfs/signed.ko").read_bytes()
 trailer = b"~Module signature appended~\n"
 if not data.endswith(trailer):
