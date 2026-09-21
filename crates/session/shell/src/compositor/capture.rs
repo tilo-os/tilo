@@ -2328,6 +2328,8 @@ mod tests {
                 body.splice(doc, &automerge::ROOT, 0..end, &long_note);
             })
             .expect("capture fixture writes the canonical Notes record");
+        let mut shell_document = automerge::AutoCommit::new();
+        frame_builder.pump_apps(&mut shell_document, &automerge::ROOT);
         frame_builder.relayout();
         let _ = frame_builder.paint();
         assert!(
