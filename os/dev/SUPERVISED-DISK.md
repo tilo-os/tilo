@@ -62,6 +62,10 @@ Its entrypoint requires that `/run/udev/data` is absent, the mount belongs to
 the inner PID 1 namespace and the filesystem is read-only before bootc starts.
 This keeps a later helper from creating an empty database directory that would
 disable bootc's direct block-device probing for guest-local loop partitions.
+The installer container itself is started by the already verified canonical
+digest reference. Bootc resolves that running container's exact local manifest
+digest and enters its private mount namespace; the explicit canonical target
+reference remains the installed system's upgrade origin.
 
 Root/native architecture/user-namespace/remote-container/EFI/TPM checks and all
 source, signature, boot-prediction and cleanup checks remain enforced. Success
