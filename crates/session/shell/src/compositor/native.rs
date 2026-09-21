@@ -7514,7 +7514,7 @@ mod tests {
             Some(IDLE_BACKEND_POLL)
         );
         assert_eq!(
-            native_loop_park(now, false, frame, [Some(now - Duration::from_millis(1))]),
+            native_loop_park(now + Duration::from_millis(1), false, frame, [Some(now)]),
             Some(Duration::ZERO)
         );
     }
