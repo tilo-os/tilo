@@ -178,6 +178,9 @@ pub enum Action {
     SeedRoomActivity {
         explore: bool,
     },
+    /// Focus a recap outcome already present in the responsive render. Enter
+    /// remains the production activation path.
+    FocusFirstRoomActivityWorkSession,
     /// Seed two context-grouped sessions without writing named ranges. Used
     /// to prove the first human seam correction materializes shared bounds.
     SeedAutomaticWorkSessions,
@@ -632,6 +635,10 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
+        Action::FocusFirstRoomActivityWorkSession => assert!(
+            driver.focus_first_room_activity_work_session_for_shots(),
+            "scenario: the settled recap must render a focusable work session"
+        ),
         Action::SeedAutomaticWorkSessions => driver.seed_automatic_work_sessions_for_shots(),
         Action::ExpandAutomaticWorkSession => assert!(
             driver.expand_automatic_work_session_for_shots(),
@@ -2478,7 +2485,11 @@ fn room_activity_catch_up_keyboard() -> Scenario {
         description: "Open the tiled recap, expand a high-level outcome, then follow it into Full history.",
         actions: vec![
             Action::SeedRoomActivity { explore: false },
+            // Opening a tiled window first reconciles it into the retained
+            // group row, then eases the focused group into view. Capture the
+            // settled destination, not the first frame at the strip edge.
             Action::Relayout,
+            Action::Wait(20),
             Action::Snapshot("01-recap"),
             Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
             Action::Key(Key::Named(NamedKey::ArrowLeft)),
@@ -2487,8 +2498,9 @@ fn room_activity_catch_up_keyboard() -> Scenario {
             Action::Key(Key::Character("-".into())),
             Action::Modifiers(ModifiersState::empty()),
             Action::Relayout,
+            Action::Wait(20),
             Action::Snapshot("02-window-reordered-and-resized"),
-            Action::Key(Key::Named(NamedKey::End)),
+            Action::FocusFirstRoomActivityWorkSession,
             Action::Key(Key::Named(NamedKey::Enter)),
             Action::Wait(12),
             Action::Relayout,

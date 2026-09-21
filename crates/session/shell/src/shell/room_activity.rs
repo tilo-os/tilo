@@ -1448,6 +1448,42 @@ impl RoomActivityPane {
         true
     }
 
+    /// Focus the first recap outcome that the settled responsive layout
+    /// actually rendered. The following Enter still travels through the
+    /// production keyboard handler; this only avoids assuming whether a
+    /// compact layout ended with a paging control.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn focus_first_work_session_for_shots(&mut self) -> bool {
+        let Some((index, _)) = self.brief_rects.first().copied() else {
+            return false;
+        };
+        self.keyboard_focus = Some(ActivityFocus::Brief(index));
+        true
+    }
+
+    /// Give deterministic visual journeys a real, elapsed departure frontier
+    /// without reading or overwriting this device's persisted history state.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn prepare_away_recap_for_shots(&mut self, tree: &mut WorkspaceTree) {
+        let workspace = tree.active.raw();
+        let departed_at_secs = self
+            .now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(AWAY_RECAP_AFTER.as_secs().saturating_add(60));
+        self.departures.insert(
+            workspace,
+            WorkspaceDeparture {
+                departed_at_secs,
+                frontier: WorkspaceSeenFrontier::default(),
+            },
+        );
+        self.presence_workspace = Some(workspace);
+        self.refresh(tree);
+        self.prepare_away_view(workspace);
+    }
+
     #[cfg(feature = "hosted-test-control")]
     pub fn move_work_session_boundary_for_shots(
         &mut self,
@@ -3423,12 +3459,16 @@ impl RoomActivityPane {
             );
             let title_extra = 18.0 * title_lines.len().saturating_sub(1) as f64;
             let expanded_height = 138.0 + 24.0 * brief.actions.len() as f64;
-            let height = 112.0 + (expanded_height - 112.0) * expansion + title_extra;
             let more_room = 34.0;
             let has_later = index
                 .checked_add(1)
                 .is_some_and(|next| next < self.digest.briefs.len())
                 || self.brief_offset > 0;
+            let available_height =
+                (self.sheet.y1 - 10.0 - y - if has_later { more_room } else { 0.0 })
+                    .max(112.0 + title_extra);
+            let height =
+                (112.0 + (expanded_height - 112.0) * expansion + title_extra).min(available_height);
             if y + height + if has_later { more_room } else { 0.0 } > self.sheet.y1 - 10.0 {
                 break;
             }
@@ -6694,7 +6734,13 @@ fn draw_brief_card(
     );
     if expanded {
         let mut action_y = rect.y0 + 100.0 + title_extra;
+        // Always reserve the final line for the route into Full history.
+        // Compact windows show as many complete action rows as fit instead
+        // of dropping the expanded outcome altogether.
         for action in &brief.actions {
+            if action_y + 24.0 > rect.y1 - 28.0 {
+                break;
+            }
             let (r, g, b) = ui::widget::history::hue_to_rgb(action.author.avatar_hue);
             let initial = action
                 .author
@@ -6742,30 +6788,22 @@ fn draw_brief_card(
             );
             action_y += 24.0;
         }
+        tr.draw_text(
+            scene,
+            "Open in full history  →",
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.accent[4],
+            at(transform, content_x, (action_y + 6.0).min(rect.y1 - 12.0)),
+            Some(width),
+        );
+        return;
     }
-    let affordance = if expanded {
-        "Open in full history  →"
-    } else {
-        "Show the underlying actions  ↓"
-    };
     tr.draw_text(
         scene,
-        affordance,
+        "Show the underlying actions  ↓",
         theme.tokens.typography.scale.sm,
-        if expanded {
-            theme.tokens.colors.accent[4]
-        } else {
-            theme.tokens.colors.text_dim
-        },
-        at(
-            transform,
-            content_x,
-            if expanded {
-                rect.y0 + 106.0 + 24.0 * brief.actions.len() as f64 + title_extra
-            } else {
-                rect.y0 + 96.0 + title_extra
-            },
-        ),
+        theme.tokens.colors.text_dim,
+        at(transform, content_x, rect.y0 + 96.0 + title_extra),
         Some(width),
     );
 }
@@ -7820,6 +7858,7 @@ mod tests {
 
     fn away_change_count_after(elapsed: Duration, changed: bool) -> usize {
         let mut tree = WorkspaceTree::bootstrap_demo();
+        let records = RecordStore::in_memory();
         let home = tree.active;
         let elsewhere = tree
             .workspaces
@@ -7833,10 +7872,12 @@ mod tests {
         pane.set_now_for_test(departed_at);
         pane.observe_workspace(home.raw());
         pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
 
         pane.observe_workspace(elsewhere.raw());
         tree.active = elsewhere;
         pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
         if changed {
             tree.workspaces
                 .iter_mut()
@@ -7850,6 +7891,7 @@ mod tests {
         pane.set_now_for_test(departed_at + elapsed);
         pane.observe_workspace(home.raw());
         pane.refresh(&mut tree);
+        pane.refresh_records(&mut tree, &records);
         pane.away_change_count(home.raw())
     }
 

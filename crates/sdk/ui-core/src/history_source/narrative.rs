@@ -28,7 +28,20 @@ pub struct NarrativeSource {
 
 impl NarrativeRequest {
     pub fn from_digest(digest: &ActivityDigest) -> Option<Self> {
-        let deterministic_text = digest.headline()?;
+        let first = digest.briefs.first()?;
+        let deterministic_text = match digest.briefs.as_slice() {
+            [_] => format!("Work centered on {}.", first.title),
+            [first, second] => {
+                format!("Work centered on {} and {}.", first.title, second.title)
+            }
+            [first, second, rest @ ..] => format!(
+                "Work centered on {}, {}, and {} more.",
+                first.title,
+                second.title,
+                rest.len()
+            ),
+            [] => return None,
+        };
         let source_ids = digest
             .briefs
             .iter()
@@ -94,6 +107,43 @@ pub fn deterministic_narrative(request: &NarrativeRequest) -> GroundedNarrative 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history_source::digest::{ActivityBrief, ActivityDigest};
+    use crate::widget::history::HistoryAuthor;
+    use std::time::SystemTime;
+
+    fn brief(id: u8, title: &str) -> ActivityBrief {
+        ActivityBrief {
+            title: title.into(),
+            detail: "2 changes".into(),
+            authors: vec![HistoryAuthor::new("Ada", 120.0, "ada")],
+            apps: vec!["Notes".into()],
+            resources: vec!["Launch brief".into()],
+            changes: 2,
+            actions: Vec::new(),
+            first_at: SystemTime::UNIX_EPOCH,
+            last_at: SystemTime::UNIX_EPOCH,
+            group_id: None,
+            work_session_id: None,
+            entry_ids: vec![HistoryEntryId([id; 16])],
+        }
+    }
+
+    #[test]
+    fn deterministic_copy_summarizes_work_instead_of_repeating_a_glance_label() {
+        let digest = ActivityDigest {
+            briefs: vec![
+                brief(1, "Onboard Sarah"),
+                brief(2, "Write Q3 financial report"),
+            ],
+            total_changes: 4,
+            people: 2,
+        };
+        let request = NarrativeRequest::from_digest(&digest).expect("two briefs");
+        assert_eq!(
+            request.deterministic_text,
+            "Work centered on Onboard Sarah and Write Q3 financial report."
+        );
+    }
 
     #[test]
     fn refuses_ungrounded_generated_claims() {
