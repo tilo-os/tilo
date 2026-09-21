@@ -19,7 +19,7 @@ use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{Element, TaffyTreeExt, Widget};
+use crate::widget::{Element, NativeViewLifecycle, TaffyTreeExt, Widget};
 
 /// Live parent-window context supplied before a native view is shown.
 pub struct NativeViewHost<'a> {
@@ -285,8 +285,8 @@ impl Drop for NativeView {
     }
 }
 
-impl Widget for NativeView {
-    fn mount_native_views(&mut self, host: &NativeViewHost<'_>) {
+impl NativeViewLifecycle for NativeView {
+    fn mount_native_view(&mut self, host: &NativeViewHost<'_>) {
         let host_changed = self.host_window_id != host.window_id()
             || self.platform != host.platform()
             || self.scale_factor.to_bits() != host.scale_factor().to_bits();
@@ -312,7 +312,7 @@ impl Widget for NativeView {
         self.sync_geometry();
     }
 
-    fn unmount_native_views(&mut self) {
+    fn unmount_native_view(&mut self) {
         if self.mounted {
             self.backend.set_visible(false);
             self.backend.unmount();
@@ -326,6 +326,12 @@ impl Widget for NativeView {
             self.backend.set_visible(false);
             self.visible = false;
         }
+    }
+}
+
+impl Widget for NativeView {
+    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
+        Some(self)
     }
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
@@ -725,7 +731,7 @@ mod tests {
         let mut view = NativeView::new("Calendar", backend(&calls));
         view.rect = Rect::new(10.0, 20.0, 110.0, 70.0);
         let host = NativeViewHost::headless(PlatformConventions::new(Platform::Windows), 1.5);
-        view.mount_native_views(&host);
+        view.mount_native_view(&host);
         assert!(view.is_mounted());
         assert!(calls.borrow().contains(&Call::Geometry(NativeViewGeometry {
             logical: view.rect,
@@ -744,7 +750,7 @@ mod tests {
             &PresenceCtx::default(),
         );
         view.native_view_frame_start();
-        view.unmount_native_views();
+        view.unmount_native_view();
 
         let calls = calls.borrow();
         assert!(calls.contains(&Call::Platform(host.platform())));
@@ -759,10 +765,10 @@ mod tests {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let mut view = NativeView::new("Preview", backend(&calls));
         let host = NativeViewHost::headless(PlatformConventions::default(), 1.0);
-        view.mount_native_views(&host);
-        view.mount_native_views(&host);
+        view.mount_native_view(&host);
+        view.mount_native_view(&host);
         let scaled = NativeViewHost::headless(PlatformConventions::default(), 2.0);
-        view.mount_native_views(&scaled);
+        view.mount_native_view(&scaled);
         assert_eq!(
             calls
                 .borrow()
@@ -792,7 +798,7 @@ mod tests {
                 fail_mount: true,
             },
         );
-        view.mount_native_views(&NativeViewHost::headless(
+        view.mount_native_view(&NativeViewHost::headless(
             PlatformConventions::default(),
             1.0,
         ));
@@ -817,7 +823,7 @@ mod tests {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let mut view = NativeView::new("Native editor", backend(&calls));
         view.rect = Rect::new(10.0, 20.0, 210.0, 120.0);
-        view.mount_native_views(&NativeViewHost::headless(
+        view.mount_native_view(&NativeViewHost::headless(
             PlatformConventions::default(),
             1.0,
         ));
@@ -878,7 +884,7 @@ mod tests {
             },
         )
         .with_fallback(Box::new(crate::widget::Text::new("Portable picker")));
-        view.mount_native_views(&NativeViewHost::headless(
+        view.mount_native_view(&NativeViewHost::headless(
             PlatformConventions::default(),
             1.0,
         ));
