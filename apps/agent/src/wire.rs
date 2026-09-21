@@ -12,13 +12,21 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ui::collaboration::{
-    CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager, RouteSpec,
+    CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager,
+    DocumentPublicationError, DocumentPublicationReceipt, RouteSpec,
 };
 
 /// One connection to the broker.
 pub struct Link {
     manager: CollaborationManager,
     pending: VecDeque<CollabEvent>,
+    last_publication: LastPublication,
+}
+
+enum LastPublication {
+    None,
+    Pending(DocumentPublicationReceipt),
+    Failed(DocumentPublicationError),
 }
 
 fn take_next_polled(
@@ -49,6 +57,7 @@ impl Link {
         Ok(Self {
             manager,
             pending: VecDeque::new(),
+            last_publication: LastPublication::None,
         })
     }
 
@@ -85,6 +94,7 @@ impl Link {
         Ok(Self {
             manager,
             pending: VecDeque::new(),
+            last_publication: LastPublication::None,
         })
     }
 
@@ -116,18 +126,18 @@ impl Link {
         Ok(Self {
             manager,
             pending: VecDeque::new(),
+            last_publication: LastPublication::None,
         })
     }
 
-    /// Write one request. Blocking: a full-document snapshot can be large
-    /// and must not be truncated by a would-block.
+    /// Enqueue one request and record an ordered receipt for document publications.
     ///
     /// # Errors
     ///
-    /// Reserved for a future fallible transport; currently always succeeds.
+    /// Returns an error if the request or its document completion marker cannot enqueue.
     pub fn send(&mut self, req: &CollabRequest) -> Result<()> {
-        self.manager.send(req.clone());
-        Ok(())
+        let queued = self.manager.send(req.clone());
+        self.record_enqueue(req, queued)
     }
 
     /// Subscribe to another typed route. This is used for cluster-wide
@@ -141,9 +151,66 @@ impl Link {
     ///
     /// # Errors
     ///
-    /// Reserved for a future fallible transport; currently always succeeds.
+    /// Returns an error if the request or its document completion marker cannot enqueue.
     pub fn send_to_route(&mut self, route: RouteSpec, req: &CollabRequest) -> Result<()> {
-        self.manager.send_to_route(route, req.clone());
+        let queued = self.manager.try_send_to_route(route, req.clone());
+        self.record_enqueue(req, queued)
+    }
+
+    fn record_enqueue(&mut self, req: &CollabRequest, queued: bool) -> Result<()> {
+        let document = matches!(
+            req,
+            CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
+        );
+        if !queued {
+            // Healthy presence shedding is an explicit transport contract.
+            if matches!(req, CollabRequest::Presence { .. }) && self.manager.is_connected() {
+                return Ok(());
+            }
+            let error =
+                DocumentPublicationError::Failed("collaboration request enqueue rejected".into());
+            if document {
+                self.last_publication = LastPublication::Failed(error.clone());
+            }
+            return Err(error.into());
+        }
+        if document {
+            if let LastPublication::Failed(error) = &self.last_publication {
+                return Err(error.clone().into());
+            }
+            match self.manager.begin_document_publication_barrier() {
+                Ok(receipt) => self.last_publication = LastPublication::Pending(receipt),
+                Err(error) => {
+                    // Invalidate the older prefix even if the caller ignores this error.
+                    self.last_publication = LastPublication::Failed(error.clone());
+                    return Err(error.into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Complete the latest document prefix while retaining the inbound receiver.
+    /// Events polled around the wait remain available to the normal session loop.
+    ///
+    /// # Errors
+    /// Returns a publication/transport error or exhaustion of the supplied deadline.
+    pub fn complete_publications(&mut self, deadline: Option<std::time::Instant>) -> Result<()> {
+        let publication = std::mem::replace(&mut self.last_publication, LastPublication::None);
+        let result = match publication {
+            LastPublication::None => return Ok(()),
+            LastPublication::Failed(error) => Err(error),
+            LastPublication::Pending(receipt) => {
+                self.pending.extend(self.manager.poll());
+                let result = receipt.wait(deadline);
+                self.pending.extend(self.manager.poll());
+                result
+            }
+        };
+        if let Err(error) = result {
+            self.last_publication = LastPublication::Failed(error.clone());
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -181,6 +248,46 @@ impl Link {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct AcceptedPeer;
+
+    impl ui::collaboration::PeerTransport for AcceptedPeer {
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn send(&mut self, _: CollabRequest) -> std::result::Result<(), String> {
+            Ok(())
+        }
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            Vec::new()
+        }
+    }
+
+    fn peer_link() -> Link {
+        Link {
+            manager: CollaborationManager::with_peer_transport(AcceptedPeer),
+            pending: VecDeque::new(),
+            last_publication: LastPublication::None,
+        }
+    }
+
+    #[test]
+    fn idle_link_needs_no_completion_protocol_or_extra_deadline() {
+        let mut link = peer_link();
+        link.complete_publications(Some(std::time::Instant::now()))
+            .unwrap();
+    }
+
+    #[test]
+    fn accepted_document_without_completion_support_is_sticky_failure() {
+        let mut link = peer_link();
+        assert!(
+            link.send(&CollabRequest::document_incremental(vec![1]))
+                .is_err()
+        );
+        assert!(link.complete_publications(None).is_err());
+        assert!(link.complete_publications(None).is_err());
+    }
 
     #[test]
     fn typed_poll_batches_keep_every_event_in_order() {

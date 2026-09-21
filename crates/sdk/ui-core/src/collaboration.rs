@@ -792,11 +792,102 @@ struct SdkChannel {
     _thread: Option<thread::JoinHandle<()>>,
 }
 
+/// Failure to complete a prefix of SDK document publications.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DocumentPublicationError {
+    /// This transport has no document-publication completion protocol.
+    Unsupported,
+    /// No SDK connection is available.
+    Unavailable,
+    /// The first signing, encoding, transport, or queue failure.
+    Failed(String),
+    /// The worker exited without resolving the receipt.
+    WorkerStopped,
+    /// The caller's existing absolute deadline elapsed.
+    DeadlineElapsed,
+}
+
+impl std::fmt::Display for DocumentPublicationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported => f.write_str("document publication completion is unsupported"),
+            Self::Unavailable => f.write_str("document publication transport is unavailable"),
+            Self::Failed(error) => write!(f, "document publication failed: {error}"),
+            Self::WorkerStopped => f.write_str("document publication worker stopped"),
+            Self::DeadlineElapsed => f.write_str("document publication deadline elapsed"),
+        }
+    }
+}
+
+impl std::error::Error for DocumentPublicationError {}
+
+/// Completion of the document prefix preceding one ordered SDK marker.
+///
+/// Success means signing/encoding and the broker send RPCs returned successfully.
+/// It does not acknowledge peer observation, CRDT application, or durability.
+/// Keep the manager (including its inbound receiver) alive while waiting.
+pub struct DocumentPublicationReceipt {
+    receiver: mpsc::Receiver<Result<(), DocumentPublicationError>>,
+    state: BridgeState,
+}
+
+impl DocumentPublicationReceipt {
+    /// Inspect completion without waiting. A completed receipt is consumed.
+    ///
+    /// # Errors
+    /// Returns the prefix failure or the worker's disconnection cause.
+    pub fn try_complete(&self) -> Result<Option<()>, DocumentPublicationError> {
+        match self.receiver.try_recv() {
+            Ok(result) => result.map(Some),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => Err(self.disconnected()),
+        }
+    }
+
+    /// Wait for the ordered reply, optionally within an existing absolute deadline.
+    /// Already completed replies take precedence over an elapsed deadline.
+    ///
+    /// # Errors
+    /// Returns a publication failure, worker disconnection, or elapsed deadline.
+    pub fn wait(
+        self,
+        deadline: Option<crate::clock::Instant>,
+    ) -> Result<(), DocumentPublicationError> {
+        if self.try_complete()?.is_some() {
+            return Ok(());
+        }
+        match deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(crate::clock::Instant::now());
+                match self.receiver.recv_timeout(remaining) {
+                    Ok(result) => result,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        Err(DocumentPublicationError::DeadlineElapsed)
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => Err(self.disconnected()),
+                }
+            }
+            None => self
+                .receiver
+                .recv()
+                .unwrap_or_else(|_| Err(self.disconnected())),
+        }
+    }
+
+    fn disconnected(&self) -> DocumentPublicationError {
+        self.state
+            .publication_result()
+            .err()
+            .unwrap_or(DocumentPublicationError::WorkerStopped)
+    }
+}
+
 enum SdkCommand {
     Primary(CollabRequest),
     Join(RouteSpec),
     ToRoute(RouteSpec, CollabRequest),
     PrimaryReady(mpsc::SyncSender<Result<RouteSpec, String>>),
+    DocumentPublicationBarrier(mpsc::SyncSender<Result<(), DocumentPublicationError>>),
     InstallEncryption {
         spec: RouteSpec,
         group: Box<channel_crypto::ChannelGroup>,
@@ -1080,7 +1171,9 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             }
             meter.finish()
         }
-        SdkCommand::PrimaryReady(_) => Some(std::mem::size_of::<SdkCommand>()),
+        SdkCommand::PrimaryReady(_) | SdkCommand::DocumentPublicationBarrier(_) => {
+            Some(std::mem::size_of::<SdkCommand>())
+        }
         // `ChannelGroup` intentionally hides its OpenMLS allocation graph,
         // so it cannot offer an exact capacity probe without widening the
         // crypto API. Installation is synchronous and requires `&mut self`,
@@ -1342,6 +1435,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
 #[derive(Clone)]
 struct BridgeState {
     healthy: Arc<AtomicBool>,
+    publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
     command_bytes: ByteBudget,
     event_bytes: ByteBudget,
     owner_wake: crate::wake::WakeHandle,
@@ -1407,6 +1501,7 @@ impl BridgeState {
     fn new() -> Self {
         Self {
             healthy: Arc::new(AtomicBool::new(true)),
+            publication_failure: Arc::new(std::sync::Mutex::new(None)),
             command_bytes: ByteBudget::new(),
             event_bytes: ByteBudget::new(),
             owner_wake: crate::wake::WakeHandle::new(),
@@ -1431,7 +1526,38 @@ impl BridgeState {
         self.wake_pending.store(false, Ordering::Release);
     }
 
+    fn publication_result(&self) -> Result<(), DocumentPublicationError> {
+        match self.publication_failure.lock() {
+            Ok(failure) => failure.clone().map_or(Ok(()), Err),
+            Err(_) => Err(DocumentPublicationError::Failed(
+                "publication failure state poisoned".into(),
+            )),
+        }
+    }
+
+    fn record_publication_failure(&self, error: DocumentPublicationError) {
+        if let Ok(mut failure) = self.publication_failure.lock() {
+            failure.get_or_insert(error);
+        }
+    }
+
+    fn publication_failed(
+        &self,
+        context: &'static str,
+        error: impl std::fmt::Display,
+        disconnect: bool,
+    ) -> DocumentPublicationError {
+        let failure = DocumentPublicationError::Failed(format!("{context}: {error}"));
+        self.record_publication_failure(failure.clone());
+        if disconnect {
+            self.fail_closed(context);
+        }
+        failure
+    }
+
     fn fail_closed(&self, direction: &'static str) {
+        // Latch before withdrawing health or dropping any queued receipt sender.
+        self.record_publication_failure(DocumentPublicationError::Failed(direction.into()));
         if self.healthy.swap(false, Ordering::AcqRel) {
             tracing::error!(
                 direction,
@@ -2616,6 +2742,37 @@ impl CollaborationManager {
         false
     }
 
+    /// Enqueue a document-publication marker without waiting on the owner thread.
+    /// The returned receipt covers the preceding queue prefix, not peer durability.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported/unavailable transports or a rejected marker.
+    pub fn begin_document_publication_barrier(
+        &self,
+    ) -> Result<DocumentPublicationReceipt, DocumentPublicationError> {
+        let channel = match &self.backend {
+            Backend::Sdk(channel) => channel,
+            Backend::Peer(_) => return Err(DocumentPublicationError::Unsupported),
+            Backend::Disabled => return Err(DocumentPublicationError::Unavailable),
+        };
+        let (reply, receiver) = mpsc::sync_channel(1);
+        if !enqueue_sdk_command(
+            &channel.outbound_tx,
+            SdkCommand::DocumentPublicationBarrier(reply),
+            &channel.state,
+        ) {
+            return Err(channel
+                .state
+                .publication_result()
+                .err()
+                .unwrap_or(DocumentPublicationError::Unavailable));
+        }
+        Ok(DocumentPublicationReceipt {
+            receiver,
+            state: channel.state.clone(),
+        })
+    }
+
     /// Register the UI-owned pull directory on the primary broker route.
     /// Re-registering is harmless: the broker atomically replaces the old
     /// capability for this live connection.
@@ -2728,7 +2885,7 @@ impl CollaborationManager {
 
     /// Exact local enqueue outcome. The SDK's later RPC barrier still owns
     /// durable acknowledgment; callers must not interpret this as commitment.
-    pub(crate) fn try_send_to_route(&mut self, route: RouteSpec, req: CollabRequest) -> bool {
+    pub fn try_send_to_route(&mut self, route: RouteSpec, req: CollabRequest) -> bool {
         if matches!(req, CollabRequest::Hello { .. }) {
             tracing::warn!("collab: send_to_route ignores Hello; use join_route");
             return false;
@@ -3220,6 +3377,15 @@ async fn drive_shovel(
             SdkCommand::Primary(request) => {
                 let Some(key) = primary.as_ref() else {
                     tracing::warn!("collab: request sent before the primary route joined");
+                    if matches!(
+                        request,
+                        CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
+                    ) {
+                        inbound_tx
+                            .state
+                            .fail_closed("document primary route unavailable");
+                        break;
+                    }
                     continue;
                 };
                 if let Some(route) = routes.get_mut(key) {
@@ -3227,6 +3393,14 @@ async fn drive_shovel(
                     if !inbound_tx.state.is_healthy() {
                         break;
                     }
+                } else if matches!(
+                    request,
+                    CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
+                ) {
+                    inbound_tx
+                        .state
+                        .fail_closed("document primary handle unavailable");
+                    break;
                 }
             }
             SdkCommand::Join(spec) => {
@@ -3266,6 +3440,10 @@ async fn drive_shovel(
             }
             SdkCommand::PrimaryReady(reply) => {
                 let _ = reply.send(primary_result.clone());
+            }
+            SdkCommand::DocumentPublicationBarrier(reply) => {
+                // A superseded receipt may have no receiver. Its prefix still ran.
+                let _ = reply.send(inbound_tx.state.publication_result());
             }
             SdkCommand::InstallEncryption { spec, group, reply } => {
                 let result = install_sdk_encryption(
@@ -3794,7 +3972,7 @@ async fn send_document_mutation(
     signer: &mut LocalSdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
     inbound: &InboundBridge,
-) {
+) -> Result<(), DocumentPublicationError> {
     if let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(host)) = signer {
         // The standalone owner admits cleartext state. Never bypass an MLS
         // requirement or produce a signed cleartext replacement for ciphertext.
@@ -3803,10 +3981,11 @@ async fn send_document_mutation(
             .lock()
             .is_ok_and(|encryption| encryption.is_none())
         {
-            inbound
-                .state
-                .fail_closed("host document encryption unavailable");
-            return;
+            return Err(inbound.state.publication_failed(
+                "host document encryption unavailable",
+                "cleartext commit refused",
+                true,
+            ));
         }
         let result = host
             .commit(&route.spec, mutation)
@@ -3816,15 +3995,21 @@ async fn send_document_mutation(
             Ok(bytes) => {
                 if let Err(error) = route.channel.send(&bytes).await {
                     tracing::warn!(%error, "collab: precommitted host document handoff failed; outcome unknown");
-                    inbound.state.fail_closed("host document receipt handoff");
+                    return Err(inbound.state.publication_failed(
+                        "host document receipt handoff",
+                        error,
+                        true,
+                    ));
                 }
             }
             Err(error) => {
                 tracing::warn!(%error, "collab: host document commit failed; outcome unknown");
-                inbound.state.fail_closed("host document commit");
+                return Err(inbound
+                    .state
+                    .publication_failed("host document commit", error, true));
             }
         }
-        return;
+        return Ok(());
     }
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
@@ -3832,15 +4017,21 @@ async fn send_document_mutation(
         Ok(payload) => payload,
         Err(error) => {
             tracing::warn!(%error, "collab: typed document mutation would not encode; dropping");
-            inbound.state.fail_closed("document signing or encoding");
-            return;
+            return Err(inbound.state.publication_failed(
+                "document signing or encoding",
+                error,
+                true,
+            ));
         }
     };
     let Some((payload, encryption_metadata)) =
         prepare_document_payload(&route.encryption, cleartext)
     else {
-        inbound.state.fail_closed("document encryption");
-        return;
+        return Err(inbound.state.publication_failed(
+            "document encryption",
+            "payload unavailable",
+            true,
+        ));
     };
     let now = crate::clock::SystemTime::now();
     let author = match signer {
@@ -3885,8 +4076,11 @@ async fn send_document_mutation(
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(%error, "collab: unsigned document envelope would not encode; dropping");
-            inbound.state.fail_closed("document signing or encoding");
-            return;
+            return Err(inbound.state.publication_failed(
+                "document signing or encoding",
+                error,
+                true,
+            ));
         }
     };
     let signature = match signer {
@@ -3902,8 +4096,11 @@ async fn send_document_mutation(
                     ?error,
                     "collab: identity service denied document operation; dropping"
                 );
-                inbound.state.fail_closed("document signing or encoding");
-                return;
+                return Err(inbound.state.publication_failed(
+                    "document signing or encoding",
+                    error,
+                    true,
+                ));
             }
         },
         LocalSdkDocumentSigner::Host(identity) => match identity
@@ -3912,14 +4109,15 @@ async fn send_document_mutation(
         {
             Ok(signature) => signature,
             Err(error) => {
-                if !identity.is_usable() {
-                    inbound.state.fail_closed("host identity signing transport");
-                }
                 tracing::warn!(
                     ?error,
                     "collab: host identity service denied document operation; dropping"
                 );
-                return;
+                return Err(inbound.state.publication_failed(
+                    "host identity signing",
+                    error,
+                    !identity.is_usable(),
+                ));
             }
         },
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
@@ -3928,8 +4126,11 @@ async fn send_document_mutation(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     tracing::warn!(%error, "collab: document op would not canonicalize; dropping");
-                    inbound.state.fail_closed("document signing or encoding");
-                    return;
+                    return Err(inbound.state.publication_failed(
+                        "document signing or encoding",
+                        error,
+                        true,
+                    ));
                 }
             };
             key.sign(&signing_bytes).to_bytes()
@@ -3940,14 +4141,19 @@ async fn send_document_mutation(
         Ok(bytes) => {
             if let Err(error) = route.channel.send(&bytes).await {
                 tracing::warn!(%error, "collab: document commit failed; outcome unknown");
-                inbound.state.fail_closed("document commit RPC");
+                return Err(inbound
+                    .state
+                    .publication_failed("document commit RPC", error, true));
             }
         }
         Err(error) => {
             tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
-            inbound.state.fail_closed("document encoding");
+            return Err(inbound
+                .state
+                .publication_failed("document encoding", error, true));
         }
     }
+    Ok(())
 }
 
 fn prepare_document_payload(
@@ -4207,14 +4413,22 @@ async fn dispatch_sdk_request(
         CollabRequest::Hello { .. } => {}
         CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
             Ok(bytes) => {
-                if route.channel.send(&bytes).await.is_err() {
-                    inbound_tx.state.fail_closed("signed document commit RPC");
+                if let Err(error) = route.channel.send(&bytes).await {
+                    inbound_tx
+                        .state
+                        .publication_failed("signed document commit RPC", error, true);
                 }
             }
-            Err(_) => inbound_tx.state.fail_closed("signed document encoding"),
+            Err(error) => {
+                inbound_tx
+                    .state
+                    .publication_failed("signed document encoding", error, true);
+            }
         },
         CollabRequest::Document { mutation } => {
-            send_document_mutation(route, signer, mutation, inbound_tx).await;
+            // The helper records every failure, including a policy denial that
+            // leaves the identity connection usable, before returning its result.
+            let _ = send_document_mutation(route, signer, mutation, inbound_tx).await;
         }
         CollabRequest::RequestDocumentSnapshot => {
             if route.channel.request_document_snapshot().await.is_err() {
@@ -4827,6 +5041,7 @@ mod tests {
     #[derive(Default)]
     struct Captures {
         fail_document: bool,
+        document_gates: std::collections::VecDeque<DocumentSendGate>,
         fail_terminal: bool,
         terminal_updates: usize,
         joined: Vec<(String, Vec<u8>)>,
@@ -4839,6 +5054,11 @@ mod tests {
         arrived: Vec<Vec<u8>>,
         left: Vec<Vec<u8>>,
         scrollback_requests: Vec<(Vec<u8>, u64, u32)>,
+    }
+
+    struct DocumentSendGate {
+        entered: mpsc::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<Result<(), String>>,
     }
 
     /// Shared between the test-thread's tokio `LocalSet` and the caller.
@@ -5194,6 +5414,15 @@ mod tests {
                 return Promise::err(capnp::Error::failed("owner durable barrier failed".into()));
             }
             captures.signed_ops.push(op);
+            if let Some(gate) = captures.document_gates.pop_front() {
+                gate.entered.send(()).unwrap();
+                return Promise::from_future(async move {
+                    gate.release
+                        .await
+                        .map_err(|_| capnp::Error::failed("document gate dropped".into()))?
+                        .map_err(capnp::Error::failed)
+                });
+            }
             Promise::ok(())
         }
 
@@ -5563,6 +5792,14 @@ mod tests {
         }
     }
 
+    fn assert_document_publication_failure(manager: &CollaborationManager, expected: &str) {
+        let error = manager
+            .begin_document_publication_barrier()
+            .and_then(|receipt| receipt.wait(Some(Instant::now() + Duration::from_secs(2))))
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+
     #[test]
     fn host_connector_uses_certified_presentation_and_broker_document_policy() {
         let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
@@ -5575,6 +5812,7 @@ mod tests {
                 vec![
                     runtime_identity::wire::Response::Signature(vec![7; 64]),
                     runtime_identity::wire::Response::Denied("fixture role revoked".into()),
+                    runtime_identity::wire::Response::Signature(vec![8; 64]),
                 ],
             );
             requests_tx.send(requests).unwrap();
@@ -5627,10 +5865,7 @@ mod tests {
         manager.send(CollabRequest::document_incremental(
             b"fixture document change".to_vec(),
         ));
-        assert!(wait_until(
-            || host_identity_requests(&requests.lock().unwrap()).len() == 3,
-            Duration::from_secs(2)
-        ));
+        assert_document_publication_failure(&manager, "fixture role revoked");
         let requests = host_identity_requests(&requests.lock().unwrap());
         assert!(
             matches!(&requests[1], runtime_identity::wire::Request::CollaborationJoin { workspace_id } if workspace_id == &cluster_id.to_string())
@@ -5657,6 +5892,19 @@ mod tests {
         // through the harness or unsigned path after this readiness barrier.
         manager.await_primary_route().unwrap();
         assert!(captures.lock().unwrap().signed_ops.is_empty());
+        assert!(manager.send(CollabRequest::document_incremental(
+            b"later allowed change".to_vec()
+        )));
+        assert_document_publication_failure(&manager, "fixture role revoked");
+        assert!(
+            manager.is_connected(),
+            "policy refusal leaves identity transport usable"
+        );
+        assert_eq!(
+            captures.lock().unwrap().signed_ops.len(),
+            1,
+            "later RPC succeeds without erasing the earlier prefix failure"
+        );
     }
 
     // Wrap the existing successful broker, changing only its join response.
@@ -5969,6 +6217,271 @@ mod tests {
         );
         drop(manager);
         thread.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn document_publication_receipt_waits_for_primary_and_routed_rpc_completion() {
+        let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
+        let mut gates = Vec::new();
+        for _ in 0..2 {
+            let (entered, observed) = mpsc::channel();
+            let (release, receiver) = tokio::sync::oneshot::channel();
+            captures
+                .lock()
+                .unwrap()
+                .document_gates
+                .push_back(DocumentSendGate {
+                    entered,
+                    release: receiver,
+                });
+            // Dropping the sender on unwind releases the fake RPC with Err.
+            gates.push((observed, release));
+        }
+        let broker = FakeBroker {
+            captures,
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let cluster_id = Uuid::new_v4();
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", cluster_id);
+        assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
+        let first = manager.begin_document_publication_barrier().unwrap();
+        assert!(manager.try_send_to_route(
+            RouteSpec {
+                app_id: "other".into(),
+                cluster_id,
+                record: Some("second".into()),
+            },
+            CollabRequest::document_incremental(b"second".to_vec())
+        ));
+        let second = manager.begin_document_publication_barrier().unwrap();
+        let mut gates = gates.into_iter();
+        let (entered, release) = gates.next().unwrap();
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(first.try_complete(), Ok(None));
+        assert_eq!(second.try_complete(), Ok(None));
+        release.send(Ok(())).unwrap();
+        let (entered, release) = gates.next().unwrap();
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        // The second RPC can only begin after the first marker has resolved.
+        assert_eq!(first.wait(Some(Instant::now())), Ok(()));
+        assert_eq!(second.try_complete(), Ok(None));
+        release.send(Ok(())).unwrap();
+        assert_eq!(
+            second.wait(Some(Instant::now() + Duration::from_secs(2))),
+            Ok(())
+        );
+        assert_eq!(captures.lock().unwrap().signed_ops.len(), 2);
+        assert!(manager.is_connected());
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    struct RefusedDocumentIdentity;
+
+    #[cfg(unix)]
+    impl SdkCertifiedIdentity for RefusedDocumentIdentity {
+        fn device_certificate(&self) -> Option<&[u8]> {
+            Some(b"fixture")
+        }
+        fn signing_public_key(&self) -> [u8; 32] {
+            [5; 32]
+        }
+        fn sign_collaboration_join(
+            &self,
+            _: &str,
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Ok([7; 64])
+        }
+        fn sign_collaboration_op(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &[u8],
+        ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "certified signing refused",
+            )
+            .into())
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn document_publication_certified_signing_refusal_never_reports_success() {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: SdkDocumentSigner::Certified(Box::new(RefusedDocumentIdentity)),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::disabled();
+        manager.backend = Backend::Sdk(sdk);
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "worker".into(),
+            cluster_id: Uuid::new_v4(),
+            record: None,
+            handle: None,
+        }));
+        manager.await_primary_route().unwrap();
+        assert!(manager.send(CollabRequest::document_incremental(b"refused".to_vec())));
+        // Signing may fail before the marker enqueue; either path must carry the cause.
+        let error = match manager.begin_document_publication_barrier() {
+            Ok(receipt) => receipt
+                .wait(Some(Instant::now() + Duration::from_secs(2)))
+                .unwrap_err(),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("certified signing refused"),
+            "{error}"
+        );
+        assert!(captures.lock().unwrap().signed_ops.is_empty());
+        assert!(!manager.is_connected());
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn document_publication_rpc_failure_survives_worker_exit() {
+        let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
+        let (entered, observed) = mpsc::channel();
+        let (release, receiver) = tokio::sync::oneshot::channel();
+        captures
+            .lock()
+            .unwrap()
+            .document_gates
+            .push_back(DocumentSendGate {
+                entered,
+                release: receiver,
+            });
+        let broker = FakeBroker {
+            captures,
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, thread) = stand_up_fake_broker(broker);
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
+        assert!(manager.send(CollabRequest::document_incremental(b"failed".to_vec())));
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        let receipt = manager.begin_document_publication_barrier().unwrap();
+        release.send(Err("document RPC refused".into())).unwrap();
+        let error = receipt
+            .wait(Some(Instant::now() + Duration::from_secs(2)))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("document RPC refused"),
+            "{error}"
+        );
+        assert!(!manager.is_connected());
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn document_publication_unavailable_and_rejected_markers_are_errors() {
+        let mut manager = CollaborationManager::disabled();
+        assert!(matches!(
+            manager.begin_document_publication_barrier(),
+            Err(DocumentPublicationError::Unavailable)
+        ));
+        let (outbound_tx, mut outbound_rx) = tokio_mpsc::channel(1);
+        let (_, inbound_rx) = tokio_mpsc::channel(1);
+        let (action_directory_tx, action_directory_rx) = mpsc::sync_channel(1);
+        let state = BridgeState::new();
+        manager.backend = Backend::Sdk(SdkChannel {
+            outbound_tx,
+            inbound_rx,
+            state,
+            action_directory_rx,
+            action_directory_tx,
+            action_directory_published: false,
+            _thread: None,
+        });
+        let earlier = manager.begin_document_publication_barrier().unwrap();
+        assert!(matches!(
+            manager.begin_document_publication_barrier(),
+            Err(DocumentPublicationError::Failed(_))
+        ));
+        assert!(!manager.is_connected());
+        drop(outbound_rx.try_recv().unwrap());
+        assert!(matches!(
+            earlier.wait(None),
+            Err(DocumentPublicationError::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn document_publication_completed_prefix_is_not_poisoned_by_later_failure() {
+        let state = BridgeState::new();
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let receipt = DocumentPublicationReceipt {
+            receiver,
+            state: state.clone(),
+        };
+        reply.send(state.publication_result()).unwrap();
+        state.record_publication_failure(DocumentPublicationError::Failed("later".into()));
+        assert_eq!(receipt.wait(Some(Instant::now())), Ok(()));
+    }
+
+    #[test]
+    fn document_publication_disconnection_and_pending_deadline_are_errors() {
+        let state = BridgeState::new();
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let receipt = DocumentPublicationReceipt {
+            receiver,
+            state: state.clone(),
+        };
+        assert_eq!(
+            receipt.wait(Some(Instant::now())),
+            Err(DocumentPublicationError::DeadlineElapsed)
+        );
+        drop(reply);
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let receipt = DocumentPublicationReceipt { receiver, state };
+        drop(reply);
+        assert_eq!(
+            receipt.wait(None),
+            Err(DocumentPublicationError::WorkerStopped)
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn document_publication_superseded_receipt_does_not_stop_worker() {
+        let mut manager = connected_manager();
+        assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
+        drop(manager.begin_document_publication_barrier().unwrap());
+        assert!(manager.send(CollabRequest::document_incremental(b"second".to_vec())));
+        assert_eq!(
+            manager
+                .begin_document_publication_barrier()
+                .unwrap()
+                .wait(Some(Instant::now() + Duration::from_secs(2))),
+            Ok(())
+        );
+        assert!(manager.is_connected());
     }
 
     pub(super) fn connected_manager() -> CollaborationManager {

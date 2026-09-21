@@ -427,6 +427,7 @@ impl Session {
         let joined = Instant::now();
         loop {
             if self.step(Duration::from_millis(100))? && self.cfg.once {
+                self.link.complete_publications(None)?;
                 return Ok(());
             }
             if !self.has_primary_document()
@@ -930,6 +931,7 @@ impl Session {
                 break;
             }
         }
+        self.link.complete_publications(Some(deadline))?;
         Ok(acted)
     }
 
