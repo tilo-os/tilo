@@ -26,7 +26,7 @@ use ui::text_selection::{
 use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
 use ui::icons::Icon;
 use ui::theme::Theme;
-use ui::widget::{AppKind, AppWidget, EmptyState, IconDescriptor, Widget};
+use ui::widget::{AppKind, AppWidget, CompleteContentProvider, EmptyState, IconDescriptor, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
 use vello::peniko::Fill;
@@ -259,7 +259,54 @@ impl Default for NotesApp {
     }
 }
 
+impl CompleteContentProvider for NotesApp {
+    fn complete_content_size(&self) -> Option<Size> {
+        (!self.body.text.is_empty() && self.complete_content_height > self.rect.height() + 1.0)
+            .then_some(Size::new(self.rect.width(), self.complete_content_height))
+    }
+
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut Scene,
+        bounds: Rect,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        if self.body.text.is_empty() || bounds.area() <= 0.0 {
+            return false;
+        }
+
+        // Capture is another presentation of the same document, not a live
+        // resize. Restore every draw-time interaction cache so the editor's
+        // next pointer event still maps against the on-screen surface.
+        let live_rect = self.rect;
+        let live_body_origin = self.body_origin;
+        let live_wrap_width = self.wrap_width;
+        let live_empty_action_rect = self.empty_action_rect;
+        let live_complete_content_height = self.complete_content_height;
+
+        self.rect = bounds;
+        self.draw(scene, transform, tr, theme, presence);
+
+        self.rect = live_rect;
+        self.body_origin = live_body_origin;
+        self.wrap_width = live_wrap_width;
+        self.empty_action_rect = live_empty_action_rect;
+        self.complete_content_height = live_complete_content_height;
+        true
+    }
+}
+
 impl Widget for NotesApp {
+    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
+        Some(self)
+    }
+
+    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
+        Some(self)
+    }
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.body.sync(state, root);
         self.clamp_cursor();
@@ -395,44 +442,6 @@ impl Widget for NotesApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-
-    fn complete_content_size(&self) -> Option<Size> {
-        (!self.body.text.is_empty() && self.complete_content_height > self.rect.height() + 1.0)
-            .then_some(Size::new(self.rect.width(), self.complete_content_height))
-    }
-
-    fn draw_complete_content(
-        &mut self,
-        scene: &mut Scene,
-        bounds: Rect,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) -> bool {
-        if self.body.text.is_empty() || bounds.area() <= 0.0 {
-            return false;
-        }
-
-        // Capture is another presentation of the same document, not a live
-        // resize. Restore every draw-time interaction cache so the editor's
-        // next pointer event still maps against the on-screen surface.
-        let live_rect = self.rect;
-        let live_body_origin = self.body_origin;
-        let live_wrap_width = self.wrap_width;
-        let live_empty_action_rect = self.empty_action_rect;
-        let live_complete_content_height = self.complete_content_height;
-
-        self.rect = bounds;
-        self.draw(scene, transform, tr, theme, presence);
-
-        self.rect = live_rect;
-        self.body_origin = live_body_origin;
-        self.wrap_width = live_wrap_width;
-        self.empty_action_rect = live_empty_action_rect;
-        self.complete_content_height = live_complete_content_height;
-        true
     }
 
     fn is_focusable(&self) -> bool {
