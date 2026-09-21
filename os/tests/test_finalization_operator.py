@@ -303,7 +303,9 @@ class OperatorTests(unittest.TestCase):
                 o.load(self.args.operation)
             with self.assertRaisesRegex(ValueError, 'implementation changed'):
                 o.load(self.args.operation, '1' * 64)
-            config, request = o.load(self.args.operation, config_sha256)
+            with self.assertRaisesRegex(ValueError, 'implementation changed'):
+                o.load(self.args.operation, config_sha256, '1' * 64)
+            config, request = o.load(self.args.operation, config_sha256, '0' * 64)
         self.assertEqual(config['request_sha256'], s.digest(s.canonical(self.q)))
         self.assertEqual(request, self.q)
         self.assertEqual(
