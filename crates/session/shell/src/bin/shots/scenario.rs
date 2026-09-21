@@ -82,6 +82,12 @@ pub enum Action {
     /// hover-driven — a tab pill opening its control cluster — where a
     /// literal coordinate would go stale the moment the row re-sizes.
     MoveCursorNamed(&'static str),
+    /// Move to a live group's empty tab-bar grab zone. Unlike raw screen
+    /// coordinates this remains valid in compact and normal viewport sweeps.
+    MoveCursorGroupGrab(usize),
+    /// Move an active whole-group drag beyond the named group's midpoint,
+    /// resolving the after-slot without baking viewport geometry into a shot.
+    MoveCursorGroupReorderTarget(usize),
     /// Synthesise a `CursorMoved` without a press/release. Use with
     /// `MousePress`/`MouseRelease` to compose drags that need mid-
     /// gesture snapshots — useful for the new tab-bar `hover_drop_idx`
@@ -531,6 +537,16 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
                 "scenario: could not resolve named target '{name}' (rect not populated yet — paint first?)"
             ),
         },
+        Action::MoveCursorGroupGrab(index) => {
+            if !driver.move_cursor_to_group_grab(*index) {
+                eprintln!("scenario: could not resolve group {index}'s drag handle");
+            }
+        }
+        Action::MoveCursorGroupReorderTarget(index) => {
+            if !driver.move_cursor_to_group_reorder_target(*index) {
+                eprintln!("scenario: could not resolve group {index}'s reorder target");
+            }
+        }
         Action::MousePress => driver.press(),
         Action::MouseRelease => driver.release(),
         Action::SnapshotSequence {
@@ -1572,6 +1588,7 @@ pub fn catalogue() -> Vec<Scenario> {
         tab_drag(),
         tab_drag_out_to_new_group(),
         tab_drag_hover_line_indicator(),
+        group_drag_visual(),
         workspace_switch(),
         wheel_scroll_workspaces(),
         wheel_drag_feel(),
@@ -4015,15 +4032,58 @@ fn tab_drag_hover_line_indicator() -> Scenario {
              bar while a drag is in flight over an inter-pill gap. Holds the drag \
              open (no release) so the line is visible in the snapshot.",
         actions: vec![
-            Action::MoveCursor(Point::new(424.0, 120.0)),
+            Action::Snapshot("00-before"),
+            Action::MoveCursorNamed("tab:Files"),
             Action::MousePress,
-            Action::MoveCursor(Point::new(484.0, 120.0)),
-            Action::MoveCursor(Point::new(700.0, 120.0)),
-            Action::Wait(4),
-            Action::Snapshot("01-mid-drag-with-line"),
+            Action::MoveCursorNamed("tab:Notes"),
+            Action::Snapshot("01-lift-start"),
+            Action::SnapshotSequence {
+                prefix: "02-held-lift",
+                frames: 5,
+                gap_frames: 2,
+            },
             Action::MouseRelease,
             Action::Wait(12),
-            Action::Snapshot("02-after-release"),
+            Action::Snapshot("03-after-release"),
+        ],
+    }
+}
+
+/// Whole-window reorder using live group geometry, with the pointer held long
+/// enough to inspect the handle/content alpha split and the fast tuck motion.
+/// Setup follows the production placement route, yielding two real hosted app
+/// bodies at both compact and normal viewport widths.
+fn group_drag_visual() -> Scenario {
+    Scenario {
+        name: "group_drag_visual",
+        description: "Carry a complete window group over its neighbour, capturing the translucent handle and tucked app content throughout the lift.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+            Action::Wait(2),
+            Action::OpenHostedWindow {
+                app: "Files",
+                title: "Files",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::Snapshot("00-before"),
+            Action::MoveCursorGroupGrab(0),
+            Action::MousePress,
+            Action::MoveCursorGroupReorderTarget(1),
+            Action::Snapshot("01-lift-start"),
+            Action::SnapshotSequence {
+                prefix: "02-held-lift",
+                frames: 5,
+                gap_frames: 2,
+            },
+            Action::MouseRelease,
+            Action::Wait(12),
+            Action::Snapshot("03-after-release"),
         ],
     }
 }

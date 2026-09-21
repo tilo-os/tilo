@@ -28,9 +28,17 @@ pub enum Placement {
     /// A tab inside an existing group. What a **document opened from another app** gets, so the
     /// strip doesn't grow a column every peek. Falls back to [`Placement::NewGroup`] when the named group no longer exists.
     TabIn(GroupId),
+    /// A tab at an exact insertion index in an existing group. Pointer drops use
+    /// this instead of [`Self::TabIn`] so landing left or right of a particular
+    /// tab remains stable even if focus changes while the app is starting.
+    TabAt(GroupId, usize),
     /// Its own window group, right of the group named here. Unlike [`Placement::NewGroup`] ("beside
     /// whatever has focus"), names a specific group, so the answer survives focus moving between launch and arrival. Falls back to [`Placement::NewGroup`] when gone, as [`Placement::TabIn`] does.
     RightOf(GroupId),
+    /// A new window group at an exact seam in a named strip. The index is
+    /// clamped to the live group count; a stale strip falls back to
+    /// [`Self::NewGroup`] rather than placing the window in an arbitrary strip.
+    GroupAt(StripId, usize),
     /// Into a tab that already exists, replacing whatever it holds. What a launch on behalf of a
     /// peer's window asks for ([`crate::shell::peer_windows`]): the tab already arrived in the room document. Falls back to [`Placement::NewGroup`] when the tab is gone by arrival.
     IntoTab(TabId),
@@ -180,6 +188,152 @@ pub fn open_hosted_app(
     tab_id
 }
 
+/// Rehome an existing tab through the same exact destination grammar used by
+/// a fresh drop. This is the deduplicated-document path: dragging a document
+/// which is already open moves its one live window instead of launching a
+/// duplicate or merely focusing the old location.
+pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placement) -> bool {
+    let source = tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.id == tab_id)
+                    .map(|tab_index| (strip.id, group.id, tab_index))
+            })
+        })
+    });
+    let Some((source_strip, source_group, source_index)) = source else {
+        return false;
+    };
+    let destination = match placement {
+        Placement::TabAt(group, index) => tree.workspaces.iter().find_map(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .any(|candidate| candidate.id == group)
+                    .then_some((
+                        strip.id,
+                        ui::widget::TabDropTarget::ExistingGroup {
+                            group_id: group,
+                            tab_index: index,
+                        },
+                    ))
+            })
+        }),
+        Placement::TabIn(group) => tree.workspaces.iter().find_map(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip.window_groups.iter().find_map(|candidate| {
+                    (candidate.id == group).then_some((
+                        strip.id,
+                        ui::widget::TabDropTarget::ExistingGroup {
+                            group_id: group,
+                            tab_index: candidate.tabs.len(),
+                        },
+                    ))
+                })
+            })
+        }),
+        Placement::GroupAt(strip, index) => Some((
+            strip,
+            ui::widget::TabDropTarget::GroupGap { gap_index: index },
+        )),
+        Placement::NewGroup | Placement::RightOf(_) | Placement::IntoTab(_) => None,
+    };
+    let Some((destination_strip, mut target)) = destination else {
+        return false;
+    };
+    if destination_strip != source_strip {
+        return tree.move_tab_across_strips(
+            source_strip,
+            destination_strip,
+            tab_id,
+            next_id(),
+            target,
+        );
+    }
+
+    let Some(strip) = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .find(|strip| strip.id == source_strip)
+    else {
+        return false;
+    };
+    let source_group_index = strip
+        .window_groups
+        .iter()
+        .position(|group| group.id == source_group)
+        .unwrap_or(0);
+    let source_group_len = strip.window_groups[source_group_index].tabs.len();
+    match &mut target {
+        ui::widget::TabDropTarget::ExistingGroup {
+            group_id,
+            tab_index,
+        } if *group_id == source_group && source_index < *tab_index => {
+            *tab_index = tab_index.saturating_sub(1);
+        }
+        ui::widget::TabDropTarget::GroupGap { gap_index }
+            if source_group_len == 1 && source_group_index < *gap_index =>
+        {
+            *gap_index = gap_index.saturating_sub(1);
+        }
+        _ => {}
+    }
+    let mut topology: Vec<ui::widget::GroupTopology> = strip
+        .window_groups
+        .iter()
+        .map(|group| ui::widget::GroupTopology {
+            id: group.id,
+            tab_ids: group.tabs.iter().map(|tab| tab.id).collect(),
+            active_tab: group.active_tab,
+            width: group.width.to_ui(),
+        })
+        .collect();
+    let Some(source_group_index) = topology.iter().position(|group| group.id == source_group)
+    else {
+        return false;
+    };
+    topology[source_group_index].tab_ids.remove(source_index);
+    if topology[source_group_index].active_tab == tab_id {
+        topology[source_group_index].active_tab = topology[source_group_index]
+            .tab_ids
+            .first()
+            .copied()
+            .unwrap_or(0);
+    }
+    if topology[source_group_index].tab_ids.is_empty() {
+        topology.remove(source_group_index);
+    }
+    match target {
+        ui::widget::TabDropTarget::ExistingGroup {
+            group_id,
+            tab_index,
+        } => {
+            let Some(group) = topology.iter_mut().find(|group| group.id == group_id) else {
+                return false;
+            };
+            group
+                .tab_ids
+                .insert(tab_index.min(group.tab_ids.len()), tab_id);
+            group.active_tab = tab_id;
+        }
+        ui::widget::TabDropTarget::GroupGap { gap_index } => topology.insert(
+            gap_index.min(topology.len()),
+            ui::widget::GroupTopology {
+                id: next_id(),
+                tab_ids: vec![tab_id],
+                active_tab: tab_id,
+                width: ui::widget::WindowWidth::Normal,
+            },
+        ),
+    }
+    tree.reconcile_strip_topology(source_strip, &topology)
+}
+
 /// Open or focus the one personal workspace-activity window in the active
 /// workspace. The tab is device-local, but otherwise uses the ordinary tiled
 /// window model so close, resize, tab/group reorder and persistence need no
@@ -310,9 +464,23 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         return tab_id;
     }
 
-    // Target strip: the focused one, else the first. A recorded pointer to a strip that has since been closed falls back the same way.
-    let strip_idx = active_strip
-        .and_then(|id| ws.strips.iter().position(|s| s.id == id))
+    // An explicit pointer target can name a strip other than the focused one.
+    // Resolve it once; stale targets deliberately degrade to the ordinary
+    // focused-strip placement rule rather than landing in a random strip.
+    let explicit_strip = match placement {
+        Placement::GroupAt(strip, _) => ws.strips.iter().position(|s| s.id == strip),
+        Placement::TabAt(group, _) | Placement::TabIn(group) | Placement::RightOf(group) => {
+            ws.strips.iter().position(|s| {
+                s.window_groups
+                    .iter()
+                    .any(|candidate| candidate.id == group)
+            })
+        }
+        Placement::NewGroup | Placement::IntoTab(_) => None,
+    };
+    // Target strip: explicit destination, then focused one, else the first.
+    let strip_idx = explicit_strip
+        .or_else(|| active_strip.and_then(|id| ws.strips.iter().position(|s| s.id == id)))
         .unwrap_or(0);
     // `strip_idx` is either a position found in `ws.strips` or the fallback `0`, and the
     // empty-strips case already returned above, so this is always in bounds — `get_mut` keeps
@@ -322,11 +490,17 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     };
     let strip_id = strip.id;
 
-    // A `TabIn` whose group is gone degrades to a new group rather than silently landing somewhere arbitrary.
+    // A tab target whose group is gone degrades to a new group rather than
+    // silently landing somewhere arbitrary.
     let tab_target = match placement {
-        Placement::TabIn(g) => strip.window_groups.iter().position(|w| w.id == g),
+        Placement::TabIn(g) | Placement::TabAt(g, _) => {
+            strip.window_groups.iter().position(|w| w.id == g)
+        }
         // `IntoTab` only reaches here when its tab has gone; it degrades to a new group, as the variant's own documentation says.
-        Placement::NewGroup | Placement::RightOf(_) | Placement::IntoTab(_) => None,
+        Placement::NewGroup
+        | Placement::RightOf(_)
+        | Placement::GroupAt(_, _)
+        | Placement::IntoTab(_) => None,
     };
 
     if let Some(idx) = tab_target {
@@ -334,13 +508,16 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         let Some(group) = strip.window_groups.get_mut(idx) else {
             return tab_id;
         };
-        // Right of the tab the user was on, not at the end of the bar.
-        let after = group
-            .tabs
-            .iter()
-            .position(|t| t.id == group.active_tab)
-            .map_or(group.tabs.len(), |i| i.saturating_add(1));
-        group.tabs.insert(after, new_tab);
+        let insert_at = match placement {
+            Placement::TabAt(_, index) => index.min(group.tabs.len()),
+            // Right of the tab the user was on, not at the end of the bar.
+            _ => group
+                .tabs
+                .iter()
+                .position(|t| t.id == group.active_tab)
+                .map_or(group.tabs.len(), |i| i.saturating_add(1)),
+        };
+        group.tabs.insert(insert_at, new_tab);
         group.active_tab = tab_id;
         let group_id = group.id;
         tree.active_strip.insert(ws_id, strip_id);
@@ -362,9 +539,14 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         _ => None,
     }
     .or(active_group);
-    let insert_at = anchor
-        .and_then(|g| strip.window_groups.iter().position(|w| w.id == g))
-        .map_or(strip.window_groups.len(), |i| i.saturating_add(1));
+    let insert_at = match placement {
+        Placement::GroupAt(target_strip, index) if target_strip == strip_id => {
+            index.min(strip.window_groups.len())
+        }
+        _ => anchor
+            .and_then(|g| strip.window_groups.iter().position(|w| w.id == g))
+            .map_or(strip.window_groups.len(), |i| i.saturating_add(1)),
+    };
     strip.window_groups.insert(insert_at, group);
     tree.active_strip.insert(ws_id, strip_id);
     tree.set_active_group(strip_id, group_id);
@@ -2346,6 +2528,89 @@ mod tests {
         );
         assert_eq!(tree.active, active);
         assert!(group_id_for_surface(&tree, 9_999).is_none());
+    }
+
+    #[test]
+    fn exact_drop_placements_preserve_tab_and_group_sides() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.persist_path = None;
+        let strip_id = tree.workspaces[0].strips[0].id;
+        let group_id = tree.workspaces[0].strips[0].window_groups[0].id;
+        let original_first = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+
+        let left = open_hosted_app(
+            &mut tree,
+            AppKind::Terminal,
+            "left",
+            Placement::TabAt(group_id, 0),
+        );
+        let right = open_hosted_app(
+            &mut tree,
+            AppKind::Terminal,
+            "right",
+            Placement::TabAt(group_id, usize::MAX),
+        );
+        let group = &tree.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(group.tabs.first().map(|tab| tab.id), Some(left));
+        assert_eq!(group.tabs.get(1).map(|tab| tab.id), Some(original_first));
+        assert_eq!(group.tabs.last().map(|tab| tab.id), Some(right));
+
+        let first_group = open_hosted_app(
+            &mut tree,
+            AppKind::Terminal,
+            "before",
+            Placement::GroupAt(strip_id, 0),
+        );
+        let last_group = open_hosted_app(
+            &mut tree,
+            AppKind::Terminal,
+            "after",
+            Placement::GroupAt(strip_id, usize::MAX),
+        );
+        let strip = &tree.workspaces[0].strips[0];
+        assert_eq!(strip.window_groups[0].tabs[0].id, first_group);
+        assert_eq!(strip.window_groups.last().unwrap().tabs[0].id, last_group);
+    }
+
+    #[test]
+    fn an_existing_document_tab_is_rehomed_without_duplication() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.persist_path = None;
+        tree.seed_doc_from_cache();
+        let strip_id = tree.workspaces[0].strips[0].id;
+        let group_id = tree.workspaces[0].strips[0].window_groups[0].id;
+        let tab_id = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let before = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .flat_map(|group| &group.tabs)
+            .count();
+
+        assert!(relocate_tab(
+            &mut tree,
+            tab_id,
+            Placement::GroupAt(strip_id, usize::MAX)
+        ));
+        let strip = &tree.workspaces[0].strips[0];
+        assert_eq!(
+            strip
+                .window_groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .filter(|tab| tab.id == tab_id)
+                .count(),
+            1
+        );
+        assert_eq!(
+            strip
+                .window_groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .count(),
+            before
+        );
+        assert_eq!(strip.window_groups.last().unwrap().tabs[0].id, tab_id);
+        assert_ne!(strip.window_groups.last().unwrap().id, group_id);
     }
 
     #[test]

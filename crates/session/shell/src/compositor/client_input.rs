@@ -90,6 +90,9 @@ pub struct ClientInput {
     forwarded_keys: HashSet<u32>,
     /// Accumulator for the Alt+Shift wheel group-jump gesture, so a touchpad's small pixel deltas fire one discrete jump per [`JUMP_PX_PER_DETENT`]. See [`WheelJumpAccum`].
     jump_wheel: WheelJumpAccum,
+    /// Whether this module currently owns a content-drop indicator in the
+    /// retained chrome. Prevents cleanup from touching an ordinary tab drag.
+    content_drop_hover_active: bool,
 }
 
 impl ClientInput {
@@ -663,7 +666,16 @@ pub fn touch_target(
     if !state.client_input.surfaces.contains_key(&hit.surface_id) {
         return None;
     }
-    Some((hit.surface_id, (hit.rect.x0, hit.rect.y0)))
+    let local_x = *x - hit.rect.x0;
+    let local_y = *y - hit.rect.y0;
+    Some(
+        crate::compositor::foreign::store()
+            .child_at(hit.surface_id, local_x, local_y)
+            .map_or(
+                (hit.surface_id, (hit.rect.x0, hit.rect.y0)),
+                |(child, child_x, child_y)| (child, (*x - child_x, *y - child_y)),
+            ),
+    )
 }
 
 /// Direct touch follows the same click-to-focus policy as pointer input.
@@ -957,9 +969,27 @@ fn route_cursor_moved(
 ) -> bool {
     state.client_input.cursor = Some((position.x, position.y));
     // Withheld from the chrome's own dispatch below (belongs to the client) — without this the chrome's pointer idea freezes at its last chrome-side position.
-    fb.host_mut()
-        .note_pointer(vello::kurbo::Point::new(position.x, position.y));
-    let hit = current_pointer_target(state, fb, captured);
+    // During a client-originated content drag, tiled window chrome/body is a
+    // shell placement target rather than an offer to the app currently under
+    // it. Withdrawing pointer focus here makes Smithay report `target: None`
+    // on release, which is the protocol boundary used by the shell drop pump.
+    let point = vello::kurbo::Point::new(position.x, position.y);
+    fb.host_mut().note_pointer(point);
+    let shell_content_target =
+        state.selection.dnd_active && fb.host().has_content_drop_target(point);
+    if state.selection.dnd_active {
+        fb.host_mut()
+            .set_content_drop_hover(shell_content_target.then_some(point));
+        state.selection.shell_drop_placement = shell_content_target
+            .then(|| fb.host().content_drop_placement(point))
+            .flatten();
+        state.client_input.content_drop_hover_active = shell_content_target;
+    }
+    let hit = if shell_content_target {
+        None
+    } else {
+        current_pointer_target(state, fb, captured)
+    };
     deliver_pointer(state, hit);
     // During a chrome drag the file manager keeps drawing the ghost under the cursor, so it sees every move even over a client.
     hit.is_some() && state.selection.chrome_drag.is_none()
@@ -1233,13 +1263,44 @@ fn route_keyboard_input(
 /// Called every tick: once the chrome's in-process drag gesture has the
 /// pointer over a foreign tile, the compositor claims it, starts smithay's
 /// server-side drag offering the file, and delivers the enter. From then on `current_pointer_target` hit-tests normally so the client under the pointer receives `wl_data_device` enter/motion/drop; the release is the drop — Files does not act on the release itself.
-pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
+pub fn pump_chrome_drag(state: &mut State, fb: &mut FrameBuilder) {
     if state.selection.chrome_drag.is_some() || state.selection.dnd_active {
         return;
     }
     let Some(pending) = file_explorer::external_drag::unclaimed() else {
+        if state.client_input.content_drop_hover_active {
+            fb.host_mut().set_content_drop_hover(None);
+            state.client_input.content_drop_hover_active = false;
+        }
         return;
     };
+    // Files is hosted in-process, so its drag does not pass through the
+    // Wayland data-device callbacks which normally populate the compositor's
+    // carried-content visual. Prime that visual as soon as the host can see
+    // the gesture; it is then the same preview whether the eventual target is
+    // another client or shell chrome.
+    let label = crate::compositor::drag_feedback::label_for_paths(&pending.paths);
+    if state.selection.dnd_label.get().as_deref() != Some(label.as_str()) {
+        state.selection.dnd_label.set(Some(label));
+        crate::compositor::selection::request_path_drag_preview(
+            &pending.paths,
+            state.selection.dnd_label.clone(),
+        );
+    }
+    let (x, y) = state.client_input.cursor();
+    let at = vello::kurbo::Point::new(x, y);
+    if fb.host().has_content_drop_target(at) {
+        // Shell placement wins over offering the payload to the app beneath
+        // the pointer. Keep the hosted drag unclaimed until button-up so
+        // `finish_chrome_drag_into_shell` can commit this exact target.
+        fb.host_mut().set_content_drop_hover(Some(at));
+        state.client_input.content_drop_hover_active = true;
+        return;
+    }
+    if state.client_input.content_drop_hover_active {
+        fb.host_mut().set_content_drop_hover(None);
+        state.client_input.content_drop_hover_active = false;
+    }
     tracing::debug!(
         target: "shell::selection",
         grab = ?state.client_input.grab,
@@ -1292,6 +1353,10 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
         .set(Some(crate::compositor::drag_feedback::label_for_paths(
             &drag.paths,
         )));
+    crate::compositor::selection::request_path_drag_preview(
+        &drag.paths,
+        state.selection.dnd_label.clone(),
+    );
     state.selection.chrome_drag = Some(drag);
     let serial = mint_serial(state);
     let location = SmithayPoint::from(state.client_input.cursor());
@@ -1313,6 +1378,64 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
         metadata,
     );
     deliver_pointer(state, Some(hit));
+}
+
+/// Finish a hosted Files drag on shell-owned window chrome/content.
+///
+/// This runs before the release is dispatched back into Files. Claiming the
+/// process-global drag first makes Files cancel its own folder move, while the
+/// paths are opened through the exact same retained-geometry resolver used by
+/// client DnD and `WindowEvent::DroppedFile`.
+pub fn finish_chrome_drag_into_shell(
+    state: &mut State,
+    fb: &mut FrameBuilder,
+    event: &WindowEvent,
+) -> bool {
+    if !matches!(
+        event,
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        }
+    ) || state.selection.chrome_drag.is_some()
+        || state.selection.dnd_active
+    {
+        return false;
+    }
+    let Some(pending) = file_explorer::external_drag::unclaimed() else {
+        return false;
+    };
+    let (x, y) = state.client_input.cursor();
+    let at = vello::kurbo::Point::new(x, y);
+    let Some(placement) = fb.host().content_drop_placement(at) else {
+        return false;
+    };
+    let Some(drag) = file_explorer::external_drag::hand_off() else {
+        return false;
+    };
+    debug_assert_eq!(drag.paths, pending.paths);
+    let changed = drag
+        .paths
+        .iter()
+        .enumerate()
+        .fold(false, |changed, (offset, path)| {
+            let placement = match placement {
+                crate::shell::tab_binding::Placement::TabAt(group, index) => {
+                    crate::shell::tab_binding::Placement::TabAt(group, index.saturating_add(offset))
+                }
+                crate::shell::tab_binding::Placement::GroupAt(strip, index) => {
+                    crate::shell::tab_binding::Placement::GroupAt(
+                        strip,
+                        index.saturating_add(offset),
+                    )
+                }
+                other => other,
+            };
+            fb.host().open_dropped_path_with_placement(path, placement) || changed
+        });
+    state.selection.dnd_label.set(None);
+    changed
 }
 
 /// Where the pointer should be focused right now: the foreign tile under the cursor, or the implicit grab's owner while a button is held.
@@ -1459,7 +1582,15 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
 /// Push the current cursor position at `hit` (or clear client focus when `None`), producing the enter/motion/leave sequence.
 fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
     let global = state.client_input.cursor();
-    let target = hit.map(|h| (h.surface_id, (h.rect.x0, h.rect.y0)));
+    let target = hit.map(|h| {
+        let local_x = global.0 - h.rect.x0;
+        let local_y = global.1 - h.rect.y0;
+        crate::compositor::foreign::store()
+            .child_at(h.surface_id, local_x, local_y)
+            .map_or((h.surface_id, (h.rect.x0, h.rect.y0)), |(child, x, y)| {
+                (child, (global.0 - x, global.1 - y))
+            })
+    });
     if state.selection.dnd_active {
         tracing::debug!(
             target: "shell::selection",

@@ -44,6 +44,7 @@ pub struct HostedTileInputs {
     file_services: Option<file_explorer::files_app::HostedFileServices>,
     native_apps: Arc<[NativeAppRegistration]>,
     documents: Rc<RefCell<HashMap<TabId, HostedDocumentState>>>,
+    file_directories: Rc<RefCell<HashMap<TabId, PathBuf>>>,
 }
 
 struct FixtureDirectory(PathBuf);
@@ -149,6 +150,7 @@ impl HostedTileInputs {
             file_services,
             native_apps: Arc::default(),
             documents: Rc::default(),
+            file_directories: Rc::default(),
         })
     }
 
@@ -184,6 +186,26 @@ impl HostedTileInputs {
         self.documents
             .borrow_mut()
             .insert(tab, HostedDocumentState::Ready(document));
+    }
+
+    /// Choose the directory a newly-created hosted Files tab presents. The
+    /// binding is device-local launch data, just like [`Self::bind_document`];
+    /// filesystem authority is granted separately by chrome.
+    pub(crate) fn bind_files_directory(&self, tab: TabId, directory: PathBuf) {
+        self.file_directories.borrow_mut().insert(tab, directory);
+    }
+
+    pub(crate) fn files_for_tab(&self, tab: TabId) -> Option<file_explorer::StartupInputs> {
+        let directory = self.file_directories.borrow().get(&tab).cloned()?;
+        let mut inputs = self.files.clone().unwrap_or(file_explorer::StartupInputs {
+            initial_dir: directory.clone(),
+            workspace_roots: Vec::new(),
+            record_roots: Vec::new(),
+            remote_accounts: Vec::new(),
+            trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+        });
+        inputs.initial_dir = directory;
+        Some(inputs)
     }
 
     /// Release launch data once its tab leaves any workspace, without rereading files.
@@ -331,6 +353,17 @@ mod tests {
             result,
             Err(HostedTileError::RequiredServiceMissing("Files startup"))
         ));
+    }
+
+    #[test]
+    fn a_files_tab_can_start_in_its_dropped_directory() {
+        let parent = tempfile::tempdir().unwrap();
+        let inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
+        let dropped = parent.path().join("dropped");
+        std::fs::create_dir(&dropped).unwrap();
+        inputs.bind_files_directory(42, dropped.clone());
+        assert_eq!(inputs.files_for_tab(42).unwrap().initial_dir, dropped);
+        assert!(inputs.files_for_tab(43).is_none());
     }
 }
 

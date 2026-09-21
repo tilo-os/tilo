@@ -137,6 +137,59 @@ impl ShellDriver {
         self.fb.host_mut()
     }
 
+    /// Move to the empty tab-bar space that owns whole-group dragging.
+    /// Resolving from live group geometry keeps held-drag visual scenarios
+    /// valid at both compact and normal viewport widths.
+    pub fn move_cursor_to_group_grab(&mut self, group_idx: usize) -> bool {
+        let strip_id = {
+            let state = self.chrome();
+            let tree = state.tree();
+            tree.active_workspace()
+                .and_then(|workspace| workspace.strips.first())
+                .map(|strip| strip.id)
+        };
+        let Some(strip_id) = strip_id else {
+            return false;
+        };
+        let point = {
+            let Some(group) = self.host_mut().group_at_for_tests(strip_id, group_idx) else {
+                return false;
+            };
+            let bar = group.bar_rect();
+            let last = group.tab_rects().last().copied().unwrap_or(bar);
+            Point::new(
+                f64::midpoint(last.x1, bar.x1),
+                f64::midpoint(bar.y0, bar.y1),
+            )
+        };
+        self.move_cursor(point);
+        true
+    }
+
+    /// Carry the active whole-group drag past another group's midpoint.
+    /// The small over-travel makes the intended after-slot unambiguous while
+    /// retaining the source grab's y coordinate and pointer capture.
+    pub fn move_cursor_to_group_reorder_target(&mut self, group_idx: usize) -> bool {
+        let strip_id = {
+            let state = self.chrome();
+            let tree = state.tree();
+            tree.active_workspace()
+                .and_then(|workspace| workspace.strips.first())
+                .map(|strip| strip.id)
+        };
+        let Some(strip_id) = strip_id else {
+            return false;
+        };
+        let x = {
+            let Some(group) = self.host_mut().group_at_for_tests(strip_id, group_idx) else {
+                return false;
+            };
+            group.get_rect().center().x + 24.0
+        };
+        self.move_cursor(Point::new(x, self.last_cursor.y));
+        true
+    }
+
     /// Show the same reduced first-login ceremony used when Tilo is installed
     /// as an additional session on an existing Linux desktop. The path is
     /// deliberately read-only/nonexistent: this visual scenario never mints
