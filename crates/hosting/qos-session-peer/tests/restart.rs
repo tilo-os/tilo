@@ -367,6 +367,133 @@ fn shared_host_identity_retains_exclusive_custody() {
     assert!(!destination.exists());
 }
 
+/// The ordinary host must reopen persisted worker views on their original qOS
+/// routes even when the installed application definition has been renamed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_host_restart_restores_bound_local_views() {
+    use std::{
+        io::Write,
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let path = dir.path().join("owner");
+    let ready = dir.path().join("ready.json");
+    let before = SessionOwner::initialize(&path).unwrap().status();
+    let mut saved_notes: Option<ui::application_view::SavedInstanceView> = None;
+    struct ChildGuard(std::process::Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    for cycle in 0..2 {
+        let mut child = ChildGuard(
+            Command::new(env!("CARGO_BIN_EXE_qos-session-peer"))
+                .arg("run")
+                .arg(&path)
+                .arg(&ready)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "host {cycle} did not write readiness"
+            );
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "host exited during startup"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(&ready).unwrap()).unwrap();
+        let origin = metadata["fixture_origin"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("http://")
+            .unwrap();
+        let observed = loop {
+            let mut socket = tokio::net::TcpStream::connect(origin).await.unwrap();
+            socket
+                .write_all(format!("GET /status HTTP/1.1\r\nHost: {origin}\r\n\r\n").as_bytes())
+                .await
+                .unwrap();
+            let mut bytes = vec![];
+            socket.read_to_end(&mut bytes).await.unwrap();
+            let text = String::from_utf8(bytes).unwrap();
+            let status: serde_json::Value =
+                serde_json::from_str(text.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert!(
+                status["action_error"].is_null(),
+                "host cycle {cycle} rejected its own view: {status}"
+            );
+            if status["native_peer"] == "subscribed" && status["actions"] == "ready" {
+                break serde_json::from_value::<qos_session_peer::Status>(status).unwrap();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "host {cycle} actions never became ready: {status}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(observed.room, before.room);
+        assert_eq!(observed.authority, before.authority);
+        child
+            .0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"shutdown\n")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(
+                    status.success(),
+                    "host {cycle} did not close its components cleanly"
+                );
+                break;
+            }
+            assert!(Instant::now() < deadline, "host {cycle} did not shut down");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!ready.exists());
+        let reopened = SessionOwner::open(&path).unwrap();
+        assert_observed_state_survives(&reopened, &observed);
+        let notes = fs::read_dir(path.join("actions/views"))
+            .unwrap()
+            .map(|entry| {
+                postcard::from_bytes::<ui::application_view::SavedInstanceView>(
+                    &fs::read(entry.unwrap().path()).unwrap(),
+                )
+                .unwrap()
+            })
+            .find(|saved| saved.app_id == "dev.qos.notes")
+            .expect("ordinary Notes worker must persist its view");
+        assert_eq!(notes.workspace_id, before.room);
+        assert_eq!(notes.application.as_ref().unwrap().app_id, "dev.qos.notes");
+        if let Some(previous) = &saved_notes {
+            assert_eq!(notes.device_id, previous.device_id);
+            assert_eq!(notes.instance_id, previous.instance_id);
+            assert_eq!(notes.record_id, previous.record_id);
+            assert_eq!(
+                notes.application.as_ref().unwrap().payload,
+                previous.application.as_ref().unwrap().payload
+            );
+        }
+        saved_notes = Some(notes);
+    }
+}
+
 #[test]
 fn corrupt_or_missing_state_never_reseeds_identity() {
     let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
