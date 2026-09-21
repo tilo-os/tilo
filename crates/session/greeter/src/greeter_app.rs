@@ -3382,6 +3382,10 @@ mod tests {
             AuthScenario::PersonalError,
         ] {
             let mut app = GreeterApp::for_shot(scenario);
+            // This regression requires a session picker. Snapshot discovery
+            // follows the host, whose CI image may expose zero or one session.
+            // Inject both choices before the first CRDT sync and layout.
+            app.sessions = test_sessions();
             let _layout = layout_at_with_theme(&mut app, (640.0, 640.0), &theme);
             let ordinary = rect_for(&app, "greeter.welcome").expect("ordinary identity");
             let mut original_actions = Vec::new();
