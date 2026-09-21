@@ -1,0 +1,23 @@
+{
+  "schema": "tilo.lenovo-83ed.dual-boot-layout.v1",
+  "observed_at": "2026-09-21",
+  "disk": {
+    "size_bytes": 1024209543168,
+    "gpt_uuid": "e6a469fd-e19b-4974-ad23-9c234a4e225a",
+    "windows_unique_id": "eui.002538A441BE8A46",
+    "logical_sector_bytes": 512
+  },
+  "windows_target_size_bytes": 858993459200,
+  "free_extent": {
+    "offset_bytes": 859401355264,
+    "size_bytes": 162710683648
+  },
+  "partitions": [
+    {"number": 1, "partuuid": "6e3c8d29-eefd-452f-a856-9bc30f84aace", "offset_bytes": 1048576, "size_bytes": 272629760, "role": "windows-esp", "action": "preserve"},
+    {"number": 2, "partuuid": "e8e71c5f-d195-4e58-b0f4-d3076c3a936b", "offset_bytes": 273678336, "size_bytes": 134217728, "role": "microsoft-reserved", "action": "preserve"},
+    {"number": 3, "partuuid": "fa6ad2c9-bd0e-4780-9d68-324b93376d01", "offset_bytes": 407896064, "size_bytes": 858993459200, "role": "windows-c", "action": "shrink-in-windows"},
+    {"number": 5, "partuuid": "162e4fc3-6689-48ca-868e-d124ecbf887f", "offset_bytes": 859401355264, "size_bytes": 2147483648, "role": "tilo-esp", "action": "create"},
+    {"number": 6, "partuuid": "29651c1b-7556-4066-b6c8-6114008ff60a", "offset_bytes": 861548838912, "size_bytes": 160563200000, "role": "tilo-encrypted-root", "action": "create"},
+    {"number": 4, "partuuid": "cbb0cbe1-feef-44dd-948b-409061320e11", "offset_bytes": 1022112038912, "size_bytes": 2097152000, "role": "windows-recovery", "action": "preserve"}
+  ]
+}
