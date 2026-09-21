@@ -247,26 +247,6 @@ mod component_adapter {
             }
             Ok(())
         }
-        fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return Vec::new();
-            };
-            root.take_collab_requests()
-        }
-        fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.handle_collab_event(event);
-        }
         fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
