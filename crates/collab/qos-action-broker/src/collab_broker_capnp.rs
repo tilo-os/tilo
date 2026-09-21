@@ -38,7 +38,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_types::{
@@ -196,7 +196,7 @@ struct AdmittedJoinIdentity {
     agent_id: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BrokerActor {
     id: String,
     is_agent: bool,
@@ -1452,7 +1452,8 @@ struct ChannelSubscribers {
     context: Vec<ContextSub>,
 }
 
-type ActionCatalogueSubscriber = (String, BrokerActor, mpsc::UnboundedSender<String>);
+type ActionCatalogueSnapshot = Option<Arc<str>>;
+type ActionCatalogueSubscriber = (String, BrokerActor, watch::Sender<ActionCatalogueSnapshot>);
 
 /// Host-owned admission for one private SDK descriptor. Never serialized on the wire.
 #[derive(Clone)]
@@ -2895,12 +2896,26 @@ impl CapnpBrokerState {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let mut audiences: HashMap<(String, BrokerActor), ActionCatalogueSnapshot> = HashMap::new();
         let mut disconnected = Vec::new();
         for (peer, cluster, actor, tx) in subscribers {
-            let delivered = self
-                .action_catalogue_json_for(&cluster, &actor, None)
-                .is_ok_and(|snapshot| tx.send(snapshot).is_ok());
-            if !delivered {
+            let snapshot = audiences
+                .entry((cluster.clone(), actor.clone()))
+                .or_insert_with(|| {
+                    self.action_catalogue_json_for(&cluster, &actor, None)
+                        .ok()
+                        .map(Arc::<str>::from)
+                })
+                .clone();
+            if let Some(snapshot) = snapshot {
+                if tx.send(Some(snapshot)).is_err() {
+                    disconnected.push(peer);
+                }
+            } else {
+                // Invalidate an unread prior snapshot before removing this
+                // audience. A failed current authorization must never let
+                // a slow reader consume stale discovery state.
+                tx.send_replace(None);
                 disconnected.push(peer);
             }
         }
@@ -5763,16 +5778,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
         let cluster = self.route().cluster_id;
         let actor = self.verified_identity.broker_actor();
-        let (tx, rx) = mpsc::unbounded_channel();
         let initial = match self.state.action_catalogue_json_for(&cluster, &actor, None) {
-            Ok(snapshot) => snapshot,
+            Ok(snapshot) => Arc::<str>::from(snapshot),
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
-        if tx.send(initial).is_err() {
-            return Promise::err(capnp::Error::disconnected(
-                "action catalogue stream closed".into(),
-            ));
-        }
+        let (tx, rx) = watch::channel(Some(initial));
         if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
             subscribers.insert(self.peer_id, (cluster, actor, tx));
         } else {
@@ -5782,7 +5792,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
         let client: action_catalogue_stream::Client =
             capnp_rpc::new_client(ActionCatalogueStreamServer {
-                rx: Rc::new(AsyncMutex::new(rx)),
+                reader: Rc::new(AsyncMutex::new(ActionCatalogueReader { rx, initial: true })),
             });
         results.get().set_stream(client);
         Promise::ok(())
@@ -7071,7 +7081,24 @@ struct TaskRunStreamServer {
 }
 
 struct ActionCatalogueStreamServer {
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<String>>>,
+    reader: Rc<AsyncMutex<ActionCatalogueReader>>,
+}
+
+struct ActionCatalogueReader {
+    rx: watch::Receiver<ActionCatalogueSnapshot>,
+    initial: bool,
+}
+
+impl ActionCatalogueReader {
+    async fn next(&mut self) -> Result<Arc<str>, ()> {
+        if self.initial {
+            self.initial = false;
+        } else {
+            self.rx.changed().await.map_err(|_| ())?;
+        }
+        let snapshot = self.rx.borrow_and_update().clone();
+        snapshot.ok_or(())
+    }
 }
 
 impl action_catalogue_stream::Server for ActionCatalogueStreamServer {
@@ -7080,13 +7107,11 @@ impl action_catalogue_stream::Server for ActionCatalogueStreamServer {
         _params: action_catalogue_stream::ReadParams,
         mut results: action_catalogue_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
+        let reader = self.reader.clone();
         Promise::from_future(async move {
-            let mut guard = rx.lock().await;
-            let snapshot = guard.recv().await.ok_or_else(|| {
+            let snapshot = reader.lock().await.next().await.map_err(|()| {
                 capnp::Error::disconnected("action catalogue stream closed".into())
             })?;
-            drop(guard);
             results.get().set_catalogue_json(&snapshot);
             Ok(())
         })
@@ -10173,6 +10198,323 @@ pub mod tests {
                 "{label} must not receive a record-directed document",
             );
         }
+    }
+
+    #[derive(Clone)]
+    struct CountingCatalogueAuthority {
+        tree: Arc<Mutex<qos_desktop::WorkspaceTree>>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        failed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl crate::services::WorkspaceAuthority for CountingCatalogueAuthority {
+        fn snapshot(&self) -> Result<qos_desktop::WorkspaceTree, String> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("catalogue authority unavailable".into());
+            }
+            self.tree
+                .lock()
+                .map_err(|_| "catalogue authority unavailable".to_string())
+                .map(|tree| tree.clone())
+        }
+    }
+
+    fn catalogue_surface(peer_id: u64, cluster: &str, resource: &str) -> PublishedSurface {
+        PublishedSurface {
+            peer_id,
+            app_id: "dev.qos.files".into(),
+            route: CrdtRoute::record("dev.qos.files", cluster, format!("record-{peer_id}")),
+            actions: vec![PublishedAction {
+                resource: resource.into(),
+                action: "open".into(),
+                resource_kind: "files.entry".into(),
+                resource_label: resource.into(),
+                action_label: "Open".into(),
+                description: None,
+                operation_kind: tilo_actions::OperationKind::View,
+                params: Vec::new(),
+                contract: tilo_actions::ActionContract {
+                    permission: tilo_actions::PermissionRequirement::Write,
+                    ..Default::default()
+                },
+                input: PublishedInput::None,
+            }],
+            live: true,
+        }
+    }
+
+    struct CountingCatalogueFixture {
+        state: Arc<CapnpBrokerState>,
+        tree: Arc<Mutex<qos_desktop::WorkspaceTree>>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        failed: Arc<std::sync::atomic::AtomicBool>,
+        cluster: String,
+    }
+
+    fn counting_catalogue_state(owner: &str) -> CountingCatalogueFixture {
+        let mut workspace = crate::test_support::Workspace::test_default(
+            crate::test_support::WorkspaceId(29),
+            "Catalogue room",
+        );
+        workspace.set_owner(owner);
+        let cluster = workspace.room.to_string();
+        let mut tree = qos_desktop::WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let tree = Arc::new(Mutex::new(tree));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(Arc::new(CountingCatalogueAuthority {
+                tree: tree.clone(),
+                calls: calls.clone(),
+                failed: failed.clone(),
+            })),
+            None,
+            None,
+            HostServices::default(),
+        );
+        CountingCatalogueFixture {
+            state,
+            tree,
+            calls,
+            failed,
+            cluster,
+        }
+    }
+
+    fn catalogue_test_channel() -> (
+        watch::Sender<ActionCatalogueSnapshot>,
+        watch::Receiver<ActionCatalogueSnapshot>,
+    ) {
+        watch::channel(Some(Arc::<str>::from("{}")))
+    }
+
+    fn current_catalogue(
+        receiver: &mut watch::Receiver<ActionCatalogueSnapshot>,
+    ) -> ActionCatalogueSnapshot {
+        receiver.borrow_and_update().clone()
+    }
+
+    #[test]
+    fn catalogue_publication_computes_once_per_exact_audience_and_keeps_only_latest_state() {
+        let CountingCatalogueFixture {
+            state,
+            calls,
+            cluster,
+            ..
+        } = counting_catalogue_state("owner");
+        let actor = BrokerActor::person("owner");
+        let (first_tx, mut first_rx) = catalogue_test_channel();
+        let (second_tx, mut second_rx) = catalogue_test_channel();
+        state.action_catalogue_subscribers.lock().unwrap().extend([
+            (1, (cluster.clone(), actor.clone(), first_tx)),
+            (2, (cluster.clone(), actor, second_tx)),
+        ]);
+
+        state
+            .surfaces
+            .lock()
+            .unwrap()
+            .insert(11, catalogue_surface(11, &cluster, "files.entry:first"));
+        state.publish_action_catalogue();
+        state
+            .surfaces
+            .lock()
+            .unwrap()
+            .insert(12, catalogue_surface(12, &cluster, "files.entry:second"));
+        state.publish_action_catalogue();
+
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "each synchronous publication computes one snapshot for a shared exact audience"
+        );
+        for receiver in [&mut first_rx, &mut second_rx] {
+            let latest: serde_json::Value =
+                serde_json::from_str(&current_catalogue(receiver).unwrap()).unwrap();
+            assert_eq!(latest["surfaces"].as_array().unwrap().len(), 2);
+            assert!(
+                !receiver.has_changed().unwrap(),
+                "a slow reader retains no obsolete complete catalogue"
+            );
+        }
+    }
+
+    #[test]
+    fn catalogue_publication_separates_person_and_agent_with_the_same_textual_id() {
+        let CountingCatalogueFixture {
+            state,
+            tree,
+            calls,
+            cluster,
+            ..
+        } = counting_catalogue_state("same");
+        state
+            .surfaces
+            .lock()
+            .unwrap()
+            .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
+        let mut other = crate::test_support::Workspace::test_default(
+            crate::test_support::WorkspaceId(30),
+            "Other catalogue room",
+        );
+        other.set_owner("same");
+        let other_cluster = other.room.to_string();
+        tree.lock().unwrap().workspaces.push(other);
+        let (person_tx, mut person_rx) = catalogue_test_channel();
+        let (agent_tx, mut agent_rx) = catalogue_test_channel();
+        let (other_tx, mut other_rx) = catalogue_test_channel();
+        state.action_catalogue_subscribers.lock().unwrap().extend([
+            (1, (cluster.clone(), BrokerActor::person("same"), person_tx)),
+            (2, (cluster, BrokerActor::agent("same"), agent_tx)),
+            (3, (other_cluster, BrokerActor::person("same"), other_tx)),
+        ]);
+
+        state.publish_action_catalogue();
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 3);
+        let person = current_catalogue(&mut person_rx).unwrap();
+        let agent = current_catalogue(&mut agent_rx).unwrap();
+        let other = current_catalogue(&mut other_rx).unwrap();
+        assert!(person.contains("files.entry:owner"));
+        assert!(!agent.contains("files.entry:owner"));
+        assert!(!other.contains("files.entry:owner"));
+    }
+
+    #[test]
+    fn catalogue_publication_rechecks_changed_authority_on_the_next_turn() {
+        let CountingCatalogueFixture {
+            state,
+            tree,
+            calls,
+            cluster,
+            ..
+        } = counting_catalogue_state("owner");
+        state
+            .surfaces
+            .lock()
+            .unwrap()
+            .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
+        let (tx, mut rx) = catalogue_test_channel();
+        state
+            .action_catalogue_subscribers
+            .lock()
+            .unwrap()
+            .insert(1, (cluster, BrokerActor::person("owner"), tx));
+        state.publish_action_catalogue();
+        assert!(
+            current_catalogue(&mut rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+
+        tree.lock().unwrap().workspaces[0].set_owner("replacement");
+        state.publish_action_catalogue();
+        assert!(
+            !current_catalogue(&mut rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn catalogue_stream_starts_with_latest_state_and_rejects_invalidated_pending_state() {
+        let (initial_tx, initial_rx) = watch::channel(Some(Arc::<str>::from("initial")));
+        let mut initial_reader = ActionCatalogueReader {
+            rx: initial_rx,
+            initial: true,
+        };
+        assert_eq!(&*initial_reader.next().await.unwrap(), "initial");
+        drop(initial_tx);
+        assert!(
+            initial_reader.next().await.is_err(),
+            "a closed stream with no pending state disconnects"
+        );
+
+        let (tx, rx) = watch::channel(Some(Arc::<str>::from("initial")));
+        tx.send(Some(Arc::<str>::from("newer"))).unwrap();
+        let mut reader = ActionCatalogueReader { rx, initial: true };
+        assert_eq!(&*reader.next().await.unwrap(), "newer");
+
+        tx.send(Some(Arc::<str>::from("unread"))).unwrap();
+        tx.send_replace(None);
+        drop(tx);
+        assert!(
+            reader.next().await.is_err(),
+            "projection failure invalidates an unread stale snapshot"
+        );
+    }
+
+    #[test]
+    fn catalogue_projection_failure_invalidates_and_removes_its_audience() {
+        let CountingCatalogueFixture {
+            state,
+            calls,
+            failed,
+            cluster,
+            ..
+        } = counting_catalogue_state("owner");
+        state
+            .surfaces
+            .lock()
+            .unwrap()
+            .insert(11, catalogue_surface(11, &cluster, "files.entry:owner"));
+        let (tx, mut rx) = catalogue_test_channel();
+        let (second_tx, mut second_rx) = catalogue_test_channel();
+        let (closed_tx, closed_rx) = catalogue_test_channel();
+        drop(closed_rx);
+        state
+            .action_catalogue_subscribers
+            .lock()
+            .unwrap()
+            .insert(1, (cluster.clone(), BrokerActor::person("owner"), tx));
+        state.action_catalogue_subscribers.lock().unwrap().insert(
+            2,
+            (cluster.clone(), BrokerActor::person("owner"), second_tx),
+        );
+        state
+            .action_catalogue_subscribers
+            .lock()
+            .unwrap()
+            .insert(3, (cluster, BrokerActor::person("owner"), closed_tx));
+        state.publish_action_catalogue();
+        assert!(
+            current_catalogue(&mut rx)
+                .unwrap()
+                .contains("files.entry:owner"),
+            "the current authorized catalogue is initially available"
+        );
+        assert!(
+            current_catalogue(&mut second_rx)
+                .unwrap()
+                .contains("files.entry:owner")
+        );
+        assert!(
+            !state
+                .action_catalogue_subscribers
+                .lock()
+                .unwrap()
+                .contains_key(&3),
+            "closed catalogue subscribers are removed"
+        );
+
+        failed.store(true, std::sync::atomic::Ordering::Relaxed);
+        state.publish_action_catalogue();
+        assert!(rx.borrow_and_update().is_none());
+        assert!(second_rx.borrow_and_update().is_none());
+        let subscribers = state.action_catalogue_subscribers.lock().unwrap();
+        assert!(!subscribers.contains_key(&1));
+        assert!(!subscribers.contains_key(&2));
+        assert!(!subscribers.contains_key(&3));
+        drop(subscribers);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[allow(

@@ -75,6 +75,27 @@ pub enum PeerActionAttachmentError {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequestFailure {
+    Capacity,
+    QueueClosed,
+    ReplyTimeout,
+    ReplyClosed,
+    BrokerRejected,
+}
+
+impl RequestFailure {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Capacity => "capacity",
+            Self::QueueClosed => "queue_closed",
+            Self::ReplyTimeout => "reply_timeout",
+            Self::ReplyClosed => "reply_closed",
+            Self::BrokerRejected => "broker_rejected",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PeerActionQueue {
     sender: mpsc::Sender<Request>,
@@ -89,6 +110,7 @@ pub struct Request {
     pub reply: oneshot::Sender<Result<ActionMessage, ()>>,
     pub _permit: OwnedSemaphorePermit,
 }
+
 struct ReadinessReset(tokio::sync::watch::Sender<bool>);
 impl Drop for ReadinessReset {
     fn drop(&mut self) {
@@ -109,26 +131,50 @@ impl PeerActionQueue {
     }
     async fn request(
         &self,
+        phase: &'static str,
         evidence: Option<CertifiedAction>,
         poll: Option<tilo_actions::InvocationId>,
         notification: Option<tilo_actions::InvocationUpdate>,
-    ) -> Result<ActionMessage, ()> {
-        let permit = self.permits.clone().try_acquire_owned().map_err(|_| ())?;
-        let (reply, rx) = oneshot::channel();
-        self.sender
-            .try_send(Request {
-                evidence,
-                poll,
-                notification,
-                reply,
-                _permit: permit,
-            })
-            .map_err(|_| ())?;
-        // Timeout is transport uncertainty. It never cancels admitted work.
-        tokio::time::timeout(std::time::Duration::from_secs(5), rx)
-            .await
-            .map_err(|_| ())?
-            .map_err(|_| ())?
+    ) -> Result<ActionMessage, RequestFailure> {
+        let result = async {
+            let permit = self
+                .permits
+                .clone()
+                .try_acquire_owned()
+                .map_err(|error| match error {
+                    tokio::sync::TryAcquireError::Closed => RequestFailure::QueueClosed,
+                    tokio::sync::TryAcquireError::NoPermits => RequestFailure::Capacity,
+                })?;
+            let (reply, rx) = oneshot::channel();
+            self.sender
+                .try_send(Request {
+                    evidence,
+                    poll,
+                    notification,
+                    reply,
+                    _permit: permit,
+                })
+                .map_err(|error| match error {
+                    mpsc::error::TrySendError::Full(_) => RequestFailure::Capacity,
+                    mpsc::error::TrySendError::Closed(_) => RequestFailure::QueueClosed,
+                })?;
+            // Timeout is transport uncertainty. It never cancels admitted work.
+            match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+                Err(_) => Err(RequestFailure::ReplyTimeout),
+                Ok(Err(_)) => Err(RequestFailure::ReplyClosed),
+                Ok(Ok(Err(()))) => Err(RequestFailure::BrokerRejected),
+                Ok(Ok(Ok(message))) => Ok(message),
+            }
+        }
+        .await;
+        if let Err(problem) = result {
+            tracing::warn!(
+                phase,
+                reason = problem.label(),
+                "peer action attachment request failed"
+            );
+        }
+        result
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -136,7 +182,9 @@ impl PeerActionQueue {
         &self,
         evidence: Option<CertifiedAction>,
     ) -> Result<ActionMessage, ()> {
-        self.request(evidence, None, None).await
+        self.request("test_request", evidence, None, None)
+            .await
+            .map_err(|_| ())
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -231,7 +279,7 @@ impl PeerActionQueue {
         acknowledged.send_replace(false);
         let readiness = ReadinessReset(acknowledged);
         let ActionMessage::BrokerCatalogue { host: current, .. } = self
-            .request(None, None, None)
+            .request("initial_catalogue", None, None, None)
             .await
             .map_err(|_| PeerActionAttachmentError::Failed)?
         else {
@@ -262,7 +310,7 @@ impl PeerActionQueue {
                 event = session.recv_certified_action() => match event {
                     Some(CertifiedActionEvent::Delivered(evidence)) => {
                         if evidence.action().room != room { return Err(PeerActionAttachmentError::Failed); }
-                        let response = self.request(Some(evidence.clone()), None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?;
+                        let response = self.request("delivered_action", Some(evidence.clone()), None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?;
                         send(&session, &evidence, response.clone()).map_err(attachment_send_error)?;
                         if let ActionMessage::Observation { invocation, ref update, uncertain, .. } = response {
                             if !uncertain && update.as_ref().is_some_and(|u| !u.is_terminal()) {
@@ -291,13 +339,13 @@ impl PeerActionQueue {
                         if let ActionMessage::Observation { update: Some(prior), .. } = previous {
                             if sequence(&update).zip(sequence(prior)).is_some_and(|(next, old)| next <= old) { continue; }
                         }
-                        let response = self.request(Some(evidence.clone()), Some(*invocation), Some(update)).await.map_err(|_| PeerActionAttachmentError::Failed)?;
+                        let response = self.request("transition_poll", Some(evidence.clone()), Some(*invocation), Some(update)).await.map_err(|_| PeerActionAttachmentError::Failed)?;
                         if response != *previous { send(&session, evidence, response.clone()).map_err(attachment_send_error)?; *previous = response; }
                     }
                     watches.retain(|(_, _, response)| matches!(response, ActionMessage::Observation { update: Some(update), uncertain: false, .. } if !update.is_terminal()));
                 }
                 _ = tick.tick() => {
-                    self.request(None, None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?;
+                    self.request("heartbeat", None, None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?;
                 }
             }
         }
@@ -604,15 +652,25 @@ mod tests {
         for _ in 0..CAPACITY {
             let queue = queue.clone();
             pending.push(tokio::spawn(async move {
-                queue.request(None, None, None).await
+                queue.request("test_request", None, None, None).await
             }));
         }
         tokio::task::yield_now().await;
-        assert!(queue.request(None, None, None).await.is_err());
+        assert!(
+            queue
+                .request("test_request", None, None, None)
+                .await
+                .is_err()
+        );
         drop(receiver);
         for request in pending {
             assert!(request.await.unwrap().is_err());
         }
-        assert!(queue.request(None, None, None).await.is_err());
+        assert!(
+            queue
+                .request("test_request", None, None, None)
+                .await
+                .is_err()
+        );
     }
 }
