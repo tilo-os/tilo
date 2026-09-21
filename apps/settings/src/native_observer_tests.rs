@@ -237,7 +237,7 @@ impl Harness {
                 let control = intent
                     .address
                     .resource
-                    .strip_prefix("qos.control:")
+                    .strip_prefix("tilo.control:")
                     .unwrap();
                 let payload = serde_json::to_vec(control).unwrap();
                 let started = self
@@ -245,7 +245,7 @@ impl Harness {
                     .start_resource_operation(
                         tilo_actions::InvocationId::new(),
                         tilo_actions::OperationKind::View,
-                        "qos.ui.control.invoke",
+                        "tilo.ui.control.invoke",
                         &payload,
                         &mut self.doc,
                         &root(),

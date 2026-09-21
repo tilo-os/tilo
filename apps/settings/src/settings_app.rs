@@ -549,8 +549,11 @@ impl SettingsApp {
         let narrow_screen = self.narrow_shot_screen.unwrap_or(NarrowScreen::Content);
         let mut shell = AppShell::new(nav, content)
             .with_search(self.build_search_field())
-            .with_breakpoint(self.scaled_breakpoint())
-            .with_sidebar_width(self.scaled_sidebar_width())
+            // AppShell resolves text-authored extents against the live theme.
+            // Pass the 1x values here; pre-scaling them would apply the text
+            // scale twice when the shell refreshes its metrics.
+            .with_breakpoint(NAV_BREAKPOINT)
+            .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
             .with_narrow_screen(narrow_screen);
         if let Some(w) = self.width_hint {
             shell = shell.with_width_hint(f64::from(w));
