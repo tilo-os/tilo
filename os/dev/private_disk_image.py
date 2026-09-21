@@ -75,10 +75,6 @@ def loop_partition_nodes(loop, partition_numbers=(1, 2), *, devices=Path('/dev')
         raise ValueError('invalid loop partition node request')
     base = match.group(1)
     base_sysfs = sys_class / base
-    parent_major_minor = base_sysfs.joinpath('dev').read_text().strip()
-    if not re.fullmatch(r'[0-9]+:[0-9]+', parent_major_minor):
-        raise ValueError('loop device has invalid kernel identity')
-    parent_major = int(parent_major_minor.split(':', 1)[0])
     expected = {f'{base}p{number}': number for number in numbers}
     deadline = time.monotonic() + timeout
     while True:
@@ -104,8 +100,15 @@ def loop_partition_nodes(loop, partition_numbers=(1, 2), *, devices=Path('/dev')
             if not re.fullmatch(r'[0-9]+:[0-9]+', major_minor):
                 raise ValueError('loop partition has invalid kernel identity')
             major, minor = map(int, major_minor.split(':', 1))
-            if major != parent_major:
-                raise ValueError('loop partition major differs from its parent')
+            uevent = {}
+            for line in entry.joinpath('uevent').read_text().splitlines():
+                key, separator, value = line.partition('=')
+                if not separator or not key or key in uevent:
+                    raise ValueError('loop partition uevent is malformed')
+                uevent[key] = value
+            if (uevent.get('DEVNAME') != name
+                    or ('PARTN' in uevent and uevent['PARTN'] != str(number))):
+                raise ValueError('loop partition uevent identity differs')
             node = devices / name
             expected_device = os.makedev(major, minor)
             owned = False
