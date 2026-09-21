@@ -79,6 +79,7 @@ pub struct WorkspaceRuntime {
     pub admit_authenticated: bool,
     /// Cross-user roots admitted by the signed authority for this exact room.
     pub admitted_users: HashSet<[u8; 32]>,
+    pub(crate) checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
     pub(crate) outbound_federation: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
@@ -149,6 +150,7 @@ impl WorkspaceRuntime {
             membership_revision: 0,
             admit_authenticated: false,
             admitted_users: HashSet::new(),
+            checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
             compute: crate::compute_transport::ComputeTransportState::default(),

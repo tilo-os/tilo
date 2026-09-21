@@ -182,6 +182,7 @@ async fn deployed_v1_and_v2_clients_authenticate_actual_new_handlers() {
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: vec![hex::encode(user.user_pk)],
                 shell_authority: None,
+                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
             }],
             ..RelayConfig::default()
         },

@@ -135,6 +135,7 @@ pub async fn spawn_relay_on(
             replication: tilo_relay::ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
             shell_authority: None,
+            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
         });
     }
     let identity = RelayIdentity {

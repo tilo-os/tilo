@@ -528,6 +528,7 @@ mod tests {
             sequence: None,
             replays: Replays::default(),
             retention_scratch: None,
+            retention_candidates: Vec::new(),
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
         };
@@ -581,6 +582,7 @@ mod tests {
             sequence: None,
             replays: Replays::default(),
             retention_scratch: None,
+            retention_candidates: Vec::new(),
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
         };
@@ -626,6 +628,7 @@ mod tests {
                 sequence: None,
                 replays: Replays::default(),
                 retention_scratch: None,
+                retention_candidates: Vec::new(),
                 workers: crate::persistence::isolated_test_workers(),
                 replay_worker: Arc::new(Semaphore::new(1)),
             };
@@ -682,6 +685,7 @@ mod tests {
             sequence: None,
             replays: Replays::default(),
             retention_scratch: None,
+            retention_candidates: Vec::new(),
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
         };
@@ -726,6 +730,7 @@ mod tests {
             sequence: None,
             replays: Replays::default(),
             retention_scratch: None,
+            retention_candidates: Vec::new(),
             workers: crate::persistence::isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
         };

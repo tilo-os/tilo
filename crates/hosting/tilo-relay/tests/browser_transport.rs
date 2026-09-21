@@ -41,6 +41,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
             replication: tilo_relay::ReplicationIntent::FullWorkspace,
             admitted_users: vec![],
             shell_authority: None,
+            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
         }],
         ..Default::default()
     };

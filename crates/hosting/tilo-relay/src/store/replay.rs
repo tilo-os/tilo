@@ -407,6 +407,9 @@ impl WorkspaceStore {
             let unresolved = match selection.step(limit)? {
                 Step::More => return Ok(Step::More),
                 Step::Done(super::shell_selection::SelectionOutcome::Published(_)) => false,
+                Step::Done(super::shell_selection::SelectionOutcome::BatchPublished { .. }) => {
+                    return Err(invalid("replay capture returned batch selection"));
+                }
                 Step::Done(
                     super::shell_selection::SelectionOutcome::UnresolvedTailDependencies,
                 ) => true,

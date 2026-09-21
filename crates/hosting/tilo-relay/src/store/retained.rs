@@ -430,12 +430,147 @@ pub(crate) struct RetainBuild {
     last: u64,
     key: Option<blake3::Hash>,
     staged: Option<PathBuf>,
+    staged_append: bool,
     survivors: u64,
     written: u64,
     shell_store: Option<WorkspaceStore>,
     selected_read: Option<super::shell_selection::SelectedRead>,
     selection: Option<super::shell_selection::Selection>,
     publication: Option<super::shell_selection::Publication>,
+    selected_obsolete: bool,
+    staged_only: bool,
+}
+pub(crate) struct CheckpointStage {
+    build: RetainBuild,
+}
+pub(crate) struct CheckpointDiscard {
+    root: PathBuf,
+    entries: Option<super::bounded::DirectoryCursor>,
+}
+impl CheckpointDiscard {
+    pub(crate) fn new(lineage: PathBuf, staged: PathBuf) -> Result<Option<Self>, StoreError> {
+        if current(&lineage)?.as_ref() == Some(&staged) {
+            return Ok(None);
+        }
+        if staged.parent() != Some(lineage.as_path()) {
+            return Err(invalid("checkpoint stage is outside its retained lineage"));
+        }
+        Ok(Some(Self {
+            root: staged.clone(),
+            entries: match super::bounded::DirectoryCursor::open(&staged) {
+                Ok(entries) => Some(entries),
+                Err(StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error),
+            },
+        }))
+    }
+    pub(crate) fn step(
+        &mut self,
+        limit: super::bounded::WorkLimit,
+    ) -> Result<super::bounded::Step<()>, StoreError> {
+        use super::bounded::Step;
+        let limit = limit.checked()?;
+        let Some(entries) = &mut self.entries else {
+            return Ok(Step::Done(()));
+        };
+        for _ in 0..limit.record_entries() {
+            let Some(entry) = entries.peek()? else {
+                self.entries = None;
+                match fs::remove_dir(&self.root) {
+                    Ok(()) => return Ok(Step::Done(())),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(Step::Done(()));
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            };
+            if !entry.file_type()?.is_file() {
+                return Err(invalid("checkpoint stage contained a non-file entry"));
+            }
+            match fs::remove_file(entry.path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            entries.advance();
+        }
+        Ok(Step::More)
+    }
+}
+impl CheckpointStage {
+    pub(crate) fn projected_generation(&self) -> &Path {
+        self.build.staged.as_deref().unwrap_or(&self.build.active)
+    }
+    pub(crate) fn lineage_name(&self) -> &std::ffi::OsStr {
+        self.build
+            .lineage
+            .file_name()
+            .expect("retained lineage name")
+    }
+    pub(crate) fn written(&self) -> u64 {
+        self.build.written
+    }
+    pub(crate) fn cleanup_paths(&self) -> Option<(PathBuf, PathBuf)> {
+        self.build
+            .staged
+            .as_ref()
+            .map(|staged| (self.build.lineage.clone(), staged.clone()))
+    }
+    pub(crate) fn step(
+        &mut self,
+        limit: super::bounded::WorkLimit,
+    ) -> Result<super::bounded::Step<bool>, StoreError> {
+        use super::bounded::Step;
+        if matches!(
+            self.build.phase,
+            RetainPhase::Commit | RetainPhase::Collect(_) | RetainPhase::Done
+        ) {
+            return Ok(Step::Done(
+                self.build.duplicate || self.build.staged.is_some(),
+            ));
+        }
+        match self.build.step(limit)? {
+            Step::More => Ok(Step::More),
+            Step::Done(_) => Ok(Step::Done(
+                self.build.duplicate || self.build.staged.is_some(),
+            )),
+        }
+    }
+    /// Publish only the lineage CURRENT. Selection CURRENT must be durable
+    /// before `finish_gc` may retire any prior generation.
+    pub(crate) fn promote(&mut self) -> Result<(), StoreError> {
+        if matches!(self.build.phase, RetainPhase::Commit) {
+            let staged = self.build.staged.as_ref().unwrap().clone();
+            sync_dir(&staged)?;
+            durable_write(
+                &self.build.lineage.join("CURRENT"),
+                staged.file_name().unwrap().as_encoded_bytes(),
+            )?;
+            self.build.written = self.build.bytes.len() as u64;
+            self.build.phase = RetainPhase::Collect(GenerationGc::new(self.build.lineage.clone())?);
+        }
+        Ok(())
+    }
+    pub(crate) fn finish_gc(
+        &mut self,
+        limit: super::bounded::WorkLimit,
+    ) -> Result<super::bounded::Step<()>, StoreError> {
+        use super::bounded::Step;
+        #[cfg(test)]
+        super::test_barrier::check(&self.build.lineage, "checkpoint-stage-finish-gc")?;
+        match &mut self.build.phase {
+            RetainPhase::Collect(gc) => {
+                if let Step::Done(()) = gc.step(limit)? {
+                    self.build.phase = RetainPhase::Done;
+                    Ok(Step::Done(()))
+                } else {
+                    Ok(Step::More)
+                }
+            }
+            RetainPhase::Done => Ok(Step::Done(())),
+            _ => Err(invalid("checkpoint stage was not promoted")),
+        }
+    }
 }
 impl RetainBuild {
     pub(crate) fn scratch(&self) -> &Path {
@@ -446,10 +581,23 @@ impl RetainBuild {
             .as_ref()
             .and_then(|selection| selection.activation_on_error())
     }
+    #[allow(
+        dead_code,
+        reason = "legacy aggregate work statistics remain available alongside phase-specific diagnostics"
+    )]
     pub(crate) fn stats(&self) -> &super::bounded::WorkStats {
         self.selection
             .as_ref()
             .map_or(&self.sorter.stats, |s| s.stats())
+    }
+    pub(crate) fn retention_stats(&self) -> &super::bounded::WorkStats {
+        &self.sorter.stats
+    }
+    pub(crate) fn selection_stats(&self) -> Option<&super::bounded::WorkStats> {
+        self.selection.as_ref().map(|selection| selection.stats())
+    }
+    pub(crate) fn selected_obsolete(&self) -> bool {
+        self.selected_obsolete
     }
     pub(crate) fn step(
         &mut self,
@@ -462,6 +610,7 @@ impl RetainBuild {
                 if reader.obsolete(&self.bytes)? {
                     self.publication = Some(super::shell_selection::Publication::Suppress);
                     self.phase = RetainPhase::Done;
+                    self.selected_obsolete = true;
                 }
                 self.selected_read = None;
             }
@@ -519,8 +668,11 @@ impl RetainBuild {
                     self.sorter.stats.last_step_work += 1;
                     let Some(meta) = read_meta(file)? else {
                         if self.duplicate {
-                            self.phase =
-                                RetainPhase::Collect(GenerationGc::new(self.lineage.clone())?);
+                            self.phase = if self.staged_only {
+                                RetainPhase::Done
+                            } else {
+                                RetainPhase::Collect(GenerationGc::new(self.lineage.clone())?)
+                            };
                         } else if self.checkpoint
                             && !self.opaque
                             && covers(&self.bytes, &self.bytes, self.workspace)
@@ -529,6 +681,26 @@ impl RetainBuild {
                             create_dir(&staged)?;
                             durable_write(&staged.join("checkpoint.delta"), &self.bytes)?;
                             self.staged = Some(staged);
+                            #[cfg(test)]
+                            super::test_barrier::check(
+                                &self.lineage,
+                                "checkpoint-stage-after-allocation",
+                            )?;
+                            self.phase =
+                                RetainPhase::Stage(fs::File::open(self.sorted.as_ref().unwrap())?);
+                        } else if self.staged_only {
+                            // Preserve opaque/unproved history exactly in an
+                            // inactive generation. The live generation is not
+                            // mutated until the caller promotes this stage.
+                            let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
+                            create_dir(&staged)?;
+                            self.staged = Some(staged);
+                            #[cfg(test)]
+                            super::test_barrier::check(
+                                &self.lineage,
+                                "checkpoint-stage-after-allocation",
+                            )?;
+                            self.staged_append = true;
                             self.phase =
                                 RetainPhase::Stage(fs::File::open(self.sorted.as_ref().unwrap())?);
                         } else {
@@ -577,6 +749,20 @@ impl RetainBuild {
                 for _ in 0..limit.record_entries() {
                     self.sorter.stats.last_step_work += 1;
                     let Some(meta) = read_meta(file)? else {
+                        if self.staged_append {
+                            let next = self
+                                .last
+                                .checked_add(1)
+                                .ok_or_else(|| invalid("retained record sequence exhausted"))?;
+                            durable_write(
+                                &self
+                                    .staged
+                                    .as_ref()
+                                    .unwrap()
+                                    .join(format!("{next:016x}.delta")),
+                                &self.bytes,
+                            )?;
+                        }
                         self.phase = RetainPhase::Commit;
                         return Ok(Step::More);
                     };
@@ -587,7 +773,17 @@ impl RetainBuild {
                         .stats
                         .peak_frame_bytes
                         .max(record.bytes.len() + self.bytes.len());
-                    if !covers(&self.bytes, &record.bytes, self.workspace) {
+                    if self.staged_append {
+                        fs::hard_link(
+                            &record.path,
+                            self.staged.as_ref().unwrap().join(
+                                record
+                                    .path
+                                    .file_name()
+                                    .ok_or_else(|| invalid("retained record name"))?,
+                            ),
+                        )?;
+                    } else if !covers(&self.bytes, &record.bytes, self.workspace) {
                         fs::hard_link(
                             &record.path,
                             self.staged
@@ -634,6 +830,9 @@ impl RetainBuild {
                                 publication,
                             )) => self.publication = Some(publication),
                             Step::Done(
+                                super::shell_selection::SelectionOutcome::BatchPublished { .. },
+                            ) => return Err(invalid("single retain returned batch selection")),
+                            Step::Done(
                                 super::shell_selection::SelectionOutcome::UnresolvedTailDependencies,
                             ) => {
                                 return Err(invalid(
@@ -655,11 +854,74 @@ impl RetainBuild {
     }
 }
 impl WorkspaceStore {
+    pub(crate) fn checkpoint_lineage_exists(
+        &self,
+        channel: &[u8; 32],
+        bytes: &[u8],
+    ) -> Result<bool, StoreError> {
+        let (author, actual_channel, checkpoint) = identity(bytes, self.workspace_id)
+            .ok_or_else(|| invalid("invalid retained envelope"))?;
+        if actual_channel != *channel || !checkpoint {
+            return Err(invalid("retained envelope channel or kind mismatch"));
+        }
+        let lineage = self.root.join(RETAINED_DIR).join("v2").join(format!(
+            "{}-{}",
+            hex::encode(author),
+            hex::encode(channel)
+        ));
+        Ok(current(&lineage)?.is_some())
+    }
+
     pub(crate) fn start_retain(
         &self,
         channel: &[u8; 32],
         seq: Option<u64>,
         bytes: Vec<u8>,
+    ) -> Result<RetainBuild, StoreError> {
+        self.start_retain_at(channel, seq, bytes, None)
+    }
+    pub(crate) fn start_retain_in(
+        &self,
+        channel: &[u8; 32],
+        seq: Option<u64>,
+        bytes: Vec<u8>,
+        scratch: PathBuf,
+    ) -> Result<RetainBuild, StoreError> {
+        self.start_retain_at(channel, seq, bytes, Some(scratch))
+    }
+    pub(crate) fn start_staged_checkpoint(
+        &self,
+        channel: &[u8; 32],
+        bytes: Vec<u8>,
+        scratch: PathBuf,
+    ) -> Result<CheckpointStage, StoreError> {
+        let (author, actual_channel, checkpoint) = identity(&bytes, self.workspace_id)
+            .ok_or_else(|| invalid("invalid retained envelope"))?;
+        if actual_channel != *channel || !checkpoint {
+            return Err(invalid("retained envelope channel or kind mismatch"));
+        }
+        let lineage = self.root.join(RETAINED_DIR).join("v2").join(format!(
+            "{}-{}",
+            hex::encode(author),
+            hex::encode(channel)
+        ));
+        if current(&lineage)?.is_none() {
+            return Err(invalid(
+                "checkpoint projection requires an existing lineage",
+            ));
+        }
+        let mut build = self.start_retain_at(channel, None, bytes, Some(scratch))?;
+        build.shell_store = None;
+        build.selected_read = None;
+        build.staged_only = true;
+        Ok(CheckpointStage { build })
+    }
+    fn start_retain_at(
+        &self,
+        channel: &[u8; 32],
+        seq: Option<u64>,
+        bytes: Vec<u8>,
+        scratch: Option<PathBuf>,
     ) -> Result<RetainBuild, StoreError> {
         let (author, actual_channel, checkpoint) = identity(&bytes, self.workspace_id)
             .ok_or_else(|| invalid("invalid retained envelope"))?;
@@ -679,10 +941,12 @@ impl WorkspaceStore {
         };
         let scratch_root = self.root.join("store-work-v1");
         fs::create_dir_all(&scratch_root)?;
-        let scratch = scratch_root.join(format!(
-            "retain-{}",
-            hex::encode(rand::random::<[u8; 16]>())
-        ));
+        let scratch = scratch.unwrap_or_else(|| {
+            scratch_root.join(format!(
+                "retain-{}",
+                hex::encode(rand::random::<[u8; 16]>())
+            ))
+        });
         fs::create_dir(&scratch)?;
         let sorter = super::bounded::Sorter::new(scratch.join("sort"))?;
         let phase = RetainPhase::Scan(fs::read_dir(&active)?);
@@ -702,12 +966,15 @@ impl WorkspaceStore {
             last: 0,
             key,
             staged: None,
+            staged_append: false,
             survivors: 0,
             written: 0,
             shell_store: self.shell_authority().map(|_| self.clone()),
             selected_read: super::shell_selection::SelectedRead::new(self)?,
             selection: None,
             publication: None,
+            selected_obsolete: false,
+            staged_only: false,
         })
     }
     pub(super) fn retain_shared(
@@ -1289,5 +1556,62 @@ pub(super) mod tests {
         assert_eq!(replay.len(), 2);
         assert!(replay.contains(&first));
         assert!(replay.contains(&second));
+    }
+
+    #[test]
+    fn checkpoint_discard_reclaims_only_inactive_flat_generations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lineage = tmp.path().join("lineage");
+        let active_name = "11".repeat(16);
+        let staged_name = "22".repeat(16);
+        let active = lineage.join(&active_name);
+        let staged = lineage.join(&staged_name);
+        fs::create_dir_all(&active).unwrap();
+        fs::create_dir(&staged).unwrap();
+        fs::write(lineage.join("CURRENT"), active_name.as_bytes()).unwrap();
+        fs::write(active.join("checkpoint.delta"), b"active").unwrap();
+        for index in 0..3 {
+            fs::write(staged.join(format!("{index:02}.delta")), b"staged").unwrap();
+        }
+
+        let mut discard = CheckpointDiscard::new(lineage.clone(), staged.clone())
+            .unwrap()
+            .unwrap();
+        let mut quanta = 0;
+        loop {
+            quanta += 1;
+            if matches!(
+                discard
+                    .step(WorkLimit {
+                        entries: 1,
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                Step::Done(())
+            ) {
+                break;
+            }
+        }
+        assert!(quanta > 1, "candidate cleanup must remain bounded");
+        assert!(!staged.exists());
+        assert!(active.join("checkpoint.delta").exists());
+
+        fs::create_dir(&staged).unwrap();
+        fs::write(staged.join("checkpoint.delta"), b"selected").unwrap();
+        fs::write(lineage.join("CURRENT"), staged_name.as_bytes()).unwrap();
+        assert!(
+            CheckpointDiscard::new(lineage.clone(), staged.clone())
+                .unwrap()
+                .is_none()
+        );
+        assert!(staged.join("checkpoint.delta").exists());
+
+        fs::remove_file(lineage.join("CURRENT")).unwrap();
+        fs::create_dir(lineage.join("CURRENT")).unwrap();
+        assert!(CheckpointDiscard::new(lineage, staged.clone()).is_err());
+        assert!(
+            staged.join("checkpoint.delta").exists(),
+            "an unreadable CURRENT must preserve the candidate"
+        );
     }
 }

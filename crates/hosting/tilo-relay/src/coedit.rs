@@ -92,6 +92,42 @@ impl CoeditPayload {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RetentionKind {
+    Checkpoint,
+    Delta,
+}
+
+#[derive(Deserialize)]
+enum RetentionMetadata<'a> {
+    Checkpoint {
+        channel: [u8; 32],
+        #[serde(borrow)]
+        body: &'a [u8],
+    },
+    RetainedDelta {
+        channel: [u8; 32],
+        #[serde(borrow)]
+        body: &'a [u8],
+    },
+}
+
+/// Decode only the host-visible retention route and kind. The opaque body is
+/// consumed without allocating or exposing it to diagnostics.
+pub(crate) fn retention_metadata(bytes: &[u8]) -> Option<([u8; 32], RetentionKind)> {
+    let metadata: RetentionMetadata<'_> = postcard::from_bytes(bytes).ok()?;
+    match metadata {
+        RetentionMetadata::Checkpoint { channel, body } => {
+            let _ = body;
+            Some((channel, RetentionKind::Checkpoint))
+        }
+        RetentionMetadata::RetainedDelta { channel, body } => {
+            let _ = body;
+            Some((channel, RetentionKind::Delta))
+        }
+    }
+}
+
 /// Presence body wrapper that carries author attribution.
 ///
 /// [`Envelope::Presence`] has no author field — the host forwards the
@@ -458,6 +494,34 @@ mod tests {
                 Some(payload)
             );
         }
+    }
+
+    #[test]
+    fn retention_metadata_reports_only_kind_and_channel() {
+        for (payload, expected) in [
+            (
+                CoeditPayload::Checkpoint {
+                    channel: [3; 32],
+                    body: vec![8; 1024],
+                },
+                ([3; 32], RetentionKind::Checkpoint),
+            ),
+            (
+                CoeditPayload::RetainedDelta {
+                    channel: [4; 32],
+                    body: vec![7; 1024],
+                },
+                ([4; 32], RetentionKind::Delta),
+            ),
+        ] {
+            let encoded = payload.encode().unwrap();
+            assert_eq!(retention_metadata(&encoded), Some(expected));
+            let mut trailing = encoded;
+            trailing.push(0);
+            assert_eq!(retention_metadata(&trailing), Some(expected));
+            assert!(CoeditPayload::decode(&trailing).is_some());
+        }
+        assert_eq!(retention_metadata(&[]), None);
     }
 
     #[test]

@@ -26,6 +26,36 @@ pub(crate) use selected::SelectedRead;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+static SELECTION_CONSTRUCTIONS: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    >,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn track_selection_constructions(
+    root: &Path,
+) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    let observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    SELECTION_CONSTRUCTIONS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .insert(root.to_path_buf(), observed.clone());
+    observed
+}
+
+#[cfg(test)]
+pub(crate) fn selection_constructions(root: &Path) -> usize {
+    SELECTION_CONSTRUCTIONS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .remove(root)
+        .map_or(0, |count| count.load(std::sync::atomic::Ordering::SeqCst))
+}
+
 pub(crate) const DIRECTORY: &str = "shell-selected-v1";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Publication {
@@ -36,7 +66,23 @@ pub(crate) enum Publication {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SelectionOutcome {
     Published(Publication),
+    BatchPublished {
+        publication: Publication,
+        dispositions: Vec<IncomingDisposition>,
+    },
     UnresolvedTailDependencies,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IncomingDisposition {
+    Covered,
+    Staged,
+    SelectedLive,
+    Original,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BatchSelectionOutcome {
+    pub publication: Publication,
+    pub dispositions: Vec<IncomingDisposition>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainOutcome {
@@ -174,6 +220,7 @@ pub(crate) struct Selection {
     phase: Phase,
     outer: Option<fs::ReadDir>,
     child: Option<fs::ReadDir>,
+    active_lineage: Option<std::ffi::OsString>,
     old_scan: Option<File>,
     sorter: Sorter,
     inventory: Option<PathBuf>,
@@ -200,7 +247,10 @@ pub(crate) struct Selection {
     gc_output: File,
     changed: bool,
     switch_attempted: bool,
-    incoming: Option<[u8; 32]>,
+    incoming: Vec<[u8; 32]>,
+    incoming_dispositions: Vec<Option<IncomingDisposition>>,
+    lineage_overrides: BTreeMap<std::ffi::OsString, PathBuf>,
+    batch: bool,
     incoming_staged: bool,
 }
 impl Selection {
@@ -209,6 +259,53 @@ impl Selection {
         scratch: PathBuf,
         incoming: Option<[u8; 32]>,
     ) -> Result<Self, StoreError> {
+        Self::new_inner(
+            store,
+            scratch,
+            incoming.into_iter().collect(),
+            BTreeMap::new(),
+            false,
+        )
+    }
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "tests exercise cumulative checkpoint selection without projected lineage overrides"
+        )
+    )]
+    pub(crate) fn new_batch(
+        store: &WorkspaceStore,
+        scratch: PathBuf,
+        incoming: Vec<[u8; 32]>,
+    ) -> Result<Self, StoreError> {
+        Self::new_inner(store, scratch, incoming, BTreeMap::new(), true)
+    }
+    pub(crate) fn new_projected(
+        store: &WorkspaceStore,
+        scratch: PathBuf,
+        incoming: Vec<[u8; 32]>,
+        lineage_overrides: BTreeMap<std::ffi::OsString, PathBuf>,
+    ) -> Result<Self, StoreError> {
+        Self::new_inner(store, scratch, incoming, lineage_overrides, true)
+    }
+    fn new_inner(
+        store: &WorkspaceStore,
+        scratch: PathBuf,
+        incoming: Vec<[u8; 32]>,
+        lineage_overrides: BTreeMap<std::ffi::OsString, PathBuf>,
+        batch: bool,
+    ) -> Result<Self, StoreError> {
+        #[cfg(test)]
+        if let Some(count) = SELECTION_CONSTRUCTIONS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .get(store.root())
+        {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let incoming_dispositions = vec![None; incoming.len()];
         fs::create_dir_all(&scratch)?;
         let old_read =
             SelectedRead::new(store)?.ok_or_else(|| invalid("unbound shell selector"))?;
@@ -228,6 +325,7 @@ impl Selection {
             phase: Phase::Old,
             outer: None,
             child: None,
+            active_lineage: None,
             old_scan,
             sorter: Sorter::new(scratch.join("shell-sort"))?,
             inventory: None,
@@ -255,6 +353,9 @@ impl Selection {
             changed: false,
             switch_attempted: false,
             incoming,
+            incoming_dispositions,
+            lineage_overrides,
+            batch,
             incoming_staged: false,
             scratch,
         })
@@ -265,8 +366,52 @@ impl Selection {
     pub(crate) fn activation_on_error(&self) -> Option<PathBuf> {
         (self.changed && self.switch_attempted).then(|| self.staged.clone())
     }
+    pub(crate) fn cleanup_paths(&self) -> (PathBuf, PathBuf) {
+        (self.store.root.join(DIRECTORY), self.staged.clone())
+    }
     pub(crate) fn stats(&self) -> &WorkStats {
         &self.sorter.stats
+    }
+    fn batch_outcome(&self) -> BatchSelectionOutcome {
+        BatchSelectionOutcome {
+            publication: if self.changed {
+                Publication::Activate(self.staged.clone())
+            } else if self.incoming_staged
+                || (self.batch
+                    && self.incoming_dispositions.iter().all(|value| {
+                        value.is_some_and(|value| value != IncomingDisposition::Original)
+                    }))
+            {
+                Publication::Suppress
+            } else {
+                Publication::Original
+            },
+            dispositions: self
+                .incoming_dispositions
+                .iter()
+                .map(|value| value.unwrap_or(IncomingDisposition::Original))
+                .collect(),
+        }
+    }
+    /// Finish the projected manifests without switching selected CURRENT.
+    /// The caller must promote every projected lineage before resuming `step`.
+    pub(crate) fn step_projection(
+        &mut self,
+        limit: WorkLimit,
+    ) -> Result<Step<BatchSelectionOutcome>, StoreError> {
+        if matches!(self.phase, Phase::Commit) {
+            return Ok(Step::Done(self.batch_outcome()));
+        }
+        match self.step(limit)? {
+            Step::More => Ok(Step::More),
+            Step::Done(SelectionOutcome::UnresolvedTailDependencies) => {
+                Ok(Step::Done(BatchSelectionOutcome {
+                    publication: Publication::Original,
+                    dispositions: vec![IncomingDisposition::Original; self.incoming.len()],
+                }))
+            }
+            Step::Done(_) => Err(invalid("projected selection committed before promotion")),
+        }
     }
     fn restart(&mut self, phase: Phase) -> Result<(), StoreError> {
         self.input = Some(File::open(self.inventory.as_ref().unwrap())?);
@@ -294,6 +439,7 @@ impl Selection {
             let value = self
                 .read(meta)?
                 .ok_or_else(|| invalid("invalid live prerequisite"))?;
+            self.note_incoming(&value, IncomingDisposition::SelectedLive);
             self.old.room.as_ref().is_none_or(|room| {
                 room.covers_frame(value.source, value.channel, &value.body)
                     != CoverageDecision::Covered
@@ -302,6 +448,7 @@ impl Selection {
             let value = self
                 .read(meta)?
                 .ok_or_else(|| invalid("invalid live application"))?;
+            self.note_incoming(&value, IncomingDisposition::SelectedLive);
             let key = value
                 .route()
                 .ok_or_else(|| invalid("invalid live application route"))?
@@ -316,16 +463,51 @@ impl Selection {
         }
         Ok(())
     }
+    fn note_incoming(&mut self, value: &Frame, disposition: IncomingDisposition) {
+        let identity = input_identity(
+            value.source,
+            value.channel,
+            value.kind == RoomInput::Checkpoint,
+            &value.body,
+        );
+        for (index, incoming) in self.incoming.iter().enumerate() {
+            if incoming != &identity {
+                continue;
+            }
+            let slot = &mut self.incoming_dispositions[index];
+            let replace = match (*slot, disposition) {
+                (None, _) => true,
+                (Some(IncomingDisposition::Staged), IncomingDisposition::Covered)
+                | (Some(IncomingDisposition::Staged), IncomingDisposition::SelectedLive)
+                | (Some(IncomingDisposition::Covered), IncomingDisposition::SelectedLive) => true,
+                _ => false,
+            };
+            if replace {
+                *slot = Some(disposition);
+            }
+        }
+    }
     fn note_staged(&mut self, value: &Frame) {
-        if self.incoming
-            == Some(input_identity(
-                value.source,
-                value.channel,
-                value.kind == RoomInput::Checkpoint,
-                &value.body,
-            ))
-        {
+        self.note_incoming(value, IncomingDisposition::Staged);
+        if self.incoming.iter().any(|incoming| {
+            incoming
+                == &input_identity(
+                    value.source,
+                    value.channel,
+                    value.kind == RoomInput::Checkpoint,
+                    &value.body,
+                )
+        }) {
             self.incoming_staged = true
+        }
+    }
+    fn stage_or_preserve_extra(&mut self, meta: &Meta, value: &Frame) -> Result<(), StoreError> {
+        if self.fallback {
+            self.note_incoming(value, IncomingDisposition::Original);
+            self.extra(meta)
+        } else {
+            self.note_staged(value);
+            Ok(())
         }
     }
     fn extra(&mut self, meta: &Meta) -> Result<(), StoreError> {
@@ -344,7 +526,8 @@ impl Selection {
         ];
         write_meta(&mut self.extras, &extra)
     }
-    fn covered(&mut self, meta: &Meta) -> Result<(), StoreError> {
+    fn covered(&mut self, meta: &Meta, value: &Frame) -> Result<(), StoreError> {
+        self.note_incoming(value, IncomingDisposition::Covered);
         // Only v2 immutable originals are eligible. Selected-generation files
         // are collected separately after replacement; legacy files stay intact.
         if meta.source.starts_with("retained/v2") {
@@ -417,14 +600,11 @@ impl Selection {
                             && !name.to_string_lossy().starts_with('.')
                         {
                             let path = entry.path();
-                            let lineage = path
-                                .parent()
-                                .unwrap()
-                                .parent()
-                                .unwrap()
-                                .file_name()
-                                .unwrap()
-                                .to_os_string();
+                            let lineage = self
+                                .active_lineage
+                                .as_ref()
+                                .expect("active retained lineage")
+                                .clone();
                             self.sorter.push(Meta {
                                 key: vec![
                                     "1".into(),
@@ -443,13 +623,20 @@ impl Selection {
                             })?;
                         }
                     } else {
-                        self.child = None
+                        self.child = None;
+                        self.active_lineage = None;
                     }
                 } else if let Some(entry) = self.outer.as_mut().unwrap().next() {
                     let entry = entry?;
                     if entry.file_type()?.is_dir() {
-                        if let Some(active) = retained::current(&entry.path())? {
+                        let active = self
+                            .lineage_overrides
+                            .get(&entry.file_name())
+                            .cloned()
+                            .or(retained::current(&entry.path())?);
+                        if let Some(active) = active {
                             self.child = Some(fs::read_dir(active)?);
+                            self.active_lineage = Some(entry.file_name());
                         }
                     }
                 } else {
@@ -515,6 +702,8 @@ impl Selection {
                     if !self.basis.complete() {
                         self.basis = self.old.clone();
                         self.fallback = true;
+                        self.incoming_dispositions.fill(None);
+                        self.incoming_staged = false;
                     }
                     self.restart(Phase::Check)?;
                 }
@@ -524,6 +713,8 @@ impl Selection {
                     if self.blocked && !self.fallback {
                         self.basis = self.old.clone();
                         self.fallback = true;
+                        self.incoming_dispositions.fill(None);
+                        self.incoming_staged = false;
                         self.blocked = false;
                         self.extras.set_len(0)?;
                         self.extras.rewind()?;
@@ -555,7 +746,7 @@ impl Selection {
                         r.covers_frame(value.source, value.channel, &value.body)
                             == CoverageDecision::Covered
                     }) {
-                        self.covered(&meta)?
+                        self.covered(&meta, &value)?
                     } else if verify_room(
                         &self.authority,
                         value.source,
@@ -566,7 +757,7 @@ impl Selection {
                     )
                     .is_ok()
                     {
-                        self.note_staged(&value)
+                        self.stage_or_preserve_extra(&meta, &value)?
                     } else {
                         self.blocked = true;
                         self.extra(&meta)?
@@ -582,7 +773,7 @@ impl Selection {
                         verify_snapshot(room, value.source, value.channel, &value.body)
                     });
                 if matches!(snapshot_result, Some(Ok(_))) {
-                    self.covered(&meta)?;
+                    self.covered(&meta, &value)?;
                     return Ok(Step::More);
                 }
                 if matches!(snapshot_result, Some(Err(ProofError::Unpaired))) {
@@ -592,7 +783,7 @@ impl Selection {
                         .get(&key)
                         .is_none_or(|r| seq > r.coverage.sequence)
                     {
-                        self.note_staged(&value);
+                        self.stage_or_preserve_extra(&meta, &value)?;
                         return Ok(Step::More);
                     }
                     self.historical = Some((
@@ -612,7 +803,7 @@ impl Selection {
                             verify_snapshot(room, value.source, value.channel, &value.body),
                             Err(ProofError::Unknown)
                         ) {
-                            self.note_staged(&value);
+                            self.stage_or_preserve_extra(&meta, &value)?;
                             return Ok(Step::More);
                         }
                     }
@@ -620,7 +811,7 @@ impl Selection {
                 if let Some(snapshot) = self.candidate_snapshot(&key)? {
                     let decision = snapshot.classify_tail(value.source, value.channel, &value.body);
                     if decision.coverage == CoverageDecision::Covered {
-                        self.covered(&meta)?;
+                        self.covered(&meta, &value)?;
                         return Ok(Step::More);
                     }
                     // Floor-safe tails are validated cumulatively only after the
@@ -676,7 +867,7 @@ impl Selection {
                         }
                     }
                     if covered {
-                        self.covered(&meta)?;
+                        self.covered(&meta, &target)?;
                         self.phase = Phase::Check
                     } else {
                         self.historical = Some((meta, target, file, prior));
@@ -780,6 +971,8 @@ impl Selection {
                     }
                     self.basis = self.old.clone();
                     self.fallback = true;
+                    self.incoming_dispositions.fill(None);
+                    self.incoming_staged = false;
                     self.blocked = false;
                     self.extras.set_len(0)?;
                     self.extras.rewind()?;
@@ -881,13 +1074,21 @@ impl Selection {
                 }
             }
             Phase::Done => {
-                return Ok(Step::Done(SelectionOutcome::Published(if self.changed {
+                let publication = if self.changed {
                     Publication::Activate(self.staged.clone())
                 } else if self.incoming_staged {
                     Publication::Suppress
                 } else {
                     Publication::Original
-                })));
+                };
+                if self.batch {
+                    let outcome = self.batch_outcome();
+                    return Ok(Step::Done(SelectionOutcome::BatchPublished {
+                        publication: outcome.publication,
+                        dispositions: outcome.dispositions,
+                    }));
+                }
+                return Ok(Step::Done(SelectionOutcome::Published(publication)));
             }
         }
         Ok(Step::More)

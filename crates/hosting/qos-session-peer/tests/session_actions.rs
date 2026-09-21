@@ -310,6 +310,452 @@ async fn failed_private_attachment_withdraws_actions() {
     assert!(exit.success());
 }
 
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotion() {
+    use std::io::Write;
+    use tilo_relay::peer::CheckpointPrefixPromotionFaultState;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, persist};
+
+    fn revocations(peer: &qos_peer_state::StatePeer) -> RevocationList {
+        let mut list = RevocationList::new();
+        for entry in peer.revocations() {
+            list.insert(entry).unwrap();
+        }
+        list
+    }
+
+    fn exact(actual: &qos_peer_state::StatePeer, expected: &qos_peer_state::StatePeer) -> bool {
+        actual.room() == expected.room()
+            && actual.authority() == expected.authority()
+            && actual.certificates() == expected.certificates()
+            && actual.revocations() == expected.revocations()
+            && actual.rows() == expected.rows()
+            && actual.admitted_room().map(|room| room.clone().get_heads())
+                == expected
+                    .admitted_room()
+                    .map(|room| room.clone().get_heads())
+            && expected.rows().iter().all(|row| {
+                actual
+                    .durable_coverage(&row.app_id, &row.record_id)
+                    .unwrap()
+                    == expected
+                        .durable_coverage(&row.app_id, &row.record_id)
+                        .unwrap()
+            })
+    }
+
+    fn receipt_covers(
+        next: &qos_peer_state::durability::DurableReceipt,
+        prior: &qos_peer_state::durability::DurableReceipt,
+    ) -> bool {
+        next.generation >= prior.generation
+            && next.coverage.room == prior.coverage.room
+            && next.coverage.app == prior.coverage.app
+            && next.coverage.record == prior.coverage.record
+            && next.coverage.author == prior.coverage.author
+            && next.coverage.sequence >= prior.coverage.sequence
+            && prior.coverage.watermarks.iter().all(|(author, seq)| {
+                next.coverage.watermarks.get(author).copied().unwrap_or(0) >= *seq
+            })
+            && (next.generation != prior.generation || next == prior)
+    }
+
+    fn covers_prior(actual: &qos_peer_state::StatePeer, prior: &qos_peer_state::StatePeer) -> bool {
+        use ui::automerge::ReadDoc;
+
+        let room_covered = prior.admitted_room().is_some_and(|prior_room| {
+            actual.admitted_room().is_some_and(|actual_room| {
+                prior_room
+                    .clone()
+                    .get_heads()
+                    .iter()
+                    .all(|head| actual_room.get_change_by_hash(head).is_some())
+            })
+        });
+        actual.room() == prior.room()
+            && actual.authority() == prior.authority()
+            && actual.certificates() == prior.certificates()
+            && actual.revocations() == prior.revocations()
+            && room_covered
+            && prior.rows().iter().all(|row| {
+                let Some(actual_bytes) = actual.document(&row.app_id, &row.record_id) else {
+                    return false;
+                };
+                let Ok(actual_document) = ui::automerge::AutoCommit::load(&actual_bytes) else {
+                    return false;
+                };
+                let heads_covered = prior
+                    .document_heads(&row.app_id, &row.record_id)
+                    .is_some_and(|heads| {
+                        heads
+                            .iter()
+                            .all(|head| actual_document.get_change_by_hash(head).is_some())
+                    });
+                let receipts_covered = prior
+                    .durable_coverage(&row.app_id, &row.record_id)
+                    .ok()
+                    .flatten()
+                    .zip(
+                        actual
+                            .durable_coverage(&row.app_id, &row.record_id)
+                            .ok()
+                            .flatten(),
+                    )
+                    .is_some_and(|(prior, actual)| receipt_covers(&actual, &prior));
+                heads_covered
+                    && receipts_covered
+                    && actual
+                        .durable_covers_current(&row.app_id, &row.record_id)
+                        .unwrap_or(false)
+            })
+    }
+
+    fn coverage_summary(
+        actual: &qos_peer_state::StatePeer,
+        prior: &qos_peer_state::StatePeer,
+    ) -> String {
+        let actual_rows = actual
+            .rows()
+            .into_iter()
+            .map(|row| (row.app_id, row.record_id))
+            .collect::<std::collections::BTreeSet<_>>();
+        let prior_rows = prior
+            .rows()
+            .into_iter()
+            .map(|row| (row.app_id, row.record_id))
+            .collect::<std::collections::BTreeSet<_>>();
+        format!(
+            "room_heads_equal={} certificates_equal={} revocations_equal={} missing_rows={:?} extra_rows={:?} covers_prior={}",
+            actual.admitted_room().map(|room| room.clone().get_heads())
+                == prior.admitted_room().map(|room| room.clone().get_heads()),
+            actual.certificates() == prior.certificates(),
+            actual.revocations() == prior.revocations(),
+            prior_rows.difference(&actual_rows).collect::<Vec<_>>(),
+            actual_rows.difference(&prior_rows).collect::<Vec<_>>(),
+            covers_prior(actual, prior),
+        )
+    }
+
+    async fn binding(
+        metadata: &serde_json::Value,
+        cert: DeviceCert,
+        key: SigningKey,
+        host: [u8; 32],
+    ) -> ObserverBinding {
+        let packet: iroh_base::RelayUrl =
+            metadata["packet_relay"].as_str().unwrap().parse().unwrap();
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from(packet)))
+            .bind()
+            .await
+            .unwrap();
+        endpoint.online().await;
+        ObserverBinding {
+            endpoint,
+            relay: serde_json::from_value(metadata["relay_address"].clone()).unwrap(),
+            root: cert.user_public_key,
+            host,
+            cert,
+            key,
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("owner");
+    let ready = temp.path().join("ready.json");
+    let mut owner = SessionOwner::initialize(&state).unwrap();
+    let state = state.canonicalize().unwrap();
+    let identity = persist::IdentityPaths::under(state.join("identity"));
+    let native_key = persist::read_device_key(&identity.device_privkey).unwrap();
+    let root_key = persist::read_signing_key(&identity.user_privkey).unwrap();
+    let observer_key = SigningKey::from_bytes(&[73; 32]);
+    let mut observer_cert = DeviceCert {
+        user_public_key: root_key.verifying_key().to_bytes(),
+        device_public_key: observer_key.verifying_key().to_bytes(),
+        device_label: "partial checkpoint recovery observer".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: tilo_relay::clock::now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut observer_cert, &root_key).unwrap();
+    let mut candidate = owner.peer().clone();
+    candidate
+        .admit_certificate(
+            observer_cert.clone(),
+            &native_key,
+            web_time::SystemTime::now(),
+        )
+        .unwrap();
+    owner
+        .commit_admission(candidate, owner.directory().to_vec())
+        .unwrap();
+    let workspace = owner.workspace_id();
+    let room: uuid::Uuid = owner.peer().room().parse().unwrap();
+    let host_device = owner.host_certificate().device_public_key;
+    let initial = owner.peer().clone();
+
+    // Seed the signed retained baseline independently through the public store
+    // boundary. The real qos-session-peer subprocess below exercises automatic
+    // recovery after the injected partial promotion.
+    let mut relay =
+        tilo_relay::store::WorkspaceStore::open(&state.join("relay"), workspace, true).unwrap();
+    relay
+        .bind_shell_authority(
+            qos_peer_state::retained_proof::RetentionAuthority::new(
+                initial.room(),
+                initial.authority().clone(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let mut checkpoints = 0;
+    for (index, (bytes, kind)) in owner
+        .outgoing()
+        .iter()
+        .zip(owner.outgoing_kinds())
+        .enumerate()
+    {
+        let message: qos_peer_state::NeighbourMsg = postcard::from_bytes(bytes).unwrap();
+        let (channel, actual) = qos_peer_state::transport::retention(
+            &message,
+            *kind == qos_peer_state::transport::Retention::Checkpoint,
+        )
+        .unwrap();
+        assert_eq!(&actual, kind);
+        let payload = match kind {
+            qos_peer_state::transport::Retention::Checkpoint => {
+                checkpoints += 1;
+                tilo_relay::coedit::CoeditPayload::Checkpoint {
+                    channel,
+                    body: bytes.clone(),
+                }
+            }
+            qos_peer_state::transport::Retention::Delta => {
+                tilo_relay::coedit::CoeditPayload::RetainedDelta {
+                    channel,
+                    body: bytes.clone(),
+                }
+            }
+        };
+        let raw = tilo_relay::transport::encode(&tilo_relay::transport::Envelope::Delta {
+            workspace_id: workspace,
+            author_device_public_key: initial.authority().device_public_key,
+            authored_at_ns: tilo_relay::clock::now_ns(),
+            signature: [0; 64],
+            delta: payload.encode().unwrap(),
+        })
+        .unwrap();
+        match kind {
+            qos_peer_state::transport::Retention::Checkpoint => {
+                relay.retain_checkpoint(&channel, &raw).unwrap()
+            }
+            qos_peer_state::transport::Retention::Delta => relay
+                .retain_delta(&channel, u64::try_from(index + 1).unwrap(), &raw)
+                .unwrap(),
+        }
+    }
+    assert!(checkpoints > 1, "seed must establish more than one lineage");
+    let selected_root = relay.root().join("shell-selected-v1");
+    let selected_name =
+        String::from_utf8(fs::read(selected_root.join("CURRENT")).unwrap()).unwrap();
+    let mut retained = fs::read_dir(selected_root.join(selected_name))
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| {
+            let name = entry.file_name();
+            entry.file_type().unwrap().is_file()
+                && name.to_string_lossy().ends_with(".delta")
+                && !name.to_string_lossy().starts_with("gc-")
+        })
+        .into_iter()
+        .map(|entry| {
+            let raw = fs::read(entry.path()).unwrap();
+            let tilo_relay::transport::Envelope::Delta {
+                author_device_public_key,
+                delta,
+                ..
+            } = tilo_relay::transport::decode(&raw[4..]).unwrap()
+            else {
+                panic!("retained seed contained a non-delta frame")
+            };
+            let body = match tilo_relay::coedit::CoeditPayload::decode(&delta).unwrap() {
+                tilo_relay::coedit::CoeditPayload::Checkpoint { body, .. }
+                | tilo_relay::coedit::CoeditPayload::RetainedDelta { body, .. } => body,
+            };
+            (author_device_public_key, body)
+        })
+        .collect::<Vec<_>>();
+    let mut seed_remote = qos_peer_state::StatePeer::new(
+        initial.room(),
+        initial.authority().clone(),
+        initial.certificates(),
+        revocations(&initial),
+        web_time::SystemTime::now(),
+    )
+    .unwrap();
+    for expected_bytes in owner.outgoing() {
+        let index = retained
+            .iter()
+            .position(|(_, body)| body == expected_bytes)
+            .expect("retained store omitted a committed baseline message");
+        let (author, body) = retained.swap_remove(index);
+        seed_remote
+            .receive_from(
+                qos_peer_state::TransportOrigin::RetainedRelayDelta(author),
+                postcard::from_bytes(&body).unwrap(),
+                web_time::SystemTime::now(),
+            )
+            .unwrap();
+    }
+    assert!(retained.is_empty(), "retained seed added an unknown frame");
+    assert!(exact(&seed_remote, &initial));
+    drop(relay);
+    drop(owner);
+
+    // A new native checkpoint basis reuses those channels. The marker is
+    // private to this exact relay workspace and is consumed only after the
+    // first lineage CURRENT was durably promoted.
+    let mut owner = SessionOwner::open(&state).unwrap();
+    owner.refresh_checkpoint().unwrap();
+    let expected = owner.peer().clone();
+    assert!(
+        !exact(&expected, &initial),
+        "refresh must advance the durable checkpoint basis"
+    );
+    assert_ne!(
+        expected
+            .admitted_room()
+            .map(|room| room.clone().get_heads()),
+        initial.admitted_room().map(|room| room.clone().get_heads()),
+        "refresh must advance the governed room checkpoint"
+    );
+    let changed_receipts = expected
+        .rows()
+        .iter()
+        .filter(|row| {
+            let before = initial
+                .durable_coverage(&row.app_id, &row.record_id)
+                .unwrap();
+            let after = expected
+                .durable_coverage(&row.app_id, &row.record_id)
+                .unwrap();
+            before.is_some() && after.is_some() && before != after
+        })
+        .count();
+    assert!(
+        changed_receipts >= 2,
+        "refresh must advance at least two existing durable receipts, advanced {changed_receipts}"
+    );
+    let workspace_root = state.join("relay/workspaces").join(workspace.to_string());
+    tilo_relay::peer::arm_checkpoint_prefix_post_first_promotion(&workspace_root).unwrap();
+    assert_eq!(
+        tilo_relay::peer::checkpoint_prefix_post_first_promotion_state(&workspace_root),
+        CheckpointPrefixPromotionFaultState::Armed
+    );
+    drop(owner);
+
+    let (mut host, metadata, _) = start(&state, &ready).await;
+    let origin = metadata["fixture_origin"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status = request(origin, "/status", None, None).await.1;
+        let fired = tilo_relay::peer::checkpoint_prefix_post_first_promotion_state(&workspace_root)
+            == CheckpointPrefixPromotionFaultState::Fired;
+        if fired
+            && status["native_subscription_generation"]
+                .as_u64()
+                .unwrap_or(0)
+                >= 2
+            && status["native_peer"] == "subscribed"
+            && status["actions"] == "ready"
+            && status["error"].is_null()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native source did not fence and automatically reconnect after the partial promotion: {status}; fault={:?}",
+            tilo_relay::peer::checkpoint_prefix_post_first_promotion_state(&workspace_root)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // This observer never asks the owner to resend. Its replay can converge
+    // only if the replacement native Ready callback republished the durable
+    // basis containing the unpromoted suffix.
+    let recovered_binding = binding(&metadata, observer_cert, observer_key, host_device).await;
+    let mut recovered = qos_peer_state::StatePeer::new(
+        expected.room(),
+        expected.authority().clone(),
+        expected.certificates(),
+        revocations(&expected),
+        web_time::SystemTime::now(),
+    )
+    .unwrap();
+    let recovery_deadline = Instant::now() + Duration::from_secs(30);
+    let (client, replayed) =
+        connect_observer(&recovered_binding, room, &mut recovered, recovery_deadline)
+            .await
+            .unwrap();
+    while !covers_prior(&recovered, &expected) {
+        let event = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(recovery_deadline),
+            client.recv(),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "automatic native suffix did not arrive within the original deadline: {}",
+                coverage_summary(&recovered, &expected)
+            )
+        })
+        .expect("observer disconnected before the automatic native suffix arrived");
+        apply_state(&mut recovered, event);
+    }
+    assert!(
+        replayed > 1,
+        "recovery replay omitted the checkpoint suffix"
+    );
+    if !exact(&recovered, &expected) {
+        eprintln!(
+            "recovered basis strictly advanced beyond the prelaunch oracle: {}",
+            coverage_summary(&recovered, &expected)
+        );
+    }
+    assert!(
+        covers_prior(&recovered, &expected),
+        "automatic native reconnect did not cover every refreshed row, room head and durable receipt: {}",
+        coverage_summary(&recovered, &expected)
+    );
+    writeln!(host.0.stdin.as_mut().unwrap(), "shutdown").unwrap();
+    while let Some(event) = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(recovery_deadline),
+        client.recv(),
+    )
+    .await
+    .expect("observer did not quiesce after orderly native shutdown")
+    {
+        apply_state(&mut recovered, event);
+    }
+    drop(client);
+    let exit = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(recovery_deadline),
+        tokio::task::spawn_blocking(move || host.0.wait().unwrap()),
+    )
+    .await
+    .expect("native did not exit within the original recovery deadline")
+    .unwrap();
+    assert!(exit.success());
+    let reopened = SessionOwner::open(&state).unwrap();
+    assert!(
+        exact(&recovered, reopened.peer()),
+        "observer did not converge the final durable owner state after orderly shutdown: {}",
+        coverage_summary(&recovered, reopened.peer())
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn normal_host_serves_real_checked_application_catalogue() {
     checked_application_catalogue(false).await;

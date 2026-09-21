@@ -32,6 +32,764 @@ fn setup() -> (tempfile::TempDir, WorkspaceStore) {
     }
     (tmp, store)
 }
+
+#[test]
+fn serial_checkpoint_refresh_reference_repeats_global_selection_per_frame() {
+    let tmp = tempfile::tempdir().unwrap();
+    let meta = producer_metadata();
+    let authority = RetentionAuthority::new(
+        meta["room"].as_str().unwrap(),
+        serde_json::from_value(meta["authority"].clone()).unwrap(),
+    )
+    .unwrap();
+    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let mut store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
+    store.bind_shell_authority(authority).unwrap();
+    for row in meta["baseline"].as_array().unwrap() {
+        retained(&store, &producer_frame(&meta, row, 1));
+    }
+    let scratch = store.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let mut initial = Selection::new(&store, scratch, None).unwrap();
+    while matches!(initial.step(WorkLimit::default()).unwrap(), Step::More) {}
+    let mut global_selections = 0;
+    let mut global_reads = 0;
+    for row in meta["checkpoint2"].as_array().unwrap() {
+        let bytes = producer_frame(&meta, row, 2);
+        let (_, payload) = retained::payload(&bytes, store.workspace_id()).unwrap();
+        let CoeditPayload::Checkpoint { channel, .. } = payload else {
+            panic!("coherent refresh fixture contains a retained delta")
+        };
+        let mut build = store.start_retain(&channel, None, bytes).unwrap();
+        while matches!(build.step(WorkLimit::default()).unwrap(), Step::More) {}
+        if let Some(stats) = build.selection_stats() {
+            global_selections += 1;
+            global_reads += stats.preparation_reads;
+        }
+    }
+
+    assert_eq!(global_selections, 4);
+    assert_eq!(global_reads, 100);
+}
+
+#[test]
+fn projected_checkpoint_prefix_classifies_every_input_in_one_selection() {
+    let (_tmp, store) = setup();
+    let meta = producer_metadata();
+    let incoming = meta["checkpoint2"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| incoming_identity(&producer_frame(&meta, row, 2), store.workspace_id()).unwrap())
+        .collect::<Vec<_>>();
+    let scratch = store.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let mut selector = Selection::new_batch(&store, scratch, incoming).unwrap();
+    let outcome = loop {
+        if let Step::Done(outcome) = selector.step(WorkLimit::default()).unwrap() {
+            break outcome;
+        }
+    };
+    let SelectionOutcome::BatchPublished {
+        publication,
+        dispositions,
+    } = outcome
+    else {
+        panic!("coherent checkpoint projection did not finish")
+    };
+    assert!(matches!(publication, Publication::Activate(_)));
+    assert_eq!(dispositions.len(), 4);
+    assert!(
+        dispositions
+            .iter()
+            .all(|value| *value != IncomingDisposition::Original),
+        "a coherent checkpoint projection left an input unrepresented: {dispositions:?}"
+    );
+    assert!(selector.stats().preparation_reads < 40);
+}
+
+#[test]
+fn unchanged_all_covered_projected_prefix_suppresses_and_switches_current() {
+    let (_tmp, store) = setup();
+    let meta = producer_metadata();
+    let selected_scratch = store.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let mut selected = Selection::new(&store, selected_scratch, None).unwrap();
+    while matches!(selected.step(WorkLimit::default()).unwrap(), Step::More) {}
+    let before = retained::current(&store.root.join(DIRECTORY))
+        .unwrap()
+        .unwrap();
+
+    // These older signed shell checkpoints are opaque to raw-Automerge
+    // retention. Production CheckpointStage therefore preserves the active
+    // checkpoint2 generation and appends each exact baseline input. The
+    // unchanged selected checkpoint2 basis proves every appended input Covered.
+    let root = store.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    fs::create_dir(&root).unwrap();
+    let mut stages = Vec::new();
+    let mut incoming = Vec::new();
+    for (index, row) in meta["baseline"].as_array().unwrap().iter().enumerate() {
+        let bytes = producer_frame(&meta, row, 3);
+        let (_, CoeditPayload::Checkpoint { channel, .. }) =
+            retained::payload(&bytes, store.workspace_id()).unwrap()
+        else {
+            panic!()
+        };
+        incoming.push(incoming_identity(&bytes, store.workspace_id()).unwrap());
+        let mut stage = store
+            .start_staged_checkpoint(&channel, bytes, root.join(format!("input-{index:02}")))
+            .unwrap();
+        loop {
+            match stage.step(WorkLimit::default()).unwrap() {
+                Step::More => {}
+                Step::Done(eligible) => {
+                    assert!(eligible, "opaque exact history must remain projectable");
+                    break;
+                }
+            }
+        }
+        stages.push(stage);
+    }
+    let overrides = stages
+        .iter()
+        .map(|stage| {
+            (
+                stage.lineage_name().to_os_string(),
+                stage.projected_generation().to_path_buf(),
+            )
+        })
+        .collect();
+    let mut selector =
+        Selection::new_projected(&store, root.join("selection"), incoming, overrides).unwrap();
+    let projected = loop {
+        if let Step::Done(outcome) = selector.step_projection(WorkLimit::default()).unwrap() {
+            break outcome;
+        }
+    };
+    assert_eq!(projected.publication, Publication::Suppress);
+    assert!(
+        projected
+            .dispositions
+            .iter()
+            .all(|value| *value == IncomingDisposition::Covered),
+        "unchanged projected inputs were not all proven Covered: {:?}",
+        projected.dispositions
+    );
+    assert_eq!(
+        retained::current(&store.root.join(DIRECTORY))
+            .unwrap()
+            .unwrap(),
+        before,
+        "projection switched selected CURRENT before lineage promotion"
+    );
+
+    for stage in &mut stages {
+        stage.promote().unwrap();
+    }
+    let committed = loop {
+        if let Step::Done(outcome) = selector.step(WorkLimit::default()).unwrap() {
+            break outcome;
+        }
+    };
+    let SelectionOutcome::BatchPublished {
+        publication,
+        dispositions,
+    } = committed
+    else {
+        panic!("projected batch did not publish a batch outcome")
+    };
+    assert_eq!(publication, Publication::Suppress);
+    assert_eq!(dispositions, projected.dispositions);
+    assert_ne!(
+        retained::current(&store.root.join(DIRECTORY))
+            .unwrap()
+            .unwrap(),
+        before,
+        "unchanged projected cut did not durably switch selected CURRENT"
+    );
+    for stage in &mut stages {
+        while matches!(stage.finish_gc(WorkLimit::default()).unwrap(), Step::More) {}
+    }
+    let mut reopened = SelectedRead::new(&store).unwrap().unwrap();
+    while matches!(reopened.step().unwrap(), Step::More) {}
+    assert!(reopened.basis.complete());
+}
+
+#[test]
+fn successful_old_basis_fallback_keeps_newer_checkpoint_original() {
+    use automerge::transaction::Transactable;
+
+    fn signed(
+        key: &ed25519_dalek::SigningKey,
+        room: &str,
+        mutation: collab_types::DocumentMutation,
+        seq: u64,
+        now: web_time::SystemTime,
+    ) -> qos_peer_state::NeighbourMsg {
+        let source = key.verifying_key().to_bytes();
+        let mut envelope = collab_types::SignedOp::new_unsigned(
+            mutation.encode().unwrap(),
+            collab_types::document_artifact_id("selector.app", room, "one"),
+            collab_types::Ed25519PublicKey::from_bytes(source),
+            collab_types::document_attestation_id("selector.app", room, "one"),
+            collab_types::OpClass::Splice,
+            now,
+            seq,
+        );
+        collab_types::sign_op(&mut envelope, key).unwrap();
+        qos_peer_state::NeighbourMsg::AppDocument {
+            peer: qos_peer_state::peer_handle(&source),
+            app_id: "selector.app".into(),
+            cluster_id: room.into(),
+            record_id: "one".into(),
+            envelope: Box::new(envelope),
+        }
+    }
+    fn frame(
+        authority: &RetentionAuthority,
+        message: &qos_peer_state::NeighbourMsg,
+        checkpoint: bool,
+    ) -> Vec<u8> {
+        let channel = qos_peer_state::transport::retention(message, checkpoint)
+            .unwrap()
+            .0;
+        let body = postcard::to_allocvec(message).unwrap();
+        let payload = if checkpoint {
+            CoeditPayload::Checkpoint { channel, body }
+        } else {
+            CoeditPayload::RetainedDelta { channel, body }
+        };
+        let source = match message {
+            qos_peer_state::NeighbourMsg::AppDocument { envelope, .. } => {
+                *envelope.author.as_bytes()
+            }
+            _ => authority.governor().device_public_key,
+        };
+        crate::transport::encode(&crate::transport::Envelope::Delta {
+            workspace_id: crate::room_workspace_id(authority.room()).unwrap(),
+            author_device_public_key: source,
+            authored_at_ns: 1,
+            signature: [0; 64],
+            delta: payload.encode().unwrap(),
+        })
+        .unwrap()
+    }
+
+    let root_key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root_key.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "selector fallback fixture".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
+    let now = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_secs(2000);
+    let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let mut owner = qos_peer_state::StatePeer::new(
+        room,
+        cert.clone(),
+        vec![],
+        tilo_user_identity::RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    let mut document = automerge::AutoCommit::new();
+    document.put(automerge::ROOT, "value", "baseline").unwrap();
+    owner
+        .install_seed(
+            qos_peer_state::SeedState {
+                room_changes: qos_peer_state::seed_room(room, &cert, &[cert.clone()]).unwrap(),
+                documents: vec![qos_peer_state::SeedDocument {
+                    app_id: "selector.app".into(),
+                    record_id: "one".into(),
+                    kind: "test".into(),
+                    bytes: document.save(),
+                }],
+            },
+            &key,
+            now,
+        )
+        .unwrap();
+    let authority = RetentionAuthority::new(room, cert).unwrap();
+    let cp1 = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let qos_peer_state::NeighbourMsg::AppDocument { envelope, .. } = &cp1[1] else {
+        panic!()
+    };
+    let next_sequence = envelope.seq + 1;
+
+    // The prospective checkpoint admits branch A at next_sequence. A signed
+    // concurrent branch-B tail at that same sequence is below its floor and
+    // therefore blocks the prospective cut, while the old CP1 basis can still
+    // append it in sequence. This makes fallback complete rather than return an
+    // unresolved outcome.
+    let baseline = owner.document("selector.app", "one").unwrap();
+    let mut branch_a = automerge::AutoCommit::load(&baseline).unwrap();
+    branch_a.set_actor(automerge::ActorId::from(vec![71]));
+    branch_a.put(automerge::ROOT, "candidate", "A").unwrap();
+    branch_a.commit();
+    let candidate = signed(
+        &key,
+        authority.room(),
+        collab_types::DocumentMutation::Snapshot(branch_a.save()),
+        next_sequence,
+        now,
+    );
+    let qos_peer_state::NeighbourMsg::AppDocument { envelope, .. } = candidate else {
+        panic!()
+    };
+    owner
+        .admit_local_app_document("selector.app", "one", *envelope, now)
+        .unwrap();
+    let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
+
+    let mut branch_b = automerge::AutoCommit::load(&baseline).unwrap();
+    branch_b.set_actor(automerge::ActorId::from(vec![72]));
+    let baseline_heads = branch_b.get_heads();
+    branch_b.put(automerge::ROOT, "fallback", "B").unwrap();
+    branch_b.commit();
+    let tail = signed(
+        &key,
+        authority.room(),
+        collab_types::DocumentMutation::Incremental(
+            branch_b
+                .get_changes(&baseline_heads)
+                .iter()
+                .flat_map(|change| change.raw_bytes().to_vec())
+                .collect(),
+        ),
+        next_sequence,
+        now,
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut store = WorkspaceStore::open(
+        tmp.path(),
+        crate::room_workspace_id(authority.room()).unwrap(),
+        true,
+    )
+    .unwrap();
+    store.bind_shell_authority(authority.clone()).unwrap();
+    for message in &cp1 {
+        retained(&store, &frame(&authority, message, true));
+    }
+    let initial_scratch = store.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let mut initial = Selection::new(&store, initial_scratch, None).unwrap();
+    while matches!(initial.step(WorkLimit::default()).unwrap(), Step::More) {}
+    retained(&store, &frame(&authority, &tail, false));
+    let selected_before = retained::current(&store.root.join(DIRECTORY))
+        .unwrap()
+        .unwrap();
+
+    let root = store.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    fs::create_dir(&root).unwrap();
+    let mut stages = Vec::new();
+    let mut incoming = Vec::new();
+    for (index, message) in cp2.iter().enumerate() {
+        let bytes = frame(&authority, message, true);
+        let (_, CoeditPayload::Checkpoint { channel, .. }) =
+            retained::payload(&bytes, store.workspace_id()).unwrap()
+        else {
+            panic!()
+        };
+        incoming.push(incoming_identity(&bytes, store.workspace_id()).unwrap());
+        let mut stage = store
+            .start_staged_checkpoint(&channel, bytes, root.join(format!("input-{index:02}")))
+            .unwrap();
+        loop {
+            match stage.step(WorkLimit::default()).unwrap() {
+                Step::More => {}
+                Step::Done(eligible) => {
+                    assert!(eligible, "signed checkpoint fixture must be projectable");
+                    break;
+                }
+            }
+        }
+        stages.push(stage);
+    }
+    let overrides = stages
+        .iter()
+        .map(|stage| {
+            (
+                stage.lineage_name().to_os_string(),
+                stage.projected_generation().to_path_buf(),
+            )
+        })
+        .collect();
+    let mut selector =
+        Selection::new_projected(&store, root.join("selection"), incoming, overrides).unwrap();
+    let mut saw_provisional = false;
+    let mut saw_cleared_fallback = false;
+    let outcome = loop {
+        let was_fallback = selector.fallback;
+        let result = selector
+            .step_projection(WorkLimit {
+                entries: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        if !selector.fallback
+            && selector
+                .incoming_dispositions
+                .iter()
+                .all(|value| *value == Some(IncomingDisposition::Covered))
+        {
+            saw_provisional = true;
+        }
+        if !was_fallback && selector.fallback {
+            saw_cleared_fallback = selector.incoming_dispositions.iter().all(Option::is_none);
+        }
+        if let Step::Done(outcome) = result {
+            break outcome;
+        }
+    };
+    assert!(
+        saw_provisional,
+        "prospective basis never classified the prefix Covered"
+    );
+    assert!(
+        saw_cleared_fallback,
+        "prospective dispositions survived the switch back to the old basis"
+    );
+    assert!(
+        matches!(selector.phase, Phase::Commit),
+        "fixture returned unresolved instead of completing the old-basis fallback"
+    );
+    assert_eq!(outcome.publication, Publication::Original);
+    assert!(
+        outcome
+            .dispositions
+            .iter()
+            .all(|value| *value == IncomingDisposition::Original),
+        "newer checkpoint was suppressed even though the old-basis cut omits it: {:?}",
+        outcome.dispositions
+    );
+    assert_eq!(
+        retained::current(&store.root.join(DIRECTORY))
+            .unwrap()
+            .unwrap(),
+        selected_before,
+        "projection switched selected CURRENT before a serial retry"
+    );
+}
+
+#[test]
+fn exact_history_checkpoint_prefix_stays_inactive_before_projected_selection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let meta = producer_metadata();
+    let authority = RetentionAuthority::new(
+        meta["room"].as_str().unwrap(),
+        serde_json::from_value(meta["authority"].clone()).unwrap(),
+    )
+    .unwrap();
+    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let mut store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
+    store.bind_shell_authority(authority).unwrap();
+    for row in meta["baseline"].as_array().unwrap() {
+        retained(&store, &producer_frame(&meta, row, 1));
+    }
+    let initial_scratch = store.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let mut initial = Selection::new(&store, initial_scratch, None).unwrap();
+    while matches!(initial.step(WorkLimit::default()).unwrap(), Step::More) {}
+    let selected_before = fs::read(store.root.join(DIRECTORY).join("CURRENT")).unwrap();
+    let before = fs::read_dir(store.root.join("retained/v2"))
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry.file_name(),
+                fs::read(entry.path().join("CURRENT")).unwrap(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let batch_root = store.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    fs::create_dir(&batch_root).unwrap();
+    let mut stages = Vec::new();
+    let mut incoming = Vec::new();
+    for (index, row) in meta["checkpoint2"].as_array().unwrap().iter().enumerate() {
+        let bytes = producer_frame(&meta, row, 2);
+        let (_, payload) = retained::payload(&bytes, store.workspace_id()).unwrap();
+        let CoeditPayload::Checkpoint { channel, .. } = payload else {
+            panic!()
+        };
+        incoming.push(incoming_identity(&bytes, store.workspace_id()).unwrap());
+        let mut stage = store
+            .start_staged_checkpoint(
+                &channel,
+                bytes,
+                batch_root.join(format!("input-{index:02}")),
+            )
+            .unwrap();
+        loop {
+            match stage.step(WorkLimit::default()).unwrap() {
+                Step::More => {}
+                Step::Done(eligible) => {
+                    assert!(eligible, "exact history checkpoint must be projectable");
+                    break;
+                }
+            }
+        }
+        stages.push(stage);
+    }
+    assert_eq!(incoming.len(), stages.len());
+    let after = fs::read_dir(store.root.join("retained/v2"))
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry.file_name(),
+                fs::read(entry.path().join("CURRENT")).unwrap(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(after, before, "projection switched a lineage CURRENT");
+    assert_eq!(
+        fs::read(store.root.join(DIRECTORY).join("CURRENT")).unwrap(),
+        selected_before,
+        "projection switched selected CURRENT"
+    );
+}
+
+#[test]
+fn atomic_checkpoint_prefix_commit_matches_serial_replay() {
+    fn baseline(meta: &serde_json::Value) -> (tempfile::TempDir, WorkspaceStore) {
+        let tmp = tempfile::tempdir().unwrap();
+        let authority = RetentionAuthority::new(
+            meta["room"].as_str().unwrap(),
+            serde_json::from_value(meta["authority"].clone()).unwrap(),
+        )
+        .unwrap();
+        let id = crate::room_workspace_id(authority.room()).unwrap();
+        let mut store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
+        store.bind_shell_authority(authority).unwrap();
+        for row in meta["baseline"].as_array().unwrap() {
+            retained(&store, &producer_frame(meta, row, 1));
+        }
+        let scratch = store.root.join("store-work-v1").join(format!(
+            "retain-{}",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        let mut initial = Selection::new(&store, scratch, None).unwrap();
+        while matches!(initial.step(WorkLimit::default()).unwrap(), Step::More) {}
+        (tmp, store)
+    }
+
+    let meta = producer_metadata();
+    let (_serial_tmp, serial) = baseline(&meta);
+    for row in meta["checkpoint2"].as_array().unwrap() {
+        let bytes = producer_frame(&meta, row, 2);
+        let (_, payload) = retained::payload(&bytes, serial.workspace_id()).unwrap();
+        let CoeditPayload::Checkpoint { channel, .. } = payload else {
+            panic!()
+        };
+        let mut build = serial.start_retain(&channel, None, bytes).unwrap();
+        while matches!(build.step(WorkLimit::default()).unwrap(), Step::More) {}
+    }
+    let serial_replay = crate::store::shell_selection_tests::replay_frames(&serial);
+
+    let (_batch_tmp, batch) = baseline(&meta);
+    let root = batch.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    fs::create_dir(&root).unwrap();
+    let mut stages = Vec::new();
+    let mut incoming = Vec::new();
+    for (index, row) in meta["checkpoint2"].as_array().unwrap().iter().enumerate() {
+        let bytes = producer_frame(&meta, row, 2);
+        let (_, payload) = retained::payload(&bytes, batch.workspace_id()).unwrap();
+        let CoeditPayload::Checkpoint { channel, .. } = payload else {
+            panic!()
+        };
+        incoming.push(incoming_identity(&bytes, batch.workspace_id()).unwrap());
+        let mut stage = batch
+            .start_staged_checkpoint(&channel, bytes, root.join(format!("input-{index:02}")))
+            .unwrap();
+        loop {
+            match stage.step(WorkLimit::default()).unwrap() {
+                Step::More => {}
+                Step::Done(eligible) => {
+                    assert!(eligible, "exact history checkpoint must be projectable");
+                    break;
+                }
+            }
+        }
+        stages.push(stage);
+    }
+    for (index, stage) in stages.iter_mut().enumerate() {
+        stage.promote().unwrap();
+        let mut selector = Selection::new(
+            &batch,
+            root.join(format!("serial-{index:02}")),
+            Some(incoming[index]),
+        )
+        .unwrap();
+        loop {
+            if matches!(selector.step(WorkLimit::default()).unwrap(), Step::Done(_)) {
+                break;
+            }
+        }
+        while matches!(stage.finish_gc(WorkLimit::default()).unwrap(), Step::More) {}
+    }
+    assert_eq!(
+        crate::store::shell_selection_tests::replay_frames(&batch),
+        serial_replay
+    );
+}
+
+#[test]
+fn promoted_prefix_repairs_on_reopen_and_suffix_republish_completes_the_cut() {
+    fn opened(meta: &serde_json::Value) -> (tempfile::TempDir, WorkspaceStore) {
+        let tmp = tempfile::tempdir().unwrap();
+        let authority = RetentionAuthority::new(
+            meta["room"].as_str().unwrap(),
+            serde_json::from_value(meta["authority"].clone()).unwrap(),
+        )
+        .unwrap();
+        let id = crate::room_workspace_id(authority.room()).unwrap();
+        let mut store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
+        store.bind_shell_authority(authority).unwrap();
+        for row in meta["baseline"].as_array().unwrap() {
+            retained(&store, &producer_frame(meta, row, 1));
+        }
+        let scratch = store.root.join("store-work-v1").join(format!(
+            "retain-{}",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        let mut selection = Selection::new(&store, scratch, None).unwrap();
+        while matches!(selection.step(WorkLimit::default()).unwrap(), Step::More) {}
+        (tmp, store)
+    }
+
+    let meta = producer_metadata();
+    let rows = meta["checkpoint2"].as_array().unwrap();
+    let (_expected_tmp, expected) = opened(&meta);
+    for row in &rows[..2] {
+        let bytes = producer_frame(&meta, row, 2);
+        let (_, CoeditPayload::Checkpoint { channel, .. }) =
+            retained::payload(&bytes, expected.workspace_id()).unwrap()
+        else {
+            panic!()
+        };
+        let mut build = expected.start_retain(&channel, None, bytes).unwrap();
+        while matches!(build.step(WorkLimit::default()).unwrap(), Step::More) {}
+    }
+    let complete = crate::store::shell_selection_tests::replay_frames(&expected);
+
+    let (recovery_tmp, recovery) = opened(&meta);
+    let channels = rows[..2]
+        .iter()
+        .map(|row| {
+            let bytes = producer_frame(&meta, row, 2);
+            let (_, CoeditPayload::Checkpoint { channel, .. }) =
+                retained::payload(&bytes, recovery.workspace_id()).unwrap()
+            else {
+                panic!()
+            };
+            channel
+        })
+        .collect::<Vec<_>>();
+    let recovery_root = recovery.root.clone();
+    let lineage = |channel: [u8; 32]| {
+        recovery_root.join("retained/v2").join(format!(
+            "{}-{}",
+            hex::encode(
+                serde_json::from_value::<tilo_user_identity::DeviceCert>(meta["authority"].clone())
+                    .unwrap()
+                    .device_public_key
+            ),
+            hex::encode(channel)
+        ))
+    };
+    let before = channels
+        .iter()
+        .map(|channel| retained::current(&lineage(*channel)).unwrap().unwrap())
+        .collect::<Vec<_>>();
+    let root = recovery.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    fs::create_dir(&root).unwrap();
+    let mut staged = Vec::new();
+    for (index, row) in rows[..2].iter().enumerate() {
+        let bytes = producer_frame(&meta, row, 2);
+        let (_, CoeditPayload::Checkpoint { channel, .. }) =
+            retained::payload(&bytes, recovery.workspace_id()).unwrap()
+        else {
+            panic!()
+        };
+        let mut stage = recovery
+            .start_staged_checkpoint(&channel, bytes, root.join(format!("input-{index}")))
+            .unwrap();
+        while matches!(stage.step(WorkLimit::default()).unwrap(), Step::More) {}
+        staged.push(stage);
+    }
+    staged[0].promote().unwrap();
+    drop(staged);
+    drop(recovery);
+
+    let authority = RetentionAuthority::new(
+        meta["room"].as_str().unwrap(),
+        serde_json::from_value(meta["authority"].clone()).unwrap(),
+    )
+    .unwrap();
+    let id = crate::room_workspace_id(authority.room()).unwrap();
+    let mut reopened = WorkspaceStore::open(recovery_tmp.path(), id, true).unwrap();
+    reopened.bind_shell_authority(authority).unwrap();
+    let repaired = crate::store::shell_selection_tests::replay_frames(&reopened);
+    assert!(
+        !repaired.is_empty(),
+        "promoted prefix repairs into a replayable cut"
+    );
+    assert_ne!(
+        retained::current(&lineage(channels[0])).unwrap().unwrap(),
+        before[0]
+    );
+    assert_eq!(
+        retained::current(&lineage(channels[1])).unwrap().unwrap(),
+        before[1],
+        "unpromoted suffix must not switch its lineage CURRENT"
+    );
+
+    let suffix = producer_frame(&meta, &rows[1], 2);
+    let (_, CoeditPayload::Checkpoint { channel, .. }) =
+        retained::payload(&suffix, reopened.workspace_id()).unwrap()
+    else {
+        panic!()
+    };
+    let mut build = reopened.start_retain(&channel, None, suffix).unwrap();
+    while matches!(build.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert_eq!(
+        crate::store::shell_selection_tests::replay_frames(&reopened),
+        complete,
+        "current checkpoint republish is accepted or semantically suppressed after repair"
+    );
+}
 #[test]
 fn selected_switch_failure_keeps_previous_durable_basis_and_retires_no_input() {
     let (_tmp, store) = setup();

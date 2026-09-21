@@ -133,6 +133,18 @@ fn default_priority() -> i32 {
     0
 }
 
+/// Local recovery contract for an admitted checkpoint publisher. This is
+/// intentionally absent from persisted configuration and wire protocols.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CheckpointPrefixRecovery {
+    /// Generic SDK/browser/relay publishers have no automatic resend promise.
+    #[default]
+    Disabled,
+    /// The native session owner republishes its complete durable baseline on
+    /// every new Ready session after an uncertain send.
+    NativeOwnerDurableBaseline,
+}
+
 /// A single workspace this relay is bound to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -163,6 +175,10 @@ pub struct WorkspaceBinding {
     /// membership nor a same-user relay identity implies this authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_authority: Option<qos_peer_state::retained_proof::RetentionAuthority>,
+    /// Programmatic host capability. Persisted/admin configuration cannot opt
+    /// into checkpoint-prefix recovery semantics.
+    #[serde(skip)]
+    pub checkpoint_prefix_recovery: CheckpointPrefixRecovery,
 }
 
 mod workspace_id_serde {
@@ -310,6 +326,7 @@ impl RelayConfig {
             replication: default_server_replication(),
             admitted_users: Vec::new(),
             shell_authority: None,
+            checkpoint_prefix_recovery: CheckpointPrefixRecovery::Disabled,
         });
         true
     }
@@ -385,11 +402,49 @@ mod tests {
             toml::from_str::<WorkspaceBinding>(&toml::to_string(&binding).unwrap()).unwrap(),
             binding
         );
+        assert_eq!(
+            binding.checkpoint_prefix_recovery,
+            CheckpointPrefixRecovery::Disabled
+        );
+        let encoded = toml::to_string(&binding).unwrap();
+        assert!(!encoded.contains("checkpoint_prefix_recovery"));
+        assert!(
+            toml::from_str::<WorkspaceBinding>(
+                "id = 42\ncheckpoint_prefix_recovery = \"NativeOwnerDurableBaseline\""
+            )
+            .is_err(),
+            "persisted configuration cannot opt into a process recovery contract"
+        );
         assert!(
             serde_json::from_value::<WorkspaceBinding>(serde_json::json!({"id": "42"}))
                 .unwrap()
                 .shell_authority
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn checkpoint_prefix_recovery_is_runtime_only_when_serializing_toml_and_json() {
+        let mut binding: WorkspaceBinding =
+            serde_json::from_value(serde_json::json!({"id": "42"})).unwrap();
+        binding.checkpoint_prefix_recovery = CheckpointPrefixRecovery::NativeOwnerDurableBaseline;
+
+        let toml_text = toml::to_string(&binding).unwrap();
+        assert!(!toml_text.contains("checkpoint_prefix_recovery"));
+        assert_eq!(
+            toml::from_str::<WorkspaceBinding>(&toml_text)
+                .unwrap()
+                .checkpoint_prefix_recovery,
+            CheckpointPrefixRecovery::Disabled
+        );
+
+        let json_value = serde_json::to_value(&binding).unwrap();
+        assert!(json_value.get("checkpoint_prefix_recovery").is_none());
+        assert_eq!(
+            serde_json::from_value::<WorkspaceBinding>(json_value)
+                .unwrap()
+                .checkpoint_prefix_recovery,
+            CheckpointPrefixRecovery::Disabled
         );
     }
 
@@ -402,6 +457,7 @@ mod tests {
             replication: ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
             shell_authority: None,
+            checkpoint_prefix_recovery: CheckpointPrefixRecovery::Disabled,
         };
         let text = toml::to_string(&binding).unwrap();
         assert!(text.contains(&format!("id = \"{high}\"")));

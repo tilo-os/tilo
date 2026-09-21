@@ -647,6 +647,7 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
                     replication: crate::mesh::ReplicationIntent::FullWorkspace,
                     admitted_users: room_users.clone(),
                     shell_authority: None,
+                    checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
                 });
             } else if let Some(binding) = cfg.workspaces.iter_mut().find(|binding| binding.id == id)
             {
@@ -755,6 +756,7 @@ fn build_workspace_registry(cfg: &RelayConfig) -> Result<WorkspaceRegistry, Rela
         if let Some(authority) = &binding.shell_authority {
             rt.store.bind_shell_authority(authority.clone())?;
         }
+        rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
         rt.admit_authenticated = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
         rt.admitted_users = binding
             .admitted_users
@@ -2824,6 +2826,7 @@ mod tests {
                     replication: crate::mesh::ReplicationIntent::FullWorkspace,
                     admitted_users: vec![hex::encode(user.public_key)],
                     shell_authority: None,
+                    checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
                 }],
                 ..RelayConfig::default()
             },

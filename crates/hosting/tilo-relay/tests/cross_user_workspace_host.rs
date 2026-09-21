@@ -46,6 +46,7 @@ async fn pinned_provider_host_serves_only_enrolled_cross_user_devices() {
             replication: tilo_relay::ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
             shell_authority: None,
+            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
         }],
         ..RelayConfig::default()
     };
@@ -153,6 +154,7 @@ async fn provider_membership_removal_closes_a_live_tenant_session() {
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
                 shell_authority: None,
+                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
             }],
             ..RelayConfig::default()
         },

@@ -16,6 +16,9 @@ ignored = ["getrandom"]
 name = "tilo_relay"
 path = "src/lib.rs"
 
+[features]
+test-support = []
+
 [[bin]]
 name = "tilo-relay"
 path = "src/main.rs"

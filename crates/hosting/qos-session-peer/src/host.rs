@@ -412,6 +412,8 @@ impl LocalHost {
                     )
                     .map_err(anyhow::Error::msg)?,
                 ),
+                checkpoint_prefix_recovery:
+                    tilo_relay::CheckpointPrefixRecovery::NativeOwnerDurableBaseline,
             }],
             ..Default::default()
         };

@@ -133,7 +133,7 @@ pub use compute_worker::{
     run_production_compute_worker,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
+pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 #[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Relay, RelayError, RelayHandle};
 #[cfg(not(target_arch = "wasm32"))]

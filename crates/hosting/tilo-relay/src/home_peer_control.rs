@@ -147,6 +147,7 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
             replication: replication.clone(),
             admitted_users: Vec::new(),
             shell_authority: None,
+            checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
         })
         .collect();
     Ok(config)

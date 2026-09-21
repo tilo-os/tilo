@@ -135,6 +135,7 @@ pub(crate) struct State {
     sequence: Option<u64>,
     replays: replay::Replays,
     pub(crate) retention_scratch: Option<std::path::PathBuf>,
+    pub(crate) retention_candidates: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     workers: Arc<Semaphore>,
     replay_worker: Arc<Semaphore>,
 }
@@ -247,6 +248,7 @@ fn start(
         sequence: None,
         replays: replay::Replays::default(),
         retention_scratch: None,
+        retention_candidates: Vec::new(),
         workers: budgets.workers.clone(),
         replay_worker: budgets.replay_worker.clone(),
     }));
@@ -472,6 +474,43 @@ async fn run_owner(
                 }
             }
         }
+        let candidates = std::mem::take(
+            &mut state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retention_candidates,
+        );
+        for (lineage, staged) in candidates {
+            let mut discard = None;
+            loop {
+                let lineage = lineage.clone();
+                let staged = staged.clone();
+                let (next, result) = blocking(workers.clone(), move || {
+                    let result = (|| {
+                        if discard.is_none() {
+                            discard =
+                                crate::store::retained::CheckpointDiscard::new(lineage, staged)?;
+                        }
+                        match discard.as_mut() {
+                            Some(discard) => discard.step(WorkLimit::default()),
+                            None => Ok(Step::Done(())),
+                        }
+                    })();
+                    (discard, result)
+                })
+                .await
+                .expect("checkpoint stage disposal worker panicked");
+                discard = next;
+                match result {
+                    Ok(Step::Done(())) => break,
+                    Ok(Step::More) => tokio::task::yield_now().await,
+                    Err(error) => {
+                        tracing::warn!(%error, "checkpoint stage disposal failed");
+                        tokio::time::sleep(RECLAIM_RETRY).await;
+                    }
+                }
+            }
+        }
         if state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -682,6 +721,72 @@ impl Persistence {
         Ok(rx)
     }
 
+    /// Admit one ordered owner job on behalf of a bounded input sequence.
+    /// The job consumes the same normal message and byte capacity as its
+    /// individual inputs, but holds one queue position through completion.
+    pub(crate) async fn submit_sequence_wait<T, Run, Fut>(
+        &self,
+        message_units: u32,
+        charged_size: usize,
+        run: Run,
+    ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError>
+    where
+        T: Send + 'static,
+        Run: FnOnce(Arc<Mutex<State>>, Arc<Semaphore>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, StoreError>> + Send + 'static,
+    {
+        if message_units == 0
+            || usize::try_from(message_units)
+                .ok()
+                .is_none_or(|units| units > NORMAL_MESSAGES)
+        {
+            return Err(error("state message backpressure"));
+        }
+        let byte_count = charged_bytes(charged_size)?;
+        let slots = self
+            .budgets
+            .normal_messages
+            .clone()
+            .acquire_many_owned(message_units)
+            .await
+            .map_err(|_| error("state persistence unavailable"))?;
+        let bytes = self
+            .budgets
+            .normal_bytes
+            .clone()
+            .acquire_many_owned(byte_count)
+            .await
+            .map_err(|_| error("state persistence unavailable"))?;
+        let (tx, rx) = oneshot::channel();
+        let job = Box::new(
+            move |state: Arc<Mutex<State>>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                Box::pin(async move {
+                    let (_slots, _bytes) = (slots, bytes);
+                    let workers = state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .workers
+                        .clone();
+                    let result = run(state, workers).await;
+                    let _ = tx.send(result);
+                })
+            },
+        );
+        let permit = self
+            .tx
+            .reserve()
+            .await
+            .map_err(|_| error("state persistence unavailable"))?;
+        let _admission = self.admission.lock().await;
+        let sequence = next_normal_job(&self.normal_sequence)?;
+        #[cfg(test)]
+        if let Some(hook) = &self.admission_hook {
+            hook();
+        }
+        permit.send(NormalJob { sequence, job });
+        Ok(rx)
+    }
+
     /// Replay capture and cleanup reserve bounded admission inside the existing
     /// global totals so queued mutation input cannot strand a fresh subscriber.
     pub(crate) async fn submit_replay_resumable_wait<P, PF, T, F, C, CF>(
@@ -871,6 +976,26 @@ pub(crate) async fn blocking<T: Send + 'static>(
 mod tests {
     use super::*;
 
+    fn test_persistence(
+        root: &std::path::Path,
+        budgets: AdmissionBudgets,
+    ) -> (Persistence, tokio::task::JoinHandle<()>) {
+        let state = state(root);
+        let (tx, rx) = mpsc::channel::<NormalJob>(8);
+        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let owner = Persistence {
+            tx,
+            replay_tx,
+            normal_sequence: Arc::new(AtomicU64::new(0)),
+            admission: Arc::new(tokio::sync::Mutex::new(())),
+            budgets,
+            admission_hook: None,
+            replay_admission_hook: None,
+        };
+        let running = tokio::spawn(run_owner(rx, replay_rx, state));
+        (owner, running)
+    }
+
     fn state(root: &std::path::Path) -> Arc<Mutex<State>> {
         Arc::new(Mutex::new(State {
             store: WorkspaceStore::open(root, 7, false).unwrap(),
@@ -878,6 +1003,7 @@ mod tests {
             sequence: None,
             replays: replay::Replays::default(),
             retention_scratch: None,
+            retention_candidates: Vec::new(),
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
         }))
@@ -892,6 +1018,206 @@ mod tests {
                     .push(value);
             })
         })
+    }
+
+    #[tokio::test]
+    async fn sequence_admission_rejects_invalid_message_units() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (owner, running) = test_persistence(
+            tmp.path(),
+            AdmissionBudgets::isolated(isolated_test_workers()),
+        );
+
+        for units in [0, u32::try_from(NORMAL_MESSAGES).unwrap() + 1] {
+            assert!(
+                owner
+                    .submit_sequence_wait(units, 1, |_, _| async { Ok(()) })
+                    .await
+                    .is_err(),
+                "accepted invalid aggregate message charge {units}"
+            );
+        }
+
+        drop(owner);
+        running.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sequence_admission_holds_aggregate_budgets_until_run_finishes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let budgets = AdmissionBudgets::isolated(isolated_test_workers());
+        let inspect = budgets.clone();
+        let (owner, running) = test_persistence(tmp.path(), budgets);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let signal = started.clone();
+        let (release_tx, release_rx) = oneshot::channel();
+
+        let receipt = owner
+            .submit_sequence_wait(3, 7, move |_, _| async move {
+                signal.notify_one();
+                let _ = release_rx.await;
+                Ok(9_u8)
+            })
+            .await
+            .unwrap();
+        started.notified().await;
+        assert_eq!(
+            inspect.normal_messages.available_permits(),
+            NORMAL_MESSAGES - 3
+        );
+        assert_eq!(inspect.normal_bytes.available_permits(), NORMAL_BYTES - 7);
+        let remaining_messages = inspect
+            .normal_messages
+            .clone()
+            .try_acquire_many_owned(u32::try_from(NORMAL_MESSAGES - 3).unwrap())
+            .unwrap();
+        assert!(
+            owner
+                .submit_resumable(
+                    1,
+                    async { Ok(()) },
+                    |_, _| Ok(Step::Done(())),
+                    |result| async { result },
+                )
+                .is_err(),
+            "ordinary admission bypassed the aggregate message charge"
+        );
+
+        release_tx.send(()).unwrap();
+        assert_eq!(crate::persistence::receipt(receipt).await.unwrap(), 9);
+        tokio::task::yield_now().await;
+        assert_eq!(inspect.normal_messages.available_permits(), 3);
+        assert_eq!(inspect.normal_bytes.available_permits(), NORMAL_BYTES);
+        drop(remaining_messages);
+        assert_eq!(inspect.normal_messages.available_permits(), NORMAL_MESSAGES);
+
+        drop(owner);
+        running.await.unwrap();
+        assert_eq!(inspect.normal_messages.available_permits(), NORMAL_MESSAGES);
+        assert_eq!(inspect.normal_bytes.available_permits(), NORMAL_BYTES);
+    }
+
+    #[tokio::test]
+    async fn sequence_admission_completes_after_receiver_cancellation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let budgets = AdmissionBudgets::isolated(isolated_test_workers());
+        let inspect = budgets.clone();
+        let (owner, running) = test_persistence(tmp.path(), budgets);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let signal = started.clone();
+        let completed = Arc::new(tokio::sync::Notify::new());
+        let finished = completed.clone();
+        let (release_tx, release_rx) = oneshot::channel();
+
+        let receipt = owner
+            .submit_sequence_wait(2, 5, move |_, _| async move {
+                signal.notify_one();
+                let _ = release_rx.await;
+                finished.notify_one();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        started.notified().await;
+        drop(receipt);
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), completed.notified())
+            .await
+            .expect("cancelled receiver stopped admitted sequence work");
+        tokio::task::yield_now().await;
+        assert_eq!(inspect.normal_messages.available_permits(), NORMAL_MESSAGES);
+        assert_eq!(inspect.normal_bytes.available_permits(), NORMAL_BYTES);
+
+        drop(owner);
+        running.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sequence_admission_leaves_replay_reserve_available() {
+        let tmp = tempfile::tempdir().unwrap();
+        let budgets = AdmissionBudgets::isolated(isolated_test_workers());
+        let (owner, running) = test_persistence(tmp.path(), budgets);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let signal = started.clone();
+        let (release_tx, release_rx) = oneshot::channel();
+
+        let sequence = owner
+            .submit_sequence_wait(
+                u32::try_from(NORMAL_MESSAGES).unwrap(),
+                NORMAL_BYTES,
+                move |_, _| async move {
+                    signal.notify_one();
+                    let _ = release_rx.await;
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        started.notified().await;
+        let replay = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            owner.submit_replay_resumable_wait(
+                false,
+                1,
+                async { Ok(()) },
+                |_, _| Ok(Step::Done(())),
+                |result| async { result },
+            ),
+        )
+        .await
+        .expect("saturated normal sequence blocked reserved replay admission")
+        .unwrap();
+
+        release_tx.send(()).unwrap();
+        crate::persistence::receipt(sequence).await.unwrap();
+        crate::persistence::receipt(replay).await.unwrap();
+        drop(owner);
+        running.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn sequence_admission_uses_one_ordered_queue_position() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (owner, running) = test_persistence(
+            tmp.path(),
+            AdmissionBudgets::isolated(isolated_test_workers()),
+        );
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let sequence_order = order.clone();
+        let sequence = owner
+            .submit_sequence_wait(4, 4, move |state, workers| async move {
+                let owner_workers = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .workers
+                    .clone();
+                assert!(Arc::ptr_eq(&workers, &owner_workers));
+                sequence_order.lock().unwrap().push("sequence");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(owner.normal_sequence.load(Ordering::Acquire), 1);
+        let normal_order = order.clone();
+        let normal = owner
+            .submit_resumable_wait(
+                1,
+                async { Ok(()) },
+                move |_, _| {
+                    normal_order.lock().unwrap().push("normal");
+                    Ok(Step::Done(()))
+                },
+                |result| async { result },
+            )
+            .await
+            .unwrap();
+        assert_eq!(owner.normal_sequence.load(Ordering::Acquire), 2);
+
+        crate::persistence::receipt(sequence).await.unwrap();
+        crate::persistence::receipt(normal).await.unwrap();
+        assert_eq!(*order.lock().unwrap(), ["sequence", "normal"]);
+        drop(owner);
+        running.await.unwrap();
     }
 
     #[tokio::test]
@@ -1038,6 +1364,7 @@ mod tests {
             sequence: None,
             replays: replay::Replays::default(),
             retention_scratch: None,
+            retention_candidates: Vec::new(),
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
         }));
@@ -1091,6 +1418,7 @@ mod tests {
             sequence: None,
             replays: replay::Replays::default(),
             retention_scratch: None,
+            retention_candidates: Vec::new(),
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
         }));
@@ -1147,6 +1475,7 @@ mod tests {
             sequence: None,
             replays: replay::Replays::default(),
             retention_scratch: None,
+            retention_candidates: Vec::new(),
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
         }));
@@ -1245,5 +1574,28 @@ mod tests {
         drop(owner);
         running.await.unwrap();
         assert_eq!(*order.lock().unwrap(), ["normal-1", "capture", "normal-2"]);
+    }
+
+    #[test]
+    fn retained_checkpoint_payload_never_materializes_the_plain_state_document() {
+        let meta = crate::store::shell_selection_tests::producer_metadata();
+        let row = meta["checkpoint2"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["kind"] == "Checkpoint")
+            .unwrap();
+        let bytes = crate::store::shell_selection_tests::producer_frame(&meta, row, 2);
+        let crate::transport::Envelope::Delta { delta, .. } =
+            crate::transport::decode(&bytes[4..]).unwrap()
+        else {
+            panic!("checkpoint fixture is not a delta")
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state(tmp.path());
+        let mut state = state.lock().unwrap();
+        state.doc = Some(automerge::AutoCommit::new());
+        assert!(!state.would_materialize(&delta));
+        assert!(!state.materialize(&delta));
     }
 }
