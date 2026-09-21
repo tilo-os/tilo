@@ -1,6 +1,6 @@
 # Product packaging coverage and next Windows qualification
 
-Source audit: main `d780529df`, 2026-09-20. A defined workflow is not evidence
+Source audit: main `d34b49c38`, 2026-09-21. A defined workflow is not evidence
 that every target has a ready runner, successful native build or releasable
 artifact.
 
@@ -34,6 +34,20 @@ operator command is only for changes the classifier assigns to the protected
 scope. See [Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow)
 for the command and limits, and [Release pipeline](release-pipeline.md) for
 heavy-build and publication triggers.
+
+## What runs for each event
+
+| Event | Routine feedback | Packaging and release behavior |
+| --- | --- | --- |
+| Task-branch push | Fast quality for that commit: changed-file formatting, lint-exception policy, repository policy, `cargo deny`, and `cargo machete` | No app publication or OS build |
+| Pull request to `main` | Fast quality plus affected reverse-dependency checks and applicable security contracts; the app workflow reports its dependency-selected plan | No qpkg publication and no full OS build |
+| Push to `main` | Fast quality and affected checks retain a result for that exact commit | Relevant app/package inputs publish the dependency-selected x86-64 app set, reuse unchanged collection members, and submit newly built qpkgs to the signed registry; OS publication remains off |
+| Nightly, tag, or explicit dispatch | Full-workspace and product-specific qualification according to the workflow | App and desktop release matrices expand only on their documented triggers; an OS version is published only by an OS tag or a `main` dispatch with `publish=true` |
+
+Do not interpret a skipped Rust row as missing CI. The aggregate accepts it only
+for the audited documentation/helper allowlist; quality remains required. Use the
+selector summary to see which packages and security contracts applied to the
+exact head.
 
 | Product | Existing path | Remaining qualification or deferral |
 | --- | --- | --- |

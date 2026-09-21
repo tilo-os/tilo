@@ -128,10 +128,10 @@ fn headless_renderer_captures_a_widget_tree() {
     // at the actual widget pipeline.
     use std::collections::HashMap;
     use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
-    use ui::theme::Theme;
-    use ui::widget::{Container, Widget};
+    use tilo_ui::presence::PresenceCtx;
+    use tilo_ui::text_render::TextRenderer;
+    use tilo_ui::theme::Theme;
+    use tilo_ui::widget::{Container, Widget};
 
     let (w, h) = (160, 80);
     let Some(mut renderer) = try_new_renderer(w, h) else {
@@ -204,10 +204,10 @@ fn headless_renderer_captures_a_widget_tree() {
 fn tab_bar_renders_pills_inside_six_px_insets() {
     use std::collections::HashMap;
     use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
-    use ui::theme::Theme;
-    use ui::widget::{TabBar, TabDescriptor, Widget};
+    use tilo_ui::presence::PresenceCtx;
+    use tilo_ui::text_render::TextRenderer;
+    use tilo_ui::theme::Theme;
+    use tilo_ui::widget::{TabBar, TabDescriptor, Widget};
 
     // 240 wide gives us room for the first 96 px min-width pill + gap;
     // 44 tall matches TAB_BAR_HEIGHT exactly.
