@@ -5725,13 +5725,13 @@ mod tests {
             .unwrap();
         let page = app.workspace.selected().unwrap();
         let imported = NotesDoc::page_block_snapshots(&doc, page);
-        assert!(imported.iter().any(|(_, text)| text.contains("../assets/")));
+        assert!(imported.iter().any(|(_, text)| text.contains("asset:")));
         app.finish_image_insert(&mut doc, page, &image);
         let images = NotesDoc::page_block_snapshots(&doc, page);
         assert_eq!(
             images
                 .iter()
-                .filter(|(_, text)| text.contains("../assets/"))
+                .filter(|(_, text)| text.contains("asset:"))
                 .count(),
             2
         );
