@@ -37,7 +37,9 @@ fn preview(
     controller
         .select(
             doc,
-            &[tilo_ui::history_source::entry_id_from_hash(&hash.to_string())],
+            &[tilo_ui::history_source::entry_id_from_hash(
+                &hash.to_string(),
+            )],
         )
         .unwrap();
     controller.select_compare_side(side).unwrap();
