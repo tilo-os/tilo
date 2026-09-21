@@ -196,6 +196,47 @@ fn connect_readiness(path: &Path) -> std::io::Result<std::os::unix::net::UnixStr
     Ok(stream)
 }
 
+#[cfg(all(test, target_os = "linux"))]
+fn bounded_listener(path: &Path, backlog: libc::c_int) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::{
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::ffi::OsStrExt,
+    };
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un consists solely of integer fields and a byte array.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
+        return Err(std::io::Error::other("invalid readiness socket path"));
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
+        *slot = *byte as libc::c_char;
+    }
+    // SAFETY: valid AF_UNIX socket constants; no pointers are passed.
+    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: this call uniquely adopts the newly created owned descriptor.
+    let listener = unsafe { OwnedFd::from_raw_fd(raw) };
+    // SAFETY: address is initialized and its correct size is supplied.
+    if unsafe {
+        libc::bind(
+            listener.as_raw_fd(),
+            (&raw const address).cast(),
+            std::mem::size_of_val(&address) as libc::socklen_t,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: listener is a bound AF_UNIX stream socket and backlog is fixed by the test.
+    if unsafe { libc::listen(listener.as_raw_fd(), backlog) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(listener)
+}
+
 #[cfg(not(target_os = "linux"))]
 pub fn trusted_identity_complete() -> Result<(), String> {
     Err("Continue the saved Desktop imports after logging into Tilo on Linux.".into())
@@ -236,10 +277,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn readiness_connection_refuses_a_full_backlog_without_hanging() {
-        use std::os::unix::net::UnixListener;
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("gate");
-        let _server = UnixListener::bind(&path).unwrap();
+        let _server = bounded_listener(&path, 1).unwrap();
         let mut held = Vec::new();
         let started = std::time::Instant::now();
         loop {
@@ -248,10 +288,14 @@ mod tests {
                 Err(_) => break,
             }
             assert!(
-                held.len() < 1024,
-                "fixture backlog was unexpectedly unbounded"
+                held.len() < 16,
+                "explicit one-slot listener backlog was unexpectedly unbounded"
             );
         }
+        assert!(
+            !held.is_empty(),
+            "listener must accept before backlog saturation"
+        );
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 }
