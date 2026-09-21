@@ -2,8 +2,8 @@
 use automerge::AutoCommit;
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use ui::bound_dispatch::BoundNodeMap;
-use ui::widget::{Block, BlockEditor, CursorPlacement, Widget};
+use tilo_ui::bound_dispatch::BoundNodeMap;
+use tilo_ui::widget::{Block, BlockEditor, CursorPlacement, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
@@ -15,8 +15,8 @@ struct RetainedCode {
     nodes: HashMap<NodeId, *mut dyn Widget>,
     bindings: BoundNodeMap,
     root: NodeId,
-    text: ui::TextRenderer,
-    theme: ui::Theme,
+    text: tilo_ui::TextRenderer,
+    theme: tilo_ui::Theme,
     doc: AutoCommit,
 }
 
@@ -28,12 +28,12 @@ impl RetainedCode {
             Block::paragraph("Following paragraph"),
         ]);
         editor.focus_block(0, CursorPlacement::Start);
-        let theme = ui::Theme::dark().with_text_scale(scale);
-        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+        let theme = tilo_ui::Theme::dark().with_text_scale(scale);
+        let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
             "en-US",
         );
-        let mut text = ui::TextRenderer::with_font_catalog(&catalog).unwrap();
+        let mut text = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
         text.set_text_scale(scale);
         let mut tree = TaffyTree::new();
         let mut nodes = HashMap::new();
@@ -61,7 +61,7 @@ impl RetainedCode {
     fn frame(&mut self) {
         // SAFETY: no topology change is allowed between keystrokes in this test.
         unsafe {
-            ui::widget::compute_widget_layout(
+            tilo_ui::widget::compute_widget_layout(
                 &mut self.tree,
                 self.root,
                 Size {
@@ -80,7 +80,7 @@ impl RetainedCode {
             Affine::IDENTITY,
             &mut self.text,
             &self.theme,
-            &ui::presence::PresenceCtx::empty(),
+            &tilo_ui::presence::PresenceCtx::empty(),
         );
         self.editor.mark_drawn();
     }
