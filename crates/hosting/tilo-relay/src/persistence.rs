@@ -8,43 +8,126 @@ use crate::{
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 mod replay;
 pub(crate) use replay::output_budget;
-pub(crate) use replay::{Authority as ReplayAuthority, ReplayAdvance, ReplayTicket, WrittenBatch};
+pub(crate) use replay::{
+    Authority as ReplayAuthority, ReplayAdvance, ReplayHandle, ReplayTicket, WrittenBatch,
+};
 
 const QUEUE_MESSAGES: usize = 32;
 const GLOBAL_MESSAGES: usize = 128;
 const GLOBAL_BYTES: usize = 256 * 1024 * 1024;
+const REPLAY_MESSAGES: usize = crate::store::replay::DEFAULT_REPLAY_TICKETS;
+const REPLAY_BYTES: usize = 64 * 1024;
+const NORMAL_MESSAGES: usize = GLOBAL_MESSAGES - REPLAY_MESSAGES;
+const NORMAL_BYTES: usize = GLOBAL_BYTES - REPLAY_BYTES;
 const BLOCKING_WORKERS: usize = 4;
 const RECLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
 
 type Job = Box<dyn FnOnce(Arc<Mutex<State>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+struct NormalJob {
+    sequence: u64,
+    job: Job,
+}
+struct ReplayJob {
+    prerequisite: Option<u64>,
+    job: Job,
+}
 
 fn message_budget() -> &'static Arc<Semaphore> {
     static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    SLOTS.get_or_init(|| Arc::new(Semaphore::new(GLOBAL_MESSAGES)))
+    SLOTS.get_or_init(|| Arc::new(Semaphore::new(NORMAL_MESSAGES)))
 }
 
 fn byte_budget() -> &'static Arc<Semaphore> {
     static BYTES: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    BYTES.get_or_init(|| Arc::new(Semaphore::new(GLOBAL_BYTES)))
+    BYTES.get_or_init(|| Arc::new(Semaphore::new(NORMAL_BYTES)))
+}
+
+fn replay_message_budget() -> &'static Arc<Semaphore> {
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOTS.get_or_init(|| Arc::new(Semaphore::new(REPLAY_MESSAGES)))
+}
+
+fn replay_byte_budget() -> &'static Arc<Semaphore> {
+    static BYTES: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    BYTES.get_or_init(|| Arc::new(Semaphore::new(REPLAY_BYTES)))
+}
+
+fn detached_replay_budget() -> &'static Arc<Semaphore> {
+    static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    WORKERS.get_or_init(|| Arc::new(Semaphore::new(1)))
+}
+
+#[derive(Clone)]
+struct AdmissionBudgets {
+    normal_messages: Arc<Semaphore>,
+    normal_bytes: Arc<Semaphore>,
+    replay_messages: Arc<Semaphore>,
+    replay_bytes: Arc<Semaphore>,
+    workers: Arc<Semaphore>,
+    replay_worker: Arc<Semaphore>,
+}
+impl AdmissionBudgets {
+    fn global() -> Self {
+        Self {
+            normal_messages: message_budget().clone(),
+            normal_bytes: byte_budget().clone(),
+            replay_messages: replay_message_budget().clone(),
+            replay_bytes: replay_byte_budget().clone(),
+            workers: blocking_budget().clone(),
+            replay_worker: detached_replay_budget().clone(),
+        }
+    }
+
+    #[cfg(test)]
+    fn isolated(workers: Arc<Semaphore>) -> Self {
+        Self {
+            normal_messages: Arc::new(Semaphore::new(NORMAL_MESSAGES)),
+            normal_bytes: Arc::new(Semaphore::new(NORMAL_BYTES)),
+            replay_messages: Arc::new(Semaphore::new(REPLAY_MESSAGES)),
+            replay_bytes: Arc::new(Semaphore::new(REPLAY_BYTES)),
+            workers,
+            replay_worker: Arc::new(Semaphore::new(1)),
+        }
+    }
 }
 
 fn charged_bytes(bytes: usize) -> Result<u32, StoreError> {
     let bytes = bytes.max(1);
-    if bytes > GLOBAL_BYTES {
+    if bytes > NORMAL_BYTES {
         return Err(error("state byte backpressure"));
     }
     u32::try_from(bytes).map_err(|_| error("state byte backpressure"))
 }
 
+fn next_normal_job(sequence: &AtomicU64) -> Result<u64, StoreError> {
+    sequence
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(1)
+        })
+        .map(|previous| previous + 1)
+        .map_err(|_| error("state job sequence exhausted"))
+}
+
 #[derive(Clone)]
 pub(crate) struct Persistence {
-    tx: mpsc::Sender<Job>,
+    tx: mpsc::Sender<NormalJob>,
+    replay_tx: mpsc::Sender<ReplayJob>,
+    normal_sequence: Arc<AtomicU64>,
+    admission: Arc<tokio::sync::Mutex<()>>,
+    budgets: AdmissionBudgets,
+    #[cfg(test)]
+    admission_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    replay_admission_hook: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 pub(crate) struct State {
     pub(crate) store: WorkspaceStore,
@@ -52,6 +135,8 @@ pub(crate) struct State {
     sequence: Option<u64>,
     replays: replay::Replays,
     pub(crate) retention_scratch: Option<std::path::PathBuf>,
+    workers: Arc<Semaphore>,
+    replay_worker: Arc<Semaphore>,
 }
 pub(crate) fn error(message: impl Into<String>) -> StoreError {
     StoreError::Io(std::io::Error::other(message.into()))
@@ -131,27 +216,107 @@ impl State {
 pub(crate) async fn handle(workspace: &SharedWorkspace) -> Persistence {
     let mut runtime = workspace.lock().await;
     runtime.persistence.clone().unwrap_or_else(|| {
-        let (tx, rx) = mpsc::channel::<Job>(QUEUE_MESSAGES);
-        let state = Arc::new(Mutex::new(State {
-            store: runtime.store.clone(),
-            doc: runtime.doc.take(),
-            sequence: None,
-            replays: replay::Replays::default(),
-            retention_scratch: None,
-        }));
-        tokio::spawn(run_owner(rx, state));
-        let handle = Persistence { tx };
-        runtime.persistence = Some(handle.clone());
-        handle
+        let budgets = initial_budgets(&runtime);
+        start(&mut runtime, budgets)
     })
 }
 
-async fn run_owner(mut rx: mpsc::Receiver<Job>, state: Arc<Mutex<State>>) {
+fn initial_budgets(_runtime: &crate::workspace::WorkspaceRuntime) -> AdmissionBudgets {
+    #[cfg(test)]
+    if let Some(budgets) = test_budgets()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(_runtime.store.root())
+    {
+        return budgets;
+    }
+    AdmissionBudgets::global()
+}
+
+fn start(
+    runtime: &mut crate::workspace::WorkspaceRuntime,
+    budgets: AdmissionBudgets,
+) -> Persistence {
+    let (tx, rx) = mpsc::channel::<NormalJob>(QUEUE_MESSAGES);
+    let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(REPLAY_MESSAGES);
+    let normal_sequence = Arc::new(AtomicU64::new(0));
+    let admission = Arc::new(tokio::sync::Mutex::new(()));
+    let state = Arc::new(Mutex::new(State {
+        store: runtime.store.clone(),
+        doc: runtime.doc.take(),
+        sequence: None,
+        replays: replay::Replays::default(),
+        retention_scratch: None,
+        workers: budgets.workers.clone(),
+        replay_worker: budgets.replay_worker.clone(),
+    }));
+    tokio::spawn(run_owner(rx, replay_rx, state));
+    let handle = Persistence {
+        tx,
+        replay_tx,
+        normal_sequence,
+        admission,
+        budgets,
+        #[cfg(test)]
+        admission_hook: None,
+        #[cfg(test)]
+        replay_admission_hook: None,
+    };
+    runtime.persistence = Some(handle.clone());
+    handle
+}
+
+#[cfg(test)]
+pub(crate) fn isolated_test_workers() -> Arc<Semaphore> {
+    Arc::new(Semaphore::new(BLOCKING_WORKERS))
+}
+
+#[cfg(test)]
+pub(crate) fn isolate_test_admission_with_workers(
+    runtime: &mut crate::workspace::WorkspaceRuntime,
+    workers: Arc<Semaphore>,
+) {
+    assert!(
+        runtime.persistence.is_none(),
+        "test admission must be isolated before persistence starts"
+    );
+    assert!(
+        test_budgets()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                runtime.store.root().to_path_buf(),
+                AdmissionBudgets::isolated(workers)
+            )
+            .is_none(),
+        "test admission was configured twice"
+    );
+}
+
+#[cfg(test)]
+fn test_budgets() -> &'static Mutex<std::collections::HashMap<std::path::PathBuf, AdmissionBudgets>>
+{
+    static BUDGETS: OnceLock<
+        Mutex<std::collections::HashMap<std::path::PathBuf, AdmissionBudgets>>,
+    > = OnceLock::new();
+    BUDGETS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+async fn run_owner(
+    mut rx: mpsc::Receiver<NormalJob>,
+    mut replay_rx: mpsc::Receiver<ReplayJob>,
+    state: Arc<Mutex<State>>,
+) {
+    let workers = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .workers
+        .clone();
     // The startup scan is never reused after a new ticket is admitted.
     let mut startup = None;
     loop {
         let shared = state.clone();
-        let result = blocking(move || {
+        let result = blocking(workers.clone(), move || {
             let state = shared
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -178,10 +343,101 @@ async fn run_owner(mut rx: mpsc::Receiver<Job>, state: Arc<Mutex<State>>) {
     drop(startup);
     let mut idle = tokio::time::interval(RECLAIM_INTERVAL);
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut prefer_normal = false;
+    let mut normal_open = true;
+    let mut replay_open = true;
+    let mut completed_normal = 0u64;
+    let mut pending_replay = None;
     loop {
-        tokio::select! {
-            job = rx.recv() => match job { Some(job) => job(state.clone()).await, None => break },
-            _ = idle.tick() => {}
+        enum Work {
+            Normal(NormalJob),
+            Replay(ReplayJob),
+            QueueReplay(ReplayJob),
+            Idle,
+            Closed,
+        }
+        if pending_replay.is_none() && replay_open {
+            match replay_rx.try_recv() {
+                Ok(job) => pending_replay = Some(job),
+                Err(mpsc::error::TryRecvError::Disconnected) => replay_open = false,
+                Err(mpsc::error::TryRecvError::Empty) => {}
+            }
+        }
+        if !normal_open && !replay_open && pending_replay.is_none() {
+            break;
+        }
+        // A first shell basis may depend on normal jobs already queued when the
+        // capture was admitted. Its fixed watermark excludes later traffic, so
+        // unrelated continuous input cannot extend this prerequisite window.
+        let mut waiting_prerequisite = pending_replay
+            .as_ref()
+            .and_then(|job| job.prerequisite)
+            .is_some_and(|required| required > completed_normal);
+        if waiting_prerequisite {
+            let shared = state.clone();
+            let has_basis = blocking(workers.clone(), move || {
+                shared
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .store
+                    .replay_capture_has_basis()
+            })
+            .await;
+            if matches!(has_basis, Ok(Ok(true))) {
+                pending_replay.as_mut().unwrap().prerequisite = None;
+                waiting_prerequisite = false;
+            }
+        }
+        let work = if waiting_prerequisite && normal_open {
+            match rx.recv().await {
+                Some(job) => Work::Normal(job),
+                None => {
+                    normal_open = false;
+                    Work::Idle
+                }
+            }
+        } else if prefer_normal && normal_open {
+            match rx.try_recv() {
+                Ok(job) => Work::Normal(job),
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    normal_open = false;
+                    Work::Idle
+                }
+                Err(mpsc::error::TryRecvError::Empty) => match pending_replay.take() {
+                    Some(job) => Work::Replay(job),
+                    None => tokio::select! {
+                        biased;
+                        job = rx.recv(), if normal_open => match job { Some(job) => Work::Normal(job), None => { normal_open = false; Work::Idle } },
+                        job = replay_rx.recv(), if replay_open => match job { Some(job) => Work::QueueReplay(job), None => { replay_open = false; Work::Idle } },
+                        _ = idle.tick() => Work::Idle,
+                    },
+                },
+            }
+        } else if let Some(job) = pending_replay.take() {
+            Work::Replay(job)
+        } else if normal_open || replay_open {
+            tokio::select! {
+                biased;
+                job = replay_rx.recv(), if replay_open => match job { Some(job) => Work::QueueReplay(job), None => { replay_open = false; Work::Idle } },
+                job = rx.recv(), if normal_open => match job { Some(job) => Work::Normal(job), None => { normal_open = false; Work::Idle } },
+                _ = idle.tick() => Work::Idle,
+            }
+        } else {
+            Work::Closed
+        };
+        match work {
+            Work::Normal(job) => {
+                (job.job)(state.clone()).await;
+                completed_normal = completed_normal.max(job.sequence);
+                prefer_normal = false;
+            }
+            Work::Replay(job) => {
+                (job.job)(state.clone()).await;
+                prefer_normal = true;
+            }
+            Work::QueueReplay(job) => pending_replay = Some(job),
+            Work::Idle => {}
+            Work::Closed => break,
         }
         // One retained transaction can leave at most one known scratch
         // root. Finish its disposal before another mutation can create one.
@@ -194,7 +450,7 @@ async fn run_owner(mut rx: mpsc::Receiver<Job>, state: Arc<Mutex<State>>) {
             let mut discard = None;
             loop {
                 let path = root.clone();
-                let (next, result) = blocking(move || {
+                let (next, result) = blocking(workers.clone(), move || {
                     let result = (|| {
                         if discard.is_none() {
                             discard = Some(crate::store::replay::WorkDiscard::new(path)?);
@@ -225,7 +481,7 @@ async fn run_owner(mut rx: mpsc::Receiver<Job>, state: Arc<Mutex<State>>) {
             continue;
         }
         let shared = state.clone();
-        let _ = blocking(move || {
+        let _ = blocking(workers.clone(), move || {
             let mut state = shared
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -238,6 +494,10 @@ async fn run_owner(mut rx: mpsc::Receiver<Job>, state: Arc<Mutex<State>>) {
 }
 
 impl Persistence {
+    pub(crate) fn workers(&self) -> Arc<Semaphore> {
+        self.budgets.workers.clone()
+    }
+
     /// Nonwaiting admission: includes queued and executing work in both bounds.
     /// `bytes` charges owned input, encoding and decoded coedit body. Replay
     /// batches retain their separate process-wide output permits through writes.
@@ -343,19 +603,34 @@ impl Persistence {
         C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
         CF: Future<Output = Result<T, StoreError>> + Send + 'static,
     {
-        let slot = message_budget()
+        let slot = self
+            .budgets
+            .normal_messages
             .clone()
             .try_acquire_owned()
             .map_err(|_| error("state message backpressure"))?;
         let byte_count = charged_bytes(bytes)?;
-        let bytes = byte_budget()
+        let bytes = self
+            .budgets
+            .normal_bytes
             .clone()
             .try_acquire_many_owned(byte_count)
             .map_err(|_| error("state byte backpressure"))?;
         let (job, rx) = resumable_job(slot, bytes, byte_count, preparation, operation, completion);
-        self.tx
-            .try_send(job)
+        let permit = self
+            .tx
+            .try_reserve()
             .map_err(|_| error("workspace state backpressure"))?;
+        let _admission = self
+            .admission
+            .try_lock()
+            .map_err(|_| error("workspace state backpressure"))?;
+        let sequence = next_normal_job(&self.normal_sequence)?;
+        #[cfg(test)]
+        if let Some(hook) = &self.admission_hook {
+            hook();
+        }
+        permit.send(NormalJob { sequence, job });
         Ok(rx)
     }
 
@@ -377,19 +652,81 @@ impl Persistence {
         CF: Future<Output = Result<T, StoreError>> + Send + 'static,
     {
         let byte_count = charged_bytes(bytes)?;
-        let slot = message_budget()
+        let slot = self
+            .budgets
+            .normal_messages
             .clone()
             .acquire_owned()
             .await
             .map_err(|_| error("state persistence unavailable"))?;
-        let bytes = byte_budget()
+        let bytes = self
+            .budgets
+            .normal_bytes
             .clone()
             .acquire_many_owned(byte_count)
             .await
             .map_err(|_| error("state persistence unavailable"))?;
         let (job, rx) = resumable_job(slot, bytes, byte_count, preparation, operation, completion);
-        self.tx
-            .send(job)
+        let permit = self
+            .tx
+            .reserve()
+            .await
+            .map_err(|_| error("state persistence unavailable"))?;
+        let _admission = self.admission.lock().await;
+        let sequence = next_normal_job(&self.normal_sequence)?;
+        #[cfg(test)]
+        if let Some(hook) = &self.admission_hook {
+            hook();
+        }
+        permit.send(NormalJob { sequence, job });
+        Ok(rx)
+    }
+
+    /// Replay capture and cleanup reserve bounded admission inside the existing
+    /// global totals so queued mutation input cannot strand a fresh subscriber.
+    pub(crate) async fn submit_replay_resumable_wait<P, PF, T, F, C, CF>(
+        &self,
+        capture: bool,
+        bytes: usize,
+        preparation: PF,
+        operation: F,
+        completion: C,
+    ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError>
+    where
+        P: Send + 'static,
+        PF: Future<Output = Result<P, StoreError>> + Send + 'static,
+        T: Send + 'static,
+        F: FnMut(&mut State, &mut Option<P>) -> Result<Step<T>, StoreError> + Send + 'static,
+        C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
+        CF: Future<Output = Result<T, StoreError>> + Send + 'static,
+    {
+        let byte_count = u32::try_from(bytes.max(1))
+            .ok()
+            .filter(|bytes| *bytes as usize <= REPLAY_BYTES)
+            .ok_or_else(|| error("replay state byte backpressure"))?;
+        let slot = self
+            .budgets
+            .replay_messages
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| error("state persistence unavailable"))?;
+        let bytes = self
+            .budgets
+            .replay_bytes
+            .clone()
+            .acquire_many_owned(byte_count)
+            .await
+            .map_err(|_| error("state persistence unavailable"))?;
+        let (job, rx) = resumable_job(slot, bytes, byte_count, preparation, operation, completion);
+        let _admission = self.admission.lock().await;
+        let prerequisite = capture.then(|| self.normal_sequence.load(Ordering::Acquire));
+        #[cfg(test)]
+        if let Some(hook) = &self.replay_admission_hook {
+            hook();
+        }
+        self.replay_tx
+            .send(ReplayJob { prerequisite, job })
             .await
             .map_err(|_| error("state persistence unavailable"))?;
         Ok(rx)
@@ -426,13 +763,18 @@ where
         move |state: Arc<Mutex<State>>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
             Box::pin(async move {
                 let (_slot, _bytes) = (slot, bytes);
+                let workers = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .workers
+                    .clone();
                 let result = match preparation.await {
                     Err(error) => Err(error),
                     Ok(prepared) => {
                         let mut prepared = Some(prepared);
                         loop {
                             let shared = state.clone();
-                            let quantum = blocking(move || {
+                            let quantum = blocking(workers.clone(), move || {
                                 let start = std::time::Instant::now();
                                 let result = operation(
                                     &mut shared
@@ -504,13 +846,16 @@ pub(crate) fn delivery_budget(
         .map_err(|_| error("live state byte backpressure"))
 }
 
+fn blocking_budget() -> &'static Arc<Semaphore> {
+    static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    WORKERS.get_or_init(|| Arc::new(Semaphore::new(BLOCKING_WORKERS)))
+}
+
 pub(crate) async fn blocking<T: Send + 'static>(
+    workers: Arc<Semaphore>,
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, StoreError> {
-    static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    let permit = WORKERS
-        .get_or_init(|| Arc::new(Semaphore::new(BLOCKING_WORKERS)))
-        .clone()
+    let permit = workers
         .acquire_owned()
         .await
         .map_err(|e| error(e.to_string()))?;
@@ -520,4 +865,385 @@ pub(crate) async fn blocking<T: Send + 'static>(
     })
     .await
     .map_err(|e| error(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(root: &std::path::Path) -> Arc<Mutex<State>> {
+        Arc::new(Mutex::new(State {
+            store: WorkspaceStore::open(root, 7, false).unwrap(),
+            doc: None,
+            sequence: None,
+            replays: replay::Replays::default(),
+            retention_scratch: None,
+            workers: isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
+        }))
+    }
+
+    fn record_job(order: Arc<Mutex<Vec<&'static str>>>, value: &'static str) -> Job {
+        Box::new(move |_| {
+            Box::pin(async move {
+                order
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(value);
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn replay_reserve_remains_available_when_normal_budgets_are_saturated() {
+        assert_eq!(NORMAL_MESSAGES + REPLAY_MESSAGES, GLOBAL_MESSAGES);
+        assert_eq!(NORMAL_BYTES + REPLAY_BYTES, GLOBAL_BYTES);
+        let budgets = AdmissionBudgets {
+            normal_messages: Arc::new(Semaphore::new(NORMAL_MESSAGES)),
+            normal_bytes: Arc::new(Semaphore::new(NORMAL_BYTES)),
+            replay_messages: Arc::new(Semaphore::new(REPLAY_MESSAGES)),
+            replay_bytes: Arc::new(Semaphore::new(REPLAY_BYTES)),
+            workers: isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
+        };
+        let _normal_message_hold = budgets
+            .normal_messages
+            .clone()
+            .acquire_many_owned(NORMAL_MESSAGES as u32)
+            .await
+            .unwrap();
+        let _normal_byte_hold = budgets
+            .normal_bytes
+            .clone()
+            .acquire_many_owned(NORMAL_BYTES as u32)
+            .await
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state(tmp.path());
+        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
+        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let owner = Persistence {
+            tx: normal_tx,
+            replay_tx,
+            normal_sequence: Arc::new(AtomicU64::new(0)),
+            admission: Arc::new(tokio::sync::Mutex::new(())),
+            budgets,
+            admission_hook: None,
+            replay_admission_hook: None,
+        };
+        let running = tokio::spawn(run_owner(normal_rx, replay_rx, state));
+        assert!(
+            owner
+                .submit_resumable(
+                    1,
+                    async { Ok(()) },
+                    |_, _| Ok(Step::Done(())),
+                    |result| async { result },
+                )
+                .is_err(),
+            "normal admission ignored its saturated production budget"
+        );
+        let replay = owner
+            .submit_replay_resumable_wait(
+                false,
+                1,
+                async { Ok(()) },
+                |_, _| Ok(Step::Done(())),
+                |result| async { result },
+            )
+            .await
+            .expect("reserved replay admission used the saturated normal budget");
+        receipt(replay).await.unwrap();
+        drop(owner);
+        running.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn owner_drains_both_closed_queues_and_prioritizes_one_replay_after_current_normal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state(tmp.path());
+        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
+        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let signal = started.clone();
+        normal_tx
+            .send(NormalJob {
+                sequence: 1,
+                job: Box::new(move |_| {
+                    Box::pin(async move {
+                        signal.notify_one();
+                        let _ = release_rx.await;
+                    })
+                }),
+            })
+            .await
+            .unwrap();
+        let running = tokio::spawn(run_owner(normal_rx, replay_rx, state));
+        started.notified().await;
+        normal_tx
+            .send(NormalJob {
+                sequence: 2,
+                job: record_job(order.clone(), "normal-1"),
+            })
+            .await
+            .unwrap();
+        normal_tx
+            .send(NormalJob {
+                sequence: 3,
+                job: record_job(order.clone(), "normal-2"),
+            })
+            .await
+            .unwrap();
+        replay_tx
+            .send(ReplayJob {
+                prerequisite: None,
+                job: record_job(order.clone(), "replay-1"),
+            })
+            .await
+            .unwrap();
+        replay_tx
+            .send(ReplayJob {
+                prerequisite: None,
+                job: record_job(order.clone(), "replay-2"),
+            })
+            .await
+            .unwrap();
+        drop(normal_tx);
+        drop(replay_tx);
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), running)
+            .await
+            .expect("closed queues were not drained")
+            .unwrap();
+        assert_eq!(
+            *order
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ["replay-1", "normal-1", "replay-2", "normal-2"]
+        );
+    }
+
+    #[tokio::test]
+    async fn first_basis_prerequisites_run_before_priority_capture() {
+        let tmp = tempfile::tempdir().unwrap();
+        let authority = crate::store::shell_proof_tests::binding();
+        let workspace = crate::room_workspace_id(authority.room()).unwrap();
+        let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
+        store.bind_shell_authority(authority).unwrap();
+        let state = Arc::new(Mutex::new(State {
+            store,
+            doc: None,
+            sequence: None,
+            replays: replay::Replays::default(),
+            retention_scratch: None,
+            workers: isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
+        }));
+        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
+        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let normal_order = order.clone();
+        normal_tx
+            .send(NormalJob {
+                sequence: 1,
+                job: Box::new(move |state| {
+                    Box::pin(async move {
+                        let root = state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .store
+                            .root()
+                            .join(crate::store::shell_selection::DIRECTORY);
+                        let generation = "00000000000000000000000000000001";
+                        std::fs::create_dir_all(root.join(generation)).unwrap();
+                        std::fs::write(root.join("CURRENT"), generation).unwrap();
+                        normal_order.lock().unwrap().push("normal-basis");
+                    })
+                }),
+            })
+            .await
+            .unwrap();
+        replay_tx
+            .send(ReplayJob {
+                prerequisite: Some(1),
+                job: record_job(order.clone(), "replay-capture"),
+            })
+            .await
+            .unwrap();
+        drop(normal_tx);
+        drop(replay_tx);
+        run_owner(normal_rx, replay_rx, state).await;
+        assert_eq!(*order.lock().unwrap(), ["normal-basis", "replay-capture"]);
+    }
+
+    #[tokio::test]
+    async fn first_basis_capture_waits_only_for_its_fixed_normal_watermark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let authority = crate::store::shell_proof_tests::binding();
+        let workspace = crate::room_workspace_id(authority.room()).unwrap();
+        let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
+        store.bind_shell_authority(authority).unwrap();
+        let state = Arc::new(Mutex::new(State {
+            store,
+            doc: None,
+            sequence: None,
+            replays: replay::Replays::default(),
+            retention_scratch: None,
+            workers: isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
+        }));
+        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
+        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        normal_tx
+            .send(NormalJob {
+                sequence: 1,
+                job: record_job(order.clone(), "normal-prerequisite"),
+            })
+            .await
+            .unwrap();
+        replay_tx
+            .send(ReplayJob {
+                prerequisite: Some(1),
+                job: record_job(order.clone(), "replay-capture"),
+            })
+            .await
+            .unwrap();
+        for (sequence, label) in [(2, "normal-later-1"), (3, "normal-later-2")] {
+            normal_tx
+                .send(NormalJob {
+                    sequence,
+                    job: record_job(order.clone(), label),
+                })
+                .await
+                .unwrap();
+        }
+        drop(normal_tx);
+        drop(replay_tx);
+        run_owner(normal_rx, replay_rx, state).await;
+        assert_eq!(
+            *order.lock().unwrap(),
+            [
+                "normal-prerequisite",
+                "replay-capture",
+                "normal-later-1",
+                "normal-later-2",
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn production_admission_linearizes_normal_prefix_before_capture_watermark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let authority = crate::store::shell_proof_tests::binding();
+        let workspace = crate::room_workspace_id(authority.room()).unwrap();
+        let mut store = WorkspaceStore::open(tmp.path(), workspace, false).unwrap();
+        store.bind_shell_authority(authority).unwrap();
+        let state = Arc::new(Mutex::new(State {
+            store,
+            doc: None,
+            sequence: None,
+            replays: replay::Replays::default(),
+            retention_scratch: None,
+            workers: isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
+        }));
+        let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
+        let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let admitted = Arc::new(tokio::sync::Notify::new());
+        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let hook = {
+            let entered = entered.clone();
+            let release = release.clone();
+            let first = first.clone();
+            Arc::new(move || {
+                if first.swap(false, Ordering::SeqCst) {
+                    entered.wait();
+                    release.wait();
+                }
+            }) as Arc<dyn Fn() + Send + Sync>
+        };
+        let owner = Persistence {
+            tx: normal_tx,
+            replay_tx,
+            normal_sequence: Arc::new(AtomicU64::new(0)),
+            admission: Arc::new(tokio::sync::Mutex::new(())),
+            budgets: AdmissionBudgets::global(),
+            admission_hook: Some(hook),
+            replay_admission_hook: Some({
+                let admitted = admitted.clone();
+                Arc::new(move || admitted.notify_one())
+            }),
+        };
+        let running = tokio::spawn(run_owner(normal_rx, replay_rx, state));
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        let first_owner = owner.clone();
+        let first_order = order.clone();
+        let first_job = tokio::spawn(async move {
+            let rx = first_owner
+                .submit_resumable_wait(
+                    1,
+                    async { Ok(()) },
+                    move |_, _| {
+                        first_order.lock().unwrap().push("normal-1");
+                        Ok(Step::Done(()))
+                    },
+                    |result| async { result },
+                )
+                .await?;
+            receipt(rx).await
+        });
+        tokio::task::spawn_blocking(move || entered.wait())
+            .await
+            .unwrap();
+
+        let replay_owner = owner.clone();
+        let replay_order = order.clone();
+        let capture = tokio::spawn(async move {
+            let rx = replay_owner
+                .submit_replay_resumable_wait(
+                    true,
+                    1,
+                    async { Ok(()) },
+                    move |_, _| {
+                        replay_order.lock().unwrap().push("capture");
+                        Ok(Step::Done(()))
+                    },
+                    |result| async { result },
+                )
+                .await?;
+            receipt(rx).await
+        });
+        tokio::task::spawn_blocking(move || release.wait())
+            .await
+            .unwrap();
+        admitted.notified().await;
+        let later_owner = owner.clone();
+        let later_order = order.clone();
+        let later = tokio::spawn(async move {
+            let rx = later_owner
+                .submit_resumable_wait(
+                    1,
+                    async { Ok(()) },
+                    move |_, _| {
+                        later_order.lock().unwrap().push("normal-2");
+                        Ok(Step::Done(()))
+                    },
+                    |result| async { result },
+                )
+                .await?;
+            receipt(rx).await
+        });
+        first_job.await.unwrap().unwrap();
+        capture.await.unwrap().unwrap();
+        later.await.unwrap().unwrap();
+        drop(owner);
+        running.await.unwrap();
+        assert_eq!(*order.lock().unwrap(), ["normal-1", "capture", "normal-2"]);
+    }
 }

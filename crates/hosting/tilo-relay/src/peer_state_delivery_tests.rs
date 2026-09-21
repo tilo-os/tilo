@@ -79,6 +79,7 @@ async fn writer_boundary(
             peer: recipient.clone(),
             tx: state_tx.clone(),
             live: live.clone(),
+            replay: None,
         },
     );
     let store = runtime.store.clone();

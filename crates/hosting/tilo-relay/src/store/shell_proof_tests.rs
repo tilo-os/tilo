@@ -9,7 +9,7 @@ pub(super) fn fixture() -> PathBuf {
 pub(super) fn metadata() -> serde_json::Value {
     serde_json::from_slice(&fs::read(fixture().join("failure.json")).unwrap()).unwrap()
 }
-pub(super) fn binding() -> RetentionAuthority {
+pub(crate) fn binding() -> RetentionAuthority {
     let meta = metadata();
     RetentionAuthority::new(
         meta["room"].as_str().unwrap(),

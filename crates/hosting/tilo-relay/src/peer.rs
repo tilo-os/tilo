@@ -16,7 +16,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::AuthenticatedPeer;
 use crate::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
-use crate::persistence::{ReplayAdvance, ReplayTicket, WrittenBatch};
+use crate::persistence::{ReplayAdvance, ReplayHandle, ReplayTicket, WrittenBatch};
 use crate::store::StoreError;
 use crate::store::replay::Step;
 use crate::transport::Envelope;
@@ -506,7 +506,7 @@ fn inbound_bytes(frame: &EnvelopeV2) -> usize {
 }
 
 struct ReplayWrite {
-    ticket: Option<(u64, ReplayTicket)>,
+    ticket: Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
     reply: Option<Envelope>,
     replaying: bool,
 }
@@ -568,7 +568,8 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
     write: &mut W,
 ) -> Result<(), PeerError> {
     let mut reply = batch.reply;
-    if let Some((workspace_id, ticket)) = batch.ticket {
+    let mut completed_replay = None;
+    if let Some((workspace_id, ticket, mut handle, catchup)) = batch.ticket {
         let ws = session
             .workspaces
             .lock()
@@ -578,30 +579,16 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             .ok_or_else(|| PeerError::Protocol("replay workspace disappeared".into()))?;
         let owner = crate::persistence::handle(&ws).await;
         let mut written = None;
+        let mut boundary_done = false;
+        let mut replayed_frames = 0u64;
         loop {
             let authority = ticket.authority.clone();
             let source = StateSource::new(peer, session);
-            let workspace = ws.clone();
-            let mut acknowledged = written.take();
-            let admission = owner.submit_resumable_wait(
-                1,
-                async move {
-                    authorize_replay(&workspace, &source, &authority).await?;
-                    Ok(authority)
-                },
-                move |state, authority| {
-                    let result = state.advance_replay(
-                        authority.as_ref().expect("replay preparation"),
-                        acknowledged.take(),
-                    )?;
-                    match result {
-                        ReplayAdvance::Preparing => Ok(Step::More),
-                        result => Ok(Step::Done(result)),
-                    }
-                },
-                |result| async { result },
-            );
-            match replay_wait(admission, peer, session, private_rx, write).await? {
+            let preparing = async {
+                authorize_replay(&ws, &source, &authority).await?;
+                handle.advance(&authority, written.take()).await
+            };
+            match replay_direct_wait(preparing, peer, session, private_rx, write).await? {
                 ReplayAdvance::Preparing => {}
                 ReplayAdvance::Batch(mut frames) => {
                     while let Some(frame) = frames.front() {
@@ -625,43 +612,96 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                     continue;
                 }
                 ReplayAdvance::Exhausted(summary) => {
-                    loop {
-                        let authority = ticket.authority.clone();
-                        let source = StateSource::new(peer, session);
-                        let workspace = ws.clone();
-                        let checking_workspace = ws.clone();
-                        let checking_source = source.clone();
-                        let admission = owner.submit_prepared_wait(
-                            1,
-                            async move {
-                                authorize_replay(&workspace, &source, &authority).await?;
-                                Ok(authority)
-                            },
-                            move |state, authority| {
-                                state.finish_replay(&authority, |store| {
+                    replayed_frames = replayed_frames.saturating_add(summary.total_frames);
+                    let authority = ticket.authority.clone();
+                    let source = StateSource::new(peer, session);
+                    let workspace = ws.clone();
+                    let checking_workspace = ws.clone();
+                    let checking_source = source.clone();
+                    let cleanup_handle = handle.clone();
+                    let cleanup = owner.submit_replay_resumable_wait(
+                        false,
+                        1,
+                        async move {
+                            authorize_replay(&workspace, &source, &authority).await?;
+                            Ok(authority)
+                        },
+                        move |state, authority| {
+                            state.finish_replay(
+                                authority.as_ref().expect("replay cleanup"),
+                                &cleanup_handle,
+                                |store| {
                                     authorize_replay_now(
                                         store,
                                         &checking_workspace,
                                         &checking_source,
-                                        &authority,
+                                        authority.as_ref().expect("replay cleanup"),
                                     )
-                                })
+                                },
+                            )
+                        },
+                        |result| async { result },
+                    );
+                    let _ = replay_wait(cleanup, peer, session, private_rx, write).await?;
+                    if !boundary_done {
+                        let authority = ticket.authority.clone();
+                        let capture = authority.clone();
+                        let boundary_authority = authority.clone();
+                        let source = StateSource::new(peer, session);
+                        let workspace = ws.clone();
+                        let boundary_workspace = ws.clone();
+                        let boundary_source = source.clone();
+                        let checking = catchup.clone();
+                        let completing = catchup.clone();
+                        let boundary = owner.submit_replay_resumable_wait(
+                            true,
+                            1,
+                            async move {
+                                authorize_replay(&workspace, &source, &authority).await?;
+                                Ok(())
                             },
-                            |result| async { result },
+                            move |state, _| {
+                                if !checking.dirty.load(std::sync::atomic::Ordering::SeqCst) {
+                                    return Ok(Step::Done(None));
+                                }
+                                match state.capture_replay(&capture)? {
+                                    Step::More => Ok(Step::More),
+                                    Step::Done(handle) => Ok(Step::Done(Some(handle))),
+                                }
+                            },
+                            move |result| async move {
+                                let result = result?;
+                                finish_replay_boundary(
+                                    &boundary_workspace,
+                                    &boundary_source,
+                                    &boundary_authority,
+                                    &completing,
+                                )
+                                .await?;
+                                Ok(result)
+                            },
                         );
-                        if matches!(
-                            replay_wait(admission, peer, session, private_rx, write).await?,
-                            Step::Done(_)
-                        ) {
-                            break;
+                        if let Some(catchup_handle) =
+                            replay_wait(boundary, peer, session, private_rx, write).await?
+                        {
+                            handle = catchup_handle;
+                            written = None;
+                            boundary_done = true;
+                            continue;
                         }
                     }
                     authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority)
                         .await?;
                     reply = Some(Envelope::Ready {
                         workspace_id,
-                        pending_deltas: summary.ready_count(),
+                        pending_deltas: u32::try_from(replayed_frames).unwrap_or(u32::MAX),
                     });
+                    completed_replay = Some((
+                        catchup.clone(),
+                        ws.clone(),
+                        StateSource::new(peer, session),
+                        ticket,
+                    ));
                     break;
                 }
             }
@@ -671,9 +711,29 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
     }
     if let Some(reply) = reply {
         authorize_state_frame(&reply, peer, session).await?;
+        if let Some((catchup, workspace, source, ticket)) = &completed_replay {
+            #[cfg(test)]
+            {
+                let root = workspace.lock().await.store.root().to_path_buf();
+                let workers = crate::persistence::handle(workspace).await.workers();
+                crate::persistence::blocking(workers, move || {
+                    crate::store::test_barrier::pause(&root, "replay-before-ready")
+                })
+                .await?;
+            }
+            authorize_replay_boundary(workspace, source, &ticket.authority, catchup).await?;
+            if !ticket.authority.bound_active() {
+                return Err(PeerError::Protocol(
+                    "replay session fenced before Ready".into(),
+                ));
+            }
+        }
         write
             .write_all(&crate::transport_v2::encode_state(&reply, session.v2)?)
             .await?;
+        if let Some((catchup, workspace, source, ticket)) = completed_replay {
+            complete_replay_ready(&workspace, &source, &ticket.authority, &catchup).await?;
+        }
     }
     if batch.replaying {
         pending.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
@@ -695,6 +755,96 @@ async fn authorize_replay(
     {
         return Err(crate::persistence::error(
             "replay subscriber authorization changed",
+        ));
+    }
+    Ok(())
+}
+
+async fn finish_replay_boundary(
+    workspace: &SharedWorkspace,
+    source: &StateSource,
+    authority: &crate::persistence::ReplayAuthority,
+    catchup: &Arc<ReplayCatchup>,
+) -> Result<(), StoreError> {
+    authorize_replay(workspace, source, authority).await?;
+    let runtime = workspace.lock().await;
+    let current = runtime
+        .state_sessions
+        .get(&source.peer.device_public_key)
+        .and_then(|session| session.replay.as_ref())
+        .filter(|current| Arc::ptr_eq(current, catchup))
+        .ok_or_else(|| crate::persistence::error("replay session boundary changed"))?;
+    current
+        .phase
+        .store(ReplayCatchup::BOUNDARY, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+async fn authorize_replay_boundary(
+    workspace: &SharedWorkspace,
+    source: &StateSource,
+    authority: &crate::persistence::ReplayAuthority,
+    catchup: &Arc<ReplayCatchup>,
+) -> Result<(), StoreError> {
+    authorize_replay(workspace, source, authority).await?;
+    let runtime = workspace.lock().await;
+    let session = runtime
+        .state_sessions
+        .get(&source.peer.device_public_key)
+        .filter(|session| authority.matches(&session.live))
+        .filter(|session| {
+            session
+                .replay
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, catchup))
+        })
+        .ok_or_else(|| crate::persistence::error("replay session boundary changed"))?;
+    if session
+        .replay
+        .as_ref()
+        .unwrap()
+        .phase
+        .load(std::sync::atomic::Ordering::SeqCst)
+        != ReplayCatchup::BOUNDARY
+    {
+        return Err(crate::persistence::error(
+            "replay session boundary not ready",
+        ));
+    }
+    Ok(())
+}
+
+async fn complete_replay_ready(
+    workspace: &SharedWorkspace,
+    source: &StateSource,
+    authority: &crate::persistence::ReplayAuthority,
+    catchup: &Arc<ReplayCatchup>,
+) -> Result<(), StoreError> {
+    let runtime = workspace.lock().await;
+    let session = runtime
+        .state_sessions
+        .get(&source.peer.device_public_key)
+        .filter(|session| authority.matches(&session.live))
+        .filter(|session| {
+            session
+                .replay
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, catchup))
+        })
+        .ok_or_else(|| crate::persistence::error("replay session fenced during Ready"))?;
+    let replay = session.replay.as_ref().unwrap();
+    if replay
+        .phase
+        .compare_exchange(
+            ReplayCatchup::BOUNDARY,
+            ReplayCatchup::READY,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return Err(crate::persistence::error(
+            "replay session boundary changed during Ready",
         ));
     }
     Ok(())
@@ -755,6 +905,29 @@ async fn replay_wait<T, W: tokio::io::AsyncWrite + Unpin>(
         tokio::select! {
             biased;
             result = &mut completed => return Ok(result?),
+            private = private_rx.recv(), if private_open => {
+                match private {
+                    Some(private) => write_private(private, peer, session, write).await?,
+                    None => private_open = false,
+                }
+            }
+        }
+    }
+}
+
+async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
+    operation: impl std::future::Future<Output = Result<T, StoreError>>,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
+    write: &mut W,
+) -> Result<T, PeerError> {
+    tokio::pin!(operation);
+    let mut private_open = session.v2;
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut operation => return Ok(result?),
             private = private_rx.recv(), if private_open => {
                 match private {
                     Some(private) => write_private(private, peer, session, write).await?,
@@ -865,7 +1038,7 @@ async fn handle_envelope(
     env: Envelope,
     session: &SessionCtx<'_>,
     subscribed: &mut Vec<u64>,
-    replay: &mut Option<(u64, ReplayTicket)>,
+    replay: &mut Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
 ) -> Result<Option<Envelope>, PeerError> {
     match env {
         Envelope::Subscribe { workspace_id } => {
@@ -900,7 +1073,7 @@ async fn handle_subscribe(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &mut Vec<u64>,
-    replay: &mut Option<(u64, ReplayTicket)>,
+    replay: &mut Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
     workspace_id: u64,
 ) -> Result<Option<Envelope>, PeerError> {
     let ws = get_or_autobind_workspace(session.workspaces, session.autobind, workspace_id).await?;
@@ -966,8 +1139,11 @@ async fn handle_subscribe(
     let ticket = ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned())?;
     let capture = ticket.authority.clone();
     let bind = ticket.authority.clone();
+    let catchup = Arc::new(ReplayCatchup::new());
+    let session_catchup = catchup.clone();
     let rx = owner
-        .submit_resumable_wait(
+        .submit_replay_resumable_wait(
+            true,
             1,
             async { Ok(()) },
             move |state, _| state.capture_replay(&capture),
@@ -1015,6 +1191,7 @@ async fn handle_subscribe(
                         live,
                         peer: source.peer,
                         tx: state_tx,
+                        replay: Some(session_catchup),
                     },
                 );
                 drop(wr);
@@ -1022,8 +1199,8 @@ async fn handle_subscribe(
             },
         )
         .await?;
-    crate::persistence::receipt(rx).await?;
-    *replay = Some((workspace_id, ticket));
+    let handle = crate::persistence::receipt(rx).await?;
+    *replay = Some((workspace_id, ticket, handle, catchup));
     if !subscribed.contains(&workspace_id) {
         subscribed.push(workspace_id);
     }
@@ -1059,6 +1236,23 @@ pub(crate) struct StateSession {
     pub(crate) peer: AuthenticatedPeer,
     pub(crate) tx: mpsc::Sender<StateDelivery>,
     pub(crate) live: Arc<std::sync::atomic::AtomicBool>,
+    replay: Option<Arc<ReplayCatchup>>,
+}
+struct ReplayCatchup {
+    phase: std::sync::atomic::AtomicU8,
+    dirty: std::sync::atomic::AtomicBool,
+}
+impl ReplayCatchup {
+    const ACTIVE: u8 = 0;
+    const BOUNDARY: u8 = 1;
+    const READY: u8 = 2;
+
+    fn new() -> Self {
+        Self {
+            phase: std::sync::atomic::AtomicU8::new(Self::ACTIVE),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
 }
 #[derive(Clone)]
 pub(crate) struct StateSource {
@@ -1205,7 +1399,10 @@ async fn enqueue_state(
     role: crate::auth::PeerRole,
     metrics: Arc<crate::metrics::Metrics>,
 ) -> Result<(), PeerError> {
-    enqueue_state_inner(workspace, envelope, source, role, metrics, false).await
+    Box::pin(enqueue_state_inner(
+        workspace, envelope, source, role, metrics, false,
+    ))
+    .await
 }
 pub(crate) async fn enqueue_federated(
     workspace: &SharedWorkspace,
@@ -1214,14 +1411,14 @@ pub(crate) async fn enqueue_federated(
     metrics: Arc<crate::metrics::Metrics>,
     sync: bool,
 ) -> Result<(), PeerError> {
-    enqueue_state_inner(
+    Box::pin(enqueue_state_inner(
         workspace,
         envelope,
         Some(source),
         crate::auth::PeerRole::PeerRelay,
         metrics,
         sync,
-    )
+    ))
     .await
 }
 async fn enqueue_state_inner(
@@ -1262,6 +1459,7 @@ async fn enqueue_state_inner(
     }
     drop(runtime);
     let owner = crate::persistence::handle(workspace).await;
+    let workers = owner.workers();
     let workspace = workspace.clone();
     let failure = source.clone();
     let persist_metrics = metrics.clone();
@@ -1454,12 +1652,12 @@ async fn enqueue_state_inner(
                 let publication_result: Result<(), crate::store::StoreError> = async {
                 if let Some(error) = commit.activation_error.take() { return Err(error); }
                 let mut cursor = if let Some(path) = commit.activation.take() {
-                    Some(crate::persistence::blocking(move || crate::store::replay::PublicationCursor::open(&path)).await??)
+                    Some(crate::persistence::blocking(workers.clone(), move || crate::store::replay::PublicationCursor::open(&path)).await??)
                 } else { None };
                 let mut original = cursor.is_none();
                 loop {
                     let (envelope, budget) = if let Some(mut selected) = cursor.take() {
-                        let (next, result) = crate::persistence::blocking(move || {
+                        let (next, result) = crate::persistence::blocking(workers.clone(), move || {
                             let result = selected.step(crate::persistence::output_budget());
                             (selected, result)
                         }).await?;
@@ -1472,7 +1670,17 @@ async fn enqueue_state_inner(
                     } else if original {
                         original = false;
                         let bytes = match &*commit.envelope { Envelope::Delta {delta, ..} => delta.len().saturating_add(256), _ => 1 };
-                        (LiveEnvelope::Original(commit.envelope.clone()), crate::persistence::delivery_budget(bytes).map(Some))
+                        let budget = crate::persistence::delivery_budget(bytes).map(Some);
+                        #[cfg(test)]
+                        let budget = {
+                            let mut budget = budget;
+                            let root = workspace.lock().await.store.root().to_path_buf();
+                            if crate::store::test_barrier::check(&root, "live-delivery-budget").is_err() {
+                                budget = Err(crate::persistence::error("injected live delivery budget failure"));
+                            }
+                            budget
+                        };
+                        (LiveEnvelope::Original(commit.envelope.clone()), budget)
                     } else { break };
                     let checkpoint_channel = match &envelope {
                         LiveEnvelope::Original(original) => match &**original {
@@ -1496,12 +1704,35 @@ async fn enqueue_state_inner(
                         if !sub.tx.same_channel(original) { continue; }
                         let Some(target) = runtime.state_sessions.get(recipient) else { continue };
                         if !state_member(&runtime, &target.peer) || source.as_ref().is_some_and(|s| !s.cert(&target.peer)) { continue; }
+                        let replay_phase = target.replay.as_ref().map(|replay| {
+                            replay.phase.load(std::sync::atomic::Ordering::SeqCst)
+                        });
+                        if replay_phase == Some(ReplayCatchup::ACTIVE) {
+                            // This commit is already durable. The replay owner
+                            // will take one final coherent cut before opening
+                            // this exact session to post-Ready live delivery.
+                            target.replay.as_ref().unwrap()
+                                .dirty
+                                .store(true, std::sync::atomic::Ordering::SeqCst);
+                            continue;
+                        }
                         if target.peer.role == crate::auth::PeerRole::Device
                             && checkpoint_channel.is_some_and(|channel| !runtime.needs_checkpoint(recipient, &channel)) { continue; }
                         // Durable coverage was committed before publication. If
                         // the shared live-byte budget is full, leave that coverage
                         // for replay/anti-entropy without fencing a healthy wire.
-                        let Ok(budget) = &budget else { continue };
+                        let Ok(budget) = &budget else {
+                            if activating {
+                                return Err(crate::persistence::error(
+                                    "activation delivery byte backpressure",
+                                ));
+                            }
+                            if replay_phase == Some(ReplayCatchup::BOUNDARY) {
+                                target.live.store(false, std::sync::atomic::Ordering::SeqCst);
+                                let _ = sub.disconnect.try_send(());
+                            }
+                            continue
+                        };
                         if crate::persistence::correlated_diagnostics() && let Envelope::Delta { workspace_id, authored_at_ns, .. } = &*envelope {
                             tracing::info!(phase="server_delta_publication", workspace_id, authored_at_ns, recipient=%hex::encode(&recipient[..4]));
                         }
@@ -1521,9 +1752,18 @@ async fn enqueue_state_inner(
                             // basis whose exact retry is suppressed after CURRENT;
                             // a partial recipient must reconnect to recover it.
                             Err(mpsc::error::TrySendError::Full(delivery)) => {
-                                if matches!(&delivery.envelope, LiveEnvelope::Selected(_)) {
+                                if activating
+                                    || matches!(&delivery.envelope, LiveEnvelope::Selected(_))
+                                {
                                     let _ = sub.disconnect.try_send(());
                                     runtime.remove_subscriber_session(recipient, original);
+                                    continue;
+                                }
+                                if replay_phase == Some(ReplayCatchup::BOUNDARY) {
+                                    target
+                                        .live
+                                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                                    let _ = sub.disconnect.try_send(());
                                 }
                             }
                             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -2425,6 +2665,7 @@ mod private_transport_tests {
                     peer: peer.clone(),
                     tx: state_tx,
                     live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    replay: None,
                 },
             );
             peers.push(peer);
@@ -2491,6 +2732,7 @@ mod private_transport_tests {
                     peer: peer.clone(),
                     tx: new_state_tx,
                     live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    replay: None,
                 },
             );
         }
@@ -2610,6 +2852,7 @@ mod private_transport_tests {
                 peer: receiver,
                 tx: state_tx,
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                replay: None,
             },
         );
         let (slow, _) = certified_device(&root, user.public_key, "saturated recipient");
@@ -2629,6 +2872,7 @@ mod private_transport_tests {
                 peer: slow,
                 tx: slow_state,
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                replay: None,
             },
         );
         let workspace = Arc::new(AsyncMutex::new(runtime));

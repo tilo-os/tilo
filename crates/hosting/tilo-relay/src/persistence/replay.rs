@@ -1,10 +1,10 @@
 //! Session authority belongs to the ordered owner, never to a persisted manifest.
 use super::{State, error};
-use crate::store::{StoreError, replay::*};
+use crate::store::{StoreError, WorkspaceStore, replay::*};
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -65,6 +65,9 @@ impl Authority {
                 .as_ref()
                 .is_some_and(|bound| Arc::ptr_eq(bound, live))
     }
+    pub(crate) fn bound_active(&self) -> bool {
+        self.active() && self.session.lock().unwrap().is_some()
+    }
 }
 impl ReplayTicket {
     pub(crate) fn reserve(
@@ -107,17 +110,29 @@ pub(crate) enum ReplayAdvance {
     Batch(ReplayBatch),
     Exhausted(ReplaySummary),
 }
+#[derive(Clone)]
+pub(crate) struct ReplayHandle {
+    detached: Arc<Mutex<Option<DetachedReplay>>>,
+    authority: Weak<Authority>,
+    workers: Arc<Semaphore>,
+    replay_worker: Arc<Semaphore>,
+}
+struct DetachedReplay {
+    store: WorkspaceStore,
+    snapshot: ReplaySnapshot,
+    summary: Option<ReplaySummary>,
+    outstanding: Option<(u64, bool)>,
+    exhausted: bool,
+    finished: bool,
+}
 enum Cursor {
     Capture(ReplayBuild),
-    Snapshot(ReplaySnapshot),
+    Detached(Arc<Mutex<Option<DetachedReplay>>>),
     Discard(WorkDiscard),
 }
 struct Entry {
     authority: Arc<Authority>,
     cursor: Option<Cursor>,
-    summary: Option<ReplaySummary>,
-    outstanding: Option<(u64, bool)>,
-    exhausted: bool,
     finished: bool,
 }
 #[derive(Default)]
@@ -134,13 +149,138 @@ pub(crate) fn output_budget() -> &'static ReplayBudget {
     static OUTPUT: OnceLock<ReplayBudget> = OnceLock::new();
     OUTPUT.get_or_init(|| ReplayBudget::new(DEFAULT_OUTPUT_BYTES))
 }
+
+impl DetachedReplay {
+    fn advance(
+        &mut self,
+        authority: &Arc<Authority>,
+        written: Option<WrittenBatch>,
+        budget: &ReplayBudget,
+    ) -> Result<ReplayAdvance, StoreError> {
+        if !authority.active() || authority.session.lock().unwrap().is_none() || self.finished {
+            return Err(error("stale replay ticket/session"));
+        }
+        match (self.outstanding, written) {
+            (Some((number, eof)), Some(WrittenBatch(actual))) if number == actual => {
+                self.outstanding = None;
+                self.exhausted = eof;
+            }
+            (None, None) => {}
+            _ => return Err(error("invalid replay batch receipt")),
+        }
+        if self.exhausted {
+            return Ok(ReplayAdvance::Exhausted(self.summary.unwrap()));
+        }
+        if self.summary.is_none() {
+            match self
+                .store
+                .prepare_replay_step(&mut self.snapshot, WorkLimit::default())?
+            {
+                Step::More => return Ok(ReplayAdvance::Preparing),
+                Step::Done(summary) => self.summary = Some(summary),
+            }
+        }
+        let batch =
+            self.store
+                .read_replay_batch(&mut self.snapshot, ReplayLimits::default(), budget)?;
+        self.outstanding = Some((batch.number, batch.eof));
+        #[cfg(test)]
+        crate::store::test_barrier::pause(self.store.root(), "replay-first-batch-ready");
+        if super::diagnostics() {
+            tracing::info!(
+                phase = "replay_batch",
+                frames = batch.len(),
+                encoded_bytes = batch.encoded_bytes,
+                charged_bytes = batch.charged_bytes,
+                output_bytes = budget.used(),
+                preparation_reads = self.snapshot.stats().preparation_reads,
+                hydration_reads = self.snapshot.stats().hydration_reads
+            );
+        }
+        Ok(ReplayAdvance::Batch(batch))
+    }
+}
+
+impl ReplayHandle {
+    fn validate(&self, authority: &Arc<Authority>) -> Result<(), StoreError> {
+        let expected = self
+            .authority
+            .upgrade()
+            .ok_or_else(|| error("stale replay handle"))?;
+        if !Arc::ptr_eq(&expected, authority)
+            || !authority.active()
+            || authority.session.lock().unwrap().is_none()
+        {
+            return Err(error("stale replay ticket/session"));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn advance(
+        &self,
+        authority: &Arc<Authority>,
+        mut written: Option<WrittenBatch>,
+    ) -> Result<ReplayAdvance, StoreError> {
+        self.validate(authority)?;
+        loop {
+            let replay_permit = self
+                .replay_worker
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|error| super::error(error.to_string()))?;
+            let detached = self.detached.clone();
+            let authority = authority.clone();
+            let acknowledged = written.take();
+            let advance = super::blocking(self.workers.clone(), move || {
+                let _replay_permit = replay_permit;
+                detached
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_mut()
+                    .ok_or_else(|| error("stale replay handle"))?
+                    .advance(&authority, acknowledged, output_budget())
+            })
+            .await??;
+            match advance {
+                ReplayAdvance::Preparing => tokio::task::yield_now().await,
+                result => return Ok(result),
+            }
+        }
+    }
+}
 impl State {
     pub(crate) fn capture_replay(
         &mut self,
         authority: &Arc<Authority>,
-    ) -> Result<Step<()>, StoreError> {
+    ) -> Result<Step<ReplayHandle>, StoreError> {
         if !authority.active() {
             return Err(error("replay cancelled"));
+        }
+        if self
+            .replays
+            .entries
+            .get(&authority.id.0)
+            .is_some_and(|entry| entry.finished)
+        {
+            let entry = self.replays.entries.get_mut(&authority.id.0).unwrap();
+            if !matches!(entry.cursor, Some(Cursor::Discard(_))) {
+                entry.cursor = Some(Cursor::Discard(WorkDiscard::new(
+                    self.store
+                        .root()
+                        .join("store-work-v1")
+                        .join(format!("replay-{}", hex::encode(authority.id.0))),
+                )?));
+            }
+            let Some(Cursor::Discard(discard)) = &mut entry.cursor else {
+                unreachable!("finished replay disposal cursor")
+            };
+            match discard.step(WorkLimit::default())? {
+                Step::More => return Ok(Step::More),
+                Step::Done(()) => {
+                    self.replays.entries.remove(&authority.id.0);
+                }
+            }
         }
         if !self.replays.entries.contains_key(&authority.id.0) {
             let build = self
@@ -152,9 +292,6 @@ impl State {
                 Entry {
                     authority: authority.clone(),
                     cursor: None,
-                    summary: None,
-                    outstanding: None,
-                    exhausted: false,
                     finished: false,
                 },
             );
@@ -176,8 +313,21 @@ impl State {
         {
             Step::More => Ok(Step::More),
             Step::Done(snapshot) => {
-                entry.cursor = Some(Cursor::Snapshot(snapshot));
-                Ok(Step::Done(()))
+                let detached = Arc::new(Mutex::new(Some(DetachedReplay {
+                    store: self.store.clone(),
+                    snapshot,
+                    summary: None,
+                    outstanding: None,
+                    exhausted: false,
+                    finished: false,
+                })));
+                entry.cursor = Some(Cursor::Detached(detached.clone()));
+                Ok(Step::Done(ReplayHandle {
+                    detached,
+                    authority: Arc::downgrade(authority),
+                    workers: self.workers.clone(),
+                    replay_worker: self.replay_worker.clone(),
+                }))
             }
         }
     }
@@ -196,6 +346,7 @@ impl State {
         }
         Ok(entry)
     }
+    #[cfg(test)]
     pub(crate) fn advance_replay(
         &mut self,
         authority: &Arc<Authority>,
@@ -203,74 +354,59 @@ impl State {
     ) -> Result<ReplayAdvance, StoreError> {
         self.advance_replay_with_budget(authority, written, output_budget())
     }
+    #[cfg(test)]
     fn advance_replay_with_budget(
         &mut self,
         authority: &Arc<Authority>,
         written: Option<WrittenBatch>,
         budget: &ReplayBudget,
     ) -> Result<ReplayAdvance, StoreError> {
-        let store = self.store.clone();
         let entry = self.replay_entry(authority)?;
-        match (entry.outstanding, written) {
-            (Some((number, eof)), Some(WrittenBatch(actual))) if number == actual => {
-                entry.outstanding = None;
-                entry.exhausted = eof;
-            }
-            (None, None) => {}
-            _ => return Err(error("invalid replay batch receipt")),
-        }
-        if entry.exhausted {
-            return Ok(ReplayAdvance::Exhausted(entry.summary.unwrap()));
-        }
-        let Some(Cursor::Snapshot(snapshot)) = &mut entry.cursor else {
+        let Some(Cursor::Detached(detached)) = &entry.cursor else {
             return Err(error("replay is not readable"));
         };
-        if entry.summary.is_none() {
-            match store.prepare_replay_step(snapshot, WorkLimit::default())? {
-                Step::More => return Ok(ReplayAdvance::Preparing),
-                Step::Done(summary) => entry.summary = Some(summary),
-            }
-        }
-        let batch = store.read_replay_batch(snapshot, ReplayLimits::default(), budget)?;
-        entry.outstanding = Some((batch.number, batch.eof));
-        #[cfg(test)]
-        crate::store::test_barrier::pause(store.root(), "replay-first-batch-ready");
-        if super::diagnostics() {
-            tracing::info!(
-                phase = "replay_batch",
-                frames = batch.len(),
-                encoded_bytes = batch.encoded_bytes,
-                charged_bytes = batch.charged_bytes,
-                output_bytes = budget.used(),
-                preparation_reads = snapshot.stats().preparation_reads,
-                hydration_reads = snapshot.stats().hydration_reads
-            );
-        }
-        Ok(ReplayAdvance::Batch(batch))
+        detached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+            .ok_or_else(|| error("stale replay handle"))?
+            .advance(authority, written, budget)
     }
     pub(crate) fn finish_replay(
         &mut self,
         authority: &Arc<Authority>,
+        handle: &ReplayHandle,
         authorize: impl FnOnce(&crate::store::WorkspaceStore) -> Result<(), StoreError>,
     ) -> Result<Step<ReplaySummary>, StoreError> {
+        handle.validate(authority)?;
         let store = self.store.clone();
         let entry = self.replay_entry(authority)?;
-        if !entry.exhausted || entry.outstanding.is_some() {
-            return Err(error("replay is not wholly written"));
+        let Some(Cursor::Detached(current)) = &entry.cursor else {
+            return Err(error("replay is not detached"));
+        };
+        if !Arc::ptr_eq(current, &handle.detached) {
+            return Err(error("replay handle changed"));
         }
+        let current = current.clone();
         #[cfg(test)]
         crate::store::test_barrier::pause(store.root(), "replay-cleanup");
+        let mut detached = current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let detached = detached
+            .as_mut()
+            .ok_or_else(|| error("stale replay handle"))?;
+        // The handle wait may cross a session replacement. Refresh routing and
+        // liveness after it, immediately before this exact check-and-unlink.
         authorize(&store)?;
-        // Authorization was refreshed at this job's ordered preparation. Recheck
-        // exact liveness after waits, immediately before this single-entry unlink.
-        if !authority.active() {
+        if !authority.active() || authority.session.lock().unwrap().is_none() {
             return Err(error("replay session changed before cleanup"));
         }
-        let Some(Cursor::Snapshot(snapshot)) = &mut entry.cursor else {
-            return Err(error("replay already finished"));
-        };
+        if !detached.exhausted || detached.outstanding.is_some() {
+            return Err(error("replay is not wholly written"));
+        }
         match store.cleanup_replay_step(
-            snapshot,
+            &mut detached.snapshot,
             WorkLimit {
                 entries: 1,
                 ..WorkLimit::default()
@@ -278,8 +414,9 @@ impl State {
         )? {
             Step::More => Ok(Step::More),
             Step::Done(()) => {
+                detached.finished = true;
                 entry.finished = true;
-                Ok(Step::Done(entry.summary.unwrap()))
+                Ok(Step::Done(detached.summary.unwrap()))
             }
         }
     }
@@ -305,7 +442,29 @@ impl State {
         if !matches!(entry.cursor, Some(Cursor::Discard(_))) {
             let discard = match entry.cursor.take() {
                 Some(Cursor::Capture(build)) => build.into_discard(),
-                Some(Cursor::Snapshot(snapshot)) => snapshot.into_discard(),
+                Some(Cursor::Detached(detached)) => {
+                    let retained = detached.clone();
+                    let snapshot = match detached.try_lock() {
+                        Ok(mut guard) => guard.take().map(|detached| detached.snapshot),
+                        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned
+                            .into_inner()
+                            .take()
+                            .map(|detached| detached.snapshot),
+                        Err(std::sync::TryLockError::WouldBlock) => {
+                            entry.cursor = Some(Cursor::Detached(retained));
+                            return Ok(());
+                        }
+                    };
+                    match snapshot {
+                        Some(snapshot) => snapshot.into_discard(),
+                        None => WorkDiscard::new(
+                            self.store
+                                .root()
+                                .join("store-work-v1")
+                                .join(format!("replay-{}", hex::encode(id))),
+                        ),
+                    }
+                }
                 _ => WorkDiscard::new(
                     self.store
                         .root()
@@ -327,6 +486,155 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn capture(state: &mut State, ticket: &ReplayTicket) -> ReplayHandle {
+        loop {
+            match state.capture_replay(&ticket.authority).unwrap() {
+                Step::More => {}
+                Step::Done(handle) => return handle,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn detached_handle_requires_exact_bound_authority_and_rejects_post_finish_advance() {
+        let slots = Arc::new(Semaphore::new(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let mut state = State {
+            store,
+            doc: None,
+            sequence: None,
+            replays: Replays::default(),
+            retention_scratch: None,
+            workers: crate::persistence::isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
+        };
+        let ticket = ReplayTicket::reserve_from([2; 32], None, slots.clone()).unwrap();
+        let handle = capture(&mut state, &ticket);
+        assert!(handle.advance(&ticket.authority, None).await.is_err());
+        ticket
+            .authority
+            .bind(Arc::new(AtomicBool::new(true)))
+            .unwrap();
+        let foreign = ReplayTicket::reserve_from([2; 32], None, slots).unwrap();
+        foreign
+            .authority
+            .bind(Arc::new(AtomicBool::new(true)))
+            .unwrap();
+        assert!(handle.advance(&foreign.authority, None).await.is_err());
+
+        let batch = match handle.advance(&ticket.authority, None).await.unwrap() {
+            ReplayAdvance::Batch(batch) => batch,
+            _ => panic!("empty replay did not produce its terminal batch"),
+        };
+        let number = batch.number;
+        drop(batch);
+        assert!(matches!(
+            handle
+                .advance(&ticket.authority, Some(WrittenBatch(number)))
+                .await
+                .unwrap(),
+            ReplayAdvance::Exhausted(_)
+        ));
+        while matches!(
+            state
+                .finish_replay(&ticket.authority, &handle, |_| Ok(()))
+                .unwrap(),
+            Step::More
+        ) {}
+        assert!(handle.advance(&ticket.authority, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn detached_cleanup_preserves_same_path_replacement() {
+        let slots = Arc::new(Semaphore::new(1));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let raw = crate::transport::encode(&crate::transport::Envelope::Ping).unwrap();
+        let device = [2; 32];
+        let pending = store.enqueue_pending(&device, 1, &raw).unwrap();
+        let mut state = State {
+            store,
+            doc: None,
+            sequence: None,
+            replays: Replays::default(),
+            retention_scratch: None,
+            workers: crate::persistence::isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
+        };
+        let ticket = ReplayTicket::reserve_from(device, None, slots).unwrap();
+        let handle = capture(&mut state, &ticket);
+        ticket
+            .authority
+            .bind(Arc::new(AtomicBool::new(true)))
+            .unwrap();
+        let batch = match handle.advance(&ticket.authority, None).await.unwrap() {
+            ReplayAdvance::Batch(batch) => batch,
+            _ => panic!("pending replay did not produce a batch"),
+        };
+        let number = batch.number;
+        drop(batch);
+        assert!(matches!(
+            handle
+                .advance(&ticket.authority, Some(WrittenBatch(number)))
+                .await
+                .unwrap(),
+            ReplayAdvance::Exhausted(_)
+        ));
+        std::fs::remove_file(&pending).unwrap();
+        std::fs::write(&pending, &raw).unwrap();
+        while matches!(
+            state
+                .finish_replay(&ticket.authority, &handle, |_| Ok(()))
+                .unwrap(),
+            Step::More
+        ) {}
+        assert!(pending.exists(), "cleanup removed a replacement inode");
+    }
+
+    #[test]
+    fn cancelled_detached_reclaim_defers_busy_lock_and_recovers_poison() {
+        for poison in [false, true] {
+            let slots = Arc::new(Semaphore::new(1));
+            let tmp = tempfile::tempdir().unwrap();
+            let store = crate::store::WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let mut state = State {
+                store,
+                doc: None,
+                sequence: None,
+                replays: Replays::default(),
+                retention_scratch: None,
+                workers: crate::persistence::isolated_test_workers(),
+                replay_worker: Arc::new(Semaphore::new(1)),
+            };
+            let ticket = ReplayTicket::reserve_from([2; 32], None, slots.clone()).unwrap();
+            let handle = capture(&mut state, &ticket);
+            if poison {
+                let detached = handle.detached.clone();
+                let _ = std::panic::catch_unwind(move || {
+                    let _guard = detached.lock().unwrap();
+                    panic!("poison detached replay");
+                });
+                drop(ticket);
+            } else {
+                let guard = handle.detached.lock().unwrap();
+                drop(ticket);
+                state.reclaim_replay_step().unwrap();
+                assert_eq!(slots.available_permits(), 0);
+                drop(guard);
+            }
+            for _ in 0..1000 {
+                if state.replays.is_empty() {
+                    break;
+                }
+                state.reclaim_replay_step().unwrap();
+            }
+            assert!(state.replays.is_empty());
+            assert_eq!(slots.available_permits(), 1);
+        }
+    }
+
     #[test]
     fn ticket_admission_includes_cancelled_work_until_bounded_disposal_finishes() {
         // Exercise the production admission primitive with a local pool so this
@@ -353,6 +661,8 @@ mod tests {
             sequence: None,
             replays: Replays::default(),
             retention_scratch: None,
+            workers: crate::persistence::isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
         };
         let ticket = held.pop().unwrap();
         while matches!(state.capture_replay(&ticket.authority).unwrap(), Step::More) {}
@@ -395,6 +705,8 @@ mod tests {
             sequence: None,
             replays: Replays::default(),
             retention_scratch: None,
+            workers: crate::persistence::isolated_test_workers(),
+            replay_worker: Arc::new(Semaphore::new(1)),
         };
         let tickets = (0..2)
             .map(|_| {

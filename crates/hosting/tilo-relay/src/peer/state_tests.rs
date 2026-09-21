@@ -26,6 +26,15 @@ impl Fixture {
         Self::with_delivery_capacity(32)
     }
     fn with_delivery_capacity(delivery_capacity: usize) -> Self {
+        Self::with_delivery_capacity_and_workers(
+            delivery_capacity,
+            crate::persistence::isolated_test_workers(),
+        )
+    }
+    fn with_delivery_capacity_and_workers(
+        delivery_capacity: usize,
+        workers: Arc<tokio::sync::Semaphore>,
+    ) -> Self {
         let (root, user) = UserIdentity::generate("owner", 1);
         let (author, _) = certified_device(&root, user.public_key, "author");
         let (recipient, _) = certified_device(&root, user.public_key, "recipient");
@@ -35,6 +44,7 @@ impl Fixture {
         for peer in [&author, &recipient] {
             runtime.admit_device(peer.device_public_key).unwrap();
         }
+        crate::persistence::isolate_test_admission_with_workers(&mut runtime, workers);
         let (source_tx, source_rx) = mpsc::channel(32);
         let (recipient_tx, recipient_state_rx) = mpsc::channel(32);
         let (delivery, recipient_rx) = mpsc::channel(delivery_capacity);
@@ -57,6 +67,7 @@ impl Fixture {
                 peer: recipient.clone(),
                 tx: delivery,
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                replay: None,
             },
         );
         let source = StateSource {
@@ -157,6 +168,19 @@ impl Fixture {
         crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
             .await
             .unwrap();
+    }
+    async fn drained_wait(&self) {
+        let owner = crate::persistence::handle(&self.workspace).await;
+        let receipt = owner
+            .submit_resumable_wait(
+                1,
+                async { Ok(()) },
+                |_, _| Ok(Step::Done(())),
+                |result| async { result },
+            )
+            .await
+            .unwrap();
+        crate::persistence::receipt(receipt).await.unwrap();
     }
     async fn write(&self, delivery: StateDelivery, wire: &mut Vec<u8>) {
         let session = SessionCtx {
@@ -606,7 +630,7 @@ async fn inbound_delta_waits_for_owner_capacity_without_failing_its_session() {
         .expect("inbound state admission did not resume when owner capacity returned")
         .unwrap()
         .unwrap();
-    fixture.drained().await;
+    fixture.drained_wait().await;
 }
 
 #[tokio::test]
@@ -963,85 +987,6 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
 }
 
 #[tokio::test]
-async fn subscribe_queued_before_delta_receives_commit_after_its_replay_cut() {
-    for kind in [0, 1] {
-        let fixture = Fixture::new();
-        fixture
-            .workspace
-            .lock()
-            .await
-            .remove_subscriber(&fixture.recipient.device_public_key);
-        let (release, reached) =
-            crate::store::test_barrier::install(fixture.store.root(), "replay-prepare");
-        let registry = fixture.registry.clone();
-        let source = fixture.source.clone();
-        let recipient = fixture.recipient.clone();
-        let outbound = fixture.recipient_tx.clone();
-        let private = fixture.private.clone();
-        let metrics = fixture.metrics.clone();
-        let (state_tx, mut deliveries) = mpsc::channel(32);
-        let subscribing = tokio::spawn(async move {
-            let session = SessionCtx {
-                workspaces: &registry,
-                autobind: None,
-                outbound: &outbound,
-                state_outbound: Some(&state_tx),
-                connection_live: None,
-                own_user_public_key: &source.own_user,
-                metrics: &metrics,
-                trust_policy: &source.policy,
-                disconnect: &source.disconnect,
-                v2: true,
-                private_tx: &private,
-                revocations: &source.revocations,
-            };
-            let mut frames = None;
-            let reply = handle_subscribe(&recipient, &session, &mut Vec::new(), &mut frames, 7)
-                .await
-                .unwrap();
-            assert_eq!(reply, None);
-            let (_, ticket) = frames.expect("subscribe did not return a bounded ticket");
-            let workspace = registry.lock().await.get(&7).unwrap().clone();
-            let owner = crate::persistence::handle(&workspace).await;
-            let mut written = None;
-            loop {
-                let authority = ticket.authority.clone();
-                match crate::persistence::receipt(
-                    owner
-                        .read(1, move |state| state.advance_replay(&authority, written))
-                        .unwrap(),
-                )
-                .await
-                .unwrap()
-                {
-                    ReplayAdvance::Preparing => written = None,
-                    ReplayAdvance::Batch(batch) => {
-                        assert_eq!(batch.len(), 0, "later commit leaked into replay cut");
-                        written = Some(WrittenBatch(batch.number));
-                    }
-                    ReplayAdvance::Exhausted(summary) => {
-                        assert_eq!(summary.ready_count(), 0);
-                        break;
-                    }
-                }
-            }
-        });
-        reached.await.unwrap();
-        fixture.enqueue(kind).await;
-        drop(release);
-        subscribing.await.unwrap();
-        fixture.drained().await;
-        let delivery = deliveries
-            .try_recv()
-            .expect("subscriber missed the first commit after its replay cut");
-        assert_eq!(*delivery.envelope, fixture.envelope(kind));
-        if kind == 0 {
-            assert!(delivery.cleanup.as_ref().unwrap().exists());
-        }
-    }
-}
-
-#[tokio::test]
 async fn owner_reclaims_abandoned_work_before_first_job() {
     let fixture = Fixture::new();
     let abandoned = fixture
@@ -1071,7 +1016,10 @@ async fn owner_reclaims_abandoned_work_before_first_job() {
 
 #[tokio::test]
 async fn retained_transactions_release_global_workers_between_quanta() {
-    let fixtures = (0..5).map(|_| Fixture::new()).collect::<Vec<_>>();
+    let workers = crate::persistence::isolated_test_workers();
+    let fixtures = (0..5)
+        .map(|_| Fixture::with_delivery_capacity_and_workers(32, workers.clone()))
+        .collect::<Vec<_>>();
     let mut owners = Vec::new();
     for fixture in &fixtures {
         let owner = crate::persistence::handle(&fixture.workspace).await;
@@ -1123,7 +1071,7 @@ async fn retained_transactions_release_global_workers_between_quanta() {
 }
 
 impl Fixture {
-    async fn subscribe_ticket(&self) -> (u64, ReplayTicket) {
+    async fn subscribe_ticket(&self) -> (u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>) {
         let (state_tx, _state_rx) = mpsc::channel(32);
         let session = SessionCtx {
             workspaces: &self.registry,
@@ -1185,10 +1133,17 @@ async fn replay_capture_waits_for_owner_capacity_and_can_be_cancelled() {
         if cancel {
             assert!(matches!(task.await, Err(error) if error.is_cancelled()));
         } else {
-            let (_, ticket) = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+            let (_, ticket, _, _) = tokio::time::timeout(std::time::Duration::from_secs(3), task)
                 .await
                 .unwrap()
                 .unwrap();
+            assert!(
+                matches!(
+                    queued.last_mut().unwrap().try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                ),
+                "priority capture drained the normal backlog first"
+            );
             drop(ticket);
         }
         for receipt in queued {
@@ -1325,7 +1280,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
 }
 
 #[tokio::test]
-async fn replay_preparation_keeps_its_owner_position_ahead_of_later_retention() {
+async fn detached_replay_allows_retention_then_catches_up_before_ready() {
     let fixture = Arc::new(Fixture::new());
     let device = fixture.recipient.device_public_key;
     fixture
@@ -1339,40 +1294,190 @@ async fn replay_preparation_keeps_its_owner_position_ahead_of_later_retention() 
 
     let (prepare_release, prepare_reached) =
         crate::store::test_barrier::install(fixture.store.root(), "replay-manifest-prepare");
-    let (batch_release, batch_reached) =
-        crate::store::test_barrier::install(fixture.store.root(), "replay-first-batch-ready");
-    let (retain_release, retain_reached) =
-        crate::store::test_barrier::install(fixture.store.root(), "retain-sort");
-    let (mut write, read) = tokio::io::duplex(4096);
+    let (ready_release, ready_reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "replay-before-ready");
+    let (mut write, read) = tokio::io::duplex(1024 * 1024);
     let writer = fixture.clone();
-    let replay = tokio::spawn(async move { writer.replay_to(&mut write).await });
+    let replay = tokio::spawn(async move { writer.replay_to_with_deliveries(&mut write).await });
     prepare_reached.await.unwrap();
 
     fixture.enqueue(1).await;
-    drop(prepare_release);
-
-    tokio::select! {
-        reached = retain_reached => {
-            reached.unwrap();
-            panic!("later retention overtook admitted replay preparation");
-        }
-        reached = batch_reached => {
-            reached.unwrap();
-        }
+    for kind in 3..42 {
+        fixture.enqueue(kind).await;
     }
+    tokio::time::timeout(std::time::Duration::from_secs(3), fixture.drained_wait())
+        .await
+        .expect("detached preparation still blocked the mutation owner");
+    drop(prepare_release);
+    ready_reached.await.unwrap();
+    fixture.enqueue(43).await;
+    fixture.drained_wait().await;
+    drop(ready_release);
 
-    drop(batch_release);
     let mut reader = crate::transport_v2::SessionReader::new(read, true);
-    assert!(matches!(
-        reader.read_next().await.unwrap(),
-        Some(EnvelopeV2::State(Envelope::Delta { .. }))
-    ));
-    drop(retain_release);
-    assert!(matches!(
-        reader.read_next().await.unwrap(),
-        Some(EnvelopeV2::State(Envelope::Ready { .. }))
-    ));
-    replay.await.unwrap().unwrap();
+    let mut deltas = Vec::new();
+    let ready = loop {
+        match reader.read_next().await.unwrap() {
+            Some(EnvelopeV2::State(envelope @ Envelope::Delta { .. })) => deltas.push(envelope),
+            Some(EnvelopeV2::State(Envelope::Ready { pending_deltas, .. })) => {
+                break pending_deltas;
+            }
+            frame => panic!("unexpected replay frame: {frame:?}"),
+        }
+    };
+    let mut post_ready = replay.await.unwrap().unwrap();
+    assert!(deltas.contains(&fixture.envelope(0)));
+    assert!(deltas.contains(&fixture.envelope(1)));
+    for kind in 3..42 {
+        assert!(
+            deltas.contains(&fixture.envelope(kind)),
+            "catch-up omitted post-cut commit {kind}"
+        );
+    }
+    assert!(!deltas.contains(&fixture.envelope(43)));
+    assert_eq!(ready as usize, deltas.len());
+    let delivery = post_ready
+        .try_recv()
+        .expect("post-boundary commit was not queued behind Ready");
+    assert_eq!(*delivery.envelope, fixture.envelope(43));
+}
+
+#[tokio::test]
+async fn replay_boundary_cross_workspace_full_live_queue_fences_exact_session() {
+    let mut fixture = Fixture::with_delivery_capacity(1);
+    let live = {
+        let mut runtime = fixture.workspace.lock().await;
+        let session = runtime
+            .state_sessions
+            .get_mut(&fixture.recipient.device_public_key)
+            .unwrap();
+        let mut cross_workspace = fixture.envelope(3);
+        if let Envelope::Delta { workspace_id, .. } = &mut cross_workspace {
+            *workspace_id = 99;
+        }
+        session
+            .tx
+            .try_send(StateDelivery {
+                envelope: LiveEnvelope::Original(Arc::new(cross_workspace)),
+                cleanup: None,
+                source: None,
+                _budget: None,
+                live: session.live.clone(),
+            })
+            .unwrap();
+        let catchup = Arc::new(ReplayCatchup::new());
+        catchup
+            .phase
+            .store(ReplayCatchup::BOUNDARY, std::sync::atomic::Ordering::SeqCst);
+        session.replay = Some(catchup);
+        session.live.clone()
+    };
+    fixture.enqueue(4).await;
+    fixture.drained().await;
+    assert!(!live.load(std::sync::atomic::Ordering::SeqCst));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        fixture.recipient_disconnected.recv(),
+    )
+    .await
+    .expect("boundary overflow did not fence its connection");
+}
+
+#[tokio::test]
+async fn replay_boundary_live_byte_exhaustion_fences_exact_session() {
+    let mut fixture = Fixture::new();
+    let live = {
+        let mut runtime = fixture.workspace.lock().await;
+        let session = runtime
+            .state_sessions
+            .get_mut(&fixture.recipient.device_public_key)
+            .unwrap();
+        let catchup = Arc::new(ReplayCatchup::new());
+        catchup
+            .phase
+            .store(ReplayCatchup::BOUNDARY, std::sync::atomic::Ordering::SeqCst);
+        session.replay = Some(catchup);
+        session.live.clone()
+    };
+    let fault = crate::store::test_barrier::fail(fixture.store.root(), "live-delivery-budget");
+    fixture.enqueue(3).await;
+    fixture.drained().await;
+    drop(fault);
+    assert!(!live.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(fixture.recipient_rx.try_recv().is_err());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        fixture.recipient_disconnected.recv(),
+    )
+    .await
+    .expect("boundary byte exhaustion did not fence its connection");
+}
+
+#[tokio::test]
+async fn replay_fenced_before_final_ready_never_writes_ready() {
+    let fixture = Arc::new(Fixture::new());
+    fixture
+        .store
+        .enqueue_pending(
+            &fixture.recipient.device_public_key,
+            1,
+            &crate::transport::encode(&fixture.envelope(3)).unwrap(),
+        )
+        .unwrap();
+    let (release, reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "replay-before-ready");
+    let replaying = fixture.clone();
+    let task = tokio::spawn(async move {
+        let mut wire = Vec::new();
+        let result = replaying.replay_to(&mut wire).await;
+        (result, wire)
+    });
+    reached.await.unwrap();
+    let (state_tx, live) = {
+        let runtime = fixture.workspace.lock().await;
+        let session = runtime
+            .state_sessions
+            .get(&fixture.recipient.device_public_key)
+            .unwrap();
+        (session.tx.clone(), session.live.clone())
+    };
+    for authored_at_ns in 0..32 {
+        let mut cross_workspace = fixture.envelope(3);
+        if let Envelope::Delta {
+            workspace_id,
+            authored_at_ns: current,
+            ..
+        } = &mut cross_workspace
+        {
+            *workspace_id = 99;
+            *current = authored_at_ns;
+        }
+        state_tx
+            .try_send(StateDelivery {
+                envelope: LiveEnvelope::Original(Arc::new(cross_workspace)),
+                cleanup: None,
+                source: None,
+                _budget: None,
+                live: live.clone(),
+            })
+            .unwrap();
+    }
+    fixture.enqueue(4).await;
+    fixture.drained().await;
+    assert!(
+        !live.load(std::sync::atomic::Ordering::SeqCst),
+        "post-boundary overflow did not fence the replay lease"
+    );
+    drop(release);
+    let (result, wire) = task.await.unwrap();
+    assert!(result.is_err());
+    let mut reader = SessionReader::new(wire.as_slice(), true);
+    while let Some(frame) = reader.read_next().await.unwrap() {
+        assert!(
+            !matches!(frame, EnvelopeV2::State(Envelope::Ready { .. })),
+            "fenced replay emitted Ready"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1438,7 +1543,14 @@ impl Fixture {
         &self,
         write: &mut W,
     ) -> Result<(), PeerError> {
-        let (state_tx, _state_rx) = mpsc::channel(32);
+        self.replay_to_with_deliveries(write).await.map(|_| ())
+    }
+
+    async fn replay_to_with_deliveries<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        write: &mut W,
+    ) -> Result<mpsc::Receiver<StateDelivery>, PeerError> {
+        let (state_tx, state_rx) = mpsc::channel(32);
         let session = SessionCtx {
             workspaces: &self.registry,
             autobind: None,
@@ -1460,7 +1572,8 @@ impl Fixture {
             &mut Vec::new(),
             write,
         )
-        .await
+        .await?;
+        Ok(state_rx)
     }
 }
 
@@ -1529,13 +1642,18 @@ async fn replay_cleanup_rechecks_authority_after_waiting_for_worker() {
 #[tokio::test]
 async fn replay_finish_rejects_duplicate_completion_and_outstanding_batches() {
     let fixture = Fixture::new();
-    let (_, ticket) = fixture.subscribe_ticket().await;
+    let (_, ticket, handle, _) = fixture.subscribe_ticket().await;
     let owner = crate::persistence::handle(&fixture.workspace).await;
     let authority = ticket.authority.clone();
+    let finishing = handle.clone();
     assert!(
         crate::persistence::receipt(
             owner
-                .read(1, move |state| state.finish_replay(&authority, |_| Ok(())))
+                .read(1, move |state| state.finish_replay(
+                    &authority,
+                    &finishing,
+                    |_| Ok(())
+                ))
                 .unwrap()
         )
         .await
@@ -1592,10 +1710,15 @@ async fn replay_finish_rejects_duplicate_completion_and_outstanding_batches() {
         ReplayAdvance::Exhausted(_)
     ));
     let authority = ticket.authority.clone();
+    let finishing = handle.clone();
     assert!(matches!(
         crate::persistence::receipt(
             owner
-                .read(1, move |state| state.finish_replay(&authority, |_| Ok(())))
+                .read(1, move |state| state.finish_replay(
+                    &authority,
+                    &finishing,
+                    |_| Ok(())
+                ))
                 .unwrap()
         )
         .await
@@ -1603,10 +1726,15 @@ async fn replay_finish_rejects_duplicate_completion_and_outstanding_batches() {
         Step::Done(_)
     ));
     let authority = ticket.authority.clone();
+    let finishing = handle.clone();
     assert!(
         crate::persistence::receipt(
             owner
-                .read(1, move |state| state.finish_replay(&authority, |_| Ok(())))
+                .read(1, move |state| state.finish_replay(
+                    &authority,
+                    &finishing,
+                    |_| Ok(())
+                ))
                 .unwrap()
         )
         .await
@@ -1718,7 +1846,7 @@ async fn dropped_ticket_reclaims_without_abort_admission_on_full_owner_queue() {
             )
             .unwrap();
     }
-    let (_, ticket) = fixture.subscribe_ticket().await;
+    let (_, ticket, _, _) = fixture.subscribe_ticket().await;
     let owner = crate::persistence::handle(&fixture.workspace).await;
     let (release, reached) =
         crate::store::test_barrier::install(fixture.store.root(), "hold-owner");

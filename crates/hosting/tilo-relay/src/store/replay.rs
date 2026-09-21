@@ -42,12 +42,6 @@ impl Default for ReplayLimits {
 pub(crate) struct ReplaySummary {
     pub total_frames: u64,
 }
-impl ReplaySummary {
-    pub(crate) fn ready_count(self) -> u32 {
-        u32::try_from(self.total_frames).unwrap_or(u32::MAX)
-    }
-}
-
 /// A caller shares this budget across all owners; the batch keeps its permit
 /// through writes, including transport::encode's payload + output overlap.
 #[derive(Clone)]
@@ -339,6 +333,11 @@ impl ReplaySnapshot {
     }
 }
 impl WorkspaceStore {
+    pub(crate) fn replay_capture_has_basis(&self) -> Result<bool, StoreError> {
+        Ok(self.shell_authority().is_none()
+            || retained::current(&self.root.join(super::shell_selection::DIRECTORY))?.is_some())
+    }
+
     pub(crate) fn start_replay_capture(
         &self,
         id: ReplayId,
