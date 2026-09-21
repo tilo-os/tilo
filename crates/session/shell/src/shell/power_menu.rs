@@ -149,13 +149,24 @@ impl PowerMenu {
         if !self.open {
             return PowerMenuClick::Ignored;
         }
-        let point = self.untransform_pointer(viewport, point, Instant::now());
-        if !panel_rect(viewport).contains(point) {
+        let stable_point = point;
+        let painted_point = self.untransform_pointer(viewport, point, Instant::now());
+        if !panel_rect(viewport).contains(painted_point)
+            && !panel_rect(viewport).contains(stable_point)
+        {
             self.close();
             return PowerMenuClick::Consumed;
         }
-        let Some(index) =
-            (0..ACTIONS.len()).find(|&index| action_rect(viewport, index).contains(point))
+        // Prefer the inverse-painted coordinate while the flyout animates so
+        // adjacent actions cannot be confused. The stable rectangles remain
+        // valid semantic hit targets too: `action_rects` publishes them to
+        // accessibility and automation before the transition settles.
+        let Some(index) = (0..ACTIONS.len())
+            .find(|&index| action_rect(viewport, index).contains(painted_point))
+            .or_else(|| {
+                (0..ACTIONS.len())
+                    .find(|&index| action_rect(viewport, index).contains(stable_point))
+            })
         else {
             return PowerMenuClick::Consumed;
         };

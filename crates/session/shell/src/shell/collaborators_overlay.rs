@@ -1514,11 +1514,21 @@ pub(crate) fn collaborator_roster_rows_with_local_user(
     tree: &WorkspaceTree,
     local_user: &str,
 ) -> Vec<RosterRow> {
-    let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
-        Some(workspace) if !workspace.collaborators.is_empty() => &workspace.collaborators,
-        _ => &tree.collaborators,
-    };
-    let colors = crate::shell::state::roster_colors_with_local_user(roster, local_user);
+    // Presence publication updates the active workspace and the legacy
+    // tree-wide mirror together, but readers can observe one side of that
+    // handoff before the other (and old control clients still update only
+    // the mirror). Merge by stable participant id, preferring the room row's
+    // richer activity fields, so nobody temporarily disappears from People.
+    let mut roster = tree
+        .active_workspace()
+        .map(|workspace| workspace.collaborators.clone())
+        .unwrap_or_default();
+    for participant in &tree.collaborators {
+        if !roster.iter().any(|row| row.id == participant.id) {
+            roster.push(participant.clone());
+        }
+    }
+    let colors = crate::shell::state::roster_colors_with_local_user(&roster, local_user);
     let agent_members = tree
         .active_workspace()
         .map_or_else(Vec::new, crate::shell::state::Workspace::agent_members);

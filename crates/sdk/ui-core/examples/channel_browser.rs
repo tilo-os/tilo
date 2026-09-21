@@ -15,8 +15,8 @@
 use std::time::{Duration, SystemTime};
 
 use collab_types::ChannelId;
-use ui::widget::channel_browser::{ChannelBrowser, ChannelEntry};
-use ui::{App, State};
+use tilo_ui::widget::channel_browser::{ChannelBrowser, ChannelEntry};
+use tilo_ui::{App, State};
 
 fn ch(
     name: &str,
@@ -42,7 +42,7 @@ fn ch(
 }
 
 pub fn run(_args: &[String]) {
-    let wake_scope = ui::wake::WakeScope::new();
+    let wake_scope = tilo_ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
     // Mocked entries — two spaces, a mix of roles, pins, and unread
     // counts. Matches the shape the shell will produce in Phase 5

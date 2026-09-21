@@ -78,6 +78,9 @@ pub struct RegistryConfig {
     /// Users can silence a registry without removing it.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Stable by default; development explicitly opts into prerelease apps.
+    #[serde(default)]
+    pub channel: pkg::version::ReleaseChannel,
 }
 
 fn default_enabled() -> bool {
@@ -103,6 +106,7 @@ impl RegistriesFile {
                     base_url: DEFAULT_REGISTRY_BASE_URL.into(),
                     owner_pubkey_hex,
                     enabled: true,
+                    channel: pkg::version::ReleaseChannel::Stable,
                 }]
             }),
         }
@@ -256,6 +260,7 @@ pub fn add_registry(
         base_url: base_url.trim_end_matches('/').to_string(),
         owner_pubkey_hex: owner_pubkey_hex.to_ascii_lowercase(),
         enabled: true,
+        channel: pkg::version::ReleaseChannel::Stable,
     });
     Ok(())
 }
@@ -470,6 +475,17 @@ enabled = false
     }
 
     #[test]
+    fn omitted_channel_stays_stable_and_development_requires_opt_in() {
+        let old = "name = 'test'\nbase_url = 'https://example.invalid'\nenabled = true\n";
+        let stable: RegistryConfig = toml::from_str(old).unwrap();
+        assert_eq!(stable.channel, pkg::version::ReleaseChannel::Stable);
+        let dev: RegistryConfig =
+            toml::from_str(&format!("{old}channel = 'development'\n")).unwrap();
+        assert_eq!(dev.channel, pkg::version::ReleaseChannel::Development);
+        assert!(toml::from_str::<RegistryConfig>(&format!("{old}channel = 'typo'\n")).is_err());
+    }
+
+    #[test]
     fn only_exact_legacy_main_registry_receives_the_os_pin() {
         let td = TempDir::new().unwrap();
         let _guard = scoped_dir(&td);
@@ -480,12 +496,14 @@ enabled = false
                     base_url: DEFAULT_REGISTRY_BASE_URL.into(),
                     owner_pubkey_hex: placeholder_owner_pubkey(),
                     enabled: true,
+                    channel: pkg::version::ReleaseChannel::Stable,
                 },
                 RegistryConfig {
                     name: "custom".into(),
                     base_url: "https://registry.example".into(),
                     owner_pubkey_hex: placeholder_owner_pubkey(),
                     enabled: true,
+                    channel: pkg::version::ReleaseChannel::Stable,
                 },
             ],
         };

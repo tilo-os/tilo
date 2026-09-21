@@ -7,8 +7,8 @@
 //! Every case here builds an **automerge document**, edits it through `qdoc` (or
 //! through plain automerge, for the room-shaped documents that carry no editor
 //! schema), names runs of it through the real
-//! [`ui::history_groups`] API, and then derives the rows and bands with
-//! [`ui::HistorySource`] + [`ui::group_entries`] exactly as the word processor
+//! [`tilo_ui::history_groups`] API, and then derives the rows and bands with
+//! [`tilo_ui::HistorySource`] + [`tilo_ui::group_entries`] exactly as the word processor
 //! and the compositor do. Nothing is a hand-written `HistoryEntry` — except the
 //! one case that says so in its own name, where the point is layout under a
 //! thousand bands rather than where the bands came from.
@@ -20,11 +20,11 @@
 use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::widget::history_scrubber::ScrubberGroup;
-use ui::{
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::widget::history_scrubber::ScrubberGroup;
+use tilo_ui::{
     ActivityTimeline, AuthorDirectory, GroupingConfig, HistoryEntry, HistoryScrubber,
     HistorySource, Theme, Widget,
 };
@@ -209,11 +209,11 @@ fn rows(doc: &mut AutoCommit) -> Vec<HistoryEntry> {
     // "Unknown participant" path.
     authors.register(
         &hex_actor("alice"),
-        ui::HistoryAuthor::new("Alice", 210.0, short(&hex_actor("alice"))),
+        tilo_ui::HistoryAuthor::new("Alice", 210.0, short(&hex_actor("alice"))),
     );
     authors.register(
         &hex_actor("Ada Lovelace"),
-        ui::HistoryAuthor::new("Ada Lovelace", 320.0, short(&hex_actor("Ada Lovelace"))),
+        tilo_ui::HistoryAuthor::new("Ada Lovelace", 320.0, short(&hex_actor("Ada Lovelace"))),
     );
     HistorySource::new()
         .with_authors(authors)
@@ -259,7 +259,7 @@ fn timeline(
     w: f64,
     h: f64,
     entries: Vec<HistoryEntry>,
-    named: Vec<ui::NamedRange>,
+    named: Vec<tilo_ui::NamedRange>,
 ) -> ActivityTimeline {
     let mut t = ActivityTimeline::with_entries(entries);
     t.set_named_ranges(named);
@@ -278,8 +278,8 @@ fn scrubber(w: f64, entries: Vec<HistoryEntry>, groups: Vec<ScrubberGroup>) -> H
 
 /// Turn the model's groups into the strip's segments, exactly as the word
 /// processor's panel does.
-fn segments(entries: &[HistoryEntry], named: &[ui::NamedRange]) -> Vec<ScrubberGroup> {
-    ui::group_entries(entries, named, &GroupingConfig::default())
+fn segments(entries: &[HistoryEntry], named: &[tilo_ui::NamedRange]) -> Vec<ScrubberGroup> {
+    tilo_ui::group_entries(entries, named, &GroupingConfig::default())
         .iter()
         .map(|g| ScrubberGroup {
             start: g.start,
@@ -345,7 +345,7 @@ pub fn run(args: &[String]) {
 fn shoot_main_bands(
     shot: &mut Shot,
     doc: &mut AutoCommit,
-) -> (Vec<HistoryEntry>, Vec<ui::NamedRange>) {
+) -> (Vec<HistoryEntry>, Vec<tilo_ui::NamedRange>) {
     let entries = rows(doc);
     println!("  ({} changes in the document)", entries.len());
 
@@ -356,7 +356,7 @@ fn shoot_main_bands(
     if let Some(start) = entries.get(8)
         && let Some(end) = entries.get(11)
     {
-        ui::history_groups::name_range(&mut peer, &start.id, Some(&end.id), "Costs section");
+        tilo_ui::history_groups::name_range(&mut peer, &start.id, Some(&end.id), "Costs section");
     }
     qdoc::history::commit_stamped_at(&mut peer, now_i64().saturating_sub(2 * 3600));
     #[allow(
@@ -370,12 +370,12 @@ fn shoot_main_bands(
     if let Some(start) = entries.get(12)
         && let Some(end) = entries.last()
     {
-        ui::history_groups::name_range(doc, &start.id, Some(&end.id), "Headcount pass");
+        tilo_ui::history_groups::name_range(doc, &start.id, Some(&end.id), "Headcount pass");
     }
     qdoc::history::commit_stamped_at(doc, now_i64().saturating_sub(600));
 
     let entries = rows(doc);
-    let named = ui::history_groups::read_named_ranges(doc, &author_dir());
+    let named = tilo_ui::history_groups::read_named_ranges(doc, &author_dir());
     println!("  ({} named runs)", named.len());
 
     let mut t = timeline(520.0, 640.0, entries.clone(), named.clone());
@@ -418,14 +418,14 @@ fn shoot_open_band(
     shot: &mut Shot,
     doc: &AutoCommit,
     entries: &[HistoryEntry],
-) -> (Vec<HistoryEntry>, Vec<ui::NamedRange>) {
+) -> (Vec<HistoryEntry>, Vec<tilo_ui::NamedRange>) {
     let mut open_doc = doc.clone();
     if let Some(start) = entries.get(12) {
-        ui::history_groups::name_range(&mut open_doc, &start.id, None, "Rework the intro");
+        tilo_ui::history_groups::name_range(&mut open_doc, &start.id, None, "Rework the intro");
     }
     qdoc::history::commit_stamped_at(&mut open_doc, now_i64().saturating_sub(300));
     let open_entries = rows(&mut open_doc);
-    let open_named = ui::history_groups::read_named_ranges(&open_doc, &author_dir());
+    let open_named = tilo_ui::history_groups::read_named_ranges(&open_doc, &author_dir());
     let mut t = timeline(520.0, 640.0, open_entries.clone(), open_named.clone());
     shot.paint("open-band", 520, 640, &mut t);
 
@@ -442,11 +442,11 @@ fn shoot_long_and_nested(shot: &mut Shot, doc: &AutoCommit, entries: &[HistoryEn
     if let Some(start) = entries.get(12)
         && let Some(end) = entries.last()
     {
-        ui::history_groups::name_range(&mut long_doc, &start.id, Some(&end.id), long);
+        tilo_ui::history_groups::name_range(&mut long_doc, &start.id, Some(&end.id), long);
     }
     qdoc::history::commit_stamped_at(&mut long_doc, now_i64().saturating_sub(500));
     let long_entries = rows(&mut long_doc);
-    let long_named = ui::history_groups::read_named_ranges(&long_doc, &author_dir());
+    let long_named = tilo_ui::history_groups::read_named_ranges(&long_doc, &author_dir());
     let mut t = timeline(520.0, 640.0, long_entries.clone(), long_named.clone());
     shot.paint("long-name", 520, 640, &mut t);
 
@@ -461,11 +461,16 @@ fn shoot_long_and_nested(shot: &mut Shot, doc: &AutoCommit, entries: &[HistoryEn
     if let Some(start) = entries.first()
         && let Some(end) = entries.last()
     {
-        ui::history_groups::name_range(&mut nested_doc, &start.id, Some(&end.id), "Q3 release");
+        tilo_ui::history_groups::name_range(
+            &mut nested_doc,
+            &start.id,
+            Some(&end.id),
+            "Q3 release",
+        );
     }
     qdoc::history::commit_stamped_at(&mut nested_doc, now_i64().saturating_sub(400));
     let nested_entries = rows(&mut nested_doc);
-    let nested_named = ui::history_groups::read_named_ranges(&nested_doc, &author_dir());
+    let nested_named = tilo_ui::history_groups::read_named_ranges(&nested_doc, &author_dir());
     let mut t = timeline(520.0, 700.0, nested_entries, nested_named);
     t.set_all_expanded(true);
     shot.paint("nested", 520, 700, &mut t);
@@ -528,8 +533,8 @@ fn synthetic_entry(i: i32) -> HistoryEntry {
     let elapsed = 2000u64.saturating_sub(u64::try_from(i).unwrap_or(0));
     let delta_chars = usize::try_from((i % 40).saturating_add(1)).unwrap_or(1);
     HistoryEntry {
-        id: ui::HistoryEntryId(synthetic_id(i)),
-        author: ui::HistoryAuthor::new(format!("Person {}", i / 2), hue, "0badf00d"),
+        id: tilo_ui::HistoryEntryId(synthetic_id(i)),
+        author: tilo_ui::HistoryAuthor::new(format!("Person {}", i / 2), hue, "0badf00d"),
         op_class: collab_types::OpClass::Splice,
         artifact_kind: collab_types::ArtifactKind::Note,
         timestamp: now()
@@ -545,7 +550,11 @@ fn synthetic_entry(i: i32) -> HistoryEntry {
 
 /// Narrow panes over real bands, and a thousand synthesised bands. Split out
 /// of `run` to keep that under the line cap.
-fn shoot_narrow_and_thousand(shot: &mut Shot, entries: &[HistoryEntry], named: &[ui::NamedRange]) {
+fn shoot_narrow_and_thousand(
+    shot: &mut Shot,
+    entries: &[HistoryEntry],
+    named: &[tilo_ui::NamedRange],
+) {
     // Narrow, with real bands.
     let mut t = timeline(300.0, 640.0, entries.to_vec(), named.to_vec());
     shot.paint("narrow-300", 300, 640, &mut t);
@@ -573,9 +582,9 @@ fn shoot_narrow_and_thousand(shot: &mut Shot, entries: &[HistoryEntry], named: &
 fn shoot_version_strip(
     shot: &mut Shot,
     entries: &[HistoryEntry],
-    named: &[ui::NamedRange],
+    named: &[tilo_ui::NamedRange],
     open_entries: &[HistoryEntry],
-    open_named: &[ui::NamedRange],
+    open_named: &[tilo_ui::NamedRange],
     single_entries: &[HistoryEntry],
 ) {
     let last_tick = entries.len().saturating_sub(1);
@@ -632,11 +641,11 @@ fn author_dir() -> AuthorDirectory {
     let mut authors = AuthorDirectory::new();
     authors.register(
         &hex_actor("alice"),
-        ui::HistoryAuthor::new("Alice", 210.0, short(&hex_actor("alice"))),
+        tilo_ui::HistoryAuthor::new("Alice", 210.0, short(&hex_actor("alice"))),
     );
     authors.register(
         &hex_actor("Ada Lovelace"),
-        ui::HistoryAuthor::new("Ada Lovelace", 320.0, short(&hex_actor("Ada Lovelace"))),
+        tilo_ui::HistoryAuthor::new("Ada Lovelace", 320.0, short(&hex_actor("Ada Lovelace"))),
     );
     authors
 }

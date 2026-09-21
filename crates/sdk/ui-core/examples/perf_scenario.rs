@@ -1,5 +1,5 @@
 //! Headless performance-scenario runner — the CLI face of
-//! [`ui::profiling`].
+//! [`tilo_ui::profiling`].
 //!
 //! Drives a `ui` app through a scripted interaction with **no GPU and no
 //! window**, timing each of the five frame passes (`sync`, `build_layout`,
@@ -24,12 +24,12 @@
 //! ```
 //!
 //! Any app author gets the same measurement over their own root with one call:
-//! `ui::profiling::run_scenario_on(state, app_root(), &scenario)`.
+//! `tilo_ui::profiling::run_scenario_on(state, app_root(), &scenario)`.
 
-use ui::profiling::{PerfScenario, PerfStep, run_scenario_on};
-use ui::state::State;
-use ui::theme::Theme;
-use ui::widget::{Column, Scrollable, Text, Widget};
+use tilo_ui::profiling::{PerfScenario, PerfStep, run_scenario_on};
+use tilo_ui::state::State;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{Column, Scrollable, Text, Widget};
 
 use super::gallery_scene;
 
@@ -48,7 +48,7 @@ fn list_app(rows: usize) -> (State, Box<dyn Widget>) {
 }
 
 pub fn run(args: &[String]) {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
     let count = arg_value(args, "--count")
         .and_then(|v| v.parse().ok())
         .unwrap_or(120usize);

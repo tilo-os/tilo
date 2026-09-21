@@ -8,7 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::widget::{TabBar, TabDescriptor};
+use tilo_ui::widget::{TabBar, TabDescriptor};
 
 #[test]
 fn tabbar_activates_by_index() {
@@ -42,7 +42,7 @@ fn tabbar_reorder_swaps_positions() {
     assert_eq!(ids, vec![2, 3, 1]);
 }
 
-use ui::widget::{AppKind, TileContent, TileHost};
+use tilo_ui::widget::{AppKind, TileContent, TileHost};
 
 #[test]
 fn tile_content_stub_renders_label() {

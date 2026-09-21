@@ -12,13 +12,26 @@ use std::time::{Duration, Instant};
 
 use ui::{GroundedNarrative, NarrativeRequest};
 
-#[derive(Default)]
 pub struct LocalHistoryNarrator {
+    enabled: bool,
     pending: Arc<std::sync::Mutex<Option<(String, GroundedNarrative)>>>,
     running: Arc<AtomicBool>,
     last_key: Option<String>,
     completed_key: Option<String>,
     last_attempt: Option<Instant>,
+}
+
+impl Default for LocalHistoryNarrator {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pending: Arc::default(),
+            running: Arc::default(),
+            last_key: None,
+            completed_key: None,
+            last_attempt: None,
+        }
+    }
 }
 
 const FAILED_RETRY_DELAY: Duration = Duration::from_secs(60);
@@ -32,6 +45,15 @@ const NARRATIVE_LIMIT: usize = 1024 * 1024;
 const NARRATIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 impl LocalHistoryNarrator {
+    /// Deterministic narrator for fixtures and hosts without local-model
+    /// authority. Requests remain inert instead of probing the host.
+    pub(crate) fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Self::default()
+        }
+    }
+
     /// Start one bounded background generation when the evidence changes.
     pub fn request(&mut self, request: &NarrativeRequest) {
         self.request_prompt(request, prompt_for(request));
@@ -44,6 +66,9 @@ impl LocalHistoryNarrator {
     }
 
     fn request_prompt(&mut self, _request: &NarrativeRequest, prompt: String) {
+        if !self.enabled {
+            return;
+        }
         #[cfg(test)]
         crate::shell::test_support::ambient_start("history model worker");
         let key = blake3::hash(prompt.as_bytes()).to_hex().to_string();
@@ -124,7 +149,11 @@ fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String>
                     "TB" => 1_000_000_000_000_f64,
                     _ => return None,
                 };
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "Model inventory sizes are nonnegative decimal byte estimates used only for bounded model selection."
+                )]
                 Some((value * multiplier) as u64)
             });
             Some((name, size))

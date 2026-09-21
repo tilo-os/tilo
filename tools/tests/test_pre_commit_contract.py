@@ -15,6 +15,12 @@ class PreCommitContractTests(unittest.TestCase):
         for command in ("cargo check", "cargo clippy", "cargo test", "cargo nextest"):
             self.assertNotIn(command, hook)
 
+    def test_local_hook_checks_staged_allow_reasons(self) -> None:
+        hook = HOOK.read_text(encoding="utf-8")
+
+        self.assertIn("check_changed_rust_allows.py", hook)
+        self.assertIn("--staged", hook)
+
     def test_ci_owns_the_differential_clippy_gate(self) -> None:
         workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")
 
@@ -52,7 +58,7 @@ class PreCommitContractTests(unittest.TestCase):
         base_compile = 'run_clippy "$base_tree" "$base_json"'
         self.assertLess(script.index(head_compile), script.index(base_compile))
         self.assertIn("using its partial diagnostic baseline", script)
-        self.assertIn('git -C "$root" diff --name-only "$base..HEAD"', script)
+        self.assertIn('git -C "$root" diff --name-status -M "$base..HEAD"', script)
         self.assertIn('fingerprint[1] in changed', script)
         self.assertNotIn("refusing a false baseline", script)
         self.assertNotIn("accepting the base-repair path", script)

@@ -20,10 +20,16 @@ FROM registry.fedoraproject.org/fedora:42
 # package here would be shadowed by a shim reporting the component missing.
 # pulseaudio supplies only the private software endpoint started by
 # tools/with-headless-audio.sh; CI does not start or replace a host audio service.
+# cryptsetup, swtpm and tpm2-tools are test subjects too: tilo-rollback's
+# mechanism suite drives a real LUKS2 header and a private software TPM and must
+# fail rather than report success when that security boundary is unavailable.
+# The pinned NTFS reader archive bootstraps with autotools; libgcrypt-devel
+# supplies its configure macro even though production crypto is disabled.
 RUN dnf install -y \
       nodejs \
       capnproto \
       gcc gcc-c++ make cmake perl perl-FindBin python3 git jq ripgrep time yt-dlp \
+      autoconf automake libtool libgcrypt-devel \
       clang clang-devel pkgconf-pkg-config \
       libxkbcommon-devel wayland-devel \
       libseat-devel libinput-devel systemd-devel libdrm-devel \
@@ -46,6 +52,7 @@ RUN dnf install -y \
       nasm \
       vulkan-loader mesa-vulkan-drivers \
       bubblewrap gnome-text-editor \
+      cryptsetup swtpm swtpm-tools tpm2-tools \
     && dnf clean all
 
 # Required by production PDF capture tests. Use the same verified external
