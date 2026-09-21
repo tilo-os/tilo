@@ -3,10 +3,22 @@
 The registry is Tilo's semi-federated marketplace for `.qpkg`
 bundles. It advertises signed metadata so users can browse,
 install, and update packages from the shell. Anyone can host
-their own registry; the Tilo org deployment targets
-`registry.tilo.dev` (source under `crates/packaging/registry-server`)
-and ships **the registry client itself as a `.qpkg` app** so it
-can be swapped out or forked like any other Tilo app.
+their own registry. The Tilo org's alpha deployment is publicly reachable at
+`registry.sandbox.example` using the server under
+`crates/packaging/registry-server`. The separate `registry.tilo.dev` production
+hostname remains deferred.
+
+Continuous app packaging currently publishes immutable qpkgs and collection
+bundles to Forgejo's generic package registry. That is the cross-workflow
+artifact channel used by app, desktop and OS jobs; it is distinct from the
+signed catalogue and moderation service described here. Main-branch app publication
+now submits newly built qpkgs to that service; separate collector and networkless
+signer jobs independently verify accepted requests before advancing its signed
+snapshot. Production readiness still depends on the deployed owner/publisher trust,
+delegated-key rotation and backup path.
+
+The registry client is itself intended to ship as a `.qpkg` app so it can be
+swapped out or forked like any other Tilo app.
 
 The registry architecture covers self-hosted bootstrap, publisher-allowlist
 workflow, TLS setup, backup/restore, and moderation hooks.
@@ -214,10 +226,10 @@ artifact reproduces the existing entry, while reusing a version/target identity
 for different bytes fails closed.
 
 Each signed version binds the package root, exact final-file BLAKE3 and size,
-architecture, minimum ISA and runtime ABI. The official registry currently
-accepts only `x86_64`; CI still retains immutable `aarch64` artifacts for the
-future multi-target lane. Do not publish a macOS package through this Linux
-qpkg lane.
+architecture, minimum ISA and runtime ABI. The official registry accepts
+`x86_64` and `aarch64` targets. Pass the qpkg's target with
+`tilo-pkg entry --arch`; do not publish a macOS package through this Linux qpkg
+lane.
 
 ### 6. Moderator workflow
 

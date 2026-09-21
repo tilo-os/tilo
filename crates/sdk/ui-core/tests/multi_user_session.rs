@@ -10,10 +10,12 @@
 
 use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
 use std::time::SystemTime;
-use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
-use ui::permissions::{Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb};
-use ui::presence::{PathSegment, PresenceKey};
-use ui::widget::{TextInput, Widget};
+use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
+use tilo_ui::permissions::{
+    Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb,
+};
+use tilo_ui::presence::{PathSegment, PresenceKey};
+use tilo_ui::widget::{TextInput, Widget};
 
 #[test]
 fn memory_relay_fans_out_presence_updates_to_both_peers() {
@@ -149,9 +151,9 @@ fn status_crosses_the_same_authenticated_room_presence_path() {
     let room = PresenceKey::Workspace {
         id: "finance-room".into(),
     };
-    let status = ui::LiveStatus {
+    let status = tilo_ui::LiveStatus {
         text: "Reconciling forecast against actuals".into(),
-        origin: ui::StatusOrigin::Inferred {
+        origin: tilo_ui::StatusOrigin::Inferred {
             generator: "local".into(),
         },
         updated_at: SystemTime::now(),
@@ -174,7 +176,10 @@ fn status_crosses_the_same_authenticated_room_presence_path() {
         .status_for(&UserId("alice".into()), SystemTime::now())
         .expect("remote status reaches the room presence context");
     assert_eq!(received.text, "Reconciling forecast against actuals");
-    assert!(matches!(received.origin, ui::StatusOrigin::Inferred { .. }));
+    assert!(matches!(
+        received.origin,
+        tilo_ui::StatusOrigin::Inferred { .. }
+    ));
 }
 
 #[test]
@@ -312,9 +317,9 @@ fn peer_caret_in_text_input_renders_on_remote_app() {
 
     let mut input = TextInput::new(vec![PathSegment::Field("doc".into())]);
     let mut scene = vello::Scene::new();
-    let theme = ui::theme::Theme::dark();
-    let mut tr = ui::text_render::TextRenderer::new();
-    let perms = ui::permissions::PermissionContext::permissive();
+    let theme = tilo_ui::theme::Theme::dark();
+    let mut tr = tilo_ui::text_render::TextRenderer::new();
+    let perms = tilo_ui::permissions::PermissionContext::permissive();
 
     input.draw_with_presence(
         &mut scene,

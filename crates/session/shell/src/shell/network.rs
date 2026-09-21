@@ -3205,7 +3205,10 @@ impl ShellNetwork {
 
     /// Stream an immutable Nearby spool object from a receiver-confirmed
     /// checkpoint to one exact certified transport peer.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the transfer command carries the authenticated target plus its complete resumable-content contract"
+    )]
     pub(crate) fn start_nearby_transfer(
         &self,
         target: &crate::shell::personal_continuity::DeviceId,
@@ -5311,7 +5314,10 @@ impl ShellNetwork {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "identity redemption keeps certificate, invitation, room, and persistence validation in one atomic admission path"
+    )]
     fn redeem_invited_identity(
         &self,
         workspace_topic: u64,
@@ -6731,10 +6737,11 @@ mod tests {
             target_key.public().as_bytes(),
         ))
         .unwrap();
-        net.registered_home_peer_ids
+        authenticated_personal_peer(&net, &root, &target_key);
+        net.registered_home_device_ids
             .lock()
             .unwrap()
-            .insert(target_key.public());
+            .insert(*target_key.public().as_bytes());
         let request_id = net
             .send_personal_fabric_action(
                 &target,

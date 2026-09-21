@@ -11,9 +11,12 @@
 //!         ├── "title"  (Text)   # collaborative title
 //!         ├── "parent" (Str)    # PageId string, or "" for a root page
 //!         ├── "order"  (Int)
-//!         └── "blocks" (List)
+//!         └── "blocks" (List; object storage, not presentation order)
 //!             └── [i] (Map)
+//!                 ├── "id" (Str)    # durable public identity
 //!                 ├── "kind" (Str)   # paragraph / heading1.. / bullet / ...
+//!                 ├── "notes_order_base" (Bytes) # initial fractional position
+//!                 ├── "notes_order" (Bytes, optional) # winning subsequent move
 //!                 └── "text" (Text)  # body + author/Notes inline marks
 //! ```
 //!
@@ -61,6 +64,26 @@ impl NotesDoc {
                 Self::page_blocks_list(doc, copy.page).ok_or("copy block list is missing")?;
             for (index, block) in copy.blocks.into_iter().enumerate() {
                 insert_block(doc, &list, index, &block.id, &block.kind, &block.text)?;
+                if block.nesting > 0 {
+                    apply_block_op(
+                        doc,
+                        &list,
+                        &BlockEditOp::SetNesting {
+                            block_id: block.id.clone(),
+                            depth: block.nesting,
+                        },
+                    )?;
+                }
+                if block.code_group.is_some() {
+                    apply_block_op(
+                        doc,
+                        &list,
+                        &BlockEditOp::SetCodeGroup {
+                            block_id: block.id.clone(),
+                            group_id: block.code_group,
+                        },
+                    )?;
+                }
                 let text = Self::block_text_obj(doc, &list, index).ok_or("copy text is missing")?;
                 for mark in block.marks {
                     doc.mark(&text, mark, ExpandMark::After)
@@ -350,7 +373,9 @@ impl NotesDoc {
         out
     }
 
-    /// Return an existing page's `blocks` List. Page creation ensures the
+    /// Return an existing page's storage `blocks` List. Use ordered block
+    /// objects or snapshots for presentation; physical indices are not order.
+    /// Page creation ensures the
     /// list exists as part of `UpsertPage`; this read helper intentionally
     /// never creates document state from an editor/widget path.
     ///
@@ -368,21 +393,19 @@ impl NotesDoc {
         }
     }
 
-    /// The `Text` `ObjId` for block `index` in a `blocks` List, if that
+    /// The `Text` `ObjId` for presentation position `index`, if that
     /// block exists and has a Text body.
     pub fn block_text_obj(doc: &AutoCommit, blocks: &ObjId, index: usize) -> Option<ObjId> {
-        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(blocks, index) else {
-            return None;
-        };
+        let block = Self::ordered_block_objects(doc, blocks).get(index)?.clone();
         match doc.get(&block, "text") {
             Ok(Some((Value::Object(ObjType::Text), t))) => Some(t),
             _ => None,
         }
     }
 
-    /// The `kind` string for block `index`, defaulting to `"paragraph"`.
+    /// The `kind` at presentation position `index`, defaulting to `"paragraph"`.
     pub fn block_kind(doc: &AutoCommit, blocks: &ObjId, index: usize) -> String {
-        let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(blocks, index) else {
+        let Some(block) = Self::ordered_block_objects(doc, blocks).get(index).cloned() else {
             return "paragraph".to_string();
         };
         match doc.get(&block, "kind") {
@@ -394,8 +417,8 @@ impl NotesDoc {
         }
     }
 
-    /// Stable block identities and current plain text for one page. The Text
-    /// object's Automerge id survives list insertion, deletion and reordering.
+    /// Stable public block identities and current plain text for one page.
+    /// Reordering changes presentation metadata and preserves native Text objects.
     pub fn page_block_snapshots(doc: &AutoCommit, id: PageId) -> Vec<(String, String)> {
         let Ok(Some((Value::Object(ObjType::Map), pages))) = doc.get(&ROOT, "pages") else {
             return Vec::new();
@@ -407,10 +430,11 @@ impl NotesDoc {
         let Ok(Some((Value::Object(ObjType::List), blocks))) = doc.get(&page, "blocks") else {
             return Vec::new();
         };
-        (0..doc.length(&blocks))
-            .filter_map(|index| {
-                let text = Self::block_text_obj(doc, &blocks, index)?;
-                let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&blocks, index) else {
+        Self::ordered_block_objects(doc, &blocks)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, block)| {
+                let Ok(Some((Value::Object(ObjType::Text), text))) = doc.get(&block, "text") else {
                     return None;
                 };
                 // Pre-action Notes documents used the Text object id as the
@@ -431,6 +455,34 @@ impl NotesDoc {
             .collect()
     }
 
+    /// Visible Maps in presentation order; the owning List is storage only.
+    pub fn ordered_block_objects(doc: &AutoCommit, list: &ObjId) -> Vec<ObjId> {
+        crate::block_order::objects(doc, list)
+    }
+
+    /// Strict projection boundary for a mounted editor; malformed storage must
+    /// be refused, not silently omitted from the visible document.
+    /// # Errors
+    /// Refuses non-List storage or a missing/conflicted/non-Map list element.
+    pub fn checked_block_objects(doc: &AutoCommit, list: &ObjId) -> Result<Vec<ObjId>, String> {
+        if doc.object_type(list).ok() != Some(ObjType::List) {
+            return Err("canonical blocks must be a List".into());
+        }
+        for index in 0..doc.length(list) {
+            let values = doc.get_all(list, index).map_err(|e| e.to_string())?;
+            if !matches!(values.as_slice(), [(Value::Object(ObjType::Map), _)]) {
+                return Err("canonical block must be one Map".into());
+            }
+        }
+        Ok(Self::ordered_block_objects(doc, list))
+    }
+
+    pub fn has_block_order(doc: &AutoCommit, list: &ObjId) -> bool {
+        Self::ordered_block_objects(doc, list)
+            .iter()
+            .any(|block| crate::block_order::stored(doc, block).is_some())
+    }
+
     /// Append a new block `{ kind, text }` to a `blocks` List and return
     /// the new block's `text` `ObjId` (already seeded with `text`).
     ///
@@ -444,18 +496,9 @@ impl NotesDoc {
     )]
     pub fn push_block(doc: &mut AutoCommit, blocks: &ObjId, kind: &str, text: &str) -> ObjId {
         let index = doc.length(blocks);
-        let block = doc
-            .insert_object(blocks, index, ObjType::Map)
-            .expect("insert block map never fails");
-        let _ = doc.put(&block, "kind", kind);
-        let _ = doc.put(&block, "id", Uuid::new_v4().to_string());
-        let text_id = doc
-            .put_object(&block, "text", ObjType::Text)
-            .expect("put_object block text never fails");
-        if !text.is_empty() {
-            let _ = doc.splice_text(&text_id, 0, 0, text);
-        }
-        text_id
+        insert_block(doc, blocks, index, &Uuid::new_v4().to_string(), kind, text)
+            .expect("insert block on a live list succeeds");
+        Self::block_text_obj(doc, blocks, index).expect("new block has Text")
     }
 
     /// Apply semantic editor operations through a page's durable block list.
@@ -547,12 +590,14 @@ impl NotesDoc {
         let Some(list) = Self::page_blocks_list(doc, page) else {
             return Vec::new();
         };
-        (0..doc.length(&list))
-            .filter_map(|index| {
-                let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&list, index) else {
+        Self::ordered_block_objects(doc, &list)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, block)| {
+                let Ok(Some((Value::Object(ObjType::Text), text_obj))) = doc.get(&block, "text")
+                else {
                     return None;
                 };
-                let text_obj = Self::block_text_obj(doc, &list, index)?;
                 let text = doc.text(&text_obj).ok()?;
                 let id = block_id(doc, &block).unwrap_or_else(|| {
                     let kind = block_kind_value(doc, &block).unwrap_or_default();
@@ -595,6 +640,8 @@ struct DuplicateBlock {
     kind: String,
     text: String,
     marks: Vec<Mark>,
+    code_group: Option<String>,
+    nesting: u8,
 }
 struct PreparedDuplicate {
     page: PageId,
@@ -722,6 +769,7 @@ fn prepare_duplicate_blocks(
     }
     let list = NotesDoc::page_blocks_list(doc, src).ok_or("source list is missing")?;
     let mut copied_blocks = Vec::new();
+    let mut groups = BTreeMap::new();
     for (index, (id, text)) in source_blocks.into_iter().enumerate() {
         let object = NotesDoc::block_text_obj(doc, &list, index).ok_or("source text is missing")?;
         let mut marks = doc.marks(&object).map_err(|e| e.to_string())?;
@@ -736,6 +784,19 @@ fn prepare_duplicate_blocks(
                 }
             }
         }
+        let (_, source_map) = block_map(doc, &list, &id).ok_or("source block is missing")?;
+        let code_group = doc
+            .get(&source_map, "code_group")
+            .map_err(|e| e.to_string())?
+            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .map(|old| -> Result<_, String> {
+                let copied = blocks
+                    .get(id.as_str())
+                    .copied()
+                    .ok_or_else(|| "source block mapping is missing".to_owned())?;
+                Ok(groups.entry(old).or_insert(copied).clone())
+            })
+            .transpose()?;
         copied_blocks.push(DuplicateBlock {
             id: (*blocks
                 .get(id.as_str())
@@ -744,6 +805,12 @@ fn prepare_duplicate_blocks(
             kind: NotesDoc::block_kind(doc, &list, index),
             text,
             marks,
+            code_group,
+            nesting: doc
+                .get(&source_map, "nesting")
+                .map_err(|e| e.to_string())?
+                .and_then(|(value, _)| value.to_u64())
+                .unwrap_or(0) as u8,
         });
     }
     Ok(copied_blocks)
@@ -951,10 +1018,100 @@ fn block_map(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<(usize, ObjId)>
     }
 }
 
+fn ordered_index(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<usize> {
+    NotesDoc::ordered_block_objects(doc, list)
+        .iter()
+        .position(|block| block_id(doc, block).as_deref() == Some(id))
+}
+
+fn order_enabled(doc: &AutoCommit, list: &ObjId) -> bool {
+    doc.get(ROOT, "notes_schema_version")
+        .ok()
+        .flatten()
+        .is_some_and(|(value, _)| value.to_u64().is_some_and(|version| version >= 2))
+        || NotesDoc::has_block_order(doc, list)
+}
+
+fn ensure_list_order(doc: &mut AutoCommit, list: &ObjId) -> Result<(), String> {
+    ensure_block_ids(doc, list)?;
+    for index in 0..doc.length(list) {
+        let Some((Value::Object(ObjType::Map), block)) =
+            doc.get(list, index).map_err(|e| e.to_string())?
+        else {
+            return Err("block storage is malformed".into());
+        };
+        if crate::block_order::stored(doc, &block).is_none() {
+            let id = block_id(doc, &block)
+                .ok_or("block identity is missing")?
+                .parse::<Uuid>()
+                .map_err(|e| e.to_string())?;
+            doc.put(
+                &block,
+                crate::block_order::BASE_FIELD,
+                crate::block_order::initial(index, id),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Upgrade from inside the structural action, never from a reader or a widget.
+/// Existing canonical peers reject schema 2 rather than interpreting storage
+/// order as presentation order. Existing Text/Map identities are untouched.
+fn enable_block_order(doc: &mut AutoCommit, list: &ObjId) -> Result<(), String> {
+    let canonical_v1 = doc
+        .get(ROOT, "notes_schema_version")
+        .ok()
+        .flatten()
+        .is_some_and(|(value, _)| value.to_u64() == Some(1));
+    if canonical_v1 {
+        let lists = NotesDoc::list_pages(doc)
+            .into_iter()
+            .filter_map(|page| NotesDoc::page_blocks_list(doc, page.id))
+            .collect::<Vec<_>>();
+        for blocks in lists {
+            ensure_list_order(doc, &blocks)?;
+        }
+        doc.put(ROOT, "notes_schema_version", 2_u64)
+            .map_err(|e| e.to_string())?;
+    } else {
+        ensure_list_order(doc, list)?;
+    }
+    Ok(())
+}
+
+fn rank_for_gap(
+    doc: &AutoCommit,
+    objects: &[ObjId],
+    index: usize,
+    id: &str,
+) -> Result<Vec<u8>, String> {
+    let rank = |index: usize| {
+        objects
+            .get(index)
+            .and_then(|block| crate::block_order::stored(doc, block))
+    };
+    let lo = index.checked_sub(1).and_then(rank);
+    let hi = rank(index);
+    crate::block_order::between(
+        lo.as_deref(),
+        hi.as_deref(),
+        id.parse::<Uuid>().map_err(|e| e.to_string())?,
+    )
+}
+
 pub(crate) fn valid_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "paragraph" | "divider" | "heading1" | "heading2" | "heading3"
+        "paragraph"
+            | "quote"
+            | "table:0"
+            | "table:1"
+            | "divider"
+            | "heading1"
+            | "heading2"
+            | "heading3"
     ) || kind
         .strip_prefix("bullet:")
         .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| n <= 5))
@@ -983,18 +1140,33 @@ fn insert_block(
     if Uuid::parse_str(id).is_err() || !valid_kind(kind) {
         return Err("block operation is invalid".into());
     }
+    let order = if order_enabled(doc, list) {
+        let objects = NotesDoc::ordered_block_objects(doc, list);
+        Some(rank_for_gap(doc, &objects, index.min(objects.len()), id)?)
+    } else {
+        None
+    };
+    let storage_index = if order.is_some() {
+        doc.length(list)
+    } else {
+        index.min(doc.length(list))
+    };
     let block = doc
-        .insert_object(list, index.min(doc.length(list)), ObjType::Map)
+        .insert_object(list, storage_index, ObjType::Map)
         .map_err(|_| "page block list no longer exists")?;
     doc.put(&block, "id", id)
         .map_err(|_| "page block list no longer exists")?;
     doc.put(&block, "kind", kind)
         .map_err(|_| "page block list no longer exists")?;
+    if let Some(order) = order {
+        doc.put(&block, crate::block_order::BASE_FIELD, order)
+            .map_err(|e| e.to_string())?;
+    }
     if doc
         .get(ROOT, "notes_schema_version")
         .ok()
         .flatten()
-        .is_some_and(|(value, _)| value.to_i64() == Some(1))
+        .is_some_and(|(value, _)| value.to_i64().is_some_and(|version| version >= 1))
     {
         doc.put(&block, "notes_marks_version", 1_i64)
             .map_err(|e| e.to_string())?;
@@ -1029,7 +1201,7 @@ fn apply_block_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Resul
                 return Err("block already exists".into());
             }
             let index = match after {
-                Some(after) => block_index(doc, list, after)
+                Some(after) => ordered_index(doc, list, after)
                     .map(|index| index.saturating_add(1))
                     .ok_or_else(|| "block predecessor no longer exists".to_string())?,
                 None => 0,
@@ -1048,8 +1220,59 @@ fn apply_block_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Resul
             }
             let (_, block) =
                 block_map(doc, list, id).ok_or_else(|| "block no longer exists".to_string())?;
+            if kind.starts_with("bullet:")
+                || kind.starts_with("numbered:")
+                || kind.starts_with("checklist:")
+            {
+                doc.delete(&block, "nesting").map_err(|e| e.to_string())?;
+            }
+            if !kind.starts_with("code:") {
+                doc.delete(&block, "code_group")
+                    .map_err(|e| e.to_string())?;
+            }
             doc.put(&block, "kind", kind)
                 .map_err(|_| "page block list no longer exists".into())
+        }
+        BlockEditOp::SetNesting {
+            block_id: id,
+            depth,
+        } => {
+            if *depth > crate::markdown::MAX_LIST_INDENT {
+                return Err("block nesting is too deep".into());
+            }
+            let (_, block) = block_map(doc, list, id).ok_or("block no longer exists")?;
+            let kind = block_kind_value(doc, &block).ok_or("block kind is missing")?;
+            if *depth > 0
+                && (kind.starts_with("bullet:")
+                    || kind.starts_with("numbered:")
+                    || kind.starts_with("checklist:"))
+            {
+                return Err("list depth belongs to its kind".into());
+            }
+            if *depth == 0 {
+                doc.delete(&block, "nesting").map_err(|e| e.to_string())
+            } else {
+                doc.put(&block, "nesting", u64::from(*depth))
+                    .map_err(|e| e.to_string())
+            }
+        }
+        BlockEditOp::SetCodeGroup {
+            block_id: id,
+            group_id,
+        } => {
+            let (_, block) = block_map(doc, list, id).ok_or("block no longer exists")?;
+            if let Some(group) = group_id {
+                let uuid = Uuid::parse_str(group).map_err(|_| "invalid code group UUID")?;
+                if uuid.is_nil()
+                    || !block_kind_value(doc, &block).is_some_and(|kind| kind.starts_with("code:"))
+                {
+                    return Err("invalid code group".into());
+                }
+                doc.put(&block, "code_group", group.as_str())
+                    .map_err(|e| e.to_string())
+            } else {
+                doc.delete(&block, "code_group").map_err(|e| e.to_string())
+            }
         }
         BlockEditOp::SetChecklist { block_id: id, done } => {
             let (_, block) =
@@ -1101,54 +1324,38 @@ fn apply_block_op(doc: &mut AutoCommit, list: &ObjId, op: &BlockEditOp) -> Resul
             if after.as_deref() == Some(id) {
                 return Err("block cannot follow itself".into());
             }
-            let (old_index, block) =
+            let (_, block) =
                 block_map(doc, list, id).ok_or_else(|| "block no longer exists".to_string())?;
-            let kind = block_kind_value(doc, &block)
-                .ok_or_else(|| "block kind no longer exists".to_string())?;
-            let text = match doc.get(&block, "text") {
-                Ok(Some((Value::Object(ObjType::Text), text))) => {
-                    doc.text(&text).map_err(|_| "block text no longer exists")?
-                }
-                _ => return Err("block text no longer exists".into()),
-            };
-            // Automerge has no list move primitive: this is a delete + insert.
-            // Preserve the Notes-owned native marks (and their migration
-            // marker) explicitly so a reorder cannot silently strip formatting
-            // or page links from the moved block.
-            let Ok(Some((Value::Object(ObjType::Text), text_obj))) = doc.get(&block, "text") else {
-                return Err("block text no longer exists".into());
-            };
-            let marks = doc
-                .marks(&text_obj)
-                .ok()
+            let objects = NotesDoc::ordered_block_objects(doc, list);
+            let old_index = objects
+                .iter()
+                .position(|object| object == &block)
+                .ok_or("block no longer exists")?;
+            let previous = old_index
+                .checked_sub(1)
+                .and_then(|i| objects.get(i))
+                .and_then(|object| block_id(doc, object));
+            if previous.as_deref() == after.as_deref() {
+                return Ok(());
+            }
+            let remaining = objects
                 .into_iter()
-                .flatten()
-                .filter_map(|mark| inline_mark_span(&text, &mark))
+                .filter(|object| object != &block)
                 .collect::<Vec<_>>();
-            let had_marks_version = matches!(
-                doc.get(&block, "notes_marks_version"),
-                Ok(Some((Value::Scalar(value), _))) if value.to_i64() == Some(1)
-            );
-            doc.delete(list, old_index)
-                .map_err(|_| "page block list no longer exists")?;
             let index = match after {
-                Some(after) => block_index(doc, list, after)
-                    .map(|index| index.saturating_add(1))
-                    .ok_or_else(|| "block predecessor no longer exists".to_string())?,
+                Some(after) => remaining
+                    .iter()
+                    .position(|object| block_id(doc, object).as_deref() == Some(after))
+                    .map(|index| index + 1)
+                    .ok_or("block predecessor no longer exists")?,
                 None => 0,
             };
-            insert_block(doc, list, index, id, &kind, &text)?;
-            if had_marks_version {
-                let (_, inserted) = block_map(doc, list, id)
-                    .ok_or_else(|| "moved block no longer exists".to_string())?;
-                let Ok(Some((Value::Object(ObjType::Text), inserted_text))) =
-                    doc.get(&inserted, "text")
-                else {
-                    return Err("moved block text no longer exists".into());
-                };
-                replace_native_marks(doc, &inserted, &inserted_text, &text, &marks)?;
-            }
-            Ok(())
+            // Validate the destination before migration or any mutation. Moving
+            // changes only this scalar; native Text and every native mark survive.
+            enable_block_order(doc, list)?;
+            let rank = rank_for_gap(doc, &remaining, index, id)?;
+            doc.put(&block, crate::block_order::FIELD, rank)
+                .map_err(|e| e.to_string())
         }
     }
 }
@@ -1413,8 +1620,7 @@ mod tests {
         assert!(NotesDoc::page_marks_are_canonical(&doc, page));
         assert_eq!(NotesDoc::page_block_marks(&doc, page)[0].1, expected);
 
-        // A Notes block move is represented as delete+insert, so this pins
-        // the explicit native-mark preservation in that action interpreter.
+        // A move must leave native formatting/link anchors unchanged.
         NotesDoc::apply_block_ops(
             &mut doc,
             page,

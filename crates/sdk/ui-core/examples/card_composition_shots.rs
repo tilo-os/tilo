@@ -1,9 +1,9 @@
 //! Content-card framework fixture. No app migration is implied.
 //! `cargo run -p ui --example card-composition-shots -- /tmp/card-composition`
 use std::path::PathBuf;
-use ui::headless::FrameHarness;
-use ui::theme::Theme;
-use ui::widget::{Actions, Button, Card, CardGrid, Container, Element, Scrollable, Text};
+use tilo_ui::headless::FrameHarness;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{Actions, Button, Card, CardGrid, Container, Element, Scrollable, Text};
 
 // The automatic authoring surface contains no dimensions or viewport branches.
 fn cards() -> Element {
@@ -18,7 +18,7 @@ fn cards() -> Element {
         Box::new(Card::composed(Box::new(Text::new("Your connections are ready. Refresh remote services to discover updates and sync changes from your other devices.")))
             .with_title("Remote connections")
             .with_footer(Box::new(Actions::new(Button::new("remote-refresh", "Refresh all connections", None)
-                .with_icon(ui::icons::Icon::Refresh).primary())
+                .with_icon(tilo_ui::icons::Icon::Refresh).primary())
                 .secondary(Button::new("remote-details", "View details", None))))),
     ]))
 }
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("narrow-large-text", (340, 1200), 2.0),
     ] {
         let mut harness = FrameHarness::new_with_theme(
-            ui::State::new(),
+            tilo_ui::State::new(),
             page(),
             viewport,
             Theme::dark().with_text_scale(scale),
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let mut resized =
-        FrameHarness::new_with_theme(ui::State::new(), page(), (1080, 640), Theme::dark());
+        FrameHarness::new_with_theme(tilo_ui::State::new(), page(), (1080, 640), Theme::dark());
     resized.resize((340, 900))?;
     resized.render_png(&output.join("resized-narrow.png"));
     std::fs::write(

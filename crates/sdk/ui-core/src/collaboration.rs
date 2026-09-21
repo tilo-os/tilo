@@ -1643,6 +1643,13 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
 // One signing boundary for inherited Unix services and supplied host services.
 // This trait is private: platform bootstrap supplies the concrete broker client,
 // never a caller-defined signer that could bypass that client's service policy.
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "certified inherited identities are supplied by Unix launch services"
+    )
+)]
 trait SdkCertifiedIdentity: Send {
     fn device_certificate(&self) -> Option<&[u8]>;
     fn signing_public_key(&self) -> [u8; 32];
@@ -1720,6 +1727,13 @@ impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
     }
 }
 
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "certified inherited identities are supplied by Unix launch services"
+    )
+)]
 enum SdkDocumentSigner {
     Certified(Box<dyn SdkCertifiedIdentity>),
     /// Explicit-FD harnesses have no launcher identity service. Their
@@ -1763,6 +1777,13 @@ fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal
     sdk_join_identity_from(runtime_identity::load()?, cluster_id)
 }
 
+#[cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "certified inherited identities are supplied by Unix launch services"
+    )
+)]
 fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
     identity: I,
     cluster_id: Uuid,
@@ -2279,14 +2300,14 @@ impl CollaborationManager {
     /// Test-only: build a manager talking to an SDK broker on the given
     /// already-connected client fd, bypassing env-var lookup so two
     /// tests in one process don't race on `TILO_SVC_COLLAB_FD`.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
         Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, Vec::new())
     }
 
     /// Like [`Self::from_sdk_fd_for_test`] but stamps the `join_channel`
     /// call with a caller-supplied identity blob.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn from_sdk_fd_for_test_with_identity(
         fd: RawFd,
         app_id: &str,
@@ -2778,6 +2799,7 @@ fn resolve_local_user_id() -> String {
 
 /// `$XDG_CONFIG_HOME/tilo/identity/primary.json`, else
 /// `$HOME/.config/tilo/identity/primary.json`.
+#[cfg(unix)]
 fn config_identity_path() -> Option<std::path::PathBuf> {
     let base = match non_empty_env("XDG_CONFIG_HOME") {
         Some(v) => std::path::PathBuf::from(v),

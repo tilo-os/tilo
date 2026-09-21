@@ -427,7 +427,11 @@ fn app_owned_transfer_region(
 
 // Coordinates have already been clamped to the u32-sized pixel buffer. The
 // float-to-integer conversion intentionally rounds outward to retain edges.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "Crop endpoints are floor/ceil rounded and clamped to nonnegative u32 frame dimensions before conversion."
+)]
 fn frozen_transfer_frame(
     surface_id: u64,
     source: Rect,
@@ -494,14 +498,20 @@ fn frozen_floating_return_frame(
     })
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Kurbo rect/vector addition translates app-local f64 geometry into desktop coordinates without integer arithmetic."
+)]
 fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The protocol pump keeps authenticated connection events, surface handoffs, and disconnect cleanup in their processing order."
+)]
 fn pump_floating_surface_service(
     service: &FloatingSurfaceService,
     state: &mut State,
@@ -813,7 +823,10 @@ fn pump_floating_surface_service(
     changed
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Kurbo rect/vector arithmetic applies an f64 translation to keep a reachable surface patch within desktop bounds."
+)]
 fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
     let mut offset = vello::kurbo::Vec2::ZERO;
     let reachable = 64.0;
@@ -830,7 +843,10 @@ fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
     rect + offset
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Kurbo point/rect arithmetic applies the same f64 clamp offset to window and content geometry."
+)]
 fn clamp_external_floating_geometry(
     window_rect: Rect,
     content_rect: Rect,
@@ -879,7 +895,10 @@ fn floating_desktop_bounds(outputs: &[Output], fallback_size: (u32, u32)) -> Rec
 /// from becoming stranded in a hole inside the desktop's bounding box. A
 /// reachable 64×64 patch on any real output is enough; otherwise the nearest
 /// output receives the same clamp used at the outside desktop edge.
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Kurbo point subtraction computes f64 distances to choose the nearest reachable output before clamping a surface."
+)]
 fn clamp_external_floating_geometry_to_outputs(
     window_rect: Rect,
     content_rect: Rect,
@@ -914,7 +933,10 @@ fn clamp_external_floating_geometry_to_outputs(
     clamp_external_floating_geometry(window_rect, content_rect, target)
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "Kurbo point/rect arithmetic moves each transfer source by the same f64 offset as its rehomed surface."
+)]
 fn rehome_native_floating_surfaces(
     state: &mut State,
     outputs: &[Output],
@@ -4123,9 +4145,15 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 }
 
 struct PortalBackend {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Retaining the runtime keeps portal worker tasks alive for the lifetime of the compositor backend."
+    )]
     runtime: tokio::runtime::Runtime,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Retaining the server handle keeps its D-Bus connection, bus name, and object server alive."
+    )]
     server: crate::portal::ServerHandle,
     remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
@@ -7702,10 +7730,9 @@ mod tests {
         );
 
         assert!(
-            fb.host_mut().focus_window_widget(strip, group, first),
-            "the existing tab can be focused through the production widget path"
+            fb.host_mut().focus_window_on_strip(strip, group, first),
+            "the existing tab can be focused through the production focus path"
         );
-        fb.host_mut().flush_active_tab_writeback();
         let _ = fb.paint_settled();
         assert_eq!(
             visible_tiled_surface_rects(&fb)

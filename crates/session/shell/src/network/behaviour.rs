@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn legacy_path_is_adopted_when_device_key_is_absent() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("device/keypair.bin");
+        let path = tilo_user_identity::IdentityPaths::under(dir.path()).device_privkey;
         let legacy = dir.path().join("tilo-fs/peer-key");
         std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         std::fs::write(&legacy, legacy_protobuf([8; 32])).unwrap();

@@ -8,7 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::widget::Scrollable;
+use tilo_ui::widget::Scrollable;
 
 #[test]
 fn scrollable_clamps_to_content_bounds() {

@@ -8,7 +8,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::overlay::{FocusTrap, Modal, OverlayStack, Popover};
+use tilo_ui::overlay::{FocusTrap, Modal, OverlayStack, Popover};
 use vello::kurbo::Point;
 
 #[test]

@@ -92,9 +92,9 @@ second app-specific automation protocol.
 Validate one app or the graphical workspace:
 
 ```bash
-tilo-dev check apps/my-app
-tilo-dev certify apps/my-app
-tilo-dev certify . --workspace
+tilo-app check apps/my-app
+tilo-app certify apps/my-app
+tilo-app certify . --workspace
 ```
 
 `check` includes structural validation, app-local formatting and Clippy,
@@ -144,7 +144,7 @@ touch. Expanded neighbouring targets must not overlap.
 | `word-processor` | Rich-text word processor over `qdoc`; round-trips .odt/.docx/.md plus PDF/HTML/RTF/EPUB via the `qdoc-*` codec crates. Binary `word-processor`. |
 | `sheets` | Spreadsheet: A1 addressing, tokenizer→parser→evaluator formula engine with dependency-aware recalc; .xlsx (calamine / rust_xlsxwriter), .ods and .csv import/export. |
 | `slides` | Presentation editor: slide editor, inspector, thumbnail rail, present mode; image import via the XDG file-chooser portal. |
-| `notes` | Markdown note-taking: page side-tree, block editor, `[[Page]]` links, on-disk `~/notes/` storage with debounced save. |
+| `notes` | Collaborative block notes: nested note tree, rich Markdown editing, `[[Note]]` links, tables, formulas, images, metadata, history-aware actions, and host-owned Automerge storage. |
 | `calendar` | Calendar + task manager (Planify-style): month/week/day/agenda, recurrence, tasks; iCalendar interop and live CalDAV sync (PROPFIND/REPORT/ETag PUT, worker thread, `live` on by default). |
 | `contacts` | Address book with vCard import/export. |
 | `typst-editor` | Split-view Typst editor: source pane + live compiled preview (`typst` / `typst-render` / tiny-skia), diagnostics panel, page thumbnails, background compile. |

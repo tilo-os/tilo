@@ -156,6 +156,8 @@ pub struct TextInput {
     rect: Rect,
     is_hovered: bool,
     is_focused: bool,
+    /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
+    caret_paint_suppressed: bool,
     text: String,
     /// Optional per-character admission rule for domain-specific single-line
     /// fields (for example a spreadsheet cell-reference box). Applied to
@@ -214,11 +216,16 @@ pub struct TextInput {
     single_layout: Option<RichTextLayout>,
     single_origin: Point,
     shaped_layout_signature: u64,
+    /// Complete authored runs supplied by a shared rich-text widget. They
+    /// participate in the same shaping as wrapping, carets and hit-testing.
+    rich_spans: Option<Vec<RichSpan>>,
     /// In-progress IME composition. It is inserted only in the display
     /// layout and never exposed through value, clipboard, CRDT, or a11y.
     preedit: String,
     preedit_cursor: Option<(usize, usize)>,
     scroll_x: f64,
+    /// A wrapped row inside a compound code fence shares its parent's spacing.
+    compact_multiline: bool,
     last_edit_time: Option<Instant>,
     font_size_override: Option<f32>,
     /// The text scale used for the most recent paint. Code gutter geometry is
@@ -358,6 +365,7 @@ impl TextInput {
             rect: Rect::ZERO,
             is_hovered: false,
             is_focused: false,
+            caret_paint_suppressed: false,
             text: String::new(),
             char_filter: None,
             cursor_pos: 0,
@@ -374,9 +382,11 @@ impl TextInput {
             single_layout: None,
             single_origin: Point::ZERO,
             shaped_layout_signature: u64::MAX,
+            rich_spans: None,
             preedit: String::new(),
             preedit_cursor: None,
             scroll_x: 0.0,
+            compact_multiline: false,
             last_edit_time: None,
             dirty: false,
             on_change: None,
@@ -717,11 +727,23 @@ impl TextInput {
         let mut hash = DefaultHasher::new();
         base.hash(&mut hash);
         for span in spans {
+            span.text.hash(&mut hash);
             span.color.hash(&mut hash);
             span.bold.hash(&mut hash);
             span.italic.hash(&mut hash);
+            span.size.map(f32::to_bits).hash(&mut hash);
+            span.family.hash(&mut hash);
+            span.background.hash(&mut hash);
+            span.baseline.hash(&mut hash);
         }
         hash.finish()
+    }
+
+    pub(super) fn set_rich_spans(&mut self, spans: Option<Vec<RichSpan>>) {
+        if self.rich_spans != spans {
+            self.rich_spans = spans;
+            self.model_layout_dirty = true;
+        }
     }
 
     /// Convert the highlighter's logical-line ranges into a complete set of
@@ -778,6 +800,18 @@ impl TextInput {
             && let Some(tail) = self.text.get(cursor..)
         {
             spans.push(RichSpan::new(tail));
+        }
+
+        // An optimistic edit can temporarily precede its parent's mark update.
+        // Never shape stale text in that interval.
+        if let Some(authored) = &self.rich_spans
+            && authored
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>()
+                == self.text
+        {
+            spans.clone_from(authored);
         }
 
         if self.preedit.is_empty() {
@@ -976,6 +1010,14 @@ impl TextInput {
         self.publish_local_state();
     }
 
+    /// Delete the selected text in a host-owned local projection.
+    pub(super) fn delete_local_selection(&mut self) {
+        let mut sink = AutoCommit::new();
+        self.delete_selection(&mut sink, None);
+        self.last_notified_text.clone_from(&self.text);
+        self.publish_local_state();
+    }
+
     pub fn cursor_pos(&self) -> usize {
         self.cursor_pos
     }
@@ -990,6 +1032,7 @@ impl TextInput {
         self.cursor_pos = grapheme_boundary_at_or_before(&self.text, pos);
         self.caret_affinity = TextAffinity::Before;
         self.selection_anchor = None;
+        self.goal_x = None;
     }
 
     /// Seat the caret at an exact shaped position without counting as an edit.
@@ -997,6 +1040,7 @@ impl TextInput {
         self.cursor_pos = grapheme_boundary_at_or_before(&self.text, position.byte);
         self.caret_affinity = position.affinity;
         self.selection_anchor = None;
+        self.goal_x = None;
     }
 
     pub fn selection_range_public(&self) -> Option<(usize, usize)> {
@@ -1039,8 +1083,8 @@ impl TextInput {
         if !self.multiline {
             return;
         }
-        let view_h = self.rect.height() - ML_PAD_Y * 2.0;
-        let max = (self.content_height() - ML_PAD_Y * 2.0 - view_h).max(0.0);
+        let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
+        let max = (self.content_height() - self.multiline_padding_y() * 2.0 - view_h).max(0.0);
         self.scroll_y = (self.scroll_y + dy).clamp(0.0, max);
     }
 
@@ -1179,7 +1223,7 @@ impl TextInput {
         }
         let lh = self.line_height();
         let px = self.ml_left();
-        let py = ML_PAD_Y;
+        let py = self.multiline_padding_y();
         let mut out = Vec::new();
         for r in &self.lines {
             let lo = start.max(r.start);
@@ -1222,11 +1266,11 @@ impl TextInput {
         if self.multiline_shaped
             && let Some(layout) = &self.single_layout
         {
-            return f64::from(layout.height()) + ML_PAD_Y * 2.0;
+            return f64::from(layout.height()) + self.multiline_padding_y() * 2.0;
         }
         let lh = self.line_height();
         let rows = u32::try_from(self.lines.len().max(1)).unwrap_or(u32::MAX);
-        f64::from(rows) * lh + ML_PAD_Y * 2.0
+        f64::from(rows) * lh + self.multiline_padding_y() * 2.0
     }
 
     fn x_in_row(&self, r: &VisualLine, byte: usize) -> f64 {
@@ -1285,7 +1329,7 @@ impl TextInput {
         let (i, x) = self.locate_ml(byte);
         let y = self.lines.get(i).map_or(0.0, |r| r.y);
         let cx = self.rect.x0 + self.ml_left() + x;
-        let cy = self.rect.y0 + ML_PAD_Y + y - self.scroll_y;
+        let cy = self.rect.y0 + self.multiline_padding_y() + y - self.scroll_y;
         Rect::new(cx, cy, cx + width, cy + self.line_height())
     }
 
@@ -1295,7 +1339,7 @@ impl TextInput {
             return 0;
         }
         let lh = self.line_height();
-        let local_y = pt.y - (self.rect.y0 + ML_PAD_Y) + self.scroll_y;
+        let local_y = pt.y - (self.rect.y0 + self.multiline_padding_y()) + self.scroll_y;
         let max_row = self.lines.len().saturating_sub(1);
         let row = {
             let row_f = (local_y / lh).floor().max(0.0);
@@ -1392,6 +1436,49 @@ impl TextInput {
         self.goal_x = Some(goal);
     }
 
+    /// Preferred column in editor coordinates, preserving the exact visual
+    /// side of a wrap or bidi boundary when beginning a vertical movement.
+    pub(super) fn vertical_goal_x(&self) -> f64 {
+        if let Some(goal) = self.goal_x {
+            return self.single_origin.x + goal;
+        }
+        self.caret_rect_at(&Theme::dark(), self.caret_position()).x0
+    }
+
+    pub(super) fn set_vertical_goal_x(&mut self, x: f64) {
+        self.goal_x = Some(x - self.single_origin.x);
+    }
+
+    pub(super) fn move_visual_row(&mut self, down: bool) {
+        self.move_vertical(down, false);
+    }
+
+    /// Restore a document selection's active endpoint after its per-block
+    /// bands have been painted, retaining wrap/bidi affinity.
+    pub(super) fn set_selection_at(&mut self, anchor: usize, cursor: TextPosition) {
+        self.set_selection(anchor, cursor.byte);
+        self.caret_affinity = cursor.affinity;
+    }
+
+    /// Whether arrow navigation can stay within this shaped paragraph.
+    pub(super) fn has_visual_row(&self, down: bool) -> bool {
+        if let Some(layout) = &self.single_layout {
+            let (_, top, height) =
+                layout.caret_geometry_at(self.text_to_layout_position(self.caret_position()));
+            return if down {
+                top + height < layout.height() - 0.5
+            } else {
+                top > 0.5
+            };
+        }
+        let (row, _) = self.locate_ml(self.cursor_pos);
+        if down {
+            row.saturating_add(1) < self.lines.len()
+        } else {
+            row > 0
+        }
+    }
+
     fn build_lines(&mut self, tr: &mut TextRenderer, avail_w: f64) {
         let size = self.effective_font_size();
         let lh = self.line_height();
@@ -1431,7 +1518,10 @@ impl TextInput {
     /// with `a <= b <= nchars`. The `.get`/`unwrap_or` fallbacks below exist
     /// so a future change to this invariant degrades gracefully instead of
     /// panicking; they are not expected to trigger.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "wrapping carries the bounded paragraph range and accumulated layout explicitly"
+    )]
     fn wrap_paragraph(
         &self,
         tr: &mut TextRenderer,
@@ -1625,7 +1715,7 @@ impl TextInput {
     /// when the caret moved since the last draw, so a wheel scroll away from
     /// it sticks.
     fn update_ml_scroll(&mut self, caret_top: f32, caret_height: f32, layout_height: f32) {
-        let view_height = (self.rect.height() - ML_PAD_Y * 2.0).max(1.0);
+        let view_height = (self.rect.height() - self.multiline_padding_y() * 2.0).max(1.0);
         if self.is_focused && self.last_scroll_caret != Some(self.cursor_pos) {
             if f64::from(caret_top) - self.scroll_y < 0.0 {
                 self.scroll_y = f64::from(caret_top);
@@ -1638,6 +1728,42 @@ impl TextInput {
         self.last_scroll_caret = Some(self.cursor_pos);
         let max_scroll = (f64::from(layout_height) - view_height).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
+    }
+
+    /// Embedded auto-height editors must reserve exactly the paragraph and
+    /// padding used by painting, including attributed runs and empty lines.
+    pub(super) fn measure_wrapped_content(
+        &mut self,
+        width: f32,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f32 {
+        self.gutter_text_scale = f64::from(theme.text_scale);
+        let available = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
+        #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
+        self.ensure_shaped_layout(tr, theme, self.effective_font_size(), available as f32);
+        let minimum = self.effective_font_size() * theme.text_scale * LINE_HEIGHT_RATIO;
+        let height = self
+            .single_layout
+            .as_ref()
+            .map_or(minimum, |layout| layout.height().max(minimum));
+        height + if self.compact_multiline { 0.0 } else { 16.0 }
+    }
+
+    /// Prepare the shared shaped hit-testing geometry for a projected cell
+    /// before its first focus/click, without painting a throwaway scene.
+    pub(super) fn prepare_wrapped_layout(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded widget geometry is consumed by the f32 text layout API"
+        )]
+        let width = self.rect.width() as f32;
+        self.measure_wrapped_content(width, tr, theme);
+        self.single_origin = Point::new(
+            self.rect.x0 + self.ml_left(),
+            self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+        );
+        self.multiline_shaped = true;
     }
 
     fn draw_code_gutter_background(
@@ -1762,6 +1888,10 @@ impl TextInput {
         }
     }
 
+    pub(crate) fn suppress_caret_paint(&mut self, suppressed: bool) {
+        self.caret_paint_suppressed = suppressed;
+    }
+
     fn draw_ml_caret(
         &self,
         scene: &mut Scene,
@@ -1769,7 +1899,7 @@ impl TextInput {
         theme: &Theme,
         caret_position: TextPosition,
     ) {
-        if !self.is_focused || self.effectively_disabled() {
+        if self.caret_paint_suppressed || !self.is_focused || self.effectively_disabled() {
             return;
         }
         let Some(layout) = self.single_layout.as_ref() else {
@@ -1827,8 +1957,10 @@ impl TextInput {
             return;
         };
         self.update_ml_scroll(caret_top, caret_height, layout_height);
-        self.single_origin =
-            Point::new(self.rect.x0 + left, self.rect.y0 + ML_PAD_Y - self.scroll_y);
+        self.single_origin = Point::new(
+            self.rect.x0 + left,
+            self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+        );
         self.multiline_shaped = true;
         self.lines.clear();
 
@@ -1898,7 +2030,7 @@ impl TextInput {
         let (caret_row, _) = self.locate_ml(self.cursor_pos);
         let caret_top = self.lines.get(caret_row).map_or(0.0, |r| r.y);
         let caret_bot = caret_top + lh;
-        let view_h = self.rect.height() - ML_PAD_Y * 2.0;
+        let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
         let caret_moved = self.last_scroll_caret != Some(self.cursor_pos);
         if self.is_focused {
             if caret_moved {
@@ -1957,7 +2089,7 @@ impl TextInput {
         if !(self.highlight_current_line && self.is_focused && !self.shows_placeholder()) {
             return;
         }
-        let view_h = self.rect.height() - ML_PAD_Y * 2.0;
+        let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
         let band_color = theme.bg_hover.with_alpha_factor(0.6);
         for (row, &lor) in self.lines.iter().zip(line_of_row.iter()) {
             if lor != caret_line {
@@ -1967,7 +2099,7 @@ impl TextInput {
             if top + lh < 0.0 || top > view_h {
                 continue;
             }
-            let y0 = self.rect.y0 + ML_PAD_Y + top;
+            let y0 = self.rect.y0 + self.multiline_padding_y() + top;
             let band = Rect::new(self.rect.x0 + gutter_w, y0, self.rect.x1, y0 + lh);
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -2037,8 +2169,11 @@ impl TextInput {
                 clippy::arithmetic_side_effects,
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
-            let origin =
-                transform * Affine::translate((x, self.rect.y0 + ML_PAD_Y + ry - self.scroll_y));
+            let origin = transform
+                * Affine::translate((
+                    x,
+                    self.rect.y0 + self.multiline_padding_y() + ry - self.scroll_y,
+                ));
             let col = if *current {
                 theme.text_primary
             } else {
@@ -2069,7 +2204,7 @@ impl TextInput {
                 let origin = transform
                     * Affine::translate((
                         self.rect.x0 + left + x,
-                        self.rect.y0 + ML_PAD_Y + ry - self.scroll_y,
+                        self.rect.y0 + self.multiline_padding_y() + ry - self.scroll_y,
                     ));
                 self.draw_text_run(scene, tr, text, size, *color, origin);
             }
@@ -2127,7 +2262,10 @@ impl TextInput {
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
             let origin = transform
-                * Affine::translate((self.rect.x0 + left, self.rect.y0 + ML_PAD_Y - self.scroll_y));
+                * Affine::translate((
+                    self.rect.x0 + left,
+                    self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+                ));
             tr.draw_text(scene, &placeholder, size, theme.text_dim, origin, None);
         }
 
@@ -2136,7 +2274,7 @@ impl TextInput {
         } else {
             theme.text_primary
         };
-        let view_h = self.rect.height() - ML_PAD_Y * 2.0;
+        let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
         let (row_draws, gutter_nums) = self.collect_ml_body_rows(
             &line_of_row,
             &is_line_start,
@@ -2151,7 +2289,7 @@ impl TextInput {
         self.draw_body_gutter_numbers(scene, transform, tr, theme, size, gutter_w, &gutter_nums);
         self.draw_body_rows(scene, transform, tr, size, left, &row_draws);
 
-        if self.is_focused && !self.effectively_disabled() {
+        if !self.caret_paint_suppressed && self.is_focused && !self.effectively_disabled() {
             let caret = self.caret_rect_ml(self.cursor_pos, theme.caret_width);
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -2246,6 +2384,10 @@ impl TextInput {
     /// `Some(text)` if a user-initiated edit landed since the last call.
     pub fn take_dirty(&mut self) -> Option<String> {
         if self.dirty {
+            // Publishing the edit to the document does not mean the host has
+            // measured its new intrinsic height yet. Keep those lifecycles
+            // separate so CRDT projection cannot swallow layout invalidation.
+            self.model_layout_dirty |= self.multiline;
             self.dirty = false;
             Some(self.text.clone())
         } else {
@@ -2253,10 +2395,27 @@ impl TextInput {
         }
     }
 
+    pub(super) fn acknowledge_layout_measure(&mut self) {
+        self.model_layout_dirty = false;
+    }
+
     /// Bypasses `draw_with_presence` — only safe on local-mode `TextInputs`
     /// with no presence path or permission scope.
     pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.single_origin.x += rect.x0 - self.rect.x0;
+        self.single_origin.y += rect.y0 - self.rect.y0;
         self.rect = rect;
+    }
+
+    /// Embedded hosts that route movement only to their focused child must
+    /// transfer the current pointer before forwarding a press to a new child.
+    /// This updates hover/hit-test input without changing caret or selection.
+    pub(super) fn update_pointer_position(&mut self, point: Point) -> bool {
+        let hover = self.rect.contains(point);
+        let changed = hover != self.is_hovered;
+        self.is_hovered = hover;
+        self.last_mouse_pos = point;
+        changed
     }
 
     #[must_use]
@@ -2338,6 +2497,21 @@ impl TextInput {
 
     pub fn set_multiline(&mut self, on: bool) {
         self.multiline = on;
+    }
+
+    pub(super) fn set_compact_multiline(&mut self, compact: bool) {
+        if self.compact_multiline != compact {
+            self.compact_multiline = compact;
+            self.model_layout_dirty = true;
+        }
+    }
+
+    fn multiline_padding_y(&self) -> f64 {
+        if self.compact_multiline {
+            0.0
+        } else {
+            ML_PAD_Y
+        }
     }
 
     pub fn is_multiline(&self) -> bool {
@@ -3556,12 +3730,12 @@ impl Widget for TextInput {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
+        self.apply_layout_external(Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        ));
     }
 
     /// Single-line keeps its fixed row height from `build_layout` (ZERO
@@ -3644,7 +3818,7 @@ impl Widget for TextInput {
         self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
-        self.update_single_line_scroll(cursor_x_offset, padding_x);
+        self.update_single_line_scroll(cursor_x_offset, padding_x, theme.caret_width);
 
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -4329,8 +4503,15 @@ impl TextInput {
         }
     }
 
-    fn update_single_line_scroll(&mut self, cursor_x_offset: f64, padding_x: f64) {
-        let visible_width = self.rect.width() - padding_x * 2.0;
+    fn update_single_line_scroll(
+        &mut self,
+        cursor_x_offset: f64,
+        padding_x: f64,
+        caret_width: f64,
+    ) {
+        // Include the caret's painted width, especially for padding-free code
+        // lines: putting its left edge on the clip boundary hides it entirely.
+        let visible_width = (self.rect.width() - padding_x * 2.0 - caret_width * 2.0).max(0.0);
         if self.is_focused {
             if cursor_x_offset - self.scroll_x < 0.0 {
                 self.scroll_x = cursor_x_offset;
@@ -4429,6 +4610,9 @@ impl TextInput {
     }
 
     fn draw_single_line_caret(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        if self.caret_paint_suppressed {
+            return;
+        }
         let cursor_rect = if !self.preedit.is_empty()
             && !self.masked()
             && let Some(layout) = &self.single_layout
@@ -4471,12 +4655,9 @@ impl TextInput {
         handled: &mut bool,
     ) {
         let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-        let hover = self.rect.contains(logical_pos);
-        if hover != self.is_hovered {
-            self.is_hovered = hover;
+        if self.update_pointer_position(logical_pos) {
             *handled = true;
         }
-        self.last_mouse_pos = logical_pos;
 
         if !self.is_dragging {
             return;
@@ -5123,6 +5304,46 @@ impl TextInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drag_preview_suppresses_caret_paint_without_blurring_or_clearing_ime() {
+        let mut input = TextInput::local().with_initial_value("editable");
+        input.set_focus(true);
+        input.set_selection(1, 4);
+        input.preedit = "composing".into();
+        let before = (
+            input.cursor_pos(),
+            input.selection_range(),
+            input.preedit.clone(),
+        );
+        let theme = Theme::dark();
+        let mut visible = Scene::new();
+        input.draw_single_line_caret(&mut visible, Affine::IDENTITY, &theme);
+        assert!(!visible.encoding().draw_tags.is_empty());
+        input.suppress_caret_paint(true);
+        let mut hidden = Scene::new();
+        input.draw_single_line_caret(&mut hidden, Affine::IDENTITY, &theme);
+        assert!(
+            hidden.encoding().draw_tags.is_empty(),
+            "drag scenes must contain no local caret"
+        );
+        assert!(input.is_focused());
+        assert_eq!(
+            (
+                input.cursor_pos(),
+                input.selection_range(),
+                input.preedit.clone()
+            ),
+            before
+        );
+        input.suppress_caret_paint(false);
+        let mut restored = Scene::new();
+        input.draw_single_line_caret(&mut restored, Affine::IDENTITY, &theme);
+        assert_eq!(
+            restored.encoding().draw_tags.len(),
+            visible.encoding().draw_tags.len()
+        );
+    }
 
     #[test]
     fn programmatic_caret_never_splits_a_grapheme() {
