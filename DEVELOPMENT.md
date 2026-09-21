@@ -89,6 +89,28 @@ normal download/compiler caches. Missing or ignored tests fail. The job records
 source SHA, workflow SHA, builder digest and exit status; its diagnostic result
 does not replace required PR checks or trigger publication.
 
+For a related group, set `target_kind=lib` (leave `test_target` empty), or keep
+`target_kind=integration` and name the integration target. Supply `test_names` as
+a JSON array of up to 32 exact paths, leaving `test_name` empty. All names must
+exist before any case runs. Every case runs even if an earlier case fails, and
+the run fails if any case fails or is ignored. One job reuses one target tree;
+there is no workspace-wide selection or per-case runner dispatch.
+
+For example, write `["tests::first_case", "tests::second_case"]` to `cases.json`
+and submit directly through the scheduler (replace the example package and SHA):
+
+```sh
+jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
+  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
+  | fgj api -X POST repos/qos/qos/actions/workflows/focused-test.yml/dispatches --hostname code.sandbox.example
+```
+
+Use this structured request for lists: the installed `fgj workflow run` does not
+expand `-F` files and parses `-f` values as CSV, which breaks JSON arrays.
+
+Do not reserve runners or ask another agent to allocate a slot. Each case's
+result and the exact source/workflow/builder identities appear in the run summary.
+
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
 ```sh
