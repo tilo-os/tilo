@@ -412,7 +412,8 @@ if grep -Fq 'TILO_INSTALLER_OS_IMAGE' "$workflow" \
    && grep -Fq 'generation_image="code.podesta.ai/qos/tilo:gen$generation"' "$published_image" \
    && grep -Fq 'generation_digest' "$published_image" \
    && grep -Fq 'published generation tag gen$generation binds' "$published_image" \
-   && grep -Fq 'TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.sha }}' "$workflow" \
+   && grep -Fq "TILO_EXPECTED_OS_SOURCE_REVISION: \${{ startsWith(github.ref, 'refs/tags/imager-v') && github.sha || '' }}" "$workflow" \
+   && grep -Fq 'rehearsal overlays $GITHUB_SHA onto verified published generation' "$workflow" \
    && grep -Fq 'resolvedDependencies[]?; .uri == $source' "$published_image" \
    && grep -Fq 'podman tag "$image" "$TILO_IMAGE"' "$published_image"; then
   ok 'installer media consume one verified, digest-pinned published OS generation'
