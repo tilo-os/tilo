@@ -24,12 +24,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
-use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Widget;
+use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
 #[derive(Clone)]
 struct Proc {
@@ -230,11 +230,11 @@ pub fn run(_args: &[String]) {
 
 /// `QOS_SHOTS_THEME` picks the palette (`dark` by default) and
 /// `QOS_SHOTS_TEXT_SCALE` the text scale — the switches every app's `--shots`
-/// honours through `ui::launch::shot_theme`, whose `LaunchArgs` an example
+/// honours through `tilo_ui::launch::shot_theme`, whose `LaunchArgs` an example
 /// cannot construct. An unknown theme name is an error, never a silent dark
 /// shot: a capture that cannot observe its subject must fail.
 fn shot_theme() -> Theme {
-    ui::launch::shot_theme_from_env().unwrap_or_else(|error| {
+    tilo_ui::launch::shot_theme_from_env().unwrap_or_else(|error| {
         eprintln!("ui-shots: {error}");
         std::process::exit(2)
     })

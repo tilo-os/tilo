@@ -3,10 +3,12 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tarfile
 import tempfile
+import types
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -18,6 +20,125 @@ SPEC = importlib.util.spec_from_file_location('operator_cli', Path(__file__).res
 o = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(o)
 s = o.spool
+
+
+class MultiClusterObservationTests(unittest.TestCase):
+    @staticmethod
+    def pod(cluster, *, label=True, dind=True, uid='pod-uid'):
+        labels = {'app.kubernetes.io/managed-by': 'sandbox-broker',
+                  'podesta.ai/workload': 'forgejo-ci', 'podesta.ai/cluster': cluster}
+        if not label:
+            labels.pop('podesta.ai/workload')
+        containers = [SimpleNamespace(name='runner')]
+        if dind:
+            containers.append(SimpleNamespace(name='dind'))
+        spec_data = {'containers': [{'name': 'runner', 'image': 'runner:image'},
+                                    {'name': 'dind', 'image': 'dind:image'}]}
+        status_data = {'containerStatuses': [
+            {'name': 'runner', 'containerID': 'containerd://runner', 'imageID': 'sha256:runner',
+             'restartCount': 0, 'state': {'running': {'startedAt': 'fixture'}}},
+            {'name': 'dind', 'containerID': 'containerd://dind', 'imageID': 'sha256:dind',
+             'restartCount': 0, 'state': {'running': {'startedAt': 'fixture'}}}]}
+        spec = SimpleNamespace(containers=containers, serialized=spec_data)
+        status = SimpleNamespace(phase='Running', serialized=status_data)
+        metadata = SimpleNamespace(name='runner-pod', uid=uid, labels=labels)
+        return SimpleNamespace(metadata=metadata, spec=spec, status=status)
+
+    def observe(self, profiles, pods, *, fail_target=None, fresh_uid='pod-uid'):
+        class Configuration:
+            def __init__(self): self.api_key = {}; self.target = None
+        class ApiClient:
+            def __init__(self, cfg): self.cfg = cfg
+            @staticmethod
+            def sanitize_for_serialization(value): return value.serialized
+        class Api:
+            def __init__(self, target): self.target = target
+            def list_namespaced_pod(self, *args, **kwargs):
+                if self.target == fail_target: raise RuntimeError('target query failed')
+                return SimpleNamespace(items=pods.get(self.target, []))
+            @staticmethod
+            def read_namespaced_pod_log(*args, **kwargs): return 'task 42 repo is qos/qos'
+            def read_namespaced_pod(self, *args, **kwargs):
+                pod = pods[self.target][0]
+                return self.patched_pod(pod, fresh_uid)
+            @staticmethod
+            def patched_pod(pod, uid):
+                if pod.metadata.uid == uid: return pod
+                changed = SimpleNamespace(**vars(pod))
+                changed.metadata = SimpleNamespace(**vars(pod.metadata)); changed.metadata.uid = uid
+                return changed
+            connect_get_namespaced_pod_exec = None
+        def load(path, *, client_configuration):
+            found = [name for name, target in o.broker.TARGETS.items() if target['kubeconfig'] == path]
+            if len(found) != 1: raise AssertionError(path)
+            client_configuration.target = found[0]
+        def incluster(*, client_configuration): client_configuration.target = 'on-prem'
+        client = SimpleNamespace(Configuration=Configuration, ApiClient=ApiClient,
+                                 CoreV1Api=lambda api: Api(api.cfg.target))
+        kube = types.ModuleType('kubernetes'); kube.client = client
+        kube.config = SimpleNamespace(load_kube_config=load, load_incluster_config=incluster)
+        stream_module = types.ModuleType('kubernetes.stream')
+        nested = {'Id': '1' * 64, 'Image': 'sha256:' + '2' * 64,
+                  'State': {'Running': True, 'StartedAt': 'fixture'}, 'RestartCount': 0}
+        worker = {'request_sha256': 'a' * 64, 'helpers': {'revision': 'b' * 40},
+                  'source': {'revision': 'c' * 40}, 'directories': {}, 'graph_driver': 'overlay'}
+        class WS:
+            def __init__(self, output): self.output = json.dumps(output); self.status = json.dumps({'status': 'Success'})
+            def run_forever(self, timeout): pass
+            def read_stdout(self): return self.output
+            def read_channel(self, channel): return self.status
+            def close(self): pass
+        def stream(*args, **kwargs):
+            return WS(nested if kwargs['command'][:2] == ['docker', 'inspect'] else worker)
+        stream_module.stream = stream
+        auth = {name: None if target['mode'] == 'in-cluster' else 'k8s-aws-v1.' + name
+                for name, target in o.broker.TARGETS.items()}
+        payload = {'auth': auth, 'task': 42, 'repository': 'qos/qos',
+                   'inner_name': 'tilo-finalization-23-2', 'tools': 'sha256:' + '2' * 64,
+                   'inspect': o.broker.INSPECT, 'inside': o.INSIDE, 'helper_files': {}}
+        stdin, stdout = io.StringIO(json.dumps(payload)), io.StringIO()
+        environment = {'BROKER_CLUSTER_TARGETS': json.dumps(profiles)}
+        with patch.dict(sys.modules, {'kubernetes': kube, 'kubernetes.stream': stream_module}), \
+                patch.dict(os.environ, environment), patch.object(sys, 'stdin', stdin), patch.object(sys, 'stdout', stdout):
+            exec(o.OBSERVE, {})
+        return json.loads(stdout.getvalue())
+
+    @staticmethod
+    def profile(name):
+        return {'name': name, 'ci_enabled': True, 'kubeconfig': o.broker.TARGETS[name]['kubeconfig']}
+
+    def test_oregon_runner_is_selected_without_returning_authorization(self):
+        result = self.observe([self.profile('aws-us-west-2')],
+                              {'aws-us-west-2': [self.pod('aws-us-west-2')]})
+        self.assertEqual(result['cluster'], 'aws-us-west-2')
+        self.assertEqual(result['pod_uid'], 'pod-uid')
+        self.assertNotIn('auth', result)
+        self.assertNotIn('k8s-aws-v1.', json.dumps(result))
+
+    def test_zero_duplicate_and_partial_target_failure_are_rejected(self):
+        west, east = self.profile('aws-us-west-2'), self.profile('aws-eu-central-1')
+        cases = [
+            ([west], {'aws-us-west-2': []}, None),
+            ([west, east], {'aws-us-west-2': [self.pod('aws-us-west-2')],
+                            'aws-eu-central-1': [self.pod('aws-eu-central-1')]}, None),
+            ([west, east], {'aws-us-west-2': [self.pod('aws-us-west-2')],
+                            'aws-eu-central-1': []}, 'aws-eu-central-1'),
+        ]
+        for profiles, pods, failure in cases:
+            with self.subTest(failure=failure), self.assertRaises((ValueError, RuntimeError)):
+                self.observe(profiles, pods, fail_target=failure)
+
+    def test_unknown_target_label_container_and_identity_changes_are_rejected(self):
+        west = self.profile('aws-us-west-2')
+        cases = [
+            ([{'name': 'unknown', 'ci_enabled': True}], {}, {}),
+            ([west], {'aws-us-west-2': [self.pod('aws-us-west-2', label=False)]}, {}),
+            ([west], {'aws-us-west-2': [self.pod('aws-us-west-2', dind=False)]}, {}),
+            ([west], {'aws-us-west-2': [self.pod('aws-us-west-2')]}, {'fresh_uid': 'changed'}),
+        ]
+        for profiles, pods, kwargs in cases:
+            with self.subTest(profiles=profiles), self.assertRaises((ValueError, KeyError)):
+                self.observe(profiles, pods, **kwargs)
 
 
 def context(job='old'):
@@ -176,8 +297,19 @@ class OperatorTests(unittest.TestCase):
 
     def test_local_operator_change_does_not_silently_change_operation(self):
         self.init()
-        with patch.object(o, 'operator_identity', return_value='0' * 64), self.assertRaisesRegex(ValueError, 'implementation changed'):
-            o.load(self.args.operation)
+        config_sha256 = s.digest((self.args.operation / 'operation.json').read_bytes())
+        with patch.object(o, 'operator_identity', return_value='0' * 64):
+            with self.assertRaisesRegex(ValueError, 'implementation changed'):
+                o.load(self.args.operation)
+            with self.assertRaisesRegex(ValueError, 'implementation changed'):
+                o.load(self.args.operation, '1' * 64)
+            with self.assertRaisesRegex(ValueError, 'implementation changed'):
+                o.load(self.args.operation, config_sha256, '1' * 64)
+            config, request = o.load(self.args.operation, config_sha256, '0' * 64)
+        self.assertEqual(config['request_sha256'], s.digest(s.canonical(self.q)))
+        self.assertEqual(request, self.q)
+        self.assertEqual(
+            s.digest((self.args.operation / 'operation.json').read_bytes()), config_sha256)
 
     def test_archive_traversal_and_wrong_archive_are_rejected_before_operation_creation(self):
         self.archive(('../../escape',))
@@ -231,6 +363,53 @@ class OperatorTests(unittest.TestCase):
             with self.subTest(label=label), self.assertRaises(ValueError):
                 o.admit_job(c, raw, candidate, [job], 2)
 
+    def test_event_admission_normalizes_only_omitted_empty_restore_identity(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        raw = s.canonical(self.q)
+        event = json.loads(run['event_payload'])
+        restore_fields = ('restore_run_id', 'restore_run_attempt', 'restore_receipt_sha256')
+        for omitted in (restore_fields, restore_fields[:1], restore_fields[1:]):
+            changed = copy.deepcopy(event)
+            for field in omitted:
+                changed['inputs'].pop(field)
+            candidate = copy.deepcopy(run)
+            candidate['event_payload'] = json.dumps(changed)
+            with self.subTest(omitted=omitted):
+                self.assertEqual(o.admit_job(c, raw, candidate, [job], 2), job)
+
+        hostile = {
+            'nonempty-run-only': {'restore_run_id': '41'},
+            'nonempty-attempt-only': {'restore_run_attempt': '3'},
+            'nonempty-receipt-only': {'restore_receipt_sha256': 'a' * 64},
+        }
+        for label, supplied in hostile.items():
+            changed = copy.deepcopy(event)
+            for field in restore_fields:
+                changed['inputs'].pop(field)
+            changed['inputs'].update(supplied)
+            candidate = copy.deepcopy(run)
+            candidate['event_payload'] = json.dumps(changed)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                    ValueError, 'dispatch restore inputs differ'):
+                o.admit_job(c, raw, candidate, [job], 2)
+
+    def test_event_admission_rejects_omitted_or_untyped_restore_stage(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        raw = s.canonical(self.q)
+        event = json.loads(run['event_payload'])
+        for value in (None, 5):
+            changed = copy.deepcopy(event)
+            if value is None:
+                changed['inputs'].pop('restore_stage')
+            else:
+                changed['inputs']['restore_stage'] = value
+            candidate = copy.deepcopy(run)
+            candidate['event_payload'] = json.dumps(changed)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                o.admit_job(c, raw, candidate, [job], 2)
+
     def test_event_admission_rejects_nondefault_restore_stage_on_fresh_run(self):
         c, _ = self.init()
         run, job = self.event(c)
@@ -257,6 +436,54 @@ class OperatorTests(unittest.TestCase):
             job['task_id'] += 1
             with self.assertRaisesRegex(ValueError, 'task changed'):
                 o.status(self.args.operation, c, 23, 2)
+
+    def test_status_accepts_same_job_becoming_terminal_during_transfer(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        directory = o.run_path(self.args.operation, 23, 2)
+        directory.mkdir(mode=0o700)
+        self.put(directory / 'job.json', s.canonical(job))
+        self.put(directory / 'staging-receipt.json', b'{}')
+        terminal_run, terminal_job = copy.deepcopy(run), copy.deepcopy(job)
+        terminal_run['status'] = terminal_job['status'] = 'failure'
+        client = Mock()
+        client.transfer.side_effect = ValueError('authenticated transfer command failed')
+        with patch.object(o, 'actual_job', side_effect=[(run, job), (terminal_run, terminal_job)]), \
+                patch.object(o, 'client_for', return_value=client):
+            result = o.status(self.args.operation, c, 23, 2)
+        self.assertEqual(result['job_status'], 'failure')
+        self.assertEqual(result['run_status'], 'failure')
+        self.assertEqual(result['requests'], [])
+
+    def test_status_preserves_transfer_failure_if_same_job_still_runs(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        directory = o.run_path(self.args.operation, 23, 2)
+        directory.mkdir(mode=0o700)
+        self.put(directory / 'job.json', s.canonical(job))
+        self.put(directory / 'staging-receipt.json', b'{}')
+        client = Mock()
+        client.transfer.side_effect = TimeoutError('transport lost')
+        with patch.object(o, 'actual_job', side_effect=[(run, job), (run, copy.deepcopy(job))]), \
+                patch.object(o, 'client_for', return_value=client), \
+                self.assertRaisesRegex(TimeoutError, 'transport lost'):
+            o.status(self.args.operation, c, 23, 2)
+
+    def test_status_rejects_identity_change_during_terminal_recheck(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        directory = o.run_path(self.args.operation, 23, 2)
+        directory.mkdir(mode=0o700)
+        self.put(directory / 'job.json', s.canonical(job))
+        self.put(directory / 'staging-receipt.json', b'{}')
+        changed = copy.deepcopy(job)
+        changed['task_id'] += 1
+        client = Mock()
+        client.transfer.side_effect = ValueError('transfer failed')
+        with patch.object(o, 'actual_job', side_effect=[(run, job), (run, changed)]), \
+                patch.object(o, 'client_for', return_value=client), \
+                self.assertRaisesRegex(ValueError, 'identity changed'):
+            o.status(self.args.operation, c, 23, 2)
 
     def test_wait_ignores_serviced_requests_and_timeout_is_observation_only(self):
         state = {'requests': ['a' * 32], 'job_status': 'running'}

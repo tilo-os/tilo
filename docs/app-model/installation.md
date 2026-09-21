@@ -46,6 +46,39 @@ tilo-catalogue repo remove team
 Changes are atomically written to the same `registries.toml` used by the
 Store. Repositories retain list order as their resolution priority.
 
+## Stable and development builds
+
+Catalogue repositories default to `channel = "stable"`, including existing
+configuration files without that field. Stable selection excludes SemVer
+prereleases; numeric CalVer and older opaque versions keep their prior behavior.
+Use `tilo-catalogue repo channel NAME development` to opt into prereleases, or
+`tilo-catalogue repo channel NAME stable` to return to stable selection. This
+changes future offers; it does not silently downgrade an installed development
+build. Stable promotion requires publishing the corresponding stable version.
+
+Development builds derive `0.1.1-dev.N+gSHA` from declared app version `0.1.0`.
+`N` is the commit's position in complete authoritative main first-parent history;
+shallow histories and side-branch sources are rejected. SHA identifies the source
+but never orders updates. Retrying the same source derives the same identity;
+changed bytes under that identity are rejected. A new source advances the numeric
+sequence. Explicit stable tags retain the declared manifest version, and stable
+clients continue to see `0.1.0` even when development clients see `0.1.1-dev.N`.
+Publishing stable `0.1.1` supersedes its development prereleases in both channels.
+
+`dist/apps/package-apps.sh` enables this derivation only with
+`TILO_APP_DEV_SOURCE=<full main SHA>`. It stages the version inside the signed
+package and collection index. Partial collections retain each unchanged app's
+previous artifact version. The app workflow sets this flag for main pushes and
+explicitly publishing manual main runs. Tags keep stable versions; nonpublishing
+qualification keeps its existing manifest versions. Artifacts still upload to
+Forgejo packages; the authoritative main-branch publisher submits newly built
+qpkgs through its direct signed-registry path, without a second
+catalogue-submission job.
+
+These settings govern the signed snapshot catalogue and `tilo-catalogue install`.
+The legacy `tilo-install update` registry resolver uses a separate configuration
+and protocol; it does not inherit this catalogue channel setting.
+
 ## The on-disk layout
 
 ```

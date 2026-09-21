@@ -6,9 +6,9 @@
 //! Run:  cargo run -p ui --example ui-lab -- gallery
 //! For the offscreen light+dark renders, see `gallery_shots`.
 
-use ui::theme::Theme;
-use ui::widget::{Scrollable, Widget};
-use ui::{App, State};
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{Scrollable, Widget};
+use tilo_ui::{App, State};
 
 use super::gallery_scene;
 
@@ -17,9 +17,9 @@ fn build_gallery(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
 }
 
 pub fn run(_args: &[String]) {
-    let wake_scope = ui::wake::WakeScope::new();
+    let wake_scope = tilo_ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
 
     let mut state = State::new();
     // The live window opens in dark; dimmed-label colours are baked from this
