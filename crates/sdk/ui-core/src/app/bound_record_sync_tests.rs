@@ -4,10 +4,11 @@
 fn native_bound_sync_routes_notebook_bytes_and_preserves_local_undo_and_retries() {
     let mut fixture = ActionFixture::new();
     let binding = fixture.bindings[0].clone();
-    fixture.app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+    fixture.app.actions.bound_broker_route_for_test =
+        Some(crate::collaboration::PrimaryRouteWitness {
         route: binding.broker_route().unwrap(),
         epoch: uuid::Uuid::new_v4(),
-    });
+        });
     fixture
         .app
         .state
@@ -107,7 +108,7 @@ fn native_bound_sync_routes_notebook_bytes_and_preserves_local_undo_and_retries(
         other
     );
     fixture.app.close_components();
-    assert!(fixture.app.bound_record_sync.is_none());
+    assert!(fixture.app.actions.bound_record_sync.is_none());
 }
 
 #[test]
@@ -274,6 +275,7 @@ fn native_bound_sync_requires_live_matching_route_and_resends_after_reconnection
     // record, even though its heads and both view lifetimes are unchanged.
     fixture
         .app
+        .actions
         .bound_broker_route_for_test
         .as_mut()
         .unwrap()
@@ -286,15 +288,20 @@ fn native_bound_sync_requires_live_matching_route_and_resends_after_reconnection
             .0
             .is_empty()
     );
-    let route = fixture.app.bound_broker_route_for_test.take().unwrap();
+    let route = fixture
+        .app
+        .actions
+        .bound_broker_route_for_test
+        .take()
+        .unwrap();
     let outer = fixture.app.state.doc.get_heads();
     assert!(fixture.app.primary_document_snapshot().is_err());
     assert!(fixture.app.pending_primary_document_delta().is_err());
     let mut wrong = route.clone();
     wrong.route.app_id = "dev.tilo.foreign".into();
-    fixture.app.bound_broker_route_for_test = Some(wrong);
+    fixture.app.actions.bound_broker_route_for_test = Some(wrong);
     assert!(fixture.app.primary_document_snapshot().is_err());
-    fixture.app.bound_broker_route_for_test = Some(route);
+    fixture.app.actions.bound_broker_route_for_test = Some(route);
     assert!(!fixture.app.primary_document_snapshot().unwrap().is_empty());
     fixture.app.close_components();
     assert!(
