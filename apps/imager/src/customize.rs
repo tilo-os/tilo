@@ -1556,7 +1556,8 @@ mod tests {
                         .abs()
                         < 1e-6
                 );
-                assert!((g.export.y0 - (g.keyboard.y1 + GROUP)).abs() < 1e-6);
+                let option_bottom = g.keyboard.y1.max(g.filesystem.y1);
+                assert!((g.export.y0 - (option_bottom + GROUP)).abs() < 1e-6);
                 // Independent of the formula: fields are the toolkit's bar
                 // control, the Preview action a pointer target, a caption band
                 // plus an `s1` step separates every field from the caption
