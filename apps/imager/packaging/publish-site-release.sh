@@ -8,7 +8,7 @@ set -euo pipefail
 : "${TILO_SITE_GIT_TOKEN:?missing short-lived website token}"
 : "${TILO_LINUX_SIGNING_FINGERPRINT:?missing protected Linux signing fingerprint}"
 
-release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
+release_repository="${TILO_RELEASE_REPOSITORY:-qos/releases}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 release_root="${GITHUB_SERVER_URL%/}/${release_repository}/releases"
@@ -34,7 +34,7 @@ SH
 chmod 0700 "$askpass"
 
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
-  "$GITHUB_SERVER_URL/tilo/website.git" "$work/site"
+  "$GITHUB_SERVER_URL/qos/site.git" "$work/site"
 manifest="$work/site/src/data/imager-release.json"
 contract="$work/site/src/data/install-contract.json"
 test -f "$manifest"
@@ -123,7 +123,8 @@ fi
 expected_download="$release_root/download/$GITHUB_REF_NAME/$(jq -r '.assets.windowsX64Setup' "$manifest")"
 grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
   || { printf 'landing page does not consume the public releaseRoot manifest field\n' >&2; exit 1; }
-if grep -R -Fq -- 'https://code.sandbox.example/qos/tilo/releases/download/' "$work/site/dist"; then
+if grep -R -Fq -- 'https://code.sandbox.example/qos/qos/releases/download/' "$work/site/dist" \
+   || grep -R -Fq -- 'https://code.sandbox.example/tilo/releases/download/' "$work/site/dist"; then
   printf 'landing page still contains private-source release downloads\n' >&2
   exit 1
 fi

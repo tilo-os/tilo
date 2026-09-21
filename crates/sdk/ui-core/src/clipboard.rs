@@ -107,7 +107,7 @@ pub fn install_clipboard_backend(backend: Arc<dyn ClipboardBackend>) {
     let name = backend.name();
     if let Ok(mut slot) = backend_slot().write() {
         *slot = Some(backend);
-        tracing::debug!(target: "ui::clipboard", backend = name, "clipboard backend installed");
+        tracing::debug!(target: "tilo_ui::clipboard", backend = name, "clipboard backend installed");
     }
 }
 
@@ -124,7 +124,7 @@ pub fn warn_fallback_once(op: &str) {
     static WARNED: OnceLock<()> = OnceLock::new();
     WARNED.get_or_init(|| {
         tracing::warn!(
-            target: "ui::clipboard",
+            target: "tilo_ui::clipboard",
             operation = op,
             "no system clipboard: falling back to an in-process buffer. Copy and paste \
              will work inside this process and silently do nothing between processes. \

@@ -19,7 +19,7 @@ presentation-feedback = ["ui-core/presentation-feedback"]
 notifications = ["ui-core/notifications"]
 
 [dependencies]
-ui-core = { package = "ui", path = "../ui-core" }
+ui-core = { package = "tilo-ui", path = "../ui-core" }
 
 [lints]
 workspace = true

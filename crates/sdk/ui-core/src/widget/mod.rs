@@ -439,7 +439,40 @@ pub enum WindowCloseAdmission {
     Defer,
 }
 
+/// Optional cross-device continuation capability for an app root.
+///
+/// Continuation is deliberately separate from [`Widget`]: ordinary controls
+/// have no resumable app state, while roots that do can expose this capability
+/// through [`Widget::continuable`] without weakening their UI integration.
+pub trait Continuable {
+    /// Return a compact, path-free projection of state that may be resumed on
+    /// another device owned by the same person.
+    fn continuation_metadata(
+        &self,
+        state: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata>;
+
+    /// Apply a continuation projection after launch. Implementations must not
+    /// change focus or start media; malformed or unknown metadata is ignored.
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &crate::collaboration::ContinuationMetadata,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool;
+}
+
 pub trait Widget {
+    /// Concrete identity for host-side frame maps that must distinguish a
+    /// wrapper from its first field even when they share a data address.
+    /// Unlike trait-object pointer equality, this does not depend on the
+    /// compiler reusing one vtable instance across codegen units.
+    #[doc(hidden)]
+    fn concrete_type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// A successful, locally applied resource Document action on this exact owner.
     /// Immutable document access permits cache reconciliation only. Not called for
     /// submissions, failed execution, replay, remote merge, or History restore.
@@ -690,27 +723,14 @@ pub trait Widget {
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId);
 
-    /// Return a compact, path-free projection of state that may be resumed on
-    /// another device owned by the same person. The host reports it to the
-    /// local shell only; returning it never changes focus or starts playback.
-    fn continuation_metadata(
-        &self,
-        _state: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<crate::collaboration::ContinuationMetadata> {
+    /// Expose cross-device continuation for app roots that support it.
+    fn continuable(&self) -> Option<&dyn Continuable> {
         None
     }
 
-    /// Apply a continuation projection after this process was launched into a
-    /// synchronized tab. Implementations must not change focus or start media;
-    /// malformed/unknown metadata is ignored.
-    fn restore_continuation_metadata(
-        &mut self,
-        _metadata: &crate::collaboration::ContinuationMetadata,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> bool {
-        false
+    /// Mutable counterpart to [`Widget::continuable`].
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        None
     }
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
         false
@@ -2515,6 +2535,17 @@ pub(crate) mod control_result_probe {
                 .push_back(tilo_actions::ControlInvocation {
                     address: tilo_actions::ActionAddress::new("test.control-result", action),
                     arguments: serde_json::Map::new(),
+                });
+        }
+        pub(crate) fn enqueue_text(&self, action: &str, text: &str) {
+            self.pending
+                .borrow_mut()
+                .push_back(tilo_actions::ControlInvocation {
+                    address: tilo_actions::ActionAddress::new("test.control-result", action),
+                    arguments: serde_json::Map::from_iter([(
+                        "text".to_string(),
+                        serde_json::Value::String(text.to_string()),
+                    )]),
                 });
         }
     }
