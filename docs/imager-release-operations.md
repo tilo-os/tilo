@@ -5,7 +5,7 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 
 | Label | Host | Required tooling |
 |---|---|---|
-| `imager-linux-x86_64` | Linux x86-64 | Rust, Cap'n Proto compiler, Docker + Buildx, GPG or KMS client, Podman, QEMU/OVMF tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm, UDisks2, Flatpak + flatpak-builder with the 25.08 SDK |
+| `imager-linux-x86_64` | Linux x86-64 | Rust, Cap'n Proto compiler, Docker + Buildx, GPG or KMS client, Podman, QEMU/4 MiB measured OVMF, swtpm, `virt-fw-vars`, zstd, Homebrew, Ruby, curl, jq, Node.js and npm, UDisks2, Flatpak + flatpak-builder with the 25.08 SDK |
 | `imager-linux-aarch64` | Linux ARM64 | same Linux toolchain, release utilities, Docker/Buildx, ARM64 QEMU/UEFI, and UDisks2 service, running natively |
 | `imager-windows-x86_64` | Windows x86-64 | Rust MSVC, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6, WinGet client |
 | `imager-windows-aarch64` | Windows ARM64 | Native ARM64 Rust MSVC and C++ build tools, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6.3 or newer, WinGet client |
