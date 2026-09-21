@@ -557,6 +557,13 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
             Ok(())
         })
 }
+
+fn prepare_ready_publication(owner: &SessionOwner) -> Result<()> {
+    if !owner.permits_publication() || owner.outgoing().is_empty() {
+        bail!("native owner has no committed publication evidence");
+    }
+    Ok(())
+}
 /// Variant name for diagnostics; never inspects payloads.
 pub fn message_kind(message: &qos_peer_state::NeighbourMsg) -> &'static str {
     use qos_peer_state::NeighbourMsg as M;
@@ -822,7 +829,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         let _timing = crate::action_timing::Timing::new("subscription_ready_work");
                         subscription_generation = subscription_generation.checked_add(1).context("native subscription generation exhausted")?;
                         tracing::info!(replayed = pending, generation = subscription_generation, "native subscription ready after relay replay");
-                        owner.refresh_checkpoint()?;
+                        prepare_ready_publication(&owner)?;
                         if action_error.is_none() {
                             *authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))? = Some(owner.peer().clone());
                             if actions.is_none() {
@@ -981,6 +988,41 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use iroh::Watcher;
+
+    #[test]
+    fn ready_reuses_the_exact_committed_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("owner");
+        let owner = SessionOwner::initialize(&root).unwrap();
+        let generation = owner.status().generation;
+        let baseline = owner.publication_baseline();
+        let outgoing = owner.outgoing().to_vec();
+        let kinds = owner.outgoing_kinds().to_vec();
+        drop(owner);
+
+        let owner = SessionOwner::open(&root).unwrap();
+        assert_eq!(owner.status().generation, generation);
+        assert_eq!(owner.publication_baseline(), baseline);
+        assert_eq!(owner.outgoing(), outgoing);
+
+        prepare_ready_publication(&owner).unwrap();
+
+        assert_eq!(owner.status().generation, generation);
+        assert_eq!(owner.publication_baseline(), baseline);
+        assert_eq!(owner.outgoing(), outgoing);
+        let mut delivered = Vec::new();
+        let mut cursor = crate::publication::PublicationCursor::default();
+        cursor
+            .send(&owner, |bytes, kind| {
+                delivered.push((bytes.to_vec(), kind));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            delivered,
+            outgoing.into_iter().zip(kinds).collect::<Vec<_>>()
+        );
+    }
 
     #[tokio::test]
     async fn private_packet_map_matches_actual_server_capabilities() {

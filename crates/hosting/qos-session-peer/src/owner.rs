@@ -321,8 +321,13 @@ impl SessionOwner {
             workspace_id,
         };
         let mut candidate = owner.peer.clone();
-        if crate::seed::bootstrap_desktop(&mut candidate, &owner.identity.native)
-            .map_err(anyhow::Error::msg)?
+        let desktop_changed =
+            crate::seed::bootstrap_desktop(&mut candidate, &owner.identity.native)
+                .map_err(anyhow::Error::msg)?;
+        // Older complete aggregates may have no publication queue. Rebuild that
+        // recovery basis once at open; ordinary reconnects reuse exact evidence.
+        if (desktop_changed || owner.aggregate.outgoing.is_empty())
+            && candidate.incomplete_reason().is_none()
         {
             let messages = candidate
                 .durable_bootstrap_messages(
@@ -336,20 +341,7 @@ impl SessionOwner {
                 )
                 .map_err(anyhow::Error::msg)?;
             let mut next = owner.aggregate.clone();
-            next.outgoing.extend(
-                messages
-                    .iter()
-                    .map(postcard::to_stdvec)
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
-            next.publication = PublicationState::checkpoint(
-                next.outgoing.len(),
-                owner
-                    .aggregate
-                    .generation
-                    .checked_add(1)
-                    .context("session generation exhausted")?,
-            );
+            owner.replace_publication(&mut next, &messages)?;
             owner.commit(next, candidate)?;
         }
         Ok(owner)
@@ -806,6 +798,100 @@ impl SessionOwner {
 #[cfg(test)]
 mod enrollment_migration_tests {
     use super::*;
+    #[test]
+    fn empty_publication_rebuilds_once_and_reconnects_from_the_committed_basis() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("owner");
+        let mut owner = SessionOwner::initialize(&path).unwrap();
+        let generation = owner.status().generation;
+        owner.aggregate.outgoing.clear();
+        owner.aggregate.publication = PublicationState::checkpoint(0, generation);
+        owner
+            .store
+            .commit(&encode(&owner.aggregate, &owner.identity).unwrap())
+            .unwrap();
+        drop(owner);
+
+        let owner = SessionOwner::open(&path).unwrap();
+        assert_eq!(owner.status().generation, generation + 1);
+        assert!(!owner.outgoing().is_empty());
+        assert!(
+            owner
+                .outgoing_kinds()
+                .iter()
+                .all(|kind| *kind == Retention::Checkpoint)
+        );
+        let outgoing = owner.outgoing().to_vec();
+        let kinds = owner.outgoing_kinds().to_vec();
+        let mut delivered = Vec::new();
+        crate::publication::PublicationCursor::default()
+            .send(&owner, |bytes, kind| {
+                delivered.push((bytes.to_vec(), kind));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            delivered,
+            outgoing
+                .iter()
+                .cloned()
+                .zip(kinds.iter().copied())
+                .collect::<Vec<_>>()
+        );
+        drop(owner);
+
+        let owner = SessionOwner::open(&path).unwrap();
+        assert_eq!(owner.status().generation, generation + 1);
+        assert_eq!(owner.outgoing(), outgoing);
+        assert_eq!(owner.outgoing_kinds(), kinds);
+    }
+
+    #[test]
+    fn incomplete_encryption_reopens_without_publishing_a_plaintext_checkpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("owner");
+        let mut owner = SessionOwner::initialize(&path).unwrap();
+        let author = owner.identity.native.verifying_key().to_bytes();
+        let mut encrypted = owner
+            .peer
+            .signed_snapshots(&owner.identity.native, SystemTime::now())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let NeighbourMsg::AppDocument {
+            app_id,
+            cluster_id,
+            record_id,
+            envelope,
+            ..
+        } = &mut encrypted
+        else {
+            panic!("signed snapshot must be an application document");
+        };
+        envelope.seq += 1;
+        envelope.encryption = Some(collab_types::EncryptionMetadata {
+            epoch: 1,
+            channel: collab_types::document_channel_id(app_id, cluster_id, record_id),
+        });
+        envelope.payload = vec![1, 2, 3];
+        collab_types::sign_op(envelope, &owner.identity.native).unwrap();
+        owner
+            .receive(TransportOrigin::RelayDelta(author), encrypted)
+            .unwrap()
+            .unwrap();
+        assert!(!owner.permits_publication());
+        assert!(owner.outgoing().is_empty());
+        let generation = owner.status().generation;
+        drop(owner);
+
+        let owner = SessionOwner::open(&path).unwrap();
+        assert_eq!(owner.status().generation, generation);
+        assert!(owner.peer().incomplete_reason().is_some());
+        assert!(!owner.permits_publication());
+        assert!(owner.outgoing().is_empty());
+    }
+
     #[test]
     fn legacy_room_binding_survives_restart_and_enrollment() {
         let temp = tempfile::tempdir().unwrap();
@@ -1363,9 +1449,15 @@ mod desktop_migration_tests {
             owner.aggregate.outgoing.len(),
             owner.aggregate.generation,
         );
+        let old_delta = postcard::to_stdvec(&NeighbourMsg::SyncResp {
+            changes: Vec::new(),
+            room: room.clone(),
+        })
+        .unwrap();
+        owner.aggregate.outgoing.push(old_delta.clone());
+        owner.aggregate.publication.kinds.push(Retention::Delta);
         owner.aggregate.peer = legacy.durable().unwrap();
         let pending = owner.aggregate.pending.clone();
-        let outgoing = owner.aggregate.outgoing.clone();
         let generation = owner.aggregate.generation;
         let authority = owner.aggregate.authority.clone();
         let directory = owner.aggregate.directory.clone();
@@ -1379,7 +1471,29 @@ mod desktop_migration_tests {
         assert_eq!(owner.aggregate.authority, authority);
         assert_eq!(owner.directory(), directory);
         assert_eq!(owner.pending(), pending);
-        assert!(owner.outgoing().starts_with(&outgoing));
+        assert!(!owner.outgoing().contains(&old_delta));
+        assert!(
+            owner
+                .outgoing_kinds()
+                .iter()
+                .all(|kind| *kind == Retention::Checkpoint)
+        );
+        let mut delivered = Vec::new();
+        crate::publication::PublicationCursor::default()
+            .send(&owner, |bytes, kind| {
+                delivered.push((bytes.to_vec(), kind));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            delivered,
+            owner
+                .outgoing()
+                .iter()
+                .cloned()
+                .zip(owner.outgoing_kinds().iter().copied())
+                .collect::<Vec<_>>()
+        );
         assert_eq!(owner.status().generation, generation + 1);
         assert_eq!(
             owner
