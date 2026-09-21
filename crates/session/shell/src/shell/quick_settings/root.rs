@@ -885,6 +885,14 @@ impl QuickSettingsRoot {
         state: &mut QuickSettingsState,
         direction: f32,
     ) -> Option<SliderCommit> {
+        let available = match self.keyboard_focus? {
+            Self::SLIDER_FOCUS_START => state.brightness_available,
+            i if i == Self::SLIDER_FOCUS_START + 1 => state.volume_available,
+            _ => return None,
+        };
+        if !available {
+            return None;
+        }
         let value = match self.keyboard_focus? {
             Self::SLIDER_FOCUS_START => &mut state.brightness,
             i if i == Self::SLIDER_FOCUS_START + 1 => &mut state.volume,
@@ -922,6 +930,14 @@ impl QuickSettingsRoot {
         for i in 0..2 {
             let (bar, _) = self.slider_geometry_for(panel, i);
             if Rect::new(bar.x0 - 6., bar.y0 - 10., bar.x1 + 6., bar.y1 + 10.).contains(point) {
+                let available = if i == 0 {
+                    state.brightness_available
+                } else {
+                    state.volume_available
+                };
+                if !available {
+                    return RootAction::None;
+                }
                 let value = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
                 if i == 0 {
                     state.brightness = value;
@@ -1172,6 +1188,11 @@ impl QuickSettingsRoot {
         );
         for i in 0..2 {
             let (bar, y) = self.slider_geometry_for(self.panel, i);
+            let available = if i == 0 {
+                state.brightness_available
+            } else {
+                state.volume_available
+            };
             let face = Rect::new(
                 bar.x0 - self.scaled(5.),
                 y - self.scaled(4.),
@@ -1207,9 +1228,10 @@ impl QuickSettingsRoot {
                         state.volume
                     }),
                 )
-                .hovered(cursor.is_some_and(|p| face.contains(p)))
+                .hovered(available && cursor.is_some_and(|p| face.contains(p)))
                 .focused(self.keyboard_focus == Some(Self::SLIDER_FOCUS_START.saturating_add(i)))
-                .dragging(self.slider_drag == Some(i)),
+                .dragging(self.slider_drag == Some(i))
+                .disabled(!available),
             );
         }
         let controls = self.visible_controls(state);
@@ -1780,33 +1802,24 @@ impl QuickSettingsRoot {
             })
             .with_state(AccessState::new().modal(true));
         if !self.edit_mode {
-            for (name, value) in [("Brightness", state.brightness), ("Volume", state.volume)] {
+            for (name, value, available) in [
+                ("Brightness", state.brightness, state.brightness_available),
+                ("Volume", state.volume, state.volume_available),
+            ] {
                 root.children.push(
                     AccessNode::new(Role::Slider)
                         .with_name(name)
-                        .with_value(format!("{:.0}%", value * 100.0))
-                        .with_description("Use Left and Right Arrow to adjust")
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
-        }
-        if !self.edit_mode {
-            root.children.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Power profile")
-                    .with_value(state.power_profile.label())
-                    .with_description("Activate to use the next power profile")
-                    .with_state(AccessState::new().focusable(true)),
-            );
-            for name in [
-                "Customize Quick Settings",
-                "Open Settings",
-                "Open power menu",
-            ] {
-                root.children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(name)
-                        .with_state(AccessState::new().focusable(true)),
+                        .with_value(if available {
+                            format!("{:.0}%", value * 100.0)
+                        } else {
+                            "Unavailable".into()
+                        })
+                        .with_description(if available {
+                            "Use Left and Right Arrow to adjust"
+                        } else {
+                            "No controllable device is available"
+                        })
+                        .with_state(AccessState::new().focusable(available).disabled(!available)),
                 );
             }
         }
@@ -1840,6 +1853,26 @@ impl QuickSettingsRoot {
                 node.state.checked = Some(Self::on(c, state));
             }
             root.children.push(node);
+        }
+        if !self.edit_mode {
+            root.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Power profile")
+                    .with_value(state.power_profile.label())
+                    .with_description("Activate to use the next power profile")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+            for name in [
+                "Customize Quick Settings",
+                "Open Settings",
+                "Open power menu",
+            ] {
+                root.children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
         }
         if self.edit_mode {
             root.children.push(

@@ -415,6 +415,15 @@ fn keyboard_slider_arrows_route_through_the_host() {
         calls.iter().any(|call| call.starts_with("set_volume(")),
         "Left Arrow on the focused volume slider did not reach QsActions: {calls:?}"
     );
+    let osd = chrome
+        .borrow()
+        .osd
+        .expect("a successful slider interaction raises the shared HUD");
+    assert!(matches!(
+        osd.kind,
+        shell::shell::osd::OsdKind::Volume { muted: false }
+    ));
+    assert_eq!(osd.caption(), "Volume 35%");
 }
 
 /// Enter, Space and reverse-Tab all use the same root actions exposed to
@@ -753,8 +762,8 @@ fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
         recorder.0.calls()
     );
 
-    // Row 1 is already connected, so the click connects directly with no
-    // passphrase needed.
+    // Row 1 is already connected, so it is truthful status rather than a
+    // second join action.
     {
         let mut st = chrome.borrow_mut();
         st.quick_settings.wifi_password = None;
@@ -768,8 +777,8 @@ fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
     );
     assert_eq!(
         chrome.borrow().quick_settings.wifi_joining.as_deref(),
-        Some(scanned[1].ssid.as_str()),
-        "an open or already-known network must enter the asynchronous join lifecycle"
+        None,
+        "an already-connected network must not enter another join lifecycle"
     );
 }
 
