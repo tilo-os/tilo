@@ -4,17 +4,20 @@ import argparse, hashlib, json, os, pathlib, re, subprocess, tarfile
 ROOT = pathlib.Path(__file__).resolve().parent
 PIN = "d327833ec1d5eb1358b6f2c37139f10a3460944d"
 SHA = "b90caed8fade648f119c767bd310419be56a2b0014b16e6b2c68b50bc6c7e9cd"
+PIC_BUILD_LAYOUT = "pic-v1"
 def build(output, fixture=False):
     archive = ROOT / "vendor/ntfs-3g-source.tar.gz"
     if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA:
         raise RuntimeError("NTFS source checksum mismatch")
     output = pathlib.Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    src = output / ("ntfs-3g-" + PIN)
+    build_root = output / PIC_BUILD_LAYOUT
+    build_root.mkdir(parents=True, exist_ok=True)
+    src = build_root / ("ntfs-3g-" + PIN)
     if not src.exists():
         with tarfile.open(archive) as tar:
             # Trusted exact hash is required even on Python without extraction filters.
-            tar.extractall(output)
+            tar.extractall(build_root)
     env = os.environ.copy()
     env["PATH"] = "/opt/homebrew/opt/libtool/libexec/gnubin:/opt/homebrew/bin:" + env["PATH"]
     env["LC_ALL"] = "C"
@@ -28,12 +31,13 @@ def build(output, fixture=False):
     archiver = env.get("QOS_NTFS_AR", "ar")
     env["CC"] = compiler; env["AR"] = archiver
     env["RANLIB"] = env.get("QOS_NTFS_RANLIB", "ranlib")
-    settings={"cc":compiler,"ar":archiver,"host":env.get("QOS_NTFS_HOST"),"ranlib":env["RANLIB"],"fixture":fixture}
+    settings={"cc":compiler,"ar":archiver,"host":env.get("QOS_NTFS_HOST"),"ranlib":env["RANLIB"],"pic":True,"fixture":fixture}
     stamp=src / ".qos-config.json"
     if stamp.exists() and json.loads(stamp.read_text()) != settings:
         raise RuntimeError("native build configuration changed; use a new output directory")
     if not stamp.exists():
-        flags = ["--disable-ntfs-3g", "--disable-mount-helper", "--disable-plugins", "--disable-crypto", "--disable-nfconv", "--disable-shared", "--enable-static"]
+        # Libtool's PIC mode keeps Autoconf defaults and caller-provided CFLAGS intact.
+        flags = ["--disable-ntfs-3g", "--disable-mount-helper", "--disable-plugins", "--disable-crypto", "--disable-nfconv", "--disable-shared", "--enable-static", "--with-pic"]
         flags += (["--enable-ntfsprogs"] if fixture else ["--disable-ntfsprogs", "--disable-device-default-io-ops"])
         if env.get("QOS_NTFS_HOST"): flags += ["--host="+env["QOS_NTFS_HOST"]]
         run(["./configure", *flags])

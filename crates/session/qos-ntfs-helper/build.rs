@@ -1,4 +1,7 @@
 use std::{env, path::PathBuf, process::Command};
+
+const PIC_BUILD_LAYOUT: &str = "pic-v1";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if env::var("CARGO_CFG_TARGET_FAMILY")? != "unix" {
         return Ok(());
@@ -13,7 +16,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !status.success() {
         return Err("pinned native build failed".into());
     }
-    let src = out.join("ntfs-3g-d327833ec1d5eb1358b6f2c37139f10a3460944d");
+    let src = out
+        .join(PIC_BUILD_LAYOUT)
+        .join("ntfs-3g-d327833ec1d5eb1358b6f2c37139f10a3460944d");
     for source in ["ntfs_reader", "strict_logfile"] {
         let status = Command::new(&compiler)
             .args([
@@ -24,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "-Wall",
                 "-Wextra",
                 "-Werror",
+                "-fPIC",
                 "-c",
                 &format!("native/{source}.c"),
                 "-o",
@@ -45,6 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "-Wall",
             "-Wextra",
             "-Werror",
+            "-fPIC",
             "-c",
             "native/sandbox.c",
             "-o",
