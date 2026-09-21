@@ -772,7 +772,7 @@ result(job_state or ('reconcile' if marker_value is not None else 'ready'),recei
            'job_log_bytes':job_log_bytes} if job_state is not None else {}))'''
 
 
-def validate_creator_job_failure_receipt(path, status, acceptance_id):
+def validate_creator_job_failure_receipt(path, status):
     path=Path(path)
     try:info=path.lstat()
     except OSError as error:
@@ -784,7 +784,7 @@ def validate_creator_job_failure_receipt(path, status, acceptance_id):
     except (OSError,ValueError) as error:
         raise CreatorInputReconciliationError('creator job failure receipt is invalid') from error
     if (not isinstance(document,dict) or document.get('schema')!=1
-            or document.get('acceptance_id')!=acceptance_id
+            or document.get('purpose')!='tilo-supervised-creator-job-failure-log'
             or document.get('binding')!=status['job_binding']):
         raise CreatorInputReconciliationError('creator job failure receipt binding differs')
     try:
@@ -792,8 +792,7 @@ def validate_creator_job_failure_receipt(path, status, acceptance_id):
     except (KeyError,TypeError,ValueError) as error:
         raise CreatorInputReconciliationError('creator job failure log encoding is invalid') from error
     expected_sha=hashlib.sha256(encoded).hexdigest()
-    if (len(encoded)!=status['job_log_bytes'] or expected_sha!=status['job_log_sha256']
-            or document.get('log_sha256')!=expected_sha):
+    if len(encoded)!=status['job_log_bytes'] or expected_sha!=status['job_log_sha256']:
         raise CreatorInputReconciliationError('creator job failure log digest differs')
     return document
 
@@ -842,8 +841,7 @@ def creator_input_status(context, disk, acceptance_id='run1', operation_dir=None
         if value['job_log_bytes']:
             if operation_dir is None:
                 raise CreatorInputReconciliationError('creator job failure receipt is unavailable')
-            validate_creator_job_failure_receipt(Path(operation_dir)/'creator-job.failure.json',
-                                                 value,acceptance_id)
+            validate_creator_job_failure_receipt(Path(operation_dir)/'creator-job.failure.json',value)
     return value
 
 

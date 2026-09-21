@@ -256,8 +256,8 @@ class LaneAdmission(unittest.TestCase):
             with patch.object(lane,'command',return_value=json.dumps(status)):
                 with self.assertRaises(lane.CreatorInputReconciliationError):
                     lane.creator_input_status('ctx',worker,'run1',directory)
-            receipt={'schema':1,'purpose':'tilo-supervised-creator-job-failure',
-                     'acceptance_id':'run1','binding':binding,'log_sha256':digest,
+            receipt={'schema':1,'purpose':'tilo-supervised-creator-job-failure-log',
+                     'binding':binding,
                      'log_base64':base64.b64encode(log).decode()}
             args_path.write_text(json.dumps(receipt)); args_path.chmod(0o600)
             with patch.object(lane,'command',return_value=json.dumps(status)):
