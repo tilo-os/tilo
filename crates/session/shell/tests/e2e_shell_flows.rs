@@ -44,7 +44,10 @@ use ui::presence::PresenceCtx;
 use ui::state::State;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{AppKind, TabBar, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
+use ui::widget::{
+    AppKind, FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, Widget, WindowGroup,
+    WindowWidth,
+};
 
 use crate::support::offscreen::OffscreenRenderer;
 use crate::support::snapshot::SnapshotAssertion;
@@ -693,7 +696,14 @@ fn render_frame_to(
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, tr, theme, presence);
         if group.drag_in_flight() {
-            group.draw_floating_surfaces(&mut s, Affine::IDENTITY, tr, theme, presence);
+            FloatingSurfaceProvider::draw_floating_surfaces(
+                group,
+                &mut s,
+                Affine::IDENTITY,
+                tr,
+                theme,
+                presence,
+            );
         }
         r.render_png(&s, Color::from_rgb8(0x02, 0x06, 0x14), path);
     }
