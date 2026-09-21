@@ -8,6 +8,7 @@ identities are pinned in the retained operation receipts.
 import argparse
 import atexit
 import base64
+from contextlib import contextmanager
 import hashlib
 import io
 import json
@@ -17,6 +18,7 @@ import re
 import selectors
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -72,6 +74,118 @@ class CreatorCheckpoint(TypedDict):
     creation_sha256: str
     raw_identity: RawIdentity
     expires_at: int
+
+
+TIMING_STAGES = ('creator_admission', 'input_transfer', 'create_install',
+                 'freeze_identity', 'verifier_provision_transfer', 'verification',
+                 'vm_transfer', 'conversion_cycle', 'final_identity')
+
+
+class StageTiming(TypedDict):
+    name: str
+    status: str
+    started_offset_ns: int
+    duration_ns: int
+
+
+class LaneTimingReceipt(TypedDict):
+    schema: int
+    purpose: str
+    clock: str
+    status: str
+    total_duration_ns: int
+    stages: list[StageTiming]
+
+
+def validate_lane_timings(receipt: LaneTimingReceipt) -> None:
+    if (set(receipt) != {'schema','purpose','clock','status','total_duration_ns','stages'}
+            or receipt['schema'] != 1
+            or receipt['purpose'] != 'tilo-supervised-install-lane-timings'
+            or receipt['clock'] != 'monotonic_ns'
+            or receipt['status'] not in {'running','succeeded','failed'}
+            or type(receipt['total_duration_ns']) is not int
+            or receipt['total_duration_ns'] < 0
+            or not isinstance(receipt['stages'], list)):
+        raise ValueError('invalid supervised lane timing receipt')
+    previous_end = 0
+    for index, stage in enumerate(receipt['stages']):
+        if (not isinstance(stage, dict)
+                or set(stage) != {'name','status','started_offset_ns','duration_ns'}
+                or index >= len(TIMING_STAGES) or stage['name'] != TIMING_STAGES[index]
+                or stage['status'] not in {'succeeded','skipped','failed'}
+                or type(stage['started_offset_ns']) is not int
+                or type(stage['duration_ns']) is not int
+                or stage['started_offset_ns'] < previous_end or stage['duration_ns'] < 0
+                or (stage['status'] == 'skipped' and stage['duration_ns'] != 0)):
+            raise ValueError('invalid supervised lane timing stage')
+        previous_end = stage['started_offset_ns'] + stage['duration_ns']
+    if previous_end > receipt['total_duration_ns']:
+        raise ValueError('supervised lane timing total precedes its stages')
+    failed = [stage for stage in receipt['stages'] if stage['status'] == 'failed']
+    if (receipt['status'] == 'failed') != (len(failed) == 1):
+        raise ValueError('supervised lane timing failure status differs from its stages')
+    if failed and receipt['stages'][-1] is not failed[0]:
+        raise ValueError('supervised lane timing continued after failure')
+    if receipt['status'] == 'succeeded' and len(receipt['stages']) != len(TIMING_STAGES):
+        raise ValueError('successful supervised lane timing receipt is incomplete')
+
+
+class LaneTimer:
+    def __init__(self, path: Path, clock=time.monotonic_ns):
+        self.path = path
+        self.clock = clock
+        self.started = clock()
+        self.stages: list[StageTiming] = []
+        self.status = 'running'
+
+    def receipt(self) -> LaneTimingReceipt:
+        value: LaneTimingReceipt = {
+          'schema':1, 'purpose':'tilo-supervised-install-lane-timings',
+          'clock':'monotonic_ns', 'status':self.status,
+          'total_duration_ns':self.clock()-self.started, 'stages':list(self.stages)}
+        validate_lane_timings(value)
+        return value
+
+    def persist(self) -> None:
+        write_private(self.path,
+          (json.dumps(self.receipt(),indent=2,sort_keys=True)+'\n').encode())
+
+    def skip(self, name: str) -> None:
+        self._expect(name)
+        offset = self.clock()-self.started
+        self.stages.append({'name':name,'status':'skipped',
+                            'started_offset_ns':offset,'duration_ns':0})
+        print(f'lane timing: {name}=skipped', file=sys.stderr, flush=True)
+
+    def _expect(self, name: str) -> None:
+        if len(self.stages) >= len(TIMING_STAGES) or TIMING_STAGES[len(self.stages)] != name:
+            raise ValueError('supervised lane timing stages are out of order')
+
+    @contextmanager
+    def stage(self, name: str):
+        self._expect(name)
+        started = self.clock(); offset = started-self.started
+        try:
+            yield
+        except BaseException:
+            duration = self.clock()-started
+            self.stages.append({'name':name,'status':'failed',
+                                'started_offset_ns':offset,'duration_ns':duration})
+            self.status = 'failed'; self.persist()
+            print(f'lane timing: {name}=failed {duration/1_000_000_000:.3f}s',
+                  file=sys.stderr,flush=True)
+            raise
+        duration = self.clock()-started
+        self.stages.append({'name':name,'status':'succeeded',
+                            'started_offset_ns':offset,'duration_ns':duration})
+        print(f'lane timing: {name}={duration/1_000_000_000:.3f}s',
+              file=sys.stderr,flush=True)
+
+    def finish(self) -> LaneTimingReceipt:
+        if len(self.stages) != len(TIMING_STAGES):
+            raise ValueError('cannot finish incomplete supervised lane timings')
+        self.status = 'succeeded'; self.persist()
+        return self.receipt()
 
 
 def command(argv, payload=None, *, timeout=120, text=True):
@@ -1319,36 +1433,44 @@ def main():
             p.error('resume operation directory does not exist')
     else:
         args.operation_dir.mkdir(mode=0o700,parents=True,exist_ok=False)
+    timer=LaneTimer(args.operation_dir/'timings.json')
     values=json.loads(args.disk_args.read_text());validate_disk_args(values)
     root=Path(__file__).resolve().parents[2]; helpers=git_archive(root,args.helper_revision)
     public=public_archive(args.public_bundle)
     installer_bootc = installer_bootc_archive(
         args.installer_bootc_helper, values['installer_bootc_sha256'])
-    nodes=api_json(args.context,'get','nodes','-l','kubernetes.io/arch=arm64','--request-timeout=20s')
+    with timer.stage('creator_admission'):
+        nodes=api_json(args.context,'get','nodes','-l','kubernetes.io/arch=arm64','--request-timeout=20s')
+        if args.resume:
+            checkpoint,creation,identity,disk,disk_node,vm_node=resume_creator(args,nodes)
+        else:
+            disk_node,vm_node=select_nodes(nodes,args.disk_node,args.vm_node)
+            expires_at=int(time.time())+PAUSE_TTL_SECONDS
+            disk=create_worker(args.context,disk_manifest('tilo-disk-'+args.acceptance_id,disk_node,
+              operation=args.acceptance_id,expires_at=expires_at))
+            write_private(args.operation_dir/'worker-bindings.json',
+                          (json.dumps({'creator':disk},indent=2,sort_keys=True)+'\n').encode())
     if args.resume:
-        checkpoint,creation,identity,disk,disk_node,vm_node=resume_creator(args,nodes)
+        timer.skip('input_transfer');timer.skip('create_install');timer.skip('freeze_identity')
     else:
-        disk_node,vm_node=select_nodes(nodes,args.disk_node,args.vm_node)
-        expires_at=int(time.time())+PAUSE_TTL_SECONDS
-        disk=create_worker(args.context,disk_manifest('tilo-disk-'+args.acceptance_id,disk_node,
-          operation=args.acceptance_id,expires_at=expires_at))
-        write_private(args.operation_dir/'worker-bindings.json',
-                      (json.dumps({'creator':disk},indent=2,sort_keys=True)+'\n').encode())
         auth_path=args.operation_dir/'registry-auth.json'
         cleanup_auth=lambda: auth_path.unlink(missing_ok=True)
         try:
-            auth_bytes=registry_auth(args)
-            write_private(auth_path,auth_bytes)
-            atexit.register(cleanup_auth)
-            agent=host_agent(args.context,disk['node'])
-            stream_creator_inputs(args.context,disk['namespace'],disk['pod'],'disk',
-                                  helpers,public,installer_bootc)
-            create_on_worker(root,args,disk,agent)
-            creation=(args.operation_dir/'creation.json').read_bytes()
-            freeze_raw(args.context,disk)
-            identity=raw_identity(args.context,disk)
-            write_private(args.operation_dir/'raw-identity.json',
-                          (json.dumps(identity,indent=2,sort_keys=True)+'\n').encode())
+            with timer.stage('input_transfer'):
+                auth_bytes=registry_auth(args)
+                write_private(auth_path,auth_bytes)
+                atexit.register(cleanup_auth)
+                agent=host_agent(args.context,disk['node'])
+                stream_creator_inputs(args.context,disk['namespace'],disk['pod'],'disk',
+                                      helpers,public,installer_bootc)
+            with timer.stage('create_install'):
+                create_on_worker(root,args,disk,agent)
+                creation=(args.operation_dir/'creation.json').read_bytes()
+            with timer.stage('freeze_identity'):
+                freeze_raw(args.context,disk)
+                identity=raw_identity(args.context,disk)
+                write_private(args.operation_dir/'raw-identity.json',
+                              (json.dumps(identity,indent=2,sort_keys=True)+'\n').encode())
         except BaseException:
             cleanup_auth()
             try:
@@ -1366,44 +1488,49 @@ def main():
           args,disk,disk_node,creation,identity,expires_at)
     # Only now provision the verifier. It has a distinct new Kata sandbox and
     # never coexisted with the privileged image execution.
-    verifier=handoff_creator_to_verifier(root,args,nodes,checkpoint,disk_node,vm_node,
-      disk,creation,identity,helpers,public)
+    with timer.stage('verifier_provision_transfer'):
+        verifier=handoff_creator_to_verifier(root,args,nodes,checkpoint,disk_node,vm_node,
+          disk,creation,identity,helpers,public)
     # One authenticated exec installs its cleanup trap before reading the
     # credential stream, then removes the file on success, error or disconnect.
-    auth_bytes=registry_auth(args)
-    try:
-        verification=verify_disk(args.context,verifier,values,auth_bytes)
-    finally:
-        del auth_bytes
-    parsed=json.loads(verification)
-    if (parsed.get('purpose') != 'tilo-installed-boot-and-root-verification'
-            or not parsed.get('checks') or not all(parsed['checks'].values())):
-        raise ValueError('independent installed-disk verification did not pass')
-    write_private(args.operation_dir/'installed-verification.json',(json.dumps(parsed,indent=2,sort_keys=True)+'\n').encode())
-    finalized=verify_finalized_source(args.context,verifier,values,json.loads(creation))
-    finalized_bytes=(json.dumps(finalized,indent=2,sort_keys=True)+'\n').encode()
-    write_private(args.operation_dir/'finalized-verification.json',finalized_bytes)
-    finalization_verification_sha256=hashlib.sha256(finalized_bytes).hexdigest()
-    vm=create_worker(args.context,vm_manifest('tilo-vm-'+args.acceptance_id,vm_node))
-    stream_tree(args.context,vm['namespace'],vm['pod'],'qemu','/work/source',helpers)
-    preflight_vm(args.context,vm)
-    write_private(args.operation_dir/'worker-bindings.json',
-                  (json.dumps({'creator':disk,'verifier':verifier,'vm':vm},indent=2,sort_keys=True)+'\n').encode())
-    require_same_worker(args.context,verifier);require_same_worker(args.context,vm)
-    sparse_transfer(args.context,verifier,vm,target_container='qemu',
-                    target_directory='/work/verified',target_name='installer.raw')
-    if raw_identity(args.context,vm,'qemu','/work/verified/installer.raw')!=identity:
-        raise ValueError('KVM worker received different verified raw media')
-    delete_worker(args.context,verifier)
-    require_same_worker(args.context,vm)
-    cycle=convert_and_cycle(args.context,vm,identity,args.acceptance_id)
-    require_same_worker(args.context,vm)
-    cycle_evidence=acceptance_evidence(args.context,vm,cycle)
-    write_private(args.operation_dir/'cycle-evidence.json',
-                  (json.dumps(cycle_evidence,indent=2,sort_keys=True)+'\n').encode())
-    archive=collect_cycle_archive(args.context,vm,cycle,args.operation_dir/'cycle-evidence.tar')
-    require_same_worker(args.context,vm)
-    result={'schema':1,'purpose':'tilo-arm-installer-prepared-alongside-acceptance',
+    with timer.stage('verification'):
+        auth_bytes=registry_auth(args)
+        try:
+            verification=verify_disk(args.context,verifier,values,auth_bytes)
+        finally:
+            del auth_bytes
+        parsed=json.loads(verification)
+        if (parsed.get('purpose') != 'tilo-installed-boot-and-root-verification'
+                or not parsed.get('checks') or not all(parsed['checks'].values())):
+            raise ValueError('independent installed-disk verification did not pass')
+        write_private(args.operation_dir/'installed-verification.json',(json.dumps(parsed,indent=2,sort_keys=True)+'\n').encode())
+        finalized=verify_finalized_source(args.context,verifier,values,json.loads(creation))
+        finalized_bytes=(json.dumps(finalized,indent=2,sort_keys=True)+'\n').encode()
+        write_private(args.operation_dir/'finalized-verification.json',finalized_bytes)
+        finalization_verification_sha256=hashlib.sha256(finalized_bytes).hexdigest()
+    with timer.stage('vm_transfer'):
+        vm=create_worker(args.context,vm_manifest('tilo-vm-'+args.acceptance_id,vm_node))
+        stream_tree(args.context,vm['namespace'],vm['pod'],'qemu','/work/source',helpers)
+        preflight_vm(args.context,vm)
+        write_private(args.operation_dir/'worker-bindings.json',
+                      (json.dumps({'creator':disk,'verifier':verifier,'vm':vm},indent=2,sort_keys=True)+'\n').encode())
+        require_same_worker(args.context,verifier);require_same_worker(args.context,vm)
+        sparse_transfer(args.context,verifier,vm,target_container='qemu',
+                        target_directory='/work/verified',target_name='installer.raw')
+        if raw_identity(args.context,vm,'qemu','/work/verified/installer.raw')!=identity:
+            raise ValueError('KVM worker received different verified raw media')
+        delete_worker(args.context,verifier)
+    with timer.stage('conversion_cycle'):
+        require_same_worker(args.context,vm)
+        cycle=convert_and_cycle(args.context,vm,identity,args.acceptance_id)
+    with timer.stage('final_identity'):
+        require_same_worker(args.context,vm)
+        cycle_evidence=acceptance_evidence(args.context,vm,cycle)
+        write_private(args.operation_dir/'cycle-evidence.json',
+                      (json.dumps(cycle_evidence,indent=2,sort_keys=True)+'\n').encode())
+        archive=collect_cycle_archive(args.context,vm,cycle,args.operation_dir/'cycle-evidence.tar')
+        require_same_worker(args.context,vm)
+        result={'schema':1,'purpose':'tilo-arm-installer-prepared-alongside-acceptance',
       'helper_revision':args.helper_revision,'source':values['source'],'raw_media':identity,
       'finalized_verification_sha256':finalization_verification_sha256,
       'creator_worker':disk,'verifier_worker':verifier,'vm_worker':vm,
@@ -1411,8 +1538,9 @@ def main():
       'prepared_alongside_verified':True,'desktop_verified':True,
       'browser_offline_page_verified':True,'cycle_evidence_file':'cycle-evidence.json',
       'cycle_evidence_archive':archive,
-      'workers_retained_for_followup':True}
-    write_private(args.operation_dir/'acceptance.json',(json.dumps(result,indent=2,sort_keys=True)+'\n').encode())
+          'workers_retained_for_followup':True}
+        write_private(args.operation_dir/'acceptance.json',(json.dumps(result,indent=2,sort_keys=True)+'\n').encode())
+    timer.finish()
     print(json.dumps(result,sort_keys=True))
 
 
