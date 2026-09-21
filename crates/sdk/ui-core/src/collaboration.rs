@@ -1695,6 +1695,10 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
     }
 }
 
+/// Pending owner-backed document commit.
+pub type HostDocumentCommit =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<SignedOp, String>> + Send + 'static>>;
+
 /// Host-local capability, never selected by a wire peer. Called on the SDK
 /// shovel thread, while the application's ordinary owner thread keeps pumping.
 /// Implementations bind an exact route and revalidate current authority.
@@ -1704,7 +1708,7 @@ pub trait HostDocumentCommitter: Send + Sync {
         &self,
         route: &RouteSpec,
         mutation: collab_types::DocumentMutation,
-    ) -> Result<SignedOp, String>;
+    ) -> HostDocumentCommit;
 }
 
 // One signing boundary for inherited Unix services and supplied host services.
@@ -3806,6 +3810,7 @@ async fn send_document_mutation(
         }
         let result = host
             .commit(&route.spec, mutation)
+            .await
             .and_then(|op| postcard::to_stdvec(&op).map_err(|e| e.to_string()));
         match result {
             Ok(bytes) => {

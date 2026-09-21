@@ -1293,6 +1293,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 #[cfg(feature = "test-support")]
                 {
                     status["qualification"] = json!({"armed": qualification.route.is_some(), "held": qualification.completion.is_some(), "expired": qualification.expired,
+                        "signing": signing.qualification_signing(),
                         "workers": actions.as_mut().map(|runtime| runtime.qualification_heads(owner.peer().room())),
                         "action_registration": qualification.action_registration.as_ref().map(|hold| json!({
                             "armed": hold.barrier.is_some(),

@@ -88,6 +88,240 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
     assert!(!metadata.to_string().contains(&capability));
     (host, metadata, capability)
 }
+#[cfg(feature = "test-support")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_session_with_more_than_thirty_two_records_reaches_stable_actions_ready() {
+    use qos_peer_state::{desktop_command::*, owner_commit::*};
+    use std::{collections::BTreeMap, io::Write};
+
+    const CALCULATOR_RECORDS: usize = 35;
+
+    fn record_heads(status: &serde_json::Value) -> BTreeMap<(String, String), Vec<String>> {
+        status["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    (
+                        row["app_id"].as_str().unwrap().into(),
+                        row["record_id"].as_str().unwrap().into(),
+                    ),
+                    row["heads"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|head| head.as_str().unwrap().into())
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn worker_heads(status: &serde_json::Value) -> Option<BTreeMap<(String, String), Vec<String>>> {
+        let workers = status["qualification"]["workers"].as_array()?;
+        workers
+            .iter()
+            .map(|worker| {
+                let app = worker["app"].as_str()?.to_owned();
+                let record = worker["record"].as_str()?.to_owned();
+                let heads = worker["heads"]
+                    .as_array()?
+                    .iter()
+                    .map(|head| head.as_str().map(ToOwned::to_owned))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(((app, record), heads))
+            })
+            .collect()
+    }
+
+    fn publication_sequences(
+        status: &serde_json::Value,
+    ) -> Option<BTreeMap<(String, String), u64>> {
+        let receipts = status["qualification"]["publication"]["receipts"].as_array()?;
+        receipts
+            .iter()
+            .map(|receipt| {
+                let app = receipt["coverage"]["app"].as_str()?.to_owned();
+                let record = receipt["coverage"]["record"].as_str()?.to_owned();
+                let sequence = receipt["coverage"]["sequence"].as_u64()?;
+                Some(((app, record), sequence))
+            })
+            .collect()
+    }
+
+    fn signing_idle(status: &serde_json::Value) -> bool {
+        let signing = &status["qualification"]["signing"];
+        signing["outstanding_handoffs"] == 0 && signing["pending_exact_receipts"] == 0
+    }
+
+    fn stable(
+        status: &serde_json::Value,
+        expected: &BTreeMap<(String, String), Vec<String>>,
+        prior_receipts: &BTreeMap<(String, String), u64>,
+    ) {
+        assert_eq!(status["native_peer"], "subscribed", "{status}");
+        assert_eq!(status["actions"], "ready", "{status}");
+        assert!(status["error"].is_null(), "{status}");
+        assert!(status["action_error"].is_null(), "{status}");
+        assert!(
+            signing_idle(status),
+            "startup signing remains pending: {status}"
+        );
+        assert_eq!(
+            &record_heads(status),
+            expected,
+            "record heads changed: {status}"
+        );
+        let workers = worker_heads(status).expect("worker qualification is still initializing");
+        assert_eq!(
+            workers.len(),
+            expected.len(),
+            "not every record has a worker: {status}"
+        );
+        for (route, heads) in expected {
+            assert_eq!(
+                workers.get(route),
+                Some(heads),
+                "worker did not finish {route:?}: {status}"
+            );
+        }
+        let receipts = publication_sequences(status)
+            .expect("durable publication receipts are still initializing");
+        assert_eq!(
+            receipts.len(),
+            expected.len(),
+            "not every record has a durable receipt: {status}"
+        );
+        for route in expected.keys() {
+            let sequence = receipts
+                .get(route)
+                .copied()
+                .expect("worker route missing its durable receipt");
+            assert!(
+                sequence >= prior_receipts.get(route).copied().unwrap_or(0),
+                "durable receipt regressed for {route:?}: {status}"
+            );
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("owner");
+    let ready = temp.path().join("ready.json");
+    let mut owner = SessionOwner::initialize(&state).unwrap();
+    let mut tree = qos_desktop::WorkspaceTree::default();
+    qos_desktop::projection::RoomProjection::apply_admitted_room(
+        &mut tree,
+        qos_desktop::RoomId::parse(owner.peer().room()).unwrap(),
+        owner.peer().admitted_room().unwrap(),
+    )
+    .unwrap();
+    let strip = tree.workspaces[0].strips[0].id.0;
+    for _ in 0..CALCULATOR_RECORDS {
+        let source = CommandSource {
+            room: owner.peer().room().into(),
+            heads: owner
+                .peer()
+                .admitted_room()
+                .unwrap()
+                .clone()
+                .get_heads()
+                .into_iter()
+                .map(|head| head.0)
+                .collect(),
+        };
+        owner
+            .commit_desktop_command(&OwnerCommitRequest {
+                room: owner.peer().room().into(),
+                operation: CommitOperation::DesktopCommand {
+                    invocation: uuid::Uuid::new_v4(),
+                    caller: owner.peer().authority().clone(),
+                    command: BoundCommand {
+                        source,
+                        command: DesktopCommand::OpenTab {
+                            app: "dev.qos.calculator".into(),
+                            placement: TabPlacement::NewGroup { strip, after: None },
+                        },
+                    },
+                },
+            })
+            .unwrap();
+    }
+    let expected = owner
+        .peer()
+        .rows()
+        .into_iter()
+        .map(|row| ((row.app_id, row.record_id), row.heads))
+        .collect::<BTreeMap<_, _>>();
+    let prior_receipts = owner
+        .peer()
+        .rows()
+        .into_iter()
+        .map(|row| {
+            let route = (row.app_id.clone(), row.record_id.clone());
+            let receipt = owner
+                .peer()
+                .durable_coverage(&row.app_id, &row.record_id)
+                .unwrap()
+                .expect("every retained record has a durable receipt");
+            (route, receipt.coverage.sequence)
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert!(expected.len() >= 34);
+    assert_eq!(
+        expected
+            .keys()
+            .filter(|(app, _)| app == "dev.qos.calculator")
+            .count(),
+        CALCULATOR_RECORDS
+    );
+    drop(owner);
+
+    let (mut host, metadata, _) = start(&state, &ready).await;
+    let origin = metadata["fixture_origin"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let status = request(origin, "/status", None, None).await.1;
+        if !status["error"].is_null() || !status["action_error"].is_null() {
+            panic!("retained >32-record startup failed: {status}");
+        }
+        if status["native_peer"] == "subscribed"
+            && status["actions"] == "ready"
+            && record_heads(&status) == expected
+            && worker_heads(&status).as_ref() == Some(&expected)
+            && signing_idle(&status)
+            && publication_sequences(&status)
+                .as_ref()
+                .is_some_and(|receipts| {
+                    receipts.len() == expected.len()
+                        && expected.keys().all(|route| {
+                            receipts.get(route).copied().unwrap_or(0)
+                                >= prior_receipts.get(route).copied().unwrap_or(0)
+                        })
+                })
+        {
+            stable(&status, &expected, &prior_receipts);
+            // Keep the gate satisfied through a real idle interval. This
+            // prevents a transient Ready report from masking a later worker
+            // overflow or action-registration failure.
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            let settled = request(origin, "/status", None, None).await.1;
+            stable(&settled, &expected, &prior_receipts);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "retained >32-record session did not reach stable actions/worker readiness: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    writeln!(host.0.stdin.as_mut().unwrap(), "shutdown").unwrap();
+    let exit = tokio::task::spawn_blocking(move || host.0.wait().unwrap())
+        .await
+        .unwrap();
+    assert!(exit.success());
+}
+
 async fn proof(origin: &str, cap: &str, key: &SigningKey, id: u8) -> enrollment::CompleteRequest {
     let request_body = serde_json::to_string(&ChallengeRequest {
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
