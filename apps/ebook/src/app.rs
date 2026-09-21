@@ -10528,7 +10528,10 @@ impl BooksApp {
         tabs_y: f64,
     ) -> f64 {
         let tab_h = 38.0;
-        let mut tx = r.x0 + 26.0;
+        let left = r.x0 + 26.0;
+        let right = r.x1 - 26.0;
+        let mut tx = left;
+        let mut ty = tabs_y;
         for (tab, label) in [
             (SettingsTab::Library, "Library"),
             (SettingsTab::Fonts, "Fonts"),
@@ -10537,7 +10540,12 @@ impl BooksApp {
         ] {
             let active = self.settings_tab == tab;
             let (lw, lh) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
-            let tab_rect = Rect::new(tx, tabs_y, tx + f64::from(lw) + 24.0, tabs_y + tab_h);
+            let tab_w = f64::from(lw) + 24.0;
+            if tx > left && tx + tab_w > right {
+                tx = left;
+                ty += tab_h;
+            }
+            let tab_rect = Rect::new(tx, ty, tx + tab_w, ty + tab_h);
             let hover = self.is_hover(tab_rect);
             let col = if active || hover {
                 c.text_primary
@@ -10549,7 +10557,7 @@ impl BooksApp {
                 label,
                 14.0,
                 col,
-                t * Affine::translate((tx + 12.0, tabs_y + (tab_h - f64::from(lh)) / 2.0)),
+                t * Affine::translate((tx + 12.0, ty + (tab_h - f64::from(lh)) / 2.0)),
                 None,
                 if active {
                     TextWeight::Semibold
@@ -10560,20 +10568,21 @@ impl BooksApp {
             if active {
                 let ind = Rect::new(
                     tx + 8.0,
-                    tabs_y + tab_h - 3.0,
+                    ty + tab_h - 3.0,
                     tx + f64::from(lw) + 16.0,
-                    tabs_y + tab_h,
+                    ty + tab_h,
                 );
                 paint::fill_round(scene, t, ind, 1.5, theme.accent_primary);
             }
-            if !active {
-                self.push_hit(tab_rect, Action::SetSettingsTab(tab));
-            }
-            tx += f64::from(lw) + 24.0 + 6.0;
+            // The selected tab remains a member of the discoverable radio
+            // group. Re-selecting it is an idempotent action.
+            self.push_hit(tab_rect, Action::SetSettingsTab(tab));
+            tx += tab_w + 6.0;
         }
         // Divider under the whole tab bar, derived against the base it sits on.
-        chrome::bar_edge(scene, t, c.surfaces.base, r.x0, r.x1, tabs_y + tab_h);
-        tab_h
+        let total_h = ty - tabs_y + tab_h;
+        chrome::bar_edge(scene, t, c.surfaces.base, r.x0, r.x1, tabs_y + total_h);
+        total_h
     }
 
     /// Device-local keyboard binding editor. Each row records one printable
@@ -12317,10 +12326,10 @@ mod local_interaction_tests {
 
     impl WorkspaceEnvGuard {
         fn set(path: &std::path::Path) -> Self {
-            let previous = std::env::var_os("QOS_WORKSPACE_DIR");
+            let previous = std::env::var_os("TILO_WORKSPACE_DIR");
             // SAFETY: callers use the shared `serial_test` lock while this
-            // process-global compatibility override is installed.
-            unsafe { std::env::set_var("QOS_WORKSPACE_DIR", path) };
+            // process-global workspace override is installed.
+            unsafe { std::env::set_var("TILO_WORKSPACE_DIR", path) };
             Self(previous)
         }
     }
@@ -12330,9 +12339,9 @@ mod local_interaction_tests {
             // SAFETY: see `set`; restoration also runs during unwinding.
             unsafe {
                 if let Some(previous) = self.0.take() {
-                    std::env::set_var("QOS_WORKSPACE_DIR", previous);
+                    std::env::set_var("TILO_WORKSPACE_DIR", previous);
                 } else {
-                    std::env::remove_var("QOS_WORKSPACE_DIR");
+                    std::env::remove_var("TILO_WORKSPACE_DIR");
                 }
             }
         }
@@ -14959,18 +14968,18 @@ mod local_interaction_tests {
         frame(&mut app, &mut doc, 1280.0, 800.0);
 
         // The EncodedAction the palette would dispatch for "Delete comment".
-        let resources = <BooksApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
         let spec_encoded = {
-            let hl_res = resources[0].children[0]
-                .children
-                .iter()
-                .find(|r| r.kind == "ebook.highlight")
-                .expect("highlight resource");
-            let comment = hl_res
-                .children
-                .iter()
-                .find(|r| r.id.as_str() == format!("ebook.comment:{cid}"))
-                .expect("comment resource");
+            let provider = crate::search_provider::BookSearchProvider::new_shared(
+                Arc::clone(&app.library),
+                Arc::new(BooksDoc::list_annotations(&doc)),
+                Arc::new(BooksDoc::read_library_entries(&doc)),
+                1,
+            );
+            let comment = ui::search::SearchProvider::resolve_action_resource(
+                &provider,
+                &tilo_actions::ActionAddress::new(format!("ebook.comment:{cid}"), "open"),
+            )
+            .expect("exact comment resource");
             let spec = comment
                 .actions
                 .iter()
@@ -15048,9 +15057,14 @@ mod local_interaction_tests {
 
         // The palette's book-level "Highlight selection" EncodedAction, resolved
         // from the same live selection the swatch sees.
-        let resources = <BooksApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
         let spec_encoded = {
-            let spec = resources[0].children[0]
+            let book = <BooksApp as tilo_actions::ResourceProvider>::resource(
+                &app,
+                &doc,
+                &format!("ebook.book:{}", app.book_id()),
+            )
+            .expect("exact current-book resource");
+            let spec = book
                 .actions
                 .iter()
                 .find(|a| a.id == "highlight-selection")
