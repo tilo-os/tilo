@@ -1480,6 +1480,32 @@ impl Drop for RecordReservation {
 }
 
 impl RecordStore {
+    /// Cheap content witness for retained projections over open records.
+    ///
+    /// Base heads cover committed changes and `pending_ops` covers the live
+    /// typing transaction before its next commit boundary. Record identity is
+    /// included so opening or closing a document also invalidates a snapshot.
+    pub fn content_revision(&self) -> String {
+        let set = self.0.borrow();
+        let mut records = set.open.iter().collect::<Vec<_>>();
+        records.sort_unstable_by_key(|(id, _)| *id);
+        let mut revision = String::new();
+        for (id, parked) in records {
+            use std::fmt::Write as _;
+            let Some(doc) = parked.doc.as_ref() else {
+                continue;
+            };
+            let _ = write!(
+                revision,
+                "{}:{:?}:{}\u{1e}",
+                id.as_str(),
+                doc.base_heads(),
+                doc.pending_ops()
+            );
+        }
+        revision
+    }
+
     /// Explicit immutable identity only; legacy and memory stores have no canonical namespace.
     pub(crate) fn canonical_namespace(&self) -> Option<(PathBuf, String, String)> {
         let set = self.0.borrow();

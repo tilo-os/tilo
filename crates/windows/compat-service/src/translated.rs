@@ -3,6 +3,7 @@
 //! This does not create or relax a sandbox. The caller must already have
 //! entered the capsule, including its namespace and Landlock restrictions.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -235,6 +236,7 @@ impl PreparationChildren {
     }
 
     fn reap_descendants(&self) -> io::Result<()> {
+        let mut empty_since = None;
         loop {
             let mut children = Vec::new();
             for pid in direct_children()? {
@@ -250,8 +252,18 @@ impl PreparationChildren {
                 }
             }
             if children.is_empty() {
-                return Ok(());
+                let since = empty_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_millis(250) {
+                    return Ok(());
+                }
+                // A detached grandchild becomes our child as its direct parent
+                // exits. Procfs can briefly publish the empty pre-adoption
+                // snapshot even though waitid already observes the new child.
+                // Require a quiet interval before releasing the prefix lock.
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
             }
+            empty_since = None;
             for pid in children {
                 // Only our unreaped direct children appear here. No concurrent
                 // reaper exists in this single-threaded helper, so the PID
@@ -308,16 +320,70 @@ impl Drop for PreparationChildren {
 }
 
 fn direct_children() -> io::Result<Vec<libc::pid_t>> {
-    let mut children = Vec::new();
+    let mut children = BTreeSet::new();
     for task in std::fs::read_dir("/proc/self/task")? {
-        for pid in std::fs::read_to_string(task?.path().join("children"))?.split_whitespace() {
-            children.push(
+        let task = match task {
+            Ok(task) => task,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let raw = match std::fs::read_to_string(task.path().join("children")) {
+            Ok(raw) => raw,
+            // A test-harness thread can exit between read_dir and this read.
+            // Production preparation is single-threaded, but treating that
+            // procfs race as an empty, already-gone task keeps the preflight
+            // reliable without weakening child ownership.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for pid in raw.split_whitespace() {
+            children.insert(
                 pid.parse()
                     .map_err(|_| io::Error::other("invalid child PID"))?,
             );
         }
     }
-    Ok(children)
+
+    // `/proc/self/task/*/children` can briefly omit an adopted subreaper
+    // child even after waitid(P_PIDFD) reports that we own it. Cross-check
+    // process status so cleanup cannot release the prefix lock during that
+    // procfs publication race. Entries that disappear or are unreadable are
+    // unrelated snapshots; any owned child remains waitable and keeps its PID.
+    let our_pid = std::process::id();
+    for process in std::fs::read_dir("/proc")? {
+        let process = match process {
+            Ok(process) => process,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let Some(pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        let status = match std::fs::read_to_string(process.path().join("status")) {
+            Ok(status) => status,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let parent = status.lines().find_map(|line| {
+            line.strip_prefix("PPid:")
+                .and_then(|value| value.trim().parse::<u32>().ok())
+        });
+        if parent == Some(our_pid) {
+            children.insert(pid);
+        }
+    }
+    Ok(children.into_iter().collect())
 }
 
 fn still_our_child(descriptor: &OwnedFd) -> io::Result<bool> {

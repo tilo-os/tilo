@@ -64,7 +64,7 @@ impl SearchProvider for EditorProvider {
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
-        ctx.chrome.revision.to_string()
+        super::text_app::text_search_revision(ctx.chrome)
     }
 
     fn query_page(

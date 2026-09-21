@@ -232,6 +232,14 @@ class BuilderCandidates(unittest.TestCase):
         affected_job = CHECK.split('  affected:\n', 1)[1].split('\n  checks:\n', 1)[0]
         self.assertIn('    needs: [builder, select]', affected_job)
         self.assertIn('image: ${{ needs.builder.outputs.image }}', affected_job)
+        self.assertIn('      - name: Checkout exact change', affected_job)
+        self.assertIn('          fetch-depth: 1', affected_job)
+        self.assertNotIn('          fetch-depth: 0', affected_job)
+        self.assertIn('CLIPPY_BASE: ${{ needs.select.outputs.base }}', affected_job)
+        self.assertIn('test "$head" = "$GITHUB_SHA"', affected_job)
+        self.assertIn('git fetch --no-tags --no-write-fetch-head --depth=1 origin', affected_job)
+        self.assertIn('"+$CLIPPY_BASE:refs/ci/clippy-base"', affected_job)
+        self.assertIn('test "$(git rev-parse "$CLIPPY_BASE^{commit}")" = "$CLIPPY_BASE"', affected_job)
         builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
         self.assertIn('image: code.podesta.ai/qos/ci-control@sha256:', builder_job)
         self.assertNotIn('needs.builder.outputs.image', builder_job)
@@ -341,6 +349,11 @@ class CanaryIdentity(unittest.TestCase):
                         BUILD.index('name: Retain only successful cold acceptance'))
         self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh warm'),
                         BUILD.index('name: Retain only successful warm acceptance'))
+        replication = BUILD.split('name: Replicate the promoted builder beside Oregon runners', 1)[1]
+        self.assertIn("if: github.ref == 'refs/heads/main'", replication)
+        self.assertIn('replicate-builder-index.py', replication)
+        self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
+        self.assertIn('podesta-burst-usw2-qos-builder-replication', replication)
 
     def test_reuse_never_reaches_signing_or_promotion(self):
         signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]
