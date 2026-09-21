@@ -341,7 +341,7 @@ fn selected_action_collects_real_parameters_and_confirmation() {
     let operation = f.take_caller_operation().unwrap();
     assert_eq!(
         operation.wire_argument().as_deref(),
-        Some("\u{1e}qos-args:{\"rows\":2}")
+        Some("\u{1e}tilo-args:{\"rows\":2}")
     );
     assert_eq!(
         operation.confirmation_evidence(),

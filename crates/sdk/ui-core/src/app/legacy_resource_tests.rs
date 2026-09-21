@@ -443,7 +443,22 @@ fn native_legacy_effect_control_keeps_existing_confirmation_gate() {
     assert!(app.controlled_local_idle_for_test());
     assert!(app.action_palette().is_some());
     assert_eq!(f.probe.starts.get(), 0);
-    assert_eq!(f.snapshot(), before);
+    let gated = f.snapshot();
+    assert_eq!(
+        gated.0, before.0,
+        "opening confirmation must not mutate durable document bytes"
+    );
+    assert_eq!(
+        gated.1, before.1,
+        "opening confirmation must not add an undo boundary"
+    );
+    assert!(
+        gated
+            .2
+            .zip(before.2)
+            .is_some_and(|(after, before)| after > before),
+        "palette admission must revoke authority resolved before resource rediscovery"
+    );
     app.invoke_resource_action(
         &address(),
         None,

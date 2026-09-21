@@ -363,7 +363,7 @@ mod tests {
             .expect("typed and confirmed intent");
         assert_eq!(
             intent.wire_argument().as_deref(),
-            Some("\u{1e}qos-args:{\"rows\":2}")
+            Some("\u{1e}tilo-args:{\"rows\":2}")
         );
         assert_eq!(
             intent.confirmation_evidence(),
