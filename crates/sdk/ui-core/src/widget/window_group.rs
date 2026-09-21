@@ -796,6 +796,16 @@ impl WindowGroup {
             .map(|(_, h)| h)
     }
 
+    /// Laid-out content bounds for a tab. Shell-owned system windows use
+    /// this as their ordinary tile viewport instead of inventing separate
+    /// floating geometry.
+    pub fn content_rect_for_tab(&self, tab_id: u64) -> Option<Rect> {
+        self.hosts
+            .iter()
+            .find(|(id, _)| *id == tab_id)
+            .map(|(_, host)| host.get_rect())
+    }
+
     #[cfg(test)]
     pub fn has_host(&self, id: u64) -> bool {
         self.hosts.iter().any(|(i, _)| *i == id)

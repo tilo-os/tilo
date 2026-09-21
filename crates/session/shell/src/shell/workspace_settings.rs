@@ -1673,6 +1673,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
 fn tile_app_id(tile: &crate::shell::state::TileContent) -> String {
     use crate::shell::state::TileContent;
     match tile {
+        TileContent::WorkspaceActivity => "org.tilo.WorkspaceActivity".to_string(),
         TileContent::Foreign { app_id, .. }
         | TileContent::PeerWindow { app_id, .. }
         | TileContent::LocalApp { app_id, .. } => app_id.clone(),

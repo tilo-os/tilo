@@ -178,6 +178,9 @@ pub enum Action {
     SeedRoomActivity {
         explore: bool,
     },
+    /// Focus a recap outcome already present in the responsive render. Enter
+    /// remains the production activation path.
+    FocusFirstRoomActivityWorkSession,
     /// Seed two context-grouped sessions without writing named ranges. Used
     /// to prove the first human seam correction materializes shared bounds.
     SeedAutomaticWorkSessions,
@@ -632,6 +635,10 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
+        Action::FocusFirstRoomActivityWorkSession => assert!(
+            driver.focus_first_room_activity_work_session_for_shots(),
+            "scenario: the settled recap must render a focusable work session"
+        ),
         Action::SeedAutomaticWorkSessions => driver.seed_automatic_work_sessions_for_shots(),
         Action::ExpandAutomaticWorkSession => assert!(
             driver.expand_automatic_work_session_for_shots(),
@@ -1382,6 +1389,12 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     push_kv_bool(&mut out, "overlay_collaborators", st.overlays.collaborators);
     out.push(',');
     push_kv_bool(&mut out, "overlay_room_activity", st.overlays.room_activity);
+    out.push(',');
+    push_kv_bool(
+        &mut out,
+        "workspace_activity_open",
+        shell::shell::tab_binding::active_workspace_activity_tab(&st.tree()).is_some(),
+    );
     out.push(',');
     push_kv_str(
         &mut out,
@@ -2464,28 +2477,37 @@ fn room_activity_from_palette() -> Scenario {
     }
 }
 
-/// Work-session cards at rest, then the exact state reached without a
-/// pointer: traverse the modal and expand a named session, revealing the
-/// shared boundary that can move one underlying action in either direction.
+/// The recap at rest, then the exact state reached without a pointer:
+/// expand one high-level outcome and follow it into the granular log.
 fn room_activity_catch_up_keyboard() -> Scenario {
     Scenario {
         name: "room_activity_catch_up_keyboard",
-        description: "Open Catch up, traverse its controls by keyboard, and reveal the editable boundary between adjacent work sessions.",
+        description: "Open the tiled recap, expand a high-level outcome, then follow it into Full history.",
         actions: vec![
             Action::SeedRoomActivity { explore: false },
+            // Opening a tiled window first reconciles it into the retained
+            // group row, then eases the focused group into view. Capture the
+            // settled destination, not the first frame at the strip edge.
             Action::Relayout,
-            Action::Snapshot("01-catch-up"),
-            Action::Key(Key::Named(NamedKey::Home)),
-            Action::Key(Key::Named(NamedKey::ArrowRight)),
-            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Wait(20),
+            Action::Snapshot("01-recap"),
+            Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+            Action::Key(Key::Named(NamedKey::ArrowLeft)),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Modifiers(ModifiersState::SUPER),
+            Action::Key(Key::Character("-".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Relayout,
+            Action::Wait(20),
+            Action::Snapshot("02-window-reordered-and-resized"),
+            Action::FocusFirstRoomActivityWorkSession,
             Action::Key(Key::Named(NamedKey::Enter)),
-            Action::Key(Key::Named(NamedKey::End)),
+            Action::Wait(12),
+            Action::Relayout,
+            Action::Snapshot("03-outcome-expanded"),
             Action::Key(Key::Named(NamedKey::Enter)),
-            Action::Snapshot("02-work-session-boundary-revealed"),
-            Action::Key(Key::Named(NamedKey::End)),
-            Action::Snapshot("03-work-session-boundary-focus-visible"),
-            Action::Key(Key::Named(NamedKey::Enter)),
-            Action::Snapshot("04-boundary-moved-one-action"),
+            Action::Relayout,
+            Action::Snapshot("04-full-history"),
         ],
     }
 }
