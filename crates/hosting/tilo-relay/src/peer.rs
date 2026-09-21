@@ -2426,11 +2426,11 @@ fn current_session(
 // The UUID is carried on an authenticated private lane. Select only a live
 // subscription on one of its two frozen shards; never infer membership from a
 // numeric alias, and never choose between two simultaneously bound namespaces.
-async fn private_workspace(
+async fn private_workspace_binding(
     room: uuid::Uuid,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
-) -> Result<Option<SharedWorkspace>, PeerError> {
+) -> Result<Option<(u64, SharedWorkspace)>, PeerError> {
     let ids = crate::room_workspace_ids(&room.to_string())
         .map_err(|_| PeerError::Protocol("invalid room".into()))?;
     let candidates = {
@@ -2452,9 +2452,19 @@ async fn private_workspace(
             ));
         }
         drop(runtime);
-        selected = Some(workspace);
+        selected = Some((id, workspace));
     }
     Ok(selected)
+}
+
+async fn private_workspace(
+    room: uuid::Uuid,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<SharedWorkspace>, PeerError> {
+    Ok(private_workspace_binding(room, peer, session)
+        .await?
+        .map(|(_, workspace)| workspace))
 }
 
 async fn private_membership<'a>(
@@ -2559,8 +2569,69 @@ async fn handle_private(
 }
 
 fn private_phase(action: &DirectedAction, phase: &'static str) {
+    private_workspace_phase(action, None, phase);
+}
+
+fn private_workspace_phase(
+    action: &DirectedAction,
+    workspace_id: Option<u64>,
+    phase: &'static str,
+) {
     if crate::persistence::diagnostics() {
-        tracing::info!(request_id = %action.request_id, phase, timestamp_ns = now_ns());
+        tracing::info!(
+            request_id = %action.request_id,
+            workspace_id = ?workspace_id,
+            phase,
+            timestamp_ns = now_ns()
+        );
+    }
+}
+
+struct DeliveryAuthorizationTrace<'a> {
+    action: &'a DirectedAction,
+    workspace_id: Option<u64>,
+    finished: bool,
+}
+
+impl<'a> DeliveryAuthorizationTrace<'a> {
+    fn new(action: &'a DirectedAction) -> Self {
+        Self {
+            action,
+            workspace_id: None,
+            finished: false,
+        }
+    }
+
+    fn select_workspace(&mut self, workspace_id: u64) {
+        self.workspace_id = Some(workspace_id);
+    }
+
+    fn phase(&self, phase: &'static str) {
+        private_workspace_phase(self.action, self.workspace_id, phase);
+    }
+
+    fn reject(
+        &mut self,
+        phase: &'static str,
+        reason: UnavailableReason,
+    ) -> Result<(), UnavailableReason> {
+        self.phase(phase);
+        self.finished = true;
+        Err(reason)
+    }
+
+    fn success(&mut self) -> Result<(), UnavailableReason> {
+        self.phase("delivery_authorization_success");
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for DeliveryAuthorizationTrace<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.phase("delivery_authorization_cancelled");
+        }
     }
 }
 
@@ -2690,6 +2761,7 @@ async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
             let bytes = match crate::transport_v2::encode(&frame) {
                 Ok(bytes) => bytes,
                 Err(_) => {
+                    private_phase(&delivery.action, "delivery_encoding_rejected");
                     let _ = delivery.source_disconnect.try_send(());
                     return Ok(());
                 }
@@ -2699,17 +2771,20 @@ async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
             private_phase(&delivery.action, "write_complete");
         }
         Err(reason) => {
-            if delivery
-                .reply
-                .try_send(PrivateOutbound::Reply(EnvelopeV2::unavailable(
-                    &delivery.action,
-                    reason,
-                )))
-                .is_err()
-            {
+            let unavailable =
+                delivery
+                    .reply
+                    .try_send(PrivateOutbound::Reply(EnvelopeV2::unavailable(
+                        &delivery.action,
+                        reason,
+                    )));
+            if unavailable.is_err() {
+                private_phase(&delivery.action, "delivery_unavailable_queue_failed");
                 // A bounded failure queue cannot silently erase the outcome.
                 // Its originating session must observe transport loss instead.
                 let _ = delivery.source_disconnect.try_send(());
+            } else {
+                private_phase(&delivery.action, "delivery_unavailable_queued");
             }
         }
     }
@@ -2722,42 +2797,80 @@ async fn authorize_delivery(
     session: &SessionCtx<'_>,
 ) -> Result<(), UnavailableReason> {
     use UnavailableReason as U;
-    if !current_cert(&delivery.source, session) || !current_cert(recipient, session) {
-        return Err(U::NotAuthorised);
+    let mut trace = DeliveryAuthorizationTrace::new(&delivery.action);
+    if !current_cert(&delivery.source, session) {
+        return trace.reject("delivery_rejected_source_cert_initial", U::NotAuthorised);
     }
-    let ws = private_workspace(delivery.action.room, recipient, session)
-        .await
-        .map_err(|_| U::NotAuthorised)?
-        .ok_or(U::NotAuthorised)?;
-    let wr = crate::workspace_io::fresh_membership(&ws)
-        .await
-        .map_err(|_| U::NotAuthorised)?;
-    if !current_cert(&delivery.source, session)
-        || !current_cert(recipient, session)
-        || !current_member(&wr, &delivery.source)
-        || !current_member(&wr, recipient)
-        || delivery.action.target != recipient.device_public_key
-        || !current_session(&wr, &delivery.source, &delivery.source_tx)
-        || !wr
-            .action_targets
-            .get(&delivery.source.device_public_key)
-            .is_some_and(|target| {
-                target.room == delivery.action.room
-                    && target.state_tx.same_channel(&delivery.source_tx)
-            })
-        || !current_session(&wr, recipient, session.outbound)
-        || !wr
-            .action_targets
-            .get(&recipient.device_public_key)
-            .is_some_and(|target| {
-                target.room == delivery.action.room
-                    && target.state_tx.same_channel(session.outbound)
-            })
+    if !current_cert(recipient, session) {
+        return trace.reject("delivery_rejected_recipient_cert_initial", U::NotAuthorised);
+    }
+    trace.phase("delivery_registry_wait");
+    let (workspace_id, ws) =
+        match private_workspace_binding(delivery.action.room, recipient, session).await {
+            Ok(Some(binding)) => binding,
+            Ok(None) => {
+                return trace.reject("delivery_rejected_workspace_missing", U::NotAuthorised);
+            }
+            Err(_) => {
+                return trace.reject("delivery_rejected_workspace_lookup", U::NotAuthorised);
+            }
+        };
+    trace.select_workspace(workspace_id);
+    trace.phase("delivery_registry_acquired");
+    let wr = match crate::workspace_io::fresh_membership_for_delivery(
+        &ws,
+        workspace_id,
+        delivery.action.request_id,
+    )
+    .await
     {
-        return Err(U::NotAuthorised);
+        Ok(wr) => wr,
+        Err(_) => return trace.reject("delivery_rejected_membership_error", U::NotAuthorised),
+    };
+    if !current_cert(&delivery.source, session) {
+        return trace.reject("delivery_rejected_source_cert_current", U::NotAuthorised);
+    }
+    if !current_cert(recipient, session) {
+        return trace.reject("delivery_rejected_recipient_cert_current", U::NotAuthorised);
+    }
+    if !current_member(&wr, &delivery.source) {
+        return trace.reject("delivery_rejected_source_member", U::NotAuthorised);
+    }
+    if !current_member(&wr, recipient) {
+        return trace.reject("delivery_rejected_recipient_member", U::NotAuthorised);
+    }
+    if delivery.action.target != recipient.device_public_key {
+        return trace.reject("delivery_rejected_target_mismatch", U::NotAuthorised);
+    }
+    if !current_session(&wr, &delivery.source, &delivery.source_tx) {
+        return trace.reject("delivery_rejected_source_session", U::NotAuthorised);
+    }
+    if !wr
+        .action_targets
+        .get(&delivery.source.device_public_key)
+        .is_some_and(|target| {
+            target.room == delivery.action.room && target.state_tx.same_channel(&delivery.source_tx)
+        })
+    {
+        return trace.reject("delivery_rejected_source_action_target", U::NotAuthorised);
+    }
+    if !current_session(&wr, recipient, session.outbound) {
+        return trace.reject("delivery_rejected_recipient_session", U::NotAuthorised);
+    }
+    if !wr
+        .action_targets
+        .get(&recipient.device_public_key)
+        .is_some_and(|target| {
+            target.room == delivery.action.room && target.state_tx.same_channel(session.outbound)
+        })
+    {
+        return trace.reject(
+            "delivery_rejected_recipient_action_target",
+            U::NotAuthorised,
+        );
     }
     drop(wr);
-    Ok(())
+    trace.success()
 }
 
 #[cfg(test)]

@@ -38,23 +38,63 @@ fn admit_work() -> Result<OwnedSemaphorePermit, StoreError> {
         })
 }
 
+#[derive(Clone, Copy)]
+struct MembershipTrace {
+    request_id: uuid::Uuid,
+    workspace_id: u64,
+}
+
+fn membership_phase(trace: Option<MembershipTrace>, phase: &'static str) {
+    if crate::persistence::diagnostics()
+        && let Some(trace) = trace
+    {
+        tracing::info!(
+            request_id = %trace.request_id,
+            workspace_id = trace.workspace_id,
+            phase,
+            timestamp_ns = crate::peer::now_ns()
+        );
+    }
+}
+
 async fn authorization_io<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, StoreError> + Send + 'static,
+    trace: Option<MembershipTrace>,
 ) -> Result<T, StoreError> {
     static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    membership_phase(trace, "delivery_membership_worker_wait");
     let permit = WORKERS
         .get_or_init(|| Arc::new(Semaphore::new(AUTHORIZATION_WORKERS)))
         .clone()
         .acquire_owned()
         .await
         .map_err(|error| io_error(error.to_string()))?;
+    membership_phase(trace, "delivery_membership_worker_admitted");
     // The permit stays in blocking work even when the waiting caller cancels.
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        operation()
+        membership_phase(trace, "delivery_membership_read_started");
+        let result = operation();
+        membership_phase(
+            trace,
+            if result.is_ok() {
+                "delivery_membership_read_returned"
+            } else {
+                "delivery_membership_read_returned_error"
+            },
+        );
+        result
     })
-    .await
-    .map_err(|error| io_error(error.to_string()))?
+    .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            membership_phase(trace, "delivery_membership_worker_join_error");
+            return Err(io_error(error.to_string()));
+        }
+    };
+    membership_phase(trace, "delivery_membership_worker_joined");
+    result
 }
 
 async fn authority_handles(
@@ -71,11 +111,39 @@ async fn authority_handles(
 pub(crate) async fn fresh_membership(
     workspace: &SharedWorkspace,
 ) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
+    fresh_membership_inner(workspace, None).await
+}
+
+pub(crate) async fn fresh_membership_for_delivery(
+    workspace: &SharedWorkspace,
+    workspace_id: u64,
+    request_id: uuid::Uuid,
+) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
+    fresh_membership_inner(
+        workspace,
+        Some(MembershipTrace {
+            request_id,
+            workspace_id,
+        }),
+    )
+    .await
+}
+
+async fn fresh_membership_inner(
+    workspace: &SharedWorkspace,
+    trace: Option<MembershipTrace>,
+) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
     let _slot = admit_work()?;
+    membership_phase(trace, "delivery_membership_handles_wait");
     let (store, lane) = authority_handles(workspace).await;
+    membership_phase(trace, "delivery_membership_handles_acquired");
+    membership_phase(trace, "delivery_membership_lane_wait");
     let _lane = lane.lock_owned().await;
-    let mut members = authorization_io(move || store.load_membership()).await?;
+    membership_phase(trace, "delivery_membership_lane_acquired");
+    let mut members = authorization_io(move || store.load_membership(), trace).await?;
+    membership_phase(trace, "delivery_membership_runtime_wait");
     let mut runtime = workspace.lock().await;
+    membership_phase(trace, "delivery_membership_runtime_acquired");
     if let Some(ceiling) = &runtime.membership_ceiling {
         members.retain(|device| ceiling.contains(device));
     }
@@ -97,7 +165,7 @@ pub(crate) async fn admit_member(
         let (store, lane) = authority_handles(&workspace).await;
         let _lane = lane.lock_owned().await;
         let reader = store.clone();
-        let mut members = authorization_io(move || reader.load_membership()).await?;
+        let mut members = authorization_io(move || reader.load_membership(), None).await?;
         {
             let runtime = workspace.lock().await;
             if runtime.membership_revision != expected_revision {
@@ -120,7 +188,7 @@ pub(crate) async fn admit_member(
             members.push(device);
         }
         let saved = members.clone();
-        authorization_io(move || store.save_membership(&saved)).await?;
+        authorization_io(move || store.save_membership(&saved), None).await?;
         workspace.lock().await.membership.set(members);
         Ok(())
     })
@@ -160,7 +228,7 @@ pub(crate) async fn replace_membership(
                 .retain(|device| members.contains(device));
         }
         let saved = members.clone();
-        authorization_io(move || store.save_membership(&saved)).await?;
+        authorization_io(move || store.save_membership(&saved), None).await?;
         let mut runtime = workspace.lock().await;
         runtime.membership.set(members);
         runtime.membership_ceiling = None;
