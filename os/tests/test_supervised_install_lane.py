@@ -141,6 +141,21 @@ class LaneAdmission(unittest.TestCase):
         self.assertIn('mv -T -n', script)
         self.assertIn('own_helpers=0; own_public=0; own_installer=0', script)
 
+    def test_pending_creator_requires_an_exact_atomic_input_receipt(self):
+        inputs=(b'helpers',b'public',b'installer')
+        expected={'schema':1,'purpose':'tilo-supervised-creator-inputs',
+                  'helpers':hashlib.sha256(inputs[0]).hexdigest(),
+                  'public':hashlib.sha256(inputs[1]).hexdigest(),
+                  'installer':hashlib.sha256(inputs[2]).hexdigest()}
+        worker={'namespace':'kata-system','pod':'tilo-disk-run1'}
+        with patch.object(lane,'command',return_value=json.dumps(expected)):
+            self.assertTrue(lane.creator_inputs_ready('ctx',worker,*inputs))
+        with patch.object(lane,'command',return_value='{}'):
+            self.assertFalse(lane.creator_inputs_ready('ctx',worker,*inputs))
+        with patch.object(lane,'command',side_effect=lane.ControllerTransportError('relay')):
+            with self.assertRaises(lane.ControllerTransportError):
+                lane.creator_inputs_ready('ctx',worker,*inputs)
+
     def test_gui_evidence_requires_desktop_and_rendered_local_browser_page(self):
         html='<!doctype html><h1>Tilo browser offline ready</h1>\n'
         good={'oobe_intro':'Create your local identity',
@@ -570,14 +585,28 @@ class LaneAdmission(unittest.TestCase):
         disk={'namespace':'kata-system','pod':'tilo-disk-run1','pod_uid':'pod-uid',
               'node':'disk','node_uid':'node-uid'}
         agent={'metadata':{'name':'kata-deploy'}}
-        with patch.object(lane,'command',return_value=b'{}') as command:
+        result=SimpleNamespace(returncode=0,stdout=b'{}',stderr=b'')
+        with patch.object(lane.subprocess,'run',return_value=result) as command:
             lane.controller(Path('/root'),args,disk,agent,False,registry_auth_bytes=b'{"auths":{"registry":{}}}')
-        argv,payload=command.call_args.args[:2]
+        argv=command.call_args.args[0];payload=command.call_args.kwargs['input']
         self.assertIn('--registry-auth-stdin',argv)
         self.assertIn('--creator-job-receipt',argv)
         self.assertNotIn('registry-auth.json',str(argv))
         self.assertEqual(payload,b'{"auths":{"registry":{}}}')
-        self.assertEqual(command.call_args.kwargs,{'timeout':7200,'text':False})
+        self.assertEqual(command.call_args.kwargs['timeout'],7200)
+        self.assertFalse(command.call_args.kwargs['text'])
+
+    def test_creator_child_transport_sentinel_preserves_worker(self):
+        args=SimpleNamespace(context='ctx',host_pins=Path('/pins'),disk_args=Path('/args'),
+            operation_dir=Path('/operation'),helper_revision='a'*40,acceptance_id='run1')
+        disk={'namespace':'kata-system','pod':'tilo-disk-run1','pod_uid':'pod-uid',
+              'node':'disk','node_uid':'node-uid'};agent={'metadata':{'name':'kata-deploy'}}
+        result=SimpleNamespace(returncode=75,stdout='',stderr='TILO_CREATOR_CONTROLLER_TRANSPORT\n')
+        with patch.object(lane.subprocess,'run',return_value=result), \
+                patch.object(lane,'collect_creator_failure') as failure:
+            with self.assertRaises(lane.ControllerTransportError):
+                lane.controller(Path('/root'),args,disk,agent,False)
+        failure.assert_not_called()
 
     def test_resume_pending_creator_adopts_only_bound_worker(self):
         with tempfile.TemporaryDirectory() as directory:
