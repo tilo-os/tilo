@@ -14,6 +14,7 @@ pub(crate) fn installed_applications() -> [(&'static str, &'static ApplicationDe
         ("dev.qos.calculator", calculator::definition()),
     ]
 }
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn definitions() -> [&'static ApplicationDefinition; 4] {
     installed_applications().map(|(_, definition)| definition)
 }
@@ -27,6 +28,7 @@ pub(crate) fn installed_application(
                 || ui::application::lookup_compatible_first_party_app_ids(definition.app_id, app)
         })
 }
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
     installed_application(app).map(|(_, definition)| definition)
 }
