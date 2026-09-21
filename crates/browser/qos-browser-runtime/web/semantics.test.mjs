@@ -413,7 +413,7 @@ test('duplicate tab test IDs route by current path while canonical group identit
 });
 
 
-test('caller palette publishes exact result test ID and search path routes and refuses removed rows',()=>{
+test('caller palette keeps test IDs for identity while actions route by canonical paths',()=>{
   const calls=[];const reports=[];const root=new Element('div');
   const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},report=>reports.push(report));
   const target='action:exact-certified-host/room/record/revision:insert-table';
@@ -424,7 +424,7 @@ test('caller palette publishes exact result test ID and search path routes and r
   document.activeElement=document.body;bridge.update(view([field,results]));
   assert.equal(document.activeElement,root.children[0],'the private palette publishes its current search-field owner');
   const row=root.children[1].children[0];row.dispatchEvent(event('click'));
-  assert.deepEqual(calls.at(-1),['action-palette-results',target,'activate','',0,0]);
+  assert.deepEqual(calls.at(-1),['caller-palette/SearchResultsView[0]',target,'activate','',0,0]);
   const editor=root.children[0];document.activeElement=editor;editor.value='Insert table';
   editor.dispatchEvent(event('input',{inputType:'insertText',isComposing:false}));
   assert.deepEqual(calls.find(call=>call[2]==='value'),[searchPath,undefined,'value','Insert table',0,0]);
@@ -683,4 +683,12 @@ test('plain semantic editor lifetime is revoked on same-owner reselection and aw
   assert.deepEqual(calls,[]);assert.notEqual(root.children[0],old);
   const fresh=root.children[0];fresh.value='fresh';fresh.dispatchEvent(event('input',{inputType:'insertText',data:'fresh'}));assert.equal(calls[0]?.[3],'fresh');
  }
+});
+
+test('unique test ids do not replace the canonical keyboard owner for text actions',()=>{
+ const root=new Element('div'),calls=[];const owner='CertifiedDesktop[0]/DesktopSurface[0]/CalculatorApp[0]';
+ const bridge=semanticBridge(root,(...args)=>{calls.push(args);return args[0]===owner;},()=>{});
+ bridge.update({keyboard_focus_owner:owner,root:{path:owner,test_id:'calculator-app',semantics:{role:'TextInput',name:'Expression',action_target:'calculator.expression',value:'2',state:{focusable:true,focused:true}}}});
+ const editor=root.children[0];editor.focus();editor.value='2^2';editor.dispatchEvent(event('input',{inputType:'insertText',data:'2'}));editor.setSelectionRange(1,2);editor.dispatchEvent(event('select'));
+ assert(calls.length>=3);assert(calls.every(x=>x[0]===owner));assert(calls.some(x=>x[2]==='focus')&&calls.some(x=>x[2]==='value')&&calls.some(x=>x[2]==='selection'));bridge.close();
 });

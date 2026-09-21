@@ -329,7 +329,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
         const uniqueTestId=node.test_id&&testIds.get(node.test_id)===1;
         const semanticKey=node.semantics.semantic_key;
         const identity=semanticKey&&semanticOwners.get(semanticKey)===1?['semantic',semanticKey]:uniqueTestId?['test',node.test_id]:['path',node.path];
-        semantic(node.semantics,uniqueTestId?node.test_id:node.path,parent,node.path,identity,ancestry,node.path);
+        semantic(node.semantics,node.path,parent,node.path,identity,ancestry,node.path);
         ancestry=[...ancestry,JSON.stringify([identity,node.semantics.semantic_key??node.semantics.action_target??node.path])];
       }
       for(const child of node.children??[])walk(child,parent,ancestry);
