@@ -70,7 +70,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let theme = ui::launch::shot_theme(args);
     ui::headless::FrameHarness::new_with_theme(ui::State::new(), shot_root(args)?, viewport, theme)
         .render_png(out);
-    println!("dev.tilo.slides: wrote shot to {}", out.display());
+    println!("so.tilo.slides: wrote shot to {}", out.display());
     Ok(())
 }
 
@@ -79,7 +79,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.slides", slides::app_root)
+        &LaunchSpec::new("so.tilo.slides", slides::app_root)
             .history(&slides::framework_history::HISTORY)
             .shot_handler(render_shot)
             .scenarios(&[

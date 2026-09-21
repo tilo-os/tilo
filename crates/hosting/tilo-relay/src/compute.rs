@@ -1023,8 +1023,8 @@ mod tests {
     use super::*;
     use crate::{DeviceRole, ServiceCapabilities};
     use ed25519_dalek::{Signer, SigningKey};
-    use pkg::blobs::{BlobHash, Collection};
-    use pkg::signed::SignedRoot;
+    use tilo_app_package::blobs::{BlobHash, Collection};
+    use tilo_app_package::signed::SignedRoot;
 
     fn spec() -> ComputeJobSpec {
         ComputeJobSpec {
@@ -1033,7 +1033,7 @@ mod tests {
             requester: [2; 32],
             worker: [3; 32],
             workspace_id: 7,
-            app_id: "dev.tilo.video-editor".into(),
+            app_id: "so.tilo.video-editor".into(),
             package_digest: [4; 32],
             entrypoint: "render-export-v1".into(),
             arguments: Vec::new(),
@@ -1055,7 +1055,7 @@ mod tests {
             role: DeviceRole::AlwaysOnServer,
             services: ServiceCapabilities::personal_server(),
             workspaces: BTreeSet::from([7]),
-            apps: BTreeSet::from(["dev.tilo.video-editor".into()]),
+            apps: BTreeSet::from(["so.tilo.video-editor".into()]),
             accelerators: BTreeSet::from([ComputeAccelerator::Gpu]),
             priority: 0,
             latency_ms: 4,

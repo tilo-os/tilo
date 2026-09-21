@@ -1782,7 +1782,7 @@ fn rerouting_preserves_the_positioned_navigation_surface_identity() {
             ref app_id,
             ref element_id,
             ..
-        } if app_id == "dev.tilo.maps" && element_id == "active-navigation"
+        } if app_id == "so.tilo.maps" && element_id == "active-navigation"
     ));
 }
 

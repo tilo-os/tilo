@@ -40,7 +40,7 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.windows", live_root)
+        &LaunchSpec::new_with_args("so.tilo.windows", live_root)
             .max_positionals(1)
             .shot_root(shot_root)
             .scenarios(&[

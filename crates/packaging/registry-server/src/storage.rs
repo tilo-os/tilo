@@ -128,7 +128,7 @@ impl Storage {
         Ok(self
             .root
             .join("staged-artifacts")
-            .join(format!("{}.qpkg", blake3_hex.to_ascii_lowercase())))
+            .join(format!("{}.tapp", blake3_hex.to_ascii_lowercase())))
     }
 
     /// Load the active root-signed channel authorization.
@@ -1045,7 +1045,7 @@ pub struct StagedArtifact {
 
 /// Untrusted collector output. The networkless signer treats this only as an
 /// index into content-addressed bytes and independently re-verifies every
-/// request, policy constraint, digest, and qpkg signature.
+/// request, policy constraint, digest, and tapp signature.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StagedPromotion {
     pub publisher_pubkey_hex: String,
@@ -1138,7 +1138,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
 
 /// Percent-encode-ish rendering of a package id so it round-trips
 /// through the filesystem on macOS + Linux + a case-preserving
-/// fallback. Reverse-DNS ids ("dev.tilo.editor") already only
+/// fallback. Reverse-DNS ids ("so.tilo.editor") already only
 /// contain safe characters, but we lower-case them and swap `/`
 /// for `_` defensively against future publishers.
 fn filename_encode(pkg_id: &str) -> String {
@@ -1175,9 +1175,11 @@ mod tests {
         RegistryEntry {
             package_id: id.into(),
             name: "Test".into(),
-            description: String::new(),
+            description: "Native test app".into(),
+            tagline: "Test on Tilo OS".into(),
+            images: registry_types::LocalizedImages::default(),
+            supported_languages: vec!["en".into()],
             categories: vec![],
-            icon_url: None,
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: "aa".repeat(32),
@@ -1244,7 +1246,7 @@ mod tests {
         let storage = Storage::open(dir.path()).unwrap();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
         let mut threads = Vec::new();
-        for marker in ["dev.tilo.a", "dev.tilo.b"] {
+        for marker in ["so.tilo.a", "so.tilo.b"] {
             let storage = storage.clone();
             let barrier = barrier.clone();
             threads.push(std::thread::spawn(move || {
@@ -1323,9 +1325,9 @@ mod tests {
     fn save_and_load_entry_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let s = Storage::open(dir.path()).unwrap();
-        let e = sample_entry("dev.tilo.editor");
+        let e = sample_entry("so.tilo.editor");
         s.save_entry(&e).unwrap();
-        let back = s.load_entry("dev.tilo.editor").unwrap().unwrap();
+        let back = s.load_entry("so.tilo.editor").unwrap().unwrap();
         assert_eq!(back, e);
     }
 
@@ -1340,8 +1342,8 @@ mod tests {
     fn load_entries_lists_all() {
         let dir = tempfile::tempdir().unwrap();
         let s = Storage::open(dir.path()).unwrap();
-        s.save_entry(&sample_entry("dev.tilo.a")).unwrap();
-        s.save_entry(&sample_entry("dev.tilo.b")).unwrap();
+        s.save_entry(&sample_entry("so.tilo.a")).unwrap();
+        s.save_entry(&sample_entry("so.tilo.b")).unwrap();
         let mut ids: Vec<String> = s
             .load_entries()
             .unwrap()
@@ -1349,22 +1351,22 @@ mod tests {
             .map(|e| e.package_id)
             .collect();
         ids.sort();
-        assert_eq!(ids, vec!["dev.tilo.a", "dev.tilo.b"]);
+        assert_eq!(ids, vec!["so.tilo.a", "so.tilo.b"]);
     }
 
     #[test]
     fn delete_entry_removes_file() {
         let dir = tempfile::tempdir().unwrap();
         let s = Storage::open(dir.path()).unwrap();
-        s.save_entry(&sample_entry("dev.tilo.a")).unwrap();
-        assert!(s.delete_entry("dev.tilo.a").unwrap());
-        assert!(!s.delete_entry("dev.tilo.a").unwrap());
-        assert!(s.load_entry("dev.tilo.a").unwrap().is_none());
+        s.save_entry(&sample_entry("so.tilo.a")).unwrap();
+        assert!(s.delete_entry("so.tilo.a").unwrap());
+        assert!(!s.delete_entry("so.tilo.a").unwrap());
+        assert!(s.load_entry("so.tilo.a").unwrap().is_none());
     }
 
     #[test]
     fn filename_encode_escapes_unsafe_chars() {
-        assert_eq!(filename_encode("dev.tilo.editor"), "dev.tilo.editor");
+        assert_eq!(filename_encode("so.tilo.editor"), "so.tilo.editor");
         // A slash gets escaped so it can't escape the entries/
         // directory.
         assert_eq!(filename_encode("evil/../etc"), "evil_2f.._2fetc");
@@ -1378,7 +1380,7 @@ mod tests {
             owner_pubkey_hex: "cc".repeat(32),
             name: "Tilo Official".into(),
             description: "The default registry".into(),
-            base_url: "https://apps.tilo.dev".into(),
+            base_url: "https://apps.tilo.so".into(),
         };
         s.save_identity(&ident).unwrap();
         let back = s.load_identity().unwrap();

@@ -191,7 +191,7 @@ fn render_shot_to_png(
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.contacts", contacts::app_root)
+    LaunchSpec::new("so.tilo.contacts", contacts::app_root)
         .history(&contacts::framework_history::HISTORY)
         .shot_handler(shot_handler)
         .allowed_flags(&["--detail"])
@@ -219,7 +219,7 @@ fn production_launch_registers_history() {
 #[test]
 fn actual_migrating_opener_keeps_saved_graph() {
     use automerge::{ReadDoc, transaction::Transactable};
-    const APP: &str = "dev.tilo.contacts";
+    const APP: &str = "so.tilo.contacts";
     if let Ok(stage) = std::env::var("TILO_CONTACTS_HISTORY_STARTUP") {
         let legacy = contacts::storage::default_path().unwrap();
         if stage == "write" {

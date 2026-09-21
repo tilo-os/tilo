@@ -323,11 +323,11 @@ jobs:
       # Build and run tests first. The resulting rlibs/rmeta are then reusable
       # by the all-target check; doing this in the opposite order makes rustc
       # perform metadata-only work before doing codegen for the same crates.
-      # app-catalogue's registry integration tests execute the installer;
+      # app-cli's registry integration tests execute the installer;
       # it is deliberately not a Rust dependency, so an affected-only Cargo
       # invocation does not otherwise produce that binary.
-      - name: Build installer used by app-catalogue integration tests
-        if: contains(matrix.test_packages, '-p app-catalogue')
+      - name: Build installer used by app-cli integration tests
+        if: contains(matrix.test_packages, '-p app-cli')
         run: >-
           bash tools/ci/measure.sh "build tilo-install test fixture" --
           bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --

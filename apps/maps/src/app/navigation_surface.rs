@@ -25,7 +25,7 @@ impl MapsApp {
                 title: "Active navigation".into(),
                 role: ui::floating_surface::FloatingRole::Navigation,
                 source: ui::floating_surface::FloatingSource::AppElement {
-                    app_id: "dev.tilo.maps".into(),
+                    app_id: "so.tilo.maps".into(),
                     element_id: "active-navigation".into(),
                     region: source_region,
                 },

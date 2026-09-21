@@ -1615,7 +1615,7 @@ mod tests {
 
     #[test]
     fn legacy_preparer_and_live_handler_are_rejected_before_either_runs() {
-        let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root)
             .prepare_legacy_with_args(|_| panic!("preparer must not run"))
             .live_handler(|_| panic!("live handler must not run"));
         for raw in [
@@ -1639,7 +1639,7 @@ mod tests {
             let mut previous = Vec::new();
             for (key, value) in [
                 ("XDG_DATA_HOME", directory.path().as_os_str().to_os_string()),
-                ("TILO_PACKAGE_ID", "dev.tilo.launch-fixture".into()),
+                ("TILO_PACKAGE_ID", "so.tilo.launch-fixture".into()),
                 (
                     "TILO_WORKSPACE_ID",
                     "00000000-0000-0000-0000-000000000000".into(),
@@ -1685,7 +1685,7 @@ mod tests {
             .ok_or_else(|| LaunchError::Operation("missing fixture".into()))?;
         let contents =
             std::fs::read_to_string(path).map_err(|e| LaunchError::Operation(e.to_string()))?;
-        let (mut index, autosave) = crate::persist::open_for("dev.tilo.launch-fixture")
+        let (mut index, autosave) = crate::persist::open_for("so.tilo.launch-fixture")
             .map_err(|e| LaunchError::Operation(e.to_string()))?;
         index
             .doc
@@ -1719,8 +1719,8 @@ mod tests {
         let fixture = LaunchFixtureEnv::new();
         let dump = fixture._directory.path().join("dump.json");
         let args = headless_fixture_args(None, &dump);
-        let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
-            .open_state(migrated_fixture_open);
+        let spec =
+            LaunchSpec::new("so.tilo.launch-fixture", dummy_root).open_state(migrated_fixture_open);
         assert_eq!(
             dispatch_legacy_headless(&spec, &args, args.headless.as_ref().unwrap()).unwrap(),
             0
@@ -1738,7 +1738,7 @@ mod tests {
         let dump = fixture._directory.path().join("dump.json");
         std::fs::write(&source, "fresh-file-content").unwrap();
         let args = headless_fixture_args(Some(&source), &dump);
-        let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root)
             .max_positionals(1)
             .prepare_legacy_with_args(fixture_preparer);
         assert_eq!(
@@ -1748,7 +1748,7 @@ mod tests {
         let state: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap();
         assert_eq!(state["file_marker"], "fresh-file-content");
-        let (reopened, _) = crate::persist::open_for("dev.tilo.launch-fixture").unwrap();
+        let (reopened, _) = crate::persist::open_for("so.tilo.launch-fixture").unwrap();
         assert_eq!(
             reopened
                 .doc
@@ -1791,7 +1791,7 @@ mod tests {
             Some(&source),
             &fixture._directory.path().join("unused.json"),
         );
-        let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root)
             .max_positionals(1)
             .prepare_legacy_with_args(fixture_preparer);
         let app = build_native_app_with_constructor(&spec, &args, |scope, state, root| {
@@ -1811,13 +1811,13 @@ mod tests {
         drop(app);
     }
     fn wrong_namespace_open(_: &'static str) -> (State, crate::persist::Autosave) {
-        crate::persist::open_for("dev.tilo.other-fixture").unwrap()
+        crate::persist::open_for("so.tilo.other-fixture").unwrap()
     }
 
     #[test]
     fn widget_owned_persistence_rejects_mixed_record_owner_before_either_runner() {
         let spec =
-            LaunchSpec::new("dev.tilo.launch-fixture", dummy_root).prepare_legacy_with_args(|_| {
+            LaunchSpec::new("so.tilo.launch-fixture", dummy_root).prepare_legacy_with_args(|_| {
                 Ok(LegacyLaunchInputs::new(
                     State::new(),
                     dummy_root(),
@@ -1847,7 +1847,7 @@ mod tests {
         ] {
             let dump = fixture._directory.path().join("must-not-exist.json");
             let args = headless_fixture_args(None, &dump);
-            let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root).open_state(open);
+            let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root).open_state(open);
             assert_eq!(
                 dispatch_legacy_headless(&spec, &args, args.headless.as_ref().unwrap()).unwrap(),
                 3
@@ -1858,7 +1858,7 @@ mod tests {
             !fixture
                 ._directory
                 .path()
-                .join("dev.tilo.launch-fixture/state.automerge")
+                .join("so.tilo.launch-fixture/state.automerge")
                 .exists()
         );
     }
@@ -1869,7 +1869,7 @@ mod tests {
         let dump = fixture._directory.path().join("must-not-exist.json");
         let missing = fixture._directory.path().join("missing.md");
         let args = headless_fixture_args(Some(&missing), &dump);
-        let spec = LaunchSpec::new("dev.tilo.launch-fixture", dummy_root)
+        let spec = LaunchSpec::new("so.tilo.launch-fixture", dummy_root)
             .max_positionals(1)
             .prepare_legacy_with_args(fixture_preparer);
         assert!(matches!(
@@ -1881,7 +1881,7 @@ mod tests {
             !fixture
                 ._directory
                 .path()
-                .join("dev.tilo.launch-fixture")
+                .join("so.tilo.launch-fixture")
                 .exists()
         );
     }
@@ -2106,7 +2106,7 @@ mod tests {
     #[test]
     fn app_command_can_finish_before_window_startup() {
         CUSTOM_COMMAND_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.tilo.test", dummy_root)
+        let spec = LaunchSpec::new("so.tilo.test", dummy_root)
             .allowed_live_flags(&["--utility"])
             .command_handler(custom_command);
         run_with_args(&spec, &strings(&["app", "--utility"])).unwrap();
@@ -2368,7 +2368,7 @@ mod tests {
     #[test]
     fn standard_live_factory_and_configuration_capture_the_same_app_lifetime() {
         LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
-        let spec = LaunchSpec::new("dev.tilo.wake-test", scoped_root)
+        let spec = LaunchSpec::new("so.tilo.wake-test", scoped_root)
             .open_state(scoped_open_state)
             .configure_app(scoped_configure);
         let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
@@ -2405,7 +2405,7 @@ mod tests {
         LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
         let mut outer = crate::WakeScope::new();
         let _outer = outer.enter();
-        let spec = LaunchSpec::new("dev.tilo.wake-utility", dummy_root)
+        let spec = LaunchSpec::new("so.tilo.wake-utility", dummy_root)
             .command_handler(capture_command_wake);
         run_with_args(&spec, &strings(&["app"])).unwrap();
         outer.close();
@@ -2417,7 +2417,7 @@ mod tests {
 
     #[test]
     fn privileged_app_can_reject_headless_driving() {
-        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).disable_headless();
+        let spec = LaunchSpec::new("so.tilo.test", dummy_root).disable_headless();
         let result = run_with_args(&spec, &strings(&["app", "--headless-drive", "{}"]));
         assert!(matches!(result, Err(LaunchError::HeadlessUnsupported)));
     }
@@ -2430,19 +2430,19 @@ mod tests {
             &[],
         )
         .unwrap();
-        let undeclared = LaunchSpec::new("dev.tilo.test", dummy_root);
+        let undeclared = LaunchSpec::new("so.tilo.test", dummy_root);
         assert!(matches!(
             validate_spec_args(&args, &undeclared),
             Err(LaunchError::Scenario(_))
         ));
-        let declared = LaunchSpec::new("dev.tilo.test", dummy_root).scenarios(&["wide"]);
+        let declared = LaunchSpec::new("so.tilo.test", dummy_root).scenarios(&["wide"]);
         validate_spec_args(&args, &declared).unwrap();
     }
 
     #[test]
     fn ordinary_launch_spec_reuses_live_root_for_screenshots() {
         let args = parse_args(&strings(&["app", "--shots=/tmp/ordinary.png"]), &[], &[]).unwrap();
-        let spec = LaunchSpec::new("dev.tilo.test", dummy_root);
+        let spec = LaunchSpec::new("so.tilo.test", dummy_root);
         let root = spec
             .screenshot_root(&args)
             .expect("default screenshot root");
@@ -2519,7 +2519,7 @@ mod tests {
     fn argument_aware_root_propagates_initialization_failure() {
         let args =
             parse_args_extended(&strings(&["app", "broken.qdoc"]), &[], &[], &[], &[], 1).unwrap();
-        let spec = LaunchSpec::new("dev.tilo.test", dummy_root)
+        let spec = LaunchSpec::new("so.tilo.test", dummy_root)
             .live_root_with_args(fallible_root)
             .max_positionals(1);
         match spec.live_root(&args) {
@@ -2541,7 +2541,7 @@ mod tests {
     #[test]
     fn custom_shot_pipeline_uses_standard_mode_dispatch() {
         CUSTOM_SHOT_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.tilo.test", dummy_root)
+        let spec = LaunchSpec::new("so.tilo.test", dummy_root)
             .shot_handler(custom_shot)
             .live_handler(unexpected_live);
         run_with_args(&spec, &strings(&["app", "--shots", "/tmp/custom.png"])).unwrap();
@@ -2730,7 +2730,7 @@ mod tests {
 
     #[test]
     fn app_can_replace_only_the_persistence_loader() {
-        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).open_state(custom_open_state);
+        let spec = LaunchSpec::new("so.tilo.test", dummy_root).open_state(custom_open_state);
         assert!(std::ptr::fn_addr_eq(
             spec.open_state,
             custom_open_state as OpenState
@@ -2835,7 +2835,7 @@ mod prepared_launch_tests {
                 .component_host(prepare)
                 .allowed_live_options(&["--fixture-root"])
         } else {
-            LaunchSpec::new("dev.tilo.metrics-fixture", || {
+            LaunchSpec::new("so.tilo.metrics-fixture", || {
                 Box::new(crate::widget::Button::new(
                     "metrics-button",
                     "Metrics",
@@ -2889,7 +2889,7 @@ mod prepared_launch_tests {
                 .env(CHILD_CASE, case)
                 .env(CHILD_ROOT, temp.path())
                 .env("TILO_STARTUP_METRICS_PATH", &metrics_path)
-                .env("TILO_PACKAGE_ID", "dev.tilo.metrics-fixture")
+                .env("TILO_PACKAGE_ID", "so.tilo.metrics-fixture")
                 .env("XDG_DATA_HOME", temp.path().join("legacy-data"))
                 .output()
                 .unwrap();

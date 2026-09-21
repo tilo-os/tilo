@@ -11,7 +11,7 @@
 //!
 //! ```ignore
 //! if let Some(spec) = tilo_ui::headless::spec_from_args(&args) {
-//!     std::process::exit(tilo_ui::headless::run(spec, my_app::app_root(), "dev.tilo.my-app"));
+//!     std::process::exit(tilo_ui::headless::run(spec, my_app::app_root(), "so.tilo.my-app"));
 //! }
 //! ```
 //!
@@ -5858,7 +5858,7 @@ mod tests {
     #[test]
     fn late_record_intent_uses_record_store_and_preserves_room_index() {
         const CHILD: &str = "TILO_LATE_RECORD_TEST_CHILD";
-        const PACKAGE: &str = "dev.tilo.late-record-test";
+        const PACKAGE: &str = "so.tilo.late-record-test";
         if let Ok(case) = std::env::var(CHILD) {
             use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet};
             use automerge::ReadDoc;
@@ -6017,7 +6017,7 @@ mod tests {
     #[test]
     fn automatic_record_restarts_keep_distinct_index_and_record_authors_and_fail_closed() {
         const CHILD: &str = "TILO_RECORD_RESTART_TEST_CHILD";
-        const PACKAGE: &str = "dev.tilo.record-restart-test";
+        const PACKAGE: &str = "so.tilo.record-restart-test";
         const ROOM: &str = "33333333-3333-4333-8333-333333333333";
         if std::env::var_os(CHILD).is_some() {
             use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet};

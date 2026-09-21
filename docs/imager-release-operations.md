@@ -269,7 +269,7 @@ newline-terminated `NAME=value` per line:
   token only after Forgejo OIDC validation, and revoke it after submission when
   supported.
 - Site: for the `site` platform, write a 5–15 minute Forgejo token as the
-  complete raw output. Give its bot write access only to `qos/site`. After all
+  complete raw output. Give its bot write access only to `tilo/site`. After all
   native and package-index gates pass, the workflow updates only
   `src/data/imager-release.json`, including its exact public `releaseRoot`, runs
   the site's release contract and full production build, and pushes that

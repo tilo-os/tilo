@@ -11,7 +11,7 @@
 
 
 [package]
-id       = "dev.tilo.file-explorer"
+id       = "so.tilo.file-explorer"
 name     = "Files"
 category = "System"
 version  = "0.1.0"

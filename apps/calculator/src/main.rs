@@ -486,7 +486,7 @@ fn render_shot_to_png(
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.calculator", calculator::app_root)
+    LaunchSpec::new("so.tilo.calculator", calculator::app_root)
         .history(&calculator::framework_history::HISTORY)
         .shot_handler(render_shot)
         .configure_app(configure_app)

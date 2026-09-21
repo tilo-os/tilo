@@ -41,7 +41,7 @@ pub fn main() {
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.diffmerge", diffmerge::app_root)
+    LaunchSpec::new("so.tilo.diffmerge", diffmerge::app_root)
         .history(&diffmerge::framework_history::HISTORY)
         .shot_root(shot_root)
         .scenarios(&["empty", "diff", "merge", "error", "status"])

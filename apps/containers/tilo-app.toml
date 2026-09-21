@@ -11,7 +11,7 @@
 
 
 [package]
-id       = "dev.tilo.containers"
+id       = "so.tilo.containers"
 name     = "Containers"
 category = "Development"
 version  = "0.1.0"

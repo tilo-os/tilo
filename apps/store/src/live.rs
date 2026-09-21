@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn launch_context_keeps_the_real_host_contract() {
-        let root = app_root_with_launch(None, Some("dev.tilo.notes".into()));
+        let root = app_root_with_launch(None, Some("so.tilo.notes".into()));
         assert_eq!(root.name(), "LiveStore");
         assert!(root.needs_animation_frame());
     }

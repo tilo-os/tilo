@@ -1407,7 +1407,7 @@ fn vm_installer_input(inspection: &InstallerInspection) -> VmInstallerInput {
 
 fn imported_app_id(sha256: &str) -> String {
     format!(
-        "dev.tilo.windows.import.{}",
+        "so.tilo.windows.import.{}",
         sha256.get(..24).unwrap_or(sha256)
     )
 }
@@ -1920,7 +1920,7 @@ mod tests {
         .unwrap();
         let application = VmPublishedApplication {
             entry_id: "windows-vm-opaque".to_string(),
-            app_id: "dev.tilo.windows.vm.opaque".to_string(),
+            app_id: "so.tilo.windows.vm.opaque".to_string(),
             published_application_id: "published-word".to_string(),
             display_name: "Word".to_string(),
             presentation: VmPresentation::NativeRail,

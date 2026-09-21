@@ -341,13 +341,13 @@ jobs:
           package_amd64_sha256="$(sha256sum package-roots-amd64.txt | cut -d' ' -f1)"
           package_arm64_sha256="$(sha256sum package-roots-arm64.txt | cut -d' ' -f1)"
           digest="${ref##*@}"
-          jq -n --arg source "git+ssh://code.sandbox.example/qos/tilo@$GITHUB_SHA" \
+          jq -n --arg source "git+ssh://code.sandbox.example/qos/qos@$GITHUB_SHA" \
             --arg digest "$digest" --arg base "$BASE_REF" \
             --arg package_amd64_sha256 "$package_amd64_sha256" --arg package_arm64_sha256 "$package_arm64_sha256" \
             --arg package_set_sha256 "$package_set_sha256" '
               {
                 buildDefinition: {
-                  buildType: "https://tilo.dev/buildtypes/frozen-rpm-index/v1",
+                  buildType: "https://tilo.sh/buildtypes/frozen-rpm-index/v1",
                   externalParameters: {
                     architectures: ["amd64", "arm64"],
                     packageSetSha256: $package_set_sha256,
@@ -373,7 +373,7 @@ jobs:
             --arg package_set_sha256 "$package_set_sha256" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(
-                  .buildDefinition.buildType == "https://tilo.dev/buildtypes/frozen-rpm-index/v1"
+                  .buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1"
                   and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
                   and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
                   and .buildDefinition.externalParameters.packageSetSha256ByArchitecture == {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}

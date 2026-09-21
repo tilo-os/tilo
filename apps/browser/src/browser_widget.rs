@@ -1708,7 +1708,7 @@ impl BrowserWidget {
             title: element.label.clone(),
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppElement {
-                app_id: "dev.tilo.browser".into(),
+                app_id: "so.tilo.browser".into(),
                 element_id: element.element_id.clone(),
                 region,
             },
@@ -1834,7 +1834,7 @@ impl BrowserWidget {
             title,
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppRegion {
-                app_id: "dev.tilo.browser".into(),
+                app_id: "so.tilo.browser".into(),
                 region,
             },
             preferred_size: Self::preferred_pip_size(aspect),
@@ -8600,11 +8600,11 @@ mod tests {
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
         let (mut state, root) = synced(&mut w);
 
-        engine.send(WebViewCommand::Navigate("https://tilo.example".into()));
+        engine.send(WebViewCommand::Navigate("https://example.test".into()));
         w.sync(&mut state, &root);
 
-        assert_eq!(w.address.with(Clone::clone), "https://tilo.example");
-        assert_eq!(w.app_title(), "https://tilo.example — test page");
+        assert_eq!(w.address.with(Clone::clone), "https://example.test");
+        assert_eq!(w.app_title(), "https://example.test — test page");
     }
 
     #[test]
@@ -8683,7 +8683,7 @@ mod tests {
                 .contract
                 .result
                 .validate(&ui::tilo_actions::ActionOutput {
-                    value: Some(serde_json::Value::String("https://tilo.example".into())),
+                    value: Some(serde_json::Value::String("https://example.test".into())),
                     resources: Vec::new(),
                 })
                 .is_ok()
@@ -8716,7 +8716,7 @@ mod tests {
             OperationKind::Document
         );
         let mut args = serde_json::Map::new();
-        args.insert("url".into(), serde_json::json!("tilo.example"));
+        args.insert("url".into(), serde_json::json!("example.test"));
         let encoded = navigate.build_json(&args).unwrap();
         let invocation = ui::tilo_actions::InvocationId::new();
         assert_eq!(
@@ -8733,7 +8733,7 @@ mod tests {
         );
         assert_eq!(
             engine.current_uri().as_deref(),
-            Some("https://tilo.example")
+            Some("https://example.test")
         );
         w.sync(&mut doc, &root);
         assert!(matches!(

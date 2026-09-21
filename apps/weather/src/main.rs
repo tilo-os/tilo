@@ -58,7 +58,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe();
     }
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.weather", weather::app_root)
+        &LaunchSpec::new("so.tilo.weather", weather::app_root)
             .history(&weather::framework_history::HISTORY)
             .shot_root(shot_root)
             .configure_app(|app| weather::actions::register(app.action_registry_mut()))

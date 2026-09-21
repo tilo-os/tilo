@@ -2,7 +2,7 @@
 //! feature level.
 //!
 //! Two-arch today (`x86_64`, aarch64); adding a new arch is a matching
-//! extension to `pkg::manifest::Arch`, a new detector function here,
+//! extension to `tilo_app_package::manifest::Arch`, a new detector function here,
 //! plus a `pick_variant` case.
 //!
 //! # How it works
@@ -13,8 +13,8 @@
 //! synthetic flags line and assert the mapping) and works from any
 //! userland.
 
-use pkg::manifest::{AArch64Level, Arch, IsaLevel, IsaRequirements, X86_64Level};
 use std::fs;
+use tilo_app_package::manifest::{AArch64Level, Arch, IsaLevel, IsaRequirements, X86_64Level};
 
 /// Detect the local host's arch + best-fit level for that arch.
 pub fn detect() -> IsaLevel {

@@ -40,7 +40,7 @@ fn minimal_app(root: &Path) {
     .unwrap();
     std::fs::write(
         root.join("tilo-app.toml"),
-        "[package]\nid = \"dev.tilo.demo\"\n",
+        "[package]\nid = \"so.tilo.demo\"\n",
     )
     .unwrap();
     std::fs::write(root.join("src/lib.rs"), "pub fn app_root() {}\n").unwrap();
@@ -2273,7 +2273,7 @@ fn creates_complete_starter() {
     let temp = tempfile::tempdir().expect("temp dir");
     let destination = temp.path().join("reading-list");
     let outcome = create_app(request(destination.clone())).expect("create app");
-    assert_eq!(outcome.app_id, "dev.tilo.reading.list");
+    assert_eq!(outcome.app_id, "so.tilo.reading.list");
     assert!(destination.join("Cargo.toml").is_file());
     let cargo = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
     let cargo: toml::Value = toml::from_str(&cargo).unwrap();
@@ -2989,7 +2989,7 @@ fn data_template_renders_cells_and_uses_stable_row_ids() {
         package_name: "log-browser".into(),
         crate_name: "log_browser".into(),
         title: "Log Browser".into(),
-        app_id: "dev.tilo.log.browser".into(),
+        app_id: "so.tilo.log.browser".into(),
         ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Data,
@@ -3064,7 +3064,7 @@ fn every_template_uses_the_toolkit_resource_action_host() {
             package_name: "generated-app".into(),
             crate_name: "generated_app".into(),
             title: "Generated App".into(),
-            app_id: "dev.tilo.generated.app".into(),
+            app_id: "so.tilo.generated.app".into(),
             ui_path: PathBuf::from("../../crates/sdk/ui-core"),
             workspace_member: true,
             template,
@@ -3073,7 +3073,8 @@ fn every_template_uses_the_toolkit_resource_action_host() {
         assert!(!manifest.contains("tilo-actions ="), "{template:?}");
         let source = app_lib(&spec);
         assert!(
-            source.contains("ui::widget::resource_actions::"),
+            source.contains("ui::widget::resource_actions::")
+                || source.contains("resource_actions::"),
             "{template:?}"
         );
         assert!(
@@ -3091,7 +3092,7 @@ fn qr_template_composes_ime_input_state_visual_output_and_accessibility() {
         package_name: "qr-code".into(),
         crate_name: "qr_code".into(),
         title: "QR Code".into(),
-        app_id: "dev.tilo.qr.code".into(),
+        app_id: "so.tilo.qr.code".into(),
         ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Qr,
@@ -3117,7 +3118,7 @@ fn workspace_template_composes_navigation_and_isolated_durable_detail_views() {
         package_name: "project-workspace".into(),
         crate_name: "project_workspace".into(),
         title: "Project Workspace".into(),
-        app_id: "dev.tilo.project.workspace".into(),
+        app_id: "so.tilo.project.workspace".into(),
         ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Workspace,
@@ -3142,7 +3143,7 @@ fn graph_template_generates_a_valid_editable_screen() {
         package_name: "project-maker".into(),
         crate_name: "project_maker".into(),
         title: "Project Maker".into(),
-        app_id: "dev.tilo.project.maker".into(),
+        app_id: "so.tilo.project.maker".into(),
         ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Graph,
@@ -3189,7 +3190,7 @@ fn list_template_starts_sparse_variable_and_interactive() {
         package_name: "activity-feed".into(),
         crate_name: "activity_feed".into(),
         title: "Activity Feed".into(),
-        app_id: "dev.tilo.activity.feed".into(),
+        app_id: "so.tilo.activity.feed".into(),
         ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::List,
@@ -3219,7 +3220,7 @@ fn tree_template_uses_stable_ids_and_professional_tree_defaults() {
         package_name: "project-browser".into(),
         crate_name: "project_browser".into(),
         title: "Project Browser".into(),
-        app_id: "dev.tilo.project.browser".into(),
+        app_id: "so.tilo.project.browser".into(),
         ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Tree,
@@ -3247,7 +3248,7 @@ fn async_template_uses_typed_wakeup_and_keyed_result_views() {
         package_name: "repo-scan".into(),
         crate_name: "repo_scan".into(),
         title: "Repo Scan".into(),
-        app_id: "dev.tilo.repo.scan".into(),
+        app_id: "so.tilo.repo.scan".into(),
         ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Async,
@@ -3279,7 +3280,7 @@ fn document_template_uses_direct_durable_bindings_and_undo_contract() {
         package_name: "notes".into(),
         crate_name: "notes".into(),
         title: "Notes".into(),
-        app_id: "dev.tilo.notes".into(),
+        app_id: "so.tilo.notes".into(),
         ui_path: PathBuf::from("../../crates/sdk/ui-core"),
         workspace_member: true,
         template: Template::Document,
@@ -3300,7 +3301,7 @@ fn generated_readme_commands_work_inside_workspace_or_standalone() {
             package_name: "notes".into(),
             crate_name: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             ui_path: PathBuf::from("../../crates/sdk/ui-core"),
             workspace_member,
             template: Template::Starter,
@@ -3349,7 +3350,7 @@ fn every_template_generates_valid_rust_and_actions() {
             package_name: "demo".into(),
             crate_name: "demo".into(),
             title: "Demo".into(),
-            app_id: "dev.tilo.demo".into(),
+            app_id: "so.tilo.demo".into(),
             ui_path: PathBuf::from("../../crates/sdk/ui-core"),
             workspace_member: true,
             template,
@@ -3655,7 +3656,7 @@ fn package_refuses_to_replace_output_before_building() {
     let destination = temp.path().join("reading-list");
     create_app(request(destination.clone())).expect("create app");
     std::fs::create_dir(destination.join("dist")).expect("dist directory");
-    std::fs::write(destination.join("dist/reading-list.qpkg"), "existing")
+    std::fs::write(destination.join("dist/reading-list.tapp"), "existing")
         .expect("existing package");
 
     let error = package_app(

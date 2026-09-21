@@ -23,7 +23,7 @@ use ui::{
 extern crate runtime_dylib;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.image-editor", image_editor::app_root)
+        &LaunchSpec::new("so.tilo.image-editor", image_editor::app_root)
             .open_state_with_args(open_state)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
