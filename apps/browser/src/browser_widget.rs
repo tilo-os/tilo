@@ -536,6 +536,11 @@ impl BrowserWidget {
     /// [`Self::with_engine`] and [`Self::new_headless`]. A missing or broken
     /// WPE runtime must stop the live browser rather than making a synthetic
     /// page look like a successful launch.
+    ///
+    /// # Errors
+    ///
+    /// Returns the production engine's startup error when WPE is unavailable
+    /// or cannot initialize.
     pub fn try_new() -> Result<Self, String> {
         Ok(Self::with_engine(default_engine()?, false))
     }
@@ -5516,9 +5521,8 @@ mod tests {
     #[cfg(not(feature = "wpe"))]
     #[test]
     fn production_engine_refuses_builds_without_wpe() {
-        let error = match default_engine() {
-            Ok(_) => panic!("live mode must not use TestEngine"),
-            Err(error) => error,
+        let Err(error) = default_engine() else {
+            panic!("live mode must not use TestEngine");
         };
         assert!(error.contains("built without the WPE engine"), "{error}");
     }
