@@ -2100,8 +2100,13 @@ mod tests {
                 FileView::new(&items(1200), &SelectionModel::new(), &sink).mode(mode);
             expected.text_scale = 2.0;
             expected.columns = expected.columns_for_width(scaled_rect.width());
+            let expected_height = expected.content_height(scaled_rect.width()).round();
             assert!(
-                (scaled_rect.height() - expected.content_height(scaled_rect.width())).abs() < 0.01
+                (scaled_rect.height() - expected_height).abs() < 0.01,
+                "{mode:?}: scaled height {}, expected {expected_height}, width {}, columns {}",
+                scaled_rect.height(),
+                scaled_rect.width(),
+                expected.columns,
             );
             // A new directory snapshot is remeasured even at identical pane size.
             nav.set_content(Box::new(Scrollable::new_vertical().with_child(Box::new(
@@ -2114,7 +2119,9 @@ mod tests {
             let mut expected = FileView::new(&items(120), &SelectionModel::new(), &sink).mode(mode);
             expected.text_scale = 2.0;
             expected.columns = expected.columns_for_width(replaced.width());
-            assert!((replaced.height() - expected.content_height(replaced.width())).abs() < 0.01);
+            assert!(
+                (replaced.height() - expected.content_height(replaced.width()).round()).abs() < 0.01
+            );
         }
     }
 
