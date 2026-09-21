@@ -104,10 +104,22 @@ class PlanProducerTests(unittest.TestCase):
 
     def test_all_plan_python_calls_use_pinned_isolated_launcher(self):
         workflow = Path(plan.__file__).resolve().parents[1] / '.forgejo/workflows/release-apps.yml'
-        section = workflow.read_text().split('\n  plan:', 1)[1].split('\n  build:', 1)[0]
+        section = workflow.read_text().split('\n  plan:', 1)[1].split('\n  authorize-publish:', 1)[0]
         calls = [line.strip() for line in section.splitlines() if 'python3 ' in line]
-        self.assertEqual(len(calls), 6)
-        self.assertTrue(all('python3 -I tools/ci/python.py tools/' in line for line in calls))
+        launcher = 'python3 -I tools/ci/python.py '
+        self.assertTrue(all(launcher + 'tools/' in line for line in calls))
+        self.assertEqual(
+            sorted(line.split(launcher, 1)[1].split()[0] for line in calls),
+            sorted([
+                'tools/ci/resolve_builder.py',
+                'tools/app_packaging_qualification.py',
+                'tools/ci/app_release_history.py',
+                'tools/apps/app_release.py',
+                'tools/apps/app_release.py',
+                'tools/apps/app_release.py',
+                'tools/app_packaging_plan.py',
+            ]),
+        )
         self.assertIn('tools/ci/python.py', product.REQUIRED_PATHS)
         self.assertIn('tools/ci/__init__.py', product.REQUIRED_PATHS)
 

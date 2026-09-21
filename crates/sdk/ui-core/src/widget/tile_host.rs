@@ -5,8 +5,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::app_widget::AppWidget;
+use crate::widget::{Continuable, Widget};
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -911,6 +911,34 @@ impl TileHost {
     }
 }
 
+impl Continuable for TileHost {
+    fn continuation_metadata(
+        &self,
+        state: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata> {
+        match &self.content {
+            TileContent::App(app) => app
+                .continuable()
+                .and_then(|continuable| continuable.continuation_metadata(state, path)),
+            _ => None,
+        }
+    }
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &crate::collaboration::ContinuationMetadata,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => app.continuable_mut().is_some_and(|continuable| {
+                continuable.restore_continuation_metadata(metadata, state, path)
+            }),
+            _ => false,
+        }
+    }
+}
+
 impl Widget for TileHost {
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         if let Some(error) = &self.record_error {
@@ -1028,27 +1056,15 @@ impl Widget for TileHost {
             live.handle_collab_event(event);
         }
     }
-    fn continuation_metadata(
-        &self,
-        state: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<crate::collaboration::ContinuationMetadata> {
-        match &self.content {
-            TileContent::App(app) => app.continuation_metadata(state, path),
-            _ => None,
-        }
+
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
     }
-    fn restore_continuation_metadata(
-        &mut self,
-        metadata: &crate::collaboration::ContinuationMetadata,
-        state: &mut AutoCommit,
-        path: &ObjId,
-    ) -> bool {
-        match &mut self.content {
-            TileContent::App(app) => app.restore_continuation_metadata(metadata, state, path),
-            _ => false,
-        }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
     }
+
     fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
         if let TileContent::App(app) = &mut self.content {
             app.on_external_event(payload, state, root);
@@ -2526,12 +2542,12 @@ mod tests {
         }
         let record_dir = app_state::DocStore::room_record_dir_at(
             &root,
-            "dev.qos.tile-host-test",
+            "dev.tilo.tile-host-test",
             "room",
             &checkout.id.storage_key(),
         )
         .unwrap();
-        let path = app_state::DocStore::open_canonical_at("dev.qos.tile-host-test", &record_dir)
+        let path = app_state::DocStore::open_canonical_at("dev.tilo.tile-host-test", &record_dir)
             .unwrap()
             .document_path()
             .to_path_buf();
@@ -2576,7 +2592,7 @@ mod tests {
     }
     static DECLARED_HISTORY: crate::history_mode::HistoryDefinition =
         crate::history_mode::HistoryDefinition {
-            app_id: "dev.qos.tile-host-test",
+            app_id: "dev.tilo.tile-host-test",
             scopes: &[crate::history_mode::HistoryScopeDefinition {
                 key: "body",
                 title: "Body",
@@ -2593,7 +2609,7 @@ mod tests {
         };
     static EXISTING_HISTORY: crate::history_mode::HistoryDefinition =
         crate::history_mode::HistoryDefinition {
-            app_id: "dev.qos.tile-host-test",
+            app_id: "dev.tilo.tile-host-test",
             scopes: &[crate::history_mode::HistoryScopeDefinition {
                 key: "external",
                 title: "External",
@@ -2750,7 +2766,7 @@ mod tests {
                 .unwrap();
             let path = app_state::DocStore::room_record_dir_at(
                 &root,
-                "dev.qos.tile-host-test",
+                "dev.tilo.tile-host-test",
                 "room",
                 &a.id.storage_key(),
             )
