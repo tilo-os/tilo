@@ -14,7 +14,8 @@ import broker_signing_runner as b
 
 
 def binding():
-    return {'schema': 1, 'namespace': 'test', 'pod': 'runner', 'container': 'dind', 'pod_uid': 'uid',
+    return {'schema': 1, 'cluster': 'aws-us-west-2', 'namespace': 'test',
+        'pod': 'runner', 'container': 'dind', 'pod_uid': 'uid',
         'container_id': 'containerd://abc', 'image': 'image:fixture', 'image_id': 'sha256:abc',
         'restart_count': 0, 'pod_spec_sha256': 'a'*64, 'context_sha256': 'b'*64,
         'endpoint': '/var/lib/tilo-signing-bridge/signing-spool-endpoint.py',
@@ -23,6 +24,10 @@ def binding():
 
 class BrokerTests(unittest.TestCase):
     def test_strict_identity_command_allowlist(self):
+        unpinned = binding()
+        unpinned.pop('cluster')
+        with self.assertRaisesRegex(ValueError, 'pinned broker target'):
+            b.BrokerRunner(unpinned)
         runner = b.BrokerRunner(binding())
         client = b.transport.Transport(b.CONTEXT, binding(), runner)
         valid = client.exec_prefix() + ['docker', 'exec', '-i', 'c'*64, '/usr/bin/python3',
@@ -48,8 +53,8 @@ class BrokerTests(unittest.TestCase):
             self.assertIn('--context=admin@tupo-production', argv)
             data = source.read()
             events.append((header,data))
-            self.assertEqual(set(header['auth']), set(b.TARGETS))
-            self.assertIsNone(header['auth']['on-prem'])
+            self.assertEqual(set(header['auth']), {'aws-us-west-2'})
+            self.assertEqual(header['target'], 'aws-us-west-2')
             self.assertEqual(header['container'], 'dind')
             self.assertEqual(header['input_bytes'], len(data))
             sink.write(b'public reply')
@@ -65,11 +70,11 @@ class BrokerTests(unittest.TestCase):
                 self.assert_token()
                 return super().read(*args)
             def assert_token(self):
-                if len(token_commands) != 2:
+                if len(token_commands) != 1:
                     raise AssertionError('seekable input was staged before token acquisition')
         runner(argv, output, 65536, source=SeekableSource(data), timeout=30)
         self.assertEqual({(x[x.index('--region') + 1], x[x.index('--cluster-name') + 1]) for x in token_commands},
-                         {('eu-central-1', 'burst-eu'), ('us-west-2', 'burst-us')})
+                         {('us-west-2', 'burst-us')})
         self.assertEqual(events[0][1], data)
         self.assertEqual(output.getvalue(), b'public reply')
         with patch.object(b, 'MAX_STREAM', 10), self.assertRaises(ValueError):
@@ -78,10 +83,10 @@ class BrokerTests(unittest.TestCase):
         runner.process = failed
         with self.assertRaises(ValueError): runner(argv, io.BytesIO(), 10)
 
-    def bridge(self, data, *, fail=False, limit=4096, nested=False, profiles=None):
+    def bridge(self, data, *, fail=False, limit=4096, nested=False, profiles=None,
+               target='aws-us-west-2'):
         """Exercise actual embedded EOF wrapper and stream drain protocol."""
-        header = {'auth':{'on-prem':None, 'aws-eu-central-1':'k8s-aws-v1.eu',
-                          'aws-us-west-2':'k8s-aws-v1.west'},
+        header = {'auth':{'aws-us-west-2':'k8s-aws-v1.west'}, 'target':target,
             'pod':'runner','namespace':'test','uid':'uid','container':'dind',
             'operation':'exec','command':['/usr/bin/python3','-c','import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())'],
             'input_bytes':len(data),'limit':limit,'timeout':5}
@@ -161,13 +166,15 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.bridge(b'public',fail=True)
         with self.assertRaises(ValueError): self.bridge(b'public',limit=1)
 
-    def test_bridge_rejects_unknown_and_duplicate_enabled_targets(self):
+    def test_bridge_rejects_unknown_disabled_and_mismatched_pinned_targets(self):
         with self.assertRaises(ValueError):
             self.bridge(b'', profiles=[{'name':'unknown','ci_enabled':True}])
-        profiles=[{'name':name,'ci_enabled':True,'kubeconfig':b.TARGETS[name]['kubeconfig']}
-                  for name in ('aws-eu-central-1','aws-us-west-2')]
         with self.assertRaises(ValueError):
-            self.bridge(b'', profiles=profiles)
+            self.bridge(b'', profiles=[{'name':'aws-us-west-2','ci_enabled':False,
+                                        'kubeconfig':b.TARGETS['aws-us-west-2']['kubeconfig']}])
+
+        with self.assertRaises(ValueError):
+            self.bridge(b'', target='aws-eu-central-1')
 
 
 

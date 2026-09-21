@@ -82,15 +82,19 @@ def validate_config(c):
     return c
 
 
-def load(operation, compatible_operation_sha256=None):
+def load(operation, compatible_operation_sha256=None, compatible_operator_sha256=None):
     operation = spool.private_directory(operation)
     config_raw = read(operation / 'operation.json')
     c = validate_config(json.loads(config_raw, object_pairs_hook=spool.unique))
-    if c['operator_sha256'] != operator_identity():
+    current_operator_sha256 = operator_identity()
+    if c['operator_sha256'] != current_operator_sha256:
         require(isinstance(compatible_operation_sha256, str) and
                 HEX.fullmatch(compatible_operation_sha256) is not None and
-                spool.digest(config_raw) == compatible_operation_sha256,
-                'operator implementation changed; use original checkout or authorize exact operation config')
+                spool.digest(config_raw) == compatible_operation_sha256 and
+                isinstance(compatible_operator_sha256, str) and
+                HEX.fullmatch(compatible_operator_sha256) is not None and
+                compatible_operator_sha256 == current_operator_sha256,
+                'operator implementation changed; use original checkout or authorize exact operation and replacement operator')
     for name, digest in c['files'].items():
         require(spool.digest(read(operation / name, 2**21)) == digest, 'operation snapshot changed')
     q = stage.driver.validate_request(document(operation / 'request.json'))
@@ -381,7 +385,8 @@ def bind(operation, c, q, run_id, attempt):
         pod_uid=observed['pod_uid'], container_id=nested['Id'], image_id=c['tools_image_id'],
         revision=q['source_revision'], architecture=q['architecture'],
         manifest_sha256=q['new_manifest_sha256'], target=q['new_target'])
-    binding = dict(schema=1, namespace='agent-sandboxes', pod=observed['pod'], container='dind',
+    binding = dict(schema=1, cluster=observed['cluster'], namespace='agent-sandboxes',
+        pod=observed['pod'], container='dind',
         pod_uid=observed['pod_uid'], container_id=observed['container_id'], image=observed['image'],
         image_id=observed['image_id'], restart_count=observed['restart_count'],
         pod_spec_sha256=observed['spec_sha256'], context_sha256=spool.context(context),
@@ -608,6 +613,8 @@ def main():
     ap.add_argument('--operation', type=Path, required=True)
     ap.add_argument('--compatible-operation-sha256',
                     help='authorize the exact immutable operation config with reviewed newer operator code')
+    ap.add_argument('--compatible-operator-sha256',
+                    help='pin the exact reviewed replacement operator implementation')
     sub = ap.add_subparsers(dest='command', required=True)
     for name, help_text, purposes in (
             ('diagnose-checkpoint', 'read-only checkpoint diagnostics', ('loader', 'live-uki', 'target-uki')),
@@ -657,7 +664,8 @@ def main():
         else:
             require(a.run_directory is None and a.run_id is not None and a.attempt is not None,
                     'generic checkpoint layout requires only --run-id and --attempt')
-            c, _ = load(a.operation, a.compatible_operation_sha256)
+            c, _ = load(a.operation, a.compatible_operation_sha256,
+                        a.compatible_operator_sha256)
             directory = admit_bound(a.operation, c, a.run_id, a.attempt)
         if a.command == 'diagnose-checkpoint':
             result = checkpoint_export.diagnose(
@@ -670,11 +678,13 @@ def main():
                 a.operation, directory, a.purpose, a.request_directory, spool,
                 legacy=a.legacy_layout)
     elif a.command == 'init':
-        require(a.compatible_operation_sha256 is None,
+        require(a.compatible_operation_sha256 is None and
+                a.compatible_operator_sha256 is None,
                 'operator compatibility applies only to an existing operation')
         result = initialize(a)
     else:
-        c, q = load(a.operation, a.compatible_operation_sha256)
+        c, q = load(a.operation, a.compatible_operation_sha256,
+                    a.compatible_operator_sha256)
         directory = run_path(a.operation, a.run_id, a.attempt)
         if a.command not in ('bind', 'status', 'wait'):
             directory = admit_bound(a.operation, c, a.run_id, a.attempt,
