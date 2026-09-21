@@ -165,6 +165,7 @@ enum FormMode {
     DeleteRequest,
     NewEnvironment,
     RenameEnvironment,
+    DeleteEnvironment,
     NewVariable,
     DeleteVariable,
 }
@@ -179,6 +180,7 @@ impl FormMode {
             Self::DeleteRequest => "Delete request?",
             Self::NewEnvironment => "New environment",
             Self::RenameEnvironment => "Rename environment",
+            Self::DeleteEnvironment => "Delete environment?",
             Self::NewVariable => "Add variable",
             Self::DeleteVariable => "Delete variable",
         }
@@ -193,7 +195,8 @@ impl FormMode {
     }
 
     fn needs_name(self) -> bool {
-        !self.needs_variable_fields() && !matches!(self, Self::DeleteRequest)
+        !self.needs_variable_fields()
+            && !matches!(self, Self::DeleteRequest | Self::DeleteEnvironment)
     }
 }
 
@@ -539,6 +542,7 @@ impl ApiTesterApp {
             "rename-request" => Some(FormMode::RenameRequest),
             "new-environment" => Some(FormMode::NewEnvironment),
             "rename-environment" => Some(FormMode::RenameEnvironment),
+            "delete-environment" => Some(FormMode::DeleteEnvironment),
             "new-variable" => Some(FormMode::NewVariable),
             "delete-variable" => Some(FormMode::DeleteVariable),
             _ => None,
@@ -862,9 +866,6 @@ impl ApiTesterApp {
         let cancel_sink = sink.clone();
         let form_cancel = Button::new("api.form-cancel", "Cancel", None)
             .on_effect(move || cancel_sink.borrow_mut().push(Cmd::CancelForm));
-        // The rail is for finding work, not a wall of destructive/global
-        // commands. Keep only the two workspace entry points here; request
-        // and variable mutations remain contextual resource actions.
         let management = [
             (
                 "api.new-collection",
@@ -872,12 +873,52 @@ impl ApiTesterApp {
                 Cmd::OpenForm(FormMode::NewCollection),
             ),
             (
+                "api.save-request",
+                "Save request",
+                Cmd::OpenForm(FormMode::SaveRequest),
+            ),
+        ];
+        let management = management.into_iter().chain([
+            (
+                "api.rename-collection",
+                "Rename collection",
+                Cmd::OpenForm(FormMode::RenameCollection),
+            ),
+            (
+                "api.rename-request",
+                "Rename request",
+                Cmd::OpenForm(FormMode::RenameRequest),
+            ),
+            (
+                "api.delete-request",
+                "Delete request",
+                Cmd::OpenForm(FormMode::DeleteRequest),
+            ),
+            (
                 "api.new-environment",
                 "New environment",
                 Cmd::OpenForm(FormMode::NewEnvironment),
             ),
-        ];
-        let management = management.into_iter().chain([
+            (
+                "api.rename-environment",
+                "Rename environment",
+                Cmd::OpenForm(FormMode::RenameEnvironment),
+            ),
+            (
+                "api.delete-environment",
+                "Delete environment",
+                Cmd::OpenForm(FormMode::DeleteEnvironment),
+            ),
+            (
+                "api.new-variable",
+                "Add variable",
+                Cmd::OpenForm(FormMode::NewVariable),
+            ),
+            (
+                "api.delete-variable",
+                "Delete variable",
+                Cmd::OpenForm(FormMode::DeleteVariable),
+            ),
             (
                 "api.increase-request-area",
                 "Increase request area",
@@ -3194,6 +3235,11 @@ impl ApiTesterApp {
                     self.perform(state, path, &actions::rename_environment_action(id, &name));
                 }
             }
+            FormMode::DeleteEnvironment => {
+                if let Some(id) = self.active_env {
+                    self.perform(state, path, &actions::delete_environment_action(id));
+                }
+            }
             FormMode::NewVariable => {
                 let key = self.form_key_input.value().trim().to_string();
                 let value = self.form_value_input.value().trim().to_string();
@@ -3391,8 +3437,8 @@ impl Widget for ApiTesterApp {
             (8, "Add variable", environment_name),
             (9, "Delete variable", environment_name),
         ] {
-            // Button exposes an owning name builder; move it through that
-            // builder to preserve its stable action emitter and callback.
+            // Preserve each button's callback while refreshing its contextual
+            // screen-reader name.
             let button =
                 std::mem::replace(&mut self.manage_buttons[index], Button::new("", "", None));
             self.manage_buttons[index] = button.with_accessible_name(&format!("{label}: {target}"));
