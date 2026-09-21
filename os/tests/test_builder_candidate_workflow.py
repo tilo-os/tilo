@@ -355,6 +355,26 @@ class CanaryIdentity(unittest.TestCase):
         self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
         self.assertIn('podesta-burst-usw2-qos-builder-replication', replication)
 
+    def test_main_promotion_installs_aws_cli_from_ubuntu_universe(self):
+        promotion = BUILD.split('  promote-builder:', 1)[1]
+        tools = promotion.split('      - name: Install publication tools', 1)[1].split(
+            '      - name: Verify and publish the tested native builder index', 1
+        )[0]
+        enable_universe = 'sudo -n add-apt-repository --yes universe'
+        install_aws = (
+            'sudo -n apt-get install -y --no-install-recommends '
+            'awscli podman skopeo'
+        )
+        self.assertIn(
+            'sudo -n apt-get install -y --no-install-recommends '
+            'software-properties-common',
+            tools,
+        )
+        self.assertIn(enable_universe, tools)
+        self.assertIn(install_aws, tools)
+        self.assertLess(tools.index(enable_universe), tools.index(install_aws))
+        self.assertIn('sudo -n dnf install -y awscli podman skopeo', tools)
+
     def test_reuse_never_reaches_signing_or_promotion(self):
         signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]
         build = BUILD.split('  build:', 1)[1].split('\n  images:', 1)[0]
