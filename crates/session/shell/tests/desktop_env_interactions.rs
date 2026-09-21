@@ -420,11 +420,9 @@ fn shift_resize_handle_redistributes_width_between_neighbours() {
     reason = "st's only use is producing tree via tree(); the read-guard's lifetime \
               is tied to st's borrow, so it can't be dropped before tree's last use"
 )]
-fn resize_handle_drag_clamps_at_min_width_and_persists() {
+fn resize_handle_drag_clamps_at_max_width_without_squeezing_neighbour() {
     let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200]);
-    // Start both at Narrow. From two Normals the right group can't reach its
-    // minimum at all (the left would grow past the display), so the pair sum
-    // has to leave slack for the clamp to be reachable.
+    // Start both at Narrow so the resized group has visible room to grow.
     for g in &mut tree.desktop.workspaces[0].strips[0].window_groups {
         g.width = WindowWidth::Narrow;
     }
@@ -432,8 +430,8 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let layout = lay_out_host(&mut host);
 
     let usable = usable_strip_px(&mut host, strip_id);
-    let pair_sum = 2.0 * WindowWidth::Narrow.resolve(usable);
-    let min = ui::widget::min_group_px(usable);
+    let start = WindowWidth::Narrow.resolve(usable);
+    let max = ui::widget::max_group_px(usable);
     let handle_rect = host
         .group_row_mut_for_tests(strip_id)
         .expect("strip GroupRow")
@@ -443,8 +441,8 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let cx = f64::midpoint(handle_rect.x0, handle_rect.x1);
     let cy = f64::midpoint(handle_rect.y0, handle_rect.y1);
 
-    // Far past the right neighbour's min: it can only shrink to the
-    // display's minimum, so the left group grows by that slack, not by 5000.
+    // Far past the resized group's maximum: it clamps there while the right
+    // neighbour keeps its own width in the unbounded strip.
     cursor(&mut host, &layout, Point::new(cx, cy));
     press(&mut host, &layout);
     cursor(&mut host, &layout, Point::new(cx + 5000.0, cy));
@@ -459,18 +457,18 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
     assert_approx_eq!(
         right.width.resolve(usable),
-        min,
-        "the shrinking (right) group clamps at the display's minimum width, not below",
+        start,
+        "ordinary resizing must not squeeze the right neighbour",
     );
     assert_approx_eq!(
         left.width.resolve(usable),
-        pair_sum - min,
-        "the growing (left) group absorbs only the neighbour's actual slack",
+        max,
+        "the growing group clamps at the display-relative maximum",
     );
     assert_approx_eq!(
         left.width.resolve(usable) + right.width.resolve(usable),
-        pair_sum,
-        "pair sum is preserved under clamp — no overlap, no runaway width",
+        max + start,
+        "the infinite strip grows only to the resized group's clamp",
     );
 }
 
@@ -770,7 +768,7 @@ fn expand_maximizes_beneath_the_top_bar() {
 #[test]
 fn restore_brings_back_the_workspace_switcher() {
     let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
-    tree.workspaces[0].strips[0].window_groups[0].maximized = true;
+    tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
     let maximized_layout = lay_out_host(&mut host);
