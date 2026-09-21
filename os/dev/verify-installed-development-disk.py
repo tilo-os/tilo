@@ -28,7 +28,7 @@ import development_prediction as prediction
 import hardware_profile as hardware
 import installed_material_audit as material
 import installer_bootc_helper
-from private_disk_image import _directory
+from private_disk_image import _directory, loop_partition_nodes
 
 spec = importlib.util.spec_from_file_location('installed_source', Path(__file__).with_name('verify-development-source.py'))
 source = importlib.util.module_from_spec(spec)
@@ -148,7 +148,7 @@ def partitions(document, loop):
         raise ValueError('expected a 512-byte-sector GPT on the allocated loop')
     rows = table['partitions']
     expected = [('EFI-SYSTEM', 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'),
-                ('root', 'b921b045-1df0-41c3-af44-4c6f280d3fae')]
+                ('root', '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab')]
     if len(rows) != 2:
         raise ValueError('expected only ESP and ARM64 root partitions')
     for index, (row, (label, kind)) in enumerate(zip(rows, expected), 1):
@@ -414,6 +414,7 @@ def verify(args):
             if not re.fullmatch('/dev/loop[0-9]+', loop):
                 raise ValueError('unexpected allocated loop identity')
             cleanup.callback(command, ['/usr/sbin/losetup', '--detach', loop])
+            cleanup.enter_context(loop_partition_nodes(loop))
             if command(['/usr/sbin/blockdev', '--getro', loop]).strip() != b'1':
                 raise ValueError('loop is not read-only')
             parts = partitions(json.loads(command(['/usr/sbin/sfdisk', '--json', loop])), loop)

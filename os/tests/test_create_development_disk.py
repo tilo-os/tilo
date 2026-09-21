@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 DEV = Path(__file__).resolve().parents[1] / 'dev'
 sys.path.insert(0, str(DEV))
@@ -59,88 +59,26 @@ class FailureDiagnosticTests(unittest.TestCase):
         self.assertLess(self.path.stat().st_size, 800 * 1024)
 
 
-class BootcInstallRetryTests(unittest.TestCase):
+class BootcInstallTests(unittest.TestCase):
     def result(self, returncode, stderr=b''):
         return SimpleNamespace(returncode=returncode, stdout=b'', stderr=stderr)
 
-    def test_pristine_identity_rejects_allocated_blocks_or_hostile_metadata(self):
-        disk = SimpleNamespace(validate=lambda: None, fileno=lambda: 7)
-        good = dict(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0,
-                    st_nlink=1, st_blocks=0, st_dev=1, st_ino=2, st_size=4096)
-        with patch.object(disk_creator.os, 'fstat', return_value=SimpleNamespace(**good)):
-            self.assertEqual(disk_creator._pristine_disk_identity(disk),
-                             (1, 2, 4096, stat.S_IFREG | 0o600, 0, 0, 1))
-        for field, value in [('st_blocks', 1), ('st_mode', stat.S_IFREG | 0o640),
-                             ('st_uid', 1), ('st_gid', 1), ('st_nlink', 2)]:
-            hostile = dict(good); hostile[field] = value
-            with self.subTest(field=field), \
-                    patch.object(disk_creator.os, 'fstat',
-                                 return_value=SimpleNamespace(**hostile)), \
-                    self.assertRaisesRegex(ValueError, 'unchanged pristine disk'):
-                disk_creator._pristine_disk_identity(disk)
-
-    def test_retries_only_exact_tls_failure_with_fixed_backoff(self):
-        results = [self.result(1, disk_creator.TRANSIENT_REGISTRY_TLS_ERROR + b'\n'),
-                   self.result(0)]
-        with patch.object(disk_creator.subprocess, 'run', side_effect=results) as run, \
-                patch.object(disk_creator, '_pristine_disk_identity',
-                             return_value=('same',)), \
-                patch.object(disk_creator.time, 'sleep') as sleep, \
-                patch.object(disk_creator, 'write_failure_diagnostic') as diagnostic:
+    def test_runs_once_and_revalidates_prepared_disk(self):
+        disk = SimpleNamespace(validate=Mock())
+        with patch.object(disk_creator, 'command', return_value='installed') as command:
             self.assertEqual(disk_creator.bootc_install(
-                ['/usr/bin/podman'], object(), Path('/failure')), '')
-        self.assertEqual(run.call_count, 2)
-        sleep.assert_called_once_with(2)
-        diagnostic.assert_not_called()
+                ['/usr/bin/podman'], disk, Path('/failure')), 'installed')
+        self.assertEqual(disk.validate.call_count, 2)
+        command.assert_called_once_with(
+            ['/usr/bin/podman'], failure_diagnostic=Path('/failure'))
 
-    def test_wrong_host_and_other_errors_never_retry(self):
-        for stderr in (disk_creator.TRANSIENT_REGISTRY_TLS_ERROR.replace(
-                b'code.sandbox.example', b'registry.invalid'), b'unrelated failure'):
-            with self.subTest(stderr=stderr), \
-                    patch.object(disk_creator.subprocess, 'run',
-                                 return_value=self.result(1, stderr)) as run, \
-                    patch.object(disk_creator, '_pristine_disk_identity',
-                                 return_value=('same',)), \
-                    patch.object(disk_creator.time, 'sleep') as sleep, \
-                    patch.object(disk_creator, 'write_failure_diagnostic') as diagnostic:
-                with self.assertRaisesRegex(ValueError, r'podman failed \(exit 1\)'):
-                    disk_creator.bootc_install(
-                        ['/usr/bin/podman'], object(), Path('/failure'))
-                self.assertEqual(run.call_count, 1)
-                sleep.assert_not_called()
-                diagnostic.assert_called_once()
-
-    def test_mutated_or_allocated_disk_aborts_before_retry(self):
-        failure = self.result(1, disk_creator.TRANSIENT_REGISTRY_TLS_ERROR)
-        for changed in (('changed',), ValueError('disk has allocated blocks')):
-            side_effect = [('same',), changed]
-            with self.subTest(changed=changed), \
-                    patch.object(disk_creator.subprocess, 'run', return_value=failure) as run, \
-                    patch.object(disk_creator, '_pristine_disk_identity',
-                                 side_effect=side_effect), \
-                    patch.object(disk_creator.time, 'sleep') as sleep, \
-                    patch.object(disk_creator, 'write_failure_diagnostic') as diagnostic:
-                with self.assertRaises(ValueError):
-                    disk_creator.bootc_install(
-                        ['/usr/bin/podman'], object(), Path('/failure'))
-                self.assertEqual(run.call_count, 1)
-                sleep.assert_not_called()
-                diagnostic.assert_called_once()
-
-    def test_stops_after_three_exact_failures_and_uses_two_backoffs(self):
-        failure = self.result(1, disk_creator.TRANSIENT_REGISTRY_TLS_ERROR + b'\r\n')
-        with patch.object(disk_creator.subprocess, 'run',
-                          side_effect=[failure, failure, failure]) as run, \
-                patch.object(disk_creator, '_pristine_disk_identity',
-                             return_value=('same',)), \
-                patch.object(disk_creator.time, 'sleep') as sleep, \
-                patch.object(disk_creator, 'write_failure_diagnostic') as diagnostic:
-            with self.assertRaisesRegex(ValueError, r'podman failed \(exit 1\)'):
-                disk_creator.bootc_install(
-                    ['/usr/bin/podman'], object(), Path('/failure'))
-        self.assertEqual(run.call_count, 3)
-        self.assertEqual([call.args for call in sleep.call_args_list], [(2,), (5,)])
-        diagnostic.assert_called_once()
+    def test_failure_is_not_retried_and_disk_is_revalidated(self):
+        disk = SimpleNamespace(validate=Mock())
+        with patch.object(disk_creator, 'command', side_effect=ValueError('failed')) as command:
+            with self.assertRaisesRegex(ValueError, 'failed'):
+                disk_creator.bootc_install(['/usr/bin/podman'], disk, Path('/failure'))
+        command.assert_called_once()
+        self.assertEqual(disk.validate.call_count, 2)
 
 
 class FuseDeviceTests(unittest.TestCase):
@@ -189,6 +127,7 @@ class FuseDeviceTests(unittest.TestCase):
             with self.assertRaisesRegex(PermissionError, 'denied'):
                 disk_creator.ensure_fuse_device(self.device, self.misc, self.sys_device)
 
+
     def test_rejects_symlink_without_replacing_it(self):
         target = Path(self.tmp.name) / 'target'
         target.write_text('fixture')
@@ -210,6 +149,46 @@ class FuseDeviceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'character device 10:229'):
                 disk_creator.ensure_fuse_device(self.device, self.misc, self.sys_device)
 
+
+
+class PreparedFilesystemTests(unittest.TestCase):
+    def test_exact_layout_mount_and_cleanup_order(self):
+        disk = SimpleNamespace(validate=Mock(), fileno=lambda: 42)
+        calls = []
+        table = {'partitiontable': {'label': 'gpt'}}
+        def invoke(argv, **kwargs):
+            calls.append(argv)
+            if argv[0].endswith('losetup') and '--show' in argv:
+                self.assertEqual(kwargs['pass_fds'], (42,))
+                return b'/dev/loop3\n'
+            if argv[:2] == ['/usr/sbin/sfdisk', '--json']:
+                return json.dumps(table).encode()
+            return b''
+        @contextmanager
+        def nodes(loop):
+            self.assertEqual(loop, '/dev/loop3')
+            calls.append(['nodes-enter'])
+            try:
+                yield [Path('/dev/loop3p1'), Path('/dev/loop3p2')]
+            finally:
+                calls.append(['nodes-exit'])
+        with tempfile.TemporaryDirectory() as parent, \
+                patch.object(disk_creator.inspector, 'require_private_namespace'), \
+                patch.object(disk_creator.inspector, 'command', side_effect=invoke), \
+                patch.object(disk_creator.inspector, 'partitions',
+                             return_value=['/dev/loop3p1', '/dev/loop3p2']), \
+                patch.object(disk_creator, 'loop_partition_nodes', side_effect=nodes), \
+                patch.object(disk_creator, 'command') as command:
+            with disk_creator.prepared_install_filesystem(disk, Path(parent)) as root:
+                self.assertEqual(root.name, 'target')
+                self.assertTrue((root / 'boot').is_dir())
+            layout = command.call_args.kwargs['input_bytes'].decode()
+        self.assertIn(disk_creator.ESP, layout)
+        self.assertIn(disk_creator.TILO_ROOT, layout)
+        self.assertEqual(calls[-4][0:2], ['/usr/bin/umount', str(root / 'boot')])
+        self.assertEqual(calls[-3][0:2], ['/usr/bin/umount', str(root)])
+        self.assertEqual(calls[-2], ['nodes-exit'])
+        self.assertEqual(calls[-1], ['/usr/sbin/losetup', '--detach', '/dev/loop3'])
 
 
 class LoopDeviceTests(unittest.TestCase):
@@ -444,9 +423,15 @@ class CreationTests(unittest.TestCase):
             return ''
         def install(argv, *args, **kwargs):
             return command(argv, **kwargs)
+        @contextmanager
+        def prepared(disk):
+            self.events.append('prepared')
+            yield Path('/work/prepared-target')
+            self.events.append('unmounted-target')
         with patch.object(disk_creator, 'command', command), \
                 patch.object(disk_creator, 'bootc_help', side_effect=command), \
-                patch.object(disk_creator, 'bootc_install', side_effect=install):
+                patch.object(disk_creator, 'bootc_install', side_effect=install), \
+                patch.object(disk_creator, 'prepared_install_filesystem', side_effect=prepared):
             return disk_creator.create(self.args)
 
     def test_fixed_verified_id_and_signature_policy(self):
@@ -454,7 +439,7 @@ class CreationTests(unittest.TestCase):
         argv = self.calls[-1]
         for flag in ('--remote=false', '--pull=never', '--ipc=private', '--generic-image',
                      '--enforce-container-sigpolicy', '--run-fetch-check',
-                     '--filesystem=btrfs'):
+                     '--root-mount-spec='):
             self.assertIn(flag, argv)
         self.assertIn(self.args.source, argv)
         self.assertNotIn('--source-imgref=docker://' + self.args.source, argv)
@@ -466,6 +451,9 @@ class CreationTests(unittest.TestCase):
         self.assertEqual(argv[argv.index('--') + 1], '/run/tilo-installer-bootc')
         self.assertIn('/private/helper/bootc:/run/tilo-installer-bootc:ro', argv)
         self.assertNotIn('/private/helper/bootc:/usr/bin/bootc:ro', argv)
+        self.assertIn('/work/prepared-target:/target:rw', argv)
+        self.assertNotIn('/output/disk.raw', argv)
+        self.assertEqual(argv[-1], '/target')
         self.assertNotIn('--skip-fetch-check', argv)
         self.assertFalse(receipt['installable'])
         self.assertFalse(receipt['installed_bytes_verified'])
@@ -485,7 +473,7 @@ class CreationTests(unittest.TestCase):
         self.args.source_live_uki = 'boot/EFI/Linux/live.efi'
         def materialize(disk, verified, args):
             self.assertNotIn('unmounted', self.events)
-            self.assertTrue(self.calls[-1][-1] == '/output/disk.raw')
+            self.assertTrue(self.calls[-1][-1] == '/target')
             self.events.append('materialized')
             return {'files': ['fixture']}
         with patch.object(disk_creator.inspector, 'require_private_namespace'), \
@@ -509,6 +497,9 @@ class CreationTests(unittest.TestCase):
         calls = []
         held = SimpleNamespace(validate=lambda: self.path, fileno=lambda: 42)
         verified = SimpleNamespace(root=Path('/source'), public_bundle=Path('/public'))
+        @contextmanager
+        def nodes(loop):
+            yield [Path(loop + 'p1'), Path(loop + 'p2')]
         def invoke(argv, **kwargs):
             calls.append(argv)
             if '--show' in argv:
@@ -520,6 +511,7 @@ class CreationTests(unittest.TestCase):
         with patch.object(disk_creator.inspector, 'require_private_namespace'), \
                 patch.object(disk_creator.inspector, 'command', side_effect=invoke), \
                 patch.object(disk_creator.inspector, 'partitions', return_value=['/dev/loop42p1', '/dev/loop42p2']), \
+                patch.object(disk_creator, 'loop_partition_nodes', side_effect=nodes), \
                 patch.object(disk_creator.installer_target_artifacts, 'materialize', side_effect=ValueError('copy failed')):
             with self.assertRaisesRegex(ValueError, 'copy failed'):
                 disk_creator.materialize_created_media(held, verified, self.args)

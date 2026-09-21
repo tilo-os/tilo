@@ -167,7 +167,7 @@ class LaneAdmission(unittest.TestCase):
 
     def test_creator_failure_evidence_is_exact_and_bounded(self):
         good = {'schema': 1, 'purpose': 'tilo-supervised-bootc-install-failure',
-                'stage': 'bootc-install-to-disk', 'argv_sha256': 'a' * 64,
+                'stage': 'bootc-install-to-filesystem', 'argv_sha256': 'a' * 64,
                 'returncode': 1, 'stdout_base64': base64.b64encode(b'progress').decode(),
                 'stderr_base64': base64.b64encode(b'failure').decode(),
                 'stdout_truncated': False, 'stderr_truncated': False}
@@ -180,7 +180,7 @@ class LaneAdmission(unittest.TestCase):
 
     def test_creator_failure_collection_is_private_and_never_overwrites(self):
         document = {'schema': 1, 'purpose': 'tilo-supervised-bootc-install-failure',
-                    'stage': 'bootc-install-to-disk', 'argv_sha256': 'a' * 64,
+                    'stage': 'bootc-install-to-filesystem', 'argv_sha256': 'a' * 64,
                     'returncode': 1, 'stdout_base64': '', 'stderr_base64': '',
                     'stdout_truncated': False, 'stderr_truncated': False}
         disk = {'namespace': 'kata-system', 'pod': 'tilo-disk-run1'}

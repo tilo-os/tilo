@@ -30,7 +30,7 @@ import time
 import development_prediction as prediction
 import installer_bootc_helper
 import installer_target_artifacts
-from private_disk_image import PrivateDiskImage
+from private_disk_image import PrivateDiskImage, loop_partition_nodes
 
 spec = importlib.util.spec_from_file_location('development_source', Path(__file__).with_name('verify-development-source.py'))
 source = importlib.util.module_from_spec(spec)
@@ -39,20 +39,16 @@ spec = importlib.util.spec_from_file_location('installed_disk_inspector', Path(_
 inspector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(inspector)
 
-FLAGS = ('--via-loopback', '--generic-image', '--composefs-backend', '--bootloader',
-         '--filesystem', '--source-imgref', '--target-imgref',
+FLAGS = ('--generic-image', '--composefs-backend', '--bootloader',
+         '--root-mount-spec', '--source-imgref', '--target-imgref',
          '--enforce-container-sigpolicy', '--run-fetch-check')
 
 TRANSIENT_CRUN_NAMESPACE_ERROR = (
     b'error: reading /proc/1/ns/ipc: No such file or directory (os error 2)')
 
-TRANSIENT_REGISTRY_TLS_ERROR = (
-    b'error: Installing to disk: Verifying fetch: Preparing import: Fetching manifest: '
-    b'failed to invoke method OpenImage: pinging container registry code.sandbox.example: '
-    b'Get "https://code.sandbox.example/v2/": net/http: TLS handshake timeout')
-
-
 DIAGNOSTIC_STREAM_LIMIT = 256 * 1024
+ESP = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
+TILO_ROOT = '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab'
 
 
 @contextmanager
@@ -84,7 +80,7 @@ def write_failure_diagnostic(path, argv, result):
     document = {
         'schema': 1,
         'purpose': 'tilo-supervised-bootc-install-failure',
-        'stage': 'bootc-install-to-disk',
+        'stage': 'bootc-install-to-filesystem',
         'argv_sha256': hashlib.sha256(json.dumps(argv, separators=(',', ':')).encode()).hexdigest(),
         'returncode': result.returncode,
         'stdout_base64': base64.b64encode(stdout).decode(),
@@ -103,8 +99,11 @@ def write_failure_diagnostic(path, argv, result):
         raise
 
 
-def command(argv, *, failure_diagnostic=None):
+def command(argv, *, failure_diagnostic=None, input_bytes=None):
+    if input_bytes is not None and (not isinstance(input_bytes, bytes) or len(input_bytes) > 4096):
+        raise ValueError('command input is invalid or oversized')
     result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            input=input_bytes,
                             env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
     if result.returncode:
         if failure_diagnostic is not None:
@@ -114,48 +113,13 @@ def command(argv, *, failure_diagnostic=None):
     return result.stdout.decode('utf-8', 'strict')
 
 
-def _pristine_disk_identity(disk):
+def bootc_install(argv, disk, failure_diagnostic):
+    """Run once against a prepared filesystem; any failure discards the disk."""
     disk.validate()
-    info = os.fstat(disk.fileno())
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
-            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
-            or info.st_blocks != 0):
-        raise ValueError('bootc fetch retry requires an unchanged pristine disk')
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mode,
-            info.st_uid, info.st_gid, info.st_nlink)
-
-
-def _transient_registry_tls(stderr):
-    return stderr in (TRANSIENT_REGISTRY_TLS_ERROR,
-                      TRANSIENT_REGISTRY_TLS_ERROR + b'\n',
-                      TRANSIENT_REGISTRY_TLS_ERROR + b'\r\n')
-
-
-def bootc_install(argv, disk, failure_diagnostic, attempts=3, delays=(2, 5)):
-    """Retry only bootc's pre-write fetch-check TLS timeout."""
-    if attempts != 3 or tuple(delays) != (2, 5):
-        raise ValueError('bootc install retry policy is fixed')
-    baseline = _pristine_disk_identity(disk)
-    for attempt in range(attempts):
-        result = subprocess.run(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
-        if not result.returncode:
-            return result.stdout.decode('utf-8', 'strict')
-        if attempt + 1 < attempts and _transient_registry_tls(result.stderr):
-            try:
-                if _pristine_disk_identity(disk) != baseline:
-                    raise ValueError('bootc fetch retry disk identity changed')
-                time.sleep(delays[attempt])
-                if _pristine_disk_identity(disk) != baseline:
-                    raise ValueError('bootc fetch retry disk identity changed')
-            except BaseException:
-                write_failure_diagnostic(failure_diagnostic, argv, result)
-                raise
-            continue
-        write_failure_diagnostic(failure_diagnostic, argv, result)
-        raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
-    raise AssertionError('unreachable bootc retry state')
+    try:
+        return command(argv, failure_diagnostic=failure_diagnostic)
+    finally:
+        disk.validate()
 
 
 def bootc_help(argv, attempts=3, delay_seconds=2):
@@ -205,6 +169,47 @@ def ensure_loop_devices(devices=Path('/dev'), sys_block=Path('/sys/block'),
     available = command(['/usr/sbin/losetup', '--find']).strip()
     if available not in {f'/dev/loop{index}' for index in range(8)}:
         raise ValueError('loop setup did not return an exact provisioned device')
+
+
+@contextmanager
+def prepared_install_filesystem(disk, parent=Path('/work')):
+    """Create and mount the exact Tilo GPT layout on a held new disk file."""
+    inspector.require_private_namespace()
+    disk.validate()
+    fd = disk.fileno()
+    layout = (
+        'label: gpt\n'
+        f'size=1GiB, type={ESP}, name="EFI-SYSTEM"\n'
+        f'type={TILO_ROOT}, name="root"\n'
+    ).encode()
+    with tempfile.TemporaryDirectory(prefix='tilo-install-root-', dir=parent) as directory, \
+            ExitStack() as cleanup:
+        loop = inspector.command(
+            ['/usr/sbin/losetup', '--find', '--show', '--partscan', f'/proc/self/fd/{fd}'],
+            pass_fds=(fd,)).decode().strip()
+        if not re.fullmatch(r'/dev/loop[0-9]+', loop):
+            raise ValueError('unexpected allocated install loop identity')
+        cleanup.callback(inspector.command, ['/usr/sbin/losetup', '--detach', loop])
+        command(['/usr/sbin/sfdisk', '--wipe=always', loop], input_bytes=layout)
+        nodes = cleanup.enter_context(loop_partition_nodes(loop))
+        table = json.loads(inspector.command(['/usr/sbin/sfdisk', '--json', loop]))
+        if inspector.partitions(table, loop) != [str(path) for path in nodes]:
+            raise ValueError('prepared partition identity differs')
+        esp_device, root_device = map(str, nodes)
+        inspector.command(['/usr/sbin/mkfs.vfat', '-n', 'TILO-EFI', esp_device])
+        inspector.command(['/usr/sbin/mkfs.btrfs', '-f', '-L', 'Tilo root', root_device])
+        root = Path(directory) / 'target'
+        root.mkdir(mode=0o700)
+        inspector.command(['/usr/bin/mount', '-t', 'btrfs', '-o',
+                           'rw,nodev,nosuid', root_device, str(root)])
+        cleanup.callback(inspector.command, ['/usr/bin/umount', str(root)])
+        boot = root / 'boot'
+        boot.mkdir(mode=0o755)
+        inspector.command(['/usr/bin/mount', '-t', 'vfat', '-o',
+                           'rw,nodev,nosuid,noexec', esp_device, str(boot)])
+        cleanup.callback(inspector.command, ['/usr/bin/umount', str(boot)])
+        yield root
+    disk.validate()
 
 
 def ensure_fuse_device(device=Path('/dev/fuse'), misc=Path('/proc/misc'),
@@ -340,29 +345,29 @@ def _create_verified_disk(args):
                    f'{helper_binary}:/run/tilo-installer-bootc:ro']
             help_text = bootc_help([*run, '--network=none', '--cap-drop=ALL',
                                     '--entrypoint=/run/tilo-installer-bootc', verified.image_id,
-                                    'install', 'to-disk', '--help'])
+                                    'install', 'to-filesystem', '--help'])
             if any(not re.search(r'(?<![\w-])' + re.escape(flag) + r'(?![\w-])', help_text)
                    for flag in FLAGS):
                 raise ValueError('packaged bootc lacks a required installation flag')
             disk = disks.enter_context(PrivateDiskImage(args.output, args.size_bytes))
-            path = disk.validate()
+            disk.validate()
             source_match = re.fullmatch(
                 r'code\.podesta\.ai/[a-z0-9_./-]+@(sha256:[0-9a-f]{64})', args.source)
             if source_match is None:
                 raise ValueError('bootc warmup requires the expected immutable registry source')
             wrapper = Path(__file__).with_name('bootc-registry-wrapper.py')
             helper_module = Path(__file__).with_name('installer_bootc_helper.py')
-            # Only a newly allocated file is bound, never the guest root. The
-            # operator must provision this VM without device passthrough;
-            # privileged Podman still has access to the VM's own devices.
-            with private_source_store_scratch() as store_scratch:
+            # Partition and mount only the held new file.  The inner container
+            # receives that prepared tree, never the guest root or raw image.
+            with prepared_install_filesystem(disk) as install_root, \
+                    private_source_store_scratch() as store_scratch:
                 runtime_receipt = store_scratch / 'installer-bootc-runtime.json'
                 runtime_receipt.touch(mode=0o600)
                 bootc_install([*run, '--privileged', '--network=host',
                     '--tmpfs', '/run/udev:ro,nosuid,nodev,noexec,mode=0755', *auth_args,
                     '--volume', '/var/lib/containers:/run/tilo-parent-containers:ro',
                     '--volume', f'{store_scratch}:/run/tilo-source-store-scratch:rw',
-                    '--volume', f'{path}:/output/disk.raw:rw',
+                    '--volume', f'{install_root}:/target:rw',
                     '--volume', f'{wrapper}:/run/tilo-bootc-registry-wrapper.py:ro',
                     '--volume', f'{helper_module}:/run/installer_bootc_helper.py:ro',
                     '--volume', f'{runtime_receipt}:/run/tilo-installer-bootc-runtime.json:rw',
@@ -373,11 +378,11 @@ def _create_verified_disk(args):
                     '--installer-bootc-runtime-receipt',
                     '/run/tilo-installer-bootc-runtime.json',
                     'docker://' + args.source, source_match.group(1), '--',
-                    '/run/tilo-installer-bootc', 'install', 'to-disk',
-                    '--via-loopback', '--generic-image',
-                    '--composefs-backend', '--bootloader=systemd', '--filesystem=btrfs',
+                    '/run/tilo-installer-bootc', 'install', 'to-filesystem',
+                    '--root-mount-spec=', '--generic-image',
+                    '--composefs-backend', '--bootloader=systemd',
                     '--target-imgref=' + args.target,
-                    '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'], disk,
+                    '--enforce-container-sigpolicy', '--run-fetch-check', '/target'], disk,
                     args.output.with_name('bootc-install.failure.json'))
                 helper_runtime = installer_bootc_helper.verify_runtime_receipt(
                     runtime_receipt, helper_identity)
@@ -412,6 +417,7 @@ def materialize_created_media(disk, verified, args):
         if not re.fullmatch('/dev/loop[0-9]+', loop):
             raise ValueError('unexpected allocated media loop identity')
         cleanup.callback(inspector.command, ['/usr/sbin/losetup', '--detach', loop])
+        cleanup.enter_context(loop_partition_nodes(loop))
         table = json.loads(inspector.command(['/usr/sbin/sfdisk', '--json', loop]))
         esp_device, _ = inspector.partitions(table, loop)
         esp = Path(directory) / 'esp'

@@ -23,7 +23,7 @@ class Layout(unittest.TestCase):
         self.table = {'partitiontable': {'label': 'gpt', 'device': '/dev/loop7', 'sectorsize': 512,
             'partitions': [{'node': '/dev/loop7p1', 'name': 'EFI-SYSTEM',
                 'type': 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b', 'start': 2048, 'size': 2097152},
-                {'node': '/dev/loop7p2', 'name': 'root', 'type': 'b921b045-1df0-41c3-af44-4c6f280d3fae',
+                {'node': '/dev/loop7p2', 'name': 'root', 'type': '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab',
                  'start': 2099200, 'size': 10000000}]}}
 
     def test_exact_arm_layout(self):
