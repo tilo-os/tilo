@@ -43,9 +43,9 @@ categories = [
 license = "MIT"
 repository = "https://gitlab.freedesktop.org/pipewire/pipewire-rs"
 
+# These dependencies are consumed by build.rs, which cargo-machete cannot
+# statically trace in this normalized vendored manifest.
 [package.metadata.cargo-machete]
-# This normalized vendored manifest is audited outside the root workspace;
-# cargo-machete does not attribute build.rs references in that configuration.
 ignored = ["bindgen", "cc", "system-deps"]
 
 [package.metadata.system-deps.libspa]

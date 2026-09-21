@@ -38,7 +38,7 @@
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};
+use notes::shots::DEFAULT_SHOTS_VIEWPORT;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 const SHOT_SCENARIOS: &[&str] = &[
@@ -46,12 +46,27 @@ const SHOT_SCENARIOS: &[&str] = &[
     "drawer",
     "drag",
     "block_drag",
+    "block_type_menu",
     "menu",
+    "sidebar_hover",
+    "note_menu",
     "rename",
     "rename_commit",
     "slash",
     "slash_applied",
     "heading",
+    "fenced_code",
+    "fenced_code_opening",
+    "code_keyboard",
+    "code_keyboard_active",
+    "typed_lists",
+    "multiline_typing",
+    "mixed_outline",
+    "rich_outline",
+    "paragraph_click",
+    "code_group_drag",
+    "code_group_drop",
+    "adjacent_code_fences",
     "quote",
     "title_edit",
     "recipes",
@@ -59,14 +74,19 @@ const SHOT_SCENARIOS: &[&str] = &[
     "transclusion",
     "external_link",
     "table",
+    "table_large",
+    "table_large_scrolled",
+    "table_cell_edit",
     "image",
+    "image_edit",
     "status",
     "saving",
     "save_error",
     "import_success",
     "presence",
     "shortcuts",
-    "tag_palette",
+    "shortcuts_bottom",
+    "find",
     "scrolled",
     "sidebar_scroll",
 ];
@@ -77,68 +97,35 @@ const SHOT_SCENARIOS: &[&str] = &[
 /// to spawn against its workspace.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.notes", live_root)
-            .allowed_live_flags(&["--import-legacy-stopped"])
-            .allowed_live_options(&["--notebook-dir", "--notebook-state-dir"])
+        &LaunchSpec::from_definition(notes::definition())
             .max_positionals(1)
-            .prepare_legacy_with_args(prepare_launch)
-            .shot_handler(render_shot)
+            .component_host(prepare_component)
+            .native_services()
+            .capture_scenario(capture_scenario)
+            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
             .scenarios(SHOT_SCENARIOS),
     )?;
     Ok(())
 }
 
-fn peer_id() -> &'static str {
-    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| {
-        std::env::var("QUICK_APP_ID").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
-    })
+fn prepare_component(
+    _definition: &ui::application::ApplicationDefinition,
+    args: &LaunchArgs,
+) -> Result<ui::application::PreparedComponentInputs, LaunchError> {
+    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
+    if args.shots.is_some() || args.responsive_matrix.is_some() {
+        notes::capture::prepare_fixture(args.scenario.as_deref(), inputs)
+    } else if args.native_audit {
+        notes::capture::prepare_fixture(Some("first_note"), inputs)
+    } else {
+        notes::hosting::set_native_launch_target(args.positionals().first().cloned());
+        notes::hosting::prepare_native(inputs)
+    }
 }
 
-fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
-    let root = match args.value("--notebook-dir") {
-        Some(root) => std::path::PathBuf::from(root),
-        None => notes::storage::default_root()
-            .map_err(LaunchError::Operation)?
-            .ok_or_else(|| LaunchError::Operation("Notes notebook directory unavailable".into()))?,
-    };
-    let state_root = args
-        .value("--notebook-state-dir")
-        .map_or_else(|| root.join(".qos-records"), std::path::PathBuf::from);
-    let notebook = notes::production::prepare_notebook_with_source(
-        &root,
-        &state_root,
-        &ui::collaboration::local_cluster_id().to_string(),
-        args.has("--import-legacy-stopped"),
-        args.positionals().first().map(String::as_str),
-    )
-    .map_err(LaunchError::Operation)?;
-    Ok(Box::new(notebook.root))
-}
-
-fn prepare_launch(args: &LaunchArgs) -> Result<ui::launch::LegacyLaunchInputs, LaunchError> {
-    let mut state = ui::State::new();
-    state
-        .doc
-        .set_actor(automerge::ActorId::from(peer_id().as_bytes()));
-    let root = live_root(args)?;
-    let autosave = ui::persist::Autosave::disabled("Notes owns its canonical notebook persistence");
-    let mut registry = tilo_actions::ActionRegistry::new();
-    notes::actions::register(&mut registry);
-    Ok(ui::launch::LegacyLaunchInputs::new(state, root, autosave)
-        .with_registry(registry)
-        .with_widget_owned_persistence())
-}
-
-fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let out = args.shots.as_deref().ok_or_else(|| {
-        LaunchError::Operation("Notes screenshot handler called without --shots".into())
-    })?;
-    shots::render_to_path(
-        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
-        out,
-        args.scenario.as_deref(),
-        ui::launch::shot_theme(args),
-    )
-    .map_err(|error| LaunchError::Operation(error.to_string()))
+fn capture_scenario(
+    driver: &mut ui::headless::FrameHarness,
+    args: &LaunchArgs,
+) -> Result<(), LaunchError> {
+    notes::capture::drive_fixture(driver, args.scenario.as_deref())
 }

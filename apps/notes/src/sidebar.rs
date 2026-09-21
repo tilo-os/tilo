@@ -51,13 +51,18 @@ use crate::num;
 /// with vertical air above and below its label instead of butting rows
 /// edge to edge.
 const ROW_HEIGHT: f64 = 30.0;
-/// Height of the sidebar header strip that hosts the "Pages" label and
+/// Height of the sidebar header strip that hosts the "Notes" label and
 /// the "+" new-page button. Rows start below it.
 const HEADER_HEIGHT: f64 = 42.0;
 /// Side length of the square "+" new-page button in the header.
-const NEW_BTN_SIZE: f64 = 26.0;
+const NEW_BTN_SIZE: f64 = 30.0;
 /// Right/vertical inset of the "+" button inside the header strip.
 const NEW_BTN_MARGIN: f64 = 8.0;
+/// Compact row actions appear only while a note is hovered. Keeping them a
+/// little smaller than the row preserves label space without making the hit
+/// targets fiddly.
+const ROW_ACTION_SIZE: f64 = 26.0;
+const ROW_ACTION_GAP: f64 = 2.0;
 /// Left content inset: rows, the header label and the selection pill all
 /// start this far in from the sidebar's left edge so nothing is jammed
 /// against the window frame.
@@ -198,6 +203,7 @@ pub struct NoteTreeView {
     new_page_btn_rect: Rect,
     /// True while the pointer hovers the "+" button, so it can light up.
     new_page_btn_hover: bool,
+    tooltips_suppressed: bool,
     /// Currently active double-click detection state.
     last_click: Option<ClickRecord>,
     rename: Option<RenameState>,
@@ -287,17 +293,14 @@ impl NoteTreeView {
         ROW_HEIGHT * self.text_scale
     }
 
-    /// The selected row's pill: inset `margin` from the pane's sides and
-    /// half an `s1` from the row's top and bottom, so two neighbouring rows'
-    /// pills sit one `s1` apart (HIG §7: nothing touches).
-    fn selection_pill(row: Rect, margin: f64, tokens: &ui::tokens::Tokens) -> Rect {
-        let half_gap = f64::from(tokens.spacing.s1) / 2.0;
-        Rect::new(
-            row.x0 + margin,
-            row.y0 + half_gap,
-            row.x1 - margin,
-            row.y1 - half_gap,
-        )
+    fn row_action_rects(&self, row_rect: Rect) -> (Rect, Rect) {
+        let size = self.scaled(ROW_ACTION_SIZE);
+        let gap = self.scaled(ROW_ACTION_GAP);
+        let right = row_rect.x1 - self.scaled(ROW_PILL_MARGIN + 2.0);
+        let top = row_rect.y0 + (row_rect.height() - size) / 2.0;
+        let more = Rect::new(right - size, top, right, top + size);
+        let child = Rect::new(more.x0 - gap - size, top, more.x0 - gap, top + size);
+        (child, more)
     }
 
     fn scroll_by(&mut self, delta: f64) -> bool {
@@ -339,6 +342,7 @@ impl NoteTreeView {
             row_rects: Vec::new(),
             new_page_btn_rect: Rect::ZERO,
             new_page_btn_hover: false,
+            tooltips_suppressed: false,
             last_click: None,
             rename: None,
             pending_events: Vec::new(),
@@ -655,23 +659,7 @@ impl NoteTreeView {
     fn open_context_menu(&mut self, page: PageId, at: Point) {
         self.menu_target = Some(page);
         self.empty_menu = false;
-        let mut menu = ContextMenu::new();
-        menu.push(MenuItem::icon_action(Icon::FilePlus, "New child", || {}));
-        menu.push(MenuItem::icon_action(Icon::Pencil, "Rename", || {}));
-        menu.push(MenuItem::icon_action(Icon::Copy, "Duplicate", || {}));
-        menu.push(MenuItem::icon_action(
-            Icon::ExternalLink,
-            "Copy note link",
-            || {},
-        ));
-        menu.push(MenuItem::icon_action(
-            Icon::Download,
-            "Export Markdown",
-            || {},
-        ));
-        menu.push(MenuItem::icon_action(Icon::Image, "Insert image", || {}));
-        menu.push(MenuItem::separator());
-        menu.push(MenuItem::icon_action(Icon::Trash2, "Delete", || {}));
+        let mut menu = note_context_menu();
         // Selection uses the shared menu's item indices, including separators
         // (see `apply_menu_selection`).
         menu.open_at([num::f32_of_f64(at.x), num::f32_of_f64(at.y)]);
@@ -761,6 +749,48 @@ impl NoteTreeView {
         self.menu_target = None;
         self.dirty = true;
     }
+}
+
+pub(crate) fn note_context_menu() -> ContextMenu {
+    let mut menu = ContextMenu::new();
+    menu.push(MenuItem::icon_action(
+        Icon::FilePlus,
+        ui::i18n!("notes-menu-new-child"),
+        || {},
+    ));
+    menu.push(MenuItem::icon_action(
+        Icon::Pencil,
+        ui::i18n!("notes-menu-rename"),
+        || {},
+    ));
+    menu.push(MenuItem::icon_action(
+        Icon::Copy,
+        ui::i18n!("notes-menu-duplicate"),
+        || {},
+    ));
+    menu.push(MenuItem::icon_action(
+        Icon::ExternalLink,
+        ui::i18n!("notes-menu-copy-link"),
+        || {},
+    ));
+    menu.push(MenuItem::icon_action(
+        Icon::Download,
+        ui::i18n!("notes-menu-export"),
+        || {},
+    ));
+    menu.push(MenuItem::icon_action(
+        Icon::Image,
+        ui::i18n!("notes-menu-insert-image"),
+        || {},
+    ));
+    menu.push(MenuItem::separator());
+    menu.push(MenuItem::icon_action(
+        Icon::Trash2,
+        ui::i18n!("notes-menu-delete"),
+        || {},
+    ));
+    // Keep these row indices aligned with both menu selection dispatchers.
+    menu
 }
 
 impl Default for NoteTreeView {
@@ -1029,6 +1059,11 @@ impl Widget for NoteTreeView {
         }
 
         match event {
+            WindowEvent::CursorLeft { .. } => {
+                self.last_cursor = None;
+                self.new_page_btn_hover = false;
+                self.dirty = true;
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.handle_cursor_moved(pt);
@@ -1134,10 +1169,20 @@ impl Widget for NoteTreeView {
             if rect.area() <= 0.0 {
                 continue;
             }
+            if let Some(rename) = self.rename.as_ref().filter(|rename| rename.page == row.id)
+                && let Some(mut input) = Widget::accessibility(&rename.input)
+            {
+                input.name = Some(ui::i18n!("notes-a11y-rename"));
+                input.action_target = Some(format!("notes:rename:{}", row.id));
+                input.bounds = Some(rename.input.get_rect().into());
+                children.push(input);
+                continue;
+            }
             let mut state = AccessState::new()
                 .focusable(true)
                 .selected(self.selected == Some(row.id));
             state.expanded = row.has_children.then(|| self.expanded.contains(&row.id));
+            let (child_action, more_action) = self.row_action_rects(rect);
             children.push(
                 AccessNode::new(Role::TreeItem)
                     .with_name(row.title.clone())
@@ -1146,43 +1191,49 @@ impl Widget for NoteTreeView {
                     .with_level(row.depth.saturating_add(1))
                     .with_hashed_key(row.id)
                     .with_action_target(format!("notes:page:{}", row.id))
-                    .with_bounds(rect),
+                    .with_bounds(rect)
+                    .with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name(format!(
+                                "{} {}",
+                                ui::i18n!("notes-a11y-new-child-under"),
+                                row.title
+                            ))
+                            .with_state(AccessState::new().focusable(true))
+                            .with_action_target(format!("notes:new-child:{}", row.id))
+                            .with_bounds(child_action),
+                        AccessNode::new(Role::Button)
+                            .with_name(format!(
+                                "{} {}",
+                                ui::i18n!("notes-a11y-more-actions-for"),
+                                row.title
+                            ))
+                            .with_state(AccessState::new().focusable(true))
+                            .with_action_target(format!("notes:actions:{}", row.id))
+                            .with_bounds(more_action),
+                    ]),
             );
         }
         if self.menu.is_open()
-            && let Some(menu) = self.menu.accessibility()
+            && let Some(mut menu) = Widget::accessibility(&self.menu)
         {
+            fn namespace(node: &mut AccessNode) {
+                if let Some(target) = node.action_target.take() {
+                    node.action_target = Some(format!("notes.sidebar-menu:{target}"));
+                }
+                for child in &mut node.children {
+                    namespace(child);
+                }
+            }
+            namespace(&mut menu);
             children.push(menu);
         }
         Some(
             AccessNode::new(Role::Tree)
-                .with_semantic_key("notes.page-tree")
-                .with_name("Pages")
+                .with_name(ui::i18n!("notes-title"))
                 .with_state(AccessState::new().focusable(true).focused(self.is_focused))
                 .with_children(children),
         )
-    }
-
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
-    ) -> bool {
-        if !self
-            .menu
-            .perform_semantic_action(target, action, state, path)
-        {
-            return false;
-        }
-        if let Some(index) = self.menu.take_selection() {
-            // Exactly the queue used by pointer and keyboard menu activation.
-            // The app drains it through its canonical document action boundary.
-            self.apply_menu_selection(index);
-        }
-        self.dirty = true;
-        true
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
@@ -1224,6 +1275,99 @@ impl Widget for NoteTreeView {
         true
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if matches!(action, ui::a11y::Action::Activate)
+            && let Some(page) = target
+                .strip_prefix("notes:new-child:")
+                .and_then(|page| page.parse::<PageId>().ok())
+            && self.flat_rows.iter().any(|row| row.id == page)
+        {
+            self.pending_events
+                .push(OutEvent::CreateChild { parent: Some(page) });
+            self.dirty = true;
+            return true;
+        }
+        if matches!(action, ui::a11y::Action::Activate)
+            && let Some(page) = target
+                .strip_prefix("notes:actions:")
+                .and_then(|page| page.parse::<PageId>().ok())
+            && let Some(index) = self.row_index_of(page)
+            && let Some(rect) = self.row_rects.get(index).copied()
+        {
+            self.selected = Some(page);
+            self.pending_events.push(OutEvent::Select(page));
+            let (_, more) = self.row_action_rects(rect);
+            self.open_context_menu(page, Point::new(more.x0, more.y1));
+            return true;
+        }
+        if let Some(target) = target.strip_prefix("notes.sidebar-menu:") {
+            let handled = self
+                .menu
+                .perform_semantic_action(target, action, state, path);
+            if handled {
+                if let Some(index) = self.menu.take_selection() {
+                    self.apply_menu_selection(index);
+                }
+                self.dirty = true;
+            }
+            return handled;
+        }
+        if let Some(page) = target.strip_prefix("notes:rename:")
+            && self
+                .rename
+                .as_ref()
+                .is_some_and(|rename| rename.page.to_string() == page)
+            && let Some(rename) = self.rename.as_mut()
+        {
+            let handled = rename.input.perform_action(action, state, path);
+            self.dirty |= handled;
+            return handled;
+        }
+        false
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.rename.is_some() || self.menu.is_open() {
+            return None;
+        }
+        (self.new_page_btn_rect.contains(point) || self.hovered_row(point).is_some())
+            .then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        if self.tooltips_suppressed
+            || self.menu.is_open()
+            || self.rename.is_some()
+            || self.drag.is_pending()
+        {
+            return None;
+        }
+        if self.new_page_btn_rect.contains(point) {
+            return Some((
+                self.new_page_btn_rect,
+                ui::i18n!("notes-affordance-new-note"),
+            ));
+        }
+        let index = self.hovered_row(point)?;
+        let row = self.flat_rows.get(index)?;
+        let row_rect = *self.row_rects.get(index)?;
+        let (child_action, more_action) = self.row_action_rects(row_rect);
+        if child_action.contains(point) {
+            return Some((child_action, ui::i18n!("notes-affordance-new-child")));
+        }
+        if more_action.contains(point) {
+            return Some((more_action, ui::i18n!("notes-affordance-note-actions")));
+        }
+        let hint = ui::i18n!("notes-affordance-note-row");
+        Some((row_rect, format!("{}\n{}", row.title, hint)))
+    }
+
     /// A latched drag (or an open context menu) wants to keep receiving
     /// pointer events even when the cursor leaves the sidebar rect, so the
     /// ghost keeps tracking and the drop still resolves.
@@ -1241,7 +1385,7 @@ impl Widget for NoteTreeView {
 }
 
 impl NoteTreeView {
-    /// The "Pages" label + "+" new-page button header strip.
+    /// The "Notes" label + "+" new-page button header strip.
     fn draw_header(
         &self,
         scene: &mut Scene,
@@ -1257,7 +1401,7 @@ impl NoteTreeView {
         let header_text_y = self.rect.y0 + (self.header_height() - label_h) / 2.0;
         text_renderer.draw_text(
             scene,
-            "Pages",
+            &ui::i18n!("notes-title"),
             ROW_TEXT_SIZE,
             tokens.colors.text_dim,
             transform * Affine::translate((self.rect.x0 + self.scaled(ROW_INSET_X), header_text_y)),
@@ -1278,15 +1422,17 @@ impl NoteTreeView {
         } else {
             ChipStyle::quiet()
         };
-        Chip::draw_at(
+        let btn = vello::kurbo::RoundedRect::from_rect(
+            self.new_page_btn_rect,
+            f64::from(tokens.radii.sm),
+        );
+        scene.fill(vello::peniko::Fill::NonZero, transform, btn_bg, None, &btn);
+        // Vector bounds keep the icon centred independently of font metrics.
+        Icon::Plus.draw(
             scene,
             transform,
-            self.new_page_btn_rect,
-            "",
-            ChipLead::Glyph(Icon::Plus),
-            style,
-            theme,
-            text_renderer,
+            self.new_page_btn_rect.inset(-self.scaled(5.0)),
+            tokens.colors.text_primary,
         );
     }
 
@@ -1353,6 +1499,10 @@ impl NoteTreeView {
         clippy::too_many_arguments,
         reason = "draw-context bundle, not real parameter coupling"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one row's layered visuals share geometry and interaction state"
+    )]
     fn draw_one_row(
         &self,
         scene: &mut Scene,
@@ -1364,26 +1514,30 @@ impl NoteTreeView {
         row_rect: Rect,
     ) {
         let tokens = &theme.tokens;
-        // Nesting guides: a faint vertical rail at each ancestor depth
-        // so the tree structure reads at a glance — this is what makes
-        // an indented child obviously nested under its parent. Painted
-        // before the selection pill, which is opaque, so a rail never runs
-        // through the chosen row's lifted surface.
-        for level in 0..row.depth {
-            let gx = row_rect.x0
-                + self.scaled(ROW_INSET_X)
-                + (level as f64) * self.scaled(INDENT_PX)
-                + self.scaled(GLYPH_WIDTH) / 2.0;
-            let guide = Rect::new(
-                gx - self.scaled(0.5),
-                row_rect.y0,
-                gx + self.scaled(0.5),
-                row_rect.y1,
+        let hovered = !self.drag.is_pending()
+            && !self.menu.is_open()
+            && self.rename.is_none()
+            && self
+                .last_cursor
+                .is_some_and(|point| row_rect.contains(point));
+        if self.selected == Some(row.id) || hovered {
+            // An inset rounded pill rather than an edge-to-edge bar, so
+            // the selection reads as a chip with breathing room.
+            let pill = RoundedRect::new(
+                row_rect.x0 + self.scaled(ROW_PILL_MARGIN),
+                row_rect.y0 + self.scaled(1.0),
+                row_rect.x1 - self.scaled(ROW_PILL_MARGIN),
+                row_rect.y1 - self.scaled(1.0),
+                f64::from(tokens.radii.md),
             );
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                edge_on(tokens.colors.surfaces.raised),
+                if self.selected == Some(row.id) {
+                    theme.accent_primary.with_alpha_factor(0.22)
+                } else {
+                    tokens.colors.lift(0.72)
+                },
                 None,
                 &guide,
             );
@@ -1444,18 +1598,23 @@ impl NoteTreeView {
             row_rect.y0 + (self.row_height() - line_h(ROW_TEXT_SIZE, self.text_scale)) / 2.0;
 
         if row.has_children {
-            let glyph = if self.expanded.contains(&row.id) {
-                "\u{25BC}" // ▼
+            let icon = if self.expanded.contains(&row.id) {
+                Icon::ChevronDown
             } else {
-                "\u{25B6}" // ▶
+                Icon::ChevronRight
             };
-            text_renderer.draw_text(
+            let size = self.scaled(14.0);
+            icon.draw(
                 scene,
-                glyph,
-                ROW_TEXT_SIZE,
+                transform,
+                Rect::from_center_size(
+                    Point::new(
+                        glyph_x + self.scaled(GLYPH_WIDTH) / 2.0,
+                        row_rect.center().y,
+                    ),
+                    (size, size),
+                ),
                 tokens.colors.text_dim,
-                transform * Affine::translate((glyph_x + self.scaled(2.0), text_y)),
-                None,
             );
         }
 
@@ -1463,14 +1622,48 @@ impl NoteTreeView {
         // embedded editor paints in its place.
         let is_renaming = matches!(&self.rename, Some(r) if r.page == row.id);
         if !is_renaming {
+            let (child_action, _) = self.row_action_rects(row_rect);
+            let label_right = if hovered {
+                child_action.x0 - self.scaled(4.0)
+            } else {
+                row_rect.x1 - self.scaled(4.0)
+            };
             text_renderer.draw_text(
                 scene,
                 &row.title,
                 ROW_TEXT_SIZE,
                 tokens.colors.text_primary,
                 transform * Affine::translate((label_x, text_y)),
-                Some(num::f32_of_f64(row_rect.x1 - label_x - self.scaled(4.0))),
+                Some(num::f32_of_f64((label_right - label_x).max(0.0))),
             );
+        }
+        if hovered {
+            let (child_action, more_action) = self.row_action_rects(row_rect);
+            for (rect, icon) in [
+                (child_action, Icon::Plus),
+                (more_action, Icon::MoreHorizontal),
+            ] {
+                let active = self.last_cursor.is_some_and(|point| rect.contains(point));
+                if active {
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        tokens.colors.lift(0.58),
+                        None,
+                        &RoundedRect::from_rect(rect, f64::from(tokens.radii.sm)),
+                    );
+                }
+                icon.draw(
+                    scene,
+                    transform,
+                    rect.inset(-self.scaled(4.0)),
+                    if active {
+                        tokens.colors.text_primary
+                    } else {
+                        tokens.colors.text_dim
+                    },
+                );
+            }
         }
     }
 
@@ -1760,6 +1953,9 @@ impl NoteTreeView {
     }
 
     fn handle_cursor_moved(&mut self, pt: Point) {
+        if self.last_cursor.and_then(|point| self.hovered_row(point)) != self.hovered_row(pt) {
+            self.dirty = true;
+        }
         self.last_cursor = Some(pt);
         let hover = self.new_page_btn_rect.contains(pt);
         if hover != self.new_page_btn_hover {
@@ -1933,6 +2129,26 @@ impl NoteTreeView {
             else {
                 break;
             };
+            let (child_action, more_action) = self.row_action_rects(row_rect);
+            if child_action.contains(pt) {
+                self.pending_events.push(OutEvent::CreateChild {
+                    parent: Some(row_id),
+                });
+                self.is_focused = true;
+                *focus_target = Some(node_id);
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
+            if more_action.contains(pt) {
+                self.selected = Some(row_id);
+                self.pending_events.push(OutEvent::Select(row_id));
+                self.is_focused = true;
+                *focus_target = Some(node_id);
+                self.open_context_menu(row_id, Point::new(more_action.x0, more_action.y1));
+                *handled = true;
+                return;
+            }
             let glyph_x0 =
                 row_rect.x0 + self.scaled(ROW_INSET_X) + (depth as f64) * self.scaled(INDENT_PX);
             let glyph_x1 = glyph_x0 + self.scaled(GLYPH_WIDTH);
@@ -2218,6 +2434,16 @@ impl NoteTreeView {
         })
     }
 
+    fn hovered_row(&self, point: Point) -> Option<usize> {
+        if !self.rect.contains(point) || point.y < self.rect.y0 + self.header_height() {
+            return None;
+        }
+        self.row_rects
+            .iter()
+            .position(|rect| rect.contains(point))
+            .filter(|index| *index < self.flat_rows.len())
+    }
+
     fn row_index_of(&self, id: PageId) -> Option<usize> {
         self.flat_rows.iter().position(|r| r.id == id)
     }
@@ -2227,6 +2453,10 @@ impl NoteTreeView {
     /// from the page list / editor) while it's up.
     pub fn menu_is_open(&self) -> bool {
         self.menu.is_open()
+    }
+
+    pub fn suppress_tooltips(&mut self, suppressed: bool) {
+        self.tooltips_suppressed = suppressed;
     }
 
     /// Used by tests + the parent: how many rows the tree exposes
@@ -2455,6 +2685,39 @@ mod tests {
     }
 
     #[test]
+    fn hover_row_actions_create_a_child_or_open_the_existing_note_menu() {
+        let mut workspace = Workspace::new();
+        let page = workspace.create_page(None);
+        let mut tree = NoteTreeView::new();
+        tree.sync_from_workspace(&workspace);
+        tree.rect = Rect::new(0.0, 0.0, 240.0, 200.0);
+        tree.row_rects = vec![Rect::new(0.0, 42.0, 240.0, 72.0)];
+        let (child, more) = tree.row_action_rects(tree.row_rects[0]);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut focus = None;
+        let mut handled = false;
+
+        tree.last_cursor = Some(child.center());
+        tree.handle_left_click(&mut focus, node, &mut handled);
+        assert!(handled);
+        assert!(matches!(
+            tree.take_events().as_slice(),
+            [OutEvent::CreateChild { parent: Some(id) }] if *id == page
+        ));
+
+        handled = false;
+        tree.last_cursor = Some(more.center());
+        tree.handle_left_click(&mut focus, node, &mut handled);
+        assert!(handled);
+        assert!(tree.context_menu_open_for_test());
+        assert!(matches!(
+            tree.take_events().as_slice(),
+            [OutEvent::Select(id)] if *id == page
+        ));
+    }
+
+    #[test]
     fn page_menu_semantics_activate_the_same_queued_page_action() {
         let mut workspace = Workspace::new();
         let page = workspace.create_page(None);
@@ -2471,16 +2734,16 @@ mod tests {
         assert_eq!(
             menu.children
                 .iter()
-                .map(|item| item.name.as_deref().unwrap())
+                .map(|item| item.name.clone().unwrap())
                 .collect::<Vec<_>>(),
             vec![
-                "New child",
-                "Rename",
-                "Duplicate",
-                "Copy note link",
-                "Export Markdown",
-                "Insert image",
-                "Delete"
+                ui::i18n!("notes-menu-new-child"),
+                ui::i18n!("notes-menu-rename"),
+                ui::i18n!("notes-menu-duplicate"),
+                ui::i18n!("notes-menu-copy-link"),
+                ui::i18n!("notes-menu-export"),
+                ui::i18n!("notes-menu-insert-image"),
+                ui::i18n!("notes-menu-delete")
             ]
         );
         assert!(

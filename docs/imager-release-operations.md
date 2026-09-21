@@ -5,7 +5,7 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 
 | Label | Host | Required tooling |
 |---|---|---|
-| `imager-linux-x86_64` | Linux x86-64 | Rust, Cap'n Proto compiler, Docker + Buildx, GPG or KMS client, Podman, QEMU/OVMF tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm, UDisks2, Flatpak + flatpak-builder with the 25.08 SDK |
+| `imager-linux-x86_64` | Linux x86-64 | Rust, Cap'n Proto compiler, Docker + Buildx, GPG or KMS client, Podman, QEMU/4 MiB measured OVMF, swtpm, `virt-fw-vars`, zstd, Homebrew, Ruby, curl, jq, Node.js and npm, UDisks2, Flatpak + flatpak-builder with the 25.08 SDK |
 | `imager-linux-aarch64` | Linux ARM64 | same Linux toolchain, release utilities, Docker/Buildx, ARM64 QEMU/UEFI, and UDisks2 service, running natively |
 | `imager-windows-x86_64` | Windows x86-64 | Rust MSVC, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6, WinGet client |
 | `imager-windows-aarch64` | Windows ARM64 | Native ARM64 Rust MSVC and C++ build tools, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6.3 or newer, WinGet client |
@@ -131,8 +131,8 @@ variables:
 | `IMAGER_LINUX_CREDENTIAL_BROKER` | both Linux architectures | environment file described below |
 | `IMAGER_WINDOWS_CREDENTIAL_BROKER` | Windows x86-64 and ARM64 | environment file described below |
 | `IMAGER_MACOS_CREDENTIAL_BROKER` | both macOS architectures | environment file described below |
-| `IMAGER_RELEASE_CREDENTIAL_BROKER` | Linux x86-64 promotion runner | raw Forgejo token file |
-| `IMAGER_HOMEBREW_CREDENTIAL_BROKER` | macOS ARM64 | raw Forgejo token file |
+| `IMAGER_RELEASE_CREDENTIAL_BROKER` | Linux x86-64 promotion runner | raw GitHub App installation token file |
+| `IMAGER_HOMEBREW_CREDENTIAL_BROKER` | Linux ARM64 | raw GitHub App installation token file |
 | `IMAGER_WINGET_CREDENTIAL_BROKER` | Linux x86-64 | raw GitHub token file |
 | `IMAGER_SITE_CREDENTIAL_BROKER` | Linux x86-64 | raw Forgejo token file |
 | `TILO_PCR_PREDICTION_SIGNER` | both Linux architectures | direct KMS/HSM signing interface described below |
@@ -208,20 +208,55 @@ newline-terminated `NAME=value` per line:
   `TILO_NOTARY_KEYCHAIN_PROFILE=<temporary notarytool profile>` after leasing the
   certificate into a temporary keychain and storing a scoped App Store Connect
   API credential in that profile.
-- Homebrew: for the `homebrew` platform, write a 5–15 minute Forgejo token as
-  the complete raw output. Pre-create public repository `qos/homebrew-tilo`, give
-  the release bot write access to only that repository, and mint the token for
-  that bot. Repository creation is supported by the script for bootstrap, but
-  should not be part of the steady-state lease.
-- Release: for the `release` platform, write a 5–15 minute Forgejo token as the
-  complete raw output. Pre-create `qos/releases` as a public repository with a
-  `main` branch. The token may create/update releases and attachments only in
-  that repository; it must have no write access to the private `qos/qos`
-  source repository, the Homebrew tap, or the website. The publisher checks
-  the target's exact full name and public/non-archived state before uploading,
-  reads every attachment back byte-for-byte, and publishes only a complete
-  draft. Set `IMAGER_PUBLIC_RELEASE_REPOSITORY` only when intentionally using
-  another pre-created public `OWNER/REPOSITORY` target.
+- GitHub releases and Homebrew: create a GitHub App owned by `tilo-os`, with
+  repository permission **Contents: read and write**, no organization/account
+  permissions, and no webhook. Install it only on the existing public
+  `tilo-os/releases` and `tilo-os/homebrew-tilo` repositories. Keep the App ID,
+  installation ID, and private key in the external broker (prefer an HSM/KMS
+  signer); never store the private key or a PAT in Forgejo.
+
+  After validating Forgejo OIDC, the broker exchanges `release` for a GitHub
+  App installation token narrowed to repository `releases`, or `homebrew` for
+  one narrowed to `homebrew-tilo`. Request only `contents: write`. GitHub App
+  installation tokens expire after one hour; the jobs mint them immediately
+  before promotion and revoke them when the step exits. The repository helper
+  calls `/installation/repositories` and rejects a token which can see zero,
+  two, or a different repository. This prevents accidentally returning the
+  App's installation-wide authority.
+
+  Both repositories must already have a `main` branch and remain public and
+  non-archived. If branch protection covers the tap's `main`, allow only this
+  GitHub App to bypass it, or change the tap publisher to a reviewed-PR flow.
+  The releases repository must permit the App to create releases and tags.
+  GitHub limits each release asset to 2 GiB; CI rejects an oversized installer
+  before creating a draft. If a compressed installer exceeds that limit, move
+  binaries to an object store with OIDC-issued upload leases instead of
+  splitting an image the Imager expects to verify and stream as one object.
+
+  The publisher checks the target's exact full name and public/non-archived
+  state, reads every attachment back byte-for-byte through GitHub's API, and
+  publishes only a complete draft. Set `IMAGER_PUBLIC_RELEASE_REPOSITORY` or
+  `IMAGER_HOMEBREW_TAP_REPOSITORY` only when intentionally using another
+  pre-created public target governed by an equivalently narrow App install.
+
+  A minimal broker implementation mints a GitHub App JWT (ten-minute maximum),
+  then calls `POST /app/installations/INSTALLATION_ID/access_tokens` with one of
+  these bodies:
+
+  ```json
+  {"repositories":["releases"],"permissions":{"contents":"write"}}
+  {"repositories":["homebrew-tilo"],"permissions":{"contents":"write"}}
+  ```
+
+  Return only the response's `token` bytes in `OUTPUT`, with mode `0600` and no
+  trailing newline. Do not return the expiry, App JWT, private key, or JSON.
+  The common helper rejects multiline/noisy output. The broker should keep a
+  replay cache for the validated Forgejo `run_id`, `run_attempt`, tag, and
+  platform; `release` and `homebrew` are distinct audiences/uses even when one
+  GitHub App installation covers both repositories. The App private key is necessarily a
+  longer-lived root credential, but it remains outside CI. Back it with a
+  non-exportable KMS/HSM key when possible and rotate it independently of the
+  one-hour installation tokens visible to jobs.
 - WinGet: for the `winget` platform, write the complete raw GitHub token. A
   GitHub App **installation** token scoped only to the bot's fork can push the
   branch but cannot be relied on to create a pull request in
@@ -281,7 +316,7 @@ Before creating a release tag, verify all of the following:
 
 - the protected tag rule matches `imager-v*`, forbids deletion/force-push, and
   restricts creation to release maintainers;
-- five native labels are online at least once: `imager-linux-x86_64`,
+- six native labels are online at least once: `imager-linux-x86_64`,
   `imager-linux-aarch64`, `imager-windows-x86_64`, `imager-windows-aarch64`,
   `imager-macos-x86_64`, and `imager-macos-aarch64`; each reports its expected
   native architecture and `:host` execution;
@@ -329,7 +364,8 @@ administrators):
 | Variable | Required value |
 |---|---|
 | the seven `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
-| `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional public binary repository in `OWNER/REPOSITORY` form; omit for `qos/releases` |
+| `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional GitHub binary repository in `OWNER/REPOSITORY` form; omit for `tilo-os/releases` |
+| `IMAGER_HOMEBREW_TAP_REPOSITORY` | optional GitHub tap repository; omit for `tilo-os/homebrew-tilo` |
 | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex Tilo-main registry-owner Ed25519 public key |
 | `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.podesta.ai/qos/tilo@sha256:...` manifest-list reference used by installer media |
 | `TILO_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
@@ -437,8 +473,8 @@ buildroots accept only the broker-returned non-exportable signer.
 
 ## Package indexes
 
-`publish-homebrew-tap.sh` creates `qos/homebrew-tilo` when needed, renders the
-formula and cask from release digests, audits them, and pushes `main`. Configure
+`publish-homebrew-tap.sh` updates the pre-created `tilo-os/homebrew-tilo`, renders
+the formula and cask from release digests, audits them, and pushes `main`. Configure
 the broker's `homebrew` exchange as described above. `HOMEBREW_TAP_TOKEN` is
 accepted only when the explicit static-bootstrap switch is enabled.
 
@@ -462,7 +498,7 @@ after Microsoft's public index serves the exact identifier and version.
 After first publication users install with:
 
 ```text
-brew tap tilo/tilo https://code.podesta.ai/qos/homebrew-tilo.git
+brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git
 brew install tilo-imager
 winget install Tilo.Imager
 ```

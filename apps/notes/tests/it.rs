@@ -12,8 +12,6 @@
 
 #[path = "click_link_navigates.rs"]
 mod click_link_navigates;
-#[path = "cmd_k_palette.rs"]
-mod cmd_k_palette;
 #[path = "e2e_smoke.rs"]
 mod e2e_smoke;
 #[path = "interaction_event_path.rs"]
@@ -69,5 +67,32 @@ mod canonical_actions;
 #[path = "canonical_views.rs"]
 mod canonical_views;
 
-#[path = "framework_history.rs"]
-mod framework_history;
+#[path = "note_context_menu.rs"]
+mod note_context_menu;
+
+#[path = "vertical_editing.rs"]
+mod vertical_editing;
+
+#[path = "table_preview.rs"]
+mod table_preview;
+
+#[path = "table_editing.rs"]
+mod table_editing;
+
+#[path = "soft_line_breaks.rs"]
+mod soft_line_breaks;
+
+#[path = "group_moves.rs"]
+mod group_moves;
+
+#[path = "code_groups.rs"]
+mod code_groups;
+
+#[path = "format_preservation.rs"]
+mod format_preservation;
+
+#[path = "hosting.rs"]
+mod hosting;
+
+#[path = "capture_runtime.rs"]
+mod capture_runtime;
