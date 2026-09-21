@@ -33,7 +33,7 @@ chmod 0755 "$bin/sccache"
 run_container() {
     (
         cd "$project"
-        HOME="$home" PATH="$bin:/usr/bin:/bin" CONTAINER_ID=test \
+        HOME="$home" CARGO_HOME="$home/.cargo" PATH="$bin:/usr/bin:/bin" CONTAINER_ID=test \
             "$bin/cargo" build
     )
 }
@@ -50,7 +50,7 @@ grep -Fqx 'SCCACHE_DIR=set:/var/tmp/tilo-cache' <<<"$plain"
 
 automatic=$(env -u TMPDIR -u CARGO_TARGET_DIR -u RUSTC_WRAPPER \
     -u SCCACHE_SERVER_PORT -u SCCACHE_DIR \
-    HOME="$home" PATH="$bin:/usr/bin:/bin" CONTAINER_ID=test \
+    HOME="$home" CARGO_HOME="$home/.cargo" PATH="$bin:/usr/bin:/bin" CONTAINER_ID=test \
     "$bin/cargo" build)
 grep -Fqx 'TMPDIR=unset' <<<"$automatic"
 grep -Fqx 'CARGO_TARGET_DIR=unset' <<<"$automatic"
@@ -75,7 +75,7 @@ chmod 0755 "$bin/distrobox"
 printf 'test-container\n' >"$project/.build-container"
 
 routed=$(env -u CONTAINER_ID \
-    HOME="$home" PATH="$bin:/usr/bin:/bin" \
+    HOME="$home" CARGO_HOME="$home/.cargo" PATH="$bin:/usr/bin:/bin" \
     TMPDIR=/var/tmp/tilo-routed-scratch \
     CARGO_TARGET_DIR=/var/tmp/tilo-routed-target \
     RUSTC_WRAPPER= SCCACHE_SERVER_PORT=4888 SCCACHE_DIR=/var/tmp/tilo-routed-cache \
