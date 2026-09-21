@@ -629,6 +629,8 @@ impl NoteTreeView {
         self.menu_target = Some(page);
         self.empty_menu = false;
         let mut menu = note_context_menu();
+        // Selection uses the shared menu's item indices, including separators
+        // (see `apply_menu_selection`).
         menu.open_at([num::f32_of_f64(at.x), num::f32_of_f64(at.y)]);
         self.menu = menu;
         self.dirty = true;
@@ -2609,6 +2611,73 @@ mod tests {
             tree.take_events().as_slice(),
             [OutEvent::Select(id)] if *id == page
         ));
+    }
+
+    #[test]
+    fn page_menu_semantics_activate_the_same_queued_page_action() {
+        let mut workspace = Workspace::new();
+        let page = workspace.create_page(None);
+        let mut tree = NoteTreeView::new();
+        tree.sync_from_workspace(&workspace);
+        tree.open_context_menu(page, Point::ZERO);
+        let node = tree.accessibility().unwrap();
+        let menu = node
+            .children
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::Menu)
+            .unwrap();
+        assert_eq!(menu.state.expanded, Some(true));
+        assert_eq!(
+            menu.children
+                .iter()
+                .map(|item| item.name.clone().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                ui::i18n!("notes-menu-new-child"),
+                ui::i18n!("notes-menu-rename"),
+                ui::i18n!("notes-menu-duplicate"),
+                ui::i18n!("notes-menu-copy-link"),
+                ui::i18n!("notes-menu-export"),
+                ui::i18n!("notes-menu-insert-image"),
+                ui::i18n!("notes-menu-delete")
+            ]
+        );
+        assert!(
+            menu.children
+                .iter()
+                .all(|item| item.role == ui::a11y::Role::MenuItem)
+        );
+        let target = menu.children.last().unwrap().action_target.clone().unwrap();
+        let mut doc = AutoCommit::new();
+        let before = doc.get_heads();
+        assert!(!tree.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Increment,
+            &mut doc,
+            &ObjId::Root
+        ));
+        assert!(tree.take_events().is_empty());
+        assert!(tree.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &ObjId::Root
+        ));
+        assert!(matches!(tree.take_events().as_slice(), [OutEvent::Delete(id)] if *id == page));
+        assert_eq!(
+            doc.get_heads(),
+            before,
+            "sidebar activation only queues; app owns document admission"
+        );
+        assert!(
+            !tree.perform_semantic_action(
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &ObjId::Root
+            ),
+            "closed menu target is stale"
+        );
     }
 
     #[test]
