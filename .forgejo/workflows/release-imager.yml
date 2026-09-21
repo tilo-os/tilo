@@ -138,7 +138,7 @@ jobs:
             export DEBIAN_FRONTEND=noninteractive
             sudo -n apt-get update
             if [ "${{ matrix.arch }}" = x86_64 ]; then
-              native_packages='ovmf qemu-system-x86'
+              native_packages='ovmf python3-virt-firmware qemu-system-x86 swtpm'
               qemu_binary=qemu-system-x86_64
               display_device=virtio-vga-gl
             else
@@ -151,7 +151,7 @@ jobs:
               qemu-utils socat tesseract-ocr $native_packages
           elif command -v dnf >/dev/null; then
             if [ "${{ matrix.arch }}" = x86_64 ]; then
-              native_packages='edk2-ovmf qemu-device-display-virtio-vga-gl qemu-system-x86-core'
+              native_packages='edk2-ovmf python3-virt-firmware qemu-device-display-virtio-vga-gl qemu-system-x86-core swtpm'
               qemu_binary=qemu-system-x86_64
               display_device=virtio-vga-gl
             else
@@ -168,6 +168,9 @@ jobs:
           command -v debugfs mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat mtype ntfscp \
             qemu-img "$qemu_binary" sfdisk socat tesseract >/dev/null
           command -v magick >/dev/null || command -v convert >/dev/null
+          if [ "${{ matrix.arch }}" = x86_64 ]; then
+            command -v swtpm virt-fw-vars >/dev/null
+          fi
           "$qemu_binary" -display help | grep -Fq egl-headless
           "$qemu_binary" -device help | grep -Fq "$display_device"
           test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
@@ -185,6 +188,21 @@ jobs:
           [[ "$encoder_sha256" =~ ^[0-9a-f]{64}$ ]]
           printf 'TILO_PROFILE_ENCODER=%s\nTILO_PROFILE_ENCODER_SHA256=%s\n' \
             "$encoder" "$encoder_sha256" >> "${GITHUB_ENV:?}"
+      - name: Prepare the release-certificate OVMF variable store
+        if: startsWith(github.ref, 'refs/tags/imager-v') && matrix.arch == 'x86_64'
+        run: |
+          set -euo pipefail
+          test -n "$TILO_PCR_PREDICTION_SIGNER"
+          test -n "$TILO_EFI_SIGNING_CERT_SHA256"
+          firmware="$(TILO_VM_ARCH=x86_64 TILO_SECBOOT_KEYS=none \
+            ./os/dev/vm.sh firmware --tpm)"
+          template="$(awk '$1 == "vars" { print $2 }' <<<"$firmware")"
+          test -f "$template"
+          varstore="${RUNNER_TEMP:?}/tilo-release-vars-${{ github.run_id }}-${{ github.run_attempt }}.qcow2"
+          ./os/dev/prepare-release-secureboot-vars.sh \
+            "$template" "$varstore" "$TILO_PCR_PREDICTION_SIGNER" \
+            "$TILO_EFI_SIGNING_CERT_SHA256"
+          printf 'TILO_RELEASE_SECBOOT_VARS=%s\n' "$varstore" >> "${GITHUB_ENV:?}"
       - name: Exercise the complete graphical installation cycle
         env:
           TILO_ACCEL: kvm
@@ -209,6 +227,14 @@ jobs:
               os/output/installer/qcow2/disk.qcow2 \
               --guided-alongside \
               --out dist/installer-guided-alongside-cycle
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* && "${{ matrix.arch }}" == x86_64 ]]; then
+            TILO_VM_CYCLE="${TILO_VM_CYCLE}-software-tpm-pin" \
+            TILO_SECBOOT_KEYS="${TILO_RELEASE_SECBOOT_VARS:?}" \
+              ./os/dev/test-installer-cycle.sh \
+                os/output/installer/qcow2/disk.qcow2 \
+                --software-tpm \
+                --out dist/installer-software-tpm-pin-cycle
+          fi
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
@@ -217,6 +243,7 @@ jobs:
             dist/installer-cycle
             dist/installer-alongside-cycle
             dist/installer-guided-alongside-cycle
+            dist/installer-software-tpm-pin-cycle
           if-no-files-found: error
       - name: Verify the installer-medium release payload
         run: |

@@ -422,6 +422,7 @@ else
 fi
 
 cycle="$repo/os/dev/test-installer-cycle.sh"
+release_vars="$repo/os/dev/prepare-release-secureboot-vars.sh"
 boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'needs: plan' "$workflow" \
@@ -490,6 +491,23 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   ok 'trusted main and tagged media must pass erase, prepared-alongside, and guided-alongside graphical install cycles'
 else
   bad 'release media lack a fail-closed native full graphical installation cycle'
+fi
+
+if grep -Fq "if: startsWith(github.ref, 'refs/tags/imager-v') && matrix.arch == 'x86_64'" "$workflow" \
+  && grep -Fq 'python3-virt-firmware qemu-system-x86' "$workflow" \
+  && grep -Fq 'command -v swtpm virt-fw-vars' "$workflow" \
+  && grep -Fq './os/dev/prepare-release-secureboot-vars.sh' "$workflow" \
+  && grep -Fq 'TILO_SECBOOT_KEYS="${TILO_RELEASE_SECBOOT_VARS:?}"' "$workflow" \
+  && grep -Fq -- '--software-tpm' "$workflow" \
+  && grep -Fq 'dist/installer-software-tpm-pin-cycle' "$workflow" \
+  && grep -Fq '"$signer" export-efi-cert' "$release_vars" \
+  && grep -Fq 'tilo-crypto certificate-sha256' "$release_vars" \
+  && grep -Fq -- '--add-db a0baa8a3-041d-48a8-bc87-c36d121b5e3d "$work/release-efi.crt"' "$release_vars" \
+  && grep -Fq -- '--microsoft-kek none --no-microsoft --secure-boot' "$release_vars" \
+  && ! grep -Fq 'TILO_VM_ARCH=aarch64' "$release_vars"; then
+  ok 'tagged x86 media must pass the graphical TPM2/PIN cycle with the exact release certificate enforced'
+else
+  bad 'tag promotion can bypass the supported x86 measured-boot TPM2/PIN installation cycle'
 fi
 
 grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
