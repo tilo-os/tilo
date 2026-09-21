@@ -8,9 +8,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use ui::dnd::DragPayload;
-use ui::presence::PresenceCtx;
-use ui::widget::{AppWidget, Button, Widget};
+use tilo_ui::dnd::DragPayload;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::widget::{AppWidget, Button, Widget};
 
 #[test]
 fn widget_defaults_for_collab_methods() {
@@ -28,8 +28,8 @@ fn draw_takes_presence_ctx() {
             w: &mut W,
             scene: &mut vello::Scene,
             transform: vello::kurbo::Affine,
-            tr: &mut ui::text_render::TextRenderer,
-            theme: &ui::Theme,
+            tr: &mut tilo_ui::text_render::TextRenderer,
+            theme: &tilo_ui::Theme,
             presence: &PresenceCtx,
         ) {
             w.draw(scene, transform, tr, theme, presence);
@@ -40,10 +40,10 @@ fn draw_takes_presence_ctx() {
 
 #[test]
 fn button_uses_token_radius() {
-    use ui::tokens::Tokens;
+    use tilo_ui::tokens::Tokens;
     let mut t = Tokens::dark();
     t.radii.md = 99.0;
-    let theme = ui::Theme {
+    let theme = tilo_ui::Theme {
         name: "T".into(),
         bg_app: t.colors.surfaces.base,
         bg_primary: t.colors.surfaces.raised,

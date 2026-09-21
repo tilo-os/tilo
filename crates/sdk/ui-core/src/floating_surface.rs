@@ -62,9 +62,11 @@ pub enum FloatingRole {
 pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 4;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "dev.tilo.shell-float.";
+#[cfg(unix)]
 const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
 /// Backpressure bound for a non-reading shell peer. Frames are normally
 /// flushed immediately; this only limits the exceptional `WouldBlock` queue.
+#[cfg(unix)]
 const MAX_OUTGOING_QUEUE_BYTES: usize = 4 * MAX_PROTOCOL_FRAME_BYTES;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
