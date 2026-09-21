@@ -10,7 +10,7 @@
 
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::filesystem_metadata as xattr;
-use crate::history_panel::{HistoryPanel, read_current_text_preview, text_diff_lines};
+use crate::history_panel::HistoryPanel;
 use crate::i18n::{arg, t, t_args};
 use crate::metadata_refresh;
 use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};

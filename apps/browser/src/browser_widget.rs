@@ -2328,13 +2328,6 @@ impl BrowserWidget {
         let large_text = theme.text_scale >= 1.5;
         let compact_layout = self.compact_chrome || large_text;
         let action_height = if large_text { 56.0 } else { 36.0 };
-        let section_width = if self.compact_chrome && large_text {
-            ((self.rect.width() as f32 - 36.0) / 2.0).max(150.0)
-        } else if large_text {
-            220.0
-        } else {
-            132.0
-        };
         // At intermediate desktop widths, retain one coherent panel but never
         // force a fixed 920px card past the viewport. Compact chrome remains
         // fully fluid below its own breakpoint.
@@ -2918,7 +2911,6 @@ impl BrowserWidget {
                     )
                 }
             }
-            LibrarySection::Downloads => self.capabilities.downloads(&self.engine),
             LibrarySection::Extensions => {
                 let installed = if self.headless {
                     Vec::new()
@@ -9300,6 +9292,77 @@ mod tests {
         for action in &resource.actions {
             assert_eq!(action.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);
         }
+    }
+
+    #[test]
+    fn download_library_controls_and_operations_follow_entry_status() {
+        fn bound_actions(widget: &BrowserWidget, resource: &str) -> Vec<String> {
+            let mut actions = widget
+                .control_action_bindings()
+                .into_iter()
+                .filter_map(|binding| match binding.kind {
+                    ui::widget::ControlBindingKind::Action(address)
+                        if address.resource == resource =>
+                    {
+                        Some(address.action)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            actions.sort();
+            actions
+        }
+
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+
+        widget.debug_show_downloads("progress");
+        layout_at(&mut widget, 1280.0, 800.0);
+        assert_eq!(
+            bound_actions(&widget, "browser.download.review-progress"),
+            vec!["cancel".to_string()]
+        );
+        assert!(
+            widget
+                .perform_browser_operation(BrowserOperation::RetryDownload {
+                    id: "review-progress".into(),
+                })
+                .is_err()
+        );
+
+        widget.debug_show_downloads("error");
+        layout_at(&mut widget, 1280.0, 800.0);
+        assert_eq!(
+            bound_actions(&widget, "browser.download.review-failed"),
+            vec!["retry".to_string()]
+        );
+        widget
+            .perform_browser_operation(BrowserOperation::RetryDownload {
+                id: "review-failed".into(),
+            })
+            .unwrap();
+        assert!(engine.commands().iter().any(|command| matches!(
+            command,
+            WebViewCommand::StartDownload { uri } if uri == "https://example.org/archive.zip"
+        )));
+
+        widget.debug_show_downloads("completed");
+        layout_at(&mut widget, 1280.0, 800.0);
+        assert_eq!(
+            bound_actions(&widget, "browser.download.review-complete"),
+            vec!["open".to_string(), "reveal".to_string()]
+        );
+        assert!(
+            widget
+                .perform_browser_operation(BrowserOperation::RetryDownload {
+                    id: "review-complete".into(),
+                })
+                .is_err()
+        );
+        assert_eq!(
+            widget.completed_download_path("review-complete").unwrap(),
+            std::path::PathBuf::from("/home/alex/Downloads/Design-guide.pdf")
+        );
     }
 
     #[test]

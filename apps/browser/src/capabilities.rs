@@ -9,7 +9,6 @@ pub(crate) struct Capabilities {
     // background download workers communicate through the engine protocol.
     downloads: std::rc::Rc<std::cell::RefCell<DownloadStore>>,
     observed_download_version: u64,
-    notice: ui::LocalState<String>,
 }
 impl Default for Capabilities {
     fn default() -> Self {
@@ -17,7 +16,6 @@ impl Default for Capabilities {
             permissions: BTreeMap::new(),
             downloads: std::rc::Rc::default(),
             observed_download_version: 0,
-            notice: ui::LocalState::new(String::new()),
         }
     }
 }
@@ -45,35 +43,6 @@ impl Default for DownloadStore {
             terminal_notice: String::new(),
             version: 0,
         }
-    }
-}
-
-fn open_download(path: &std::path::Path, reveal: bool) -> Result<(), String> {
-    if !path.is_absolute() || !path.is_file() {
-        return Err("The downloaded file is no longer available.".into());
-    }
-    let mut command = if cfg!(target_os = "macos") {
-        std::process::Command::new("/usr/bin/open")
-    } else {
-        std::process::Command::new("xdg-open")
-    };
-    if cfg!(target_os = "macos") {
-        if reveal {
-            command.arg("-R");
-        }
-        command.arg("--").arg(path);
-    } else {
-        command.arg(if reveal {
-            path.parent().unwrap_or(path)
-        } else {
-            path
-        });
-    }
-    let status = command.status().map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("Could not open the download. Try revealing its folder.".into())
     }
 }
 
@@ -334,92 +303,16 @@ impl Capabilities {
             )),
         ))
     }
-    pub fn downloads(&self, engine: &SharedEngine) -> Box<dyn Widget> {
-        let downloads = self.downloads.borrow();
-        let mut rows = Column::new().with_no_padding().with_intrinsic_height();
-        rows = rows.push(Box::new(
-            Text::from_state(&self.notice, Clone::clone)
-                .with_id("browser.download.notice")
-                .with_size(13.0),
-        ));
-        if !downloads.terminal_notice.is_empty() {
-            rows = rows.push(Box::new(
-                Text::new(&downloads.terminal_notice)
-                    .with_id("browser.download.terminal-status")
-                    .with_size(13.0),
-            ));
-        }
-        if downloads.records.is_empty() {
-            rows = rows.push(Box::new(Text::new("No downloads this session.")));
-        }
-        for (&id, d) in downloads.records.iter().rev() {
-            let summary = format!(
-                "{} · {} · {} / {} bytes\n{} {}",
-                d.name, d.state, d.received, d.total, d.path, d.error
-            );
-            let mut row = Row::new().push(Box::new(Text::new(&summary).with_size(13.0)));
-            if d.state == "progress" {
-                let engine = engine.clone();
-                row = row.push(Box::new(
-                    Button::new(&format!("browser.download.cancel.{id}"), "Cancel", None)
-                        .on_effect(move || {
-                            engine.send(WebViewCommand::CancelNativeDownload { id })
-                        }),
-                ));
-            }
-            if d.state == "complete" && !d.path.is_empty() {
-                for (name, label, reveal) in [("open", "Open", false), ("reveal", "Reveal", true)] {
-                    let path = std::path::PathBuf::from(&d.path);
-                    let notice = self.notice.writer();
-                    row = row.push(Box::new(
-                        Button::new(&format!("browser.download.{name}.{id}"), label, None)
-                            .on_effect(move || {
-                                let path = path.clone();
-                                let notice = notice.clone();
-                                let _ = std::thread::Builder::new()
-                                    .name("browser-open-download".into())
-                                    .spawn(move || {
-                                        notice.set(
-                                            open_download(&path, reveal).err().unwrap_or_default(),
-                                        );
-                                    });
-                            }),
-                    ));
-                }
-            }
-            if matches!(d.state.as_str(), "failed" | "cancelled") {
-                if d.retryable {
-                    let engine = engine.clone();
-                    row = row.push(Box::new(
-                        Button::new(&format!("browser.download.retry.{id}"), "Retry", None)
-                            .on_effect(move || {
-                                engine.send(WebViewCommand::RetryDownload { id });
-                            }),
-                    ));
-                } else {
-                    row = row.push(Box::new(
-                        Text::new("Retry unavailable for this address.").with_size(13.0),
-                    ));
-                }
-            }
-            rows = rows.push(Box::new(Container::new().with_child(Box::new(row))));
-        }
-        drop(downloads);
-        Box::new(rows)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn contains(widget: &dyn Widget, id: &str) -> bool {
-        widget.test_id() == Some(id) || widget.children().iter().any(|child| contains(*child, id))
-    }
+
     #[test]
     fn download_records_survive_origin_close_and_permissions_stay_local() {
         let first_engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
-        let second_capture = ui::webview::test_engine::TestEngine::new();
-        let second_engine: SharedEngine = second_capture.clone();
+        let second_engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
         let mut first = Capabilities::default();
         let mut second = Capabilities::default();
         second.share_downloads(&first);
@@ -442,24 +335,6 @@ mod tests {
             error: String::new(),
         });
         assert!(second.downloads_changed());
-        let mut rows = second.downloads(&second_engine);
-        assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
-        let result = rows
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                ui::tilo_actions::OperationKind::Effect,
-                "qos.ui.control.invoke",
-                &serde_json::to_vec("browser.download.cancel.7").unwrap(),
-                &automerge::AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(result.is_some());
-        assert!(
-            second_capture
-                .commands()
-                .contains(&WebViewCommand::CancelNativeDownload { id: 7 })
-        );
         drop(first);
         second.apply(WebViewEvent::DownloadUpdated {
             id: 7,
@@ -472,10 +347,6 @@ mod tests {
             total: 20,
             error: String::new(),
         });
-        assert!(contains(
-            second.downloads(&second_engine).as_ref(),
-            "browser.download.open.7"
-        ));
         for id in 8..150 {
             second.apply(WebViewEvent::DownloadUpdated {
                 id,
@@ -490,34 +361,6 @@ mod tests {
             });
         }
         assert_eq!(second.downloads.borrow().records.len(), 100);
-    }
-
-    #[test]
-    fn only_completed_downloads_offer_explicit_open_and_reveal() {
-        let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
-        let mut capabilities = Capabilities::default();
-        for state in ["progress", "failed", "complete"] {
-            capabilities.apply(WebViewEvent::DownloadUpdated {
-                id: 7,
-                state: state.into(),
-                path: "/tmp/test-download.txt".into(),
-                name: "test".into(),
-                url: "https://downloads.test/file".into(),
-                retryable: true,
-                received: 8,
-                total: 8,
-                error: String::new(),
-            });
-            let view = capabilities.downloads(&engine);
-            assert_eq!(
-                contains(view.as_ref(), "browser.download.open.7"),
-                state == "complete"
-            );
-            assert_eq!(
-                contains(view.as_ref(), "browser.download.reveal.7"),
-                state == "complete"
-            );
-        }
     }
 
     #[test]
@@ -544,8 +387,6 @@ mod tests {
 
     #[test]
     fn sparse_terminal_updates_preserve_retry_metadata_and_aggregate_status() {
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: SharedEngine = capture.clone();
         let mut capabilities = Capabilities::default();
         capabilities.apply(WebViewEvent::DownloadUpdated {
             id: 41,
@@ -574,23 +415,13 @@ mod tests {
             total: 0,
             error: "connection reset".into(),
         });
-        let mut rows = capabilities.downloads(&engine);
-        assert!(contains(rows.as_ref(), "browser.download.retry.41"));
-        let result = rows
-            .start_resource_operation(
-                ui::tilo_actions::InvocationId::new(),
-                ui::tilo_actions::OperationKind::Effect,
-                "qos.ui.control.invoke",
-                &serde_json::to_vec("browser.download.retry.41").unwrap(),
-                &automerge::AutoCommit::new(),
-                &automerge::ROOT,
-            )
-            .unwrap();
-        assert!(result.is_some());
         assert!(
-            capture
-                .commands()
-                .contains(&WebViewCommand::RetryDownload { id: 41 })
+            capabilities
+                .downloads
+                .borrow()
+                .records
+                .get(&41)
+                .is_some_and(|download| download.retryable)
         );
         assert_eq!(
             capabilities.toolbar_status().as_deref(),
@@ -600,7 +431,6 @@ mod tests {
 
     #[test]
     fn runtime_disconnect_fails_in_progress_records_and_exit_waits_for_detached_owner() {
-        let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
         let mut capabilities = Capabilities::default();
         capabilities.apply(WebViewEvent::DownloadUpdated {
             id: 7,
@@ -634,9 +464,9 @@ mod tests {
             error: "Chromium engine disconnected".into(),
         });
         assert!(capabilities.exit_cleanup_complete());
-        assert!(contains(
-            capabilities.downloads(&engine).as_ref(),
-            "browser.download.terminal-status"
-        ));
+        assert_eq!(
+            capabilities.downloads.borrow().terminal_notice,
+            "Download failed"
+        );
     }
 }
