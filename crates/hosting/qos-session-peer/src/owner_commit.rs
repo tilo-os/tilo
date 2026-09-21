@@ -1,6 +1,6 @@
 //! Bounded host-local requests serviced by the existing serialized SessionOwner.
 //! This mailbox owns no second document writer, signing key or persistence root.
-use crate::SessionOwner;
+use crate::{SessionOwner, action_timing::Timing};
 use qos_peer_state::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
 };
@@ -150,7 +150,9 @@ impl PendingOwnerCommit {
         owner: &mut SessionOwner,
     ) -> Result<Option<tilo_relay::peer_actions::DirectedAction>, String> {
         use qos_peer_state::desktop_command::DesktopCommandError;
+        let timing = Timing::new("owner_commit_desktop");
         self.start_execution();
+        timing.mark("semantic_apply_start");
         let result = self
             .health
             .check()
@@ -164,6 +166,11 @@ impl PendingOwnerCommit {
                         .map(|receipt| (receipt, None))
                 }
             });
+        timing.mark(if result.is_ok() {
+            "semantic_apply_ok"
+        } else {
+            "semantic_apply_error"
+        });
         let health = match &result {
             Err(DesktopCommandError::Uncertain(reason)) => Err(self.health.fail(reason.clone())),
             _ => Ok(()),
@@ -172,25 +179,41 @@ impl PendingOwnerCommit {
             Ok((receipt, delivery)) => (Ok(receipt), delivery),
             Err(error) => (Err(error), None),
         };
+        timing.mark("reply_start");
         if let Some(reply) = self.desktop_reply.take() {
             let _ = reply.send(result);
         }
+        timing.mark("reply_end");
         health.map(|()| delivery)
     }
     /// Called only by the serialized owner loop. A successful reply follows its
     /// aggregate fsync+directory barrier. Dropped callers do not cancel commits.
     pub fn apply(mut self, owner: &mut SessionOwner) -> Result<OwnerCommitReceipt, String> {
+        let phase = match &self.request.operation {
+            CommitOperation::DesktopCommand { .. } => "owner_commit_invalid_desktop",
+            CommitOperation::Document { .. } => "owner_commit_document",
+            CommitOperation::EffectReceipt { .. } => "owner_commit_effect_receipt",
+        };
+        let timing = Timing::new(phase);
         self.start_execution();
+        timing.mark("semantic_apply_start");
         let result = self
             .health
             .check()
             .and_then(|()| owner.commit_local_owner_request(&self.request));
+        timing.mark(if result.is_ok() {
+            "semantic_apply_ok"
+        } else {
+            "semantic_apply_error"
+        });
         if let Err(reason) = &result {
             self.health.fail(reason.clone());
         }
+        timing.mark("reply_start");
         if let Some(reply) = self.reply.take() {
             let _ = reply.send(result.clone());
         }
+        timing.mark("reply_end");
         result
     }
 }

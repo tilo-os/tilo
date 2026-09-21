@@ -1,5 +1,6 @@
 //! Serialized native owner. Every returned mutation receipt follows the durable barrier.
 use crate::{
+    action_timing::Timing,
     identity::{self, Identity},
     store::SessionStore,
 };
@@ -149,15 +150,40 @@ pub struct SessionOwner {
     workspace_id: u64,
 }
 fn encode(aggregate: &Aggregate, identity: &Identity) -> Result<Vec<u8>> {
+    encode_with_timing(aggregate, identity, None)
+}
+fn encode_with_timing(
+    aggregate: &Aggregate,
+    identity: &Identity,
+    timing: Option<&Timing>,
+) -> Result<Vec<u8>> {
+    if let Some(timing) = timing {
+        timing.mark("aggregate_encode_start");
+    }
     let payload = postcard::to_stdvec(aggregate)?;
+    if let Some(timing) = timing {
+        timing.mark_count("aggregate_payload_bytes", payload.len());
+        timing.mark("aggregate_encode_end");
+        timing.mark("signature_digest_start");
+    }
     let digest = blake3::Hasher::new_derive_key("qOS native session aggregate v1")
         .update(&payload)
         .finalize();
+    if let Some(timing) = timing {
+        timing.mark("signature_digest_end");
+        timing.mark("aggregate_sign_start");
+    }
     let signature = identity.native.sign(digest.as_bytes()).to_bytes().to_vec();
-    Ok(postcard::to_stdvec(&SignedAggregate {
-        payload,
-        signature,
-    })?)
+    if let Some(timing) = timing {
+        timing.mark("aggregate_sign_end");
+        timing.mark("signed_envelope_encode_start");
+    }
+    let bytes = postcard::to_stdvec(&SignedAggregate { payload, signature })?;
+    if let Some(timing) = timing {
+        timing.mark_count("signed_aggregate_bytes", bytes.len());
+        timing.mark("signed_envelope_encode_end");
+    }
+    Ok(bytes)
 }
 fn decode(bytes: &[u8]) -> Result<(Aggregate, SignedAggregate)> {
     if bytes.len() > crate::store::MAX_AGGREGATE_BYTES {
@@ -477,17 +503,26 @@ impl SessionOwner {
         Ok(())
     }
     fn commit(&mut self, mut aggregate: Aggregate, candidate: StatePeer) -> Result<CommitReceipt> {
+        let timing = Timing::new("aggregate_persist");
+        timing.mark("candidate_durable_start");
         aggregate.peer = candidate.durable().map_err(anyhow::Error::msg)?;
+        timing.mark_count("durable_peer_bytes", aggregate.peer.len());
+        timing.mark("candidate_durable_end");
         aggregate.generation = self
             .aggregate
             .generation
             .checked_add(1)
             .context("session generation exhausted")?;
-        let bytes = encode(&aggregate, &self.identity)?;
-        self.store.commit(&bytes)?;
+        let bytes = encode_with_timing(&aggregate, &self.identity, Some(&timing))?;
+        timing.mark("store_commit_start");
+        self.store.commit_timed(&bytes, &timing)?;
+        timing.mark("store_commit_end");
+        timing.mark("receipt_hash_start");
+        let aggregate_hash = blake3::hash(&bytes).to_hex().to_string();
+        timing.mark("receipt_hash_end");
         let receipt = CommitReceipt {
             generation: aggregate.generation,
-            aggregate_hash: blake3::hash(&bytes).to_hex().to_string(),
+            aggregate_hash,
             records: candidate.rows(),
             replay_floors: candidate.replay_floors(),
         };
@@ -633,14 +668,24 @@ impl SessionOwner {
         mut candidate: StatePeer,
         directory: Vec<u8>,
     ) -> Result<CommitReceipt> {
+        let timing = Timing::new("mutation_candidate");
         if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
             bail!("admission cannot replace the session namespace");
         }
+        timing.mark("validation_start");
         self.validate_admission(&candidate, &directory)?;
+        timing.mark("validation_end");
+        timing.mark("aggregate_clone_start");
         let mut next = self.aggregate.clone();
+        timing.mark("aggregate_clone_end");
         next.directory = directory;
+        timing.mark("mutation_publication_start");
         self.append_mutation_publication(&mut next, &mut candidate)?;
-        self.commit(next, candidate)
+        timing.mark("mutation_publication_end");
+        timing.mark("aggregate_persist_start");
+        let result = self.commit(next, candidate);
+        timing.mark("aggregate_persist_end");
+        result
     }
     pub(crate) fn commit_enrollment(
         &mut self,

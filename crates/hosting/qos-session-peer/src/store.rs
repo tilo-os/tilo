@@ -1,4 +1,5 @@
 //! One OS-custodied writer, atomic replacement, and a mandatory directory barrier.
+use crate::action_timing::Timing;
 use anyhow::{Context, Result, bail};
 use std::{
     fs::{self, File, OpenOptions},
@@ -108,12 +109,16 @@ impl SessionStore {
         Ok(bytes)
     }
     pub fn commit(&mut self, bytes: &[u8]) -> Result<()> {
-        self.commit_with_barrier(bytes, sync_dir)
+        self.commit_with_barrier(bytes, sync_dir, None)
+    }
+    pub(crate) fn commit_timed(&mut self, bytes: &[u8], timing: &Timing) -> Result<()> {
+        self.commit_with_barrier(bytes, sync_dir, Some(timing))
     }
     fn commit_with_barrier(
         &mut self,
         bytes: &[u8],
         barrier: impl FnOnce(&Path) -> Result<()>,
+        timing: Option<&Timing>,
     ) -> Result<()> {
         if self.poisoned {
             bail!("durable barrier failed; reopen the owner before proceeding");
@@ -122,8 +127,19 @@ impl SessionStore {
             bail!("aggregate exceeds the local storage size limit");
         }
         let result = (|| {
+            if let Some(timing) = timing {
+                timing.mark_count("aggregate_file_bytes", bytes.len());
+                timing.mark("atomic_write_start");
+            }
             atomic_file::write_with_mode(&self.root.join("session.bin"), bytes, 0o600)?;
+            if let Some(timing) = timing {
+                timing.mark("atomic_write_end");
+                timing.mark("directory_sync_start");
+            }
             barrier(&self.root)?;
+            if let Some(timing) = timing {
+                timing.mark("directory_sync_end");
+            }
             Ok(())
         })();
         if result.is_err() {
@@ -173,7 +189,7 @@ mod tests {
         let missing = temp.path().join("missing-directory");
         assert!(
             store
-                .commit_with_barrier(b"new", |_| sync_dir(&missing))
+                .commit_with_barrier(b"new", |_| sync_dir(&missing), None)
                 .is_err()
         );
         assert!(store.commit(b"ignored").is_err());

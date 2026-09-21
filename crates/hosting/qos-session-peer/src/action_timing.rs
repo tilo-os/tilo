@@ -8,6 +8,25 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn write_event(
+    writer: &mut impl Write,
+    elapsed_ms: u128,
+    sequence: u64,
+    phase: &str,
+    event: &str,
+    phase_ms: u128,
+    count: Option<usize>,
+) -> std::io::Result<()> {
+    write!(
+        writer,
+        "qos-action-timing elapsed_ms={elapsed_ms} sequence={sequence} phase={phase} event={event} phase_ms={phase_ms}"
+    )?;
+    if let Some(count) = count {
+        write!(writer, " count={count}")?;
+    }
+    writeln!(writer)
+}
+
 /// Disabled unless QOS_ACTION_TIMING=1. Labels are static call-site literals;
 /// only process-local timing sequence numbers, never request identifiers,
 /// document data or error strings, enter these logs.
@@ -61,18 +80,26 @@ impl Timing {
     }
 
     pub(crate) fn mark(&self, event: &'static str) {
+        self.mark_value(event, None);
+    }
+
+    pub(crate) fn mark_count(&self, event: &'static str, count: usize) {
+        self.mark_value(event, Some(count));
+    }
+
+    fn mark_value(&self, event: &'static str, count: Option<usize>) {
         if let Some(start) = self.start {
             static ORIGIN: OnceLock<Instant> = OnceLock::new();
             let origin = ORIGIN.get_or_init(Instant::now);
             // Ignore diagnostic output failures; they must not change admission.
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "qos-action-timing elapsed_ms={} sequence={} phase={} event={} phase_ms={}",
+            let _ = write_event(
+                &mut std::io::stderr().lock(),
                 origin.elapsed().as_millis(),
                 self.sequence,
                 self.phase,
                 event,
-                start.elapsed().as_millis()
+                start.elapsed().as_millis(),
+                count,
             );
         }
     }
@@ -87,5 +114,44 @@ impl Drop for Timing {
         {
             self.mark("finish");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counted_event_keeps_the_payload_free_static_timing_shape() {
+        let mut output = Vec::new();
+        write_event(
+            &mut output,
+            12,
+            34,
+            "aggregate_persist",
+            "aggregate_bytes",
+            56,
+            Some(78),
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "qos-action-timing elapsed_ms=12 sequence=34 phase=aggregate_persist event=aggregate_bytes phase_ms=56 count=78\n"
+        );
+        let mut output = Vec::new();
+        write_event(
+            &mut output,
+            12,
+            34,
+            "aggregate_persist",
+            "encode_end",
+            56,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "qos-action-timing elapsed_ms=12 sequence=34 phase=aggregate_persist event=encode_end phase_ms=56\n"
+        );
     }
 }
