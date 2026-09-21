@@ -7,7 +7,7 @@ use winit::{
 };
 
 #[cfg(test)]
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 
 mod bound_record_sync;
 mod close_admission;
