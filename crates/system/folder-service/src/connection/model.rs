@@ -435,6 +435,13 @@ pub enum ConnectionStatus {
     SourceUnavailable,
     DestinationUnavailable,
     /// Reserved for the durable service; a pure `ReconcilePlan` never emits this.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reserved durable-service status; pure reconciliation only asserts that it is not emitted"
+        )
+    )]
     UpToDate,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

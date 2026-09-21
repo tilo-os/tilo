@@ -922,6 +922,7 @@ pub(super) mod test_support {
     };
     type Hook = (usize, mpsc::Sender<()>, mpsc::Receiver<()>);
     static HOOKS: OnceLock<Mutex<HashMap<PathBuf, Hook>>> = OnceLock::new();
+    #[cfg(feature = "test-support")]
     pub(crate) fn hold_save(path: &Path, nth: usize) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();

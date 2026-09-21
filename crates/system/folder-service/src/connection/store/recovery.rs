@@ -1,12 +1,19 @@
 //! File-byte preservation. This does not prove a later endpoint displacement.
 pub(super) mod directory;
-use super::super::super::{migration::same_snapshot, nofollow::metadata_nofollow};
+#[cfg(any(windows, test))]
+use super::super::super::migration::same_snapshot;
+use super::super::super::nofollow::metadata_nofollow;
+#[cfg(any(windows, test))]
+use super::File;
+#[cfg(test)]
+use super::OperationReceipt;
 use super::{
-    Arc, AtomicBool, Change, ConnectionId, ConnectionStore, DurableAck, EndpointIdentity, File,
-    Lifecycle, OperationId, OperationReceipt, Page, PageCursor, Path, PreservedObject,
-    RecoveryChecks, RecoveryEntry, RecoveryId, RecoveryReason, RecoveryReservation, RecoveryState,
-    RelativePath, Row, Side, StoreError, VerifiedBaseline, format, storage,
+    Arc, AtomicBool, Change, ConnectionId, ConnectionStore, DurableAck, EndpointIdentity,
+    Lifecycle, OperationId, Page, PageCursor, Path, PreservedObject, RecoveryChecks, RecoveryEntry,
+    RecoveryId, RecoveryReason, RecoveryReservation, RecoveryState, RelativePath, Row, Side,
+    StoreError, VerifiedBaseline, format, storage,
 };
+#[cfg(any(windows, test))]
 use cap_primitives::fs::Metadata;
 use sha2::{Digest, Sha256};
 use std::{
@@ -141,6 +148,7 @@ impl ConnectionStore {
             fence: connection.fence,
         })
     }
+    #[cfg(any(windows, test))]
     pub(in super::super) fn preserve_file(
         &mut self,
         reservation: RecoveryReservation,
@@ -156,6 +164,7 @@ impl ConnectionStore {
         }
         self.preserve_file_with_context(reservation, source, flag, None)
     }
+    #[cfg(any(windows, test))]
     pub(super) fn preserve_file_with_context(
         &mut self,
         reservation: RecoveryReservation,
@@ -861,6 +870,7 @@ impl ConnectionStore {
         }
         Ok((!requires(operation, 0) || source) && (!requires(operation, 1) || destination))
     }
+    #[cfg(test)]
     pub(in super::super) fn pending_page(
         &self,
         id: ConnectionId,
@@ -880,6 +890,7 @@ impl ConnectionStore {
             next: rows.next,
         })
     }
+    #[cfg(test)]
     pub(in super::super) fn recovery_page(
         &self,
         id: ConnectionId,
@@ -956,6 +967,7 @@ pub(super) fn recovery_key(id: RecoveryId) -> Vec<u8> {
     key
 }
 
+#[cfg(test)]
 pub(super) fn eligible(entry: &RecoveryEntry, lifecycle: Lifecycle, pinned: bool) -> bool {
     lifecycle == Lifecycle::Active
         && !pinned
@@ -1443,6 +1455,7 @@ impl ConnectionStore {
     }
 }
 
+#[cfg(any(windows, test))]
 fn copy_bytes(
     source: &mut File,
     target: &mut File,

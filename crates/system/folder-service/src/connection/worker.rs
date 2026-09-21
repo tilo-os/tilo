@@ -689,10 +689,12 @@ impl Worker {
                     Err(error) => set_phase(active, Phase::RecoveryRequired(error)),
                 }
             }
-            transaction::TransactionOutcome::StructuralPending(_) => {
+            transaction::TransactionOutcome::StructuralPending(reason) => {
+                let _ = reason;
                 set_phase(active, Phase::Pending(Pending::Structural));
             }
-            transaction::TransactionOutcome::AccountedPending { .. } => {
+            transaction::TransactionOutcome::AccountedPending { operation } => {
+                let _ = operation;
                 set_phase(active, Phase::Pending(Pending::NativeRefused));
             }
             transaction::TransactionOutcome::RecoveryRequired { error, operation } => {

@@ -57,39 +57,12 @@ impl NtfsReadEndpoint {
     pub(super) fn same_session(&self, client: &Arc<Mutex<Client>>) -> bool {
         Arc::ptr_eq(&self.client, client)
     }
-    pub fn identity(&self) -> EndpointIdentity {
-        self.identity
-    }
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             safe_read: Capability::Refused(EndpointError::Unverified),
             safe_write: Capability::Refused(EndpointError::ReadOnly),
             durable_transactions: Capability::Refused(EndpointError::ReadOnly),
         }
-    }
-    /// # Errors
-    /// Native registrations never grant write access or invoke a write trial.
-    pub fn require_access(&self, access: Access) -> Result<(), EndpointError> {
-        if access == Access::Write {
-            Err(EndpointError::ReadOnly)
-        } else {
-            Ok(())
-        }
-    }
-    /// Administrative primitive; all bytes remain provisional until client postflight.
-    /// # Errors
-    /// Refuses stale tokens, failed native revalidation and invalid transport.
-    pub fn read_chunk(
-        &self,
-        token: &str,
-        offset: u64,
-        length: u32,
-    ) -> Result<Vec<u8>, EndpointError> {
-        self.client
-            .lock()
-            .map_err(|_| EndpointError::Unstable)?
-            .read_chunk(token, offset, length)
-            .map_err(EndpointError::from)
     }
     /// Canonicalizes candidates absent from the manifest using the same actual native table.
     /// # Errors

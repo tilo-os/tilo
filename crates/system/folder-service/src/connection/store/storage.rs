@@ -785,9 +785,6 @@ impl Storage {
         page.reference(hash)?;
         Ok(page)
     }
-    pub fn save_page(&self, page: &format::PageNode) -> Result<format::Child, StoreError> {
-        self.save_page_with(page, None)
-    }
     pub fn save_page_with(
         &self,
         page: &format::PageNode,

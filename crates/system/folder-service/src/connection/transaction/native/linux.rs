@@ -27,6 +27,7 @@ pub(in crate::connection::transaction) fn maybe_run_lease_receiver(args: &[Strin
     lease_process::maybe_run(args)
 }
 
+#[cfg(test)]
 pub(in crate::connection::transaction) fn initial_preview(
     store: &crate::connection::store::ConnectionStore,
     id: ConnectionId,
@@ -44,6 +45,7 @@ pub(in crate::connection::transaction) fn initial_preview(
     )
 }
 
+#[cfg(test)]
 pub(in crate::connection::transaction) fn restore_preview(
     store: &crate::connection::store::ConnectionStore,
     selected: crate::connection::store::RecoveryId,
@@ -4102,7 +4104,7 @@ mod tests {
                 &cancel,
             )
             .unwrap();
-        let mut epoch =
+        let epoch =
             NativeEpoch::begin_connected(&live, &endpoints[0], &endpoints[1], &cancel).unwrap();
         let mut evidence = epoch.equal_evidence(&live).unwrap();
         store
@@ -7753,11 +7755,11 @@ mod tests {
     }
     fn binding() -> OperationBinding {
         OperationBinding {
-            connection: ConnectionId([1; 16]),
-            operation: [2; 16],
-            store_session: [3; 16],
-            revision: 1,
-            fence: 0,
+            _connection: ConnectionId([1; 16]),
+            _operation: [2; 16],
+            _store_session: [3; 16],
+            _revision: 1,
+            _fence: 0,
         }
     }
     thread_local! { static BEFORE_RELOCATE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None); }
@@ -7821,8 +7823,8 @@ mod tests {
         assert!(matches!(
             result,
             Err(Failure {
-                cause: EndpointError::IdentityChanged,
-                boundary: Boundary::Uncertain,
+                _cause: EndpointError::IdentityChanged,
+                _boundary: Boundary::Uncertain,
                 ..
             })
         ));
@@ -7880,16 +7882,16 @@ mod tests {
                 assert!(matches!(
                     published,
                     Err(Failure {
-                        boundary: Boundary::Uncertain,
+                        _boundary: Boundary::Uncertain,
                         ..
                     })
                 ));
                 assert!(epoch.check().is_err());
             } else {
                 let published = published.unwrap();
-                assert_eq!(published.identity, expected);
+                assert_eq!(published._identity, expected);
                 assert_eq!(
-                    published.bytes.digest,
+                    published._bytes.digest,
                     <[u8; 32]>::from(Sha256::digest(b"proposal"))
                 );
             }
@@ -7941,7 +7943,7 @@ mod tests {
         assert_eq!(
             std::fs::read(
                 tree.path()
-                    .join(private.name.to_str().unwrap())
+                    .join(private._name.to_str().unwrap())
                     .join("displaced")
             )
             .unwrap(),
@@ -8013,7 +8015,7 @@ mod tests {
         let private = epoch.create_namespace(&target).unwrap();
         let captured = tree
             .path()
-            .join(private.name.to_str().unwrap())
+            .join(private._name.to_str().unwrap())
             .join("displaced");
         let writer_path = captured.clone();
         AFTER_RELOCATE.with(|hook| {
@@ -8083,7 +8085,7 @@ mod tests {
         assert_eq!(
             std::fs::read(
                 tree.path()
-                    .join(private.name.to_str().unwrap())
+                    .join(private._name.to_str().unwrap())
                     .join("stage")
             )
             .unwrap(),
@@ -8122,7 +8124,7 @@ mod tests {
         assert_eq!(
             std::fs::read(
                 tree.path()
-                    .join(private.name.to_str().unwrap())
+                    .join(private._name.to_str().unwrap())
                     .join("displaced/child")
             )
             .unwrap(),
@@ -8163,11 +8165,11 @@ mod tests {
 /// Context is data, never mutation authority. All evidence below additionally
 /// holds a fresh unpredictable epoch and actual retained native identities.
 struct OperationBinding {
-    connection: ConnectionId,
-    operation: [u8; 16],
-    store_session: [u8; 16],
-    revision: u64,
-    fence: u64,
+    _connection: ConnectionId,
+    _operation: [u8; 16],
+    _store_session: [u8; 16],
+    _revision: u64,
+    _fence: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::connection::transaction) enum Boundary {
@@ -8179,20 +8181,9 @@ pub(in crate::connection::transaction) enum Boundary {
 }
 #[derive(Debug)]
 pub(in crate::connection::transaction) struct Failure {
-    cause: EndpointError,
-    boundary: Boundary,
-    os_error: Option<i32>,
-}
-impl Failure {
-    pub(in crate::connection::transaction) fn os_error(&self) -> Option<i32> {
-        self.os_error
-    }
-    pub(in crate::connection::transaction) fn cause(&self) -> EndpointError {
-        self.cause
-    }
-    pub(in crate::connection::transaction) fn boundary(&self) -> Boundary {
-        self.boundary
-    }
+    _cause: EndpointError,
+    _boundary: Boundary,
+    _os_error: Option<i32>,
 }
 type Result<T> = std::result::Result<T, Failure>;
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -8255,7 +8246,7 @@ pub(in crate::connection::transaction) struct StableFileGuard {
 }
 pub(in crate::connection::transaction) struct PrivateNamespace {
     directory: NativeDirectory,
-    name: CString,
+    _name: CString,
     epoch: [u8; 16],
     identity: ObjectId,
     intended_parent: ObjectId,
@@ -8309,17 +8300,17 @@ pub(in crate::connection::transaction) struct RelocatedObject {
     retained: File,
     namespace: NativeDirectory,
     original_parent: NativeDirectory,
-    original_name: CString,
+    _original_name: CString,
     matches_guard: bool,
     descriptor: Option<Vec<u8>>,
 }
 pub(in crate::connection::transaction) struct NativePublication {
-    source: SourceBinding,
+    _source: SourceBinding,
     epoch: [u8; 16],
-    identity: ObjectId,
-    bytes: Capture,
-    parent: NativeDirectory,
-    name: CString,
+    _identity: ObjectId,
+    _bytes: Capture,
+    _parent: NativeDirectory,
+    _name: CString,
     guard: StableFileGuard,
     stage_descriptor: Option<Vec<u8>>,
 }
@@ -8340,7 +8331,7 @@ pub(in crate::connection::transaction) struct NativeEpoch<'a> {
     source_root: NativeDirectory,
     target_root: NativeDirectory,
     identities: [EndpointIdentity; 2],
-    binding: Option<OperationBinding>,
+    _binding: Option<OperationBinding>,
     nonce: [u8; 16],
     leases: Receiver,
     deadline: Instant,
@@ -8464,9 +8455,9 @@ impl<'a> NativeEpoch<'a> {
         reads: Arc<super::OperationReads>,
     ) -> Result<Self> {
         let fail = |cause| Failure {
-            cause,
-            boundary: Boundary::Untouched,
-            os_error: None,
+            _cause: cause,
+            _boundary: Boundary::Untouched,
+            _os_error: None,
         };
         let source_root = source.native_directory(false).map_err(fail)?;
         let target_root = target.native_directory(true).map_err(fail)?;
@@ -8479,9 +8470,9 @@ impl<'a> NativeEpoch<'a> {
                 e.into()
             };
             Failure {
-                cause,
-                boundary: Boundary::Untouched,
-                os_error,
+                _cause: cause,
+                _boundary: Boundary::Untouched,
+                _os_error: os_error,
             }
         })?;
         Ok(Self {
@@ -8495,7 +8486,7 @@ impl<'a> NativeEpoch<'a> {
             source_root,
             target_root,
             identities: [source.identity(), target.identity()],
-            binding,
+            _binding: binding,
             nonce,
             leases,
             deadline: Instant::now() + lease_process::WORK,
@@ -8518,9 +8509,9 @@ impl<'a> NativeEpoch<'a> {
         self.poisoned = true;
         self.leases.revoke();
         Failure {
-            cause,
-            boundary: self.boundary,
-            os_error: None,
+            _cause: cause,
+            _boundary: self.boundary,
+            _os_error: None,
         }
     }
     fn ep<T>(&mut self, result: std::result::Result<T, EndpointError>) -> Result<T> {
@@ -8537,7 +8528,7 @@ impl<'a> NativeEpoch<'a> {
                 e.into()
             };
             let mut failure = self.failure(cause);
-            failure.os_error = os_error;
+            failure._os_error = os_error;
             failure
         })
     }
@@ -8609,9 +8600,9 @@ impl<'a> NativeEpoch<'a> {
                     .parents
                     .get(usize::from(side == Side::Target))
                     .ok_or_else(|| Failure {
-                        cause: EndpointError::Unverified,
-                        boundary: self.boundary,
-                        os_error: None,
+                        _cause: EndpointError::Unverified,
+                        _boundary: self.boundary,
+                        _os_error: None,
                     })?;
                 return Ok(ParentGuard {
                     directory: original.directory.clone(),
@@ -8819,10 +8810,11 @@ impl<'a> NativeEpoch<'a> {
         self.parent_check(parent)?;
         self.check()
     }
+    #[cfg(test)]
     fn create_namespace(&mut self, target: &ParentGuard) -> Result<PrivateNamespace> {
         self.check()?;
         self.parent_check(target)?;
-        if self.binding.is_none() || target.side != Side::Target || self.namespace_created {
+        if self._binding.is_none() || target.side != Side::Target || self.namespace_created {
             return Err(self.failure(EndpointError::Unsupported));
         }
         let random = self.io(random_id())?;
@@ -8845,7 +8837,7 @@ impl<'a> NativeEpoch<'a> {
         let private = PrivateNamespace {
             directory,
             identity,
-            name,
+            _name: name,
             epoch: self.nonce,
             intended_parent: self.ep(object(target.directory.file()))?,
             intended_name: target.name.clone(),
@@ -8859,20 +8851,20 @@ impl<'a> NativeEpoch<'a> {
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
         ))?;
         let parent_identity = self.ep(object(target.directory.file()))?;
-        let binding = self.binding.as_ref().ok_or(Failure {
-            cause: EndpointError::Unverified,
-            boundary: self.boundary,
-            os_error: None,
+        let binding = self._binding.as_ref().ok_or(Failure {
+            _cause: EndpointError::Unverified,
+            _boundary: self.boundary,
+            _os_error: None,
         })?;
         let mut descriptor_bytes = Vec::new();
         for bytes in [
             b"QNI1".as_slice(),
             &self.nonce,
-            &binding.connection.0,
-            &binding.operation,
-            &binding.store_session,
-            &binding.revision.to_le_bytes(),
-            &binding.fence.to_le_bytes(),
+            &binding._connection.0,
+            &binding._operation,
+            &binding._store_session,
+            &binding._revision.to_le_bytes(),
+            &binding._fence.to_le_bytes(),
             &self.identities[0].volume,
             &self.identities[0].root,
             &self.identities[1].volume,
@@ -9100,7 +9092,7 @@ impl<'a> NativeEpoch<'a> {
             retained,
             namespace: private.directory.clone(),
             original_parent: target.directory.clone(),
-            original_name: target.name.clone(),
+            _original_name: target.name.clone(),
             matches_guard,
             descriptor: None,
         })
@@ -9130,6 +9122,7 @@ impl<'a> NativeEpoch<'a> {
         Ok(guard)
     }
     /// Primitive addition entrypoint. Connected replacement uses the sealed wrapper.
+    #[cfg(test)]
     fn publish_absent(
         &mut self,
         staged: StagedFile,
@@ -9248,12 +9241,12 @@ impl<'a> NativeEpoch<'a> {
             path: target.path.clone(),
         };
         Ok(NativePublication {
-            source: staged.source,
+            _source: staged.source,
             epoch: self.nonce,
-            identity: staged.guard.actual.clone(),
-            bytes,
-            parent: target.directory.clone(),
-            name: target.name.clone(),
+            _identity: staged.guard.actual.clone(),
+            _bytes: bytes,
+            _parent: target.directory.clone(),
+            _name: target.name.clone(),
             guard: staged.guard,
             stage_descriptor: staged.descriptor,
         })
@@ -9311,9 +9304,9 @@ impl<'e> NativeEpoch<'e> {
     ) -> Result<Self> {
         if live.native_kind().is_some() {
             return Err(Failure {
-                cause: EndpointError::Unverified,
-                boundary: Boundary::Untouched,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: Boundary::Untouched,
+                _os_error: None,
             });
         }
         Self::begin_connected_mode(live, source, target, cancel, false)
@@ -9327,9 +9320,9 @@ impl<'e> NativeEpoch<'e> {
     ) -> Result<Self> {
         use crate::connection::model::{Decision, Side as ModelSide};
         let failure = || Failure {
-            cause: EndpointError::Unverified,
-            boundary: Boundary::Untouched,
-            os_error: None,
+            _cause: EndpointError::Unverified,
+            _boundary: Boundary::Untouched,
+            _os_error: None,
         };
         if !(live.action().is_reconciliation()
             || capture_only
@@ -9380,11 +9373,11 @@ impl<'e> NativeEpoch<'e> {
             source,
             target,
             OperationBinding {
-                connection: live.id().connection,
-                operation,
-                store_session: [0; 16],
-                revision: live.admission(),
-                fence: live.fence(),
+                _connection: live.id().connection,
+                _operation: operation,
+                _store_session: [0; 16],
+                _revision: live.admission(),
+                _fence: live.fence(),
             },
             Arc::clone(live.operation_reads()),
         )?;
@@ -9549,9 +9542,9 @@ impl<'e> NativeEpoch<'e> {
                 .witness
                 .as_mut()
                 .ok_or_else(|| Failure {
-                    cause: EndpointError::Unverified,
-                    boundary: self.boundary,
-                    os_error: None,
+                    _cause: EndpointError::Unverified,
+                    _boundary: self.boundary,
+                    _os_error: None,
                 })?
                 .remember_created(name, evidence);
             self.io(result)?;
@@ -9568,9 +9561,9 @@ impl<'e> NativeEpoch<'e> {
         if self.witness.is_some() {
             let current = self.descriptor_snapshot(directory, name, expected)?;
             let witness = self.witness.as_mut().ok_or_else(|| Failure {
-                cause: EndpointError::Unverified,
-                boundary: self.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: self.boundary,
+                _os_error: None,
             })?;
             if let Some(original) = witness.descriptor(name) {
                 if original.identity != current.identity
@@ -9699,9 +9692,9 @@ impl<'e> NativeEpoch<'e> {
             .connected
             .as_ref()
             .ok_or_else(|| Failure {
-                cause: EndpointError::Unverified,
-                boundary: self.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: self.boundary,
+                _os_error: None,
             })?
             .direction;
         let source_state = if let Some(guard) = source_guard {
@@ -9793,7 +9786,7 @@ impl<'e> NativeEpoch<'e> {
         self.barriers(&directory, &root)?;
         let private = PrivateNamespace {
             directory,
-            name,
+            _name: name,
             epoch: self.nonce,
             identity,
             intended_parent: self.ep(object(target.directory.file()))?,
@@ -10121,9 +10114,9 @@ impl<'e> NativeEpoch<'e> {
             &private.directory,
             c"displaced-intent",
             displaced.descriptor.as_ref().ok_or_else(|| Failure {
-                cause: EndpointError::Unverified,
-                boundary: self.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: self.boundary,
+                _os_error: None,
             })?,
         )?;
         self.namespace_check(private)?;
@@ -10325,9 +10318,9 @@ impl NativeEpoch<'_> {
             .connected
             .as_ref()
             .ok_or_else(|| Failure {
-                cause: EndpointError::Unverified,
-                boundary: self.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: self.boundary,
+                _os_error: None,
             })?
             .direction;
         let model_side = if side == Side::Source {
@@ -10735,6 +10728,7 @@ impl<'e> NativeEpoch<'e> {
         clippy::needless_pass_by_value,
         reason = "Consume the one-shot admission or candidate even when validation only borrows its fields."
     )]
+    #[cfg(test)]
     pub(in crate::connection::transaction) fn publish_connected<'a>(
         &'a mut self,
         live: &LiveOperation,
@@ -10947,6 +10941,7 @@ impl super::NativeOutcome<'_, '_> {
 }
 
 impl<'e> NativeEpoch<'e> {
+    #[cfg(test)]
     pub(in crate::connection::transaction) fn deletion_outcome<'a>(
         &'a mut self,
         live: &LiveOperation,
@@ -11268,9 +11263,9 @@ impl<'e> NativeEpoch<'e> {
     ) -> Result<Self> {
         if context.native_kind().is_some() {
             return Err(Failure {
-                cause: EndpointError::Unverified,
-                boundary: Boundary::Untouched,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: Boundary::Untouched,
+                _os_error: None,
             });
         }
         Self::begin_recovery_mode(context, source, target, cancel, false)
@@ -11284,9 +11279,9 @@ impl<'e> NativeEpoch<'e> {
     ) -> Result<Self> {
         use crate::connection::model::{Decision, Side as ModelSide};
         let failure = || Failure {
-            cause: EndpointError::Unverified,
-            boundary: Boundary::Untouched,
-            os_error: None,
+            _cause: EndpointError::Unverified,
+            _boundary: Boundary::Untouched,
+            _os_error: None,
         };
         if !(context.action().is_reconciliation()
             || capture_only
@@ -11328,11 +11323,11 @@ impl<'e> NativeEpoch<'e> {
             source,
             target,
             OperationBinding {
-                connection: context.id().connection,
-                operation,
-                store_session: [0; 16],
-                revision: context.admission(),
-                fence: context.fence(),
+                _connection: context.id().connection,
+                _operation: operation,
+                _store_session: [0; 16],
+                _revision: context.admission(),
+                _fence: context.fence(),
             },
             Arc::clone(context.reads()),
         )?;
@@ -11605,7 +11600,7 @@ impl<'e> NativeEpoch<'e> {
         }
         let private = PrivateNamespace {
             directory,
-            name,
+            _name: name,
             epoch: self.nonce,
             identity,
             intended_parent: self.ep(object(target.directory.file()))?,
@@ -11643,9 +11638,9 @@ impl<'e> NativeEpoch<'e> {
             .witness
             .as_mut()
             .ok_or_else(|| Failure {
-                cause: EndpointError::Unverified,
-                boundary: self.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: self.boundary,
+                _os_error: None,
             })?
             .set_inventory(&inventory);
         self.io(result)?;
@@ -11783,12 +11778,12 @@ impl<'e> NativeEpoch<'e> {
             (
                 None,
                 Some(NativePublication {
-                    source: binding,
+                    _source: binding,
                     epoch: self.nonce,
-                    identity: guard.actual.clone(),
-                    bytes,
-                    parent: target.directory.clone(),
-                    name: target.name.clone(),
+                    _identity: guard.actual.clone(),
+                    _bytes: bytes,
+                    _parent: target.directory.clone(),
+                    _name: target.name.clone(),
                     guard,
                     stage_descriptor: Some(stage_bytes),
                 }),
@@ -12074,6 +12069,7 @@ impl<'e> super::RecoveredEvidence<'e> {
         clippy::needless_pass_by_value,
         reason = "Consume the one-shot admission or candidate even when validation only borrows its fields."
     )]
+    #[cfg(test)]
     pub(in crate::connection::transaction) fn complete_addition<'a>(
         &'a mut self,
         live: &LiveOperation,
@@ -12230,7 +12226,7 @@ impl NativeEpoch<'_> {
                 retained,
                 namespace: private.directory.clone(),
                 original_parent: target.directory.clone(),
-                original_name: target.name.clone(),
+                _original_name: target.name.clone(),
                 matches_guard: true,
                 descriptor: Some(bytes),
             },
@@ -12488,7 +12484,7 @@ impl<'e> NativeEpoch<'e> {
         }
         let private = PrivateNamespace {
             directory,
-            name,
+            _name: name,
             epoch: self.nonce,
             identity,
             intended_parent: self.ep(object(target.directory.file()))?,
@@ -14750,7 +14746,7 @@ impl NativeEpoch<'_> {
             let parent = parents.get(side).ok_or(StoreError::Corrupt)?;
             let private = PrivateNamespace {
                 directory,
-                name,
+                _name: name,
                 epoch: self.nonce,
                 identity,
                 intended_parent: object(parent.directory.file())
@@ -14978,11 +14974,11 @@ impl<'e> NativeEpoch<'e> {
             source,
             target,
             OperationBinding {
-                connection: live.id().connection,
-                operation,
-                store_session: [0; 16],
-                revision: live.admission(),
-                fence: live.fence(),
+                _connection: live.id().connection,
+                _operation: operation,
+                _store_session: [0; 16],
+                _revision: live.admission(),
+                _fence: live.fence(),
             },
             Arc::clone(live.operation_reads()),
         )
@@ -15167,9 +15163,9 @@ impl super::NativeRestore<'_> {
                         &private.directory,
                         c"displaced-intent",
                         displaced.descriptor.as_ref().ok_or_else(|| Failure {
-                            cause: EndpointError::Unverified,
-                            boundary: Boundary::Uncertain,
-                            os_error: None,
+                            _cause: EndpointError::Unverified,
+                            _boundary: Boundary::Uncertain,
+                            _os_error: None,
                         })?,
                     )?;
                 }
@@ -15213,9 +15209,9 @@ impl super::NativeRestore<'_> {
                                 .staged
                                 .as_ref()
                                 .ok_or_else(|| Failure {
-                                    cause: EndpointError::Unverified,
-                                    boundary: Boundary::Uncertain,
-                                    os_error: None,
+                                    _cause: EndpointError::Unverified,
+                                    _boundary: Boundary::Uncertain,
+                                    _os_error: None,
                                 })?
                                 .guard,
                         )?
@@ -15291,11 +15287,12 @@ impl super::NativeRestore<'_> {
         }
         Ok((intent.clone(), stage))
     }
+    #[cfg(test)]
     fn namespace_name(&self) -> std::result::Result<&str, StoreError> {
         self.private
             .as_ref()
             .ok_or(StoreError::RecoveryRequired)?
-            .name
+            ._name
             .to_str()
             .map_err(|_| StoreError::Corrupt)
     }
@@ -15378,7 +15375,7 @@ impl super::NativeRestore<'_> {
             self.epoch.barriers(&directory, &root)?;
             let private = PrivateNamespace {
                 directory,
-                name,
+                _name: name,
                 epoch: self.epoch.nonce,
                 identity,
                 intended_parent: self.epoch.ep(object(self.target.directory.file()))?,
@@ -15709,9 +15706,9 @@ impl super::NativeRestore<'_> {
                         .staged
                         .as_ref()
                         .ok_or_else(|| Failure {
-                            cause: EndpointError::Unverified,
-                            boundary: Boundary::Uncertain,
-                            os_error: None,
+                            _cause: EndpointError::Unverified,
+                            _boundary: Boundary::Uncertain,
+                            _os_error: None,
                         })?
                         .guard,
                 )?
@@ -15742,9 +15739,9 @@ impl super::NativeRestore<'_> {
                     Some(
                         d::decode(sealed.displaced.descriptor.as_deref().ok_or_else(|| {
                             Failure {
-                                cause: EndpointError::Unverified,
-                                boundary: Boundary::Uncertain,
-                                os_error: None,
+                                _cause: EndpointError::Unverified,
+                                _boundary: Boundary::Uncertain,
+                                _os_error: None,
                             }
                         })?)
                         .map_err(|_| self.epoch.failure(EndpointError::Unverified))?,
@@ -15955,11 +15952,11 @@ impl<'e> NativeEpoch<'e> {
             source,
             target,
             OperationBinding {
-                connection: context.id().connection,
-                operation,
-                store_session: [0; 16],
-                revision: context.admission(),
-                fence: context.fence(),
+                _connection: context.id().connection,
+                _operation: operation,
+                _store_session: [0; 16],
+                _revision: context.admission(),
+                _fence: context.fence(),
             },
             Arc::clone(context.reads()),
         )
@@ -16064,7 +16061,7 @@ impl<'e> NativeEpoch<'e> {
             }
             let private = PrivateNamespace {
                 directory,
-                name,
+                _name: name,
                 epoch: epoch.nonce,
                 identity,
                 intended_parent: epoch.ep(object(target.directory.file()))?,
@@ -16103,14 +16100,14 @@ impl<'e> NativeEpoch<'e> {
                 .as_ref()
                 .map(|(value, _)| {
                     d::decode(value.descriptor.as_deref().ok_or_else(|| Failure {
-                        cause: EndpointError::Unverified,
-                        boundary: Boundary::Uncertain,
-                        os_error: None,
+                        _cause: EndpointError::Unverified,
+                        _boundary: Boundary::Uncertain,
+                        _os_error: None,
                     })?)
                     .map_err(|_| Failure {
-                        cause: EndpointError::Unverified,
-                        boundary: Boundary::Uncertain,
-                        os_error: None,
+                        _cause: EndpointError::Unverified,
+                        _boundary: Boundary::Uncertain,
+                        _os_error: None,
                     })
                 })
                 .transpose()?;
@@ -16370,9 +16367,9 @@ impl super::NativeRestore<'_> {
                     &private.directory,
                     c"displaced-intent",
                     displaced.descriptor.as_deref().ok_or_else(|| Failure {
-                        cause: EndpointError::Unverified,
-                        boundary: Boundary::Uncertain,
-                        os_error: None,
+                        _cause: EndpointError::Unverified,
+                        _boundary: Boundary::Uncertain,
+                        _os_error: None,
                     })?,
                 )?;
             }
@@ -16740,11 +16737,11 @@ impl<'e> NativeEpoch<'e> {
             left,
             right,
             OperationBinding {
-                connection: context.id().connection,
-                operation,
-                store_session: [0; 16],
-                revision: context.admission(),
-                fence: context.fence(),
+                _connection: context.id().connection,
+                _operation: operation,
+                _store_session: [0; 16],
+                _revision: context.admission(),
+                _fence: context.fence(),
             },
             Arc::clone(context.reads()),
         )
@@ -17103,11 +17100,11 @@ impl<'e> NativeEpoch<'e> {
             source,
             target,
             OperationBinding {
-                connection: context.id().connection,
-                operation,
-                store_session: [0; 16],
-                revision: context.admission(),
-                fence: context.fence(),
+                _connection: context.id().connection,
+                _operation: operation,
+                _store_session: [0; 16],
+                _revision: context.admission(),
+                _fence: context.fence(),
             },
             Arc::clone(context.reads()),
         )
@@ -17468,9 +17465,9 @@ impl<'e> NativeEpoch<'e> {
     ) -> Result<Self> {
         if context.endpoints() != &[left.identity(), right.identity()] {
             return Err(Failure {
-                cause: EndpointError::IdentityChanged,
-                boundary: Boundary::Untouched,
-                os_error: None,
+                _cause: EndpointError::IdentityChanged,
+                _boundary: Boundary::Untouched,
+                _os_error: None,
             });
         }
         let mut operation = [0; 16];
@@ -17479,11 +17476,11 @@ impl<'e> NativeEpoch<'e> {
             left,
             right,
             OperationBinding {
-                connection: context.id().connection,
-                operation,
-                store_session: [0; 16],
-                revision: context.admission(),
-                fence: context.fence(),
+                _connection: context.id().connection,
+                _operation: operation,
+                _store_session: [0; 16],
+                _revision: context.admission(),
+                _fence: context.fence(),
             },
             Arc::clone(context.reads()),
         )?;
@@ -18018,9 +18015,9 @@ impl NativeEpoch<'_> {
             return Ok(());
         }
         let binding = self.connected.as_ref().ok_or(Failure {
-            cause: EndpointError::Unverified,
-            boundary: self.boundary,
-            os_error: None,
+            _cause: EndpointError::Unverified,
+            _boundary: self.boundary,
+            _os_error: None,
         })?;
         if admission.connection != binding.id.connection.0
             || admission.operation != binding.id.serial

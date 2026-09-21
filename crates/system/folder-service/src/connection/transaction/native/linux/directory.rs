@@ -220,9 +220,9 @@ impl DirectoryAncestors {
             .parents
             .get(usize::from(side == super::Side::Target))
             .ok_or(Failure {
-                cause: EndpointError::Unverified,
-                boundary: Boundary::Untouched,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: Boundary::Untouched,
+                _os_error: None,
             })?;
         Ok(ParentGuard {
             directory: original.directory.clone(),
@@ -243,9 +243,9 @@ impl<'a> NativeEpoch<'a> {
     ) -> super::Result<Self> {
         if live.native_kind() != Some(NativeOperationKind::DirectoryV1) {
             return Err(Failure {
-                cause: EndpointError::Unverified,
-                boundary: Boundary::Untouched,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: Boundary::Untouched,
+                _os_error: None,
             });
         }
         Self::begin_connected_mode(live, source, target, cancel, false)
@@ -258,9 +258,9 @@ impl<'a> NativeEpoch<'a> {
     ) -> super::Result<Self> {
         if context.native_kind() != Some(NativeOperationKind::DirectoryV1) {
             return Err(Failure {
-                cause: EndpointError::Unverified,
-                boundary: Boundary::Untouched,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: Boundary::Untouched,
+                _os_error: None,
             });
         }
         Self::begin_recovery_mode(context, source, target, cancel, false)
@@ -275,15 +275,15 @@ impl<'a> NativeEpoch<'a> {
     }
     pub(super) fn prove_directory_ancestors(&mut self, bytes: Option<&[u8]>) -> super::Result<()> {
         let admission = d::Admission::decode(bytes.ok_or(Failure {
-            cause: EndpointError::Unverified,
-            boundary: self.boundary,
-            os_error: None,
+            _cause: EndpointError::Unverified,
+            _boundary: self.boundary,
+            _os_error: None,
         })?)
         .map_err(|_| self.failure(EndpointError::Unverified))?;
         let binding = self.connected.as_ref().ok_or(Failure {
-            cause: EndpointError::Unverified,
-            boundary: self.boundary,
-            os_error: None,
+            _cause: EndpointError::Unverified,
+            _boundary: self.boundary,
+            _os_error: None,
         })?;
         if admission.connection != binding.id.connection.0
             || admission.operation != binding.id.serial
@@ -335,9 +335,9 @@ impl<'a> NativeEpoch<'a> {
                     1 - usize::from(proof.admission.direction)
                 };
                 let expected = proof.admission.chains.get(logical).ok_or(Failure {
-                    cause: EndpointError::Unverified,
-                    boundary: self.boundary,
-                    os_error: None,
+                    _cause: EndpointError::Unverified,
+                    _boundary: self.boundary,
+                    _os_error: None,
                 })?;
                 if original
                     .chain
@@ -462,9 +462,9 @@ impl<'a> DirectoryPrepared<'a> {
         session: &crate::connection::transaction::TransactionSession,
     ) -> super::Result<Self> {
         let cancel = epoch.cancel_read.ok_or(Failure {
-            cause: EndpointError::Unverified,
-            boundary: epoch.boundary,
-            os_error: None,
+            _cause: EndpointError::Unverified,
+            _boundary: epoch.boundary,
+            _os_error: None,
         })?;
         let source_parent = epoch.pin_parent(super::Side::Source, &live.intent().path)?;
         let target_parent = epoch.pin_parent(super::Side::Target, &live.intent().path)?;
@@ -473,9 +473,9 @@ impl<'a> DirectoryPrepared<'a> {
             .map_err(|_| epoch.failure(EndpointError::Unverified))?;
         epoch.admitted(live, &step, StepKind::Namespace)?;
         let bytes = live.native_identity().ok_or(Failure {
-            cause: EndpointError::Unverified,
-            boundary: epoch.boundary,
-            os_error: None,
+            _cause: EndpointError::Unverified,
+            _boundary: epoch.boundary,
+            _os_error: None,
         })?;
         let admission =
             d::Admission::decode(bytes).map_err(|_| epoch.failure(EndpointError::Unverified))?;
@@ -487,9 +487,9 @@ impl<'a> DirectoryPrepared<'a> {
             .get(usize::from(admission.direction))
             .and_then(Option::as_ref)
             .ok_or(Failure {
-                cause: EndpointError::Unverified,
-                boundary: epoch.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: epoch.boundary,
+                _os_error: None,
             })?;
         let source = epoch.source_directory(&source_parent, &expected.object)?;
         for (parent, index) in [
@@ -572,9 +572,9 @@ impl<'a> DirectoryPrepared<'a> {
             .witness
             .as_mut()
             .ok_or(Failure {
-                cause: EndpointError::Unverified,
-                boundary: epoch.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: epoch.boundary,
+                _os_error: None,
             })?
             .watch_directory(Arc::clone(&directory), false);
         epoch.io(result)?;
@@ -643,9 +643,9 @@ impl DirectoryOwner<'_> {
             .get(usize::from(self.admission.direction))
             .and_then(Option::as_ref)
             .ok_or(Failure {
-                cause: EndpointError::Unverified,
-                boundary: self.epoch.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: self.epoch.boundary,
+                _os_error: None,
             })?;
         let source_name = self.epoch.io(open_at(
             self.source_parent.directory.file(),
@@ -791,14 +791,14 @@ impl<'a> DirectoryContinuation<'a> {
             .descriptors()
             .map_err(|_| epoch.failure(EndpointError::Unverified))?;
         let stage = stage.ok_or(Failure {
-            cause: EndpointError::Unverified,
-            boundary: epoch.boundary,
-            os_error: None,
+            _cause: EndpointError::Unverified,
+            _boundary: epoch.boundary,
+            _os_error: None,
         })?;
         let admission_bytes = context.native_identity().ok_or(Failure {
-            cause: EndpointError::Unverified,
-            boundary: epoch.boundary,
-            os_error: None,
+            _cause: EndpointError::Unverified,
+            _boundary: epoch.boundary,
+            _os_error: None,
         })?;
         let admission = d::Admission::decode(admission_bytes)
             .map_err(|_| epoch.failure(EndpointError::Unverified))?;
@@ -878,9 +878,9 @@ impl<'a> DirectoryContinuation<'a> {
             .witness
             .as_mut()
             .ok_or(Failure {
-                cause: EndpointError::Unverified,
-                boundary: epoch.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: epoch.boundary,
+                _os_error: None,
             })?
             .watch_directory(
                 Arc::clone(&directory),
@@ -912,9 +912,9 @@ impl<'a> DirectoryContinuation<'a> {
             .witness
             .as_mut()
             .ok_or(Failure {
-                cause: EndpointError::Unverified,
-                boundary: epoch.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: epoch.boundary,
+                _os_error: None,
             })?
             .set_inventory(&names);
         epoch.io(set)?;
@@ -1084,9 +1084,9 @@ impl DirectoryOutcome<'_> {
             let stage = d::decode(&self.owner.stage)
                 .map_err(|_| self.owner.epoch.failure(EndpointError::Unverified))?;
             let bytes = self.owner.outcome.as_ref().ok_or(Failure {
-                cause: EndpointError::Unverified,
-                boundary: self.owner.epoch.boundary,
-                os_error: None,
+                _cause: EndpointError::Unverified,
+                _boundary: self.owner.epoch.boundary,
+                _os_error: None,
             })?;
             let outcome = d::decode(bytes)
                 .map_err(|_| self.owner.epoch.failure(EndpointError::Unverified))?;
@@ -1160,9 +1160,9 @@ impl DirectoryOutcome<'_> {
                         .get(logical)
                         .and_then(Option::as_ref)
                         .ok_or(Failure {
-                            cause: EndpointError::Unverified,
-                            boundary: self.owner.epoch.boundary,
-                            os_error: None,
+                            _cause: EndpointError::Unverified,
+                            _boundary: self.owner.epoch.boundary,
+                            _os_error: None,
                         })?
                         .object
                         .clone()
@@ -1504,6 +1504,7 @@ impl DirectoryBoundary<'_> {
     }
 }
 
+#[cfg(test)]
 pub(in crate::connection) fn execute_next_directory(
     store: &mut ConnectionStore,
     id: crate::connection::model::ConnectionId,

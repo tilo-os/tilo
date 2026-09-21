@@ -78,16 +78,18 @@ fn windows_metadata_policy(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 #[path = "endpoint/linux/ntfs.rs"]
 pub mod ntfs;
 
+#[cfg(test)]
 pub enum ReadEndpoint {
     Local(PinnedEndpoint),
     #[cfg(target_os = "linux")]
     Ntfs(Arc<ntfs::NtfsReadEndpoint>),
 }
 
+#[cfg(test)]
 pub fn observe_read(endpoint: &ReadEndpoint, cancelled: &AtomicBool) -> ObservedTree {
     match endpoint {
         ReadEndpoint::Local(local) => observe(local, cancelled),
@@ -178,13 +180,12 @@ impl EndpointLocator {
 pub struct EndpointProbe {
     pub identity: EndpointIdentity,
     pub locator: EndpointLocator,
+    #[cfg(test)]
     pub capabilities: Capabilities,
-    /// Ownership and host security labels remain local policy; ACLs, extra
-    /// streams and custom xattrs are unsupported per-path fidelity issues.
-    pub metadata_policy: &'static str,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
+    #[cfg(test)]
     Read,
     Write,
 }
@@ -193,14 +194,14 @@ pub enum Access {
 #[derive(Default)]
 pub struct EndpointContext {
     locators: BTreeMap<([u8; 32], [u8; 32]), EndpointLocator>,
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", test))]
     ntfs: BTreeMap<([u8; 32], [u8; 32]), Arc<ntfs::NtfsReadEndpoint>>,
 }
 impl EndpointContext {
     /// Register one authenticated administrative session without granting public safe-read support.
     /// # Errors
     /// Refuses identity mismatch, duplicate live authorities and resource exhaustion.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", test))]
     pub fn register_ntfs_session(
         &mut self,
         client: Arc<std::sync::Mutex<qos_ntfs_protocol::client::Client>>,
@@ -228,11 +229,12 @@ impl EndpointContext {
     }
     /// # Errors
     /// Refuses missing or invalidated local identities; native operations reattest through their retained broker.
+    #[cfg(test)]
     pub fn open_read_endpoint(
         &self,
         expected: &EndpointIdentity,
     ) -> Result<ReadEndpoint, EndpointError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", test))]
         if let Some(endpoint) = self.ntfs.get(&(expected.volume, expected.root)) {
             return Ok(ReadEndpoint::Ntfs(Arc::clone(endpoint)));
         }
@@ -250,11 +252,11 @@ impl EndpointContext {
         expected: EndpointIdentity,
     ) -> Result<(), EndpointError> {
         let key = (expected.volume, expected.root);
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", test))]
         if self.ntfs.contains_key(&key) {
             return Err(EndpointError::AmbiguousIdentity);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", test))]
         if self.locators.len().saturating_add(self.ntfs.len()) >= MAX_ENDPOINTS
             && !self.locators.contains_key(&key)
         {
@@ -286,7 +288,7 @@ impl EndpointContext {
         expected: &EndpointIdentity,
         access: Access,
     ) -> Result<PinnedEndpoint, EndpointError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", test))]
         if self.ntfs.contains_key(&(expected.volume, expected.root)) {
             return Err(if access == Access::Write {
                 EndpointError::ReadOnly
@@ -417,8 +419,8 @@ pub fn probe_endpoint(path: &Path) -> Result<EndpointProbe, EndpointError> {
     Ok(EndpointProbe {
         identity: evidence.identity,
         locator,
+        #[cfg(test)]
         capabilities: evidence.capabilities,
-        metadata_policy: "Content and executable bit only; ownership and security labels remain host-local. Windows accepts only unprotected auto-inherited baseline owner/admin full-control ACLs, without preserving them; custom or unknown ACLs, xattrs, streams and special file types require explicit handling.",
     })
 }
 #[cfg(any(target_os = "linux", windows))]

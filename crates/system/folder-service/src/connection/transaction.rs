@@ -83,6 +83,7 @@ impl InitialPreview {
         Ok(())
     }
     /// Private complete-comparison acceptance. The worker route is intentionally unchanged.
+    #[cfg(test)]
     pub(super) fn accept_complete(
         self,
         store: &ConnectionStore,
@@ -108,6 +109,7 @@ impl InitialPreview {
         }
         self.accept_complete_observed(store, session, fresh_source, fresh_destination, lease)
     }
+    #[cfg(test)]
     fn accept_complete_observed(
         self,
         store: &ConnectionStore,
@@ -341,6 +343,7 @@ pub(super) fn initial_preview_for_test(
 }
 
 /// Move-only, nonserializable consent owner; persisted review pages cannot mint it.
+#[cfg(test)]
 pub(super) struct ReviewedInitialSet {
     record: super::store::ConnectionRecord,
     lifetime: Weak<()>,
@@ -351,6 +354,7 @@ pub(super) struct ReviewedInitialSet {
     destination: super::model::ObservedTree,
     lease: super::store::ReviewReadLease,
 }
+#[cfg(test)]
 impl ReviewedInitialSet {
     pub(super) fn record(&self) -> &super::store::ConnectionRecord {
         &self.record
@@ -446,6 +450,7 @@ impl TransactionSession {
             gate,
         }
     }
+    #[cfg(test)]
     pub(super) fn request_disconnect(&self) {
         self.gate.close();
     }
@@ -822,8 +827,6 @@ pub(super) enum TransactionOutcome {
         error: StoreError,
     },
 }
-#[cfg(target_os = "linux")]
-pub(super) use native::execute_next_directory;
 #[cfg(target_os = "linux")]
 pub(super) use native::linux::{execute_next_regular, execute_reviewed_initial, resolve_regular};
 

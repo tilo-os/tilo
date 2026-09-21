@@ -324,6 +324,7 @@ impl DirectoryChainSelectionV1 {
             terminal: DirectoryChainTerminalV1::DirectoryAdd,
         })
     }
+    #[cfg(test)]
     pub(in crate::connection) fn validate_observations(
         &self,
         baseline: &VerifiedBaseline,

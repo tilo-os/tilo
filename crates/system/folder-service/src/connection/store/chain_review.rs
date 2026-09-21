@@ -675,6 +675,7 @@ impl ConnectionStore {
 }
 
 impl ConnectionStore {
+    #[cfg(test)]
     pub(in crate::connection) fn review_read_lease(&self) -> Result<ReviewReadLease, StoreError> {
         self.storage.read_lease(true)
     }
@@ -684,6 +685,7 @@ impl ConnectionStore {
     ) -> Result<Vec<u8>, StoreError> {
         format::encode(&self.connection(id)?)
     }
+    #[cfg(test)]
     pub(in crate::connection) fn validate_review_owner(
         &self,
         record: &ConnectionRecord,
@@ -715,6 +717,7 @@ impl ConnectionStore {
         Ok(())
     }
     /// Consumes explicit fresh consent and returns only a durable metadata acknowledgement.
+    #[cfg(test)]
     pub(in crate::connection) fn accept_initial_set(
         &mut self,
         owner: super::super::transaction::ReviewedInitialSet,

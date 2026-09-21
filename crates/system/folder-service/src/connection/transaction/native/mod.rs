@@ -7,7 +7,7 @@ pub(in crate::connection) use directory::{DirectoryBaselineValue, VerifiedDirect
 #[cfg(target_os = "linux")]
 pub(in crate::connection) use linux::directory::{
     DirectoryBoundary, DirectoryContinuation, DirectoryOutcome, DirectoryPrepared,
-    DirectoryUntouched, NativeDirectoryAdmission, execute_next_directory,
+    DirectoryUntouched, NativeDirectoryAdmission,
 };
 #[cfg(target_os = "linux")]
 pub(super) mod linux;
@@ -87,10 +87,18 @@ pub(in crate::connection) struct NeverBegun<'e> {
 
 #[cfg(target_os = "linux")]
 pub(in crate::connection) enum NativeSafeBoundary<'e> {
+    #[expect(
+        dead_code,
+        reason = "retained no-mutation admission boundary; validation must continue to represent and verify it fail-closed"
+    )]
     NeverBegun(NeverBegun<'e>),
     StagedOnly(OwnedBoundary<'e>),
     DisplacedAccounted(OwnedBoundary<'e>),
     PublishedAccounted(OwnedBoundary<'e>),
+    #[expect(
+        dead_code,
+        reason = "retained indeterminate native boundary; validation must continue to reject it as recovery-required"
+    )]
     Uncertain,
 }
 #[cfg(target_os = "linux")]
@@ -534,6 +542,7 @@ struct ReadBudget {
     deadline: std::time::Instant,
 }
 impl ReadBudget {
+    #[cfg(test)]
     fn for_operation(reads: &std::sync::Arc<OperationReads>, deadline: std::time::Instant) -> Self {
         Self {
             reads: std::sync::Arc::clone(reads),

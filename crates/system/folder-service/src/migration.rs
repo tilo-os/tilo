@@ -706,6 +706,7 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
 /// Returns an error for invalid/overlapping grants, an existing destination, or
 /// failure to create the fresh root. Failures after creation are per-path report
 /// entries; verified outputs remain available for later explicit resumption.
+#[cfg(test)]
 pub fn copy_folder(
     source: &Path,
     destination: &Path,

@@ -2,7 +2,9 @@
 use super::*;
 #[cfg(target_os = "linux")]
 use crate::connected::ConflictChoice;
-use crate::connected::{RecoveryId, SelectionReviewId};
+#[cfg(not(target_os = "linux"))]
+use crate::connected::RecoveryId;
+use crate::connected::SelectionReviewId;
 
 // Removing the facade bound would let callers monopolize the serialized owner.
 #[test]

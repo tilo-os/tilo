@@ -15,6 +15,7 @@ mod worker_projection;
 #[cfg(test)]
 pub(super) use worker_projection::test_support as worker_projection_tests;
 mod storage;
+#[cfg(test)]
 pub(super) use storage::ReadLease as ReviewReadLease;
 #[cfg(test)]
 mod tests;
@@ -209,10 +210,12 @@ pub(super) struct DisconnectFence {
 use super::super::migration_journal_log as framing;
 use format::{Change, Connection, Event, Row};
 pub(super) use format::{DirectoryAncestorPatchV1, DirectoryBoundaryFact, ExistingAncestorPatchV1};
+#[cfg(test)]
+use std::io::Read;
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Seek, SeekFrom, Write},
 };
 // Historical per-open correlation only; process-id reuse can collide across
 // processes. This tag is never tested for admission or reconstructed authority.
@@ -899,6 +902,7 @@ impl ConnectionStore {
         self.append(Change::Create { record })?;
         Ok(self.ack(value))
     }
+    #[cfg(any(windows, test))]
     pub(super) fn begin_intent(
         &mut self,
         intent: OperationIntent,
@@ -1218,6 +1222,7 @@ impl ConnectionStore {
         Ok(projection)
     }
     /// Historical acknowledgement only; supplies no current native authority.
+    #[cfg(test)]
     pub(super) fn selected_collision_accounting(
         &self,
         id: OperationId,
@@ -2713,6 +2718,7 @@ impl ConnectionStore {
         Ok(self.ack(receipt))
     }
     /// Durable accounting only. This query supplies no resumed live authority.
+    #[cfg(test)]
     pub(super) fn selected_application(
         &self,
         id: OperationId,
@@ -4529,7 +4535,10 @@ impl ConnectionStore {
     ) -> Result<(), StoreError> {
         let _read_lease = self.storage.read_lease(false)?;
         let live_append = baseline.live_append();
+        #[cfg(test)]
         let consent = matches!(&baseline, BaselineAppendCheck::InitialReview(_));
+        #[cfg(not(test))]
+        let consent = false;
         if matches!(change, Change::InitialReviewAccepted { .. }) && live_append && !consent {
             return Err(StoreError::RecoveryRequired);
         }
@@ -4852,6 +4861,7 @@ enum VerificationMode<'a> {
 }
 // The host-only variant probes shared append ordering, never native validity.
 enum BaselineAppendCheck<'a, 'proof> {
+    #[cfg(test)]
     InitialReview(&'a super::transaction::ReviewedInitialSet),
     None(std::marker::PhantomData<&'a &'proof ()>),
     #[cfg(target_os = "linux")]
@@ -4936,6 +4946,7 @@ impl BaselineAppendCheck<'_, '_> {
         // Non-Linux production builds have only the no-op legacy variant.
         let _ = (store, change);
         match self {
+            #[cfg(test)]
             Self::InitialReview(owner) => {
                 let Change::InitialReviewAccepted { review, .. } = change else {
                     return Err(StoreError::StaleRevision);
