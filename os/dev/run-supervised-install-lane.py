@@ -418,6 +418,65 @@ def stream_tree(context, namespace, pod, container, destination, archive):
                     '--', 'sh', '-ceu', script, 'sh', destination), archive, timeout=300, text=False)
 
 
+def creator_input_archive(helpers, public, installer_bootc):
+    """Wrap independently authenticated creator inputs for one remote exec."""
+    inputs = {'helpers.tar': helpers, 'public-trust.tar': public,
+              'installer-bootc-helper.tar': installer_bootc}
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode='w') as archive:
+        for name, content in inputs.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content); info.mode = 0o600
+            archive.addfile(info, io.BytesIO(content))
+    return out.getvalue(), {name: hashlib.sha256(content).hexdigest()
+                            for name, content in inputs.items()}
+
+
+def stream_creator_inputs(context, namespace, pod, container, helpers, public,
+                          installer_bootc):
+    """Stage all non-secret creator inputs in one fail-closed round trip."""
+    archive, identities = creator_input_archive(helpers, public, installer_bootc)
+    script = r'''set -euo pipefail
+umask 077
+for destination in /work/helpers /work/public-trust /work/installer-bootc-helper; do
+  test ! -e "$destination" && test ! -L "$destination"
+done
+stage=$(mktemp -d /work/.creator-inputs.XXXXXX)
+own_helpers=0; own_public=0; own_installer=0
+cleanup() {
+  rm -rf -- "$stage"
+  test "$own_helpers" = 0 || rm -rf -- /work/helpers
+  test "$own_public" = 0 || rm -rf -- /work/public-trust
+  test "$own_installer" = 0 || rm -rf -- /work/installer-bootc-helper
+}
+trap cleanup EXIT HUP INT TERM
+tar --no-same-owner -C "$stage" -xf -
+test "$(find "$stage" -mindepth 1 -maxdepth 1 -type f -printf x | wc -c)" = 3
+test "$(find "$stage" -mindepth 1 -maxdepth 1 ! -type f -print -quit)" = ''
+printf '%s  %s\n' "$1" "$stage/helpers.tar" | sha256sum -c - >/dev/null
+printf '%s  %s\n' "$2" "$stage/public-trust.tar" | sha256sum -c - >/dev/null
+printf '%s  %s\n' "$3" "$stage/installer-bootc-helper.tar" | sha256sum -c - >/dev/null
+mkdir -m 0700 "$stage/helpers" "$stage/public-trust" "$stage/installer-bootc-helper"
+tar --no-same-owner -C "$stage/helpers" -xf "$stage/helpers.tar"
+tar --no-same-owner -C "$stage/public-trust" -xf "$stage/public-trust.tar"
+tar --no-same-owner -C "$stage/installer-bootc-helper" -xf "$stage/installer-bootc-helper.tar"
+test -n "$(find "$stage/helpers" -mindepth 1 -print -quit)"
+test -n "$(find "$stage/public-trust" -mindepth 1 -print -quit)"
+test -n "$(find "$stage/installer-bootc-helper" -mindepth 1 -print -quit)"
+mv -T -n "$stage/helpers" /work/helpers
+test ! -e "$stage/helpers"; own_helpers=1
+mv -T -n "$stage/public-trust" /work/public-trust
+test ! -e "$stage/public-trust"; own_public=1
+mv -T -n "$stage/installer-bootc-helper" /work/installer-bootc-helper
+test ! -e "$stage/installer-bootc-helper"; own_installer=1
+own_helpers=0; own_public=0; own_installer=0
+'''
+    names = ('helpers.tar', 'public-trust.tar', 'installer-bootc-helper.tar')
+    command(kubectl(context, '-n', namespace, 'exec', '-i', pod, '-c', container,
+                    '--', 'sh', '-ceu', script, 'sh', *(identities[name] for name in names)),
+            archive, timeout=300, text=False)
+
+
 def public_archive(root):
     root = Path(root).resolve()
     if not root.is_dir():
@@ -1069,10 +1128,8 @@ def main():
             write_private(auth_path,auth_bytes)
             atexit.register(cleanup_auth)
             agent=host_agent(args.context,disk['node'])
-            stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/helpers',helpers)
-            stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/public-trust',public)
-            stream_tree(args.context,disk['namespace'],disk['pod'],'disk',
-                        '/work/installer-bootc-helper',installer_bootc)
+            stream_creator_inputs(args.context,disk['namespace'],disk['pod'],'disk',
+                                  helpers,public,installer_bootc)
             create_on_worker(root,args,disk,agent)
             creation=(args.operation_dir/'creation.json').read_bytes()
             freeze_raw(args.context,disk)
