@@ -806,6 +806,53 @@ mod tests {
     }
 
     #[test]
+    fn native_system_surface_omits_document_chrome_but_keeps_its_controls() {
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Button::new("login", "Log in", None)),
+        )
+        .without_native_document_chrome();
+        // Exercise the same preparation used before the live event loop.
+        app.prepare_native_presentation();
+        app.init_layout();
+        layout(&mut app, 1024);
+        app.refresh_semantic_tree();
+        assert!(app.history_layout.is_none());
+        assert!(!app.history_chrome_enabled);
+        let names: Vec<_> = app
+            .semantic_tree()
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect();
+        assert!(names.contains(&"Log in"));
+        assert!(!names.contains(&"History"));
+        assert!(!names.contains(&"Search"));
+        let open = tilo_actions::ActionAddress::new(
+            crate::standalone_history_host::HISTORY_RESOURCE,
+            "open",
+        );
+        assert!(app.action_ui_routes(&open).is_empty());
+    }
+
+    #[test]
+    fn native_document_surface_keeps_shared_chrome_by_default() {
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Button::new("document", "Document", None)),
+        );
+        app.prepare_native_presentation();
+        app.init_layout();
+        layout(&mut app, 1024);
+        assert!(app.history_layout.is_some());
+        assert!(app.history_chrome_enabled);
+        let open = tilo_actions::ActionAddress::new(
+            crate::standalone_history_host::HISTORY_RESOURCE,
+            "open",
+        );
+        assert!(!app.action_ui_routes(&open).is_empty());
+    }
+
+    #[test]
     fn native_history_local_door_preserves_root_and_excludes_broker_resources() {
         let mut app = App::new_with_controlled_inputs(
             crate::State::new(),

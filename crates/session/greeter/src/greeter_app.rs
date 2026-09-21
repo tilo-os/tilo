@@ -1691,6 +1691,11 @@ impl Widget for GreeterApp {
         }
     }
 
+    fn fullscreen_intent(&self) -> Option<bool> {
+        // greetd owns the output; this is a system surface, not an app window.
+        Some(true)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3500,6 +3505,32 @@ mod tests {
                 !app.needs_animation_frame(),
                 "backdrop uses a bounded cadence, not vsync spin"
             );
+        }
+    }
+
+    #[test]
+    fn live_greeter_requests_full_output_and_survives_cage_resize() {
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint);
+        assert_eq!(Widget::fullscreen_intent(&app), Some(true));
+        // The live Wayland configure can arrive after the default first size.
+        // Both height-only growth and a later shrink must repaint the output.
+        for (width, height) in [(800.0, 600.0), (1024.0, 768.0), (1024.0, 600.0)] {
+            let _layout = layout_at(&mut app, (width, height));
+            assert_eq!(
+                app.get_rect(),
+                Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
+            );
+            for id in ["greeter.login", "greeter.reboot", "greeter.poweroff"] {
+                let rect = rect_for(&app, id).unwrap_or_else(|| panic!("missing {id}"));
+                assert!(
+                    rect.x0 >= 0.0 && rect.x1 <= f64::from(width),
+                    "{id}: {rect:?}"
+                );
+                assert!(
+                    rect.y0 >= 0.0 && rect.y1 <= f64::from(height),
+                    "{id}: {rect:?}"
+                );
+            }
         }
     }
 
