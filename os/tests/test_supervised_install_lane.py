@@ -189,6 +189,20 @@ class LaneAdmission(unittest.TestCase):
             self.assertIsNone(lane.creator_input_status('ctx',worker,'run1'))
         self.assertEqual(command.call_args.args[0][-3:],['pod-uid','node-uid','run1'])
 
+    def test_creator_input_status_accepts_exact_adoptable_job_without_failure_fields(self):
+        worker={'namespace':'kata-system','pod':'tilo-disk-run1',
+                'pod_uid':'pod-uid','node_uid':'node-uid'}
+        status={'state':'adoptable','receipt':{
+                    'schema':1,'purpose':'tilo-supervised-creator-inputs',
+                    'helpers':'a'*64,'public':'b'*64,'installer':'c'*64},
+                'receipt_sha256':'d'*64}
+        with patch.object(lane,'command',return_value=json.dumps(status)):
+            self.assertEqual(lane.creator_input_status('ctx',worker,'run1'),status)
+        malformed=dict(status,job_binding={})
+        with patch.object(lane,'command',return_value=json.dumps(malformed)):
+            with self.assertRaises(lane.CreatorInputReconciliationError):
+                lane.creator_input_status('ctx',worker,'run1')
+
     @unittest.skipUnless(hasattr(os,'O_NOFOLLOW') and getattr(os,'geteuid',lambda:1)()==0,
                          'remote receipt contract requires Linux root semantics')
     def test_remote_input_status_accepts_nested_component_directories(self):
@@ -209,6 +223,52 @@ class LaneAdmission(unittest.TestCase):
                                        capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertEqual(json.loads(result.stdout)['state'],'ready')
+
+    @unittest.skipUnless(hasattr(os,'O_NOFOLLOW') and getattr(os,'geteuid',lambda:1)()==0,
+                         'remote receipt contract requires Linux root semantics')
+    def test_remote_input_status_only_adopts_exact_running_or_succeeded_job(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); output=root/'disk-output'; output.mkdir()
+            for name in ('helpers','public-trust','installer-bootc-helper'):
+                (root/name).mkdir(mode=0o700)
+            receipt={'schema':1,'purpose':'tilo-supervised-creator-inputs',
+                     'helpers':'a'*64,'public':'b'*64,'installer':'c'*64}
+            receipt_path=root/'.creator-inputs.json'; receipt_path.write_text(json.dumps(receipt)+'\n')
+            receipt_path.chmod(0o600)
+            job=output/'.creator-job'; job.mkdir(mode=0o700)
+            binding={'schema':1,'purpose':'tilo-supervised-creator-job-binding',
+                     'operation':'run1','pod_uid':'pod-uid','node_uid':'node-uid',
+                     'container_id':'container','image':'image',
+                     'output':'/work/disk-output/disk.raw','helper_revision':'a'*40,
+                     'helper_bundle_sha256':'b'*64,'job_sha256':'c'*64,
+                     'disk_args_sha256':'d'*64,'observation_sha256':'e'*64}
+            process={'pid':2,'start':'1','argv_sha256':'f'*64,
+                     'cgroup_sha256':'0'*64,'request_sha256':'1'*64}
+            status_path=job/'status.json'
+            script=lane.REMOTE_CREATOR_INPUT_STATUS.replace(
+                "pathlib.Path('/work')",f"pathlib.Path({str(root)!r})")
+            def probe(status):
+                status_path.write_text(json.dumps(status)+'\n'); status_path.chmod(0o600)
+                result=lane.subprocess.run([sys.executable,'-c',script,'pod-uid','node-uid','run1'],
+                                           capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr)
+                return json.loads(result.stdout)['state']
+            common={'schema':1,'purpose':'tilo-supervised-creator-job',
+                    'binding':binding,'process':process}
+            self.assertEqual(probe(dict(common,state='running')),'adoptable')
+            (root/'helpers').rmdir()
+            (root/'.creator-inputs-reconcile.json').write_text('not-json\n')
+            (root/'.creator-inputs-reconcile.json').chmod(0o600)
+            self.assertEqual(probe(dict(common,state='running')),'adoptable')
+            (root/'.creator-inputs-reconcile.json').unlink(); (root/'helpers').mkdir(mode=0o700)
+            self.assertEqual(probe(dict(common,state='succeeded',creation_sha256='2'*64,
+                                        log_bytes=0,log_truncated=False)),'adoptable')
+            self.assertEqual(probe(dict(common,state='launched',launched_at=1)),'active')
+            wrong=copy.deepcopy(dict(common,state='running'))
+            wrong['binding']['pod_uid']='different'
+            self.assertEqual(probe(wrong),'active')
+            malformed=dict(common,state='running',unexpected=True)
+            self.assertEqual(probe(malformed),'active')
 
     @unittest.skipUnless(hasattr(os,'O_NOFOLLOW') and getattr(os,'geteuid',lambda:1)()==0,
                          'remote receipt contract requires Linux root semantics')
