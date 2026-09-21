@@ -162,6 +162,14 @@ impl BrokerHandle {
         self.local_session.lifecycle()
     }
 
+    /// Cloneable facade over the canonical shared broker's live action
+    /// directory. Declared on the native wrapper as well as available through
+    /// `Deref` so UFCS call sites work on every target.
+    #[must_use]
+    pub fn app_action_broker(&self) -> Option<AppActionBroker> {
+        self.inner.app_action_broker()
+    }
+
     /// Native device-fabric and compositor seam for realtime continuity.
     #[must_use]
     pub fn realtime_fabric_bridge(

@@ -157,6 +157,7 @@ impl CapnpBrokerState {
                 let request = CallerInvocation {
                     recipient: Some(evidence.action().target),
                     invocation: *invocation,
+                    #[cfg(test)]
                     host,
                     peer_id: app_peer.parse().map_err(|_| "invalid app peer")?,
                     app_id: app_id.clone(),

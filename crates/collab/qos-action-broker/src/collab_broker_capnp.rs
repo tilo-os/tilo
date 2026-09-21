@@ -553,12 +553,15 @@ impl VerifiedActionCaller {
     }
 }
 
-/// Inert transport-neutral request. `host` is the durable broker authority,
-/// not an actor supplied by the remote caller. Task4c must also bind this to
-/// the certified recipient device before entering this API.
+/// Inert transport-neutral request. The production peer entrypoint validates
+/// its wire host against the durable broker authority before constructing this
+/// request. Tests retain that host to exercise the equivalent direct-admission
+/// boundary. Task4c must also bind this to the certified recipient device
+/// before entering this API.
 #[derive(Clone, Debug)]
 pub(crate) struct CallerInvocation {
     pub invocation: tilo_actions::InvocationId,
+    #[cfg(test)]
     pub host: uuid::Uuid,
     pub peer_id: u64,
     pub app_id: String,
@@ -749,6 +752,7 @@ impl CapnpBrokerState {
         Ok(record)
     }
 
+    #[cfg(test)]
     pub(crate) fn start_verified_invocation(
         &self,
         caller: &VerifiedActionCaller,

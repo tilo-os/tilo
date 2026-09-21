@@ -3,9 +3,9 @@ pub use qos_action_broker::collab_broker_capnp::*;
 
 mod local_consent;
 mod realtime_host;
-pub(crate) use local_consent::{
-    LocalSessionAuthority, LocalSessionLifecycle, LocalSessionLiveness,
-};
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) use local_consent::LocalSessionLiveness;
+pub(crate) use local_consent::{LocalSessionAuthority, LocalSessionLifecycle};
 pub(crate) use realtime_host::NativeRealtimeServices;
 pub use realtime_host::{
     RealtimeConsentUiView, RealtimeContinuityUiView, RealtimeFabricAppBridge, RealtimeSourceUiView,

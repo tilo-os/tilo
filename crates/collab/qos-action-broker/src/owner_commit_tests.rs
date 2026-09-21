@@ -47,6 +47,7 @@ mod owner_commit_tests {
             let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
                 state, directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
                 channel_id: route.channel_key(), peer_id: 1, verified_identity: admitted,
+                lease: None,
             });
             let mut document = automerge::AutoCommit::new();
             word_processor::initialize_empty_document(&mut document).unwrap();
@@ -208,7 +209,9 @@ mod owner_commit_tests {
         assert!(
             sent[..terminal].iter().any(|request| matches!(
                 request,
-                CollabRequest::DocumentSnapshot { .. } | CollabRequest::DocumentIncremental { .. }
+                CollabRequest::Document {
+                    mutation: DocumentMutation::Snapshot(_) | DocumentMutation::Incremental(_),
+                }
             )),
             "checked Writer completed before sending its changed owned document to the durable broker"
         );
@@ -339,6 +342,7 @@ mod owner_commit_tests {
             channel_id: route.channel_key(),
             peer_id: 72,
             verified_identity: admitted,
+            lease: None,
         });
         OwnerFixture {
             membership,

@@ -4060,7 +4060,7 @@ impl WorkspaceTree {
         workspace_id: WorkspaceId,
         invocation: tilo_actions::InvocationId,
         actor: &str,
-        mut context: tilo_actions::ActionContext,
+        context: tilo_actions::ActionContext,
         status: tilo_actions::EffectReceiptStatus,
         completed_at: i64,
     ) -> bool {

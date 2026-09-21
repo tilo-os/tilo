@@ -68,8 +68,8 @@ use ui::search::system::filters::draw_filter_chip;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, Image, ImageFit, OutputSpan,
-    PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
+    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
+    PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
     context_menu::ContextMenu,
 };
 use ui::{ColorCompat, CommandEntry, CommandPalette};
@@ -4332,9 +4332,6 @@ impl ShellOverlayHost {
             })
         });
         let Some(tile) = tile else {
-            return false;
-        };
-        let Some(chrome) = self.chrome.as_ref() else {
             return false;
         };
         for &row_ptr in self.group_row_ids.values() {
