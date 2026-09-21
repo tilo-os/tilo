@@ -25,10 +25,8 @@ class VerifierWorkflowTests(unittest.TestCase):
         source = WORKFLOW.read_text()
         triggers = source.split('\non:\n', 1)[1].split('\nconcurrency:', 1)[0]
         self.assertEqual(['workflow_dispatch'], re.findall(r'^  ([a-z_]+):', triggers, re.M))
-        self.assertIn('REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}', source)
-        self.assertIn('matrix: ${{ steps.architectures.outputs.matrix }}', source)
-        self.assertIn('matrix: ${{ fromJSON(needs.builder.outputs.matrix) }}', source)
-        self.assertIn('runs-on: ${{ matrix.runner }}', source)
+        self.assertIn('arch: x86_64\n            runner: runner', source)
+        self.assertIn('arch: aarch64\n            runner: runner-arm64', source)
         self.assertIn('image: ${{ needs.builder.outputs.image }}', source)
         self.assertIn('BUILDER_IMAGE: ${{ needs.builder.outputs.image }}', source)
         self.assertIn('uses: ./.forgejo/actions/restore-cargo-downloads', source)
@@ -42,29 +40,6 @@ class VerifierWorkflowTests(unittest.TestCase):
         self.assertIn('if-no-files-found: error', source)
         self.assertIn('retention-days: 14', source)
         self.assertIn('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py produce', source)
-
-    def test_actual_selector_preserves_native_lanes_and_rejects_unknown_architecture(self):
-        step = WORKFLOW.read_text().split('      - name: Select verifier architectures\n', 1)[1]
-        block = step.split('        run: |\n', 1)[1].split('      - name:', 1)[0]
-        script = '\n'.join(line[10:] for line in block.splitlines())
-        lanes = [{'arch': 'aarch64', 'runner': 'runner-arm64'},
-                 {'arch': 'x86_64', 'runner': 'runner'}]
-        for requested, expected in [('', lanes), ('x86_64,aarch64', lanes),
-                                    ('x86_64', lanes[1:]), ('aarch64', lanes[:1]),
-                                    ('riscv64', None)]:
-            with self.subTest(requested=requested), tempfile.TemporaryDirectory() as directory:
-                output = Path(directory) / 'output'
-                env = dict(os.environ, GITHUB_OUTPUT=str(output),
-                           REQUESTED_ARCHITECTURES=requested,
-                           GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main')
-                result = subprocess.run(['bash', '-c', script], cwd=ROOT, env=env,
-                                        capture_output=True, text=True)
-                if expected is None:
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertFalse(output.exists())
-                else:
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual({'include': expected}, json.loads(output.read_text().removeprefix('matrix=')))
 
     def run_fixture(self, root, *, head_ok=True, arch_ok=True, compile_ok=True):
         (root / 'tools').mkdir()

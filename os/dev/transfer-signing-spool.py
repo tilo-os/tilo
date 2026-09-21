@@ -72,12 +72,17 @@ def bounded_process(argv, sink, limit, *, source=None, timeout=120):
 def validate_binding(binding):
     expected = {'schema', 'namespace', 'pod', 'container', 'pod_uid', 'container_id', 'image',
                 'image_id', 'restart_count', 'pod_spec_sha256', 'context_sha256', 'endpoint'}
-    if (not isinstance(binding, dict) or set(binding) not in (expected, expected | {'docker'})
+    variants = tuple(expected | extra for extra in (
+        set(), {'docker'}, {'cluster'}, {'docker', 'cluster'}))
+    if (not isinstance(binding, dict) or set(binding) not in variants
             or binding['schema'] != 1):
         raise ValueError('invalid pinned transport binding')
     for name in ('namespace', 'pod', 'container'):
         if not re.fullmatch(r'[a-z0-9][a-z0-9.-]{0,252}', binding[name]):
             raise ValueError('invalid Kubernetes resource name')
+    if ('cluster' in binding and
+            not re.fullmatch(r'[a-z0-9][a-z0-9.-]{0,127}', binding['cluster'])):
+        raise ValueError('invalid pinned cluster name')
     for name in ('pod_spec_sha256', 'context_sha256'):
         if not spool.HEX.fullmatch(binding[name]):
             raise ValueError('immutable transport identity missing')

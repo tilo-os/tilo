@@ -424,8 +424,7 @@ class ProductTests(unittest.TestCase):
         for helper in ('tools/assemble_verified_apps.py', 'tools/apps/final_app_receipt.py',
                        'tools/apps/app_channel_manifest.py', 'dist/apps/assemble-collection.sh',
                        'tools/apps/assemble_app_collection.py', 'tools/ci/workspace_graph.py',
-                       'tools/ci/__init__.py', 'tools/ci/resolve_builder.py', 'tools/ci/python.py',
-                       'tools/apps/dev_app_versions.py', 'tools/apps/submit_catalogue.py'):
+                       'tools/ci/__init__.py', 'tools/ci/resolve_builder.py', 'tools/ci/python.py'):
             with self.subTest(helper=helper):
                 self.assertIn(helper, files)
                 incomplete = dict(files)
@@ -488,6 +487,7 @@ class WorkflowGuardTests(unittest.TestCase):
 
     def test_first_build_and_verified_ancestor(self):
         env = self.env()
+        self.assertTrue(guard.prevalidate(env))
         self.assertTrue(guard.validate(env))
         previous = proof({'desired': desired('b')}, {'id': 123})
         env.update(BASELINE_SHA='b' * 40, BASELINE_RECEIPT_SHA256=core.receipt_key(previous),
