@@ -22,7 +22,9 @@ containerfile="$repo/os/Containerfile"
 # zero-delay firewall-first network target that keeps both services off the
 # login chain without exposing an unfiltered interface, and
 # the packaged-app external AT-SPI client and installed-app accessibility gate,
-# the build-only residual OpenSSL ABI package gate (removed after it runs).
+# the build-only residual OpenSSL ABI package gate (removed after it runs), and
+# the systemd sleep policy that orders the user-session freeze ahead of the
+# kernel freezer so FUSE requests cannot deadlock suspend.
 # The redundant model-storage oneshot is now absent; systemd provisions the
 # model and gateway directories directly without a helper on socket activation.
 # Rustls now compiles the fixed CA-bundle path
@@ -32,7 +34,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=a35e3107b8ca6eb589a41787651c8e4e45680a8201a17e919f110d84c5fb3939
+expected_contract=a2278f4353fbb3eaa1cca604ce48cc14cc6da4b275e68321d21294c0bf0da340
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

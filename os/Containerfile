@@ -1135,6 +1135,8 @@ COPY \
     /usr/lib/systemd/system/
 COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf \
     /usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf
+COPY os/etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf \
+    /etc/systemd/sleep.conf.d/20-tilo-freeze-user-sessions.conf
 COPY os/usr/libexec/tilo-relay-firstboot /usr/libexec/tilo-relay-firstboot
 COPY os/usr/share/polkit-1/actions/org.tilo.home-peer.policy /usr/share/polkit-1/actions/org.tilo.home-peer.policy
 COPY \
