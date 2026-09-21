@@ -498,7 +498,7 @@ impl MapsApp {
         if stage == "returned"
             && let Some(id) = self.active_navigation_request().map(|request| request.id)
         {
-            <Self as Widget>::on_floating_surface_host_message(
+            <Self as FloatingSurfaceProvider>::on_floating_surface_host_message(
                 self,
                 &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
             );
