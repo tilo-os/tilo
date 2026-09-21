@@ -224,7 +224,7 @@ impl QuickSettingsWifiPane {
                         row.x1 - 72.0,
                         row.center().y + 7.0,
                     ),
-                    ui::icons::Icon::Lock,
+                    ui::icons::Icon::Shield,
                     colors.text_dim,
                     ui::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );

@@ -119,7 +119,7 @@ fn rasterise_cpu(shape: CursorShape, size: u32) -> Vec<u8> {
     let path = match shape {
         CursorShape::Default => default_path(),
     };
-    let outline = path
+    let outline_points = path
         .elements()
         .iter()
         .filter_map(|element| match element {
@@ -130,14 +130,17 @@ fn rasterise_cpu(shape: CursorShape, size: u32) -> Vec<u8> {
         })
         .collect::<Vec<_>>();
     let stroke_radius = (f64::from(SUPERSAMPLE) * 0.85).max(1.0);
-    let (fill, outline) = palette();
+    let (fill, outline_color) = palette();
     for y in 0..size {
         for x in 0..size {
             let point = (f64::from(x) + 0.5, f64::from(y) + 0.5);
-            let inside = point_in_polygon(point, &outline);
-            let edge_distance = polygon_distance(point, &outline);
+            let inside = point_in_polygon(point, &outline_points);
+            let edge_distance = polygon_distance(point, &outline_points);
             let (color, alpha) = if edge_distance <= stroke_radius {
-                ([outline.r(), outline.g(), outline.b()], outline.a())
+                (
+                    [outline_color.r(), outline_color.g(), outline_color.b()],
+                    outline_color.a(),
+                )
             } else if inside {
                 ([fill.r(), fill.g(), fill.b()], fill.a())
             } else {
