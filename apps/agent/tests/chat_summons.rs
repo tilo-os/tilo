@@ -336,7 +336,15 @@ fn scenario_outcome(
                 .unwrap();
             }
         }
-        let drain = Instant::now() + Duration::from_millis(250);
+        let acted = runner.join().unwrap();
+        let drain = Instant::now()
+            + if !restart && expected_reply {
+                Duration::from_secs(4)
+            } else {
+                Duration::from_millis(250)
+            };
+        let expected_requests = requests.max(1);
+        let mut durable_reply = false;
         while Instant::now() < drain {
             if let Some(event) = chat_peer.recv().unwrap() {
                 if let Some(DocumentMutation::Incremental(data)) =
@@ -350,9 +358,33 @@ fn scenario_outcome(
                     }
                 }
             }
+            let messages = ChatDoc::list_messages(&chat, "c_general");
+            durable_reply = (1..=expected_requests).all(|number| {
+                let parent = format!("request-{number}");
+                let mut replies = messages.iter().filter(|message| {
+                    message.author == "Scribe" && message.parent.as_deref() == Some(&parent)
+                });
+                replies.next().is_some_and(|message| {
+                    message.work.as_ref().is_some_and(|work| match outcome {
+                        OwnerOutcome::Complete => work.finished(),
+                        OwnerOutcome::Disconnect | OwnerOutcome::CancelAfterMutation => {
+                            !matches!(&work.state, AgentWorkState::Waiting { .. })
+                        }
+                    })
+                }) && replies.next().is_none()
+            });
+            if !restart && expected_reply && durable_reply {
+                break;
+            }
+        }
+        if !restart && expected_reply {
+            assert!(
+                durable_reply,
+                "the canonical answered state must replicate before restart"
+            );
         }
         assert_eq!(
-            runner.join().unwrap(),
+            acted,
             !restart && expected_reply,
             "only initial addressed summons acts"
         );
@@ -375,11 +407,22 @@ fn scenario_outcome(
             0
         }
     );
-    let replies: Vec<_> = ChatDoc::list_messages(&chat, "c_general")
+    let messages = ChatDoc::list_messages(&chat, "c_general");
+    for number in 1..=requests.max(1) {
+        let parent = format!("request-{number}");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.parent.as_deref() == Some(&parent))
+                .count(),
+            usize::from(expected_reply),
+            "each summons has exactly one canonical durable reply"
+        );
+    }
+    let replies: Vec<_> = messages
         .into_iter()
-        .filter(|m| m.parent.as_deref() == Some("request-1"))
+        .filter(|message| message.parent.as_deref() == Some("request-1"))
         .collect();
-    assert_eq!(replies.len(), usize::from(expected_reply));
     if !expected_reply {
         return;
     }
