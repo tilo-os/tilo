@@ -481,18 +481,20 @@ fn cmd_collect_first_party(
         if pending.change.action == EntryAction::Delete {
             continue;
         }
-        for (inspection, bytes) in fetch_entry_bytes(&pending.change.entry, policy)? {
+        let fetched = fetch_entry_bytes(&pending.change.entry, policy)?;
+        for (version, (inspection, bytes)) in pending.change.entry.versions.iter().zip(fetched) {
             let digest = blake3::hash(&bytes).to_hex().to_string();
             storage.save_staged_artifact(&digest, &bytes)?;
             artifacts.push(StagedArtifact {
                 submission_id: pending.submission_id.clone(),
                 version: inspection.version,
+                target: Some(version.target.clone()),
                 blake3_hex: digest,
             });
         }
     }
     artifacts.sort_by(|left, right| {
-        (&left.submission_id, &left.version).cmp(&(&right.submission_id, &right.version))
+        staged_artifact_sort_key(left).cmp(&staged_artifact_sort_key(right))
     });
     let staged = StagedPromotion {
         publisher_pubkey_hex: publisher_hex,
@@ -656,13 +658,16 @@ fn cmd_publish_staged_first_party(
             let matching: Vec<_> = staged
                 .artifacts
                 .iter()
-                .filter(|artifact| {
-                    artifact.submission_id == pending.submission_id
-                        && artifact.version == version.version
-                })
+                .filter(|artifact| staged_artifact_matches(artifact, pending, version))
                 .collect();
             let [artifact] = matching.as_slice() else {
-                anyhow::bail!("staged artifact inventory is incomplete or ambiguous");
+                anyhow::bail!(
+                    "staged artifact inventory is incomplete or ambiguous for {}@{} ({}/{})",
+                    pending.submission_id,
+                    version.version,
+                    version.target.platform,
+                    version.target.architecture,
+                );
             };
             let bytes = storage.load_staged_artifact(&artifact.blake3_hex)?;
             let _inspection = inspect_bytes(&pending.change.entry, version, &bytes)?;
@@ -747,6 +752,47 @@ fn cmd_publish_staged_first_party(
         })
     );
     Ok(())
+}
+
+type StagedTargetSortKey<'a> = Option<(&'a str, &'a str, &'a str, Option<&'a str>)>;
+type StagedArtifactSortKey<'a> = (&'a str, &'a str, StagedTargetSortKey<'a>);
+
+fn staged_artifact_sort_key(artifact: &StagedArtifact) -> StagedArtifactSortKey<'_> {
+    (
+        &artifact.submission_id,
+        &artifact.version,
+        artifact.target.as_ref().map(|target| {
+            (
+                target.platform.as_str(),
+                target.architecture.as_str(),
+                target.isa.as_str(),
+                target.runtime.as_deref(),
+            )
+        }),
+    )
+}
+
+fn staged_artifact_matches(
+    artifact: &StagedArtifact,
+    pending: &registry_server::PendingSubmission,
+    version: &registry_types::RegistryVersion,
+) -> bool {
+    if artifact.submission_id != pending.submission_id || artifact.version != version.version {
+        return false;
+    }
+    artifact.target.as_ref().map_or_else(
+        || {
+            pending
+                .change
+                .entry
+                .versions
+                .iter()
+                .filter(|candidate| candidate.version == version.version)
+                .count()
+                == 1
+        },
+        |target| target == &version.target,
+    )
 }
 
 fn apply_staged_changes(
@@ -1345,6 +1391,76 @@ fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion, sign_entry};
+
+    #[test]
+    fn staged_artifacts_are_selected_by_version_and_target() {
+        let target = |architecture: &str, isa: &str| RegistryTarget {
+            platform: registry_types::TILO_OS_PLATFORM.into(),
+            architecture: architecture.into(),
+            isa: isa.into(),
+            runtime: None,
+        };
+        let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let mut entry = publisher_entry(&key);
+        let mut arm = entry.versions[0].clone();
+        arm.target = target("aarch64", "aarch64-v8.2");
+        entry.versions.push(arm);
+        sign_entry(&mut entry, &key);
+        let pending = registry_server::PendingSubmission {
+            submission_id: entry.package_id.clone(),
+            submitted_at_unix: 1,
+            change: registry_types::sign_change_request(EntryAction::Add, entry, &key),
+        };
+        let artifacts = [
+            StagedArtifact {
+                submission_id: pending.submission_id.clone(),
+                version: "1.0.0".into(),
+                target: Some(target("x86_64", "x86_64-v3")),
+                blake3_hex: "aa".repeat(32),
+            },
+            StagedArtifact {
+                submission_id: pending.submission_id.clone(),
+                version: "1.0.0".into(),
+                target: Some(target("aarch64", "aarch64-v8.2")),
+                blake3_hex: "bb".repeat(32),
+            },
+        ];
+        for version in &pending.change.entry.versions {
+            let matches = artifacts
+                .iter()
+                .filter(|artifact| staged_artifact_matches(artifact, &pending, version))
+                .count();
+            assert_eq!(
+                matches, 1,
+                "{} must select exactly one staged artifact",
+                version.target.architecture
+            );
+        }
+
+        let legacy = StagedArtifact {
+            submission_id: pending.submission_id.clone(),
+            version: "1.0.0".into(),
+            target: None,
+            blake3_hex: "cc".repeat(32),
+        };
+        assert!(
+            pending
+                .change
+                .entry
+                .versions
+                .iter()
+                .all(|version| !staged_artifact_matches(&legacy, &pending, version)),
+            "a target-less artifact must fail closed when a version is multi-architecture"
+        );
+
+        let mut single = pending;
+        single.change.entry.versions.truncate(1);
+        assert!(staged_artifact_matches(
+            &legacy,
+            &single,
+            &single.change.entry.versions[0]
+        ));
+    }
 
     fn publisher_entry(key: &ed25519_dalek::SigningKey) -> RegistryEntry {
         let mut entry = RegistryEntry {

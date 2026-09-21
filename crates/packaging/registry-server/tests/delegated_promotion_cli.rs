@@ -243,6 +243,12 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
             artifacts: vec![StagedArtifact {
                 submission_id: "so.tilo.editor".into(),
                 version: "1.0.0".into(),
+                target: Some(RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                }),
                 blake3_hex: digest,
             }],
         })
