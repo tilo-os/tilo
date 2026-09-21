@@ -683,11 +683,11 @@ def read_private(path,limit):
  if (not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1
      or i.st_mode&0o077 or i.st_size<2 or i.st_size>limit):result('invalid')
  try:
- fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW); o=os.fstat(fd)
- if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size):result('invalid')
- value=os.read(fd,limit+1); os.close(fd)
- if len(value)!=i.st_size:result('invalid')
- return value
+  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW); o=os.fstat(fd)
+  if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size):result('invalid')
+  value=os.read(fd,limit+1); os.close(fd)
+  if len(value)!=i.st_size:result('invalid')
+  return value
  except BaseException:result('invalid')
 def failed_job(path):
  if path.is_symlink() or not path.is_dir():result('active')
