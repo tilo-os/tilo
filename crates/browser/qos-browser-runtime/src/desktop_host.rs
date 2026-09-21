@@ -358,6 +358,8 @@ struct LocalView {
     active: WorkspaceId,
     strips: HashMap<WorkspaceId, StripId>,
     groups: HashMap<StripId, GroupId>,
+    #[serde(default)]
+    group_order: HashMap<StripId, Vec<GroupId>>,
     tabs: Vec<(GroupId, TabId, WindowWidth, bool)>,
 }
 impl LocalView {
@@ -366,6 +368,17 @@ impl LocalView {
             active: tree.active,
             strips: tree.active_strip.clone(),
             groups: tree.active_group.clone(),
+            group_order: tree
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .map(|strip| {
+                    (
+                        strip.id,
+                        strip.window_groups.iter().map(|group| group.id).collect(),
+                    )
+                })
+                .collect(),
             tabs: tree
                 .workspaces
                 .iter()
@@ -394,6 +407,35 @@ impl LocalView {
                     .filter(|id| s.window_groups.iter().any(|g| g.id == **id))
                 {
                     tree.active_group.insert(s.id, *id);
+                } else if let Some(closed) = self.groups.get(&s.id)
+                    && !tree
+                        .active_group
+                        .get(&s.id)
+                        .is_some_and(|id| s.window_groups.iter().any(|group| group.id == *id))
+                {
+                    // An admitted close removes the local selection along
+                    // with its group. Continue through the group order that
+                    // was visible before that patch: right first, then left.
+                    // Older saved views did not record this order, but their
+                    // tab rows still enumerate groups in the same order.
+                    let mut order = self.group_order.get(&s.id).cloned().unwrap_or_default();
+                    if order.is_empty() {
+                        for (group, ..) in &self.tabs {
+                            if !order.contains(group) {
+                                order.push(*group);
+                            }
+                        }
+                    }
+                    tree.active_group.remove(&s.id);
+                    if let Some(index) = order.iter().position(|group| group == closed) {
+                        let successor = order[index + 1..]
+                            .iter()
+                            .chain(order[..index].iter().rev())
+                            .find(|id| s.window_groups.iter().any(|group| group.id == **id));
+                        if let Some(successor) = successor {
+                            tree.active_group.insert(s.id, *successor);
+                        }
+                    }
                 }
                 for g in &mut s.window_groups {
                     if let Some((_, tab, width, maximized)) =
@@ -2724,6 +2766,206 @@ mod tests {
 
     fn fixture() -> (DesktopRoot, DesktopHandle, PortableStorage) {
         fixture_with_topology(|_| {})
+    }
+
+    #[test]
+    fn local_view_recovery_selects_the_right_group_after_the_active_group_closes() {
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs
+                .into_iter()
+                .enumerate()
+                .map(|(index, tab)| WindowGroup {
+                    id: 3 + index as u64,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                })
+                .collect();
+            tree.active_group.insert(strip.id, 4);
+        });
+        handle
+            .tree
+            .borrow_mut()
+            .active_strip
+            .insert(WorkspaceId(1), StripId(2));
+        let before = LocalView::from_tree(&handle.tree.borrow());
+        let mut admitted = handle.tree.borrow().clone();
+        let location = {
+            let strip = &admitted.workspaces[0].strips[0];
+            qos_desktop::session_commands::TabLocation {
+                strip: strip.id.0,
+                group: strip.window_groups[1].id,
+                tab: strip.window_groups[1].tabs[0].id,
+            }
+        };
+        qos_desktop::session_commands::apply_command(
+            &mut admitted.workspaces[0],
+            &qos_desktop::session_commands::DesktopCommand::CloseTab { location },
+            &mut || Ok(0),
+            &mut |_, _| panic!("close cannot create a record"),
+        )
+        .unwrap();
+        admitted.active_group.clear();
+
+        before.apply(&mut admitted);
+
+        assert_eq!(
+            admitted.active_group.get(&StripId(2)),
+            Some(&5),
+            "closing the middle visible window selects its immediate right neighbour"
+        );
+        drop(root);
+    }
+
+    #[test]
+    fn local_view_recovery_follows_visible_group_order_for_close_and_keeps_inactive_selection() {
+        for (active_index, close_index, expected_group) in [
+            (0, 0, Some(4)),
+            (1, 1, Some(5)),
+            (3, 3, Some(5)),
+            (2, 0, Some(5)),
+            (1, 3, Some(4)),
+        ] {
+            let (_root, handle, _) = fixture_with_topology(|tree| {
+                let strip = &mut tree.workspaces[0].strips[0];
+                let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+                strip.window_groups = tabs
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, tab)| WindowGroup {
+                        id: 3 + index as u64,
+                        active_tab: tab.id,
+                        tabs: vec![tab],
+                        width: WindowWidth::Normal,
+                        maximized: false,
+                    })
+                    .collect();
+                tree.active_group.insert(strip.id, 3 + active_index as u64);
+            });
+            handle
+                .tree
+                .borrow_mut()
+                .active_strip
+                .insert(WorkspaceId(1), StripId(2));
+            let before = LocalView::from_tree(&handle.tree.borrow());
+            let mut admitted = handle.tree.borrow().clone();
+            let location = {
+                let strip = &admitted.workspaces[0].strips[0];
+                qos_desktop::session_commands::TabLocation {
+                    strip: strip.id.0,
+                    group: strip.window_groups[close_index].id,
+                    tab: strip.window_groups[close_index].tabs[0].id,
+                }
+            };
+            qos_desktop::session_commands::apply_command(
+                &mut admitted.workspaces[0],
+                &qos_desktop::session_commands::DesktopCommand::CloseTab { location },
+                &mut || Ok(0),
+                &mut |_, _| panic!("close cannot create a record"),
+            )
+            .unwrap();
+            admitted.active_group.clear();
+
+            before.apply(&mut admitted);
+
+            assert_eq!(
+                admitted.active_group.get(&StripId(2)),
+                expected_group.as_ref(),
+                "active group {active_index}, close {close_index}"
+            );
+            assert_eq!(
+                active_route(&admitted).map(|route| route.group),
+                expected_group.map(|group| group.to_string()),
+                "the recovered route must select the same visible neighbour"
+            );
+        }
+    }
+
+    #[test]
+    fn local_view_recovery_leaves_an_empty_workspace_without_an_active_group() {
+        let (_root, handle, _) = fixture_with_topology(|tree| {
+            let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+            group.tabs.truncate(1);
+            group.active_tab = group.tabs[0].id;
+        });
+        handle
+            .tree
+            .borrow_mut()
+            .active_strip
+            .insert(WorkspaceId(1), StripId(2));
+        let before = LocalView::from_tree(&handle.tree.borrow());
+        let mut admitted = handle.tree.borrow().clone();
+        let location = {
+            let strip = &admitted.workspaces[0].strips[0];
+            qos_desktop::session_commands::TabLocation {
+                strip: strip.id.0,
+                group: strip.window_groups[0].id,
+                tab: strip.window_groups[0].tabs[0].id,
+            }
+        };
+        qos_desktop::session_commands::apply_command(
+            &mut admitted.workspaces[0],
+            &qos_desktop::session_commands::DesktopCommand::CloseTab { location },
+            &mut || Ok(0),
+            &mut |_, _| panic!("close cannot create a record"),
+        )
+        .unwrap();
+        admitted.active_group.clear();
+
+        before.apply(&mut admitted);
+
+        assert!(admitted.active_group.is_empty());
+        assert!(active_route(&admitted).is_none());
+    }
+
+    #[test]
+    fn local_view_recovery_keeps_a_valid_admitted_group_selection() {
+        let (_root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs
+                .into_iter()
+                .enumerate()
+                .map(|(index, tab)| WindowGroup {
+                    id: 3 + index as u64,
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                })
+                .collect();
+            tree.active_group.insert(strip.id, 4);
+        });
+        handle
+            .tree
+            .borrow_mut()
+            .active_strip
+            .insert(WorkspaceId(1), StripId(2));
+        let before = LocalView::from_tree(&handle.tree.borrow());
+        let mut admitted = handle.tree.borrow().clone();
+        let location = {
+            let strip = &admitted.workspaces[0].strips[0];
+            qos_desktop::session_commands::TabLocation {
+                strip: strip.id.0,
+                group: strip.window_groups[1].id,
+                tab: strip.window_groups[1].tabs[0].id,
+            }
+        };
+        qos_desktop::session_commands::apply_command(
+            &mut admitted.workspaces[0],
+            &qos_desktop::session_commands::DesktopCommand::CloseTab { location },
+            &mut || Ok(0),
+            &mut |_, _| panic!("close cannot create a record"),
+        )
+        .unwrap();
+        admitted.active_group.insert(StripId(2), 3);
+
+        before.apply(&mut admitted);
+
+        assert_eq!(admitted.active_group.get(&StripId(2)), Some(&3));
     }
 
     fn assert_external_frame_idle(frame: &mut ui::headless::FrameHarness, context: &str) {
