@@ -2100,8 +2100,10 @@ mod tests {
                 FileView::new(&items(1200), &SelectionModel::new(), &sink).mode(mode);
             expected.text_scale = 2.0;
             expected.columns = expected.columns_for_width(scaled_rect.width());
-            assert!(
-                (scaled_rect.height() - expected.content_height(scaled_rect.width())).abs() < 0.01
+            assert_eq!(
+                scaled_rect.height(),
+                expected.content_height(scaled_rect.width()).round(),
+                "{mode:?}: retained layout rounds content height to a device pixel"
             );
             // A new directory snapshot is remeasured even at identical pane size.
             nav.set_content(Box::new(Scrollable::new_vertical().with_child(Box::new(
@@ -2114,7 +2116,11 @@ mod tests {
             let mut expected = FileView::new(&items(120), &SelectionModel::new(), &sink).mode(mode);
             expected.text_scale = 2.0;
             expected.columns = expected.columns_for_width(replaced.width());
-            assert!((replaced.height() - expected.content_height(replaced.width())).abs() < 0.01);
+            assert_eq!(
+                replaced.height(),
+                expected.content_height(replaced.width()).round(),
+                "{mode:?}: replaced content uses the same device-pixel rounding"
+            );
         }
     }
 
@@ -2723,7 +2729,7 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_text_scale_reserves_metadata_width_without_double_zooming_items() {
+    fn accessibility_text_scale_reserves_metadata_width_and_rows_without_item_zoom() {
         let sink = new_sink();
         let sel = SelectionModel::new();
         let mut v = FileView::new(&items(4), &sel, &sink).with_text_scale(2.0);
@@ -2734,7 +2740,11 @@ mod tests {
             "size still fits in a wide enlarged-text pane"
         );
         assert!(v.show_modified(), "modified still fits at desktop width");
-        assert_eq!(v.row_h(), LIST_ROW_H, "text scale is not item zoom");
+        assert_eq!(
+            v.row_h(),
+            LIST_ROW_H * 2.0,
+            "the row grows for the enlarged label while item zoom remains unchanged"
+        );
         assert_eq!(
             v.header_col_rect(2).width(),
             MOD_COL_W * 2.0,

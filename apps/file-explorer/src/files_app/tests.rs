@@ -227,11 +227,13 @@ mod command_path_tests {
         scroll.set_viewport_size(200.0, 300.0);
         scroll.set_content_size(200.0, 1200.0);
         scroll.scroll_by(0.0, 20.0);
-        let deadline = scroll
-            .next_wake_deadline()
-            .expect("opaque hold schedules fade start");
         let mut widget = FileExplorerWidget::new();
         widget.nav.set_content(Box::new(scroll));
+        widget.nearby_send.poll_if_due(std::time::Instant::now());
+        let deadline = widget
+            .nav
+            .next_wake_deadline()
+            .expect("opaque hold schedules a retained navigation fade");
         widget.next_metadata_refresh = deadline + std::time::Duration::from_secs(60);
         assert_eq!(widget.next_wake_deadline(), Some(deadline));
         widget.next_metadata_refresh = deadline - std::time::Duration::from_millis(1);

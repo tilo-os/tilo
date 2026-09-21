@@ -474,14 +474,21 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
         &mut driver,
         "production initial restore after repeated open",
     );
-    wait(&mut driver, "Restore acknowledgement is unavailable");
-    driver.key("Escape");
     let original: CheckedHistoryRequestV1 = serde_json::from_slice(
         &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
             .unwrap()
             .unwrap(),
     )
     .unwrap();
+    assert_eq!(
+        crate::framework_history::MountedFileHistory::open(&a)
+            .unwrap()
+            .result(original.intent_id),
+        CheckedHistoryOutcomeV1::Unavailable,
+        "a missing result projection keeps the accepted intent uncertain"
+    );
+    wait(&mut driver, "Restore acknowledgement is unavailable");
+    driver.key("Escape");
     source.set_target(Some(
         crate::framework_history::target(&b, record_b, "B".into()).unwrap(),
     ));
