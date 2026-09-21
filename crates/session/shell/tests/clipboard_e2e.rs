@@ -1134,22 +1134,6 @@ impl TestClient {
         self.conn.flush().expect("flush the receive request");
         drain(read_fd, self, peer)
     }
-
-    fn read_dnd(&mut self, peer: &mut TestClient) -> String {
-        let bytes = self.read_dnd_bytes(TEXT_MIME, Some(peer));
-        String::from_utf8(bytes).expect("selection bytes were not UTF-8")
-    }
-
-    /// Read the drag-and-drop offer as `mime`; `peer` is pumped when the source
-    /// is another test client (a compositor-sourced drag needs none).
-    fn read_dnd_bytes(&mut self, mime: &str, peer: Option<&mut TestClient>) -> Vec<u8> {
-        let offer = self.state.dnd_offer.clone().expect("a drag offer");
-        let (read_fd, write_fd) = make_pipe();
-        offer.receive(mime.to_string(), write_fd.as_fd_ref());
-        drop(write_fd);
-        self.conn.flush().expect("flush the receive request");
-        drain_bytes(read_fd, self, peer)
-    }
 }
 
 #[test]
@@ -3193,12 +3177,13 @@ fn session_lock_is_privileged_socket_only() {
     );
 }
 
-/// Drag a piece of text out of one client and drop it on another. The
-/// pointer is driven through the compositor's real input path (test-control
-/// socket synthesises the same events the backend would), so `start_drag`
-/// rides a genuine implicit grab, not an invented serial.
+/// Drag text from one client onto the outer edge of another tiled window.
+/// The shell owns that visible placement zone, materialises the payload, and
+/// opens it in a new sibling group rather than leaking the offer to the app
+/// below. The pointer is driven through the compositor's real input path, so
+/// `start_drag` rides a genuine implicit grab rather than an invented serial.
 #[test]
-fn drag_and_drop_carries_data_between_two_clients() {
+fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
     let compositor = Compositor::start();
     let payload = "dragged between two clients";
 
@@ -3225,6 +3210,7 @@ fn drag_and_drop_carries_data_between_two_clients() {
 
     let target_point = target.pointer_target(&compositor);
     let source_point = source.pointer_target(&compositor);
+    let before = tree_shape(&compositor.workspace_tree());
 
     // Press inside the source tile for a real implicit grab; the serial must
     // come from *this* press since smithay only honours `start_drag` against
@@ -3256,31 +3242,43 @@ fn drag_and_drop_carries_data_between_two_clients() {
     );
     source.roundtrip();
 
-    // Move over the target tile and release.
+    // `pointer_target` finds the first client pixel, which lies in the large
+    // left outer band. Moving there must therefore select the inter-window
+    // target before the tiled client gets a Wayland offer.
     compositor.pointer_move(target_point.0, target_point.1);
-    {
-        let started = Instant::now();
-        while started.elapsed() < DEADLINE {
-            if target.state.dnd_entered && target.state.dnd_offer.is_some() {
-                break;
-            }
-            target.pump();
-            source.pump();
-            std::thread::sleep(Duration::from_millis(10));
-        }
+    for _ in 0..25 {
+        target.pump();
+        source.pump();
         assert!(
-            target.state.dnd_entered && target.state.dnd_offer.is_some(),
-            "the drag never entered the target client's surface.\nCompositor log:\n{}",
-            compositor.recent_log(),
+            !target.state.dnd_entered && target.state.dnd_offer.is_none(),
+            "a shell-owned tiled edge must not offer the payload to the client below"
         );
+        std::thread::sleep(Duration::from_millis(10));
     }
     compositor.pointer_button(false);
-    target.wait_until(|s| s.dnd_dropped, "the target client never saw the drop");
-
-    let received = target.read_dnd(&mut source);
+    let started = Instant::now();
+    let after = loop {
+        source.pump();
+        target.pump();
+        let tree = compositor.workspace_tree();
+        let shape = tree_shape(&tree);
+        if shape.0 == before.0 + 1
+            && shape.1 == before.1 + 1
+            && foreign_group_for_app(&tree, "so.tilo.word-processor").is_some()
+        {
+            break shape;
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "the shell never opened the dragged text at the tiled edge.\n{}",
+            compositor.debug_state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_eq!(
-        received, payload,
-        "the dropped data did not match what the source offered"
+        after.0,
+        before.0 + 1,
+        "the outer edge must create a sibling group for dragged text"
     );
 }
 
@@ -3627,6 +3625,7 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
         foreign_group_for_app(&before_tree, "org.tilo.test.dnd-target")
             .expect("the destination client belongs to a durable window group");
     assert_eq!(before_foreign_order, ["org.tilo.test.dnd-target"]);
+    const IMAGE_EDITOR_APP_ID: &str = "so.tilo.image-editor";
 
     drag_file_row_to_shell_target(&compositor, row, target_point);
     compositor.pointer_button(false);
@@ -3634,9 +3633,7 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
     let after = loop {
         let tree = compositor.workspace_tree();
         let shape = tree_shape(&tree);
-        if shape.1 == before.1 + 1
-            && foreign_group_for_app(&tree, "dev.tilo.image-editor").is_some()
-        {
+        if shape.1 == before.1 + 1 && foreign_group_for_app(&tree, IMAGE_EDITOR_APP_ID).is_some() {
             break (shape, tree);
         }
         assert!(
@@ -3650,16 +3647,15 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
         after.0.0, before.0,
         "an interior body drop joins the existing group rather than creating a new one"
     );
-    let (opened_group, after_foreign_order) =
-        foreign_group_for_app(&after.1, "dev.tilo.image-editor")
-            .expect("the opened image belongs to a durable window group");
+    let (opened_group, after_foreign_order) = foreign_group_for_app(&after.1, IMAGE_EDITOR_APP_ID)
+        .expect("the opened image belongs to a durable window group");
     assert_eq!(
         opened_group, target_group,
         "the image must join the group under the pointer"
     );
     assert_eq!(
         after_foreign_order,
-        ["org.tilo.test.dnd-target", "dev.tilo.image-editor"],
+        ["org.tilo.test.dnd-target", IMAGE_EDITOR_APP_ID],
         "a right-interior drop appends the opened image after the target tab"
     );
 
