@@ -17,7 +17,7 @@ impl App {
     }
 
     fn invalidate_close_presentation(&mut self) {
-        self.action_palette = None;
+        self.actions.action_palette = None;
         self.bindings.clear();
         self.layout.node_map.clear();
         self.layout.structure_dirty = true;
@@ -183,8 +183,9 @@ impl App {
             self.platform,
         );
         self.invalidate_close_presentation();
-        let before: std::collections::HashSet<_> = self.local_invocations.keys().copied().collect();
-        let broker_request = self.next_broker_request_id;
+        let before: std::collections::HashSet<_> =
+            self.actions.local_invocations.keys().copied().collect();
+        let broker_request = self.actions.next_broker_request_id;
         let connected = self.collab_manager.is_connected();
         let actor = self.local_author.0.clone();
         // Do not supply an invocation or claim broker admission. This is the
@@ -205,11 +206,12 @@ impl App {
             }
             Ok(crate::widget::ResourceOperationStart::Accepted) => {
                 self.close_admission.save_local = self
+                    .actions
                     .local_invocations
                     .iter()
                     .find(|(id, (address, _))| !before.contains(*id) && *address == document.save)
                     .map(|(id, _)| *id);
-                if connected && self.next_broker_request_id != broker_request {
+                if connected && self.actions.next_broker_request_id != broker_request {
                     self.close_admission.save_broker_request = broker_request;
                 }
                 if self.close_admission.save_local.is_none()
