@@ -483,14 +483,12 @@ jobs:
       - name: Install publication tools
         run: |
           ./os/dev/install-cached-cosign.sh
+          ./os/dev/install-cached-aws-cli.sh
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends software-properties-common
-            sudo -n add-apt-repository --yes universe
-            sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends awscli podman skopeo
+            sudo -n apt-get install -y --no-install-recommends podman skopeo
           else
-            sudo -n dnf install -y awscli podman skopeo
+            sudo -n dnf install -y podman skopeo
           fi
       - name: Verify and publish the tested native builder index
         env:
