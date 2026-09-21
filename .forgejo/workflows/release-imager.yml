@@ -67,7 +67,11 @@ jobs:
       REGISTRY_AUTH_FILE: /tmp/tilo-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
       TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
       TILO_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.TILO_INSTALLER_OS_IMAGE }}
-      TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.sha }}
+      # A release tag must use an OS release from the identical source commit.
+      # Manual rehearsals intentionally layer this checkout's installer/rootfs
+      # overlay onto the most recent signed published generation, so they stay
+      # runnable before a candidate commit is itself publishable.
+      TILO_EXPECTED_OS_SOURCE_REVISION: ${{ startsWith(github.ref, 'refs/tags/imager-v') && github.sha || '' }}
       # A manual rehearsal receives no production signing interface. The
       # protected-tag broker is exposed only for the release path that requires
       # newly signed live/target UKIs in the installer overlay.
@@ -116,7 +120,11 @@ jobs:
             exit 1
           }
           generation="$(./os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE")"
-          echo "::notice::installer source is verified published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            echo "::notice::installer source is exact-commit published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
+          else
+            echo "::notice::rehearsal overlays $GITHUB_SHA onto verified published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
+          fi
           ./os/dev/build-custom-installer.sh
           package_args=(os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}")
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
