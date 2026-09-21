@@ -2,6 +2,7 @@ use super::*;
 use crate::bundle as internal_bundle;
 use crate::cache::fixture_platform as fixture;
 use crate::test_support::{Server, response};
+use std::sync::atomic::AtomicU64;
 
 fn manifest() -> Vec<u8> {
     internal_bundle::tests::bytes(&internal_bundle::tests::fixture())

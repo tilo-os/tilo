@@ -33,6 +33,7 @@ impl Error {
     pub(crate) fn failed(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Failed, message)
     }
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn busy(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Busy, message)
     }
@@ -45,6 +46,7 @@ impl Error {
     pub(crate) fn unsupported(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Unsupported, message)
     }
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn permission_denied(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::PermissionDenied, message)
     }
@@ -100,15 +102,13 @@ impl Failure {
     pub(crate) fn with_uncertainty(self) -> Self {
         Self(self.0.with_uncertainty())
     }
-    pub(crate) fn io(error: std::io::Error) -> Self {
-        Self(Error::io(error))
-    }
     pub(crate) fn io_context(error: std::io::Error, context: &str) -> Self {
         let message = format!("{context}{error}");
         let mut error = Error::io(error);
         error.message = message;
         Self(error)
     }
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn busy(message: impl Into<String>) -> Self {
         Self(Error::busy(message))
     }
@@ -118,9 +118,11 @@ impl Failure {
     pub(crate) fn closed(message: impl Into<String>) -> Self {
         Self(Error::closed(message))
     }
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn unsupported(message: impl Into<String>) -> Self {
         Self(Error::unsupported(message))
     }
+    #[cfg(any(windows, target_os = "linux"))]
     pub(crate) fn permission_denied(message: impl Into<String>) -> Self {
         Self(Error::permission_denied(message))
     }

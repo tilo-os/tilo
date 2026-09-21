@@ -1,5 +1,6 @@
 //! Private Windows installer cache. Cooperative current-user boundary only.
 //! FlushFileBuffers orders data, not guaranteed power-loss persistence of directory entries.
+#[cfg(windows)]
 fn require_permission_denied(
     ok: bool,
     why: &str,
@@ -10,6 +11,7 @@ fn require_permission_denied(
         Err(crate::error::Failure::permission_denied(why))
     }
 }
+#[cfg(windows)]
 fn require_unsupported(ok: bool, why: &str) -> std::result::Result<(), crate::error::Failure> {
     if ok {
         Ok(())

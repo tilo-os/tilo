@@ -11,10 +11,18 @@ pub(crate) fn next_operation(counter: &AtomicU64) -> Result<u64, String> {
 
 /// Read-only cooperative stop view for a scoped consumer. The transfer latch
 /// cannot be reset or retained beyond the borrowed consumption scope.
-pub(crate) struct Cancellation<'a>(pub(crate) &'a AtomicBool);
-impl Cancellation<'_> {
+pub(crate) struct Cancellation<'a> {
+    _cancelled: &'a AtomicBool,
+}
+impl<'a> Cancellation<'a> {
+    pub(crate) fn new(cancelled: &'a AtomicBool) -> Self {
+        Self {
+            _cancelled: cancelled,
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self._cancelled.load(Ordering::Acquire)
     }
 }
 

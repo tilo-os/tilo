@@ -21,12 +21,15 @@ pub(super) fn fault(stage: &'static str) -> Result<(), crate::error::Failure> {
         }
     })
 }
+#[cfg(test)]
 pub(crate) fn read_event(phase: &'static str, requested: u64, actual: u64) {
     READS.with(|r| r.borrow_mut().push((phase, requested, actual)));
 }
+#[cfg(test)]
 pub(crate) fn fail(stage: Option<&'static str>) {
     FAILURE.with(|f| *f.borrow_mut() = stage);
 }
+#[cfg(test)]
 pub(crate) fn read_totals(phase: &'static str) -> (u64, u64) {
     READS.with(|r| {
         r.borrow()
@@ -35,6 +38,7 @@ pub(crate) fn read_totals(phase: &'static str) -> (u64, u64) {
             .fold((0, 0), |(a, b), r| (a + r.1, b + r.2))
     })
 }
+#[cfg(test)]
 pub(crate) fn clear_reads() {
     READS.with(|r| r.borrow_mut().clear());
 }
@@ -211,7 +215,7 @@ impl Provider for DiskProvider {
         Ok(())
     }
 }
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(crate) fn prefix(
     prepared: &mut PreparedPrefix<'_>,
     bytes: &[u8],
@@ -242,7 +246,7 @@ type PreparationHook = Box<dyn FnMut(usize) -> Result<(), crate::error::Failure>
 thread_local! {
     static PREPARATION_HOOK: RefCell<Option<PreparationHook>> = const { RefCell::new(None) };
 }
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(crate) fn with_preparation_hook(hook: PreparationHook, run: impl FnOnce()) {
     struct Reset(Option<PreparationHook>);
     impl Drop for Reset {

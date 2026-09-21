@@ -21,12 +21,14 @@ const MAX_COMPONENT: u64 = 1 << 40;
 /// Exact selected bytes and validated metadata, not stable-file/install authority.
 #[derive(Debug)]
 pub(crate) struct SelectedManifest {
+    #[cfg(test)]
     bytes: Vec<u8>,
     bundle: InternalBundle,
     digest: String,
     asset: Url,
 }
 impl SelectedManifest {
+    #[cfg(test)]
     pub(crate) fn from_bytes(
         release: &InternalRelease,
         bytes: Vec<u8>,
@@ -43,12 +45,14 @@ impl SelectedManifest {
             .map_err(crate::error::Failure::invalid_input)?;
         let asset = asset_url(release.manifest_url(), origin)?;
         Ok(Self {
+            #[cfg(test)]
             bytes,
             bundle,
             digest: release.manifest_sha256().into(),
             asset,
         })
     }
+    #[cfg(test)]
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -72,6 +76,7 @@ impl SelectedManifest {
         url
     }
 }
+#[cfg(any(test, windows, target_os = "linux"))]
 fn production_origin() -> Url {
     Url::parse("https://code.podesta.ai/").expect("literal URL")
 }
@@ -129,6 +134,7 @@ pub(crate) struct InternalTransport {
     origin: Url,
 }
 impl InternalTransport {
+    #[cfg(any(windows, all(target_os = "linux", not(test))))]
     pub(crate) fn new() -> Result<Self, crate::error::Failure> {
         Self::client(production_origin(), Duration::from_secs(30))
     }
@@ -284,6 +290,7 @@ impl InternalTransport {
     /// working file with read/write access. The caller authorizes and retains the
     /// handle; this API never discovers, replaces, deletes or publishes a path.
     /// On failure bytes remain on that handle; no returned pathname is authority.
+    #[cfg(test)]
     pub(crate) fn transfer(
         &self,
         selected: &SelectedManifest,

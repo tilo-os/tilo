@@ -48,6 +48,7 @@ mod server {
         consumptions: Arc<std::sync::atomic::AtomicU64>,
     }
     impl Server {
+        #[cfg(test)]
         pub(crate) fn origin(&self) -> Url {
             Url::parse(&self.url).unwrap()
         }

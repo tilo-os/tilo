@@ -1,5 +1,6 @@
 //! Private cooperative cache. Linux check-then-unlink/rename cannot confine
 //! arbitrary hostile same-UID or privileged mutation. No support activation.
+#[cfg(target_os = "linux")]
 fn require_permission_denied(
     ok: bool,
     why: &str,
@@ -10,6 +11,7 @@ fn require_permission_denied(
         Err(crate::error::Failure::permission_denied(why))
     }
 }
+#[cfg(target_os = "linux")]
 fn require_unsupported(ok: bool, why: &str) -> std::result::Result<(), crate::error::Failure> {
     if ok {
         Ok(())

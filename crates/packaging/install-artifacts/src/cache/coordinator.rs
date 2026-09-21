@@ -8,7 +8,7 @@ use crate::{
 };
 use std::sync::{
     Arc, Condvar, Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
 use std::thread::{self, JoinHandle};
 
@@ -30,6 +30,13 @@ struct Request {
 }
 #[derive(Clone, Copy)]
 enum Action {
+    #[cfg_attr(
+        not(all(test, unix)),
+        expect(
+            dead_code,
+            reason = "the public facade cannot construct this private action; crate tests prove protected staging fails closed"
+        )
+    )]
     Consume,
     Release,
 }
@@ -43,7 +50,7 @@ struct Mailbox {
     preference: PreferenceState,
 }
 #[derive(Default)]
-struct Shared {
+pub(super) struct Shared {
     mailbox: Mutex<Mailbox>,
     wake: Condvar,
 }
@@ -60,34 +67,7 @@ pub(crate) struct Worker {
     thread: Option<JoinHandle<()>>,
 }
 impl Worker {
-    pub(crate) fn spawn(
-        consumer: impl FnMut(
-            &SelectedManifest,
-            &Cancellation<'_>,
-            &mut dyn HeldReadSeek,
-            &mut dyn HeldReadSeek,
-        ) -> Result<(), crate::error::Failure>
-        + Send
-        + 'static,
-    ) -> Result<Self, crate::error::Failure> {
-        Self::spawn_with(InternalTransport::new()?, consumer)
-    }
-    fn spawn_with(
-        transport: InternalTransport,
-        consumer: impl FnMut(
-            &SelectedManifest,
-            &Cancellation<'_>,
-            &mut dyn HeldReadSeek,
-            &mut dyn HeldReadSeek,
-        ) -> Result<(), crate::error::Failure>
-        + Send
-        + 'static,
-    ) -> Result<Self, crate::error::Failure> {
-        Self::spawn_runner(move |shared| {
-            worker_loop(shared, transport, consumer, PreferenceStore::live())
-        })
-    }
-    fn spawn_runner(
+    pub(super) fn spawn_runner(
         run: impl FnOnce(Arc<Shared>) + Send + 'static,
     ) -> Result<Self, crate::error::Failure> {
         let shared = Arc::new(Shared::default());
@@ -193,6 +173,13 @@ impl Worker {
         self.shared.wake.notify_all();
         Ok(())
     }
+    #[cfg_attr(
+        not(all(test, unix)),
+        expect(
+            dead_code,
+            reason = "retained for crate security tests; no public consume operation may expose held finals"
+        )
+    )]
     pub(crate) fn consume(&self, token: &Token) -> Result<(), crate::error::Failure> {
         self.action(token, Action::Consume)
     }
@@ -317,7 +304,7 @@ fn stop(flags: &Flags) -> Result<(), crate::error::Failure> {
         Ok(())
     }
 }
-fn worker_loop(
+pub(super) fn worker_loop(
     shared: Arc<Shared>,
     transport: InternalTransport,
     mut consumer: impl FnMut(
@@ -428,7 +415,7 @@ impl Ready<'_> {
         let [first, second] = &mut self.finals;
         first.with_verified_reader(cancel, |a| {
             second.with_verified_reader(cancel, |b| {
-                consumer(self.selected, &Cancellation(cancel), a, b)
+                consumer(self.selected, &Cancellation::new(cancel), a, b)
             })
         })
     }
@@ -659,30 +646,3 @@ fn transfer(
 #[cfg(all(test, unix))]
 #[path = "coordinator/tests.rs"]
 mod tests;
-
-#[cfg(all(unix, any(test, feature = "test-support")))]
-impl Worker {
-    pub(crate) fn fixture(
-        root: &std::path::Path,
-        preference: PreferenceStore,
-        transport: InternalTransport,
-        consumptions: Arc<AtomicU64>,
-    ) -> Self {
-        let root = root.to_owned();
-        Self::spawn_runner(move |shared| {
-            crate::cache::fixture_platform::ROOT.with(|r| *r.borrow_mut() = root);
-            crate::test_support::with_fixture_interval(|| {
-                worker_loop(
-                    shared,
-                    transport,
-                    move |selected, cancel, first, second| {
-                        consumptions.fetch_add(1, Ordering::AcqRel);
-                        crate::refuse_protected_staging(selected, cancel, first, second)
-                    },
-                    preference,
-                )
-            });
-        })
-        .expect("fixture worker")
-    }
-}

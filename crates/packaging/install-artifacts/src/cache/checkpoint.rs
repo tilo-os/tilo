@@ -11,6 +11,7 @@ pub(crate) const MAX_RECORD: usize = 4096;
 pub(crate) const MAX_SCAN: usize = 16;
 /// Providers must refuse after this many exclusive-create collisions, retaining
 /// unknown entries. Journal and payload parents must be distinct pinned parents.
+#[cfg(any(windows, target_os = "linux"))]
 pub(crate) const MAX_COLLISIONS: usize = 16;
 /// 2^32-1 transitions exceed the 16,384 intervals needed for a 1-TiB component,
 /// including three attempts. Arbitrarily repeated pauses eventually refuse.
@@ -195,6 +196,7 @@ fn binding(
     Ok((h.finalize().into(), c.byte_size))
 }
 /// Selection-checked metadata only; never an acquired namespace capability.
+#[cfg(any(test, windows, target_os = "linux"))]
 pub(super) struct UntrustedRecordHint<'a> {
     pub(super) leaf: &'a str,
     pub(super) parent_digest: &'a [u8; 32],
@@ -220,6 +222,7 @@ impl Record {
             kind: Kind::Prefix,
         })
     }
+    #[cfg(any(test, windows, target_os = "linux"))]
     pub(super) fn hint_for(
         &self,
         selected: &SelectedManifest,

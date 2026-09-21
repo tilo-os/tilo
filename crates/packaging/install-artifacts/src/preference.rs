@@ -14,6 +14,7 @@ pub(crate) struct PreferenceStore {
     hooks: Option<crate::test_support::PreferenceHooks>,
 }
 impl PreferenceStore {
+    #[cfg(any(windows, all(target_os = "linux", not(test))))]
     pub(crate) fn live() -> Self {
         let path = dirs::data_local_dir()
             .filter(|root| root.is_absolute())
