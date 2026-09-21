@@ -2,17 +2,22 @@
 
 ## Scope and method
 
-Scope: `shell/src/{compositor,wayland,sandbox,security,portal,bin}/`, the shell manifest, and shell-owned examples and packaging. Root shell state, integration tests, and application-framework internals are covered separately. The audit examines target guards, Unix and FFI use, process commands, native dependencies, host paths, device interfaces, protocols, and target scripts. Intentional Linux-only backends remain platform backends rather than portability defects.
+Scope: `crates/session/shell/src/{compositor,wayland,sandbox,security,portal,bin}/`, the shell manifest, and shell-owned examples and packaging. Root shell state, integration tests, and application-framework internals are covered separately. The audit examines target guards, Unix and FFI use, process commands, native dependencies, host paths, device interfaces, protocols, and target scripts. Intentional Linux-only backends remain platform backends rather than portability defects.
 
 ## Destination alignment
 
 Read `docs/architecture/platform-services.md`. It is proposed, not implemented. In this report “platform framework” means focused non-rendering `crates/system` / `crates/runtime` services, optionally surfaced to apps through `ui::platform`. It does **not** mean moving compositor security ownership or native Wayland/portal backends into UI. Shell consumes service crates directly; the UI/app framework internals are outside this audit. Native backends retain authorization/enforcement authority. No framework-to-app dependency should be introduced.
 
+**Source-anchor note:** Verified prefix repairs identify current moved paths where
+available. Any `:line` suffix remains the original 2026-09-18 audit coordinate; it
+is historical evidence and does not assert that the cited symbol is at that line
+in the current tree.
+
 ## A07-01 — Extract Unix local transport from portable control/capture contracts
 
 **Classification / priority:** leaked platform representation, medium; Linux control servers themselves are intentional backends.
 
-**Evidence:** `shell/src/bin/tilo-control.rs:13` imports UnixStream unconditionally, `:20` defaults to `/tmp/tilo.sock`, and `:645` installs SIGPIPE handling. `shell/src/compositor/projection_capture.rs:9` imports UnixStream in an unconditionally exported module (`compositor/mod.rs:53`); its default profile/socket discovery at `projection_capture.rs:282` and `:291` uses XDG_RUNTIME_DIR. `portal/capture_broker.rs:10` imports Unix OwnedFd, and `:90` exposes PipeWireNode/FileDescriptor in LocalCaptureHandle although capture authorization is a target-local, semantic authority service. These work as Unix assumptions on macOS, but are not portable Windows contracts; no Windows build claim is made.
+**Evidence:** `crates/session/shell/src/bin/tilo-control.rs:13` imports UnixStream unconditionally, `:20` defaults to `/tmp/tilo.sock`, and `:645` installs SIGPIPE handling. `crates/session/shell/src/compositor/projection_capture.rs:9` imports UnixStream in an unconditionally exported module (`compositor/mod.rs:53`); its default profile/socket discovery at `projection_capture.rs:282` and `:291` uses XDG_RUNTIME_DIR. `portal/capture_broker.rs:10` imports Unix OwnedFd, and `:90` exposes PipeWireNode/FileDescriptor in LocalCaptureHandle although capture authorization is a target-local, semantic authority service. These work as Unix assumptions on macOS, but are not portable Windows contracts; no Windows build claim is made.
 
 **Boundary:** local authenticated IPC endpoint/discovery and opaque local capture transport handles in the platform framework; semantic control JSON, capture lease, app/workspace/session binding and revocation stay shared. Preserve non-serializability of native handles. Reuse broker lease model and projector protocol; do not create another control protocol.
 
@@ -104,102 +109,102 @@ Read `docs/architecture/platform-services.md`. It is proposed, not implemented. 
 
 The following files matched the broad search. First lexical matches are navigation anchors rather than independent issues; findings above distinguish platform implementations, pure tests or policy, and ownership leaks.
 
-- `shell/src/bin/click_test_client.rs:1`
-- `shell/src/bin/qos-runtime-mcp.rs:46`
-- `shell/src/bin/shots/diff.rs:278`
-- `shell/src/bin/shots/driver.rs:20`
-- `shell/src/bin/shots/main.rs:204`
-- `shell/src/bin/shots/mode.rs:427`
-- `shell/src/bin/shots/scenario.rs:886`
-- `shell/src/bin/tilo-control.rs:6`
-- `shell/src/bin/tilo-loadclient.rs:1`
-- `shell/src/bin/ux-bench.rs:2`
-- `shell/src/bin/ux_bench_support/mod.rs:14`
-- `shell/src/bin/ux_bench_support/tests.rs:54`
-- `shell/src/compositor/accessibility.rs:91`
-- `shell/src/compositor/activation.rs:97`
-- `shell/src/compositor/audio_capture.rs:12`
-- `shell/src/compositor/backend/drm/devices.rs:11`
-- `shell/src/compositor/backend/drm/gestures.rs:207`
-- `shell/src/compositor/backend/drm/hotplug.rs:146`
-- `shell/src/compositor/backend/drm/input_config.rs:494`
-- `shell/src/compositor/backend/drm/mod.rs:765`
-- `shell/src/compositor/backend/drm/outputs.rs:133`
-- `shell/src/compositor/backend/drm/runtime.rs:11`
-- `shell/src/compositor/backend/drm/scale.rs:112`
-- `shell/src/compositor/backend/drm/scanout.rs:10`
-- `shell/src/compositor/backend/drm/seat_diag.rs:41`
-- `shell/src/compositor/backend/drm/session.rs:183`
-- `shell/src/compositor/backend/headless.rs:175`
-- `shell/src/compositor/backend/mod.rs:13`
-- `shell/src/compositor/backend/winit.rs:591`
-- `shell/src/compositor/bridge.rs:9`
-- `shell/src/compositor/capture.rs:17`
-- `shell/src/compositor/client_input.rs:1480`
-- `shell/src/compositor/dev_env.rs:52`
-- `shell/src/compositor/drag_feedback.rs:239`
-- `shell/src/compositor/floating_service.rs:11`
-- `shell/src/compositor/gpu_import.rs:79`
-- `shell/src/compositor/hosted.rs:230`
-- `shell/src/compositor/hosted_test_control.rs:27`
-- `shell/src/compositor/idle.rs:327`
-- `shell/src/compositor/lock_auth.rs:17`
-- `shell/src/compositor/lock_controller.rs:269`
-- `shell/src/compositor/lock_screen.rs:783`
-- `shell/src/compositor/metrics.rs:529`
-- `shell/src/compositor/mod.rs:9`
-- `shell/src/compositor/mp4_recording.rs:322`
-- `shell/src/compositor/native.rs:15`
-- `shell/src/compositor/osk_service.rs:10`
-- `shell/src/compositor/output_globals.rs:271`
-- `shell/src/compositor/pacing.rs:230`
-- `shell/src/compositor/projection_capture.rs:9`
-- `shell/src/compositor/remote_seat.rs:287`
-- `shell/src/compositor/render_node.rs:20`
-- `shell/src/compositor/selection.rs:22`
-- `shell/src/compositor/state.rs:214`
-- `shell/src/compositor/surface_outputs.rs:107`
-- `shell/src/compositor/surface_readback.rs:222`
-- `shell/src/compositor/switch_control.rs:139`
-- `shell/src/compositor/xwayland.rs:11`
-- `shell/src/portal/account.rs:5`
-- `shell/src/portal/app_chooser.rs:3`
-- `shell/src/portal/auth.rs:201`
-- `shell/src/portal/background.rs:12`
-- `shell/src/portal/camera.rs:19`
-- `shell/src/portal/capture_broker.rs:10`
-- `shell/src/portal/clipboard.rs:4`
-- `shell/src/portal/desktop_services.rs:12`
-- `shell/src/portal/doc_store.rs:202`
-- `shell/src/portal/dynamic_launcher.rs:3`
-- `shell/src/portal/email.rs:2`
-- `shell/src/portal/file_chooser.rs:26`
-- `shell/src/portal/file_picker_spawner.rs:298`
-- `shell/src/portal/global_shortcuts.rs:9`
-- `shell/src/portal/inhibit.rs:8`
-- `shell/src/portal/input_capture.rs:12`
-- `shell/src/portal/lifecycle.rs:460`
-- `shell/src/portal/lockdown.rs:10`
-- `shell/src/portal/mod.rs:51`
-- `shell/src/portal/notification.rs:12`
-- `shell/src/portal/permission_store.rs:10`
-- `shell/src/portal/picker_queue.rs:143`
-- `shell/src/portal/print.rs:31`
-- `shell/src/portal/remote_desktop.rs:32`
-- `shell/src/portal/screencast.rs:27`
-- `shell/src/portal/screencast_pipewire.rs:22`
-- `shell/src/portal/screenshot.rs:3`
-- `shell/src/portal/secret.rs:11`
-- `shell/src/portal/settings.rs:2`
-- `shell/src/portal/usb.rs:9`
-- `shell/src/portal/wallpaper.rs:2`
-- `shell/src/sandbox/landlock_shim.rs:40`
-- `shell/src/sandbox/mod.rs:25`
-- `shell/src/sandbox/profile.rs:25`
-- `shell/src/sandbox/seccomp.rs:111`
-- `shell/src/security/container.rs:3`
-- `shell/src/wayland/color_management.rs:27`
-- `shell/src/wayland/edid.rs:324`
-- `shell/src/wayland/mod.rs:11`
+- `crates/session/shell/src/bin/click_test_client.rs:1`
+- `crates/session/shell/src/bin/qos-runtime-mcp.rs:46`
+- `crates/session/shell/src/bin/shots/diff.rs:278`
+- `crates/session/shell/src/bin/shots/driver.rs:20`
+- `crates/session/shell/src/bin/shots/main.rs:204`
+- `crates/session/shell/src/bin/shots/mode.rs:427`
+- `crates/session/shell/src/bin/shots/scenario.rs:886`
+- `crates/session/shell/src/bin/tilo-control.rs:6`
+- `crates/session/shell/src/bin/tilo-loadclient.rs:1`
+- `crates/session/shell/src/bin/ux-bench.rs:2`
+- `crates/session/shell/src/bin/ux_bench_support/mod.rs:14`
+- `crates/session/shell/src/bin/ux_bench_support/tests.rs:54`
+- `crates/session/shell/src/compositor/accessibility.rs:91`
+- `crates/session/shell/src/compositor/activation.rs:97`
+- `crates/session/shell/src/compositor/audio_capture.rs:12`
+- `crates/session/shell/src/compositor/backend/drm/devices.rs:11`
+- `crates/session/shell/src/compositor/backend/drm/gestures.rs:207`
+- `crates/session/shell/src/compositor/backend/drm/hotplug.rs:146`
+- `crates/session/shell/src/compositor/backend/drm/input_config.rs:494`
+- `crates/session/shell/src/compositor/backend/drm/mod.rs:765`
+- `crates/session/shell/src/compositor/backend/drm/outputs.rs:133`
+- `crates/session/shell/src/compositor/backend/drm/runtime.rs:11`
+- `crates/session/shell/src/compositor/backend/drm/scale.rs:112`
+- `crates/session/shell/src/compositor/backend/drm/scanout.rs:10`
+- `crates/session/shell/src/compositor/backend/drm/seat_diag.rs:41`
+- `crates/session/shell/src/compositor/backend/drm/session.rs:183`
+- `crates/session/shell/src/compositor/backend/headless.rs:175`
+- `crates/session/shell/src/compositor/backend/mod.rs:13`
+- `crates/session/shell/src/compositor/backend/winit.rs:591`
+- `crates/session/shell/src/compositor/bridge.rs:9`
+- `crates/session/shell/src/compositor/capture.rs:17`
+- `crates/session/shell/src/compositor/client_input.rs:1480`
+- `crates/session/shell/src/compositor/dev_env.rs:52`
+- `crates/session/shell/src/compositor/drag_feedback.rs:239`
+- `crates/session/shell/src/compositor/floating_service.rs:11`
+- `crates/session/shell/src/compositor/gpu_import.rs:79`
+- `crates/session/shell/src/compositor/hosted.rs:230`
+- `crates/session/shell/src/compositor/hosted_test_control.rs:27`
+- `crates/session/shell/src/compositor/idle.rs:327`
+- `crates/session/shell/src/compositor/lock_auth.rs:17`
+- `crates/session/shell/src/compositor/lock_controller.rs:269`
+- `crates/session/shell/src/compositor/lock_screen.rs:783`
+- `crates/session/shell/src/compositor/metrics.rs:529`
+- `crates/session/shell/src/compositor/mod.rs:9`
+- `crates/session/shell/src/compositor/mp4_recording.rs:322`
+- `crates/session/shell/src/compositor/native.rs:15`
+- `crates/session/shell/src/compositor/osk_service.rs:10`
+- `crates/session/shell/src/compositor/output_globals.rs:271`
+- `crates/session/shell/src/compositor/pacing.rs:230`
+- `crates/session/shell/src/compositor/projection_capture.rs:9`
+- `crates/session/shell/src/compositor/remote_seat.rs:287`
+- `crates/session/shell/src/compositor/render_node.rs:20`
+- `crates/session/shell/src/compositor/selection.rs:22`
+- `crates/session/shell/src/compositor/state.rs:214`
+- `crates/session/shell/src/compositor/surface_outputs.rs:107`
+- `crates/session/shell/src/compositor/surface_readback.rs:222`
+- `crates/session/shell/src/compositor/switch_control.rs:139`
+- `crates/session/shell/src/compositor/xwayland.rs:11`
+- `crates/session/shell/src/portal/account.rs:5`
+- `crates/session/shell/src/portal/app_chooser.rs:3`
+- `crates/session/shell/src/portal/auth.rs:201`
+- `crates/session/shell/src/portal/background.rs:12`
+- `crates/session/shell/src/portal/camera.rs:19`
+- `crates/session/shell/src/portal/capture_broker.rs:10`
+- `crates/session/shell/src/portal/clipboard.rs:4`
+- `crates/session/shell/src/portal/desktop_services.rs:12`
+- `crates/session/shell/src/portal/doc_store.rs:202`
+- `crates/session/shell/src/portal/dynamic_launcher.rs:3`
+- `crates/session/shell/src/portal/email.rs:2`
+- `crates/session/shell/src/portal/file_chooser.rs:26`
+- `crates/session/shell/src/portal/file_picker_spawner.rs:298`
+- `crates/session/shell/src/portal/global_shortcuts.rs:9`
+- `crates/session/shell/src/portal/inhibit.rs:8`
+- `crates/session/shell/src/portal/input_capture.rs:12`
+- `crates/session/shell/src/portal/lifecycle.rs:460`
+- `crates/session/shell/src/portal/lockdown.rs:10`
+- `crates/session/shell/src/portal/mod.rs:51`
+- `crates/session/shell/src/portal/notification.rs:12`
+- `crates/session/shell/src/portal/permission_store.rs:10`
+- `crates/session/shell/src/portal/picker_queue.rs:143`
+- `crates/session/shell/src/portal/print.rs:31`
+- `crates/session/shell/src/portal/remote_desktop.rs:32`
+- `crates/session/shell/src/portal/screencast.rs:27`
+- `crates/session/shell/src/portal/screencast_pipewire.rs:22`
+- `crates/session/shell/src/portal/screenshot.rs:3`
+- `crates/session/shell/src/portal/secret.rs:11`
+- `crates/session/shell/src/portal/settings.rs:2`
+- `crates/session/shell/src/portal/usb.rs:9`
+- `crates/session/shell/src/portal/wallpaper.rs:2`
+- `crates/session/shell/src/sandbox/landlock_shim.rs:40`
+- `crates/session/shell/src/sandbox/mod.rs:25`
+- `crates/session/shell/src/sandbox/profile.rs:25`
+- `crates/session/shell/src/sandbox/seccomp.rs:111`
+- `crates/session/shell/src/security/container.rs:3`
+- `crates/session/shell/src/wayland/color_management.rs:27`
+- `crates/session/shell/src/wayland/edid.rs:324`
+- `crates/session/shell/src/wayland/mod.rs:11`
 
 Summary: eight grouped findings. Adjacent shell callers, launcher enforcement, media and projector services, runtime transport, and OS packaging require coordinated migration.

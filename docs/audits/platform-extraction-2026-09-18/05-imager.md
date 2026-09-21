@@ -12,6 +12,20 @@ Read `docs/architecture/platform-services.md`. It is a proposed design, not evid
 
 ## Findings
 
+**Current-tree note:** The source anchors in A05-06 through A05-09 and their
+appendix tables are historical 2026-09-18 locations. The current tree no
+longer contains the cited `destination_security`, `internal_cache`,
+`connection/endpoint`, `connection/transaction`, `migration_durability`,
+`migration_source`, or `migration_store` modules under `apps/imager/src/setup/`,
+and no one-to-one replacement was verified here. Retain the architectural
+findings and contracts, but treat those path tokens as historical anchors
+until a fresh Imager source audit assigns current locations.
+
+**Source-anchor note:** Verified prefix repairs identify current moved paths where
+available. Any `:line` suffix remains the original 2026-09-18 audit coordinate; it
+is historical evidence and does not assert that the cited symbol is at that line
+in the current tree.
+
 ### A05-01 — Device inventory, identity and destructive media authorization (high; backend + extract)
 
 Evidence: `apps/imager/src/probe.rs:75` shells to Linux lsblk; `:106` reconciles Flatpak inventory with host UDisks2; `:237` uses macOS diskutil/plutil; `:312` queries Windows disks. `apps/imager/src/write.rs:72` already defines a backend selector; `:265` implements Unix flock-based device exclusion, `:337` Windows exclusion, `:1013` UDisks object naming, `:1082` authorized descriptor opening, `:1188` helper mode, `:1463` Linux elevation, `:1489` macOS elevation, `:1520` Windows elevation, `:1588`/`:1626`/`:1637` native prepare and `:1660`/`:1678` native finish. These are intentionally privileged/platform operations, not accidental Linux-only code. Flatpak and host helper are distinct security authorities and must stay distinct.

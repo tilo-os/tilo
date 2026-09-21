@@ -2,7 +2,7 @@
 
 ## Scope and method
 
-Scope: source, tests, manifests, and documentation under `crates/collab/`, `crates/identity/`, and `crates/hosting/`. The audit covers target guards, native APIs and dependencies, processes, storage ownership and atomicity, path defaults, signals, sockets, environment variables, and platform-sensitive tests. Application-framework and adjacent system implementations are outside its scope. Findings are static source analysis rather than cross-target runtime qualification.
+Scope: source, tests, manifests, and documentation under `crates/collab/` and `crates/hosting/`. The audit covers target guards, native APIs and dependencies, processes, storage ownership and atomicity, path defaults, signals, sockets, environment variables, and platform-sensitive tests. Application-framework and adjacent system implementations are outside its scope. Findings are static source analysis rather than cross-target runtime qualification.
 
 ## Destination alignment
 
@@ -10,9 +10,14 @@ The proposed destination is `docs/architecture/platform-services.md` (read for t
 
 ## Actionable findings
 
+**Source-anchor note:** Verified prefix repairs identify current moved paths where
+available. Any `:line` suffix remains the original 2026-09-18 audit coordinate; it
+is historical evidence and does not assert that the cited symbol is at that line
+in the current tree.
+
 ### A10-01 — secure identity persistence contains platform backends in the identity domain (high)
 
-**Sites:** `crates/identity/tilo-user-identity/src/persist.rs:50` (process protection), `:65` (Linux secure open), `:110` (other platforms), `:340` (key checks), `:406` (owner policy), `:556` (exclusive key publication), `:585` (Linux renameat2), `:596` (Darwin renameatx_np), `:637` (temporary key), `:767` (mode validation); `crates/identity/tilo-user-identity/Cargo.toml:76` (`libc`).
+**Sites:** `crates/collab/tilo-user-identity/src/persist.rs:50` (process protection), `:65` (Linux secure open), `:110` (other platforms), `:340` (key checks), `:406` (owner policy), `:556` (exclusive key publication), `:585` (Linux renameat2), `:596` (Darwin renameatx_np), `:637` (temporary key), `:767` (mode validation); `crates/collab/tilo-user-identity/Cargo.toml:76` (`libc`).
 
 **Evidence/platform:** Linux uses `PR_SET_DUMPABLE`, `openat2(RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS)` and `renameat2(RENAME_NOREPLACE)`; Darwin has `O_NOFOLLOW_ANY` and `RENAME_EXCL`. Unix metadata checks enforce owner, permission mask and one link on the same open inode. Other Unix platforms get leaf-only `O_NOFOLLOW`; non-Unix drops ownership/mode/link checks and process protection. The no-clobber helper refers to Unix-only CString/OsStrExt outside cfg gates before its unsupported-platform branch. These are source-level portability/security-contract gaps, not tested build failures.
 
@@ -24,7 +29,7 @@ The proposed destination is `docs/architecture/platform-services.md` (read for t
 
 ### A10-02 — image trust and machine provisioning are explicitly Linux deployment backends (high boundary priority)
 
-**Sites:** `crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:3`, `:26`, `:90`, `:265`, `:574`, `:608`, `:626`, `:646`, `:669`, `:889`, `:898`, `:920`, `:972`; `crates/identity/tilo-user-identity/src/bin/tilo-device-key-init.rs:19`, `:24`, `:66`; manifest binary declarations at `crates/identity/tilo-user-identity/Cargo.toml:13` and `:17`.
+**Sites:** `crates/collab/tilo-user-identity/src/bin/tilo-image-trust.rs:3`, `:26`, `:90`, `:265`, `:574`, `:608`, `:626`, `:646`, `:669`, `:889`, `:898`, `:920`, `:972`; `crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs:19`, `:24`, `:66`; manifest binary declarations at `crates/collab/tilo-user-identity/Cargo.toml:13` and `:17`.
 
 **Evidence/platform:** image-trust unconditionally imports Unix APIs and uses Linux `SYS_openat2`, `prctl`, ownership checks and `flock`; parses bootc/composefs image status and uses `/run/tilo-verified-update.lock`. Device initialization requires euid 0, system identity paths and migration from `/var/lib/tilo/device/keypair.bin`, then directory fsync. Shared identity library and these installed binaries share one package.
 
@@ -60,7 +65,7 @@ The proposed destination is `docs/architecture/platform-services.md` (read for t
 
 ### A10-05 — filesystem locations and daemon lifecycle are embedded in domain defaults (medium)
 
-**Sites:** `crates/identity/tilo-user-identity/src/persist.rs:149`; `crates/hosting/tilo-relay/src/config.rs:215`–`:228`; `crates/hosting/tilo-relay/src/admin.rs:15`, `:475`; `crates/hosting/tilo-relay/src/main.rs:38`, `:193`, `:229`; `crates/hosting/tilo-relay/src/enroll.rs:53`, `:59`, `:64`, `:70`, `:75`, `:95`, `:99`, `:101`, `:113`, `:2051`, `:2054`; `crates/hosting/tilo-relay/Cargo.toml:109`.
+**Sites:** `crates/collab/tilo-user-identity/src/persist.rs:149`; `crates/hosting/tilo-relay/src/config.rs:215`–`:228`; `crates/hosting/tilo-relay/src/admin.rs:15`, `:475`; `crates/hosting/tilo-relay/src/main.rs:38`, `:193`, `:229`; `crates/hosting/tilo-relay/src/enroll.rs:53`, `:59`, `:64`, `:70`, `:75`, `:95`, `:99`, `:101`, `:113`, `:2051`, `:2054`; `crates/hosting/tilo-relay/Cargo.toml:109`.
 
 **Evidence/platform:** defaults spread `/var/lib/tilo`, `/var/lib/tilo-relay`, `/etc/tilo`, full-replica directories and `/var/cache/quick-fs`; admin separately resolves XDG_CONFIG_HOME then HOME/.config. main calls sd_notify Ready/Stopping and Unix SIGTERM/SIGINT, with ctrl-c fallback. These are lifecycle/path selection, not collaboration semantics.
 
@@ -130,7 +135,7 @@ The proposed destination is `docs/architecture/platform-services.md` (read for t
 
 ### A10-11 — native tests are not consistently isolated to their actual backend (medium)
 
-**Sites:** `crates/hosting/tilo-relay/src/process_lease.rs:114` (unguarded Unix imports, procfs and /bin/sh); `crates/hosting/tilo-relay/src/compute.rs:1018`, `:1148` (Unix exit status, symlink and procfs-backed executor tests); `crates/hosting/tilo-relay/src/admin.rs:718` (unguarded Unix permissions); `crates/hosting/tilo-relay/src/enroll.rs:2590`, `:2638`, `:2720`, `:2766`, `:3067`; `crates/hosting/tilo-relay/src/home_peer_control.rs:667`; `crates/hosting/tilo-relay/tests/personal_device_process.rs:248`, `:351`, `:354`, `:361`, `:399`, `:408`, `:447`; `crates/identity/tilo-user-identity/src/persist.rs:796`, `:814`, `:837`, `:856`, `:872`, `:897`, `:913`, `:989`, `:1019`, `:1038`, `:1073`, `:1133`, `:1157`; image-trust tests `src/bin/tilo-image-trust.rs:1055`, `:1080`, `:1113`, `:1139`; device-init tests `src/bin/tilo-device-key-init.rs:74`.
+**Sites:** `crates/hosting/tilo-relay/src/process_lease.rs:114` (unguarded Unix imports, procfs and /bin/sh); `crates/hosting/tilo-relay/src/compute.rs:1018`, `:1148` (Unix exit status, symlink and procfs-backed executor tests); `crates/hosting/tilo-relay/src/admin.rs:718` (unguarded Unix permissions); `crates/hosting/tilo-relay/src/enroll.rs:2590`, `:2638`, `:2720`, `:2766`, `:3067`; `crates/hosting/tilo-relay/src/home_peer_control.rs:667`; `crates/hosting/tilo-relay/tests/personal_device_process.rs:248`, `:351`, `:354`, `:361`, `:399`, `:408`, `:447`; `crates/collab/tilo-user-identity/src/persist.rs:796`, `:814`, `:837`, `:856`, `:872`, `:897`, `:913`, `:989`, `:1019`, `:1038`, `:1073`, `:1133`, `:1157`; image-trust tests `src/bin/tilo-image-trust.rs:1055`, `:1080`, `:1113`, `:1139`; device-init tests `src/bin/tilo-device-key-init.rs:74`.
 
 **Evidence/platform:** security tests use Unix permissions/link operations while Linux integration test uses root, CAP_SYS_ADMIN, mount namespaces, unshare, /proc, /usr/bin/setpriv and a synthesized passwd entry. That integration test has a pre-existing `#[ignore]` attributed to explicit fs-fuse CI execution and cfg(unix) body despite being Linux-only. This audit did not run/verify that CI route.
 
@@ -152,6 +157,6 @@ The proposed destination is `docs/architecture/platform-services.md` (read for t
 3. Extract compute staging and health through existing traits (A10-06/07), then discovery transport (A10-08).
 4. Adjust native dependency/test target boundaries (A10-10/11), preserving wire formats and real security acceptance tests.
 
-Coordinate with owners of `crates/system/atomic-file`, `crates/system/bounded-command`, `crates/packaging/{launcher,install,pkg}`, `crates/runtime/runtime-identity`, `fs/`, shell enrollment callers and Linux OS service/polkit/CI definitions. Their internals are adjacent scope, not covered here. Use the proposed system/runtime implementation crates and ui::platform facade described above; proposed API names describe contracts, not existing symbols. Do not move headless mechanisms directly into ui or introduce a headless dependency on ui. Preserve Cargo.lock and authorization boundaries throughout extraction.
+Coordinate with owners of `crates/system/atomic-file`, `crates/system/bounded-command`, `crates/packaging/{launcher,install,pkg}`, `crates/runtime/runtime-identity`, `crates/system/fs/`, shell enrollment callers and Linux OS service/polkit/CI definitions. Their internals are adjacent scope, not covered here. Use the proposed system/runtime implementation crates and ui::platform facade described above; proposed API names describe contracts, not existing symbols. Do not move headless mechanisms directly into ui or introduce a headless dependency on ui. Preserve Cargo.lock and authorization boundaries throughout extraction.
 
 **Summary:** 11 grouped findings (including intentional deployment/native backends and test constraints), with extraction concentrated in identity filesystem security, privileged enrollment, relay lifecycle and compute. Most collaboration protocol/crypto/domain modules should remain where they are.

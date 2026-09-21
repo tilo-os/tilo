@@ -10,6 +10,19 @@ Read `docs/architecture/platform-services.md` (proposed, implementation not star
 
 ## Actionable findings
 
+**Current-tree note:** The `crates/packaging/hello/*`,
+`crates/packaging/notes-cli/*`, `crates/session/tilo-power/*`, and
+`vendor/ntfs-3g-source.tar.gz` locations in A08-13, A08-24, and the candidate
+appendix are historical source anchors. No current one-to-one counterpart was
+verified for those demo/daemon/archive paths. Retain the packaging and power
+architecture findings, but do not treat those specific locations as live
+source references.
+
+**Source-anchor note:** Verified prefix repairs identify current moved paths where
+available. Any `:line` suffix remains the original 2026-09-18 audit coordinate; it
+is historical evidence and does not assert that the cited symbol is at that line
+in the current tree.
+
 ### A08-01 — Service discovery and connected-handle transport
 
 **Evidence:** `crates/runtime/runtime-portal/src/lib.rs:38` exports `RawFd` (an i32 placeholder off Unix); `:86` discovers env FDs; `:126` exposes `UnixCapnpClient`. `src/fd_transport.rs:3` implements SCM_RIGHTS send/receive; `src/native.rs:34` has explicit unsupported non-Unix attachment. Clients: `crates/runtime/runtime-collab/src/lib.rs`, `crates/runtime/runtime-fs/src/lib.rs:99`, `crates/runtime/runtime-identity/src/broker.rs:8`, `crates/packaging/app-host/src/client.rs`.
@@ -268,7 +281,7 @@ Read `docs/architecture/platform-services.md` (proposed, implementation not star
 
 ## Adjacent scope
 
-Coordinate with platform owner, `crates/system/{atomic-file,bounded-command,accounts,os-actions,power,desktop-entry}`, `crates/identity/`, `shell` native runtime/brokers and launcher callers, root Cargo dependency/target feature management, `os/` image units/helper paths, `fs/` storage service, and excluded UI callers. No edits in those scopes were made.
+Coordinate with platform owner, `crates/system/{atomic-file,bounded-command,accounts,os-actions,power,desktop-entry}`, `crates/collab/` identity owners, `crates/session/shell/` native runtime/brokers and launcher callers, root Cargo dependency/target feature management, `os/` image units/helper paths, `crates/system/fs/` storage service, and excluded UI callers. No edits in those scopes were made.
 
 ## Per-file lexical coverage appendix
 

@@ -6,6 +6,11 @@ Scope: `crates/system/`, including subcrates, manifests, native shims, scripts, 
 
 ## Actionable findings
 
+**Source-anchor note:** Verified prefix repairs identify current moved paths where
+available. Any `:line` suffix remains the original 2026-09-18 audit coordinate; it
+is historical evidence and does not assert that the cited symbol is at that line
+in the current tree.
+
 ### A09-01 — Durable/private file replacement is already centralized, but exposes Unix semantics
 
 Evidence: `crates/system/atomic-file/src/lib.rs:97` documents Unix mode bits; `:104` explicitly makes mode a no-op off Unix; `:136` opens and syncs the parent directory; `:158`/`:167` gate permission handling. Platform: Unix vs non-Unix. Classification: **existing reusable low-level backend with portability contract gaps**. All persistent service consumers inherit this contract; replacing the implementation with generic write/rename loses durability and privacy.
@@ -248,25 +253,25 @@ The table below includes all scoped files so implementers can distinguish candid
 | `crates/system/tts/src/queue.rs:1` | A09-12; associated API/policy/manifest; not automatically an extraction |
 | `crates/system/tts/src/speaker.rs:37`, `crates/system/tts/src/speaker.rs:197` | A09-12; native candidate; inspect production/test context |
 | `crates/system/tts/src/speechd.rs:18` | A09-12; native candidate; inspect production/test context |
-| `crates/system/windows-vm/Cargo.toml:1` | A09-13; dependency/build ownership accompanies backend |
-| `crates/system/windows-vm/examples/domain-xml.rs:17`, `crates/system/windows-vm/examples/domain-xml.rs:18` | A09-13; test/example; preserve target-specific coverage |
-| `crates/system/windows-vm/src/appliance.rs:753`, `crates/system/windows-vm/src/appliance.rs:754` | A09-13; native candidate; inspect production/test context |
-| `crates/system/windows-vm/src/bin/tilo-windows-rail.rs:12`, `crates/system/windows-vm/src/bin/tilo-windows-rail.rs:22`, `crates/system/windows-vm/src/bin/tilo-windows-rail.rs:56`, `crates/system/windows-vm/src/bin/tilo-windows-rail.rs:161` | A09-13; native candidate; inspect production/test context |
-| `crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:5`, `crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:6`, `crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:17`, `crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:18` | A09-13; native candidate; inspect production/test context |
-| `crates/system/windows-vm/src/command.rs:155`, `crates/system/windows-vm/src/command.rs:197` | A09-13; native candidate; inspect production/test context |
-| `crates/system/windows-vm/src/config.rs:73`, `crates/system/windows-vm/src/config.rs:215`, `crates/system/windows-vm/src/config.rs:216` | A09-13; native candidate; inspect production/test context |
-| `crates/system/windows-vm/src/graphics.rs:382` | A09-13; native candidate; inspect production/test context |
-| `crates/system/windows-vm/src/guest.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
-| `crates/system/windows-vm/src/guest_network.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
-| `crates/system/windows-vm/src/https_guest.rs:13`, `crates/system/windows-vm/src/https_guest.rs:250`, `crates/system/windows-vm/src/https_guest.rs:251`, `crates/system/windows-vm/src/https_guest.rs:1298` | A09-13; native candidate; inspect production/test context |
-| `crates/system/windows-vm/src/lib.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
-| `crates/system/windows-vm/src/libvirt.rs:15`, `crates/system/windows-vm/src/libvirt.rs:16`, `crates/system/windows-vm/src/libvirt.rs:189`, `crates/system/windows-vm/src/libvirt.rs:223` | A09-13; native candidate; inspect production/test context |
-| `crates/system/windows-vm/src/lifecycle.rs:216`, `crates/system/windows-vm/src/lifecycle.rs:217`, `crates/system/windows-vm/src/lifecycle.rs:267`, `crates/system/windows-vm/src/lifecycle.rs:268` | A09-13; native candidate; inspect production/test context |
-| `crates/system/windows-vm/src/portal_files.rs:12`, `crates/system/windows-vm/src/portal_files.rs:13`, `crates/system/windows-vm/src/portal_files.rs:14`, `crates/system/windows-vm/src/portal_files.rs:72` | A09-13; native candidate; inspect production/test context |
-| `crates/system/windows-vm/src/presentation.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
-| `crates/system/windows-vm/src/publication.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
-| `crates/system/windows-vm/src/remote_app.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
-| `crates/system/windows-vm/src/state.rs:2`, `crates/system/windows-vm/src/state.rs:146` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/Cargo.toml:1` | A09-13; dependency/build ownership accompanies backend |
+| `crates/windows/windows-vm/examples/domain-xml.rs:17`, `crates/windows/windows-vm/examples/domain-xml.rs:18` | A09-13; test/example; preserve target-specific coverage |
+| `crates/windows/windows-vm/src/appliance.rs:753`, `crates/windows/windows-vm/src/appliance.rs:754` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/src/bin/tilo-windows-rail.rs:12`, `crates/windows/windows-vm/src/bin/tilo-windows-rail.rs:22`, `crates/windows/windows-vm/src/bin/tilo-windows-rail.rs:56`, `crates/windows/windows-vm/src/bin/tilo-windows-rail.rs:161` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/src/bin/tilo-windows-vm-control.rs:5`, `crates/windows/windows-vm/src/bin/tilo-windows-vm-control.rs:6`, `crates/windows/windows-vm/src/bin/tilo-windows-vm-control.rs:17`, `crates/windows/windows-vm/src/bin/tilo-windows-vm-control.rs:18` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/src/command.rs:155`, `crates/windows/windows-vm/src/command.rs:197` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/src/config.rs:73`, `crates/windows/windows-vm/src/config.rs:215`, `crates/windows/windows-vm/src/config.rs:216` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/src/graphics.rs:382` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/src/guest.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
+| `crates/windows/windows-vm/src/guest_network.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
+| `crates/windows/windows-vm/src/https_guest.rs:13`, `crates/windows/windows-vm/src/https_guest.rs:250`, `crates/windows/windows-vm/src/https_guest.rs:251`, `crates/windows/windows-vm/src/https_guest.rs:1298` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/src/lib.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
+| `crates/windows/windows-vm/src/libvirt.rs:15`, `crates/windows/windows-vm/src/libvirt.rs:16`, `crates/windows/windows-vm/src/libvirt.rs:189`, `crates/windows/windows-vm/src/libvirt.rs:223` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/src/lifecycle.rs:216`, `crates/windows/windows-vm/src/lifecycle.rs:217`, `crates/windows/windows-vm/src/lifecycle.rs:267`, `crates/windows/windows-vm/src/lifecycle.rs:268` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/src/portal_files.rs:12`, `crates/windows/windows-vm/src/portal_files.rs:13`, `crates/windows/windows-vm/src/portal_files.rs:14`, `crates/windows/windows-vm/src/portal_files.rs:72` | A09-13; native candidate; inspect production/test context |
+| `crates/windows/windows-vm/src/presentation.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
+| `crates/windows/windows-vm/src/publication.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
+| `crates/windows/windows-vm/src/remote_app.rs:1` | A09-13; associated API/policy/manifest; not automatically an extraction |
+| `crates/windows/windows-vm/src/state.rs:2`, `crates/windows/windows-vm/src/state.rs:146` | A09-13; native candidate; inspect production/test context |
 
 ## Cross-scope coordination and validation
 

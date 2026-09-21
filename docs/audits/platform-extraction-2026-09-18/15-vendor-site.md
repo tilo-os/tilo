@@ -6,6 +6,16 @@ Scope: `vendor/`, `site/`, maintained documentation, top-level plans and manifes
 
 ## Findings
 
+**Current-tree note:** The `site/...` paths in A15-05 and A15-06 are
+historical website-source anchors; this branch has no root `site/` tree. Keep
+the release/provisioning and media-tooling architecture conclusions, but do
+not present those specific website paths as current files.
+
+**Source-anchor note:** Verified prefix repairs identify current moved paths where
+available. Any `:line` suffix remains the original 2026-09-18 audit coordinate; it
+is historical evidence and does not assert that the cited symbol is at that line
+in the current tree.
+
 ### A15-01 — Destination is a proposed facade plus focused service crates, not an existing monolithic platform crate
 
 - Evidence: `docs/architecture/platform-services.md` says proposed / implementation not started; `:14` specifies `ui::platform`, `:16` implementation under `crates/system` or `crates/runtime`; `:19` forbids dependency on apps; `:21` retains portal authorization and explicit unavailable results. `:50` rejects placing everything in the renderer or using source path includes.

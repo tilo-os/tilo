@@ -14,6 +14,18 @@ and inferred portability impact rather than observed runtime failures.
 
 ## Actionable findings
 
+**Current-tree note:** A12-10's `crates/dev/tilo-dev/...` and
+`crates/dev/tilo-dev-template-smoke/...` locations are historical source
+anchors. The current tree contains `crates/dev/tilo-app-cli` and
+`crates/dev/tilo-app-template-smoke`, but no one-to-one replacement was
+verified for the cited implementation. Retain the developer-tooling finding
+without presenting those old paths as current files.
+
+**Source-anchor note:** Verified prefix repairs identify current moved paths where
+available. Any `:line` suffix remains the original 2026-09-18 audit coordinate; it
+is historical evidence and does not assert that the cited symbol is at that line
+in the current tree.
+
 ### A12-01 — Model gateway transport exposes Unix descriptors and Linux peer authentication
 
 **Classification:** extract leaked transport ABI; retain authenticated Linux backend. **Priority:** high. **Condition:** Unix client types; Linux daemon credentials.
@@ -56,7 +68,7 @@ and inferred portability impact rather than observed runtime failures.
 
 **Classification:** extract transport/locations; retain runtime/build tooling. **Priority:** medium.
 
-**Evidence:** `crates/format/format-host/src/lib.rs:35` unconditionally exports transport and `:46` falls back from dirs::config_dir to literal `/tmp`; `src/transport.rs:8` uses Tokio UnixListener, `:15` resolves XDG_RUNTIME_DIR/temp, `:30` binds/removes socket and `:40` ignores chmod failure; `:74` handle_connection requires UnixStream. `src/main.rs:35` selects paths and `:66` binds; `tests/integration.rs:87`/`:99` depend on Tokio UnixStream. `src/runner.rs:220` already uses cross-platform dirs::cache_dir. `src/watch.rs:36` uses notify::recommended_watcher despite Linux-specific 'inotify' comments. `Cargo.toml:18` uses Wasmtime/Cranelift; `build.rs:6` requires external capnp codegen.
+**Evidence:** `crates/doc/format-host/src/lib.rs:35` unconditionally exports transport and `:46` falls back from dirs::config_dir to literal `/tmp`; `src/transport.rs:8` uses Tokio UnixListener, `:15` resolves XDG_RUNTIME_DIR/temp, `:30` binds/removes socket and `:40` ignores chmod failure; `:74` handle_connection requires UnixStream. `src/main.rs:35` selects paths and `:66` binds; `tests/integration.rs:87`/`:99` depend on Tokio UnixStream. `src/runner.rs:220` already uses cross-platform dirs::cache_dir. `src/watch.rs:36` uses notify::recommended_watcher despite Linux-specific 'inotify' comments. `Cargo.toml:18` uses Wasmtime/Cranelift; `build.rs:6` requires external capnp codegen.
 
 **Impact:** portable router/registry/component logic inherits a Unix transport dependency. Temp fallback and ignored permission failure are material when defining a private service endpoint; do not reproduce best-effort privacy in the abstraction.
 
@@ -139,7 +151,7 @@ and inferred portability impact rather than observed runtime failures.
 - `crates/doc/qdoc-codec-markdown-wasm/src/lib.rs:31` intentionally gates component export to wasm32; host no-op described at `:14`. Keep guest target boundary and manifest component setup; it is not leaked host OS logic.
 - `crates/doc/{qdoc-epub,qdoc-html,qdoc-rtf,qdoc-pdf}` parsers/renderers and remaining qdoc model/codec files showed no platform FFI/native runtime dependence in the scan. qdoc-pdf WinAnsi and Helvetica metrics are PDF format concepts, not Windows APIs. qdoc-pdf example `/tmp` is usage documentation. Existing qdoc blobstore subprocess test (`src/blobstore.rs:592`) invokes current_exe and is portable at the API level.
 - `crates/windows/compat-catalogue/src/lib.rs:1622` `/tmp/program/app.exe` and `:1947` `/tmp/evil.exe` are data/validation test fixtures, not executable host path defaults. Installer PE parsing, compatibility catalogue formats and guest Windows paths should stay domain-side.
-- `crates/format/format-provider-wit` WIT/generated bindings are protocol; no bespoke OS implementation found. `format-host/src/watch.rs`, `runner.rs`, `router.rs` comments mention inotify/cache, but actual notify/dirs APIs already abstract those host details.
+- `crates/doc/format-provider-wit` WIT/generated bindings are protocol; no bespoke OS implementation found. `format-host/src/watch.rs`, `runner.rs`, `router.rs` comments mention inotify/cache, but actual notify/dirs APIs already abstract those host details.
 - `crates/dev/{headless-schema,ui-graph,frame-link}/src/lib.rs` are data/model/simulation logic. `tilo-dev/templates/data.rs` scan hit is a generated identifier containing 'from_model', not chmod/OS logic. Template source references to UI remain out of app-framework extraction scope.
 - `crates/agent/provider-config` serializable provider/runtime policy is portable; retain it outside platform. Hardware categories can be expanded with future backend support rather than moving the whole policy crate.
 - **Backend test placement:** model-manager `main.rs:1534` UnixStream pair; compatibility `catalogue.rs:188` Unix symlink, `store.rs:1050` symlink protection, `dxvk.rs:534` symlink/FIFO/locks, `session.rs:1633` fd/socket and `:1742` proc identity, `translated.rs:585` Linux process cleanup, `plan.rs:1364` bwrap/Linux integration and `:1478`–`:1485` Unix/Landlock prerequisites, `audio_proxy.rs:341` live Linux graph. Move with native implementation and retain their assertions. Portable policy tests should not inherit those imports. Do not simply ignore/skip backend failures or silently pass when a required host capability is absent.
@@ -153,6 +165,6 @@ and inferred portability impact rather than observed runtime failures.
 3. Reuse ProcessSupervisor, LocalModelBackend, RuntimeRegistry, LaunchResourceBroker, SandboxExecutor and VmDelegate instead of creating parallel command interfaces.
 4. Rewire service composition and target-specific dependency selection; migrate native tests intact, then validate supported host matrix.
 
-Adjacent scope requiring coordination: `crates/packaging/launcher` fd handoff, capability plans, Landlock, NetGate and atomic_file dependency owner; `crates/system/windows-vm` RAIL/SPICE/VM interfaces; system-extension deployment/service; OS units/runner packaging; shell service callers; app-framework users are excluded from this audit and should consume the eventual semantic API without this report reviewing their internals.
+Adjacent scope requiring coordination: `crates/packaging/launcher` fd handoff, capability plans, Landlock, NetGate and atomic_file dependency owner; `crates/windows/windows-vm` RAIL/SPICE/VM interfaces; system-extension deployment/service; OS units/runner packaging; shell service callers; app-framework users are excluded from this audit and should consume the eventual semantic API without this report reviewing their internals.
 
 **Summary:** 10 grouped findings, including deliberate backends and host tools. Highest-risk extraction points are authenticated inherited IPC, nofollow/private filesystem invariants, Bubblewrap plans/handles, and descendant/audio lease lifecycle. No builds or source edits performed.

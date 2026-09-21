@@ -10,6 +10,20 @@ Read `docs/architecture/platform-services.md`: it is a **proposed** design, not 
 
 ## Confirmed extraction work
 
+**Current-tree note:** The `scripts/install-on-open-demo.py`,
+`scripts/demo-assemble.py`, `scripts/demo-home.py`, `scripts/demo-record.sh`,
+and `scripts/yc-demo*.py` entries in A14-02 and the appendix are historical
+tooling anchors; those files are absent from the current tree. The same applies
+to `tools/run-imager-ephemeral-runner.sh` and
+`os/usr/lib/systemd/system/tilo-power.service` in the findings/appendix.
+Preserve the process-lifetime finding and mark those specific examples
+historical rather than presenting them as current runnable tools.
+
+**Source-anchor note:** Verified prefix repairs identify current moved paths where
+available. Any `:line` suffix remains the original 2026-09-18 audit coordinate; it
+is historical evidence and does not assert that the cited symbol is at that line
+in the current tree.
+
 ### A14-01 — Control clients encode Unix transport and filesystem endpoint discovery throughout automation
 
 - **Classification/platform:** leaked transport assumptions in otherwise semantic automation; Unix/macOS/Linux implementations are valid backends. P2 migration work, not an assertion that Unix sockets fail on supported current hosts.
@@ -31,7 +45,7 @@ Read `docs/architecture/platform-services.md`: it is a **proposed** design, not 
 ### A14-03 — Generic build/benchmark entry points carry host diagnostics and GNU tool assumptions
 
 - **Classification/platform:** Linux-oriented developer/CI tooling; extract only reusable host probes, keep image prerequisites target-specific. P2.
-- **Evidence:** `tools/check-build-env.sh:12` unconditionally checks seat/input/udev/DRM/Wayland/PipeWire/FUSE/DBus; `:21` demands `bwrap` and fontconfig; `:55` verifies only the existence of `/usr/bin/time`. `tools/ci-measure.sh:16` likewise tests existence before invoking GNU `time -f ... -o` at `:17`. `tools/cargo-shim:43` uses `nproc`, `:44` `/proc/meminfo`; the script is explicitly for container builds and has fallback values. `scripts/perf/runtime_benchmark.py:123` implements Darwin hardware inventory with `sysctl`/`system_profiler`; `scripts/headless-examples/install-open-timing.py:549` obtains filesystem type from `/proc/mounts`, returning `unknown` on read failure.
+- **Evidence:** `tools/ci/check-build-env.sh:12` unconditionally checks seat/input/udev/DRM/Wayland/PipeWire/FUSE/DBus; `:21` demands `bwrap` and fontconfig; `:55` verifies only the existence of `/usr/bin/time`. `tools/ci/measure.sh:16` likewise tests existence before invoking GNU `time -f ... -o` at `:17`. `tools/ci/cargo-shim:43` uses `nproc`, `:44` `/proc/meminfo`; the script is explicitly for container builds and has fallback values. `scripts/perf/runtime_benchmark.py:123` implements Darwin hardware inventory with `sysctl`/`system_profiler`; `scripts/headless-examples/install-open-timing.py:549` obtains filesystem type from `/proc/mounts`, returning `unknown` on read failure.
 - **Impact:** a generic preflight cannot distinguish full Linux image dependencies from native host tools; existence does not prove GNU-time compatibility. Benchmark metadata differs by host and repeated host probing makes comparisons and future ports harder. The measured command may not run if a non-GNU executable occupies `/usr/bin/time`; not reproduced during this audit.
 - **Suggested boundary:** tooling-level target capability manifest and host diagnostics adapter (`build prerequisites`, `resource measurement`, `CPU/memory/display metadata`, `filesystem kind`). These need not be in the runtime platform library; a platform-owned CLI can export them. Keep container routing and Fedora image dependency lists in deployment tooling.
 - **Migration:** select preflight by intended build target/profile; probe actual time implementation or use a backend that produces the existing normalized metrics; move host diagnostic logic into one module with explicit missing/unavailable fields and units.
@@ -661,10 +675,10 @@ The following table is a candidate inventory, **not 588 confirmed defects**. OS/
 | `tools/atspi_external_client.py` | 136, 214, 218 |
 | `tools/benchmark-qpkg-startup.sh` | 4 |
 | `tools/binary-budget.toml` | 48 |
-| `tools/cargo-shim` | 7, 43, 44, 76, 93, 99 (+3) |
-| `tools/check-build-env.sh` | 13, 14, 18, 21, 44, 46 (+2) |
-| `tools/ci-measure.sh` | 16, 17 |
-| `tools/ci-sccache.sh` | 14 |
+| `tools/ci/cargo-shim` | 7, 43, 44, 76, 93, 99 (+3) |
+| `tools/ci/check-build-env.sh` | 13, 14, 18, 21, 44, 46 (+2) |
+| `tools/ci/measure.sh` | 16, 17 |
+| `tools/ci/sccache.sh` | 14 |
 | `tools/run-imager-ephemeral-runner.sh` | 91, 92, 180 |
 | `tools/tests/cargo_shim.sh` | 59, 61, 73, 74 |
 | `tools/tests/test_app_resource_action_contract.py` | 262, 271 |

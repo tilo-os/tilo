@@ -31,11 +31,11 @@ Retained artifacts include broker events, runtime and application logs, the
 source image, the reconstructed document, and signed document events. A run is
 valid only after successful cleanup and complete evidence checks.
 
-The shared implementation is composed in `shell/src/runtime_host.rs`, with Unix
-profile and descriptor handling in `shell/src/runtime_host/unix.rs`. Connection
+The shared implementation is composed in `crates/session/shell/src/runtime_host.rs`, with Unix
+profile and descriptor handling in `crates/session/shell/src/runtime_host/unix.rs`. Connection
 ownership lives in `crates/runtime/runtime-identity`; the filesystem content
 store is selected through `QOS_BLOB_STORE`. The proof driver is
-`shell/examples/shared-runtime-proof.rs`.
+`crates/session/shell/examples/shared-runtime-proof.rs`.
 
 This is a trusted same-user integration check. It does not claim packaged
 installation, sandbox-equivalent isolation, remote federation, every GUI app,
