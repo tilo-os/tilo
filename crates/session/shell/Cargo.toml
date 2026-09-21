@@ -53,9 +53,11 @@ hevc-codec-tests = ["hdr-decode"]
 # Stamps a build marker into the binary (see `compositor::dev_env`) so the
 # host session RPM's *developer* entry can tell a deliberately-built dev
 # compositor from any other executable before logging into it. Non-default,
-# and inert unless `debug_assertions` is also on, so a `--release` build never
-# carries the marker whatever features it was given. It enables no behaviour
-# on its own — the marker is the entire content of the feature.
+# and inert unless `debug_assertions` is also on, so a production `--release`
+# build never carries the marker whatever features it was given. The dedicated
+# `dev-release` profile enables assertions for shell but remains unusable here
+# unless this feature is explicitly selected. It enables no behaviour on its
+# own — the marker is the entire content of the feature.
 dev-session = []
 
 [dependencies]

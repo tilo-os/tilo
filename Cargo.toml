@@ -467,6 +467,18 @@ inherits = "release"
 [profile.demo.package.shell]
 debug-assertions = true
 
+# Fast production-speed developer session builds. Packaging never selects
+# this profile; the shell marker still requires the non-default dev-session
+# feature. Avoid release's fat LTO/single-codegen-unit relink on every edit.
+[profile.dev-release]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
+[profile.dev-release.package.shell]
+debug-assertions = true
+
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]

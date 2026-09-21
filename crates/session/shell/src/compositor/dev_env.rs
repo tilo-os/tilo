@@ -46,7 +46,8 @@ pub const DEV_SESSION_MARKER: &str = "tilo-app-session-build-marker-v1";
 /// The marker itself, present only when the non-default `dev-session`
 /// feature is on **and** this is a debug build. Both conditions, so that
 /// `--release --features dev-session` still produces a binary the developer
-/// session entry refuses — a shipped artefact never carries it.
+/// session entry refuses. The `dev-release` profile deliberately enables
+/// assertions for shell; packaging never selects that profile.
 ///
 /// `#[used]` keeps the linker from discarding a static nothing reads.
 #[cfg(all(feature = "dev-session", debug_assertions))]
