@@ -5,9 +5,7 @@ use crate::theme::Theme;
 use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
-use crate::widget::{
-    Continuable, FloatingSurfaceProvider, FloatingSurfaceWidgetExt, Widget,
-};
+use crate::widget::{Continuable, FloatingSurfaceProvider, FloatingSurfaceWidgetExt, Widget};
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
