@@ -81,7 +81,7 @@ class CatalogSelectionTests(unittest.TestCase):
             path = self.root / name
             path.write_bytes(name.encode())
             entry = {"arch": arch, "hardware_profile": profile,
-                     "url": f"https://code.sandbox.example/tilo/releases/releases/download/imager-v1.2.3/{name}",
+                     "url": f"https://code.sandbox.example/qos/releases/releases/download/imager-v1.2.3/{name}",
                      "archive_size": path.stat().st_size, "image_size": 1024,
                      "archive_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                      "image_sha256": "b" * 64}
@@ -93,7 +93,7 @@ class CatalogSelectionTests(unittest.TestCase):
             entries.append(entry)
         return {"schema": 2, "tag": "imager-v1.2.3", "releases": entries}
 
-    @patch.dict(os.environ, {"TILO_RELEASE_REPOSITORY": "tilo/releases", "GITHUB_SERVER_URL": "https://code.sandbox.example"})
+    @patch.dict(os.environ, {"TILO_RELEASE_REPOSITORY": "qos/releases", "GITHUB_SERVER_URL": "https://code.sandbox.example"})
     def test_media_rejects_unexpected_origin_tag_credentials_port_and_path(self):
         data = self.media_fixture()
         self.assertEqual(len(catalog.media(data, self.root)), 3)
@@ -102,7 +102,7 @@ class CatalogSelectionTests(unittest.TestCase):
                     original.replace("code.sandbox.example", "user@code.sandbox.example"),
                     original.replace("code.sandbox.example", "code.sandbox.example:444"),
                     original.replace("imager-v1.2.3", "imager-v9.9.9"),
-                    original.replace("/tilo/releases/", "/other/releases/"),
+                    original.replace("/qos/releases/", "/other/releases/"),
                     original + "?download=1", original + "#fragment",
                     original.replace("lenovo-83ed", "other-board")]
         for url in bad_urls:
@@ -111,7 +111,7 @@ class CatalogSelectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "configured release origin"):
                     catalog.media(data, self.root)
 
-    @patch.dict(os.environ, {"TILO_RELEASE_REPOSITORY": "tilo/releases", "GITHUB_SERVER_URL": "https://code.sandbox.example"})
+    @patch.dict(os.environ, {"TILO_RELEASE_REPOSITORY": "qos/releases", "GITHUB_SERVER_URL": "https://code.sandbox.example"})
     def test_board_provenance_is_mandatory_and_uses_the_os_origin_contract(self):
         original = self.media_fixture()
         for field in ("source_image_id", "input_qcow2_sha256", "hardware_profile_sha256", "target_update_ref"):
@@ -132,7 +132,7 @@ class CatalogSelectionTests(unittest.TestCase):
     def test_explicit_public_release_origin_configuration_is_respected(self):
         data = self.media_fixture()
         for entry in data["releases"]:
-            entry["url"] = entry["url"].replace("https://code.sandbox.example/tilo/releases/",
+            entry["url"] = entry["url"].replace("https://code.sandbox.example/qos/releases/",
                                                "https://downloads.example.invalid/team/public/")
         with patch.dict(os.environ, {"TILO_RELEASE_REPOSITORY": "team/public",
                                      "GITHUB_SERVER_URL": "https://downloads.example.invalid"}):
