@@ -230,7 +230,16 @@ pub fn compact_control_w(width: f32, control: El) -> El {
 /// rather than the control stretching full-width and pushing the label above
 /// it.
 pub fn choice_row(label: &str, control: El) -> El {
-    setting_row(label, compact_control(control))
+    Box::new(
+        Row::new()
+            // The Spacer owns the flexible separation. A default Row gap on
+            // both sides of it would count the intended `s3` air twice and
+            // wrap only the longest label at the whole-card inline threshold.
+            .with_gap(0.0)
+            .push(Box::new(Text::new(label).with_scaled_size(13.0)))
+            .push(Box::new(Spacer::new()))
+            .push(compact_control(control)),
+    )
 }
 
 /// [`choice_row`] with a helper line under the label.

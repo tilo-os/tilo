@@ -31,7 +31,7 @@ use vello::peniko::Color;
 
 use crate::SettingsApp;
 use crate::categories::Category;
-use crate::settings_app::NAV_BREAKPOINT;
+use crate::settings_app::breakpoint_for_text_scale;
 
 /// Default (wide) offscreen viewport. Matches the sibling apps' aspect.
 pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 760);
@@ -437,7 +437,7 @@ pub fn render_responsive_to_path_with_text_scale(
 /// breakpoint grows with the text scale exactly as the shell's does, so the
 /// scenario and the layout class the shell resolves always agree.
 fn responsive_app(viewport: (u32, u32), text_scale: f32) -> SettingsApp {
-    if f64::from(viewport.0) < NAV_BREAKPOINT * f64::from(text_scale.max(1.0)) {
+    if f64::from(viewport.0) < breakpoint_for_text_scale(text_scale) {
         SettingsApp::with_selected(Category::RegionFormats)
             .with_width_hint(viewport.0 as f32)
             .with_deterministic_hardware_for_shot()

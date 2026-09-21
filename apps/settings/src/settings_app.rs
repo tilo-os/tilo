@@ -46,6 +46,13 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 /// (see [`SettingsApp::build_shell`]).
 pub const NAV_BREAKPOINT: f64 = ui::widget::DEFAULT_SHELL_BREAKPOINT;
 
+/// The shell docks once its default content threshold and any extra room
+/// required by the scaled navigation rail both fit.
+pub(crate) fn breakpoint_for_text_scale(text_scale: f32) -> f64 {
+    NAV_BREAKPOINT
+        + (sidebar::width_for_text_scale(text_scale.max(1.0)) - sidebar::SIDEBAR_WIDTH).max(0.0)
+}
+
 /// Horizontal gutter (logical px) of the page column inside the content
 /// area — the `s6` step.
 const PAGE_GUTTER: f32 = ui::tokens::Spacing::BASE.s6;
@@ -528,7 +535,7 @@ impl SettingsApp {
 
     /// The width at or above which the sidebar docks, at the current scale.
     fn scaled_breakpoint(&self) -> f64 {
-        NAV_BREAKPOINT * self.shell_scale()
+        breakpoint_for_text_scale(self.shell_text_scale)
     }
 
     /// The docked sidebar's width at the current scale.
@@ -549,8 +556,12 @@ impl SettingsApp {
         let narrow_screen = self.narrow_shot_screen.unwrap_or(NarrowScreen::Content);
         let mut shell = AppShell::new(nav, content)
             .with_search(self.build_search_field())
-            .with_breakpoint(self.scaled_breakpoint())
-            .with_sidebar_width(self.scaled_sidebar_width())
+            // AppShell resolves authored extents through the theme exactly
+            // once. Normalize the additive final breakpoint back to its 1×
+            // authored value; passing either final value here would apply the
+            // text growth a second time.
+            .with_breakpoint(self.scaled_breakpoint() / self.shell_scale())
+            .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
             .with_narrow_screen(narrow_screen);
         if let Some(w) = self.width_hint {
             shell = shell.with_width_hint(f64::from(w));
