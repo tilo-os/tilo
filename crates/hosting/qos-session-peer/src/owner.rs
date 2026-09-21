@@ -224,13 +224,41 @@ fn publication_time() -> SystemTime {
     SystemTime::now()
 }
 #[cfg(test)]
-fn with_test_publication_time<T>(time: SystemTime, operation: impl FnOnce() -> T) -> T {
+pub(crate) fn with_test_publication_time<T>(time: SystemTime, operation: impl FnOnce() -> T) -> T {
     TEST_PUBLICATION_TIME.with(|current| {
         let prior = current.replace(Some(time));
         let result = operation();
         current.replace(prior);
         result
     })
+}
+
+#[cfg(test)]
+pub(crate) fn mutate_owned_record_for_test(
+    owner: &mut SessionOwner,
+    app: &str,
+    record: &str,
+    mutation: impl FnOnce(&mut ui::automerge::AutoCommit),
+) -> Result<()> {
+    let mut candidate = owner.peer().clone();
+    let mut document = ui::automerge::AutoCommit::load(
+        &candidate
+            .document(app, record)
+            .ok_or_else(|| anyhow::anyhow!("missing test record {app}/{record}"))?,
+    )?;
+    mutation(&mut document);
+    document.commit();
+    candidate
+        .publish_document(
+            app,
+            record,
+            document.save(),
+            &owner.identity.native,
+            SystemTime::now(),
+        )
+        .map_err(anyhow::Error::msg)?;
+    owner.commit_mutation_candidate(candidate, owner.directory().to_vec())?;
+    Ok(())
 }
 fn encode(aggregate: &Aggregate, identity: &Identity) -> Result<Vec<u8>> {
     encode_with_timing(aggregate, identity, None)

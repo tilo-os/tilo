@@ -4,6 +4,18 @@ use qos_desktop::{projection::RoomProjection, session_commands::*, *};
 use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use ui::automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc, Value, transaction::Transactable};
 
+pub(crate) fn checked_application(
+    app: &str,
+) -> Option<&'static ui::application::ApplicationDefinition> {
+    match app {
+        "dev.qos.word-processor" => Some(word_processor::definition()),
+        "dev.qos.notes" => Some(notes::definition()),
+        "dev.qos.calculator" => Some(calculator::definition()),
+        "dev.qos.chat" => Some(chat::definition()),
+        _ => None,
+    }
+}
+
 /// Room heads also advance for receipts, enrollment and document durability.
 /// Those changes must not invalidate a gesture against an unchanged desktop.
 /// Compare the original admitted desktop with the current one, without
@@ -260,22 +272,18 @@ impl SessionOwner {
             &command.command,
             &mut || qos_desktop::identity::mint_in_namespace(salt, &mut counter),
             &mut |app, id| {
-                let (definition, initialize): (
-                    &ui::application::ApplicationDefinition,
-                    fn(&mut ui::automerge::AutoCommit) -> Result<(), String>,
-                ) = match app {
-                    "dev.qos.word-processor" => (
-                        word_processor::definition(),
-                        word_processor::initialize_empty_document,
-                    ),
-                    "dev.qos.notes" => (notes::definition(), notes::notebook::initialize_empty),
-                    "dev.qos.calculator" => {
-                        (calculator::definition(), calculator::doc::initialize_empty)
+                let definition = checked_application(app).ok_or_else(|| {
+                    "application has no installed checked record factory".to_owned()
+                })?;
+                let initialize: fn(&mut ui::automerge::AutoCommit) -> Result<(), String> = match app
+                {
+                    "dev.qos.word-processor" => word_processor::initialize_empty_document,
+                    "dev.qos.notes" => notes::notebook::initialize_empty,
+                    "dev.qos.calculator" => calculator::doc::initialize_empty,
+                    "dev.qos.chat" => {
+                        |_| Err("existing package-primary Chat record required".into())
                     }
-                    "dev.qos.chat" => (chat::definition(), |_| {
-                        Err("existing package-primary Chat record required".into())
-                    }),
-                    _ => return Err("application has no installed checked record factory".into()),
+                    _ => unreachable!("checked application factory must be initialized"),
                 };
                 let checkout =
                     qos_desktop::records::component_record(app, id, definition.record_kind.clone());

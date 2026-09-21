@@ -859,7 +859,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
 }
 
 #[test]
-fn committed_desktop_defers_exact_launch_notice_until_missing_retained_record_arrives() {
+fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delivery() {
     use qos_peer_state::{NeighbourMsg, TransportOrigin};
     use tilo_relay::transport_v2::EnvelopeV2;
 
@@ -883,7 +883,7 @@ fn committed_desktop_defers_exact_launch_notice_until_missing_retained_record_ar
     for bytes in &owner.outgoing()[first_publication..] {
         let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
         if matches!(message, NeighbourMsg::AppDocument { .. }) {
-            assert!(withheld.replace(message).is_none());
+            assert!(withheld.replace(bytes.clone()).is_none());
         } else {
             browser
                 .receive_from(
@@ -915,6 +915,18 @@ fn committed_desktop_defers_exact_launch_notice_until_missing_retained_record_ar
     let (_, delivery) = owner.commit_desktop_command_with_delivery(&second).unwrap();
     let delivery = delivery.expect("second launch has direct committed delivery");
     let target = delivery.target;
+    let tilo_relay::peer_actions::ActionMessage::CommittedDesktop { packets, .. } =
+        &delivery.message
+    else {
+        panic!("second launch keeps its committed desktop delivery")
+    };
+    assert!(
+        packets
+            .iter()
+            .flat_map(|packet| qos_peer_state::desktop_delivery::decode(&[packet.clone()]).unwrap())
+            .any(|packet| packet == withheld),
+        "the direct delivery includes the exact already-persisted prerequisite that the browser missed"
+    );
     let expected_opened = match &delivery.message {
         tilo_relay::peer_actions::ActionMessage::CommittedDesktop {
             opened: Some(opened),
@@ -927,29 +939,6 @@ fn committed_desktop_defers_exact_launch_notice_until_missing_retained_record_ar
         source_user,
     };
 
-    let deferred = qos_browser_runtime::committed_desktop::admit(
-        &browser,
-        &event,
-        target,
-        web_time::SystemTime::now(),
-    )
-    .unwrap();
-    let qos_browser_runtime::committed_desktop::Admission::AwaitingRetainedState(deferred_notice) =
-        deferred
-    else {
-        panic!("validated launch must retain its exact notice while awaiting ordinary state")
-    };
-    assert_eq!(deferred_notice.invocation.0, expected_invocation);
-    assert_eq!(deferred_notice.room.to_string(), browser.room());
-    assert_eq!(deferred_notice.opened, expected_opened);
-
-    browser
-        .receive_from(
-            TransportOrigin::RetainedRelayDelta(source),
-            withheld,
-            web_time::SystemTime::now(),
-        )
-        .unwrap();
     let ready = qos_browser_runtime::committed_desktop::admit(
         &browser,
         &event,
@@ -962,9 +951,14 @@ fn committed_desktop_defers_exact_launch_notice_until_missing_retained_record_ar
         notice: ready_notice,
     } = ready
     else {
-        panic!("the same delivery becomes admissible after its missing retained prerequisite")
+        panic!("the direct delivery supplies every visible record prerequisite")
     };
-    assert_eq!(ready_notice.unwrap(), deferred_notice);
+    let ready_notice =
+        ready_notice.expect("exact launch notice is retained on the ready candidate");
+    assert_eq!(ready_notice.invocation.0, expected_invocation);
+    assert_eq!(ready_notice.room.to_string(), browser.room());
+    assert_eq!(ready_notice.opened, expected_opened);
+    assert_eq!(candidate.rows(), owner.peer().rows());
     let mut admitted = qos_desktop::WorkspaceTree::default();
     qos_desktop::projection::RoomProjection::apply_admitted_room(
         &mut admitted,

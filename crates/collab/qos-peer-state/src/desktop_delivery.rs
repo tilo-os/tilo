@@ -1,33 +1,113 @@
 //! Bounded encoding of committed state on the low-latency desktop lane.
 pub const MAX_DECODED_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_WIRE_BYTES: usize = 256 * 1024;
 
 use std::io::Write;
-pub fn encode(packets: &[Vec<u8>]) -> Result<Vec<String>, String> {
-    if packets.is_empty()
-        || packets.len() > 64
-        || packets.iter().map(Vec::len).sum::<usize>() > MAX_DECODED_BYTES
-    {
+
+pub struct EncodedPacket {
+    encoded: String,
+    decoded_bytes: usize,
+}
+
+impl EncodedPacket {
+    pub fn wire_bytes(&self) -> usize {
+        self.encoded.len()
+    }
+}
+
+pub fn encode_packet(packet: &[u8]) -> Result<EncodedPacket, String> {
+    if packet.len() > MAX_DECODED_BYTES {
         return Err("committed desktop exceeds decoded byte budget".into());
     }
-    packets
-        .iter()
-        .map(|packet| {
-            let mut encoder =
-                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-            encoder.write_all(packet).map_err(|e| e.to_string())?;
-            let compressed = encoder.finish().map_err(|e| e.to_string())?;
-            Ok(if compressed.len() + 1 < packet.len() {
-                format!("z:{}", hex::encode(compressed))
-            } else {
-                hex::encode(packet)
-            })
-        })
-        .collect()
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(packet).map_err(|e| e.to_string())?;
+    let compressed = encoder.finish().map_err(|e| e.to_string())?;
+    let encoded = if compressed.len() + 1 < packet.len() {
+        format!("z:{}", hex::encode(compressed))
+    } else {
+        hex::encode(packet)
+    };
+    Ok(EncodedPacket {
+        encoded,
+        decoded_bytes: packet.len(),
+    })
+}
+
+pub struct Encoder {
+    packets: Vec<String>,
+    decoded_bytes: usize,
+    wire_bytes: usize,
+}
+
+impl Encoder {
+    pub fn new() -> Self {
+        Self {
+            packets: Vec::new(),
+            decoded_bytes: 0,
+            wire_bytes: 0,
+        }
+    }
+
+    pub fn packet_count(&self) -> usize {
+        self.packets.len()
+    }
+
+    pub fn preflight_raw(&self, packet: &[u8]) -> Result<(), String> {
+        if self.packets.len() >= 64
+            || self
+                .decoded_bytes
+                .checked_add(packet.len())
+                .is_none_or(|bytes| bytes > MAX_DECODED_BYTES)
+        {
+            return Err("committed desktop exceeds decoded byte budget".into());
+        }
+        Ok(())
+    }
+
+    pub fn push(&mut self, packet: EncodedPacket) -> Result<(), String> {
+        if self.packets.len() >= 64
+            || self
+                .decoded_bytes
+                .checked_add(packet.decoded_bytes)
+                .is_none_or(|bytes| bytes > MAX_DECODED_BYTES)
+            || self
+                .wire_bytes
+                .checked_add(packet.wire_bytes())
+                .is_none_or(|bytes| bytes > MAX_WIRE_BYTES)
+        {
+            return Err("committed desktop exceeds transport budget".into());
+        }
+        self.decoded_bytes += packet.decoded_bytes;
+        self.wire_bytes += packet.wire_bytes();
+        self.packets.push(packet.encoded);
+        Ok(())
+    }
+
+    pub fn into_packets(self) -> Result<Vec<String>, String> {
+        (!self.packets.is_empty())
+            .then_some(self.packets)
+            .ok_or_else(|| "committed desktop has no packets".into())
+    }
+}
+
+impl Default for Encoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn encode(packets: &[Vec<u8>]) -> Result<Vec<String>, String> {
+    let mut encoder = Encoder::new();
+    for packet in packets {
+        encoder.preflight_raw(packet)?;
+        encoder.push(encode_packet(packet)?)?;
+    }
+    encoder.into_packets()
 }
 pub fn decode(packets: &[String]) -> Result<Vec<Vec<u8>>, String> {
     if packets.is_empty()
         || packets.len() > 64
-        || packets.iter().map(String::len).sum::<usize>() > 256 * 1024
+        || packets.iter().map(String::len).sum::<usize>() > MAX_WIRE_BYTES
     {
         return Err("committed desktop exceeds wire budget".into());
     }
@@ -105,7 +185,9 @@ mod tests {
     fn refuses_oversized_expansion_and_malformed_packets() {
         assert!(super::decode(&["z:not hex".into()]).is_err());
         assert!(super::decode(&["z:0001".into()]).is_err());
-        assert!(super::encode(&[vec![0; super::MAX_DECODED_BYTES + 1]]).is_err());
+        let too_large = vec![0; super::MAX_DECODED_BYTES + 1];
+        assert!(super::encode_packet(&too_large).is_err());
+        assert!(super::encode(&[too_large]).is_err());
         use std::io::Write;
         let mut bomb = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
         bomb.write_all(&vec![0; super::MAX_DECODED_BYTES + 1])
@@ -115,5 +197,21 @@ mod tests {
             super::decode(&["010203".into()]).unwrap(),
             vec![vec![1, 2, 3]]
         );
+    }
+
+    #[test]
+    fn encoder_refuses_a_packet_the_decoder_would_reject_for_wire_size() {
+        let mut state = 0x9e37_79b9u32;
+        let bytes = (0..(super::MAX_WIRE_BYTES / 2 + 4096))
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect::<Vec<_>>();
+        let packet = super::encode_packet(&bytes).unwrap();
+        assert!(packet.wire_bytes() > super::MAX_WIRE_BYTES);
+        let encoded = packet.encoded.clone();
+        assert!(super::Encoder::new().push(packet).is_err());
+        assert!(super::decode(&[encoded]).is_err());
     }
 }
