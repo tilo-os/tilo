@@ -850,4 +850,11 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except ControllerTransportError:
+        # This is deliberately constant and credential-free.  The lane needs
+        # to preserve the admitted pod instead of treating a proxy loss as a
+        # failed creator job.
+        print('TILO_CREATOR_CONTROLLER_TRANSPORT', file=sys.stderr)
+        raise SystemExit(75)
