@@ -6662,6 +6662,50 @@ impl App {
         })
     }
 
+    fn dispatch_resource_a11y_action(
+        &mut self,
+        target: accesskit::NodeId,
+        action: &crate::a11y::Action,
+    ) -> bool {
+        use crate::a11y::Action;
+
+        let argument = match action {
+            Action::Activate | Action::ToggleCheck => Some(None),
+            Action::SetValue(value) => Some(Some(value.as_str())),
+            _ => None,
+        };
+        let Some(argument) = argument else {
+            return false;
+        };
+        let mut resources = self.collect_declared_resources();
+        resources.extend(self.history_local_resources());
+        let Some(address) = Self::find_resource_action(&resources, target) else {
+            return false;
+        };
+        if self
+            .invoke_history_address_local(&address, argument)
+            .is_some()
+        {
+            return true;
+        }
+        let confirmation = tilo_actions::door::resolve(&resources, &address)
+            .map(|spec| spec.contract.confirmation.clone())
+            .unwrap_or_default();
+        if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
+            let _ = self.open_action_palette_at(&address);
+            return true;
+        }
+        let actor = crate::collaboration::local_user_id().0;
+        if self
+            .invoke_resource_action(&address, argument, &actor, false, false, None, None, None)
+            .is_ok()
+        {
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+        }
+        true
+    }
+
     /// Resolves both retained AccessKit nodes and synthetic semantic children
     /// (virtual rows/cells) to their owning widget. The widget gets first
     /// refusal; synthetic children additionally carry an opaque stable target
@@ -6678,40 +6722,8 @@ impl App {
         let _entry = self.enter_wake_scope();
 
         self.refresh_control_action_availability();
-        let argument = match action {
-            Action::Activate | Action::ToggleCheck => Some(None),
-            Action::SetValue(value) => Some(Some(value.as_str())),
-            _ => None,
-        };
-        if let Some(argument) = argument {
-            let mut resources = self.collect_declared_resources();
-            resources.extend(self.history_local_resources());
-            if let Some(address) = Self::find_resource_action(&resources, target) {
-                if self
-                    .invoke_history_address_local(&address, argument)
-                    .is_some()
-                {
-                    return None;
-                }
-                let confirmation = tilo_actions::door::resolve(&resources, &address)
-                    .map(|spec| spec.contract.confirmation.clone())
-                    .unwrap_or_default();
-                if !matches!(confirmation, tilo_actions::ConfirmationPolicy::None) {
-                    let _ = self.open_action_palette_at(&address);
-                    return None;
-                }
-                let actor = crate::collaboration::local_user_id().0;
-                if self
-                    .invoke_resource_action(
-                        &address, argument, &actor, false, false, None, None, None,
-                    )
-                    .is_ok()
-                {
-                    self.needs_sync = true;
-                    self.layout.layout_dirty = true;
-                }
-                return None;
-            }
+        if self.dispatch_resource_a11y_action(target, action) {
+            return None;
         }
 
         let resolved = self
