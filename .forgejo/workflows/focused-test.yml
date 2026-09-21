@@ -16,11 +16,11 @@ on:
         required: true
         type: string
       operation:
-        description: 'Run exact tests in one target or compile package tests'
+        description: 'Exact tests, package test compilation, or fixed read-only native observations'
         required: true
         default: test
         type: choice
-        options: [test, check-tests]
+        options: [test, check-tests, inspect-native]
       test_target:
         description: 'Integration target, e.g. it; empty for lib or check-tests'
         required: false
@@ -109,11 +109,13 @@ jobs:
           path: source
           persist-credentials: false
       - name: Restore source lockfile downloads
+        if: github.event.inputs.operation != 'inspect-native'
         id: downloads
         uses: ./control/.forgejo/actions/restore-cargo-downloads
         with:
           lockfile: source/Cargo.lock
       - name: Prepare native compiler cache and headless runtime
+        if: github.event.inputs.operation != 'inspect-native'
         run: |
           ./control/os/dev/assert-native-arch.sh x86_64
           bash control/tools/ci/sccache.sh prepare
@@ -124,12 +126,18 @@ jobs:
           chmod 700 /tmp/tilo-focused-runtime
           bash control/tools/ensure-headless-audio.sh
       - name: Execute focused request
+        if: github.event.inputs.operation != 'inspect-native'
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-focused-runtime
           BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
         run: bash control/tools/with-headless-audio.sh python3 -I control/tools/ci/focused_test.py run --root source
+      - name: Inspect normal native job environment without mounts or device access
+        if: github.event.inputs.operation == 'inspect-native'
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+        run: python3 -I control/tools/ci/focused_test.py run --root source
       - name: Report compiler cache
-        if: always()
+        if: always() && github.event.inputs.operation != 'inspect-native'
         run: bash control/tools/ci/sccache.sh report
       - name: Save source lockfile downloads
         if: always() && steps.downloads.outputs.cache-hit != 'true' && steps.downloads.outputs.cache-key != ''

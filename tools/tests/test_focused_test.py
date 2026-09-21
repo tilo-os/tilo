@@ -85,6 +85,39 @@ class FocusedTests(unittest.TestCase):
         pr_paths = workflow.split('  pull_request:', 1)[1].split('  schedule:', 1)[0]
         self.assertIn('"tools/ci/focused_test.py"', pr_paths)
 
+    def test_native_probe_is_fixed_and_does_not_compile_or_run_source(self):
+        values = focused.request(dict(self.values, OPERATION='inspect-native',
+                                      TEST_NAME='', TEST_TARGET=''))
+        observation = {'scope': 'normal-job-container', 'tools': {'gdb': None}}
+        with patch.object(focused.subprocess, 'check_output', return_value='a' * 40) as read, \
+             patch.object(focused.subprocess, 'run') as run, \
+             patch.object(focused, 'inspect_native_environment', return_value=observation):
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), values), 0)
+        self.assertEqual(read.call_args.args[0], ['git', 'rev-parse', 'HEAD'])
+        self.assertEqual(read.call_count, 1)
+        run.assert_not_called()
+        with self.assertRaises(ValueError):
+            focused.request(dict(self.values, OPERATION='inspect-native'))
+
+    def test_native_probe_reports_only_fixed_read_only_observations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'proc/self').mkdir(parents=True)
+            (root / 'dev').mkdir()
+            (root / 'proc/filesystems').write_text('nodev\tproc\n\tbtrfs\n')
+            (root / 'proc/self/status').write_text('Name:\tprivate\nCapEff:\t00000001\n')
+            (root / 'dev/loop0').touch()
+            with patch.object(focused.shutil, 'which', return_value=None), \
+                 patch.object(focused.subprocess, 'run') as run:
+                result = focused.inspect_native_environment(root)
+            self.assertEqual(result['filesystems'], ['nodev\tproc', '\tbtrfs'])
+            self.assertEqual(result['effective_capabilities'], '00000001')
+            self.assertEqual(result['loop_nodes'][0]['name'], 'loop0')
+            self.assertEqual(set(result['tools']), {'gdb', 'btrfs', 'mkfs.btrfs', 'losetup'})
+            self.assertNotIn('private', json.dumps(result))
+            self.assertFalse(result['mount_or_device_write_attempted'])
+            run.assert_not_called()
+
     def test_ignored_test_is_not_a_pass(self):
         outcomes = []
         with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \

@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import stat
 import subprocess
 import sys
 
@@ -17,8 +19,8 @@ def request(env):
         raise ValueError('source must be a full lowercase commit SHA')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', values['PACKAGE']):
         raise ValueError('package must be a Cargo package name')
-    if values['OPERATION'] not in ('test', 'test-lib', 'check-tests'):
-        raise ValueError('operation must be test, test-lib or check-tests')
+    if values['OPERATION'] not in ('test', 'test-lib', 'check-tests', 'inspect-native'):
+        raise ValueError('operation must be test, test-lib, check-tests or inspect-native')
     if values['OPERATION'] == 'test-lib':
         if values['TEST_TARGET']:
             raise ValueError('test-lib does not accept an integration target')
@@ -48,8 +50,36 @@ def request(env):
             raise ValueError('duplicate test names are not allowed')
         values['TEST_CASES'] = cases
     elif values['TEST_TARGET'] or values['TEST_NAME'] or values['TEST_NAMES']:
-        raise ValueError('check-tests does not accept a test target or name')
+        raise ValueError('this operation does not accept a test target or name')
     return values
+
+
+def inspect_native_environment(root=Path('/')):
+    """Observe this ordinary job container; never open a device or run a tool."""
+    def bounded_text(relative):
+        try:
+            with (root / relative).open() as source:
+                return source.read(65536)
+        except OSError:
+            return ''
+    status = bounded_text('proc/self/status')
+    capabilities = re.search(r'^CapEff:\s*([0-9a-fA-F]+)$', status, re.MULTILINE)
+    nodes = []
+    for name in ['loop-control', *('loop' + str(n) for n in range(256))]:
+        try:
+            metadata = (root / 'dev' / name).lstat()
+        except FileNotFoundError:
+            continue
+        nodes.append({'name': name, 'type': stat.S_IFMT(metadata.st_mode),
+                      'mode': stat.S_IMODE(metadata.st_mode),
+                      'major': os.major(metadata.st_rdev), 'minor': os.minor(metadata.st_rdev)})
+    return {'scope': 'normal-job-container',
+            'filesystems': bounded_text('proc/filesystems').splitlines(),
+            'effective_capabilities': capabilities.group(1) if capabilities else None,
+            'loop_nodes': nodes,
+            'tools': {name: shutil.which(name) for name in ('gdb', 'btrfs', 'mkfs.btrfs', 'losetup')},
+            'mount_or_device_write_attempted': False,
+            'nested_privileged_container_tested': False}
 
 
 def execute(root, values, outcomes=None):
@@ -63,6 +93,10 @@ def execute(root, values, outcomes=None):
     actual = read(['git', 'rev-parse', 'HEAD']).strip()
     if actual != values['SOURCE_SHA']:
         raise ValueError('checked-out source differs from requested SHA')
+    if values['OPERATION'] == 'inspect-native':
+        print('TILO_NATIVE_ENVIRONMENT ' + json.dumps(
+            {'source_sha': actual, **inspect_native_environment()}, sort_keys=True), flush=True)
+        return 0
     metadata = json.loads(read(['cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1']))
     packages = [p for p in metadata['packages']
                 if p['name'] == values['PACKAGE'] and p['id'] in metadata['workspace_members']]
