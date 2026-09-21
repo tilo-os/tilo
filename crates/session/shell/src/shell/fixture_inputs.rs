@@ -277,6 +277,13 @@ mod tests {
         let mut document = automerge::AutoCommit::new();
         frame.pump_apps(&mut document, &automerge::ROOT);
         let store = frame.chrome().records().clone();
+        // A fixture may describe existing tabs, but constructing it must not
+        // fabricate document authority for every persisted sibling. Seed the
+        // one record this test explicitly owns before exercising its Notes
+        // operation and rebuild custody.
+        store
+            .create_record(&crate::shell::tab_documents::scratch_tab_record(note))
+            .expect("fixture explicitly creates its Notes record");
         // The actual Notes CRDT operation edits the actual tab-bound record.
         store
             .with(&ui::record::RecordId::for_tab(note), |doc| {
@@ -332,7 +339,7 @@ mod tests {
         assert_rebuilt_files(&mut frame, strip, files, &child, &mut document);
         assert_eq!(
             frame.host().fixture_provider_ids(),
-            vec!["notes", "editor", "records"]
+            vec!["actions", "notes", "editor", "records"]
         );
         assert_eq!(guard.attempts(), 0);
     }
