@@ -5,8 +5,9 @@ apps/camera/src/app.rs literal_color 6
 apps/chat/src/paint.rs white_or_black 4
 apps/chat/src/render_call.rs literal_color 3
 apps/chat/src/render_call.rs white_or_black 3
-apps/chat/src/render_chat.rs literal_color 3
-apps/chat/src/render_chat.rs white_or_black 11
+apps/chat/src/render_chat.rs literal_color 4
+apps/chat/src/render_chat.rs white_or_black 12
+apps/contacts/src/app.rs white_or_black 1
 apps/containers/src/app.rs literal_color 1
 apps/containers/src/panels.rs white_or_black 6
 apps/db-client/src/app.rs white_or_black 3
@@ -21,8 +22,9 @@ apps/git-client/src/app.rs literal_color 1
 apps/git-client/src/app.rs white_or_black 5
 apps/git-client/src/history.rs white_or_black 2
 apps/imager/src/app.rs white_or_black 2
+apps/mail/src/app.rs literal_color 1
 apps/mail/src/draw.rs literal_color 2
-apps/mail/src/pane.rs white_or_black 5
+apps/mail/src/pane.rs white_or_black 6
 apps/maps/src/app.rs white_or_black 3
 apps/maps/src/canvas.rs literal_color 1
 apps/maps/src/canvas.rs white_or_black 7
@@ -56,7 +58,6 @@ apps/tube/src/widgets/seek_bar.rs literal_color 1
 apps/tube/src/widgets/seek_bar.rs white_or_black 1
 apps/tube/src/widgets/thumbnail.rs literal_color 8
 apps/tube/src/widgets/thumbnail.rs white_or_black 3
-apps/video-editor/src/app.rs white_or_black 0
 apps/video-editor/src/app/bin_paint.rs white_or_black 1
 apps/video-editor/src/app/paint.rs white_or_black 1
 apps/video-editor/src/app/preview_paint.rs white_or_black 7
