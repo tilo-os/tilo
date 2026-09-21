@@ -4,9 +4,9 @@ Cleanly hands a completed creator disk to disposable local ARM64 boot attempts.
 
 .DESCRIPTION
 The creator remains untouched in -CheckOnly mode. In normal mode, this script
-verifies and hashes its completed disk, powers the creator off, mounts the
-native output store read-only in WSL, makes a sparse verified copy, then starts
-native Windows QEMU/WHPX with a qcow2 overlay and fresh UEFI variables.
+verifies its completed disk, powers the creator off, mounts the native output
+store read-only in WSL, copies it directly to a byte-verified NTFS sparse raw,
+then starts native Windows QEMU/WHPX with a qcow2 overlay and fresh UEFI vars.
 #>
 [CmdletBinding()]
 param(
@@ -15,7 +15,9 @@ param(
     [string]$BuilderPidFile = (Join-Path $env:USERPROFILE 'qos\.qemu\arm64-local\disposable-qemu.pid'),
     [string]$OutputStore = 'C:\tilo-build\output-store.raw',
     [string]$WslDistribution = 'FedoraLinux-42',
-    [string]$DestinationLinux = '/home/benn1x/tilo-vm/media/disk.raw',
+    [string]$DestinationPath = 'C:\tilo-build\local\disk.raw',
+    [string]$QemuRoot = (Join-Path $env:USERPROFILE 'msys64\clangarm64'),
+    [switch]$ReplaceDestination,
     [switch]$CheckOnly,
     [switch]$NoLaunch
 )
@@ -24,8 +26,9 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $extractor = Join-Path $PSScriptRoot 'extract-arm64-disk-from-store.sh'
+$nativeCopier = Join-Path $PSScriptRoot 'copy-sparse-image.ps1'
 $launcher = Join-Path $PSScriptRoot 'iterate-arm64-disk.ps1'
-foreach ($required in @($BuilderPidFile, $OutputStore, $extractor, $launcher)) {
+foreach ($required in @($BuilderPidFile, $OutputStore, $extractor, $nativeCopier, $launcher)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Required handoff file is missing: $required"
     }
@@ -37,8 +40,11 @@ if (-not (Get-Process -Id $builderPid -ErrorAction SilentlyContinue)) {
 }
 
 $extractorLinux = ((& wsl.exe --distribution $WslDistribution --exec wslpath -a $extractor) -join '').Trim()
+$nativeCopierLinux = ((& wsl.exe --distribution $WslDistribution --exec wslpath -a $nativeCopier) -join '').Trim()
 $storeLinux = ((& wsl.exe --distribution $WslDistribution --exec wslpath -a $OutputStore) -join '').Trim()
-if ($LASTEXITCODE -ne 0 -or -not $extractorLinux.StartsWith('/') -or -not $storeLinux.StartsWith('/')) {
+$destinationLinux = ((& wsl.exe --distribution $WslDistribution --exec wslpath -a $DestinationPath) -join '').Trim()
+if ($LASTEXITCODE -ne 0 -or -not $extractorLinux.StartsWith('/') -or -not $nativeCopierLinux.StartsWith('/') `
+        -or -not $storeLinux.StartsWith('/') -or -not $destinationLinux.StartsWith('/mnt/')) {
     throw 'Could not translate the extractor or output-store path into WSL.'
 }
 & wsl.exe -d $WslDistribution -- bash -n $extractorLinux
@@ -46,13 +52,13 @@ if ($LASTEXITCODE -ne 0) {
     throw 'The WSL extractor has invalid shell syntax.'
 }
 
-$destinationWindows = "\\wsl.localhost\$WslDistribution$($DestinationLinux.Replace('/', '\'))"
 if ($CheckOnly) {
     $freeBytes = (Get-Volume -DriveLetter C).SizeRemaining
     Write-Host "Builder:      PID $builderPid [running; untouched]"
     Write-Host "Output store: $OutputStore [$((Get-Item -LiteralPath $OutputStore).Length) bytes]"
     Write-Host "Extractor:    $extractorLinux [syntax valid]"
-    Write-Host "Destination:  $destinationWindows"
+    Write-Host "Destination:  $DestinationPath [native NTFS sparse raw]"
+    Write-Host "Transport:    native qemu-img conversion + full byte compare"
     Write-Host "C: free:      $freeBytes bytes (actual copy guard uses sparse allocation + 8 GiB reserve)"
     Write-Host "Next:         rerun without -CheckOnly only after creator completion"
     return
@@ -122,17 +128,22 @@ if (Get-Process -Id $builderPid -ErrorAction SilentlyContinue) {
     throw "Builder QEMU PID $builderPid did not shut down cleanly; output store was not mounted"
 }
 
-& wsl.exe -d $WslDistribution -- bash $extractorLinux $storeLinux $DestinationLinux
+$replaceDestinationValue = if ($ReplaceDestination) { '1' } else { '0' }
+& wsl.exe -d $WslDistribution -- env `
+    "TILO_NATIVE_COPY_SCRIPT=$nativeCopierLinux" `
+    "TILO_QEMU_ROOT_WINDOWS=$QemuRoot" `
+    "TILO_REPLACE_DESTINATION=$replaceDestinationValue" `
+    bash $extractorLinux $storeLinux $destinationLinux
 if ($LASTEXITCODE -ne 0) {
     throw "Read-only sparse extraction failed with status $LASTEXITCODE"
 }
 
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcher -DiskPath $destinationWindows -CheckOnly
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcher -DiskPath $DestinationPath -QemuRoot $QemuRoot -CheckOnly
 if ($LASTEXITCODE -ne 0) {
     throw "WHPX disposable-boot preflight failed with status $LASTEXITCODE"
 }
 if (-not $NoLaunch) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcher -DiskPath $destinationWindows
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $launcher -DiskPath $DestinationPath -QemuRoot $QemuRoot
     if ($LASTEXITCODE -ne 0) {
         throw "Disposable Tilo boot launch failed with status $LASTEXITCODE"
     }
