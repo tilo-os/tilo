@@ -1,6 +1,6 @@
 //! The startup warmup must not take the process down on a machine with no
-//! usable wgpu adapter — `ui::warmup::spawn_warmup`'s Vello stage builds
-//! an [`OffscreenRenderer`](ui::offscreen::OffscreenRenderer), and on a
+//! usable wgpu adapter — `tilo_ui::warmup::spawn_warmup`'s Vello stage builds
+//! an [`OffscreenRenderer`](tilo_ui::offscreen::OffscreenRenderer), and on a
 //! GPU-less box that needs to degrade silently rather than crash.
 //!
 //! # Why this needs a child process
@@ -136,7 +136,7 @@ fn warmup_degrades_silently_when_no_wgpu_adapter_exists() {
 fn child_body() -> ! {
     // Prove the simulation works, before the aborting hook is installed,
     // so a surprise here surfaces as a clean exit code rather than a signal.
-    if let Err(e) = ui::offscreen::OffscreenRenderer::try_new(4, 4) {
+    if let Err(e) = tilo_ui::offscreen::OffscreenRenderer::try_new(4, 4) {
         eprintln!("child: no adapter, as intended: {e}");
     } else {
         eprintln!("child: an adapter was still available — cannot simulate a GPU-less machine");
@@ -150,7 +150,8 @@ fn child_body() -> ! {
     }));
 
     // `false` means "do the Vello stage too", the stage that needs an adapter.
-    let handle = ui::warmup::spawn_warmup(false).expect("warmup should be enabled in the child");
+    let handle =
+        tilo_ui::warmup::spawn_warmup(false).expect("warmup should be enabled in the child");
     match handle.join() {
         Ok(()) => {
             eprintln!("child: warmup finished without an adapter");

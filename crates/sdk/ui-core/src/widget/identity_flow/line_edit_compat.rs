@@ -2,7 +2,7 @@
 //! flow inline editor. New identity screens embed [`super::super::TextInput`].
 
 /// Single-line editing state retained for the stable SDK surface.
-#[deprecated(note = "embed ui::widget::TextInput for new single-line fields")]
+#[deprecated(note = "embed tilo_ui::widget::TextInput for new single-line fields")]
 #[derive(Clone, Debug, Default)]
 pub struct LineEditState {
     pub text: String,

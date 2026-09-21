@@ -1,4 +1,4 @@
-//! `ActionPalette` — the one Ctrl+K surface for a `ui::App`.
+//! `ActionPalette` — the one Ctrl+K surface for a `tilo_ui::App`.
 //!
 //! The **resource + action model** ([`tilo_actions`]) is the foundation: the
 //! focused app instance publishes a tree of open [`Resource`]s, each
@@ -381,6 +381,25 @@ impl ActionPalette {
         } else {
             false
         }
+    }
+
+    /// Enter confirmation with arguments already captured by a bound control.
+    /// This bypasses only argument collection; current authority, strict
+    /// parameter binding, and confirmation still use the palette's normal
+    /// production path.
+    pub(crate) fn activate_bound_with_arguments(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
+        if !self.index.contains_key(&target.key()) {
+            return false;
+        }
+        self.activate_with_arguments(
+            target.address.address.clone(),
+            Some(target.clone()),
+            arguments,
+        )
     }
 
     pub fn open(&mut self) {
@@ -818,6 +837,64 @@ impl ActionPalette {
         } else {
             false
         }
+    }
+
+    pub(crate) fn activate_address_with_arguments(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
+        if !self.index.contains_key(&address.encode()) {
+            return false;
+        }
+        self.activate_with_arguments(address.clone(), None, arguments)
+    }
+
+    fn activate_with_arguments(
+        &mut self,
+        address: tilo_actions::ActionAddress,
+        bound: Option<crate::bound_dispatch::BoundActionTarget>,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
+        let Some(resources) = self.authority_for(&address, bound.as_ref()) else {
+            return false;
+        };
+        let Some(flattened) = flatten(&resources)
+            .into_iter()
+            .find(|candidate| candidate.key == address.encode())
+        else {
+            return false;
+        };
+        if !flattened.action.contract.availability.is_available() {
+            return false;
+        }
+        let Ok(encoded) = flattened.action.build_json(arguments) else {
+            return false;
+        };
+        let mut context = ActionContext::for_resource(
+            &flattened.action.label,
+            flattened.resource_id.as_str(),
+            &flattened.resource_kind,
+            &flattened.resource_label,
+        );
+        if let Some(ambient) = self.ambient_context.as_ref() {
+            context = context.enriched_by(ambient);
+        }
+        let confirmation = flattened.action.contract.confirmation.clone();
+        self.queue_or_confirm(
+            PendingOperation {
+                bound,
+                address,
+                encoded,
+                context,
+                kind: flattened.action.kind,
+                input: PendingInput::Json(serde_json::Value::Object(arguments.clone()).to_string()),
+                confirmation: confirmation.clone(),
+                confirmation_evidence: serde_json::json!({}),
+            },
+            confirmation,
+        );
+        true
     }
 
     /// Drain a completed action activation and dispatch it against `doc` +

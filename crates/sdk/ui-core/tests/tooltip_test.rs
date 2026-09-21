@@ -9,7 +9,7 @@
 )]
 
 use std::time::Duration;
-use ui::widget::tooltip::Tooltip;
+use tilo_ui::widget::tooltip::Tooltip;
 
 #[test]
 fn tooltip_reveals_after_delay() {

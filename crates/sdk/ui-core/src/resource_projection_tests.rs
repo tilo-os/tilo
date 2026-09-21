@@ -52,7 +52,7 @@ fn lazy_control_projection_defers_semantics_until_full_collection() {
 fn lazy_control_projection_preserves_permissions_widget_changes_and_overflow() {
     let (mut app, counts, visible) = counted_control_app(false);
     app.refresh_control_action_availability();
-    app.permission_generation.set(u64::MAX);
+    app.actions.permission_generation.set(u64::MAX);
     app.set_permission_ctx(PermissionContext::from_capabilities(
         collab_types::caps::Actor::person(None, "restricted"),
         Vec::new(),
@@ -67,7 +67,7 @@ fn lazy_control_projection_preserves_permissions_widget_changes_and_overflow() {
     );
     assert_eq!(counts[1].get(), 0);
     visible.set(false);
-    app.resource_generation.set(u64::MAX);
+    app.actions.resource_generation.set(u64::MAX);
     app.invalidate_widget_resource_cache();
     app.refresh_control_action_availability();
     assert!(!app.root_widget.children()[0].is_enabled());
@@ -269,15 +269,15 @@ fn control_presence_replacement_resets_availability_stamp() {
         App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Column::new()));
     app.action_registry_mut().register::<Flip>(FLIP_TYPE);
     app.refresh_control_action_availability();
-    assert!(app.last_control_availability.is_none());
+    assert!(app.actions.last_control_availability.is_none());
     let (root, enabled) = inventory_only_publisher();
     app.root_widget = root;
     app.refresh_control_action_availability();
     assert!(enabled.get());
-    assert!(app.last_control_availability.is_some());
+    assert!(app.actions.last_control_availability.is_some());
     app.root_widget = Box::new(crate::widget::Column::new());
     app.refresh_control_action_availability();
-    assert!(app.last_control_availability.is_none());
+    assert!(app.actions.last_control_availability.is_none());
     let (root, enabled) = inventory_only_publisher();
     app.root_widget = root;
     app.refresh_control_action_availability();
