@@ -46,10 +46,6 @@ const HEIGHT: f64 = 28.0;
 /// Horizontal inset, `spacing.s3` at 1× — the same inset a button uses, so a
 /// chip and a button in one row start their content on the same line.
 const PAD_X: f64 = 12.0;
-/// Minimum vertical inset retained from the large-text chip contract. The
-/// base `s1` token is 4 px, which leaves a 200% label only 38 px tall and
-/// regresses the 40 px large-text target introduced with scalable chips.
-const MIN_PAD_Y: f64 = 6.0;
 /// Lead-to-label and label-to-dismiss gap; 6 px like the button's icon gap,
 /// between `s1` (crowds the glyph) and `s2` (splits the pill into two marks).
 const GAP: f64 = 6.0;
@@ -82,8 +78,7 @@ pub struct Chip {
     /// their own (the old `measure` reached for `Theme::dark()` instead).
     label_size: f32,
     /// Vertical inset between the measured label line and the pill edge
-    /// when the line outgrows [`HEIGHT`] (`spacing.s1`, but never below the
-    /// large-text contract's 6 px a side).
+    /// when the line outgrows [`HEIGHT`] (`spacing.s1` a side).
     pad_y: f64,
     /// `metrics.min_pointer_target`: the hit rect grows to this even though
     /// the painted pill stays at the 28 px selector height.
@@ -222,9 +217,7 @@ impl Chip {
         if self.removable {
             total += GAP + X_D;
         }
-        let height = HEIGHT
-            .max(self.min_target)
-            .max(f64::from(lh) + self.pad_y * 2.0);
+        let height = HEIGHT.max(f64::from(lh) + self.pad_y * 2.0);
         (total, height)
     }
 
@@ -355,7 +348,8 @@ impl Chip {
                   truncate anything that matters for a UI scale factor"
     )]
     pub fn label_size_for_height(height: f64, theme: &Theme) -> f32 {
-        theme.tokens.typography.scale.sm * (height / HEIGHT).clamp(0.75, 1.6) as f32
+        let scaled_height = HEIGHT * f64::from(theme.text_scale);
+        theme.tokens.typography.scale.sm * (height / scaled_height).clamp(0.75, 1.6) as f32
     }
 
     /// Intrinsic width of an immediate-mode chip — what [`Chip::draw_at`]
@@ -569,7 +563,7 @@ impl Widget for Chip {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let label_size = theme.tokens.typography.scale.sm;
-        let pad_y = f64::from(theme.tokens.spacing.s1).max(MIN_PAD_Y);
+        let pad_y = f64::from(theme.tokens.spacing.s1);
         if label_size.to_bits() != self.label_size.to_bits()
             || pad_y.to_bits() != self.pad_y.to_bits()
         {
@@ -595,10 +589,7 @@ impl Widget for Chip {
             let estimated_line_height = crate::text_metrics::line_height_px(label_size, 1.0);
             taffy::Size {
                 width: approx as f32,
-                height: self
-                    .min_target
-                    .max(HEIGHT)
-                    .max(estimated_line_height + pad_y * 2.0) as f32,
+                height: HEIGHT.max(estimated_line_height + pad_y * 2.0) as f32,
             }
         });
         let node = taffy.leaf_node(Style {
@@ -874,8 +865,9 @@ mod tests {
             "200% label width must be measured rather than painted outside a 100% chip"
         );
         assert!(
-            large.get_rect().height() >= 40.0,
-            "200% chip must grow its pointer target with its line, got {:?}",
+            large.get_rect().height() > normal.get_rect().height()
+                && large.hit_rect().height() >= large.get_rect().height(),
+            "200% chip and its pointer target must grow with its measured line, got {:?}",
             large.get_rect()
         );
     }
