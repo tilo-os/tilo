@@ -109,8 +109,29 @@ $serialProbe = [System.IO.File]::Open($serialLog, 'OpenOrCreate', 'Write', 'Read
 $serialProbe.Dispose()
 
 $diskExists = Test-Path -LiteralPath $DiskPath -PathType Leaf
+$diskHasGpt = $false
+if ($diskExists) {
+    $diskStream = [System.IO.File]::Open($DiskPath, 'Open', 'Read', 'ReadWrite')
+    try {
+        if ($diskStream.Length -ge 1024) {
+            $header = [byte[]]::new(8)
+            $diskStream.Position = 512
+            if ($diskStream.Read($header, 0, $header.Length) -eq $header.Length) {
+                $diskHasGpt = [System.Text.Encoding]::ASCII.GetString($header) -eq 'EFI PART'
+            }
+        }
+    } finally {
+        $diskStream.Dispose()
+    }
+}
 if ($CheckOnly) {
-    $diskStatus = if ($diskExists) { "present ($((Get-Item -LiteralPath $DiskPath).Length) bytes)" } else { 'MISSING; launch mode will refuse to start' }
+    $diskStatus = if ($diskHasGpt) {
+        "present with GPT ($((Get-Item -LiteralPath $DiskPath).Length) bytes)"
+    } elseif ($diskExists) {
+        "present but blank or non-GPT ($((Get-Item -LiteralPath $DiskPath).Length) bytes); launch mode will refuse to start"
+    } else {
+        'MISSING; launch mode will refuse to start'
+    }
     Write-Host "QEMU:        $qemuVersion"
     Write-Host 'Accelerator: WHPX'
     Write-Host 'Display:     GTK + virtio-gpu-pci'
@@ -125,6 +146,9 @@ if ($CheckOnly) {
 
 if (-not $diskExists) {
     throw "Raw disk is not present yet; QEMU was not started: $DiskPath"
+}
+if (-not $diskHasGpt) {
+    throw "Raw disk has no GPT header and is not an assembled boot target; QEMU was not started: $DiskPath"
 }
 
 $qemuArgs = @(
