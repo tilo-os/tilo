@@ -14,7 +14,8 @@
 //     binary). Scenarios: `form`, `hint`, `error`, `authenticating`,
 //     `fingerprint`, `starting`, `caps`, `longname`, `personal`, and
 //     `personal-no-fingerprint`, and personal-device transient variants.
-//     Defaults to `form`.
+//     Defaults to `form`. `--time <seconds>` freezes the decorative backdrop;
+//     `TILO_SHOTS_THEME=light|dark|high-contrast` selects the review palette.
 
 #![cfg_attr(
     test,
@@ -29,22 +30,13 @@
     )
 )]
 
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use greeter::GreeterApp;
 use greeter::greeter_app::AuthScenario;
-use taffy::prelude::*;
 use ui::app::UserEvent;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 use winit::event_loop::EventLoopProxy;
 
 /// Default offscreen viewport for `--shots`.
@@ -64,6 +56,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let text_scale = parse_text_scale_arg(&args);
         let mut widget = GreeterApp::for_shot(scenario);
+        widget.set_shot_time(parse_time_arg(&args).unwrap_or(0.0));
         let credentials = shot_credentials(scenario);
         if let Some((_, password)) = credentials {
             widget.seed_shot_password(password);
@@ -122,6 +115,22 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
     let (width, height) = raw.split_once(['x', 'X'])?;
     let viewport = (width.parse().ok()?, height.parse().ok()?);
     (viewport.0 > 0 && viewport.1 > 0).then_some(viewport)
+}
+
+/// A deterministic animation phase used only by the offscreen renderer.
+fn parse_time_arg(args: &[String]) -> Option<f64> {
+    let mut iter = args.iter().skip(1);
+    let raw = loop {
+        let arg = iter.next()?;
+        if arg == "--time" {
+            break iter.next()?.as_str();
+        }
+        if let Some(rest) = arg.strip_prefix("--time=") {
+            break rest;
+        }
+    };
+    let seconds: f64 = raw.parse().ok()?;
+    (seconds.is_finite() && seconds >= 0.0).then_some(seconds)
 }
 
 fn parse_text_scale_arg(args: &[String]) -> Option<f32> {
@@ -221,7 +230,7 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
 /// afterwards so those children (the `TextInputs`) pull their values from the
 /// document — the live App achieves the same via its per-frame sync.
 fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+    widget: Box<dyn Widget>,
     viewport: (u32, u32),
     text_scale: Option<f32>,
     out: &std::path::Path,
@@ -229,83 +238,27 @@ fn render_shot_to_png(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use automerge::{ObjType, transaction::Transactable};
 
-    let (w, h) = viewport;
-    // Viewport dimensions are screen/image sizes (1280x800 by default),
-    // always far under f32's 24-bit mantissa — never enough to lose precision.
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "viewport dimensions are screen/image sizes, always far under 2^24"
-    )]
-    let (wf, hf) = (w as f32, h as f32);
-    let theme = text_scale.map_or_else(Theme::dark, |scale| Theme::dark().with_text_scale(scale));
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
+    let base_theme = match std::env::var("TILO_SHOTS_THEME").as_deref() {
+        Ok("light") => Theme::light(),
+        Ok("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    let theme = if let Some(scale) = text_scale {
+        base_theme.with_text_scale(scale)
+    } else {
+        base_theme
+    };
     let mut state = ui::State::new();
-
     if let Some(username) = username {
         let uobj = state
             .doc
             .put_object(&state.root, "greeter.username", ObjType::Text)?;
-        let _ = state.doc.splice_text(&uobj, 0, 0, username);
+        state.doc.splice_text(&uobj, 0, 0, username)?;
     }
-
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-
-    // Second sync so the freshly-composed children pull from the doc.
-    widget.sync(&mut state.doc, &state.root);
-
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(wf),
-                height: Dimension::length(hf),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(wf),
-                height: AvailableSpace::Definite(hf),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    // The same bounded sync/layout/paint lifecycle as the live host handles
+    // responsive composition and applies accessibility scaling to text too.
+    let frame = ui::headless::FrameHarness::new_with_theme(state, widget, viewport, theme);
+    frame.render_png(out);
     println!("tilo-greeter: wrote shot to {}", out.display());
     Ok(())
 }
@@ -350,6 +303,24 @@ mod tests {
         for value in ["NaN", "0.5", "2.1", "not-a-number"] {
             assert_eq!(
                 parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale", value])),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn animation_phase_is_finite_and_nonnegative() {
+        assert_eq!(
+            parse_time_arg(&args(&["tilo-greeter", "--time=8"])),
+            Some(8.0)
+        );
+        assert_eq!(
+            parse_time_arg(&args(&["tilo-greeter", "--time", "1.5"])),
+            Some(1.5)
+        );
+        for value in ["NaN", "inf", "-1", "not-a-number"] {
+            assert_eq!(
+                parse_time_arg(&args(&["tilo-greeter", "--time", value])),
                 None
             );
         }
