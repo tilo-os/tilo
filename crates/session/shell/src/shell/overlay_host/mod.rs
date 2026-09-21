@@ -1402,6 +1402,7 @@ impl TabContextMenu {
 
 struct OverlayInputs {
     search_registry: crate::shell::search::SearchRegistry,
+    app_launcher: AppLauncher,
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     collaboration_preferences: CollaborationPreferences,
     shortcut_config: settings_store::hardware::ShortcutConfig,
@@ -1485,6 +1486,9 @@ pub struct ShellOverlayHost {
     /// construction — providers are stateful (own background indexers),
     /// so re-registration would leak worker threads.
     search_registry: crate::shell::search::SearchRegistry,
+    /// Starts an installed desktop app through the session launcher. Kept as
+    /// an explicit service so fixture hosts can remain process-free.
+    app_launcher: AppLauncher,
     /// Backs the current palette entries, indexed in lock-step with
     /// `palette.entries` so Enter/click resolves by ordinal.
     search_results: Vec<crate::shell::search::SearchResult>,
@@ -2680,6 +2684,7 @@ type QsFastFields = (
     Option<crate::shell::quick_settings::actions::BatteryInfo>,
 );
 
+type AppLauncher = std::rc::Rc<dyn Fn(&Chrome, &str, &str)>;
 impl ShellOverlayHost {
     #[allow(
         clippy::too_many_lines,
@@ -2965,6 +2970,13 @@ impl ShellOverlayHost {
             content,
             OverlayInputs {
                 search_registry,
+                app_launcher: std::rc::Rc::new(|chrome, package_id, display_name| {
+                    let _ = crate::shell::search::providers::applications::launch_installed_app(
+                        chrome,
+                        package_id,
+                        display_name,
+                    );
+                }),
                 room_records,
                 collaboration_preferences: CollaborationPreferences::load(),
                 shortcut_config: settings_store::hardware::ShortcutConfig::load(),
@@ -3012,6 +3024,7 @@ impl ShellOverlayHost {
             content,
             OverlayInputs {
                 search_registry,
+                app_launcher: std::rc::Rc::new(|_, _, _| {}),
                 room_records,
                 collaboration_preferences: CollaborationPreferences::from_values(
                     &serde_json::Map::new(),
@@ -3078,6 +3091,7 @@ impl ShellOverlayHost {
             palette,
             palette_visible: false,
             search_registry: inputs.search_registry,
+            app_launcher: inputs.app_launcher,
             search_results: Vec::new(),
             pending_palette_action: None,
             pending_action_admissions: Vec::new(),
@@ -13705,11 +13719,7 @@ impl ShellOverlayHost {
                     st.overlays.quick_settings = false;
                     st.bump();
                 }
-                let _ = crate::shell::search::providers::applications::launch_installed_app(
-                    chrome,
-                    "dev.tilo.settings",
-                    "Settings",
-                );
+                (self.app_launcher)(chrome, "dev.tilo.settings", "Settings");
                 // A missing Settings package is already reported by the
                 // ordinary launcher as an actionable failure notification.
                 // Workspace settings controls sharing, members and room
@@ -25458,29 +25468,6 @@ mod palette_dispatch_tests {
         assert_eq!(events[1], (first[0].0, first[0].1, false));
     }
 
-    fn install_gui_fixture(dir: &std::path::Path, package_id: &str, name: &str) {
-        let payload = dir.join("payloads").join(package_id);
-        std::fs::create_dir_all(payload.join("bin")).unwrap();
-        let manifest_path = payload.join("manifest.toml");
-        std::fs::write(
-            &manifest_path,
-            format!(
-                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
-                 version = \"1.2.3\"\n[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("registry.toml"),
-            format!(
-                "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
-                payload.display().to_string(),
-                manifest_path.display().to_string()
-            ),
-        )
-        .unwrap();
-    }
-
     #[test]
     fn palette_false_confirmation_cannot_select_an_identity_or_grant_admin() {
         use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
@@ -26285,47 +26272,19 @@ mod palette_dispatch_tests {
         );
     }
 
-    #[allow(
-        clippy::items_after_statements,
-        reason = "the local test helper is deliberately introduced beside the scenario that exercises it"
-    )]
     #[test]
-    #[serial_test::serial(process_env)]
     fn quick_settings_settings_opens_personal_settings_app_not_workspace_settings() {
-        let tmp = tempfile::tempdir().unwrap();
-        install_gui_fixture(tmp.path(), "dev.tilo.settings", "Settings");
-        let launcher = tmp.path().join("record-launch.sh");
-        let launch_log = tmp.path().join("launch.log");
-        std::fs::write(
-            &launcher,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
-                launch_log.display()
-            ),
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&launcher).unwrap().permissions();
-        use std::os::unix::fs::PermissionsExt;
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&launcher, permissions).unwrap();
-
-        // SAFETY: process-wide launcher overrides are serialized by `process_env`.
-        unsafe {
-            std::env::set_var("TILO_APPS_DATA_DIR", tmp.path());
-            std::env::set_var("TILO_LAUNCHER_BIN", &launcher);
-        }
-        crate::shell::launcher::invalidate_app_cache();
-        crate::shell::launcher::clear_pending_placements();
-        crate::shell::launcher::set_wayland_socket_path(Some(tmp.path().join("wayland-0")));
-
         let (mut host, chrome) = host_with_chrome();
+        let launches = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = std::rc::Rc::clone(&launches);
+        host.app_launcher = std::rc::Rc::new(move |_, package_id, display_name| {
+            recorded
+                .borrow_mut()
+                .push((package_id.to_string(), display_name.to_string()));
+        });
         chrome.borrow_mut().overlays.quick_settings = true;
         host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !launch_log.is_file() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
         let state = chrome.borrow();
         assert!(!state.overlays.quick_settings, "the source popover closes");
         assert!(
@@ -26333,20 +26292,11 @@ mod palette_dispatch_tests {
             "device Settings must not be confused with workspace-sharing settings"
         );
         drop(state);
-        let log = std::fs::read_to_string(&launch_log).expect("Settings launch was recorded");
-        assert!(
-            log.contains("dev.tilo.settings"),
-            "the ordinary app launcher must receive Personal Settings: {log:?}"
+        assert_eq!(
+            launches.borrow().as_slice(),
+            &[("dev.tilo.settings".into(), "Settings".into())],
+            "the app-launch service receives the exact Personal Settings identity"
         );
-
-        // SAFETY: restore process-wide overrides before releasing the serial test lock.
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-            std::env::remove_var("TILO_LAUNCHER_BIN");
-        }
-        crate::shell::launcher::set_wayland_socket_path(None);
-        crate::shell::launcher::invalidate_app_cache();
-        crate::shell::launcher::clear_pending_placements();
     }
 
     #[test]

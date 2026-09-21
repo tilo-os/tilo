@@ -5,8 +5,17 @@ use crate::widget::{
 use automerge::ReadDoc;
 
 fn form_layout(app: &mut App, width: u32) {
-    app.layout_dirty = true;
-    run_layout_pass(app, app.root_node.unwrap(), width, 1000, 1.0, false, None).unwrap();
+    app.layout.layout_dirty = true;
+    run_layout_pass(
+        app,
+        app.layout.root_node.unwrap(),
+        width,
+        1000,
+        1.0,
+        false,
+        None,
+    )
+    .unwrap();
 }
 #[test]
 fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
@@ -42,7 +51,7 @@ fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
             .unwrap();
         *root = std::mem::take(root).with_label_placement(placement);
         // A normal layout rebuild observes the newly authored region value.
-        app.structure_dirty = true;
+        app.layout.structure_dirty = true;
         form_layout(&mut app, width);
         let focused = app.focused_node.unwrap();
         assert_eq!(

@@ -3,7 +3,9 @@
 #![allow(clippy::expect_used, reason = "test fixture setup must succeed")]
 
 use std::time::SystemTime;
-use ui::widget::identity_flow::{IdentityFlowError, InviteRedemptionAuthority, PairingHandshake};
+use tilo_ui::widget::identity_flow::{
+    IdentityFlowError, InviteRedemptionAuthority, PairingHandshake,
+};
 
 fn assert_unsupported<T>(result: Result<T, IdentityFlowError>) {
     assert!(matches!(

@@ -34,17 +34,17 @@ use vello::peniko::Color;
 use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Dropdown;
-use ui::widget::Widget;
-use ui::widget::autocomplete::{Autocomplete, Suggestion};
-use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::link_popover::PageEntry;
-use ui::widget::page_palette::PageJumpPalette as PagePalette;
-use ui::widget::slash_menu::SlashMenu;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Dropdown;
+use tilo_ui::widget::Widget;
+use tilo_ui::widget::autocomplete::{Autocomplete, Suggestion};
+use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
+use tilo_ui::widget::link_popover::PageEntry;
+use tilo_ui::widget::page_palette::PageJumpPalette as PagePalette;
+use tilo_ui::widget::slash_menu::SlashMenu;
 
 const CANVAS_W: u32 = 480;
 const CANVAS_H: u32 = 360;
@@ -68,7 +68,7 @@ fn color_of(px: (u8, u8, u8, u8)) -> Color {
 /// CIE L* of an opaque sRGB pixel, from the crate's own WCAG luminance so the
 /// two "perceptual" numbers in the repo cannot drift apart.
 fn lightness(px: (u8, u8, u8, u8)) -> f64 {
-    let y = ui::a11y::relative_luminance(color_of(px));
+    let y = tilo_ui::a11y::relative_luminance(color_of(px));
     let f = if y > 216.0 / 24389.0 {
         y.cbrt()
     } else {
@@ -221,7 +221,7 @@ fn assert_armed_row(
         lo.3, 0xff,
         "{surface}/{theme_name}: plain row sample is not opaque"
     );
-    let accent = theme.tokens.colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX].to_rgba8();
+    let accent = theme.tokens.colors.accent[tilo_ui::tokens::colors::ACCENT_PRIMARY_IDX].to_rgba8();
     assert_eq!(
         (hi.0, hi.1, hi.2),
         (accent.r, accent.g, accent.b),
@@ -237,10 +237,10 @@ fn assert_armed_row(
     let ink = theme
         .tokens
         .colors
-        .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-    let ratio = ui::a11y::contrast_ratio(ink, color_of(hi));
+        .on_accent(tilo_ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+    let ratio = tilo_ui::a11y::contrast_ratio(ink, color_of(hi));
     assert!(
-        ratio >= ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+        ratio >= tilo_ui::tokens::colors::ON_FILL_MIN_CONTRAST,
         "{surface}/{theme_name}: armed-row ink {ink:?} on painted fill {hi:?} is {ratio:.2}:1"
     );
 }
@@ -484,7 +484,7 @@ fn bg_app_ground_is_opaque_so_samples_are_meaningful() {
     // Guards the sampling method itself: every case composites over the
     // theme's window ground, so a transparent ground would make each ΔL*
     // above meaningless rather than merely wrong.
-    for name in SHIPPED_THEMES {
+    for name in Theme::ALL {
         let theme = Theme::named(name).expect("shipped preset resolves");
         let px = theme.bg_app.to_rgba8();
         assert_eq!(px.a, 0xff, "{name}: bg_app must be opaque");
@@ -494,29 +494,12 @@ fn bg_app_ground_is_opaque_so_samples_are_meaningful() {
 /// Every preset `Theme::named` resolves, including the accessibility track:
 /// the veneer polarity and the accent are per-theme decisions, so a highlight
 /// that survives the two defaults can still vanish on a preset.
-const SHIPPED_THEMES: [&str; 14] = [
-    "dark",
-    "light",
-    "qosblue",
-    "mocha",
-    "latte",
-    "dracula",
-    "nord",
-    "gruvbox",
-    "gruvboxlight",
-    "solarized",
-    "oled",
-    "paper",
-    "rosepine",
-    "highcontrast",
-];
-
 /// The armed context-menu row must read on every shipped theme, and its
 /// label must stay legible on the fill it sits on — the reported surface,
 /// swept across every palette the OS can be set to.
 #[test]
 fn context_menu_highlight_is_visible_in_every_shipped_theme() {
-    for name in SHIPPED_THEMES {
+    for name in Theme::ALL {
         let theme = Theme::named(name).expect("shipped preset resolves");
         let mut menu = ContextMenu::new();
         for label in labels() {

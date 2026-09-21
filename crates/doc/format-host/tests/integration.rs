@@ -26,23 +26,20 @@ use std::time::Duration;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use format_host::format_router_capnp::format_router;
 use format_host::router::{Router, load_into};
-use format_host::runner::{LoadedComponent, spawn_epoch_ticker};
+use format_host::runner::{LoadedComponent, MAX_WALLCLOCK, spawn_epoch_ticker};
 use format_host::{transport, watch::spawn_watcher};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-/// Path to the markdown wasm component built in this worktree. Skips the
-/// test gracefully if the file is missing (i.e. someone ran tests without
-/// the wasm build step).
-fn markdown_wasm() -> Option<PathBuf> {
+/// Path to the markdown wasm component built by `tests/run-component-integration.sh`.
+fn markdown_wasm() -> PathBuf {
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let p = here
-        .parent()?
+    here.parent()
+        .expect("format-host crate has a parent directory")
         .join("qdoc-codec-markdown-wasm")
         .join("target")
         .join("wasm32-wasip2")
         .join("release")
-        .join("qdoc_codec_markdown_wasm.wasm");
-    if p.exists() { Some(p) } else { None }
+        .join("qdoc_codec_markdown_wasm.wasm")
 }
 
 /// Spin up the host in-process: shared engine, router with a freshly-written
@@ -113,11 +110,13 @@ fn client_for(stream: tokio::net::UnixStream) -> format_router::Client {
 }
 
 #[test]
+#[ignore = "builds a WASM component; run crates/doc/format-host/tests/run-component-integration.sh"]
 fn single_provider_round_trip() {
-    let Some(wasm) = markdown_wasm() else {
-        eprintln!("markdown wasm not built; skip");
-        return;
-    };
+    let wasm = markdown_wasm();
+    assert!(
+        wasm.is_file(),
+        "markdown component is missing; run crates/doc/format-host/tests/run-component-integration.sh"
+    );
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -254,11 +253,13 @@ fn unknown_mime_returns_clear_error() {
 }
 
 #[test]
+#[ignore = "builds a WASM component; run crates/doc/format-host/tests/run-component-integration.sh"]
 fn registry_hot_reload() {
-    let Some(wasm) = markdown_wasm() else {
-        eprintln!("markdown wasm not built; skip");
-        return;
-    };
+    let wasm = markdown_wasm();
+    assert!(
+        wasm.is_file(),
+        "markdown component is missing; run crates/doc/format-host/tests/run-component-integration.sh"
+    );
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -314,22 +315,11 @@ fn resource_limit_kills_runaway() {
     local.block_on(&rt, async move {
         // Compile the WAT to a Component Model wasm at test time.
         let wat_src = include_str!("fixtures/infinite-loop.wat");
-        let wasm = match wat::parse_str(wat_src) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("WAT parse failed ({e}); skipping resource-limit test");
-                return;
-            }
-        };
+        let wasm = wat::parse_str(wat_src).expect("infinite-loop WAT fixture must parse");
         let engine = LoadedComponent::engine().unwrap();
         spawn_epoch_ticker(engine.clone());
-        let comp = match LoadedComponent::from_bytes(&engine, &wasm) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Component build failed ({e}); skipping resource-limit test");
-                return;
-            }
-        };
+        let comp = LoadedComponent::from_bytes(&engine, &wasm)
+            .expect("infinite-loop fixture must load as a component");
 
         // The detect call spins forever. Wasmtime's epoch deadline should
         // kill it within the 10-s wallclock budget; we wrap the call in
@@ -339,14 +329,17 @@ fn resource_limit_kills_runaway() {
             .await
             .expect("join ok");
         let elapsed = started.elapsed();
-        // Within the 10-s budget plus a generous fudge (slow CI hosts).
-        assert!(elapsed < Duration::from_secs(20), "took {elapsed:?}");
+        // Preserve a generous allowance for a heavily scheduled CI host while
+        // deriving the bound from the production deadline.
+        let latest_expected = MAX_WALLCLOCK + MAX_WALLCLOCK;
+        assert!(elapsed < latest_expected, "took {elapsed:?}");
         match res {
             Ok(_) => panic!("infinite-loop component returned cleanly — epoch not bumping?"),
             Err(e) => {
+                assert_eq!(e.kind, "resource_limit", "unexpected error {e:?}");
                 assert!(
-                    e.kind == "resource_limit" || e.kind == "trap",
-                    "unexpected error kind {e:?}"
+                    e.message.starts_with("wallclock budget exhausted:"),
+                    "the runaway must reach epoch interruption, not fail early in canonical ABI lowering: {e:?}"
                 );
             }
         }
