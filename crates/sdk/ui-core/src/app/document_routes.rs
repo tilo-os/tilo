@@ -237,6 +237,7 @@ impl App {
             }
         }
     }
+    #[cfg(test)]
     pub(super) fn drain_document_routes(&mut self) {
         self.refresh_document_routes();
         self.drain_document_routes_after_refresh();

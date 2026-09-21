@@ -10,6 +10,29 @@ use crate::bound_dispatch::legacy_document_tests::{Fixture, SetValue, address, r
 use crate::widget::{Column, Widget};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 
+struct DocumentRouteTransport;
+impl crate::collaboration::PeerTransport for DocumentRouteTransport {
+    fn is_connected(&self) -> bool {
+        true
+    }
+    fn send(&mut self, _: CollabRequest) -> Result<(), String> {
+        Ok(())
+    }
+    fn poll(&mut self) -> Vec<CollabEvent> {
+        vec![]
+    }
+    fn join_route(&mut self, _: crate::collaboration::RouteSpec) -> Result<(), String> {
+        Ok(())
+    }
+    fn send_to_route(
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        _: CollabRequest,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 #[test]
 fn native_legacy_route_exact_owner_publication_and_repeat_idle_do_not_touch_siblings() {
     let room = uuid::Uuid::new_v4();
@@ -32,6 +55,7 @@ fn native_legacy_route_exact_owner_publication_and_repeat_idle_do_not_touch_sibl
     let original_a = a.snapshot();
     let original_b = b.snapshot();
     let outer = app.state.doc.save();
+    app.collab_manager = CollaborationManager::with_peer_transport(DocumentRouteTransport);
     app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: crate::collaboration::RouteSpec::app("controlled-shell", room),
         epoch: uuid::Uuid::new_v4(),
