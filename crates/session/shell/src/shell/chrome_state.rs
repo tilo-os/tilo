@@ -30,6 +30,44 @@ fn visual_notification_alerts_enabled() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
+mod dropped_content_startup_tests {
+    use super::ChromeState;
+    use crate::shell::hosted_inputs::{HostedDocumentState, HostedTileInputs};
+    use crate::shell::state::WorkspaceTree;
+    use crate::shell::tab_binding::Placement;
+
+    #[test]
+    fn dropped_plain_text_is_bound_to_the_exact_hosted_editor_tab() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = temp.path().join("carried.txt");
+        std::fs::write(&document, "carried words\n").unwrap();
+        let tree = WorkspaceTree::bootstrap_demo();
+        let group = tree.workspaces[0].strips[0].window_groups[0].id;
+        let inputs = HostedTileInputs::fixture_in(temp.path()).unwrap();
+        let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
+
+        let tab = chrome
+            .borrow_mut()
+            .handle_file_drop_at_placement(&document, Placement::TabAt(group, 0))
+            .unwrap();
+        assert!(matches!(
+            chrome.borrow().hosted_inputs.document(tab),
+            Some(HostedDocumentState::Ready(opened))
+                if opened.path == document.canonicalize().unwrap()
+                    && opened.text == "carried words\n"
+        ));
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let group = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|candidate| candidate.id == group)
+            .unwrap();
+        assert_eq!(group.tabs[0].id, tab);
+    }
+}
+
 fn notification_unix_ms() -> u64 {
     u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
 }
@@ -1083,6 +1121,93 @@ impl ChromeState {
             self.bump();
         }
         tab_id
+    }
+
+    /// Exact-placement sibling of [`Self::handle_file_drop_at`]. External
+    /// content and existing app tabs share the row's spatial target, so a
+    /// fallback Files/Editor tab must preserve the named tab gap or window
+    /// seam rather than collapsing it to a group id.
+    pub fn handle_file_drop_at_placement(
+        &mut self,
+        path: &std::path::Path,
+        placement: crate::shell::tab_binding::Placement,
+    ) -> Option<u64> {
+        const MAX_HOSTED_TEXT_BYTES: u64 = 32 * 1024 * 1024;
+        let mut hosted_document = None;
+        let mut files_directory = None;
+        if path.exists() {
+            let canonical = path.canonicalize().ok()?;
+            if canonical.is_dir() {
+                files_directory = Some(canonical);
+            } else {
+                let is_editor = canonical
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|extension| {
+                        super::workspace_drop::EDITOR_EXTENSIONS
+                            .iter()
+                            .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+                    });
+                if is_editor {
+                    if canonical.metadata().ok()?.len() > MAX_HOSTED_TEXT_BYTES {
+                        return None;
+                    }
+                    hosted_document =
+                        Some((canonical.clone(), std::fs::read_to_string(&canonical).ok()?));
+                } else {
+                    files_directory = canonical.parent().map(std::path::Path::to_path_buf);
+                }
+            }
+        }
+        let tab_id = {
+            let mut tree = self.tree_mut();
+            super::workspace_drop::apply_workspace_drop_at_placement_from_path(
+                &mut tree, path, placement,
+            )
+        }?;
+        let address = {
+            let tree = self.tree();
+            tree.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .any(|tab| tab.id == tab_id)
+                            .then_some((strip.id, group.id))
+                    })
+                })
+            })
+        };
+        if let Some((strip, group)) = address {
+            self.grant_dropped_file_access(path, strip, group, tab_id);
+        }
+        // Exact placement is only half of opening a drop: hosted apps also
+        // need device-local startup data naming the thing they should show.
+        // Synthetic/nonexistent paths used by shell layout fixtures retain the
+        // historical placeholder behaviour; real paths are bound here.
+        if let Some(directory) = files_directory {
+            self.hosted_inputs.bind_files_directory(tab_id, directory);
+        }
+        if let Some((path, text)) = hosted_document {
+            self.hosted_inputs.bind_document(
+                tab_id,
+                super::hosted_inputs::HostedDocument {
+                    provider_id: "org.tilo.Editor",
+                    path: path.clone(),
+                    text,
+                },
+            );
+            self.tree_mut().native_document_tabs.insert(
+                tab_id,
+                crate::shell::state::NativeDocumentReference {
+                    provider_id: "org.tilo.Editor".to_string(),
+                    path,
+                },
+            );
+        }
+        self.bump();
+        Some(tab_id)
     }
 
     /// Through the SAME [`GrantStoreHandle`] the portal uses, so

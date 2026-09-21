@@ -22,7 +22,7 @@
 )]
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Cursor, Read};
 use std::os::unix::io::{FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
@@ -3398,14 +3398,26 @@ impl Compositor {
     }
 }
 
-/// A 1x1 transparent PNG — the smallest real image a drop can carry.
-const TINY_PNG: [u8; 67] = [
-    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
-    0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
-    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
-    0x42, 0x60, 0x82,
-];
+/// An opaque, deliberately multicolour PNG. Besides protocol byte equality it
+/// makes the compositor's real-pixel drag preview inspectable in the mid-drag
+/// screenshot; the old transparent 1x1 fixture could only prove a blank card.
+fn visible_png() -> Vec<u8> {
+    let pixels = image::RgbaImage::from_fn(24, 16, |x, y| {
+        let left = x < 12;
+        let top = y < 8;
+        match (left, top) {
+            (true, true) => image::Rgba([239, 68, 68, 255]),
+            (false, true) => image::Rgba([59, 130, 246, 255]),
+            (true, false) => image::Rgba([34, 197, 94, 255]),
+            (false, false) => image::Rgba([250, 204, 21, 255]),
+        }
+    });
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(pixels)
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .expect("encode visible PNG fixture");
+    encoded.into_inner()
+}
 
 fn files_tab_is_active(compositor: &Compositor) -> bool {
     let dump = compositor.control(&serde_json::json!({"op": "state_dump"}));
@@ -3473,14 +3485,12 @@ fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
     (f64::midpoint(x0, x1), y + h / 2.0)
 }
 
-/// Press on the file row and carry it over to the client in small steps —
-/// crossing the file manager's own drag threshold before the pointer
-/// leaves its tile, so the compositor sees a drag to promote — then wait
-/// for the client to see `enter` with an offer. Split out of the
-/// drag-and-drop tests below to keep each one short.
-fn drag_file_row_onto_client(
+/// Press on the file row and carry it into a tiled window's shell-owned drop
+/// zone in small steps, crossing Files' own drag threshold before leaving its
+/// tile. The destination client deliberately receives no Wayland offer: the
+/// visible left/right body zones now mean place-and-open content as a tab.
+fn drag_file_row_to_shell_target(
     compositor: &Compositor,
-    target: &mut TestClient,
     row: (f64, f64),
     target_point: (f64, f64),
 ) {
@@ -3493,60 +3503,71 @@ fn drag_file_row_onto_client(
             row.0 + (target_point.0 - row.0) * t,
             row.1 + (target_point.1 - row.1) * t,
         );
-        target.pump();
         std::thread::sleep(Duration::from_millis(30));
     }
     compositor.snapshot(Path::new("/tmp/tilo-dnd-e2e-mid-drag.png"));
-    let started = Instant::now();
-    while started.elapsed() < DEADLINE {
-        if target.state.dnd_entered && target.state.dnd_offer.is_some() {
-            break;
+}
+
+fn tree_shape(tree: &serde_json::Value) -> (usize, usize, Vec<String>) {
+    let mut groups = 0;
+    let mut tabs = 0;
+    let mut titles = Vec::new();
+    walk_json(tree, &mut |value| {
+        if let Some(window_groups) = value.get("window_groups").and_then(|v| v.as_array()) {
+            groups += window_groups.len();
         }
-        target.pump();
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        target.state.dnd_entered && target.state.dnd_offer.is_some(),
-        "the chrome drag never entered the client's surface (drag from {row:?} to {target_point:?}; \
-         file_view={:?} row_rect={:?}).\nState:\n{}\nCompositor log:\n{}",
-        compositor.named_rect("file_view"),
-        compositor.named_rect("file_row:photo.png"),
-        compositor.control(&serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
-            .get("files_drag")
-            .map(|v| format!(
-                "files_drag={v} handed_off={}",
-                compositor.control(&serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
-                    ["files_drag_handed_off"]
-            ))
-            .unwrap_or_default(),
-        compositor.recent_log(),
-    );
+        if let (Some(title), Some(_)) = (value.get("title"), value.get("tile")) {
+            tabs += 1;
+            if let Some(title) = title.as_str() {
+                titles.push(title.to_string());
+            }
+        }
+    });
+    (groups, tabs, titles)
 }
 
-/// Release the pointer and wait for the client to see the drop. Split out
-/// of the drag-and-drop tests below to keep each one short.
-fn release_and_wait_for_drop(compositor: &Compositor, target: &mut TestClient) {
-    compositor.pointer_button(false);
-    let started = Instant::now();
-    while started.elapsed() < DEADLINE && !target.state.dnd_dropped {
-        target.pump();
-        std::thread::sleep(Duration::from_millis(10));
+/// Find the group containing a foreign app and return its durable id plus
+/// the foreign app ids in tab order. Placeholder tabs are deliberately
+/// omitted: this helper asserts the relative placement of real client
+/// windows without coupling the interaction test to the demo group's
+/// shell-owned starter tabs.
+fn foreign_group_for_app(
+    value: &serde_json::Value,
+    wanted_app_id: &str,
+) -> Option<(u64, Vec<String>)> {
+    if let Some(tabs) = value.get("tabs").and_then(serde_json::Value::as_array) {
+        let app_ids: Vec<String> = tabs
+            .iter()
+            .filter_map(|tab| {
+                tab.get("tile")?
+                    .get("Foreign")?
+                    .get("app_id")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect();
+        if app_ids.iter().any(|app_id| app_id == wanted_app_id) {
+            let group_id = value.get("id")?.as_u64()?;
+            return Some((group_id, app_ids));
+        }
     }
-    assert!(
-        target.state.dnd_dropped,
-        "the client never saw the drop.\nCompositor log:\n{}",
-        compositor.recent_log()
-    );
+    match value {
+        serde_json::Value::Array(values) => values
+            .iter()
+            .find_map(|value| foreign_group_for_app(value, wanted_app_id)),
+        serde_json::Value::Object(values) => values
+            .values()
+            .find_map(|value| foreign_group_for_app(value, wanted_app_id)),
+        _ => None,
+    }
 }
 
-/// Drag a file out of the hosted file manager (a widget inside the
-/// compositor, not a client) and drop it on a client's window. Runs
-/// through the input path; the compositor promotes the in-process
-/// drag to a server-side `wl_data_device` drag the moment the pointer
-/// reaches the client, which then gets enter, an offer carrying both the
-/// path list and the file's own bytes, and the drop.
+/// Drag a real image out of hosted Files and release on another tiled
+/// window's body. This proves the new shell-owned behavior end to end: the
+/// carried pixels remain visible, the underlying client is not offered the
+/// payload, and release opens a new tab in that existing window group.
 #[test]
-fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
+fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
     let home = PathBuf::from(format!(
         "/run/user/{}/tilo-dnd-home-{}-{}",
         unsafe { libc::getuid() },
@@ -3555,7 +3576,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     ));
     std::fs::create_dir_all(&home).expect("create the fixture home");
     let photo = home.join("photo.png");
-    std::fs::write(&photo, TINY_PNG).expect("write the fixture image");
+    std::fs::write(&photo, visible_png()).expect("write the fixture image");
 
     let compositor = Compositor::start_with(Some(&home), (2560, 900));
 
@@ -3582,55 +3603,69 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     // (drag the seam handle) so the client stays visible while Files is
     // focused.
     narrow_demo_group_for_files(&compositor);
-    let target_point = target.pointer_target(&compositor);
+    // The body zone belongs to shell placement now, so deliberately resolve
+    // it from the compositor's live foreign-surface geometry. Asking the
+    // client to discover it via wl_pointer.enter would be circular: correct
+    // shell ownership means that enter is intentionally withheld.
+    let target_name = compositor
+        .target_names()
+        .into_iter()
+        .find(|name| name.starts_with("foreign-surface-"))
+        .expect("the mapped target has compositor geometry");
+    let [target_x, target_y, target_w, target_h] = compositor
+        .named_rect(&target_name)
+        .expect("the mapped target has a live rectangle");
+    // 62.5% is firmly in the right-side body target while remaining clear of
+    // the deliberately generous outer 25% inter-group edge band.
+    let target_point = (target_x + target_w * 0.625, target_y + target_h / 2.0);
     // The row the file manager laid out for the fixture file — aimed at
     // its on-screen part, since the tile may extend past the left edge.
     let row = locate_file_row(&compositor);
+    let before_tree = compositor.workspace_tree();
+    let before = tree_shape(&before_tree);
+    let (target_group, before_foreign_order) =
+        foreign_group_for_app(&before_tree, "org.tilo.test.dnd-target")
+            .expect("the destination client belongs to a durable window group");
+    assert_eq!(before_foreign_order, ["org.tilo.test.dnd-target"]);
 
-    drag_file_row_onto_client(&compositor, &mut target, row, target_point);
-    // The client's accept-mime/action requests from `enter` must reach the
-    // compositor before release, or the drop is refused as unaccepted —
-    // matching the protocol and what a real client's event loop avoids by
-    // flushing as it goes.
-    target.roundtrip();
-    assert!(
-        target
-            .state
-            .dnd_offer_mimes
-            .iter()
-            .any(|m| m == "text/uri-list"),
-        "the offer must carry the path list; offered {:?}",
-        target.state.dnd_offer_mimes
-    );
-    assert!(
-        target
-            .state
-            .dnd_offer_mimes
-            .iter()
-            .any(|m| m == "image/png"),
-        "a single image is also offered as its own bytes; offered {:?}",
-        target.state.dnd_offer_mimes
-    );
-
-    release_and_wait_for_drop(&compositor, &mut target);
-
-    let uris = target.read_dnd_bytes("text/uri-list", None);
+    drag_file_row_to_shell_target(&compositor, row, target_point);
+    compositor.pointer_button(false);
+    let started = Instant::now();
+    let after = loop {
+        let tree = compositor.workspace_tree();
+        let shape = tree_shape(&tree);
+        if shape.1 == before.1 + 1
+            && foreign_group_for_app(&tree, "dev.tilo.image-editor").is_some()
+        {
+            break (shape, tree);
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "the shell never opened photo.png at the body target.\n{}",
+            compositor.debug_state()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_eq!(
-        String::from_utf8_lossy(&uris),
-        format!("file://{}\r\n", photo.display()),
-        "the URI list names the dragged file"
+        after.0.0, before.0,
+        "an interior body drop joins the existing group rather than creating a new one"
     );
-    let bytes = target.read_dnd_bytes("image/png", None);
+    let (opened_group, after_foreign_order) =
+        foreign_group_for_app(&after.1, "dev.tilo.image-editor")
+            .expect("the opened image belongs to a durable window group");
     assert_eq!(
-        bytes, TINY_PNG,
-        "the image bytes arrive intact through the pipe"
+        opened_group, target_group,
+        "the image must join the group under the pointer"
     );
-    target.state.dnd_offer.as_ref().expect("offer").finish();
-    target.roundtrip();
+    assert_eq!(
+        after_foreign_order,
+        ["org.tilo.test.dnd-target", "dev.tilo.image-editor"],
+        "a right-interior drop appends the opened image after the target tab"
+    );
 
     assert!(
         photo.exists(),
-        "a drop onto a client is a copy; the file manager must not have moved the file"
+        "opening by drag is a copy; Files must not move the source"
     );
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -3730,7 +3765,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     ));
     std::fs::create_dir_all(&home).expect("create the fixture home");
     let photo = home.join("photo.png");
-    std::fs::write(&photo, TINY_PNG).expect("write the fixture image");
+    std::fs::write(&photo, visible_png()).expect("write the fixture image");
 
     let compositor = Compositor::start_with_home(Some(&home));
     compositor.place_next_window("so.tilo.word-processor");

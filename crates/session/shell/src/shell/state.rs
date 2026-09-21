@@ -6284,11 +6284,8 @@ impl WorkspaceTree {
         self.doc.delete(&groups, group_idx).is_ok()
     }
 
-    /// Mirror a cross-strip move into the document with the same new group
-    /// id and insertion index as the cache and rendered row. The old code
-    /// appended the tab to the destination's *first existing group* while
-    /// the cache created a new group, so any subsequent doc resync undid the
-    /// topology the person had just created.
+    /// Mirror a cross-strip move into the document with the exact existing-tab
+    /// index or new-group seam used by the cache and rendered row.
     #[allow(
         clippy::too_many_lines,
         reason = "the document mirror applies the cross-strip topology change atomically"
@@ -6300,7 +6297,7 @@ impl WorkspaceTree {
         src_group_id: GroupId,
         remove_src_group: bool,
         new_group: &WindowGroup,
-        destination: usize,
+        target: ui::widget::TabDropTarget,
     ) -> bool {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
         let Some(tab) = new_group.tabs.first() else {
@@ -6311,6 +6308,7 @@ impl WorkspaceTree {
         };
         let mut src_groups: Option<(automerge::ObjId, usize)> = None;
         let mut dst_groups: Option<automerge::ObjId> = None;
+        let mut dst_existing_tabs: Option<automerge::ObjId> = None;
         let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() else {
             return false;
         };
@@ -6344,6 +6342,29 @@ impl WorkspaceTree {
                 };
                 if strip_raw == dst_strip.raw() {
                     dst_groups = Some(groups_id.clone());
+                    if let ui::widget::TabDropTarget::ExistingGroup { group_id, .. } = target {
+                        for group_idx in 0..self.doc.length(&groups_id) {
+                            let Some((_, group_entry)) =
+                                self.doc.get(&groups_id, group_idx).ok().flatten()
+                            else {
+                                continue;
+                            };
+                            let matches = matches!(
+                                self.doc.get(&group_entry, "id").ok().flatten(),
+                                Some((Value::Scalar(s), _))
+                                    if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == group_id)
+                            );
+                            if matches {
+                                dst_existing_tabs = self
+                                    .doc
+                                    .get(&group_entry, "tabs")
+                                    .ok()
+                                    .flatten()
+                                    .map(|(_, tabs)| tabs);
+                                break;
+                            }
+                        }
+                    }
                 }
                 if strip_raw == src_strip.raw() {
                     for group_idx in 0..self.doc.length(&groups_id) {
@@ -6370,6 +6391,11 @@ impl WorkspaceTree {
         let Some(dst_groups) = dst_groups else {
             return false;
         };
+        if matches!(target, ui::widget::TabDropTarget::ExistingGroup { .. })
+            && dst_existing_tabs.is_none()
+        {
+            return false;
+        }
 
         // AutoCommit mutations are individually fallible. Keep a cheap
         // document snapshot so the operation is all-or-nothing to callers.
@@ -6383,19 +6409,36 @@ impl WorkspaceTree {
             self.doc = before;
             return false;
         }
-        let dest = destination.min(self.doc.length(&dst_groups));
         let inserted = (|| {
-            let group_entry = self
-                .doc
-                .insert_object(&dst_groups, dest, ObjType::Map)
-                .ok()?;
-            self.doc
-                .put(&group_entry, "id", ScalarValue::Uint(new_group.id))
-                .ok()?;
-            let tabs = self
-                .doc
-                .put_object(&group_entry, "tabs", ObjType::List)
-                .ok()?;
+            let tabs = match target {
+                ui::widget::TabDropTarget::GroupGap { gap_index } => {
+                    let dest = gap_index.min(self.doc.length(&dst_groups));
+                    let group_entry = self
+                        .doc
+                        .insert_object(&dst_groups, dest, ObjType::Map)
+                        .ok()?;
+                    self.doc
+                        .put(&group_entry, "id", ScalarValue::Uint(new_group.id))
+                        .ok()?;
+                    self.doc
+                        .put_object(&group_entry, "tabs", ObjType::List)
+                        .ok()?
+                }
+                ui::widget::TabDropTarget::ExistingGroup { tab_index, .. } => {
+                    let tabs = dst_existing_tabs.clone()?;
+                    let index = tab_index.min(self.doc.length(&tabs));
+                    let tab_entry = self.doc.insert_object(&tabs, index, ObjType::Map).ok()?;
+                    self.doc
+                        .put(&tab_entry, "id", ScalarValue::Uint(tab.id))
+                        .ok()?;
+                    self.doc.put(&tab_entry, "title", tab.title.clone()).ok()?;
+                    let blob = serde_json::to_vec(&tab.tile).ok()?;
+                    self.doc
+                        .put(&tab_entry, "tile_json", ScalarValue::Bytes(blob))
+                        .ok()?;
+                    return Some(());
+                }
+            };
             let tab_entry = self.doc.insert_object(&tabs, 0, ObjType::Map).ok()?;
             self.doc
                 .put(&tab_entry, "id", ScalarValue::Uint(tab.id))
@@ -7306,8 +7349,9 @@ impl WorkspaceTree {
     /// Mirror a cross-strip tab drag-drop into the persisted tree. The
     /// widget side only mutates the widget tree — without this writeback
     /// the tab would pop back to its source strip on the next restart.
-    /// Removes the `Tab` from the source (pruning any group left empty),
-    /// appends a fresh single-tab `WindowGroup` to the destination.
+    /// Removes the `Tab` from the source (pruning any group left empty), then
+    /// applies the exact target the destination row previewed: either an exact
+    /// tab index in an existing group or a fresh group at an exact seam.
     ///
     /// Forgiving: `false` if `tab_id` or either strip id doesn't resolve.
     /// Searches every workspace since a drop could land outside the
@@ -7318,12 +7362,11 @@ impl WorkspaceTree {
         dest_strip_id: StripId,
         tab_id: TabId,
         new_group_id: GroupId,
-        destination: usize,
+        target: ui::widget::TabDropTarget,
     ) -> bool {
         if src_strip_id == dest_strip_id {
-            // Return-to-source re-splices into a new group on the same
-            // strip; the tab is still attributed to this strip, so
-            // skipping the write is safe — a restart rebuilds it anyway.
+            // Cross-strip routing never commits back into its source row;
+            // that path restores the detached live payload exactly instead.
             return false;
         }
         // Cache and Automerge document form one transaction. Keep snapshots
@@ -7331,14 +7374,20 @@ impl WorkspaceTree {
         // while replication still describes the old layout.
         let before_workspaces = self.workspaces.clone();
         let before_doc = self.doc.clone();
-        // Validate the destination before detaching anything. A stale drop
-        // target must not make the source tab disappear.
-        if !self
+        // Validate the destination and any named group before detaching
+        // anything. A stale preview must not make the source tab disappear.
+        let valid_destination = self
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
-            .any(|strip| strip.id == dest_strip_id)
-        {
+            .find(|strip| strip.id == dest_strip_id)
+            .is_some_and(|strip| match target {
+                ui::widget::TabDropTarget::ExistingGroup { group_id, .. } => {
+                    strip.window_groups.iter().any(|group| group.id == group_id)
+                }
+                ui::widget::TabDropTarget::GroupGap { .. } => true,
+            });
+        if !valid_destination {
             return false;
         }
         // Scan every workspace's strips: StripId is workspace-agnostic.
@@ -7389,7 +7438,7 @@ impl WorkspaceTree {
         let active_tab = moved.id;
         let new_group = WindowGroup {
             id: new_group_id,
-            tabs: vec![moved],
+            tabs: vec![moved.clone()],
             active_tab,
             width: WindowWidth::Normal,
             maximized: false,
@@ -7397,15 +7446,39 @@ impl WorkspaceTree {
         for ws in &mut self.workspaces {
             for strip in &mut ws.strips {
                 if strip.id == dest_strip_id {
-                    let destination = destination.min(strip.window_groups.len());
-                    strip.window_groups.insert(destination, new_group.clone());
+                    match target {
+                        ui::widget::TabDropTarget::ExistingGroup {
+                            group_id,
+                            tab_index,
+                        } => {
+                            let Some(group) = strip
+                                .window_groups
+                                .iter_mut()
+                                .find(|group| group.id == group_id)
+                            else {
+                                self.workspaces = before_workspaces;
+                                self.doc = before_doc;
+                                return false;
+                            };
+                            group
+                                .tabs
+                                .insert(tab_index.min(group.tabs.len()), moved.clone());
+                            group.active_tab = moved.id;
+                        }
+                        ui::widget::TabDropTarget::GroupGap { gap_index } => {
+                            strip.window_groups.insert(
+                                gap_index.min(strip.window_groups.len()),
+                                new_group.clone(),
+                            );
+                        }
+                    }
                     let doc_changed = self.doc_move_tab_across_strips(
                         src_strip_id,
                         dest_strip_id,
                         src_group_id,
                         prune_group_at.is_some(),
                         &new_group,
-                        destination,
+                        target,
                     );
                     if !doc_changed {
                         tracing::warn!(
@@ -9914,7 +9987,7 @@ mod automerge_foundation_tests {
             dst_strip_id,
             target_tab,
             new_group_id,
-            1,
+            ui::widget::TabDropTarget::GroupGap { gap_index: 1 },
         ));
 
         let changes = tree_a.export_changes_since(&[]);
@@ -9961,6 +10034,77 @@ mod automerge_foundation_tests {
     }
 
     #[test]
+    fn moving_a_tab_across_strips_into_existing_group_preserves_exact_index() {
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
+        let src_strip_id = tree_a.workspaces[0].strips[0].id;
+        let target_tab = tree_a.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let template = tree_a.workspaces[0].strips[0].window_groups[0].tabs[1].clone();
+        let mut before = template.clone();
+        before.id = next_id();
+        before.title = "Before".into();
+        let mut after = template;
+        after.id = next_id();
+        after.title = "After".into();
+        let expected = vec![before.id, target_tab, after.id];
+        let dst_strip_id = StripId::new();
+        let dst_group_id = next_id();
+        tree_a.workspaces[0].strips.push(Strip {
+            id: dst_strip_id,
+            name: "Dest".into(),
+            window_groups: vec![WindowGroup {
+                id: dst_group_id,
+                tabs: vec![before, after],
+                active_tab: expected[0],
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        });
+        tree_a.seed_doc_from_cache();
+
+        assert!(tree_a.move_tab_across_strips(
+            src_strip_id,
+            dst_strip_id,
+            target_tab,
+            next_id(),
+            ui::widget::TabDropTarget::ExistingGroup {
+                group_id: dst_group_id,
+                tab_index: 1,
+            },
+        ));
+        let cache_group = &tree_a.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == dst_strip_id)
+            .expect("destination strip")
+            .window_groups[0];
+        assert_eq!(
+            cache_group
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(cache_group.active_tab, target_tab);
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+        let peer_group = &tree_b
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .find(|strip| strip.id == dst_strip_id)
+            .expect("peer destination strip")
+            .window_groups[0];
+        assert_eq!(
+            peer_group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            expected,
+            "Automerge must preserve the exact existing-group insertion index"
+        );
+    }
+
+    #[test]
     fn cross_strip_move_rolls_back_when_document_cannot_commit() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let dst_strip_id = StripId::new();
@@ -9976,9 +10120,13 @@ mod automerge_foundation_tests {
         // loaded. The move must not become a cache-only layout.
         tree.doc = automerge::AutoCommit::new();
 
-        assert!(
-            !tree.move_tab_across_strips(src_strip_id, dst_strip_id, target_tab, next_id(), 0,)
-        );
+        assert!(!tree.move_tab_across_strips(
+            src_strip_id,
+            dst_strip_id,
+            target_tab,
+            next_id(),
+            ui::widget::TabDropTarget::GroupGap { gap_index: 0 },
+        ));
         assert_eq!(
             serde_json::to_value(&tree.workspaces).unwrap(),
             serde_json::to_value(&before).unwrap(),
@@ -10640,7 +10788,7 @@ mod active_group_tests {
             tree.active_strip[&tree.workspaces[0].id],
             first_tab,
             90_001,
-            0,
+            ui::widget::TabDropTarget::GroupGap { gap_index: 0 },
         ));
         let reloaded = load_tree_from(&state_path).expect("cross-strip move persisted");
         let first_tab_locations = reloaded
