@@ -216,6 +216,11 @@ def quiet_command(argv, *, timeout):
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
 
 
+def canonical_sha256(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True,
+                                     separators=(',', ':')).encode()).hexdigest()
+
+
 def kubectl(context, *args):
     return ['kubectl', '--context', context, *args]
 
@@ -1623,7 +1628,289 @@ def sparse_transfer(context, source_worker, target_worker, *, target_container,
     finally:token=None
 
 
-def convert_and_cycle(context, vm, identity, acceptance_id):
+VM_CYCLE_JOB = r'''import hashlib,json,os,pathlib,subprocess,sys
+job=pathlib.Path(sys.argv[1]); request_path=job/'request.json'; status_path=job/'status.json'; log_path=job/'log.txt'
+os.umask(0o077)
+MAX_LOG=256*1024
+def read_private(path,limit):
+ i=path.lstat()
+ if not i.st_mode&0o100000 or i.st_uid or i.st_gid or i.st_nlink!=1 or i.st_mode&0o077 or i.st_size>limit: raise ValueError('cycle job file is invalid')
+ fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  o=os.fstat(fd)
+  if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size): raise ValueError('cycle job file changed')
+  value=os.read(fd,limit+1)
+  if len(value)!=i.st_size: raise ValueError('cycle job file changed')
+  return value
+ finally: os.close(fd)
+def atom(path,value):
+ data=(json.dumps(value,sort_keys=True,separators=(',',':'))+'\n').encode(); temporary=path.with_name('.'+path.name+'.tmp')
+ fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+ try:
+  with os.fdopen(fd,'wb') as out: out.write(data); out.flush(); os.fsync(out.fileno())
+  os.replace(temporary,path)
+ finally:
+  try: temporary.unlink()
+  except FileNotFoundError: pass
+def process_identity(request):
+ proc=pathlib.Path('/proc/self'); start=(proc/'stat').read_text().split()[21]
+ return {'pid':os.getpid(),'start':start,
+         'argv_sha256':hashlib.sha256((proc/'cmdline').read_bytes()).hexdigest(),
+         'cgroup_sha256':hashlib.sha256((proc/'cgroup').read_bytes()).hexdigest(),
+         'request_sha256':hashlib.sha256(request).hexdigest()}
+def state(binding,name,process,**extra):
+ atom(status_path,{'schema':1,'purpose':'tilo-supervised-vm-cycle-job','state':name,
+                   'binding':binding,'process':process,**extra})
+try:
+ request=read_private(request_path,4*1024*1024); value=json.loads(request); binding=value['binding']
+ process=process_identity(request); state(binding,'running',process)
+ environment=os.environ.copy(); environment.update(value['environment'])
+ child=subprocess.Popen(['bash','-ceu',value['script'],'tilo-cycle'],stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,env=environment)
+ count=log_path.stat().st_size if log_path.exists() else 0
+ with log_path.open('ab',buffering=0) as log:
+  while True:
+   chunk=child.stdout.read(1024*1024)
+   if not chunk: break
+   take=max(0,MAX_LOG-count)
+   if take: log.write(chunk[:take]); count+=min(len(chunk),take)
+   if count>=MAX_LOG and child.poll() is None:
+    # Keep the job alive while making its diagnostics bounded.
+    child.stdout.read(0)
+  returncode=child.wait()
+ state(binding,'succeeded' if returncode==0 else 'failed',process,
+       returncode=returncode,log_bytes=count,log_truncated=count>=MAX_LOG)
+except BaseException:
+ try:
+  state(value['binding'],'failed',process,returncode=1,
+        log_bytes=log_path.stat().st_size if log_path.exists() else 0,
+        log_truncated=log_path.exists() and log_path.stat().st_size>=MAX_LOG)
+ except BaseException: pass
+'''
+
+
+VM_CYCLE_LAUNCH = r'''import base64,hashlib,json,os,pathlib,stat,subprocess,sys,time
+value=json.load(sys.stdin); source=base64.b64decode(sys.argv[1],validate=True)
+job=pathlib.Path(sys.argv[2]); expected=value.get('binding'); expected_sha=value.get('binding_sha256')
+def atom(path,data):
+ temporary=path.with_name('.'+path.name+'.tmp'); fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+ try:
+  with os.fdopen(fd,'wb') as out: out.write(data); out.flush(); os.fsync(out.fileno())
+  os.replace(temporary,path)
+ finally:
+  try: temporary.unlink()
+  except FileNotFoundError: pass
+def regular(path,limit):
+ i=path.lstat()
+ if not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1 or i.st_mode&0o077 or i.st_size>limit: raise ValueError('cycle job state is invalid')
+ return json.loads(path.read_bytes())
+if (not isinstance(expected,dict) or hashlib.sha256(json.dumps(expected,sort_keys=True,separators=(',',':')).encode()).hexdigest()!=expected_sha): raise SystemExit('invalid cycle job binding')
+if job.exists() or job.is_symlink():
+ ji=job.lstat()
+ if job.is_symlink() or not job.is_dir() or ji.st_uid or ji.st_gid or (ji.st_mode&0o777)!=0o700: raise SystemExit('cycle job path is invalid')
+ state=regular(job/'status.json',65536)
+ if state.get('binding')!=expected: raise SystemExit('cycle job binding differs')
+ print(json.dumps(state,sort_keys=True));sys.exit(0)
+job.mkdir(mode=0o700)
+request=json.dumps(value,sort_keys=True,separators=(',',':')).encode()+b'\n'; atom(job/'request.json',request)
+source_path=job/'job.py'; fd=os.open(source_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o700)
+try:
+ with os.fdopen(fd,'wb') as out: out.write(source); out.flush(); os.fsync(out.fileno())
+finally: pass
+atom(job/'status.json',(json.dumps({'schema':1,'purpose':'tilo-supervised-vm-cycle-job','state':'launched',
+                                    'binding':expected,'launched_at':int(time.time())},sort_keys=True)+'\n').encode())
+subprocess.Popen(['/usr/bin/python3',str(source_path),str(job)],stdin=subprocess.DEVNULL,
+                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True,close_fds=True)
+print(json.dumps(regular(job/'status.json',65536),sort_keys=True))'''
+
+
+VM_CYCLE_STATUS = r'''import hashlib,json,pathlib,sys
+job=pathlib.Path(sys.argv[1]); expected=json.loads(sys.argv[2])
+def read(path,limit):
+ i=path.lstat()
+ if not i.st_mode&0o100000 or i.st_uid or i.st_gid or i.st_nlink!=1 or i.st_mode&0o077 or i.st_size>limit: raise SystemExit('TILO_CYCLE_STATUS_INVALID')
+ return path.read_bytes()
+try: value=json.loads(read(job/'status.json',65536)); source=read(job/'job.py',1024*1024); request=read(job/'request.json',4*1024*1024)
+except BaseException: print('TILO_CYCLE_STATUS_INVALID'); raise SystemExit(2)
+if value.get('binding')!=expected or hashlib.sha256(source).hexdigest()!=expected.get('job_sha256'):
+ print('TILO_CYCLE_STATUS_INVALID'); raise SystemExit(2)
+process=value.get('process')
+if value.get('state')=='running':
+ try:
+  proc=pathlib.Path('/proc')/str(process['pid']); start=(proc/'stat').read_text().split()[21]; argv=(proc/'cmdline').read_bytes(); cgroup=(proc/'cgroup').read_bytes()
+ except (FileNotFoundError,IndexError): print('TILO_CYCLE_PROCESS_GONE'); raise SystemExit(3)
+ if (start!=process['start'] or hashlib.sha256(argv).hexdigest()!=process['argv_sha256'] or hashlib.sha256(cgroup).hexdigest()!=process['cgroup_sha256']):
+  print('TILO_CYCLE_PROCESS_CHANGED'); raise SystemExit(4)
+print(json.dumps(value,sort_keys=True))'''
+
+
+def cycle_worker_identity(context, vm):
+    pod=api_json(context,'-n',vm['namespace'],'get','pod',vm['pod'],'--request-timeout=15s')
+    node=api_json(context,'get','node',vm['node'],'--request-timeout=15s')
+    if binding(pod,node)!=vm:
+        raise ValueError('VM worker identity or specification changed')
+    containers=pod.get('status',{}).get('containerStatuses',[])
+    specs=pod.get('spec',{}).get('containers',[])
+    if len(containers)!=1 or len(specs)!=1 or containers[0].get('name')!='qemu' or specs[0].get('name')!='qemu':
+        raise ValueError('VM cycle requires one qemu container')
+    container_id=containers[0].get('containerID','').removeprefix('containerd://')
+    if not re.fullmatch(r'[0-9a-f]{32,128}',container_id) or containers[0].get('imageID')!=vm['image_id']:
+        raise ValueError('VM cycle container identity is not pinned')
+    return {'namespace':vm['namespace'],'pod':vm['pod'],'pod_uid':vm['pod_uid'],
+            'container':'qemu','container_id':container_id,'image':specs[0].get('image'),
+            'image_id':vm['image_id']}
+
+
+def validate_cycle_status(value, binding_value):
+    base={'schema','purpose','state','binding'}
+    if (not isinstance(value,dict) or value.get('schema')!=1
+            or value.get('purpose')!='tilo-supervised-vm-cycle-job'
+            or value.get('binding')!=binding_value
+            or value.get('state') not in {'launched','running','succeeded','failed'}):
+        raise ValueError('VM cycle status differs from its admitted request')
+    if value['state']=='launched':
+        if set(value)!=(base|{'launched_at'}) or type(value['launched_at']) is not int: raise ValueError('VM cycle launch status is invalid')
+        return
+    expected=base|{'process','returncode','log_bytes','log_truncated'}
+    if set(value)!=expected: raise ValueError('VM cycle status has unexpected fields')
+    process=value['process']
+    if (not isinstance(process,dict) or set(process)!={'pid','start','argv_sha256','cgroup_sha256','request_sha256'}
+            or type(process['pid']) is not int or process['pid']<=1
+            or not isinstance(process['start'],str) or not process['start'].isdigit()
+            or any(not isinstance(process[key],str) or not re.fullmatch(r'[0-9a-f]{64}',process[key]) for key in ('argv_sha256','cgroup_sha256','request_sha256'))
+            or type(value['returncode']) is not int
+            or type(value['log_bytes']) is not int or not 0<=value['log_bytes']<=256*1024
+            or type(value['log_truncated']) is not bool): raise ValueError('VM cycle process identity is invalid')
+
+
+def remote_cycle_status(context, vm, worker, binding_value, job_path):
+    try:
+        result=subprocess.run(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu','--','python3','-c',VM_CYCLE_STATUS,job_path,json.dumps(binding_value,sort_keys=True)),capture_output=True,text=True,timeout=60)
+    except (OSError,subprocess.TimeoutExpired) as error:
+        raise ControllerTransportError('VM cycle status poll lost transport') from error
+    marker=result.stdout.strip()
+    if result.returncode:
+        if marker=='TILO_CYCLE_PROCESS_GONE': raise ValueError('VM cycle process vanished')
+        if marker in ('TILO_CYCLE_PROCESS_CHANGED','TILO_CYCLE_STATUS_INVALID'): raise ValueError('VM cycle process identity changed')
+        transport=('unable to connect','connection refused','connection reset','context deadline',
+                   'i/o timeout','tls handshake timeout','timed out waiting','unexpected eof')
+        if any(row in result.stderr.lower() for row in transport):
+            raise ControllerTransportError('VM cycle status poll lost transport')
+        raise ValueError('VM cycle status command failed')
+    value=json.loads(result.stdout); validate_cycle_status(value,binding_value); return value
+
+
+def poll_cycle_job(context, vm, worker, binding_value, job_path, *, timeout=4*60*60, clock=time.monotonic, sleep=time.sleep):
+    deadline=clock()+timeout; last_transport=None; delay=10
+    while clock()<deadline:
+        try:
+            current=cycle_worker_identity(context,vm)
+            if current!=worker: raise ValueError('VM cycle worker container identity changed')
+            status=remote_cycle_status(context,vm,worker,binding_value,job_path)
+        except ControllerTransportError as error:
+            last_transport=error; sleep(delay); delay=min(60,delay*2); continue
+        delay=10
+        if status['state']=='succeeded': return status
+        if status['state']=='failed': raise ValueError('detached VM cycle failed')
+        if status['state']=='launched' and time.time()-status['launched_at']>60: raise ValueError('VM cycle launch did not establish a process')
+        sleep(10)
+    if last_transport is not None: raise ControllerTransportError('VM cycle polling timed out after transport loss') from last_transport
+    raise ValueError('detached VM cycle timed out')
+
+
+def validate_handoff_worker(value):
+    required={'pod','pod_uid','namespace','node','node_uid','spec','image_id'}
+    if (not isinstance(value,dict) or set(value)!=required
+            or any(not isinstance(value[key],str) or not value[key] for key in required-{'spec'})
+            or not isinstance(value['spec'],dict) or not digest_reference(value['image_id'])):
+        raise ValueError('VM handoff worker binding is invalid')
+
+
+def vm_handoff_document(operation, state, vm, identity, verifier=None):
+    if state not in {'vm-created','media-ready','verifier-release-intent','verifier-released'}:
+        raise ValueError('invalid VM handoff state')
+    validate_handoff_worker(vm); validate_raw_identity(identity)
+    value={'schema':1,'purpose':'tilo-supervised-vm-handoff','operation':operation,
+           'state':state,'vm':vm,'raw_media':identity}
+    if verifier is not None: validate_handoff_worker(verifier); value['verifier']=verifier
+    if state in {'verifier-release-intent','verifier-released'} and verifier is None:
+        raise ValueError('verifier release state lacks its worker binding')
+    return value
+
+
+def persist_vm_handoff(operation_dir, operation, state, vm, identity, verifier=None):
+    value=vm_handoff_document(operation,state,vm,identity,verifier)
+    write_private(Path(operation_dir)/'vm-handoff.json',
+                  (json.dumps(value,indent=2,sort_keys=True)+'\n').encode())
+    return value
+
+
+def load_vm_handoff(operation_dir, operation, state=None, expected_vm=None, expected_identity=None):
+    value=json.loads((Path(operation_dir)/'vm-handoff.json').read_text())
+    required={'schema','purpose','operation','state','vm','raw_media'}
+    if (set(value)-{'verifier'}!=required or value['schema']!=1
+            or value['purpose']!='tilo-supervised-vm-handoff' or value['operation']!=operation
+            or value['state'] not in {'vm-created','media-ready','verifier-release-intent','verifier-released'}):
+        raise ValueError('VM handoff receipt is invalid')
+    if state is not None and value['state']!=state: raise ValueError('VM handoff is at the wrong stage')
+    validate_handoff_worker(value['vm']); validate_raw_identity(value['raw_media'])
+    if expected_vm is not None and value['vm']!=expected_vm:
+        raise ValueError('VM handoff worker differs from the expected VM')
+    if expected_identity is not None and value['raw_media']!=expected_identity:
+        raise ValueError('VM handoff media differs from the expected identity')
+    if value['state'] in {'verifier-release-intent','verifier-released'}:
+        if 'verifier' not in value: raise ValueError('VM handoff lacks verifier release binding')
+        validate_handoff_worker(value['verifier'])
+    return value
+
+
+def adopt_vm_handoff(context, operation_dir, operation, identity):
+    value=load_vm_handoff(operation_dir,operation,expected_identity=identity)
+    vm=value['vm']; current=optional_same_worker(context,vm)
+    if current is None or current!=vm:
+        raise ValueError('VM handoff worker is no longer the exact live VM')
+    return value
+
+
+def detached_media_identity(context, vm, expected, operation, operation_dir=None):
+    worker=cycle_worker_identity(context,vm)
+    path='/work/verified/installer.raw'; output='/work/'+operation+'-media-identity.json'
+    script=r'''set -euo pipefail
+test "$(stat -c %s /work/verified/installer.raw)" = "$MEDIA_BYTES"
+python3 -c 'import hashlib,json,os; p="/work/verified/installer.raw"; h=hashlib.sha256(); f=open(p,"rb"); [h.update(c) for c in iter(lambda:f.read(8*1024*1024),b"")]; print(json.dumps({"size":os.stat(p).st_size,"sha256":h.hexdigest()}))' > "$MEDIA_IDENTITY.tmp"
+chmod 0400 "$MEDIA_IDENTITY.tmp"; mv -f -- "$MEDIA_IDENTITY.tmp" "$MEDIA_IDENTITY"
+test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$MEDIA_IDENTITY")" = "$MEDIA_SHA256"
+'''
+    environment={'MEDIA_BYTES':str(expected['size']),'MEDIA_SHA256':expected['sha256'],'MEDIA_IDENTITY':output}
+    python_sha=command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu','--',
+                                'sha256sum','/usr/bin/python3'),timeout=30).split()[0]
+    if not re.fullmatch(r'[0-9a-f]{64}',python_sha): raise ValueError('media identity helper is invalid')
+    binding_value={'schema':1,'purpose':'tilo-supervised-vm-cycle-job','operation':operation+'-media',
+      'cycle':operation+'-media-identity','vm':worker,'disk':expected,
+      'helper':{'path':'/usr/bin/python3','sha256':python_sha},
+      'script_sha256':hashlib.sha256(script.encode()).hexdigest(),
+      'environment_sha256':canonical_sha256(environment),
+      'args_sha256':canonical_sha256({'command':['bash','-ceu','tilo-cycle'],'environment':environment}),
+      'job_sha256':hashlib.sha256(VM_CYCLE_JOB.encode()).hexdigest()}
+    job_path='/work/'+operation+'-media-identity-job'
+    payload={'binding':binding_value,'binding_sha256':canonical_sha256(binding_value),
+             'environment':environment,'script':script}
+    launch=command(kubectl(context,'-n',vm['namespace'],'exec','-i',vm['pod'],'-c','qemu','--',
+      'python3','-c',VM_CYCLE_LAUNCH,base64.b64encode(VM_CYCLE_JOB.encode()).decode(),job_path),
+      json.dumps(payload),timeout=60)
+    validate_cycle_status(json.loads(launch),binding_value)
+    status=poll_cycle_job(context,vm,worker,binding_value,job_path)
+    result=json.loads(command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu','--',
+      'python3','-c','import json,stat,sys; p=sys.argv[1]; i=__import__("os").lstat(p); assert stat.S_ISREG(i.st_mode) and i.st_uid==0 and i.st_nlink==1 and i.st_size<=4096; print(open(p).read())',output),timeout=30))
+    if result!=expected: raise ValueError('detached VM media identity differs from the transferred media')
+    if operation_dir is not None:
+        write_private(Path(operation_dir)/'media-ready-receipt.json',
+          (json.dumps({'schema':1,'purpose':'tilo-supervised-media-ready','binding':binding_value,
+                       'status':status,'identity':result},indent=2,sort_keys=True)+'\n').encode())
+    return result
+
+
+def convert_and_cycle(context, vm, identity, acceptance_id, operation_dir=None):
     fixed = '\n'.join(f'{digest}  {path}' for path,digest in FIRMWARE.items())
     script = r'''set -euo pipefail
 test "$(stat -c %s /work/verified/installer.raw)" = "$MEDIA_BYTES"
@@ -1643,15 +1930,40 @@ grep -Fxq PASS "$EVIDENCE/verdict.txt"
 grep -Fxq 0 "$EVIDENCE/exit-status.txt"
 '''
     cycle = acceptance_id + '-prepared-alongside'
-    env = ['env',f'MEDIA_BYTES={identity["size"]}',f'MEDIA_SHA256={identity["sha256"]}',
-      f'FIRMWARE_ROWS={fixed}','TILO_VM_ARCH=aarch64','TILO_ACCEL=kvm','TILO_DISTROBOX=',
-      'TILO_MEM=4096','TILO_SMP=2','TILO_SECBOOT=0','TILO_SECBOOT_KEYS=none',
-      'TILO_PROFILE_ENCODER=/usr/local/bin/tilo-imager-profile',
-      'TILO_PROFILE_ENCODER_SHA256='+PROFILE_ENCODER_SHA256,'TILO_VM_CYCLE='+cycle,
-      'TILO_RUN=/work/'+cycle+'-run','TILO_INSTALLER_CYCLE_STORAGE=/work/'+cycle+'-storage',
-      'TILO_INSTALLER_OUTPUT=/work/'+cycle+'-storage','EVIDENCE=/work/'+cycle+'-evidence']
-    quiet_command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu','--',*env,
-                          'bash','-ceu',script),timeout=14400)
+    environment={'MEDIA_BYTES':str(identity['size']),'MEDIA_SHA256':identity['sha256'],
+      'FIRMWARE_ROWS':fixed,'TILO_VM_ARCH':'aarch64','TILO_ACCEL':'kvm','TILO_DISTROBOX':'',
+      'TILO_MEM':'4096','TILO_SMP':'2','TILO_SECBOOT':'0','TILO_SECBOOT_KEYS':'none',
+      'TILO_PROFILE_ENCODER':'/usr/local/bin/tilo-imager-profile',
+      'TILO_PROFILE_ENCODER_SHA256':PROFILE_ENCODER_SHA256,'TILO_VM_CYCLE':cycle,
+      'TILO_RUN':'/work/'+cycle+'-run','TILO_INSTALLER_CYCLE_STORAGE':'/work/'+cycle+'-storage',
+      'TILO_INSTALLER_OUTPUT':'/work/'+cycle+'-storage','EVIDENCE':'/work/'+cycle+'-evidence'}
+    worker=cycle_worker_identity(context,vm)
+    helper_path='/work/source/os/dev/test-installer-cycle.sh'
+    helper_sha=command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu','--',
+                                'sha256sum',helper_path),timeout=30).split()[0]
+    if not re.fullmatch(r'[0-9a-f]{64}',helper_sha): raise ValueError('cycle helper identity is invalid')
+    binding_value={'schema':1,'purpose':'tilo-supervised-vm-cycle-job','operation':acceptance_id,
+      'cycle':cycle,'vm':worker,'disk':identity,'helper':{'path':helper_path,'sha256':helper_sha},
+      'script_sha256':hashlib.sha256(script.encode()).hexdigest(),
+      'environment_sha256':canonical_sha256(environment),
+      'args_sha256':canonical_sha256({'command':['bash','-ceu','tilo-cycle'],'environment':environment}),
+      'job_sha256':hashlib.sha256(VM_CYCLE_JOB.encode()).hexdigest()}
+    job_path='/work/'+cycle+'-job'
+    payload={'binding':binding_value,'binding_sha256':canonical_sha256(binding_value),
+             'environment':environment,'script':script}
+    launch=command(kubectl(context,'-n',vm['namespace'],'exec','-i',vm['pod'],'-c','qemu','--',
+      'python3','-c',VM_CYCLE_LAUNCH,base64.b64encode(VM_CYCLE_JOB.encode()).decode(),job_path),
+      json.dumps(payload),timeout=60)
+    launched=json.loads(launch); validate_cycle_status(launched,binding_value)
+    if operation_dir is not None:
+        write_private(Path(operation_dir)/'vm-cycle-binding.json',
+          (json.dumps({'schema':1,'purpose':'tilo-supervised-vm-cycle-binding',
+                       'binding':binding_value,'job_path':job_path,'cycle':cycle},indent=2,sort_keys=True)+'\n').encode())
+    status=poll_cycle_job(context,vm,worker,binding_value,job_path)
+    if operation_dir is not None:
+        write_private(Path(operation_dir)/'vm-cycle-receipt.json',
+          (json.dumps({'schema':1,'purpose':'tilo-supervised-vm-cycle-receipt',
+                       'binding':binding_value,'status':status},indent=2,sort_keys=True)+'\n').encode())
     return cycle
 
 
@@ -1678,7 +1990,20 @@ def cycle_evidence_paths(cycle):
 
 def acceptance_evidence(context, vm, cycle):
     paths = cycle_evidence_paths(cycle)
-    script = "import json,pathlib,sys;p=json.loads(sys.argv[1]);print(json.dumps({k:pathlib.Path(v).read_text() for k,v in p.items()},sort_keys=True))"
+    script = r'''import json,os,pathlib,stat,sys
+p=json.loads(sys.argv[1]); total=0; result={}
+for key,path in p.items():
+ i=os.lstat(path)
+ if not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1 or i.st_mode&0o077 or i.st_size>256*1024 or total+i.st_size>4*1024*1024: raise SystemExit(2)
+ fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  o=os.fstat(fd)
+  if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size): raise SystemExit(2)
+  data=os.read(fd,256*1024+1)
+  if len(data)!=i.st_size: raise SystemExit(2)
+ finally: os.close(fd)
+ result[key]=data.decode(); total+=len(data)
+print(json.dumps(result,sort_keys=True))'''
     evidence = json.loads(command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu',
       '--','python3','-c',script,json.dumps(paths)),timeout=60))
     if evidence.get('verdict') != 'PASS\n' or evidence.get('exit_status') != '0\n':
@@ -2156,44 +2481,73 @@ def main():
             auth_bytes=None
         checkpoint=establish_creator_checkpoint(
           args,disk,disk_node,creation,identity,expires_at)
-    # Only now provision the verifier. It has a distinct new Kata sandbox and
-    # never coexisted with the privileged image execution.
-    with timer.stage('verifier_provision_transfer'):
-        verifier=handoff_creator_to_verifier(root,args,nodes,checkpoint,disk_node,vm_node,
-          disk,creation,identity,helpers,public)
-    # One authenticated exec installs its cleanup trap before reading the
-    # credential stream, then removes the file on success, error or disconnect.
-    with timer.stage('verification'):
-        auth_bytes=registry_auth(args)
-        try:
-            verification=verify_disk(args.context,verifier,values,auth_bytes,args.acceptance_id)
-        finally:
-            del auth_bytes
-        parsed=json.loads(verification)
-        if (parsed.get('purpose') != 'tilo-installed-boot-and-root-verification'
-                or not parsed.get('checks') or not all(parsed['checks'].values())):
-            raise ValueError('independent installed-disk verification did not pass')
-        write_private(args.operation_dir/'installed-verification.json',(json.dumps(parsed,indent=2,sort_keys=True)+'\n').encode())
-        finalized=verify_finalized_source(args.context,verifier,values,json.loads(creation),args.acceptance_id)
-        finalized_bytes=(json.dumps(finalized,indent=2,sort_keys=True)+'\n').encode()
-        write_private(args.operation_dir/'finalized-verification.json',finalized_bytes)
-        finalization_verification_sha256=hashlib.sha256(finalized_bytes).hexdigest()
+    resumed_handoff=None
+    if args.resume and (args.operation_dir/'vm-handoff.json').is_file():
+        resumed_handoff=load_vm_handoff(args.operation_dir,args.acceptance_id,
+                                        expected_identity=identity)
+        vm=resumed_handoff['vm']; adopt_vm_handoff(args.context,args.operation_dir,
+                                                   args.acceptance_id,identity)
+        bindings=json.loads((args.operation_dir/'worker-bindings.json').read_text())
+        if bindings.get('vm')!=vm:
+            raise ValueError('VM handoff differs from worker bindings')
+        verifier=resumed_handoff.get('verifier',bindings.get('verifier'))
+        if verifier is None:
+            raise ValueError('VM handoff lacks verifier continuation binding')
+        finalization_path=args.operation_dir/'finalized-verification.json'
+        finalization_verification_sha256=hashlib.sha256(finalization_path.read_bytes()).hexdigest()
+        timer.skip('verifier_provision_transfer');timer.skip('verification')
+    else:
+        # Only now provision the verifier. It has a distinct new Kata sandbox and
+        # never coexisted with the privileged image execution.
+        with timer.stage('verifier_provision_transfer'):
+            verifier=handoff_creator_to_verifier(root,args,nodes,checkpoint,disk_node,vm_node,
+              disk,creation,identity,helpers,public)
+        # One authenticated exec installs its cleanup trap before reading the
+        # credential stream, then removes the file on success, error or disconnect.
+        with timer.stage('verification'):
+            auth_bytes=registry_auth(args)
+            try:
+                verification=verify_disk(args.context,verifier,values,auth_bytes,args.acceptance_id)
+            finally:
+                del auth_bytes
+            parsed=json.loads(verification)
+            if (parsed.get('purpose') != 'tilo-installed-boot-and-root-verification'
+                    or not parsed.get('checks') or not all(parsed['checks'].values())):
+                raise ValueError('independent installed-disk verification did not pass')
+            write_private(args.operation_dir/'installed-verification.json',(json.dumps(parsed,indent=2,sort_keys=True)+'\n').encode())
+            finalized=verify_finalized_source(args.context,verifier,values,json.loads(creation),args.acceptance_id)
+            finalized_bytes=(json.dumps(finalized,indent=2,sort_keys=True)+'\n').encode()
+            write_private(args.operation_dir/'finalized-verification.json',finalized_bytes)
+            finalization_verification_sha256=hashlib.sha256(finalized_bytes).hexdigest()
     with timer.stage('vm_transfer'):
-        vm=create_worker(args.context,vm_manifest('tilo-vm-'+args.acceptance_id,vm_node))
-        stream_tree(args.context,vm['namespace'],vm['pod'],'qemu','/work/source',helpers)
-        preflight_vm(args.context,vm)
-        write_private(args.operation_dir/'worker-bindings.json',
-                      (json.dumps({'creator':disk,'verifier':verifier,'vm':vm},indent=2,sort_keys=True)+'\n').encode())
-        require_same_worker(args.context,verifier);require_same_worker(args.context,vm)
-        sparse_transfer(args.context,verifier,vm,target_container='qemu',
-                        target_directory='/work/verified',target_name='installer.raw',
-                        operation=args.acceptance_id,identity=identity)
-        if raw_identity(args.context,vm,'qemu','/work/verified/installer.raw')!=identity:
-            raise ValueError('KVM worker received different verified raw media')
-        delete_worker(args.context,verifier)
+        if resumed_handoff is None:
+            vm=create_worker(args.context,vm_manifest('tilo-vm-'+args.acceptance_id,vm_node))
+            persist_vm_handoff(args.operation_dir,args.acceptance_id,'vm-created',vm,identity)
+            write_private(args.operation_dir/'worker-bindings.json',
+                          (json.dumps({'creator':disk,'verifier':verifier,'vm':vm},indent=2,sort_keys=True)+'\n').encode())
+            stream_tree(args.context,vm['namespace'],vm['pod'],'qemu','/work/source',helpers)
+            preflight_vm(args.context,vm)
+        elif resumed_handoff['state']=='vm-created':
+            stream_tree(args.context,vm['namespace'],vm['pod'],'qemu','/work/source',helpers)
+            preflight_vm(args.context,vm)
+        if resumed_handoff is None or resumed_handoff['state']=='vm-created':
+            require_same_worker(args.context,verifier);require_same_worker(args.context,vm)
+            sparse_transfer(args.context,verifier,vm,target_container='qemu',
+                            target_directory='/work/verified',target_name='installer.raw',
+                            operation=args.acceptance_id,identity=identity)
+            detached_media_identity(args.context,vm,identity,args.acceptance_id,args.operation_dir)
+            persist_vm_handoff(args.operation_dir,args.acceptance_id,'media-ready',vm,identity)
+            resumed_handoff=load_vm_handoff(args.operation_dir,args.acceptance_id,
+                                             expected_identity=identity)
+        if resumed_handoff['state'] in {'media-ready','verifier-release-intent'}:
+            persist_vm_handoff(args.operation_dir,args.acceptance_id,'verifier-release-intent',vm,identity,verifier)
+            delete_worker(args.context,verifier)
+            if optional_same_worker(args.context,verifier) is not None:
+                raise ValueError('verifier remained after its release')
+            persist_vm_handoff(args.operation_dir,args.acceptance_id,'verifier-released',vm,identity,verifier)
     with timer.stage('conversion_cycle'):
         require_same_worker(args.context,vm)
-        cycle=convert_and_cycle(args.context,vm,identity,args.acceptance_id)
+        cycle=convert_and_cycle(args.context,vm,identity,args.acceptance_id,args.operation_dir)
     with timer.stage('final_identity'):
         require_same_worker(args.context,vm)
         cycle_evidence=acceptance_evidence(args.context,vm,cycle)
