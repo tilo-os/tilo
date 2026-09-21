@@ -124,7 +124,7 @@ print(json.dumps({'container':c,'sandbox':s,'pid':int(d.name),'start':(d/'stat')
 '''
 
 GUEST_JOB = r'''
-import base64,contextlib,hashlib,importlib.util,io,json,os,pathlib,stat,sys,tempfile,types,zipfile
+import base64,contextlib,hashlib,importlib.util,io,json,os,pathlib,stat,sys,tempfile,traceback,types,zipfile
 job=pathlib.Path(sys.argv[1]); auth=None if sys.argv[2]=='-' else pathlib.Path(sys.argv[2]); payload_path=job/'request.json'; status_path=job/'status.json'; log_path=job/'log.txt'
 MAX_LOG=256*1024
 class BoundedLog:
@@ -194,8 +194,13 @@ try:
  if auth is not None:
   auth.unlink();auth.parent.rmdir();auth=None
  state(binding,'succeeded',process,creation_sha256=hashlib.sha256(encoded).hexdigest(),log_bytes=log.count,log_truncated=log.count>=MAX_LOG)
-except BaseException:
+except BaseException as error:
  try:
+  # Capture only exception class and code locations.  Exception values and
+  # locals can contain registry credentials, so they are never recorded.
+  log.write('creator job failed: '+type(error).__name__+'\n')
+  for frame in traceback.extract_tb(error.__traceback__):
+   log.write('  '+pathlib.Path(frame.filename).name+':'+str(frame.lineno)+' '+frame.name+'\n')
   if payload is not None: state(payload['binding'],'failed',process,log_bytes=log.count,log_truncated=log.count>=MAX_LOG)
  except BaseException:pass
 finally:
@@ -225,7 +230,17 @@ def regular(path,limit):
  i=path.lstat()
  if not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1 or i.st_mode&0o077 or i.st_size>limit:raise ValueError('creator job state is invalid')
  return json.loads(path.read_bytes())
+def clear(path):
+ i=path.lstat()
+ if stat.S_ISDIR(i.st_mode):
+  if path.is_symlink() or i.st_uid or i.st_gid or i.st_mode&0o077:raise ValueError('failed creator output is invalid')
+  for child in path.iterdir():clear(child)
+  path.rmdir();return
+ if not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1 or i.st_mode&0o077:raise ValueError('failed creator output is invalid')
+ path.unlink()
 binding=payload.get('binding'); expected=payload.get('binding_sha256')
+retry_failed=payload.pop('retry_failed',False)
+if type(retry_failed) is not bool:raise ValueError('creator retry flag is invalid')
 if (not isinstance(binding,dict) or not isinstance(expected,str) or hashlib.sha256(json.dumps(binding,sort_keys=True,separators=(',',':')).encode()).hexdigest()!=expected):raise ValueError('creator job binding is invalid')
 if (not work.is_dir() or work.is_symlink() or work.stat().st_uid or work.stat().st_gid
     or work.stat().st_dev==pathlib.Path('/').stat().st_dev):raise ValueError('creator work directory is invalid')
@@ -241,7 +256,14 @@ if job.exists() or job.is_symlink():
  if job.is_symlink() or not job.is_dir() or job.stat().st_uid or job.stat().st_gid or stat.S_IMODE(job.stat().st_mode)!=0o700:raise ValueError('creator job directory is invalid')
  status=regular(job/'status.json',65536)
  if status.get('binding')!=binding or status.get('purpose')!='tilo-supervised-creator-job' or status.get('schema')!=1:raise ValueError('creator job binding differs')
- print(json.dumps(status,sort_keys=True));sys.exit(0)
+ if retry_failed and status.get('state')=='failed':
+  allowed={'.creator-job','disk.raw','bootc-install.failure.json','.creation.json.tmp'}
+  names={path.name for path in output.iterdir()}
+  if not names <= allowed:raise ValueError('failed creator output contains an unaccepted result')
+  for path in list(output.iterdir()):clear(path)
+  output.rmdir();output.mkdir(mode=0o700)
+ else:
+  print(json.dumps(status,sort_keys=True));sys.exit(0)
 if any(output.iterdir()):raise ValueError('creator output is not empty')
 credential=None; started=False
 try:
@@ -459,6 +481,28 @@ try:
 finally:os.close(fd)'''
 
 
+REMOTE_CREATOR_FAILURE_LOG = r'''import base64,json,os,pathlib,stat,sys
+job=pathlib.Path('/work/disk-output/.creator-job');expected=json.loads(sys.argv[1])
+def read(path,limit):
+ i=path.lstat()
+ if not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1 or i.st_mode&0o077 or i.st_size>limit:raise SystemExit(2)
+ fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+ try:
+  o=os.fstat(fd)
+  if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size):raise SystemExit(2)
+  value=os.read(fd,limit+1)
+  if len(value)!=i.st_size:raise SystemExit(2)
+  return value
+ finally:os.close(fd)
+status=json.loads(read(job/'status.json',65536))
+if status.get('schema')!=1 or status.get('purpose')!='tilo-supervised-creator-job' or status.get('state')!='failed' or status.get('binding')!=expected:raise SystemExit(2)
+sys.stdout.write(base64.b64encode(read(job/'log.txt',256*1024)).decode())'''
+
+
+class CreatorJobFailed(ValueError):
+    """The exact detached job reached a recorded terminal failure."""
+
+
 def remote_creator_status(kubectl_base, namespace, pod, container, binding):
     try:
         result = subprocess.run(kubectl_base + ['-n', namespace, 'exec', pod, '-c', container,
@@ -497,7 +541,7 @@ def poll_creator_job(kubectl_base, namespace, pod, container, binding, *,
         if status['state'] == 'succeeded':
             return status
         if status['state'] == 'failed':
-            raise ValueError('detached creator job failed')
+            raise CreatorJobFailed('detached creator job failed')
         if status['state'] == 'launched' and wall_clock() - status['launched_at'] > 60:
             raise ValueError('detached creator launch did not establish a bound process')
         sleep(poll_interval)
@@ -528,6 +572,19 @@ def remote_creator_receipt(kubectl_base, namespace, pod, container, status, bind
                != binding.get('helper_bundle_sha256')):
         raise ValueError('creator receipt does not bind the admitted detached job')
     return receipt
+
+
+def remote_creator_failure_log(kubectl_base, namespace, pod, container, binding):
+    output = checked(kubectl_base + ['-n', namespace, 'exec', pod, '-c', container,
+                                     '--', 'python3', '-c', REMOTE_CREATOR_FAILURE_LOG,
+                                     json.dumps(binding, sort_keys=True, separators=(',', ':'))])
+    try:
+        value = base64.b64decode(output.strip(), validate=True)
+    except ValueError as error:
+        raise ValueError('creator failure log is not bounded base64') from error
+    if len(value) > 256 * 1024:
+        raise ValueError('creator failure log exceeds its bound')
+    return value
 
 
 def persist_creator_job(path, binding, status):
@@ -768,6 +825,8 @@ def main():
                    help='full commit whose tracked os/dev Python helpers are executed')
     p.add_argument('--operation',
                    help='fresh DNS-safe operation binding for a detached creator job')
+    p.add_argument('--retry-failed-creator-job', action='store_true',
+                   help='clear only an exact failed detached job before retrying it')
     p.add_argument('--inspect-only', action='store_true')
     args = p.parse_args()
     k = ['kubectl', '--context', args.context]
@@ -795,6 +854,8 @@ def main():
         raise ValueError('pod changed during inspection')
     args.evidence.write_text(json.dumps({'observation':observation,'host':host},indent=2))
     if args.inspect_only:
+        if args.retry_failed_creator_job:
+            raise ValueError('failed creator retry requires disk creation')
         print(json.dumps({'inspected':True,'disk_created':False}));return
     if args.creation_receipt is None:
         raise ValueError('--creation-receipt is required for disk creation')
@@ -822,6 +883,7 @@ def main():
                'helpers':base64.b64encode(bundle).decode(),
                'helper_revision':args.helper_revision,
                'helper_bundle_sha256':bundle_sha256,
+               'retry_failed':args.retry_failed_creator_job,
                # This value is only on the launch stdin and the memory-backed
                # /tmp credential file.  GUEST_LAUNCH removes it before writing
                # the durable request in /work.
@@ -842,6 +904,11 @@ def main():
                                   pod['spec']['containers'][0]['name'], binding)
         output = remote_creator_receipt(k, args.namespace, args.pod,
                                         pod['spec']['containers'][0]['name'], status, binding).decode()
+    except CreatorJobFailed:
+        failure_log = remote_creator_failure_log(k, args.namespace, args.pod,
+                                                 pod['spec']['containers'][0]['name'], binding)
+        print('TILO_CREATOR_JOB_FAILURE_LOG '+base64.b64encode(failure_log).decode(), file=sys.stderr)
+        raise ValueError('detached creator job failed')
     except ValueError as error:
         if str(error) != 'detached creator process vanished':
             raise
