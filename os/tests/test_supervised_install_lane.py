@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import re
 import struct
@@ -174,6 +175,26 @@ class LaneAdmission(unittest.TestCase):
                 lane.creator_input_status('ctx',worker)
         with patch.object(lane,'command',return_value=json.dumps({'state':'missing'})):
             self.assertIsNone(lane.creator_input_status('ctx',worker))
+
+    @unittest.skipUnless(hasattr(os,'O_NOFOLLOW') and getattr(os,'geteuid',lambda:1)()==0,
+                         'remote receipt contract requires Linux root semantics')
+    def test_remote_input_status_accepts_nested_component_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            (root/'disk-output').mkdir()
+            for name in ('helpers','public-trust','installer-bootc-helper'):
+                (root/name/'nested').mkdir(parents=True)
+                (root/name/'nested'/'payload').write_bytes(b'x')
+            receipt={'schema':1,'purpose':'tilo-supervised-creator-inputs',
+                     'helpers':'a'*64,'public':'b'*64,'installer':'c'*64}
+            receipt_path=root/'.creator-inputs.json'
+            receipt_path.write_text(json.dumps(receipt)+'\n')
+            receipt_path.chmod(0o600)
+            script=lane.REMOTE_CREATOR_INPUT_STATUS.replace(
+                "pathlib.Path('/work')",f"pathlib.Path({str(root)!r})")
+            result=lane.subprocess.run([sys.executable,'-c',script],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads(result.stdout)['state'],'ready')
 
     def test_pending_input_delta_transfers_only_changed_component(self):
         inputs=(b'helpers-new',b'public-same',b'installer-same')
