@@ -282,7 +282,6 @@ fn retirement_confirms_immutable_selection_once_for_the_whole_plan() {
     assert!(reopened.basis.complete());
 }
 
-#[cfg(target_os = "macos")]
 #[test]
 fn selected_generation_batches_full_drive_flushes_before_publication() {
     let (_tmp, store) = setup();
@@ -325,6 +324,48 @@ fn selected_generation_batches_full_drive_flushes_before_publication() {
         3,
         "drive-wide flush count must depend on commit boundaries, not retained history size"
     );
+    let mut reopened = SelectedRead::new(&store).unwrap().unwrap();
+    while matches!(reopened.step().unwrap(), Step::More) {}
+    assert!(reopened.basis.complete());
+}
+
+#[test]
+fn selected_generation_defers_hard_link_durability_to_the_commit_barrier() {
+    let (_tmp, store) = setup();
+    let scratch = store.root.join("store-work-v1").join(format!(
+        "retain-{}",
+        hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let mut selector = Selection::new(&store, scratch, None).unwrap();
+    let before = retained::current(&store.root.join(DIRECTORY)).unwrap();
+    while !matches!(selector.phase, Phase::Commit) {
+        selector.step(WorkLimit::default()).unwrap();
+    }
+    assert!(selector.ordinal > 3, "exercise multiple staged hard links");
+    let barrier = crate::store::test_barrier::fail(&selector.staged, "sync-dir");
+    assert!(selector.step(WorkLimit::default()).is_err());
+    assert_eq!(
+        retained::current(&store.root.join(DIRECTORY)).unwrap(),
+        before
+    );
+    let mut pins = File::open(selector.staged.join("gc.manifest")).unwrap();
+    let mut retired = 0;
+    while let Some(meta) = read_meta(&mut pins).unwrap() {
+        assert!(store.root.join(meta.source).exists());
+        assert!(
+            selector
+                .staged
+                .join(format!("gc-{:016x}.delta", meta.pin))
+                .exists()
+        );
+        retired += 1;
+    }
+    assert!(
+        retired > 1,
+        "exercise multiple retirements after the staged barrier"
+    );
+    drop(barrier);
+    while matches!(selector.step(WorkLimit::default()).unwrap(), Step::More) {}
     let mut reopened = SelectedRead::new(&store).unwrap().unwrap();
     while matches!(reopened.step().unwrap(), Step::More) {}
     assert!(reopened.basis.complete());

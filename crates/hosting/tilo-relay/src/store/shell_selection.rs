@@ -283,8 +283,9 @@ impl Selection {
         let name = format!("{:016x}.delta", self.ordinal);
         bounded::increment(&mut self.ordinal)?;
         let path = self.staged.join(name);
+        // Every source belongs to an already durable retained generation. The
+        // Commit phase syncs this hard-link directory before switching CURRENT.
         fs::hard_link(self.store.root.join(&meta.source), &path)?;
-        self.sync_staged(&path)?;
         let mut selected = meta.clone();
         selected.source = path.strip_prefix(&self.store.root).unwrap().into();
         selected.key = vec![role.into()];
@@ -312,34 +313,6 @@ impl Selection {
         };
         if live {
             write_meta(&mut self.live_output, &selected)?
-        }
-        Ok(())
-    }
-    fn sync_staged(&mut self, path: &Path) -> Result<(), StoreError> {
-        let file = File::open(path)?;
-        #[cfg(target_os = "macos")]
-        {
-            use std::os::fd::AsRawFd;
-            // Rust's sync_all uses F_FULLFSYNC on macOS: a drive-wide flush.
-            // Stage every inode with fsync, then Phase::Commit's mandatory
-            // manifest sync_all flushes the complete batch before CURRENT can
-            // change. Hard links keep these files on the same filesystem.
-            // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html
-            loop {
-                // SAFETY: file owns this descriptor throughout the call.
-                if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
-                    break;
-                }
-                let error = std::io::Error::last_os_error();
-                if error.kind() != std::io::ErrorKind::Interrupted {
-                    return Err(error.into());
-                }
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            bounded::increment(&mut self.sorter.stats.staging_full_flushes)?;
-            file.sync_all()?;
         }
         Ok(())
     }
@@ -858,8 +831,9 @@ impl Selection {
                         meta.pin = self.ordinal;
                         bounded::increment(&mut self.ordinal)?;
                         let pin = self.staged.join(format!("gc-{:016x}.delta", meta.pin));
+                        // This is another link to an already durable retained
+                        // inode; the staged-directory barrier precedes CURRENT.
                         fs::hard_link(self.store.root.join(&meta.source), &pin)?;
-                        self.sync_staged(&pin)?;
                         write_meta(&mut self.gc_output, &meta)?;
                         return Ok(Step::More);
                     }
