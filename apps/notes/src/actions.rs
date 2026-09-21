@@ -1522,7 +1522,7 @@ fn page_preview_detail(doc: &AutoCommit, page: PageId) -> Option<String> {
     while !text.is_char_boundary(end) {
         end = end.saturating_sub(1);
     }
-    let mut detail = text[..end].to_string();
+    let mut detail = text.get(..end)?.to_string();
     if end < text.len() {
         while detail.len() + '…'.len_utf8() > ResourcePresentation::MAX_DETAIL_BYTES {
             detail.pop();
@@ -1968,6 +1968,7 @@ impl ResourceProvider for crate::app::NotesApp {
 mod tests {
     use super::*;
     use crate::model::Workspace;
+    use automerge::transaction::Transactable;
     use tilo_actions::{ActionInput, LocalTransport};
     use uuid::Uuid;
 
@@ -2479,7 +2480,6 @@ mod tests {
 
         // Sharing validation is confined to one immutable publication. A new
         // refresh must refuse malformed data rather than reuse a past snapshot.
-        use automerge::transaction::Transactable;
         doc.put(automerge::ROOT, "notes_schema_version", 999_u64)
             .unwrap();
         let invalid = page_resource(moved, &updated, &doc);

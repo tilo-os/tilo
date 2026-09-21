@@ -90,7 +90,7 @@ impl RetainedEditor {
     }
 
     fn rebuild_after_structure_change(&mut self) {
-        self.rebuilds += 1;
+        self.rebuilds = self.rebuilds.saturating_add(1);
         self.bindings.clear();
         self.nodes.clear();
         self.tree = TaffyTree::new();
@@ -184,13 +184,18 @@ impl RetainedEditor {
         let index = self.editor.focused_index().unwrap();
         let line = &mut self.editor.blocks[index].line;
         let rect = line.get_rect();
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the finite on-screen width must enter Taffy's f32 coordinate space"
+        )]
+        let width = rect.width() as f32;
         let natural = line.measure(
             Size {
-                width: Some(rect.width() as f32),
+                width: Some(width),
                 height: None,
             },
             Size {
-                width: taffy::AvailableSpace::Definite(rect.width() as f32),
+                width: taffy::AvailableSpace::Definite(width),
                 height: taffy::AvailableSpace::MaxContent,
             },
             &mut self.text,
@@ -202,7 +207,10 @@ impl RetainedEditor {
         );
         let caret = line.caret_rect(&self.theme, line.cursor_pos());
         assert!(caret.y0 >= rect.y0 && caret.y1 <= rect.y1 + 1.0);
-        if let Some(next) = self.editor.blocks.get(index + 1) {
+        if let Some(next) = index
+            .checked_add(1)
+            .and_then(|next| self.editor.blocks.get(next))
+        {
             assert!(
                 next.line.get_rect().y0 >= rect.y1,
                 "following block overlaps wrapped text"

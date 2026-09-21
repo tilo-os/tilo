@@ -678,6 +678,10 @@ pub fn serialize_inline(text: &InlineText) -> String {
 /// Parse a markdown string into a flat list of [`BlockSpec`]s.
 ///
 /// Empty input → a single empty paragraph.
+#[allow(
+    clippy::too_many_lines,
+    reason = "single-pass Markdown block parsing keeps lookahead and fence state local"
+)]
 pub fn parse(md: &str) -> Vec<BlockSpec> {
     let mut blocks = Vec::new();
     let mut lines = md.split('\n').peekable();

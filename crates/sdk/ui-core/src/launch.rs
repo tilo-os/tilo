@@ -2473,7 +2473,7 @@ mod prepared_launch_tests {
                     DefinitionDispatch::Native(mut app) => app.close_components(),
                     DefinitionDispatch::Rendered(mut driver)
                     | DefinitionDispatch::Audit(mut driver) => {
-                        close_component_capture(&mut driver).unwrap()
+                        close_component_capture(&mut driver).unwrap();
                     }
                     DefinitionDispatch::Headless(status) => assert_eq!(status, 0),
                 }

@@ -1,6 +1,6 @@
 //! Hermetic captures mounted through the same Notes definition and canonical
 //! owner as the live component. Scenarios use real semantic actions and keys.
-use std::{cell::RefCell, path::Path, rc::Rc};
+use std::{cell::RefCell, fmt::Write as _, path::Path, rc::Rc};
 use ui::application::{ApplicationHost, ComponentRunnerInputs, PreparedComponentInputs};
 use ui::headless::{FrameHarness, SemanticExpectation};
 use ui::launch::LaunchError;
@@ -59,7 +59,7 @@ fn fixture_body(scenario: Option<&str>) -> Option<String> {
                     })
                     .collect::<Vec<_>>()
                     .join(" | ");
-                source.push_str(&format!("| {cells} |\n"));
+                let _ = writeln!(source, "| {cells} |");
             }
             Some(source)
         }
@@ -135,6 +135,10 @@ pub fn prepare_fixture(
     prepare_fixture_owned(scenario, inputs).map(|(prepared, _)| prepared)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "constructs one hermetic fixture while retaining all lifetime-owned host resources"
+)]
 fn prepare_fixture_owned(
     scenario: Option<&str>,
     inputs: ComponentRunnerInputs,
@@ -157,8 +161,8 @@ fn prepare_fixture_owned(
         crate::shots::seed_sample_workspace(&source, scenario)
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         if scenario == Some("sidebar_scroll")
-            && let Some(workspace) = crate::storage::load_workspace(&source)
-                .map_err(|error| LaunchError::Operation(error.to_string()))?
+            && let Some(workspace) =
+                crate::storage::load_workspace(&source).map_err(LaunchError::Operation)?
         {
             for page in workspace
                 .pages()
@@ -170,8 +174,8 @@ fn prepare_fixture_owned(
             }
         }
         if let Some(body) = fixture_body(scenario) {
-            let workspace = crate::storage::load_workspace(&source)
-                .map_err(|error| LaunchError::Operation(error.to_string()))?;
+            let workspace =
+                crate::storage::load_workspace(&source).map_err(LaunchError::Operation)?;
             let selected = workspace
                 .and_then(|workspace| workspace.selected())
                 .ok_or_else(|| LaunchError::Operation("fixture selection missing".into()))?;
@@ -288,6 +292,16 @@ fn prepare_fixture_owned(
 }
 
 fn new_note(driver: &mut FrameHarness) -> Result<(), LaunchError> {
+    fn created(resources: &[tilo_actions::Resource]) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.kind == "notes.page" && resource.label == "Writing" {
+                Some(resource.id.as_str().to_owned())
+            } else {
+                created(&resource.children)
+            }
+        })
+    }
+
     let arguments = serde_json::json!({"value":"Writing"})
         .as_object()
         .cloned()
@@ -304,15 +318,6 @@ fn new_note(driver: &mut FrameHarness) -> Result<(), LaunchError> {
     driver.relayout();
     // Creating a resource is a document action; opening it is a separate local
     // view operation. Other windows keep their current selection.
-    fn created(resources: &[tilo_actions::Resource]) -> Option<String> {
-        resources.iter().find_map(|resource| {
-            if resource.kind == "notes.page" && resource.label == "Writing" {
-                Some(resource.id.as_str().to_owned())
-            } else {
-                created(&resource.children)
-            }
-        })
-    }
     let resource = created(&driver.resources()).ok_or_else(|| {
         LaunchError::Operation("created capture note missing from resources".into())
     })?;
@@ -502,9 +507,25 @@ fn move_pointer(driver: &mut FrameHarness, point: vello::kurbo::Point) {
 /// Drive the actual mounted component. No fixture-only widget setters.
 /// # Errors
 /// Refuses an unsupported or unreachable scenario.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive capture scenarios intentionally share one canonical mounted-driver dispatch"
+)]
 pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Result<(), LaunchError> {
     match scenario {
-        None | Some("first_note" | "rich_outline" | "adjacent_code_fences") => {}
+        None
+        | Some(
+            "first_note"
+            | "rich_outline"
+            | "adjacent_code_fences"
+            | "quote"
+            | "mixed_outline"
+            | "transclusion"
+            | "external_link"
+            | "table"
+            | "table_large"
+            | "status",
+        ) => {}
         Some("drawer") => {
             let rect = semantic_target_rect(driver, |target| target == "notes.drawer")
                 .ok_or_else(|| LaunchError::Operation("narrow drawer toggle missing".into()))?;
@@ -689,10 +710,8 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 .expect(&SemanticExpectation::named("note_title").value("Launch checklist notes"))
                 .map_err(LaunchError::Operation)?;
         }
-        Some("quote") => {}
         Some("recipes") => open_note(driver, "Recipes")?,
         Some("formula") => open_note(driver, "Formula notebook")?,
-        Some("mixed_outline" | "transclusion" | "external_link" | "table" | "table_large") => {}
         Some("table_cell_edit") => {
             driver.relayout();
             let target = semantic_target(driver, |name| {
@@ -822,7 +841,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             let alice = UserId("alice".into());
             let bob = UserId("bob".into());
             presence.set_display_name(alice.clone(), "Alice");
-            presence.set_display_name(bob.clone(), "Bob");
+            presence.set_display_name(bob, "Bob");
             let block = PresenceKey::Widget {
                 path: vec![
                     PathSegment::Field("notes_block".into()),
@@ -855,7 +874,6 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             presence.upsert_remote_cursor("bob".into(), [1500.0, 380.0], Some("Bob"));
             driver.set_presence_context(presence);
         }
-        Some("status") => {}
         Some("saving" | "save_error") => {
             let first = visible_block_rects(driver)
                 .into_iter()
@@ -974,6 +992,10 @@ fn semantic_observed(
 
 // Preserve the assertions from the original scenario driver, now observing
 // canonical authored blocks and the mounted runner's actual semantic bounds.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive capture assertions stay adjacent to their canonical authored scenarios"
+)]
 fn validate_capture(
     driver: &mut FrameHarness,
     records: &ui::record::RecordStore,
@@ -992,15 +1014,13 @@ fn validate_capture(
                 };
             }
             let title = match scenario {
-                None | Some("rich_outline" | "adjacent_code_fences" | "quote" | "title_edit") => {
-                    "Launch checklist"
-                }
-                Some("recipes") => "Recipes",
-                Some("formula") => "Formula notebook",
-                Some("rename_commit") => "Launch checklist v2",
-                Some("import_success") => "Project brief",
-                Some(
-                    "mixed_outline"
+                None
+                | Some(
+                    "rich_outline"
+                    | "adjacent_code_fences"
+                    | "quote"
+                    | "title_edit"
+                    | "mixed_outline"
                     | "transclusion"
                     | "external_link"
                     | "table"
@@ -1027,6 +1047,10 @@ fn validate_capture(
                     | "saving"
                     | "save_error",
                 ) => "Launch checklist",
+                Some("recipes") => "Recipes",
+                Some("formula") => "Formula notebook",
+                Some("rename_commit") => "Launch checklist v2",
+                Some("import_success") => "Project brief",
                 _ => "Writing",
             };
             let page = workspace
@@ -1039,7 +1063,7 @@ fn validate_capture(
                 doc,
                 page.id,
                 title,
-                crate::doc::NotesDoc::page_blocks_list(doc, page.id)
+                &crate::doc::NotesDoc::page_blocks_list(doc, page.id)
                     .ok_or("capture blocks missing")?,
             )?;
             Ok(Some(panel))
@@ -1067,7 +1091,7 @@ fn validate_capture(
     let code = |block: &Block| matches!(&block.kind, BlockKind::CodeBlock { lang: Some(lang) } if lang == "python");
     let observed = match scenario {
         Some("typed_lists") => {
-            matches!(blocks, [a,b,c,d,e] if matches!(a.kind, BlockKind::Bullet{..}) && matches!(b.kind, BlockKind::Bullet{..}) && matches!(c.kind, BlockKind::Numbered{..}) && matches!(d.kind, BlockKind::Numbered{..}) && matches!(e.kind, BlockKind::Checklist{done:false,..}) && e.text() == "Follow up tomorrow")
+            matches!(blocks, [first,second,third,fourth,fifth] if matches!(first.kind, BlockKind::Bullet{..}) && matches!(second.kind, BlockKind::Bullet{..}) && matches!(third.kind, BlockKind::Numbered{..}) && matches!(fourth.kind, BlockKind::Numbered{..}) && matches!(fifth.kind, BlockKind::Checklist{done:false,..}) && fifth.text() == "Follow up tomorrow")
         }
         Some("fenced_code_opening") => matches!(blocks, [a] if code(a) && a.text().is_empty()),
         Some("fenced_code") => {
@@ -1089,14 +1113,16 @@ fn validate_capture(
                 let group = blocks.iter().filter(|block| code(block)).collect::<Vec<_>>();
                 blocks.len() == 4
                     && group.len() == 3
-                    && group.windows(2).all(|pair| pair[0].same_code_group(pair[1]))
+                    && group.windows(2).all(|pair| {
+                        pair.first().zip(pair.get(1)).is_some_and(|(left, right)| left.same_code_group(right))
+                    })
                     && blocks.iter().any(|block| {
                         matches!(block.kind, BlockKind::Paragraph)
                             && block.text() == "Back to writing, without touching the mouse."
                     })
             } else {
                 blocks.len() == expected
-                    && blocks.iter().take(3).map(|block| block.text()).eq([
+                    && blocks.iter().take(3).map(Block::text).eq([
                         "if ready:",
                         "    print('Ready')",
                         "    print('Still code')",
@@ -1159,7 +1185,7 @@ fn validate_capture(
                 });
             texts && separate && heights && click_landed
         }
-        Some("slash") => slash_menu_is_expanded(driver),
+        Some("slash" | "block_type_menu") => slash_menu_is_expanded(driver),
         Some("slash_applied") => {
             matches!(blocks, [block] if matches!(block.kind, BlockKind::Heading(1)) && block.text() == "Overview")
         }
@@ -1219,7 +1245,6 @@ fn validate_capture(
         Some("menu" | "note_menu") => semantic_observed(driver, |node| {
             node.role == ui::a11y::Role::Menu && !node.state.hidden
         }),
-        Some("block_type_menu") => slash_menu_is_expanded(driver),
         Some("sidebar_hover") => semantic_observed(driver, |node| {
             node.action_target
                 .as_deref()

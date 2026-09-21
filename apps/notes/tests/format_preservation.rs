@@ -3,6 +3,10 @@ use notes::{actions, doc::NotesDoc, markdown};
 use ui::widget::{BlockEditor, BlockKind};
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "geometry regression test compares wrapping, marks, carets, and measurement in one fixture"
+)]
 fn wrapped_marks_share_shaped_geometry_with_carets_and_measurement() {
     use taffy::{AvailableSpace, Size};
     use ui::widget::{

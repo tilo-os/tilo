@@ -2901,6 +2901,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the authenticated directory traversal scenario is clearest as one test"
+    )]
     fn resource_only_directory_row_enters_an_authenticated_child_scope() {
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
         let provider = LiveAppActionsProvider::new(broker.clone());

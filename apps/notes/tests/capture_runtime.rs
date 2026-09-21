@@ -220,6 +220,10 @@ fn text_node(driver: &ui::headless::Driver, target: &str) -> ui::a11y::AccessNod
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "regression checks both text scales, source preservation, geometry, and rendering together"
+)]
 fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_sizes() {
     use notes::doc::NotesDoc;
     let source = "message = \"Long Python strings remain completely readable inside a narrow note without adding any source line breaks.\"";
@@ -238,7 +242,7 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
             .unwrap();
         let mut live = driver(&f, 225, &checkout);
         live.set_theme(
-            if scale == 1.0 {
+            if (scale - 1.0_f32).abs() < f32::EPSILON {
                 ui::Theme::dark()
             } else {
                 ui::Theme::light()
@@ -339,6 +343,10 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
 }
 
 #[test]
+#[allow(
+    clippy::items_after_statements,
+    reason = "inspection predicates are local to the profiling assertion that consumes them"
+)]
 fn canonical_typing_records_real_frame_cost_and_visible_content() {
     let prepared =
         notes::capture::prepare_fixture(Some("fenced_code_opening"), runner_inputs()).unwrap();
@@ -380,6 +388,10 @@ fn canonical_typing_records_real_frame_cost_and_visible_content() {
 }
 
 #[test]
+#[allow(
+    clippy::unicode_not_nfc,
+    reason = "test deliberately includes a decomposed accent to exercise grapheme selection"
+)]
 fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_path() {
     use notes::doc::NotesDoc;
     let f = LegacyFixture::rich();
