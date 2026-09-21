@@ -220,8 +220,12 @@ return async function connectPeer(options={}){
           clock:recoveryClock,
           context:()=>{if(closed||closing||!health.transport.authenticated)throw actionError('transport-disconnected','discovery','Action transport disconnected',true);return JSON.parse(actionRuntime(()=>runtime.peer_action_context(id),'discovery'));},
           load:async()=>{const rows=await storage.hydrate();const saved=rows.find(row=>{const storedKey=JSON.parse(row.key);return storedKey.type==='privateActions'&&storedKey.workspace===namespace.room;});if(saved)actionRevision=BigInt(saved.revision);return saved?JSON.parse(new TextDecoder().decode(saved.bytes)):undefined;},
-          commit:(value,control)=>{
+          commit:(value,control,options)=>{
             const write={key,revision:String(++actionRevision),bytes:new TextEncoder().encode(JSON.stringify(value)),actor:null};
+            // A terminal broker observation belongs to an already durable intent.
+            // Post it to the same worker FIFO so it follows the transaction already
+            // in flight without waiting for every later peer batch in that drain.
+            if(options?.kind==='terminal-observation'){control?.check();return storage.commit([write]);}
             const task=flush.catch(()=>{}).then(()=>{control?.check();return storage.commit([write]);});flush=task;return task;
           },
           request:(message,control)=>{

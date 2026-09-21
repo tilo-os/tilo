@@ -9,7 +9,31 @@ function fixture(){let bytes,deny=false;const calls=[];const f={calls,context:{.
 test('commit precedes send; failed commit sends nothing; full UUID and exact intent survive restart',async()=>{const f=fixture(),c=await f.open();f.deny=true;await assert.rejects(c.invoke({...route,invocation:id,argument:{secret:1}}),/quota/);assert.equal(f.calls.filter(m=>m.type==='invoke_bound').length,0);f.deny=false;await c.invoke({...route,invocation:id,argument:{secret:1}});assert.equal(f.calls.find(m=>m.type==='invoke_bound').invocation,id);assert.deepEqual(f.bytes.entries[0].binding,context);const restarted=await f.open();await restarted.status(id);assert.equal(f.calls.filter(m=>m.type==='invoke_bound').length,1);await assert.rejects(restarted.invoke({...route,invocation:id,argument:{secret:2}}),/intent/);});
 test('unknown observation is unknown; cancellation acknowledgement is not completion',async()=>{const f=fixture(),c=await f.open();let row=await c.invoke({...route,invocation:id});assert.equal(row.state,'unknown');row=await c.cancel(id);assert.equal(row.state,'unknown');assert.equal(row.cancellationRequested,true);assert.equal(row.terminal,false);});
 test('host or sender change refuses recovery to another owner',async()=>{const f=fixture(),c=await f.open();await c.invoke({...route,invocation:id});f.host='dddddddd-dddd-4ddd-8ddd-dddddddddddd';await assert.rejects(c.status(id),/host/);f.host=host;f.context.sender='other';await assert.rejects(c.status(id),/identity/);assert.equal(f.calls.filter(m=>m.type==='status').length,0);});
-test('terminal is visible only after observation commit; failed persistence retains uncertainty',async()=>{const f=fixture(),c=await f.open();await c.invoke({...route,invocation:id});f.response={type:'observation',host,invocation:id,update:{state:'succeeded',invocation:id,output:{value:null,resources:[]}},uncertain:false,cancellation_requested:false};f.deny=true;await assert.rejects(c.status(id),/quota/);assert.equal(c.getSnapshot().entries[0].terminal,false);f.deny=false;assert.equal((await c.status(id)).terminal,true);});
+test('terminal is visible only after observation commit; failed persistence retains uncertainty',async()=>{const f=fixture(),c=await f.open();await c.invoke({...route,invocation:id});f.response={type:'observation',host,invocation:id,update:{state:'succeeded',invocation:id,output:{value:null,resources:[]}},uncertain:false,cancellation_requested:false};f.deny=true;await assert.rejects(c.status(id),/quota/);assert.equal(c.getSnapshot().entries[0].terminal,false);assert.equal(f.calls.filter(message=>message.type==='invoke_bound').length,1);f.deny=false;assert.equal((await c.status(id)).terminal,true);assert.equal(f.calls.filter(message=>message.type==='invoke_bound').length,1,'terminal persistence retry observes status without resubmitting the effect');});
+test('only a terminal observation of a durable invocation requests transaction-boundary priority',async()=>{
+ const commits=[];let disk;
+ const c=await createActionClient({context:()=>context,load:async()=>disk,commit:async(value,_control,options)=>{commits.push(options?.kind??'ordinary');disk=structuredClone(value);},request:async message=>{
+  if(message.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue};
+  return{type:'observation',host,invocation:id,update:{state:message.type==='invoke_bound'?'accepted':'succeeded',invocation:id},uncertain:false,cancellation_requested:false};
+ }});
+ assert.equal((await c.invoke({...route,invocation:id})).terminal,false);
+ assert.deepEqual(commits,['ordinary','ordinary'],'durable intent and nonterminal response retain the ordinary barrier');
+ assert.equal((await c.status(id)).terminal,true);
+ assert.deepEqual(commits,['ordinary','ordinary','terminal-observation']);
+ await c.close();
+});
+test('caller cancellation after an authenticated terminal response does not discard its durable observation',async()=>{
+ const abort=new AbortController();let disk;
+ const c=await createActionClient({context:()=>context,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async message=>{
+  if(message.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue};
+  if(message.type==='status'){abort.abort();return{type:'observation',host,invocation:id,update:{state:'succeeded',invocation:id},uncertain:false,cancellation_requested:false};}
+  return{type:'observation',host,invocation:id,update:{state:'accepted',invocation:id},uncertain:false,cancellation_requested:false};
+ }});
+ await c.invoke({...route,invocation:id});
+ await assert.rejects(c.status(id,{signal:abort.signal}),/cancel|abort/i);
+ await drain();assert.equal(disk.entries[0].terminal,true);
+ await c.close();
+});
 test('stale route and undeclared confirmation refuse before admission',async()=>{const f=fixture(),c=await f.open();await assert.rejects(c.invoke({...route,invocation:id,record_id:'tab:2'}),/catalogue/);await assert.rejects(c.invoke({...route,invocation:id,confirmation:{kind:'confirm'}}),/confirmation/);assert.equal(f.bytes,undefined);});
 test('private response invocation and host must match',async()=>{const f=fixture(),c=await f.open();f.response={type:'observation',host,invocation:'ffffffff-ffff-4fff-8fff-ffffffffffff',update:null,uncertain:false,cancellation_requested:false};await assert.rejects(c.invoke({...route,invocation:id}),/correlation/);assert.equal(c.getSnapshot().entries[0].state,'unknown');});
 test('duplicate delivery cannot regress durable terminal',async()=>{const f=fixture(),c=await f.open();await c.invoke({...route,invocation:id});f.response={type:'observation',host,invocation:id,update:{state:'succeeded',invocation:id,output:{resources:[]}},uncertain:false,cancellation_requested:false};await c.status(id);f.response={type:'observation',host,invocation:id,update:{state:'accepted',invocation:id},uncertain:false,cancellation_requested:false};assert.equal((await c.status(id)).state,'succeeded');});
@@ -32,9 +56,9 @@ test('a retained palette control cannot rebind to a replacement certified host',
 
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
 const drain=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
-test('empty and terminal recovery performs no catalogue work',async()=>{
+test('empty and terminal restart recovery performs no catalogue work or effect resubmission',async()=>{
  const f=fixture(),c=await f.open();await c.recover();assert.equal(f.calls.length,0);
- await c.invoke({...route,invocation:id});f.response={type:'observation',host,invocation:id,update:{state:'succeeded',invocation:id},uncertain:false};await c.status(id);f.calls.length=0;await c.recover();assert.equal(f.calls.length,0);
+ await c.invoke({...route,invocation:id});f.response={type:'observation',host,invocation:id,update:{state:'succeeded',invocation:id},uncertain:false};await c.status(id);await c.close();f.calls.length=0;const restarted=await f.open();await restarted.recover();assert.equal(f.calls.length,0);assert.equal(restarted.getSnapshot().entries[0].terminal,true);await restarted.close();
 });
 test('abort survives the serial queue without durable admission',async()=>{
  const hold=deferred(),sent=[];let saved;

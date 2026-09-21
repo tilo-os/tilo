@@ -51,7 +51,7 @@ export async function createActionClient({context,load,commit,request,clock={}})
     serial=task.finally(()=>{pending--;control.dispose();});serial.catch(()=>{});
     return control.wait(task);
   }
-  async function save(next,control){if(equal(next,disk))return;if(encoder.encode(JSON.stringify(next)).length>MAX_BYTES)throw Error('Action outbox capacity exceeded');try{control?.check();await commit(copy(next),control);}catch(error){capabilityRevision++;capability={state:'unavailable',reason:'storage-failed'};notify();throw error;}disk=next;notify();}
+  async function save(next,control,options){if(equal(next,disk))return;if(encoder.encode(JSON.stringify(next)).length>MAX_BYTES)throw Error('Action outbox capacity exceeded');try{control?.check();await commit(copy(next),control,options);}catch(error){capabilityRevision++;capability={state:'unavailable',reason:'storage-failed'};notify();throw error;}disk=next;notify();}
   async function discover(control,scope,revision=scope?undefined:++capabilityRevision){
     const revoke=()=>{if(!scope&&revision===capabilityRevision)capabilityRevision++;};
     if(!scope){control.signal.addEventListener('abort',revoke,{once:true});if(control.signal.aborted)revoke();}
@@ -103,7 +103,7 @@ export async function createActionClient({context,load,commit,request,clock={}})
       else {item.state='unknown';item.reason=response.code??response.reason??'unexpected-response';}
     }
     // Never expose a new terminal result until the strict durable commit completes.
-    await save(next);return copy(item);
+    await save(next,undefined,item.terminal?{kind:'terminal-observation'}:undefined);return copy(item);
   }
   function intent(input,host){return {type:'invoke_bound',host,invocation:input.invocation,app_peer:String(input.app_peer),app_id:input.app_id,record_id:input.record_id,resource:input.resource,action:input.action,argument:input.argument??null,confirmation:input.confirmation??null,revision:input.revision??null};}
   function resolve(current,value){

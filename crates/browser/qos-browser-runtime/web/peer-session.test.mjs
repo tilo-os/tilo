@@ -645,6 +645,77 @@ test('a private-action write between two peer batches keeps its place in the per
  }finally{await storage.release();await peer.dispose();}
  assert.deepEqual(locks.held(),[]);});
 
+test('a terminal observation reaches the next transaction boundary during continuous peer persistence',async t=>{
+ const idb=fakeIndexedDB(),locks=fakeLocks(),workers=fakeWorkers({locks,indexedDB:idb});t.after(()=>workers.dispose());
+ const access=createStorageAccess({createWorker:workers.createWorker,inline:createInlineStorage({locks:locks.manager('page'),indexedDB:idb})});
+ const settle=async(rounds=40)=>{for(let i=0;i<rounds;i++)await new Promise(resolve=>setImmediate(resolve));};
+ const f=fixture({acquireStorage:access.acquireStorage}),responses=new Map();let sequence=0,revision=0,durable=0,storage,publications=0,terminal=false;
+ const host='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',invocation='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+ const route={app_peer:'7',app_id:'writer',record_id:'tab:1',resource:'document',action:'insert',revision:null};
+ const catalogue={version:1,surfaces:[{peer_id:'7',app_id:'writer',record_id:'tab:1',actions:[{resource:'document',action:'insert',contract:{confirmation:{mode:'none'}}}]}]};
+ f.runtime.peer_pending_batch_bytes=()=>revision>durable?{id:`1:${revision}`,writes:[{key:'{"type":"record"}',revision:String(revision),bytes:new Uint8Array([revision]),actor:null}],records:[]}:{id:'0',writes:[],records:[]};
+ f.runtime.acknowledge_peer_storage_batch=(_id,raw)=>{const value=JSON.parse(raw);assert.equal(value.epoch,storage.epoch);if(value.result.ok){durable=Number(value.batchId.split(':')[1]);if(durable<8)revision=durable+1;}};
+ f.runtime.peer_committed=()=>{if(!revision)return;publications++;assert.equal(durable,8,'publication follows the complete peer drain');};
+ f.runtime.peer_action_context=()=>JSON.stringify({room:'r',sender:'d',senderRoot:'root',target:'native',targetRoot:'root',certificate:'exact'});
+ f.runtime.peer_action_request=(_id,raw)=>{const message=JSON.parse(raw),request=String(++sequence);responses.set(request,message.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue}:{type:'observation',host,invocation,update:{state:message.type==='invoke_bound'?'accepted':'succeeded',invocation,output:{resources:[]}},uncertain:false,cancellation_requested:false});return request;};
+ f.runtime.peer_action_response=(_id,request)=>JSON.stringify(responses.get(request));f.runtime.peer_action_forget=(_id,request)=>responses.delete(request);
+ const peer=await f.connect();storage=await access.acquireStorage('p','d');await settle();
+ try{
+  await peer.actionsV1.invoke({...route,invocation});
+  peer.actionsV1.subscribe(snapshot=>{terminal=snapshot.entries.some(row=>row.invocation===invocation&&row.terminal);});
+  const before=idb.transactions().filter(tx=>tx.mode==='readwrite').length;
+  const gate=idb.gateNextCommit();revision=1;const draining=peer.retryPersistence();await gate.held;
+  const outcome=peer.actionsV1.status(invocation);await settle();assert.equal(terminal,false,'terminal is not exposed before its strict commit');
+  gate.release();await Promise.all([draining,outcome]);
+  const committed=idb.transactions().filter(tx=>tx.mode==='readwrite').slice(before).map(tx=>tx.keys.map(id=>JSON.parse(JSON.parse(id)[1]).type));
+  assert.deepEqual(committed,[['record'],['privateActions'],...Array.from({length:7},()=>['record'])]);
+  assert.equal(terminal,true);assert.equal(durable,8);assert.equal(publications,1);
+ }finally{await storage.release();await peer.dispose();}
+ assert.deepEqual(locks.held(),[]);
+});
+
+test('failed terminal storage keeps the durable nonterminal row and retries status without resubmitting the effect',async t=>{
+ const idb=fakeIndexedDB(),locks=fakeLocks(),workers=fakeWorkers({locks,indexedDB:idb});t.after(()=>workers.dispose());
+ const access=createStorageAccess({createWorker:workers.createWorker,inline:createInlineStorage({locks:locks.manager('page'),indexedDB:idb})});
+ const f=fixture({acquireStorage:access.acquireStorage}),responses=new Map(),requests=[];let sequence=0,terminalResponse=false;
+ const host='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',invocation='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+ const route={app_peer:'7',app_id:'writer',record_id:'tab:1',resource:'document',action:'insert',revision:null};
+ const catalogue={version:1,surfaces:[{peer_id:'7',app_id:'writer',record_id:'tab:1',actions:[{resource:'document',action:'insert',contract:{confirmation:{mode:'none'}}}]}]};
+ f.runtime.peer_action_context=()=>JSON.stringify({room:'r',sender:'d',senderRoot:'root',target:'native',targetRoot:'root',certificate:'exact'});
+ f.runtime.peer_action_request=(_id,raw)=>{const message=JSON.parse(raw),request=String(++sequence);requests.push(message.type);responses.set(request,message.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue}:{type:'observation',host,invocation,update:{state:terminalResponse?'succeeded':'accepted',invocation,output:{resources:[]}},uncertain:false,cancellation_requested:false});return request;};
+ f.runtime.peer_action_response=(_id,request)=>JSON.stringify(responses.get(request));f.runtime.peer_action_forget=(_id,request)=>responses.delete(request);
+ const peer=await f.connect();
+ try{
+  await peer.actionsV1.invoke({...route,invocation});terminalResponse=true;idb.failNextPut('QuotaExceededError');
+  await assert.rejects(peer.actionsV1.status(invocation),error=>error.name==='QuotaExceededError');
+  assert.equal(peer.actionsV1.getSnapshot().entries[0].terminal,false);
+  assert.equal((await peer.actionsV1.status(invocation)).terminal,true);
+  assert.equal(requests.filter(type=>type==='invoke_bound').length,1);
+  assert.equal(requests.filter(type=>type==='status').length,2);
+ }finally{await peer.dispose();}
+ assert.deepEqual(locks.held(),[]);
+});
+
+test('session close waits for a terminal transaction already started at the worker boundary',async t=>{
+ const idb=fakeIndexedDB(),locks=fakeLocks(),workers=fakeWorkers({locks,indexedDB:idb});t.after(()=>workers.dispose());
+ const access=createStorageAccess({createWorker:workers.createWorker,inline:createInlineStorage({locks:locks.manager('page'),indexedDB:idb})});
+ const settle=async(rounds=40)=>{for(let i=0;i<rounds;i++)await new Promise(resolve=>setImmediate(resolve));};
+ const f=fixture({acquireStorage:access.acquireStorage}),responses=new Map();let sequence=0,terminalResponse=false;
+ const host='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',invocation='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+ const route={app_peer:'7',app_id:'writer',record_id:'tab:1',resource:'document',action:'insert',revision:null};
+ const catalogue={version:1,surfaces:[{peer_id:'7',app_id:'writer',record_id:'tab:1',actions:[{resource:'document',action:'insert',contract:{confirmation:{mode:'none'}}}]}]};
+ f.runtime.peer_action_context=()=>JSON.stringify({room:'r',sender:'d',senderRoot:'root',target:'native',targetRoot:'root',certificate:'exact'});
+ f.runtime.peer_action_request=(_id,raw)=>{const message=JSON.parse(raw),request=String(++sequence);responses.set(request,message.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue}:{type:'observation',host,invocation,update:{state:terminalResponse?'succeeded':'accepted',invocation,output:{resources:[]}},uncertain:false,cancellation_requested:false});return request;};
+ f.runtime.peer_action_response=(_id,request)=>JSON.stringify(responses.get(request));f.runtime.peer_action_forget=(_id,request)=>responses.delete(request);
+ const peer=await f.connect();await peer.actionsV1.invoke({...route,invocation});terminalResponse=true;
+ const gate=idb.gateNextCommit(),outcome=peer.actionsV1.status(invocation),settlement=Promise.allSettled([outcome]);await gate.held;
+ let closed=false;const disposal=peer.dispose().then(()=>{closed=true;});await settle();assert.equal(closed,false,'lease release waits for the started terminal transaction');
+ gate.release();await settlement;await disposal;
+ const stored=idb.rows().find(row=>JSON.parse(row.key).type==='privateActions');
+ const disk=JSON.parse(new TextDecoder().decode(stored.bytes));assert.equal(disk.entries[0].terminal,true);
+ assert.equal(sequence,4,'close does not resend the admitted effect');assert.deepEqual(locks.held(),[]);
+});
+
 test('private replies wake their waiter immediately without polling or entering public snapshots',async t=>{
  const time=clock(),f=fixture({recoveryClock:time,initialStatus:progressing('0',true)}),transport=privateTransport(f);
  let response=null,reads=0;
