@@ -39,8 +39,8 @@ PACKAGES="$(python3 os/dev/derive-rpm-package-set.py --arch "$(uname -m)" | tr '
 podman build --pull=never -f os/Containerfile.rpms \
   --build-context "github-assets=$VIRTIO_ASSETS_DIR" \
   --build-arg "BASE_REF=$BASE_REF" --build-arg "PACKAGES=$PACKAGES" \
-  -t "localhost/qos-rpms:$(uname -m)-candidate" .
-podman image inspect "localhost/qos-rpms:$(uname -m)-candidate"
+  -t "localhost/tilo-rpms:$(uname -m)-candidate" .
+podman image inspect "localhost/tilo-rpms:$(uname -m)-candidate"
 ```
 
 The pinned base must already be present locally when using `--pull=never`.
@@ -69,9 +69,9 @@ It contains 185 direct roots, 1,150 binary RPMs and the matching
 the resolver and offline check left their base package inventories unchanged.
 
 The local artifact digest is
-`localhost/qos-rpms@sha256:3e8d4070f55b8e7975f0d9d236dab3969186c571707f825656f6bbe9b1f567ac`.
+`localhost/tilo-rpms@sha256:3e8d4070f55b8e7975f0d9d236dab3969186c571707f825656f6bbe9b1f567ac`.
 Its preparation records are retained under
-`/home/benn1x/qos-install-prep/arm-rpm-artifact/` on the preparation machine.
+`/home/benn1x/tilo-install-prep/arm-rpm-artifact/` on the preparation machine.
 The stricter signature helper subsequently rechecked each Fedora RPM; signed,
 wrong-key, tampered-payload and generated unsigned controls passed.
 

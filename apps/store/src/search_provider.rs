@@ -348,6 +348,8 @@ mod tests {
             id: format!("dev.example.app{index}"),
             name: format!("Example App {index}"),
             description: "A durable Store test row".into(),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec!["Utilities".into()],
             icon_url: None,
             screenshot_urls: Vec::new(),

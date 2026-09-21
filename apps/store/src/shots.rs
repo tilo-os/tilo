@@ -80,9 +80,11 @@ fn configure_settled_capture_renderer() {
 pub fn fixture_catalog() -> Vec<StoreItem> {
     let tilo =
         |name: &str, desc: &str, cat: &str, installed: InstalledState, ver: &str| StoreItem {
-            id: format!("dev.tilo.{}", name.to_ascii_lowercase()),
+            id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: desc.into(),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec![cat.into()],
             icon_url: Some(format!("https://artwork.invalid/{name}.png")),
             screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
@@ -96,7 +98,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             versions: vec![StoreItemVersion {
                 version: ver.into(),
                 released_at_unix: 0,
-                download_url: Some(format!("https://apps.tilo.dev/{name}/{ver}.qpkg")),
+                download_url: Some(format!("https://apps.tilo.so/{name}/{ver}.tapp")),
                 root_hash_hex: Some("de".repeat(32)),
                 size_bytes: 4 * 1024 * 1024,
             }],
@@ -107,6 +109,8 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         id: format!("org.example.{name}"),
         name: name.into(),
         description: desc.into(),
+        tagline: String::new(),
+        supported_languages: Vec::new(),
         categories: vec![cat.into()],
         icon_url: Some(format!("https://artwork.invalid/{name}.png")),
         screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
@@ -242,13 +246,13 @@ pub fn render_scenario_to_path_with_preferences(
     let mut app = seeded_app();
     app.set_layout_width_hint(f64::from(viewport.0));
     match scenario {
-        Some("detail") => app.focus_detail_for_shot("dev.tilo.notes"),
+        Some("detail") => app.focus_detail_for_shot("so.tilo.notes"),
         Some("remotes") => app.show_remotes_for_shot(),
         Some("progress") => {
             // Terminal is already installed and its offered action is Open,
             // so the visible busy card and masthead describe the same real
             // operation rather than claiming an install for an open-only row.
-            app.set_active_operation_for_shot("dev.tilo.terminal", crate::ActionKind::Open);
+            app.set_active_operation_for_shot("so.tilo.terminal", crate::ActionKind::Open);
             app.set_status_line("Starting Terminal · launching installed app…");
             app.set_worker_busy(true);
         }

@@ -7797,7 +7797,7 @@ mod tests {
             request_id,
             source,
             session_id: format!("session-{}", request_id[0]),
-            app_id: "dev.tilo.music".into(),
+            app_id: "so.tilo.music".into(),
             workspace_id: "00000000-0000-0000-0000-000000000001".into(),
             title: "Track".into(),
             locator: MediaSourceLocator::RemoteStream {
@@ -8808,7 +8808,7 @@ mod tests {
         PendingGamepadAuthorization {
             source: DeviceId::new(source).unwrap(),
             target: DeviceId::new("target").unwrap(),
-            app_id: "dev.tilo.game".into(),
+            app_id: "so.tilo.game".into(),
             workspace_id: "workspace".into(),
             session_id: "session".into(),
             label: "Controller".into(),
@@ -8837,7 +8837,7 @@ mod tests {
     fn gamepad_approval_requires_exact_compositor_local_focus() {
         let pending = pending_gamepad("source");
         let exact = crate::shell::physical_gamepad::PhysicalGamepadBinding {
-            app_id: "dev.tilo.game".into(),
+            app_id: "so.tilo.game".into(),
             workspace_id: "workspace".into(),
             session_id: "session".into(),
         };
@@ -8845,7 +8845,7 @@ mod tests {
         assert!(!pending.matches_local_focus(None));
         for mismatch in [
             crate::shell::physical_gamepad::PhysicalGamepadBinding {
-                app_id: "dev.tilo.other".into(),
+                app_id: "so.tilo.other".into(),
                 ..exact.clone()
             },
             crate::shell::physical_gamepad::PhysicalGamepadBinding {
@@ -8866,13 +8866,13 @@ mod tests {
         let identity = os_actions::ForwardedPeripheralIdentity::new_after_verification(
             "source",
             "target",
-            "dev.tilo.game",
+            "so.tilo.game",
             "workspace",
             "session",
         )
         .unwrap();
         let exact = crate::shell::physical_gamepad::PhysicalGamepadBinding {
-            app_id: "dev.tilo.game".into(),
+            app_id: "so.tilo.game".into(),
             workspace_id: "workspace".into(),
             session_id: "session".into(),
         };

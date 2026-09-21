@@ -548,7 +548,7 @@ mod tests {
             role: DeviceRole::AlwaysOnServer,
             services: ServiceCapabilities::personal_server(),
             workspaces: BTreeSet::from([7]),
-            apps: BTreeSet::from(["dev.tilo.word".to_string()]),
+            apps: BTreeSet::from(["so.tilo.word".to_string()]),
             accelerators: BTreeSet::from([ComputeAccelerator::Gpu]),
             priority: 0,
             latency_ms: 10,
@@ -649,13 +649,13 @@ mod tests {
     #[test]
     fn app_and_compute_placement_are_capability_and_app_scoped() {
         let mut wrong_app = server(1);
-        wrong_app.apps = BTreeSet::from(["dev.tilo.sheet".to_string()]);
+        wrong_app.apps = BTreeSet::from(["so.tilo.sheet".to_string()]);
         let right = server(2);
         let request = PlacementRequest {
             client: [99; 32],
             workspace_id: 7,
             workload: Workload::App {
-                app_id: "dev.tilo.word".to_string(),
+                app_id: "so.tilo.word".to_string(),
             },
             replicas: 1,
         };
@@ -673,7 +673,7 @@ mod tests {
             client: [99; 32],
             workspace_id: 7,
             workload: Workload::Compute {
-                app_id: "dev.tilo.word".to_string(),
+                app_id: "so.tilo.word".to_string(),
             },
             replicas: 3,
         };

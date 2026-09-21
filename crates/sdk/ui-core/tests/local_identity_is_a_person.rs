@@ -71,7 +71,7 @@ impl Drop for EnvGuard {
 fn a_person_is_not_the_application_they_are_running() {
     let _lock = env_lock();
     let _env = EnvGuard::set(&[
-        ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+        ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
         ("TILO_USER_ID", None),
         ("TILO_PRESENCE_HANDLE", None),
         ("TILO_USER_IDENTITY", None),
@@ -93,7 +93,7 @@ fn two_people_running_one_app_are_two_people() {
 
     let alice = {
         let _env = EnvGuard::set(&[
-            ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+            ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
             ("TILO_USER_ID", Some("alice")),
             ("TILO_PRESENCE_HANDLE", None),
             ("TILO_USER_IDENTITY", None),
@@ -102,7 +102,7 @@ fn two_people_running_one_app_are_two_people() {
     };
     let bob = {
         let _env = EnvGuard::set(&[
-            ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+            ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
             ("TILO_USER_ID", Some("bob")),
             ("TILO_PRESENCE_HANDLE", None),
             ("TILO_USER_IDENTITY", None),
@@ -122,7 +122,7 @@ fn two_people_running_one_app_are_two_people() {
 fn the_same_person_is_the_same_id_every_time() {
     let _lock = env_lock();
     let _env = EnvGuard::set(&[
-        ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+        ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
         ("TILO_USER_ID", None),
         ("TILO_PRESENCE_HANDLE", None),
         ("TILO_USER_IDENTITY", None),

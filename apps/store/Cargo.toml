@@ -31,7 +31,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # with the desktop's search box, which offers the same registries' apps
 # — one definition, so the two cannot drift into disagreeing about
 # whether an entry verifies.
-app-catalogue = { path = "../../crates/packaging/app-catalogue" }
+app-cli = { path = "../../crates/packaging/app-cli" }
 app-host = { path = "../../crates/packaging/app-host" }
 registry-types = { path = "../../crates/packaging/registry-types" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }

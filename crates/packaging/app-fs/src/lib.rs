@@ -3,7 +3,7 @@
 //!
 //! ## Mental model
 //!
-//! Every `.qpkg` carries a payload "Collection" — a small,
+//! Every `.tapp` carries a payload "Collection" — a small,
 //! deterministic table of `(payload-relative-path -> blob-hash)`
 //! pairs (see [`Collection`]). The on-disk file tree is a view
 //! of that table; each file's bytes live as a single

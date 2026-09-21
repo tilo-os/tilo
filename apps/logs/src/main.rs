@@ -70,7 +70,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.logs", logs::app_root)
+        &LaunchSpec::new("so.tilo.logs", logs::app_root)
             .shot_root(shot_root)
             .allowed_flags(&[
                 "--detail",

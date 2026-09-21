@@ -19,22 +19,22 @@ class CanonicalVerifierTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.pkg, self.runtime = self.root / 'tilo-pkg', self.root / 'tilo-runtime-bundle'
+        self.pkg, self.runtime = self.root / 'tilo-app-package', self.root / 'tilo-runtime-bundle'
         self.pkg.write_bytes(b'pinned-package-tool')
         self.runtime.write_bytes(b'pinned-runtime-tool')
         self.policy = {'app_publishers': ['1' * 64], 'runtime_publisher': '2' * 64,
                        'canonical_binaries': {'tilo_pkg_sha256': c.file_sha(self.pkg), 'tilo_runtime_bundle_sha256': c.file_sha(self.runtime)}}
         self.verifier = c.CanonicalVerifier(self.pkg, self.runtime, self.policy)
-        self.path = self.root / 'app.qpkg'
+        self.path = self.root / 'app.tapp'
         self.manifest = b'[package]\nid="dev.test.app"\nversion="1"\nruntime="tilo-runtime/1"\n'
-        self.make_qpkg()
+        self.make_tapp()
         self.app = {'id': 'dev.test.app', 'version': '1', 'runtime': 'tilo-runtime/1'}
-        self.package_id = 'qpkg:' + '3' * 64
+        self.package_id = 'tapp:' + '3' * 64
 
     def tearDown(self):
         self.temp.cleanup()
 
-    def make_qpkg(self, duplicate=False):
+    def make_tapp(self, duplicate=False):
         with tarfile.open(self.path, 'w') as archive:
             for _ in range(2 if duplicate else 1):
                 member = tarfile.TarInfo('manifest.toml')
@@ -50,23 +50,23 @@ class CanonicalVerifierTests(unittest.TestCase):
 
     def test_explicit_trust_and_canonical_identity_report(self):
         with patch.object(c.subprocess, 'run', side_effect=self.output) as run:
-            self.assertEqual(self.verifier.verify_qpkg(self.path, self.app), {'package_id': self.package_id, 'publisher': '1' * 64})
+            self.assertEqual(self.verifier.verify_tapp(self.path, self.app), {'package_id': self.package_id, 'publisher': '1' * 64})
         self.assertEqual(run.call_count, 2)
 
     def test_untrusted_exit_and_unrecognized_success_are_rejected(self):
         for result in (subprocess.CompletedProcess([], 2, 'signature-ok-but-untrusted', ''),
                        subprocess.CompletedProcess([], 0, 'ok', '')):
             with self.subTest(result=result), patch.object(c.subprocess, 'run', return_value=result), self.assertRaises(ValueError):
-                self.verifier.verify_qpkg(self.path, self.app)
+                self.verifier.verify_tapp(self.path, self.app)
 
     def test_duplicate_metadata_and_index_mismatch_rejected(self):
-        self.make_qpkg(duplicate=True)
+        self.make_tapp(duplicate=True)
         with patch.object(c.subprocess, 'run') as run, self.assertRaisesRegex(ValueError, 'duplicate'):
-            self.verifier.verify_qpkg(self.path, self.app)
+            self.verifier.verify_tapp(self.path, self.app)
         run.assert_not_called()
-        self.make_qpkg()
+        self.make_tapp()
         with patch.object(c.subprocess, 'run', side_effect=self.output), self.assertRaisesRegex(ValueError, 'collection index'):
-            self.verifier.verify_qpkg(self.path, dict(self.app, version='2'))
+            self.verifier.verify_tapp(self.path, dict(self.app, version='2'))
 
     def test_runtime_requires_signature_publisher_and_architecture(self):
         directory = self.root / 'runtime'
@@ -81,7 +81,7 @@ class CanonicalVerifierTests(unittest.TestCase):
     def test_binary_change_and_empty_trust_set_rejected(self):
         self.pkg.write_bytes(b'replaced')
         with patch.object(c.subprocess, 'run') as run, self.assertRaisesRegex(ValueError, 'binary changed'):
-            self.verifier.verify_qpkg(self.path, self.app)
+            self.verifier.verify_tapp(self.path, self.app)
         run.assert_not_called()
         with self.assertRaisesRegex(ValueError, 'explicit app trust'):
             c.CanonicalVerifier(self.pkg, self.runtime, dict(self.policy, app_publishers=[]))

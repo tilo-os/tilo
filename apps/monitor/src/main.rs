@@ -69,7 +69,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_interaction_bench(viewport);
     }
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.monitor", monitor::app_root)
+        &LaunchSpec::new("so.tilo.monitor", monitor::app_root)
             .shot_handler(render_shot)
             .scenarios(&[
                 "detail",

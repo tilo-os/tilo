@@ -111,7 +111,7 @@ pub(crate) fn permission_profile_resource_with_access(
                 ActionParam::required_owned(
                     "rules",
                     ParamType::Array,
-                    "Least-privilege rules. Scope examples: {\"App\":\"dev.tilo.notes\"}, {\"Action\":{\"app\":\"dev.tilo.notes\",\"action\":\"note.open\"}}, {\"FsPath\":\"/shared/design\"}, {\"FsRecord\":\"stable-record-id\"}, or \"Workspace\".",
+                    "Least-privilege rules. Scope examples: {\"App\":\"so.tilo.notes\"}, {\"Action\":{\"app\":\"so.tilo.notes\",\"action\":\"note.open\"}}, {\"FsPath\":\"/shared/design\"}, {\"FsRecord\":\"stable-record-id\"}, or \"Workspace\".",
                 )
                 .with_schema(serde_json::json!({
                     "minItems": 1,
@@ -4371,7 +4371,7 @@ mod members_pane_tests {
             "name": "Notes opener",
             "description": "Can open notes but cannot edit them",
             "rules": [{
-                "scope": {"Action": {"app": "dev.tilo.notes", "action": "note.open"}},
+                "scope": {"Action": {"app": "so.tilo.notes", "action": "note.open"}},
                 "effect": "Grant",
                 "verb": "Read"
             }]
@@ -4389,7 +4389,7 @@ mod members_pane_tests {
             PermissionProfileOperation::Save { rules, .. }
                 if rules == vec![collab_types::PermissionProfileRule::grant(
                     Scope::Action {
-                        app: "dev.tilo.notes".into(),
+                        app: "so.tilo.notes".into(),
                         action: "note.open".into(),
                     },
                     Verb::Read,
@@ -4536,7 +4536,7 @@ mod agents_pane_tests {
             &OWNER.to_string(),
             CapOverride::grant(
                 Subject::agent(AGENT),
-                Scope::App("dev.tilo.notes".into()),
+                Scope::App("so.tilo.notes".into()),
                 Verb::Write,
             ),
         )
@@ -4578,7 +4578,7 @@ mod agents_pane_tests {
         assert!(
             !ws.allows(
                 &ws.actor_for_agent(AGENT),
-                &ResourceRef::App("dev.tilo.notes".into()),
+                &ResourceRef::App("so.tilo.notes".into()),
                 Verb::Read,
             ),
             "admission must never turn the Observer label into ambient app access"
@@ -4638,13 +4638,13 @@ mod agents_pane_tests {
         let ws = ws_with_agent();
         assert!(ws.allows(
             &ws.actor_for_agent(AGENT),
-            &ResourceRef::App("dev.tilo.notes".into()),
+            &ResourceRef::App("so.tilo.notes".into()),
             Verb::Write,
         ));
         assert!(
             !ws.allows(
                 &ws.actor_for_agent(AGENT),
-                &ResourceRef::App("dev.tilo.sheets".into()),
+                &ResourceRef::App("so.tilo.sheets".into()),
                 Verb::Write,
             ),
             "an Editor admission pass must not become ambient human-role authority",
@@ -4659,7 +4659,7 @@ mod agents_pane_tests {
         assert!(ws.agent_members().is_empty());
         assert!(!ws.allows(
             &ws.actor_for_agent(AGENT),
-            &ResourceRef::App("dev.tilo.notes".into()),
+            &ResourceRef::App("so.tilo.notes".into()),
             Verb::Write,
         ));
     }
@@ -5319,7 +5319,7 @@ mod permissions_pane_tests {
         );
 
         let candidates = [desktop_policy::AppCandidate {
-            package_id: "dev.tilo.viewer".into(),
+            package_id: "so.tilo.viewer".into(),
             display_name: "Viewer".into(),
             resources: [desktop_policy::ResourceKind::extension("pdf").unwrap()].into(),
         }];
@@ -5403,7 +5403,7 @@ mod default_app_authority_tests {
 
     #[test]
     fn admin_policy_and_personal_escape_hatch_are_separately_authorized() {
-        let candidates = [candidate("dev.tilo.viewer"), candidate("dev.tilo.other")];
+        let candidates = [candidate("so.tilo.viewer"), candidate("so.tilo.other")];
         let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
         let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
         let mut ws = Workspace::new(WorkspaceId::from(7), "Docs");
@@ -5413,7 +5413,7 @@ mod default_app_authority_tests {
             ws.set_default_app_policy_as(
                 &"member".into(),
                 pdf.clone(),
-                desktop_policy::WorkspaceDefaultPolicy::App("dev.tilo.viewer".into()),
+                desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into()),
                 &resolver
             )
             .is_err()
@@ -5421,7 +5421,7 @@ mod default_app_authority_tests {
         ws.set_default_app_policy_as(
             &"owner".into(),
             pdf.clone(),
-            desktop_policy::WorkspaceDefaultPolicy::App("dev.tilo.viewer".into()),
+            desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into()),
             &resolver,
         )
         .unwrap();
@@ -5440,23 +5440,23 @@ mod default_app_authority_tests {
             &"member".into(),
             &"member".into(),
             pdf.clone(),
-            desktop_policy::UserWorkspaceChoice::App("dev.tilo.other".into()),
+            desktop_policy::UserWorkspaceChoice::App("so.tilo.other".into()),
             &resolver,
         )
         .unwrap();
         assert_eq!(
             ws.default_apps.user_choices["member"][&pdf],
-            desktop_policy::UserWorkspaceChoice::App("dev.tilo.other".into())
+            desktop_policy::UserWorkspaceChoice::App("so.tilo.other".into())
         );
     }
 
     #[test]
     fn controls_cycle_through_inheritance_before_apps() {
-        let candidates = [candidate("dev.tilo.viewer")];
+        let candidates = [candidate("so.tilo.viewer")];
         let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
         assert_eq!(
             next_workspace_default(None, &pdf, &candidates),
-            desktop_policy::WorkspaceDefaultPolicy::App("dev.tilo.viewer".into())
+            desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into())
         );
         assert_eq!(
             next_user_default(None, &pdf, &candidates),

@@ -455,7 +455,7 @@ struct PackageArgs {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Persistent tilo-pkg signing identity, relative to the app root unless absolute.
+    /// Persistent tilo-app-package signing identity, relative to the app root unless absolute.
     #[arg(long)]
     identity: Option<PathBuf>,
 
@@ -485,7 +485,7 @@ struct NewArgs {
     /// Cargo package name, for example `reading-list`.
     name: Option<String>,
 
-    /// Reverse-DNS application id. Defaults to `dev.tilo.<name>`.
+    /// Reverse-DNS application id. Defaults to `so.tilo.<name>`.
     #[arg(long)]
     id: Option<String>,
 
@@ -2053,7 +2053,7 @@ mod tests {
             "package",
             "apps/demo/src",
             "--output",
-            "dist/demo-dev.qpkg",
+            "dist/demo-dev.tapp",
             "--identity",
             "publisher.json",
             "--profile",
@@ -2070,7 +2070,7 @@ mod tests {
             panic!("expected package command");
         };
         assert_eq!(package.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.qpkg")));
+        assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.tapp")));
         assert_eq!(package.identity, Some(PathBuf::from("publisher.json")));
         assert_eq!(package.profile, "distribution");
         assert_eq!(package.target.as_deref(), Some("x86_64-unknown-linux-gnu"));

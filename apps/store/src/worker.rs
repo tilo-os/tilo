@@ -165,7 +165,7 @@ fn run(
     opened_ref: Option<FlatpakRef>,
     search_index: StoreSearchIndex,
 ) {
-    let staging = crate::actions::qpkg_staging_dir()
+    let staging = crate::actions::tapp_staging_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
     let _ = std::fs::create_dir_all(&staging);
     let mut state = State {
@@ -804,6 +804,8 @@ mod tests {
             id: id.into(),
             name: name.into(),
             description: format!("{name} Store test row"),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec!["Utilities".into()],
             icon_url: None,
             screenshot_urls: Vec::new(),

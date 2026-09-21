@@ -632,7 +632,10 @@ impl NotificationStack {
     /// Paint each live toast card, top to bottom starting at `y`,
     /// recording its dismiss hit-rect and folding its bounds into
     /// `stack_min_y`/`stack_max_y`. Split out of [`Widget::draw`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "toast rendering keeps paint context, snapshot, geometry and accumulated bounds explicit"
+    )]
     fn draw_toast_cards(
         &mut self,
         ctx: &mut PaintCtx,
@@ -1189,7 +1192,7 @@ mod tests {
                     epoch: [7; 16],
                     token: [token; 16],
                 },
-                app_id: "dev.tilo.mail".into(),
+                app_id: "so.tilo.mail".into(),
                 app_name: "Mail".into(),
                 title: title.into(),
                 body: if redacted {

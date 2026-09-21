@@ -313,7 +313,7 @@ mod tests {
             (super::tree::app_root(), br#"{"id":3}"#, Some("generated.tree.node:3")),
             (super::graph::app_root(), br#"{"name":"Atlas"}"#, Some("generated.graph-project:atlas")),
             (super::document::app_root(), b"null", None),
-            (super::qr::app_root(), br#"{"payload":"https://tilo.dev"}"#, None),
+            (super::qr::app_root(), br#"{"payload":"https://tilo.so"}"#, None),
             (super::workspace::app_root(), br#"{"id":4}"#, Some("generated.workspace-item:4/share")),
         ];
         let doc = AutoCommit::new();
