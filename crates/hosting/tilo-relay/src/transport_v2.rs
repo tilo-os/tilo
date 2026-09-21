@@ -240,7 +240,7 @@ mod tests {
                     request_id,
                     source: [1; 32],
                     target: [2; 32],
-                    message: ActionMessage::CatalogueRefresh,
+                    message: ActionMessage::CatalogueRefresh { scope: None },
                 }),
                 [
                     vec![3],
@@ -277,7 +277,7 @@ mod tests {
                         request_id,
                         source: [1; 32],
                         target: [2; 32],
-                        message: ActionMessage::CatalogueRefresh,
+                        message: ActionMessage::CatalogueRefresh { scope: None },
                     },
                     source_user: [3; 32],
                 },

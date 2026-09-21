@@ -474,6 +474,20 @@ impl BrokerHandle {
             .map_or_else(Vec::new, |state| state.published_surfaces())
     }
 
+    /// Check one live published route without cloning unrelated descriptors.
+    pub fn has_live_published_action(
+        &self,
+        app_id: &str,
+        cluster_id: &str,
+        record_id: &str,
+        resource: &str,
+        action: &str,
+    ) -> bool {
+        self.fanout.capnp_state().is_some_and(|state| {
+            state.has_live_published_action(app_id, cluster_id, record_id, resource, action)
+        })
+    }
+
     /// Direct one invocation to the exact application connection that
     /// published the addressed operation.
     ///

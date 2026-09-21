@@ -2942,7 +2942,7 @@ mod private_transport_tests {
             request_id: uuid::Uuid::from_u128(8),
             source: a.device_public_key,
             target: b.device_public_key,
-            message: ActionMessage::CatalogueRefresh,
+            message: ActionMessage::CatalogueRefresh { scope: None },
         };
         if held_authorization {
             // The state handler holds the authorization lane while its real
@@ -3242,7 +3242,7 @@ mod private_transport_tests {
             request_id: uuid::Uuid::from_u128(75),
             source: a.device_public_key,
             target: b.device_public_key,
-            message: ActionMessage::CatalogueRefresh,
+            message: ActionMessage::CatalogueRefresh { scope: None },
         };
         let unrelated = DirectedAction {
             room: rooms[1],
@@ -3615,7 +3615,7 @@ mod private_transport_tests {
             request_id: uuid::Uuid::from_u128(8),
             source: a.device_public_key,
             target: b.device_public_key,
-            message: ActionMessage::CatalogueRefresh,
+            message: ActionMessage::CatalogueRefresh { scope: None },
         };
 
         let root_path = wr.lock().await.store.root().to_path_buf();
@@ -3732,7 +3732,7 @@ mod private_transport_tests {
             request_id: uuid::Uuid::from_u128(8),
             source: a.device_public_key,
             target: b.device_public_key,
-            message: ActionMessage::CatalogueRefresh,
+            message: ActionMessage::CatalogueRefresh { scope: None },
         };
 
         assert_eq!(route_private(&action, &a, &session).await.unwrap(), None);
@@ -4079,7 +4079,7 @@ mod private_transport_tests {
             request_id: uuid::Uuid::from_u128(8),
             source: a.device_public_key,
             target: b.device_public_key,
-            message: ActionMessage::CatalogueRefresh,
+            message: ActionMessage::CatalogueRefresh { scope: None },
         };
         assert!(
             !private_may_overtake(

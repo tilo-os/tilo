@@ -101,6 +101,15 @@ test('explicit cancellation retires a queued intent before its first pump',async
 test('desktop open and close use one fresh catalogue round trip before dispatch',async()=>{
  const f=await fixture();await f.bridge.pump();
  assert.deepEqual(f.sent.map(m=>m.type),['catalogue_refresh','invoke_bound']);
+ assert.deepEqual(f.sent[0],{type:'catalogue_refresh',scope:{app_id:'dev.qos.desktop',record_id:'',resource:'desktop:session',action:'command'}});
+ f.bridge.close();await f.actions.close();
+});
+test('legacy oversized discovery refusal is a clear nonretryable no-send error',async()=>{
+ const f=await fixture({requestHook:m=>m.type==='catalogue_refresh'?{type:'rejected',code:'action_response_exceeds_limits'}:undefined});
+ await f.bridge.pump();
+ assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,0);
+ assert.match(f.reports.at(-1).desktopCommand.error,/returned too much data; command was not sent/);
+ assert.equal(f.queue.length,0);
  f.bridge.close();await f.actions.close();
 });
 test('command presentation starts before any network request and observes every retained completion',async()=>{

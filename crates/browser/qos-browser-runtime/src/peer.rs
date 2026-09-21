@@ -1205,7 +1205,7 @@ pub fn peer_action_request(id: u32, message: String) -> Result<String, JsValue> 
     let message: ActionMessage = serde_json::from_str(&message).map_err(error)?;
     if !matches!(
         message,
-        ActionMessage::CatalogueRefresh
+        ActionMessage::CatalogueRefresh { .. }
             | ActionMessage::InvokeBound { .. }
             | ActionMessage::Status { .. }
             | ActionMessage::Cancel { .. }

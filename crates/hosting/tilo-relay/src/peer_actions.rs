@@ -30,7 +30,10 @@ pub struct DirectedAction {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionMessage {
-    CatalogueRefresh,
+    CatalogueRefresh {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<ExactActionRoute>,
+    },
     /// Best-effort immediate copy of a durably committed desktop publication.
     /// Receivers must pin the source authority and use ordinary state admission.
     CommittedDesktop {
@@ -93,6 +96,17 @@ pub enum ActionMessage {
     },
 }
 
+/// Optional exact discovery narrowing. The broker still performs ordinary
+/// caller authorization and invocation binding for the selected route.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExactActionRoute {
+    pub app_id: String,
+    pub record_id: String,
+    pub resource: String,
+    pub action: String,
+}
+
 /// Exact native IDs, represented as decimal strings across the JS boundary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,7 +145,7 @@ impl ActionMessage {
             | Self::Cancel { invocation }
             | Self::CancellationRequested { invocation } => Some(*invocation),
             Self::Update { update } => Some(update.invocation()),
-            Self::CatalogueRefresh
+            Self::CatalogueRefresh { .. }
             | Self::Catalogue { .. }
             | Self::BrokerCatalogue { .. }
             | Self::Rejected { .. } => None,
@@ -239,6 +253,12 @@ impl ActionMessage {
                         _ => true,
                     }
             }
+            Self::CatalogueRefresh { scope } => scope.as_ref().is_none_or(|scope| {
+                identifier(&scope.app_id)
+                    && scope.record_id.len() <= MAX_IDENTIFIER_BYTES
+                    && identifier(&scope.resource)
+                    && identifier(&scope.action)
+            }),
             _ => self.invocation().is_none_or(|id| !id.0.is_nil()),
         }
     }
@@ -293,6 +313,38 @@ mod message_json {
 #[cfg(test)]
 mod catalogue_bounds_tests {
     use super::*;
+
+    #[test]
+    fn scoped_catalogue_refresh_remains_compatible_with_frozen_unit_reader() {
+        #[derive(Debug, Deserialize, PartialEq, Serialize)]
+        #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+        enum FrozenActionMessage {
+            CatalogueRefresh,
+        }
+        let scoped = ActionMessage::CatalogueRefresh {
+            scope: Some(ExactActionRoute {
+                app_id: "dev.qos.desktop".into(),
+                record_id: String::new(),
+                resource: "desktop:session".into(),
+                action: "command".into(),
+            }),
+        };
+        let encoded = serde_json::to_vec(&scoped).unwrap();
+        let frozen: FrozenActionMessage = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(frozen, FrozenActionMessage::CatalogueRefresh);
+        assert_eq!(
+            serde_json::to_vec(&frozen).unwrap(),
+            br#"{"type":"catalogue_refresh"}"#
+        );
+        assert_eq!(
+            serde_json::to_vec(&ActionMessage::CatalogueRefresh { scope: None }).unwrap(),
+            br#"{"type":"catalogue_refresh"}"#
+        );
+        assert_eq!(
+            serde_json::from_slice::<ActionMessage>(&encoded).unwrap(),
+            scoped
+        );
+    }
 
     fn catalogue(nodes: usize) -> serde_json::Value {
         serde_json::json!({"version": 1, "surfaces": [{"actions": vec![serde_json::json!({"resource": "document", "action": "edit", "params": {}}); nodes]}]})

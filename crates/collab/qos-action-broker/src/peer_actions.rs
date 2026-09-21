@@ -351,11 +351,94 @@ fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAc
         ))
         .is_err()
     {
+        let diagnostics = reply_limit_diagnostics(&reply);
+        tracing::warn!(
+            message_kind = diagnostics.message_kind,
+            route_valid = diagnostics.route_valid,
+            structural_valid = diagnostics.structural_valid,
+            json_serialized = diagnostics.json_serialized,
+            json_bytes = diagnostics.json_bytes,
+            json_bytes_within_limit = diagnostics.json_bytes_within_limit,
+            surface_count = ?diagnostics.surface_count,
+            action_count = ?diagnostics.action_count,
+            envelope_encoded = diagnostics.envelope_encoded,
+            envelope_bytes = ?diagnostics.envelope_bytes,
+            "native action reply exceeded transport limits"
+        );
         reply.message = ActionMessage::Rejected {
             code: "action_response_exceeds_limits".into(),
         };
     }
     reply
+}
+
+struct ReplyLimitDiagnostics {
+    message_kind: &'static str,
+    route_valid: bool,
+    structural_valid: bool,
+    json_serialized: bool,
+    json_bytes: usize,
+    json_bytes_within_limit: bool,
+    surface_count: Option<usize>,
+    action_count: Option<usize>,
+    envelope_encoded: bool,
+    envelope_bytes: Option<usize>,
+}
+
+fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
+    let message = &reply.message;
+    let message_kind = match message {
+        ActionMessage::CatalogueRefresh { .. } => "catalogue_refresh",
+        ActionMessage::CommittedDesktop { .. } => "committed_desktop",
+        ActionMessage::BrokerCatalogue { .. } => "broker_catalogue",
+        ActionMessage::InvokeBound { .. } => "invoke_bound",
+        ActionMessage::Observation { .. } => "observation",
+        ActionMessage::Rejected { .. } => "rejected",
+        ActionMessage::Catalogue { .. } => "catalogue",
+        ActionMessage::Invoke { .. } => "invoke",
+        ActionMessage::Status { .. } => "status",
+        ActionMessage::Update { .. } => "update",
+        ActionMessage::Cancel { .. } => "cancel",
+        ActionMessage::CancellationRequested { .. } => "cancellation_requested",
+    };
+    let catalogue = match message {
+        ActionMessage::Catalogue { catalogue }
+        | ActionMessage::BrokerCatalogue { catalogue, .. } => Some(catalogue),
+        _ => None,
+    };
+    let surfaces = catalogue
+        .and_then(|catalogue| catalogue.get("surfaces"))
+        .and_then(serde_json::Value::as_array);
+    let surface_count = surfaces.map(Vec::len);
+    let action_count = surfaces.map(|surfaces| {
+        surfaces
+            .iter()
+            .filter_map(|surface| surface.get("actions"))
+            .filter_map(serde_json::Value::as_array)
+            .map(Vec::len)
+            .fold(0usize, usize::saturating_add)
+    });
+    let json = serde_json::to_vec(message);
+    let json_serialized = json.is_ok();
+    let json_bytes = json.as_ref().map_or(0, Vec::len);
+    let json_bytes_within_limit = json
+        .as_ref()
+        .is_ok_and(|bytes| bytes.len() <= tilo_relay::peer_actions::MAX_PRIVATE_BYTES);
+    let encoded = tilo_relay::transport_v2::encode(
+        &tilo_relay::transport_v2::EnvelopeV2::Directed(reply.clone()),
+    );
+    ReplyLimitDiagnostics {
+        message_kind,
+        route_valid: !reply.room.is_nil() && !reply.request_id.is_nil(),
+        structural_valid: message.validate(),
+        json_serialized,
+        json_bytes,
+        json_bytes_within_limit,
+        surface_count,
+        action_count,
+        envelope_encoded: encoded.is_ok(),
+        envelope_bytes: encoded.as_ref().ok().map(Vec::len),
+    }
 }
 
 fn attachment_send_error(error: tilo_relay::client::ClientError) -> PeerActionAttachmentError {
@@ -378,7 +461,7 @@ mod tests {
             request_id: Uuid::new_v4(),
             source: [1; 32],
             target: [2; 32],
-            message: ActionMessage::CatalogueRefresh,
+            message: ActionMessage::CatalogueRefresh { scope: None },
         };
         let reply = bounded_reply(
             &request,
@@ -400,6 +483,40 @@ mod tests {
             ))
             .is_ok()
         );
+    }
+
+    #[test]
+    fn oversized_reply_diagnostics_distinguish_json_bytes_from_structure() {
+        let request = DirectedAction {
+            room: Uuid::new_v4(),
+            request_id: Uuid::new_v4(),
+            source: [1; 32],
+            target: [2; 32],
+            message: ActionMessage::CatalogueRefresh { scope: None },
+        };
+        let message = ActionMessage::BrokerCatalogue {
+            host: Uuid::new_v4(),
+            catalogue: serde_json::json!({
+                "version": 1,
+                "surfaces": [{"actions": [{}, {}]}],
+                "text": "x".repeat(tilo_relay::peer_actions::MAX_PRIVATE_BYTES),
+            }),
+        };
+        let reply = DirectedAction {
+            room: request.room,
+            request_id: request.request_id,
+            source: request.target,
+            target: request.source,
+            message,
+        };
+        let diagnostics = reply_limit_diagnostics(&reply);
+        assert_eq!(diagnostics.message_kind, "broker_catalogue");
+        assert!(diagnostics.structural_valid);
+        assert!(!diagnostics.json_bytes_within_limit);
+        assert!(diagnostics.json_bytes > tilo_relay::peer_actions::MAX_PRIVATE_BYTES);
+        assert_eq!(diagnostics.surface_count, Some(1));
+        assert_eq!(diagnostics.action_count, Some(2));
+        assert!(!diagnostics.envelope_encoded);
     }
 
     #[test]

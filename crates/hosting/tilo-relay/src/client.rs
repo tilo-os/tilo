@@ -1260,7 +1260,7 @@ mod scheduling_tests {
             request_id: Uuid::from_u128(2),
             source: [1; 32],
             target: [2; 32],
-            message: ActionMessage::CatalogueRefresh,
+            message: ActionMessage::CatalogueRefresh { scope: None },
         })
     }
 

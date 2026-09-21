@@ -124,11 +124,12 @@ impl CapnpBrokerState {
             return Ok(observation);
         }
         match &evidence.action().message {
-            ActionMessage::CatalogueRefresh => {
-                let catalogue = serde_json::from_str(
-                    &self
-                        .action_catalogue_json_for(&caller.room, &caller.admitted.broker_actor())?,
-                )
+            ActionMessage::CatalogueRefresh { scope } => {
+                let catalogue = serde_json::from_str(&self.action_catalogue_json_for(
+                    &caller.room,
+                    &caller.admitted.broker_actor(),
+                    scope.as_ref(),
+                )?)
                 .map_err(|_| "catalogue unavailable")?;
                 Ok(ActionMessage::BrokerCatalogue { host, catalogue })
             }

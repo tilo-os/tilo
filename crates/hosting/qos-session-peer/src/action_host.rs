@@ -475,16 +475,22 @@ impl ActionHost {
         }).collect())
     }
     pub fn ready(&self) -> bool {
-        let surfaces = self.broker.published_action_surfaces();
-        self.signing.health().is_ok()
-            && !self.workers.is_empty()
-            && self.workers.iter().all(|worker| {
-                surfaces.iter().any(|surface| {
-                    surface.live
-                        && surface.app_id == worker.app_id
-                        && surface.route.record_id == worker.record_id
-                })
-            })
+        use qos_peer_state::desktop_command;
+        let room = self
+            .reconciled_policy
+            .as_ref()
+            .map(|(_, policy)| policy.room.as_str())
+            .unwrap_or_default();
+        desktop_service_ready(
+            self.signing.health().is_ok(),
+            self.broker.has_live_published_action(
+                desktop_command::APP_ID,
+                room,
+                "",
+                desktop_command::RESOURCE,
+                desktop_command::ACTION,
+            ),
+        )
     }
     fn acknowledge_committed(&self, owner: &SessionOwner) -> Result<(), String> {
         for write in self.cache.pending_writes() {
@@ -639,6 +645,10 @@ impl ActionHost {
     }
 }
 
+fn desktop_service_ready(signing_healthy: bool, desktop_published: bool) -> bool {
+    signing_healthy && desktop_published
+}
+
 fn ensure_private(path: &std::path::Path) -> Result<()> {
     if path.try_exists()? {
         crate::store::check_dir(path)
@@ -651,6 +661,43 @@ fn ensure_private(path: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(flavor = "current_thread")]
+    async fn desktop_service_readiness_does_not_wait_for_document_workers() {
+        let (_root, _owner, runtime) = runtime();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let desktop = loop {
+            if let Some(surface) = runtime
+                .broker
+                .published_action_surfaces()
+                .into_iter()
+                .find(|surface| surface.app_id == qos_peer_state::desktop_command::APP_ID)
+            {
+                break surface;
+            }
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        };
+        let room = desktop.route.cluster_id.clone();
+        let published = runtime.broker.has_live_published_action(
+            qos_peer_state::desktop_command::APP_ID,
+            &room,
+            "",
+            qos_peer_state::desktop_command::RESOURCE,
+            qos_peer_state::desktop_command::ACTION,
+        );
+        assert!(
+            desktop_service_ready(true, published),
+            "unrelated unfinished workers cannot block desktop commands"
+        );
+        assert!(
+            !desktop_service_ready(true, false),
+            "the native desktop service is mandatory"
+        );
+        assert!(
+            !desktop_service_ready(false, true),
+            "unhealthy durable signing must fail closed"
+        );
+    }
     #[tokio::test(flavor = "current_thread")]
     async fn idle_pumps_reuse_projection_and_committed_generations_invalidate_it() {
         let root = tempfile::tempdir().unwrap();

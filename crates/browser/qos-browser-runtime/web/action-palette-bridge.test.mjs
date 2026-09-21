@@ -46,3 +46,29 @@ test('unrelated catalogue updates preserve controls, but replacement schema inva
  await f.actions.catalogue();await assert.rejects(bridge.submit({control}),/stale/);
  assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,1);bridge.close();
 });
+
+const deferred=()=>{let resolve;const promise=new Promise(value=>resolve=value);return{promise,resolve};};
+test('mount discovers and publishes a fresh palette without another gesture',async()=>{
+ let rows=[],sent=[];
+ const actions=await createActionClient({context:()=>binding,load:async()=>undefined,commit:async()=>{},request:async message=>{sent.push(message);return{type:'broker_catalogue',host,catalogue};}});
+ const bridge=bindActionPalette({actions,publish:value=>{rows=value;}});
+ while(rows.length===0)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(sent.length,1);assert.deepEqual(sent[0],{type:'catalogue_refresh'});assert.equal(rows[0].action_label,'Insert table');
+ bridge.close();await actions.close();
+});
+test('closing one palette detaches it without cancelling another palette refresh',async()=>{
+ const gate=deferred(),entered=deferred(),firstPublished=[],secondPublished=[],reports=[];
+ const actions=await createActionClient({context:()=>binding,load:async()=>undefined,commit:async()=>{},request:async()=>{entered.resolve();await gate.promise;return{type:'broker_catalogue',host,catalogue};}});
+ const first=bindActionPalette({actions,publish:value=>firstPublished.push(structuredClone(value)),report:value=>reports.push(value)});
+ await entered.promise;const second=bindActionPalette({actions,publish:value=>secondPublished.push(structuredClone(value)),report:value=>reports.push(value)});
+ first.close();gate.resolve();while(secondPublished.at(-1)?.length!==1)await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(firstPublished,[[]]);assert.equal(secondPublished.at(-1)[0].action_label,'Insert table');assert.deepEqual(reports,[]);assert.equal(actions.getSnapshot().capability.state,'ready');
+ second.close();await actions.close();
+});
+test('oversized general catalogue is reported as palette discovery failure',async()=>{
+ const reports=[];const actions=await createActionClient({context:()=>binding,load:async()=>undefined,commit:async()=>{},request:async()=>({type:'rejected',code:'action_response_exceeds_limits'})});
+ const bridge=bindActionPalette({actions,publish:()=>{},report:value=>reports.push(value)});
+ while(reports.length===0)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(reports[0].actionStage,'palette-discovery');assert.match(reports[0].actionError,/palette.*too much data/i);
+ bridge.close();await actions.close();
+});

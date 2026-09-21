@@ -1,4 +1,5 @@
 import {actionError} from './action-client.mjs';
+const DESKTOP_SCOPE={app_id:'dev.qos.desktop',record_id:'',resource:'desktop:session',action:'command'};
 // Shared-widget requests enter the existing certified, durable action client.
 // A response updates lifecycle only; admitted signed room state owns rendering.
 export function bindDesktopCommands({actions,peek,ack,report=()=>{},onPending=()=>{},onUpdate=()=>{},clock={}}){
@@ -49,7 +50,7 @@ export function bindDesktopCommands({actions,peek,ack,report=()=>{},onPending=()
           argument:{command:value.pending.command,...(action.params?.some(param=>param.name==='committed_desktop_v2'&&param.ty==='boolean')?{committed_desktop_v2:true}:{})},expected:{host:capability.host,binding:capability.binding,descriptor:action}};
         if(value.input&&JSON.stringify(input)!==JSON.stringify(value.input))throw Error('Action binding or catalogue changed');
         value.input??=input;check(value);return value.input;
-        },control(value));
+        },{...control(value),discoveryScope:DESKTOP_SCOPE});
       }
       if(!closed){if(samePending(value.pending))ack(value.pending.invocation);report(status(row));settle(row);retire(value);}
     }catch(error){

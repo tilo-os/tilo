@@ -1955,6 +1955,67 @@ impl CapnpBrokerState {
         result
     }
 
+    /// Check one live action route without cloning the published catalogue.
+    pub fn has_live_published_action(
+        &self,
+        app_id: &str,
+        cluster_id: &str,
+        record_id: &str,
+        resource: &str,
+        action: &str,
+    ) -> bool {
+        self.surfaces
+            .lock()
+            .map(|surfaces| {
+                surfaces.values().any(|surface| {
+                    surface.live
+                        && surface.app_id == app_id
+                        && surface.route.cluster_id == cluster_id
+                        && surface.route.record_id == record_id
+                        && surface.actions.iter().any(|descriptor| {
+                            descriptor.resource == resource && descriptor.action == action
+                        })
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    fn published_surfaces_for_scope(
+        &self,
+        scope: Option<&tilo_relay::peer_actions::ExactActionRoute>,
+    ) -> Vec<PublishedSurface> {
+        let Some(scope) = scope else {
+            return self.published_surfaces();
+        };
+        self.surfaces
+            .lock()
+            .map(|surfaces| {
+                surfaces
+                    .values()
+                    .filter_map(|surface| {
+                        (surface.app_id == scope.app_id
+                            && surface.route.record_id == scope.record_id)
+                            .then(|| PublishedSurface {
+                                peer_id: surface.peer_id,
+                                app_id: surface.app_id.clone(),
+                                route: surface.route.clone(),
+                                actions: surface
+                                    .actions
+                                    .iter()
+                                    .filter(|action| {
+                                        action.resource == scope.resource
+                                            && action.action == scope.action
+                                    })
+                                    .cloned()
+                                    .collect(),
+                                live: surface.live,
+                            })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Generation of the eager action-surface source. Reading this never
     /// clones the potentially large application action inventory.
     #[must_use]
@@ -2512,6 +2573,7 @@ impl CapnpBrokerState {
                 id: actor.to_string(),
                 is_agent: false,
             },
+            None,
         )
     }
 
@@ -2523,6 +2585,7 @@ impl CapnpBrokerState {
         &self,
         cluster_id: &str,
         actor: &BrokerActor,
+        scope: Option<&tilo_relay::peer_actions::ExactActionRoute>,
     ) -> Result<String, String> {
         let membership = self
             .membership
@@ -2541,20 +2604,30 @@ impl CapnpBrokerState {
         } else {
             workspace.actor_for_person(&actor.id)
         };
+        let published = self.published_surfaces_for_scope(scope);
         let live_apps = self
-            .published_surfaces()
-            .into_iter()
-            .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
-            .map(|surface| surface.app_id)
-            .collect::<std::collections::HashSet<_>>();
-        let mut surfaces = self
-            .published_surfaces()
+            .surfaces
+            .lock()
+            .map(|surfaces| {
+                surfaces
+                    .values()
+                    .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
+                    .map(|surface| surface.app_id.clone())
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let mut surfaces = published
             .into_iter()
             .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
             .filter_map(|surface| {
                 let actions = surface
                     .actions
                     .into_iter()
+                    .filter(|action| {
+                        scope.is_none_or(|scope| {
+                            action.resource == scope.resource && action.action == scope.action
+                        })
+                    })
                     .filter(|action| {
                         let Some(verb) = (match action.contract.permission {
                             tilo_actions::PermissionRequirement::None => None,
@@ -2622,6 +2695,14 @@ impl CapnpBrokerState {
             .map(|service| service.applications())
             .unwrap_or_default()
             .into_iter()
+            .filter(|app| {
+                scope.is_none_or(|scope| {
+                    app.package_id == scope.app_id
+                        && scope.record_id.is_empty()
+                        && scope.resource == format!("app.{}", app.package_id)
+                        && scope.action == "open"
+                })
+            })
             .filter(|app| !live_apps.contains(&app.package_id))
             .filter(|app| {
                 workspace.decide(
@@ -2676,7 +2757,7 @@ impl CapnpBrokerState {
         let mut disconnected = Vec::new();
         for (peer, cluster, actor, tx) in subscribers {
             let delivered = self
-                .action_catalogue_json_for(&cluster, &actor)
+                .action_catalogue_json_for(&cluster, &actor, None)
                 .is_ok_and(|snapshot| tx.send(snapshot).is_ok());
             if !delivered {
                 disconnected.push(peer);
@@ -5443,6 +5524,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         match self.state.action_catalogue_json_for(
             &self.route().cluster_id,
             &self.verified_identity.broker_actor(),
+            None,
         ) {
             Ok(snapshot) => {
                 results.get().set_catalogue_json(&snapshot);
@@ -5466,7 +5548,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         let cluster = self.route().cluster_id;
         let actor = self.verified_identity.broker_actor();
         let (tx, rx) = mpsc::unbounded_channel();
-        let initial = match self.state.action_catalogue_json_for(&cluster, &actor) {
+        let initial = match self.state.action_catalogue_json_for(&cluster, &actor, None) {
             Ok(snapshot) => snapshot,
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
@@ -8591,6 +8673,186 @@ pub mod tests {
                 "{label} must not receive a record-directed document",
             );
         }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        clippy::arithmetic_side_effects,
+        clippy::unchecked_time_subtraction,
+        reason = "the directed-action test keeps capability setup, delivery, and denial assertions in one scenario"
+    )]
+    #[test]
+    fn exact_catalogue_scope_avoids_unrelated_oversized_descriptors() {
+        let mut workspace = crate::test_support::Workspace::test_default(
+            crate::test_support::WorkspaceId(30),
+            "Scoped action room",
+        );
+        workspace.set_owner("owner");
+        let cluster = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let membership = tree.shared();
+        struct Launcher;
+        impl crate::services::LauncherServices for Launcher {
+            fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+                vec![crate::services::LaunchableApplication {
+                    package_id: "dev.qos.word-processor".into(),
+                    display_name: "Writer".into(),
+                }]
+            }
+            fn launch(&self, _: &str, _: &qos_desktop::Workspace) -> Result<(), String> {
+                unreachable!("catalogue projection never launches")
+            }
+            fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+                false
+            }
+        }
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership.authority()),
+            None,
+            None,
+            crate::services::HostServices {
+                launcher: Some(Arc::new(Launcher)),
+                ..Default::default()
+            },
+        );
+        let action =
+            |resource: String, action: &str, description: Option<String>| PublishedAction {
+                resource,
+                action: action.into(),
+                resource_kind: "document".into(),
+                resource_label: "Document".into(),
+                action_label: "Command".into(),
+                description,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                params: Vec::new(),
+                contract: tilo_actions::ActionContract {
+                    permission: tilo_actions::PermissionRequirement::Write,
+                    ..Default::default()
+                },
+                input: PublishedInput::None,
+            };
+        let desktop = PublishedSurface {
+            peer_id: 1,
+            app_id: qos_peer_state::desktop_command::APP_ID.into(),
+            route: CrdtRoute::record(qos_peer_state::desktop_command::APP_ID, &cluster, ""),
+            actions: vec![action(
+                qos_peer_state::desktop_command::RESOURCE.into(),
+                qos_peer_state::desktop_command::ACTION,
+                None,
+            )],
+            live: true,
+        };
+        let mut surfaces = state.surfaces.lock().unwrap();
+        surfaces.insert(desktop.peer_id, desktop);
+        for index in 0..24u64 {
+            surfaces.insert(
+                index + 2,
+                PublishedSurface {
+                    peer_id: index + 2,
+                    app_id: "dev.qos.word-processor".into(),
+                    route: CrdtRoute::record(
+                        "dev.qos.word-processor",
+                        &cluster,
+                        &format!("record-{index}"),
+                    ),
+                    actions: vec![action(
+                        format!("document:{index}"),
+                        "edit",
+                        Some("x".repeat(16 * 1024)),
+                    )],
+                    live: true,
+                },
+            );
+        }
+        drop(surfaces);
+        let actor = BrokerActor {
+            id: "owner".into(),
+            is_agent: false,
+        };
+        let full: serde_json::Value = serde_json::from_str(
+            &state
+                .action_catalogue_json_for(&cluster, &actor, None)
+                .unwrap(),
+        )
+        .unwrap();
+        let full_message = tilo_relay::peer_actions::ActionMessage::BrokerCatalogue {
+            host: uuid::Uuid::new_v4(),
+            catalogue: full,
+        };
+        assert!(
+            full_message.validate(),
+            "the full shape remains structurally valid"
+        );
+        assert!(
+            serde_json::to_vec(&full_message).unwrap().len()
+                > tilo_relay::peer_actions::MAX_PRIVATE_BYTES
+        );
+        let scope = tilo_relay::peer_actions::ExactActionRoute {
+            app_id: qos_peer_state::desktop_command::APP_ID.into(),
+            record_id: String::new(),
+            resource: qos_peer_state::desktop_command::RESOURCE.into(),
+            action: qos_peer_state::desktop_command::ACTION.into(),
+        };
+        let scoped: serde_json::Value = serde_json::from_str(
+            &state
+                .action_catalogue_json_for(&cluster, &actor, Some(&scope))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(scoped["surfaces"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            scoped["surfaces"][0]["actions"].as_array().unwrap().len(),
+            1
+        );
+        let denied = BrokerActor {
+            id: "stranger".into(),
+            is_agent: false,
+        };
+        let denied: serde_json::Value = serde_json::from_str(
+            &state
+                .action_catalogue_json_for(&cluster, &denied, Some(&scope))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            denied["surfaces"].as_array().unwrap().is_empty(),
+            "scope narrows discovery but never grants authorization"
+        );
+        let launcher_scope = tilo_relay::peer_actions::ExactActionRoute {
+            app_id: "dev.qos.word-processor".into(),
+            record_id: String::new(),
+            resource: "app.dev.qos.word-processor".into(),
+            action: "open".into(),
+        };
+        let launcher: serde_json::Value = serde_json::from_str(
+            &state
+                .action_catalogue_json_for(&cluster, &actor, Some(&launcher_scope))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            launcher["surfaces"].as_array().unwrap().is_empty(),
+            "scope cannot add a launcher hidden by another live record of that app"
+        );
+        let directed = tilo_relay::peer_actions::DirectedAction {
+            room: uuid::Uuid::parse_str(&cluster).unwrap(),
+            request_id: uuid::Uuid::new_v4(),
+            source: [1; 32],
+            target: [2; 32],
+            message: tilo_relay::peer_actions::ActionMessage::BrokerCatalogue {
+                host: uuid::Uuid::new_v4(),
+                catalogue: scoped,
+            },
+        };
+        assert!(
+            directed.validate(),
+            "the exact desktop reply fits transport bounds"
+        );
     }
 
     #[allow(

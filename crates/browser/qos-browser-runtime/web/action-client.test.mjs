@@ -77,6 +77,56 @@ test('fresh catalogue selection and invocation share one serial turn and one dis
  assert.equal(f.bytes.entries[0].invocation,id);
  await c.close();
 });
+test('exact route refresh does not replace the public palette catalogue',async()=>{
+ const publicCatalogue=structuredClone(catalogue);publicCatalogue.surfaces.push({peer_id:8,app_id:'notes',record_id:'tab:2',actions:[{resource:'page',action:'open'}]});
+ let saved;const sent=[];
+ const c=await createActionClient({context:()=>context,load:async()=>saved,commit:async value=>saved=structuredClone(value),request:async m=>{
+  sent.push(structuredClone(m));
+  if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:m.scope?catalogue:publicCatalogue};
+  return{type:'observation',host,invocation:m.invocation,update:null,uncertain:true};
+ }});
+ await c.catalogue();await c.invoke({...route,invocation:id});
+ assert.deepEqual(c.getSnapshot().capability.catalogue,publicCatalogue);
+ assert.deepEqual(sent[1].scope,{app_id:'writer',record_id:'tab:1',resource:'document',action:'insert'});
+ await c.close();
+});
+test('detached palette discovery does not occupy the action admission lane',async()=>{
+ const full=deferred(),entered=deferred(),sent=[];let saved;
+ const c=await createActionClient({context:()=>context,load:async()=>saved,commit:async value=>saved=structuredClone(value),request:async m=>{
+  sent.push(structuredClone(m));
+  if(m.type==='catalogue_refresh'&&!m.scope){entered.resolve();await full.promise;return{type:'broker_catalogue',host,catalogue};}
+  if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue};
+  return{type:'observation',host,invocation:m.invocation,update:null,uncertain:true};
+ }});
+ const palette=c.refreshCatalogue();await entered.promise;
+ const row=await c.invoke({...route,invocation:id});
+ assert.equal(row.invocation,id);assert.deepEqual(sent.slice(0,3).map(m=>[m.type,!!m.scope]),[['catalogue_refresh',false],['catalogue_refresh',true],['invoke_bound',false]]);
+ full.resolve();await palette;await c.close();
+});
+test('an older palette discovery cannot replace a newer identity capability',async()=>{
+ const old=deferred(),entered=deferred();let binding={...context},requests=0;
+ const replacement={...context,target:'replacement'};
+ const newer=structuredClone(catalogue);newer.surfaces[0].record_id='replacement';
+ const c=await createActionClient({context:()=>binding,load:async()=>undefined,commit:async()=>{},request:async m=>{
+  assert.equal(m.type,'catalogue_refresh');if(++requests===1){entered.resolve();await old.promise;return{type:'broker_catalogue',host,catalogue};}
+  return{type:'broker_catalogue',host,catalogue:newer};
+ }});
+ const stale=c.refreshCatalogue();await entered.promise;binding=replacement;await c.refreshCatalogue();
+ old.resolve();await assert.rejects(stale,/identity/i);
+ assert.deepEqual(c.getSnapshot().capability.binding,replacement);assert.deepEqual(c.getSnapshot().capability.catalogue,newer);await c.close();
+});
+test('known route recovery remains scoped when the full catalogue is oversized',async()=>{
+ let saved,overflow=false;const sent=[];
+ const c=await createActionClient({context:()=>context,load:async()=>saved,commit:async value=>saved=structuredClone(value),request:async m=>{
+  sent.push(structuredClone(m));
+  if(m.type==='catalogue_refresh')return overflow&&!m.scope?{type:'rejected',code:'action_response_exceeds_limits'}:{type:'broker_catalogue',host,catalogue};
+  return{type:'observation',host,invocation:m.invocation,update:null,uncertain:true};
+ }});
+ await c.invoke({...route,invocation:id});overflow=true;sent.length=0;await c.recover();
+ assert.equal(sent.at(-1).type,'status');
+ assert(sent.filter(m=>m.type==='catalogue_refresh').every(m=>m.scope?.app_id==='writer'));
+ await c.close();
+});
 test('selected invocation checks binding again after selection and after durable admission',async()=>{
  const f=fixture(),c=await f.open();
  await assert.rejects(c.invokeSelected(()=>{f.context={...context,certificate:'replacement'};return {...route,invocation:id};}),/identity/i);
@@ -147,12 +197,11 @@ test('closing during background network work prevents late persistence',async()=
 });
 
 test('background discovery cannot send status after a subscriber replaces the identity',async()=>{
- let binding={...context},disk;const sent=[];
+ let binding={...context},disk,replace=false;const sent=[];
  const c=await createActionClient({context:()=>binding,load:async()=>disk,commit:async value=>{disk=value;},request:async m=>{
-  sent.push(m.type);return m.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue}:{type:'observation',host,invocation:id,update:null,uncertain:false};
+  sent.push(m.type);if(m.type==='catalogue_refresh'){if(replace&&m.scope)binding={...context,target:'replacement'};return{type:'broker_catalogue',host,catalogue};}return{type:'observation',host,invocation:id,update:null,uncertain:false};
  }});
- await c.invoke({...route,invocation:id});sent.length=0;
- c.subscribe(snapshot=>{if(snapshot.capability.state==='ready')binding={...context,target:'replacement'};});
+ await c.invoke({...route,invocation:id});sent.length=0;replace=true;
  await c.recover().catch(()=>{});
  assert.deepEqual(sent,['catalogue_refresh']);await c.close();
 });

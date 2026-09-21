@@ -1,7 +1,7 @@
 // A mount only retains display controls. The session-owned actionsV1 outbox
 // remains the sole owner of invocation UUIDs, persistence and recovery.
 export function bindActionPalette({actions,publish,report=()=>{}}){
-  let closed=false, controls=new Map(), previous;
+  let closed=false, controls=new Map(), previous;const refreshController=new AbortController();
   const canonical=value=>JSON.stringify(value,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
   function update(snapshot){
     if(closed)return;
@@ -25,6 +25,7 @@ export function bindActionPalette({actions,publish,report=()=>{}}){
     }
   }
   const unsubscribe=actions.subscribe(update);update(actions.getSnapshot());
+  void actions.refreshCatalogue?.({signal:refreshController.signal}).catch(error=>{if(!closed&&error?.code!=='cancelled')report({actionError:String(error.message??error),actionStage:'palette-discovery'});});
   return {
     async submit(request){
       if(closed)throw Error('Action surface disposed');
@@ -36,6 +37,6 @@ export function bindActionPalette({actions,publish,report=()=>{}}){
       if(!closed)report({action:{invocation:row.invocation,state:row.state,terminal:row.terminal,cancellationRequested:row.cancellationRequested}});
       return row;
     },
-    close(){closed=true;controls.clear();unsubscribe();},
+    close(){closed=true;refreshController.abort();controls.clear();unsubscribe();},
   };
 }

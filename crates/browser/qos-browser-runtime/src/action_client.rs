@@ -41,7 +41,7 @@ impl PendingActions {
                 let expected = request.message.invocation();
                 let valid = match &action.message {
                     ActionMessage::BrokerCatalogue { host, catalogue } => {
-                        matches!(request.message, ActionMessage::CatalogueRefresh)
+                        matches!(request.message, ActionMessage::CatalogueRefresh { .. })
                             && !host.is_nil()
                             && ActionMessage::Catalogue {
                                 catalogue: catalogue.clone(),
@@ -149,7 +149,7 @@ mod tests {
             request_id: Uuid::from_u128(2),
             source: [3; 32],
             target: [4; 32],
-            message: ActionMessage::CatalogueRefresh,
+            message: ActionMessage::CatalogueRefresh { scope: None },
         }
     }
     fn response(a: &DirectedAction) -> DirectedAction {
@@ -200,7 +200,15 @@ mod tests {
     #[test]
     fn authentic_exact_response_and_duplicate() {
         let mut p = PendingActions::default();
-        let a = request();
+        let mut a = request();
+        a.message = ActionMessage::CatalogueRefresh {
+            scope: Some(tilo_relay::peer_actions::ExactActionRoute {
+                app_id: "dev.qos.desktop".into(),
+                record_id: String::new(),
+                resource: "desktop:session".into(),
+                action: "command".into(),
+            }),
+        };
         p.insert(a.clone()).unwrap();
         let r = response(&a);
         assert!(p.receive(

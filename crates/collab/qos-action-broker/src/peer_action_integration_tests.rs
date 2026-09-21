@@ -186,7 +186,12 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
         let catalogue = tokio::time::timeout(Duration::from_secs(5), async { loop {
-            let id = send(&caller, room, 52, ActionMessage::CatalogueRefresh);
+            let id = send(
+                &caller,
+                room,
+                52,
+                ActionMessage::CatalogueRefresh { scope: None },
+            );
             match tokio::time::timeout(Duration::from_millis(250), reply(&caller, id)).await {
                 Ok(ActionMessage::BrokerCatalogue { host, catalogue }) => { assert_eq!(host, request.host); break catalogue; }
                 _ => tokio::task::yield_now().await,
@@ -197,12 +202,22 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         // former fixed device list; current root authority accepts it dynamically.
         relay.set_workspace_membership(ws, true, [52,53,54,56].into_iter().map(|seed| device(seed, false).1.device_public_key).collect(), relay_root.path().into()).await.unwrap();
         let dynamic = client(&relay, 56, room).await;
-        let dynamic_catalogue = send(&dynamic, room, 56, ActionMessage::CatalogueRefresh);
+        let dynamic_catalogue = send(
+            &dynamic,
+            room,
+            56,
+            ActionMessage::CatalogueRefresh { scope: None },
+        );
         assert!(matches!(reply(&dynamic, dynamic_catalogue).await, ActionMessage::BrokerCatalogue { .. }));
         let mut revocation = tilo_user_identity::RevocationEntry { user_public_key: authority.root, revoked_device_public_key: device(56, false).1.device_public_key, revoked_at_ns: 1, reason: tilo_user_identity::RevocationReason::Lost, signature: [0;64] };
         tilo_user_identity::sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[51;32])).unwrap();
         authority.revocations.lock().unwrap().insert(revocation).unwrap();
-        let revoked = send(&dynamic, room, 56, ActionMessage::CatalogueRefresh);
+        let revoked = send(
+            &dynamic,
+            room,
+            56,
+            ActionMessage::CatalogueRefresh { scope: None },
+        );
         assert!(matches!(reply(&dynamic, revoked).await, ActionMessage::Rejected { .. }));
         dynamic.close().await;
         // Fresh route, directory revision and exact confirmation are all
@@ -299,7 +314,13 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         // Current room authority gates catalogue, durable disclosure and invoke.
         let membership = fixture.membership.as_ref().unwrap().clone();
         membership.write().workspaces[0].set_owner("replacement-owner");
-        for message in [ActionMessage::CatalogueRefresh, invoke(&request), ActionMessage::Status { invocation: request.invocation }] {
+        for message in [
+            ActionMessage::CatalogueRefresh { scope: None },
+            invoke(&request),
+            ActionMessage::Status {
+                invocation: request.invocation,
+            },
+        ] {
             let revoked = send(&caller, room, 52, message);
             assert!(matches!(reply(&caller, revoked).await, ActionMessage::Rejected { .. }));
         }
@@ -332,7 +353,12 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let server_session = session.clone();
         let server = tokio::spawn(async move { queue.serve(server_session, room, host).await });
         tokio::time::timeout(Duration::from_secs(5), async { loop {
-            let id = send(&caller, room, 52, ActionMessage::CatalogueRefresh);
+            let id = send(
+                &caller,
+                room,
+                52,
+                ActionMessage::CatalogueRefresh { scope: None },
+            );
             if matches!(tokio::time::timeout(Duration::from_millis(250), reply(&caller, id)).await, Ok(ActionMessage::BrokerCatalogue { .. })) { break; }
         }}).await.unwrap();
         let recovered = send(&caller, room, 52, invoke(&request));

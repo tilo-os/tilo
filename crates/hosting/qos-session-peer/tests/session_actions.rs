@@ -478,7 +478,7 @@ async fn checked_application_catalogue(multiple_writers: bool) {
                 request_id,
                 source: cert.device_public_key,
                 target: native.device_public_key,
-                message: ActionMessage::CatalogueRefresh,
+                message: ActionMessage::CatalogueRefresh { scope: None },
             }))
             .unwrap();
         let response = tokio::time::timeout(Duration::from_millis(500), async {
@@ -847,7 +847,7 @@ async fn checked_application_catalogue(multiple_writers: bool) {
             request_id: refresh,
             source: cert.device_public_key,
             target: native.device_public_key,
-            message: ActionMessage::CatalogueRefresh,
+            message: ActionMessage::CatalogueRefresh { scope: None },
         }))
         .unwrap();
     let current_catalogue = tokio::time::timeout(Duration::from_secs(5), async {
@@ -943,7 +943,7 @@ async fn checked_application_catalogue(multiple_writers: bool) {
                     let check = uuid::Uuid::new_v4(); probes.insert(check);
                     client.send_action(EnvelopeV2::Directed(DirectedAction {
                         room, request_id: check, source: cert.device_public_key,
-                        target: native.device_public_key, message: ActionMessage::CatalogueRefresh,
+                        target: native.device_public_key, message: ActionMessage::CatalogueRefresh { scope: None },
                     })).unwrap();
                 },
                 event = client.recv_action() => { match event.unwrap() {
