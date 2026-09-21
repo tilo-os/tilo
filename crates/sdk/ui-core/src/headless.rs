@@ -926,6 +926,7 @@ impl FrameHarness {
         let done = if let Some(binding) = self
             .focused
             .and_then(|node| self.bindings.binding_for(node))
+            .or_else(|| self.root.callback_binding())
         {
             binding
                 .history_request(&mut self.state.doc, crate::undo::UndoRequest::Undo)
@@ -969,6 +970,7 @@ impl FrameHarness {
         let done = if let Some(binding) = self
             .focused
             .and_then(|node| self.bindings.binding_for(node))
+            .or_else(|| self.root.callback_binding())
         {
             binding
                 .history_request(&mut self.state.doc, crate::undo::UndoRequest::Redo)
@@ -1001,6 +1003,7 @@ impl FrameHarness {
         if let Some(binding) = self
             .focused
             .and_then(|node| self.bindings.binding_for(node))
+            .or_else(|| self.root.callback_binding())
         {
             binding.undo_status(&mut self.state.doc).unwrap_or_default()
         } else if let Some(status) = self
