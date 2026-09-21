@@ -1638,6 +1638,18 @@ fn host_desktop_first_login() -> Scenario {
             Action::SetOnboardingVisual(Visual::Ready),
             Action::Relayout,
             Action::Snapshot("08-ready"),
+            Action::SetOnboardingVisual(Visual::TourNavigate),
+            Action::Relayout,
+            Action::Snapshot("09-tour-navigate"),
+            Action::SetOnboardingVisual(Visual::TourOrganise),
+            Action::Relayout,
+            Action::Snapshot("10-tour-organise"),
+            Action::SetOnboardingVisual(Visual::TourCollaborate),
+            Action::Relayout,
+            Action::Snapshot("11-tour-collaborate"),
+            Action::SetOnboardingVisual(Visual::TourStart),
+            Action::Relayout,
+            Action::Snapshot("12-tour-start"),
         ],
     }
 }
