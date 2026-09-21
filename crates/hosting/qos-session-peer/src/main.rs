@@ -13,8 +13,28 @@ fn install_tracing() {
         .with_target(true)
         .try_init();
 }
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<()> {
+/// The relay's inbound state path is one deep future chain, so a single poll
+/// can exceed Tokio's default worker stack in an unoptimized build.
+const WORKER_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+/// Keep enough workers that checkpoint serialization cannot occupy the same
+/// two threads that must continue driving the relay transport.
+fn worker_threads() -> usize {
+    std::thread::available_parallelism().map_or(4, |count| count.get().clamp(4, 8))
+}
+
+fn main() -> Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads())
+        .thread_stack_size(WORKER_STACK_BYTES)
+        .thread_name("qos-session-peer")
+        .enable_all()
+        .build()
+        .context("building the session peer runtime")?
+        .block_on(run())
+}
+
+async fn run() -> Result<()> {
     install_tracing();
     let mut args = std::env::args_os().skip(1);
     let command = args

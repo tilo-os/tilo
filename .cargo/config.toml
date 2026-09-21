@@ -47,6 +47,9 @@ rustflags = [
 # cc-rs combines generic and target-specific flags. Keep platform flags scoped
 # to their target, and avoid incompatible native LTO in distribution overrides.
 [env]
+# Tokio's test harness workers use this process default rather than an
+# application runtime builder. Leave caller overrides intact.
+RUST_MIN_STACK = { value = "16777216", force = false }
 # Scope GNU C/assembler options to Linux targets, too. Global CFLAGS would
 # send -Wa,--noexecstack to MSVC/Apple clang while building the host Imager.
 CFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }

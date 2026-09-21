@@ -578,6 +578,69 @@ pub fn message_kind(message: &qos_peer_state::NeighbourMsg) -> &'static str {
         _ => "other",
     }
 }
+/// How long a subscription must stay ready before its recovery counts as
+/// settled. A shorter session continues the same reconnect episode.
+const STABLE_SESSION: Duration = Duration::from_secs(30);
+/// Bound repeated retained-baseline replay when a connection cannot stay up.
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(15);
+
+fn next_reconnect_delay(current: Duration, ready_for: Option<Duration>) -> Duration {
+    if ready_for.is_some_and(|elapsed| elapsed >= STABLE_SESSION) {
+        return Duration::ZERO;
+    }
+    if current.is_zero() {
+        Duration::from_secs(1)
+    } else {
+        (current * 2).min(MAX_RECONNECT_DELAY)
+    }
+}
+
+/// Tracks one reconnect episode. Establishing a transport does not reset its
+/// delay; only a subscription that remains ready for `STABLE_SESSION` does.
+#[derive(Default)]
+struct ReconnectPolicy {
+    delay: Duration,
+    first_ready: Option<std::time::Instant>,
+    had_session: bool,
+}
+
+impl ReconnectPolicy {
+    fn delay(&self) -> Duration {
+        self.delay
+    }
+
+    fn observe_session(&mut self, present: bool, now: std::time::Instant) {
+        if present {
+            self.had_session = true;
+        } else if std::mem::take(&mut self.had_session) {
+            let ready_for = self
+                .first_ready
+                .take()
+                .map(|ready| now.saturating_duration_since(ready));
+            self.delay = next_reconnect_delay(self.delay, ready_for);
+        }
+    }
+
+    fn connect_failed(&mut self) {
+        self.delay = next_reconnect_delay(self.delay, None);
+    }
+
+    fn ready(&mut self, now: std::time::Instant) {
+        self.first_ready.get_or_insert(now);
+    }
+
+    fn operator_reconnect(&mut self) {
+        self.delay = Duration::ZERO;
+        self.first_ready = None;
+        self.had_session = false;
+    }
+
+    #[cfg(test)]
+    fn had_session(&self) -> bool {
+        self.had_session
+    }
+}
+
 /// Every session drop names its reason so a reconnect can be traced to its cause.
 async fn close_session(old: NativeSubscription, reason: &str) {
     tracing::warn!(reason, "native session dropped");
@@ -661,7 +724,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     let mut replaying = false;
     let mut error = None;
     let mut reconnect: Option<Reconnect> = None;
-    let mut delay = Duration::ZERO;
+    let mut reconnect_policy = ReconnectPolicy::default();
     let mut cadence = CheckpointCadence::new();
     let mut stdin = console_lines()?;
     #[cfg(feature = "test-support")]
@@ -676,14 +739,15 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     )?;
     let run_result: Result<()> = async {
     loop {
+        reconnect_policy.observe_session(session.is_some(), std::time::Instant::now());
         if session.is_none()
             && reconnect.is_none()
             && owner.permits_publication()
             && action_error.is_none()
         {
             let _timing = crate::action_timing::Timing::new("subscription_connecting");
-            tracing::info!(delay_ms = delay.as_millis() as u64, "native reconnect starting");
-            reconnect = Some(host.begin_connection(&owner, delay)?);
+            tracing::info!(delay_ms = reconnect_policy.delay().as_millis() as u64, "native reconnect starting");
+            reconnect = Some(host.begin_connection(&owner, reconnect_policy.delay())?);
         }
         tokio::select! {
             _ = &mut interrupt => break,
@@ -817,15 +881,16 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 match connection {
                     Ok(next) => {
                         let _timing = crate::action_timing::Timing::new("subscription_replaying");
-                        session=Some(next); replaying=true; error=Some("Native subscription is applying retained state".into()); delay=Duration::from_secs(1);
+                        session=Some(next); replaying=true; error=Some("Native subscription is applying retained state".into());
                     }
-                    Err(problem) => { tracing::warn!(%problem, "native reconnect failed"); error = Some(problem.to_string()); delay = if delay.is_zero() { Duration::from_secs(1) } else { (delay * 2).min(Duration::from_secs(4)) }; }
+                    Err(problem) => { tracing::warn!(%problem, "native reconnect failed"); error = Some(problem.to_string()); reconnect_policy.connect_failed(); }
                 }
             }
             inbound = async { match session.as_mut() { Some(current) => current.recv().await, None => std::future::pending().await } } => {
                 match inbound {
                     Some(Inbound::Ready { pending }) => {
                         replaying = false;
+                        reconnect_policy.ready(std::time::Instant::now());
                         let _timing = crate::action_timing::Timing::new("subscription_ready_work");
                         subscription_generation = subscription_generation.checked_add(1).context("native subscription generation exhausted")?;
                         tracing::info!(replayed = pending, generation = subscription_generation, "native subscription ready after relay replay");
@@ -950,7 +1015,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     #[cfg(feature = "test-support")]
                     Some(line) if qualification.command(&line) => {},
                     Some(line) if line == "shutdown" => break,
-                    Some(line) if line == "reconnect" => { if let Some(old)=session.take(){close_session(old, "operator reconnect").await;} delay=Duration::ZERO; },
+                    Some(line) if line == "reconnect" => { if let Some(old)=session.take(){close_session(old, "operator reconnect").await;} reconnect_policy.operator_reconnect(); },
                     Some(line) if line == "status" => println!("{}",public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error)),
                     Some(line) if line == "flush" => println!("{}",serde_json::to_string(&owner.flush()?)?),
                     Some(line) if line.starts_with("export ") => { match owner.export(Path::new(&line[7..])) {Ok(())=>println!("Export committed"),Err(problem)=>eprintln!("Export failed: {problem}")} },
@@ -1050,6 +1115,63 @@ mod tests {
             advertised_qad_port, actual_qad_port,
             "private endpoints must advertise only the packet server's real QAD listener"
         );
+    }
+}
+
+#[cfg(test)]
+mod reconnect_policy_tests {
+    use super::{MAX_RECONNECT_DELAY, ReconnectPolicy, STABLE_SESSION};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn rapid_session_losses_and_failed_connects_share_the_capped_ladder() {
+        let start = Instant::now();
+        let mut policy = ReconnectPolicy::default();
+
+        policy.observe_session(true, start);
+        policy.ready(start);
+        policy.observe_session(false, start + STABLE_SESSION - Duration::from_millis(1));
+        assert_eq!(policy.delay(), Duration::from_secs(1));
+
+        policy.observe_session(true, start + STABLE_SESSION);
+        policy.observe_session(false, start + STABLE_SESSION);
+        assert_eq!(policy.delay(), Duration::from_secs(2));
+
+        for expected in [4, 8, 15, 15] {
+            policy.connect_failed();
+            assert_eq!(policy.delay(), Duration::from_secs(expected));
+        }
+        assert_eq!(policy.delay(), MAX_RECONNECT_DELAY);
+    }
+
+    #[test]
+    fn first_ready_timestamp_credits_only_a_stable_session() {
+        let start = Instant::now();
+        let mut policy = ReconnectPolicy::default();
+        policy.connect_failed();
+        policy.connect_failed();
+        assert_eq!(policy.delay(), Duration::from_secs(2));
+
+        policy.observe_session(true, start);
+        policy.ready(start);
+        policy.ready(start + Duration::from_secs(29));
+        policy.observe_session(false, start + STABLE_SESSION);
+        assert_eq!(policy.delay(), Duration::ZERO);
+    }
+
+    #[test]
+    fn operator_reconnect_stays_immediate_after_loop_loss_accounting() {
+        let start = Instant::now();
+        let mut policy = ReconnectPolicy::default();
+        policy.connect_failed();
+        policy.observe_session(true, start);
+        policy.ready(start);
+
+        policy.operator_reconnect();
+        policy.observe_session(false, start + Duration::from_secs(1));
+
+        assert_eq!(policy.delay(), Duration::ZERO);
+        assert!(!policy.had_session());
     }
 }
 
