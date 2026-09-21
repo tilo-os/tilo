@@ -2277,7 +2277,7 @@ mod tests {
         }
 
         fn handle_collab_event(&mut self, _event: &crate::collaboration::CollabEvent) {
-            self.events.set(self.events.get() + 1);
+            self.events.set(self.events.get().saturating_add(1));
         }
     }
 
