@@ -3207,7 +3207,7 @@ impl ShellNetwork {
     /// checkpoint to one exact certified transport peer.
     #[allow(
         clippy::too_many_arguments,
-        reason = "verified transfer identity, hashes, offsets, and path are boundary inputs"
+        reason = "the transfer command carries the authenticated target plus its complete resumable-content contract"
     )]
     pub(crate) fn start_nearby_transfer(
         &self,
@@ -5316,7 +5316,7 @@ impl ShellNetwork {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "invite redemption keeps validation and state transition in one atomic flow"
+        reason = "identity redemption keeps certificate, invitation, room, and persistence validation in one atomic admission path"
     )]
     fn redeem_invited_identity(
         &self,

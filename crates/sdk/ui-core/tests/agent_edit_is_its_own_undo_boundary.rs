@@ -24,10 +24,10 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc};
 
 use crate::support::typed_collab::TypedBroker;
-use ui::app::App;
-use ui::permissions::UserId;
-use ui::state::State;
-use ui::widget::{Container, Widget};
+use tilo_ui::app::App;
+use tilo_ui::permissions::UserId;
+use tilo_ui::state::State;
+use tilo_ui::widget::{Container, Widget};
 
 const AGENT_ACTION: &str = "test.agent.write";
 /// The other party: not the person sitting at this window.
@@ -64,7 +64,7 @@ impl Widget for AgentTarget {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &ui::theme::Theme,
+        theme: &tilo_ui::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.inner.build_layout(taffy, theme, node_map)
@@ -81,14 +81,17 @@ impl Widget for AgentTarget {
         &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::TextRenderer,
-        theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
+        text_renderer: &mut tilo_ui::TextRenderer,
+        theme: &tilo_ui::theme::Theme,
+        presence: &tilo_ui::presence::PresenceCtx,
     ) {
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
     }
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the test widget implements the framework event contract"
+    )]
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,

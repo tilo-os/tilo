@@ -71,6 +71,16 @@ pub struct CatalogueApp {
     /// Expected download size, covered by the registry signature.
     #[serde(default)]
     pub qpkg_size_bytes: u64,
+    /// BLAKE3 of the exact downloaded `.qpkg` bytes.
+    #[serde(default)]
+    pub qpkg_blake3_hex: String,
+    /// Signed execution target metadata.
+    #[serde(default)]
+    pub architecture: String,
+    #[serde(default)]
+    pub isa: String,
+    #[serde(default)]
+    pub runtime: Option<String>,
     /// Publisher key the downloaded qpkg must be signed by.
     #[serde(default)]
     pub publisher_pubkey_hex: String,
@@ -104,22 +114,31 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
     if !v.trust.is_offerable() {
         return None;
     }
-    // Version strings may be SemVer or CalVer, so the publisher-signed
-    // release timestamp is the common ordering authority. Never trust JSON
-    // array order: an otherwise valid registry rewrite could put an older
-    // qpkg first. The remaining fields make timestamp ties deterministic.
+    entry_to_app_for_channel(v, registry_name, pkg::version::ReleaseChannel::Stable)
+}
+
+/// Select versions within the user's explicit release channel.
+pub fn entry_to_app_for_channel(
+    v: &VerifiedEntry,
+    registry_name: &str,
+    channel: pkg::version::ReleaseChannel,
+) -> Option<CatalogueApp> {
+    if !v.trust.is_offerable() {
+        return None;
+    }
+    // Artifact version orders releases. A later publication timestamp must
+    // not make an older semantic/CalVer artifact the offered update.
     let newest = v
         .entry
         .versions
         .iter()
-        .filter(|version| !version.qpkg_url.trim().is_empty())
-        .max_by(|a, b| {
-            (a.released_at_unix, &a.version, &a.qpkg_root_hash_hex).cmp(&(
-                b.released_at_unix,
-                &b.version,
-                &b.qpkg_root_hash_hex,
-            ))
-        })?;
+        .filter(|version| {
+            !version.qpkg_url.trim().is_empty()
+                && target_supported(version)
+                && channel.accepts(&version.version)
+        })
+        .max_by(|a, b| pkg::version::compare(&a.version, &b.version))?;
+    let target = newest.target.as_ref()?;
     let display_name = if v.entry.name.trim().is_empty() {
         launcher::registry::display_name_for_package_id(&v.entry.package_id)
     } else {
@@ -140,6 +159,10 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
         download_url: newest.qpkg_url.clone(),
         qpkg_root_hash_hex: newest.qpkg_root_hash_hex.clone(),
         qpkg_size_bytes: newest.qpkg_size_bytes,
+        qpkg_blake3_hex: newest.qpkg_blake3_hex.clone()?,
+        architecture: target.architecture.clone(),
+        isa: target.isa.clone(),
+        runtime: target.runtime.clone(),
         publisher_pubkey_hex: v.entry.publisher_pubkey_hex.clone(),
         trust: match v.trust {
             TrustLevel::PublisherSigned => "publisher-signed".into(),
@@ -147,6 +170,48 @@ pub fn entry_to_app(v: &VerifiedEntry, registry_name: &str) -> Option<CatalogueA
             TrustLevel::Untrusted => "untrusted".into(),
         },
     })
+}
+
+fn target_supported(version: &registry_types::RegistryVersion) -> bool {
+    let Some(target) = &version.target else {
+        return false;
+    };
+    if target.architecture != std::env::consts::ARCH {
+        return false;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        match target.isa.as_str() {
+            "x86_64" => true,
+            "x86_64-v2" => is_x86_feature_detected!("sse4.2") && is_x86_feature_detected!("popcnt"),
+            "x86_64-v3" => {
+                is_x86_feature_detected!("avx2")
+                    && is_x86_feature_detected!("bmi2")
+                    && is_x86_feature_detected!("fma")
+            }
+            "x86_64-v4" => {
+                is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw")
+            }
+            _ => false,
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        #[cfg(target_arch = "aarch64")]
+        {
+            match target.isa.as_str() {
+                "aarch64" => true,
+                "aarch64-v8.2" => std::arch::is_aarch64_feature_detected!("dotprod"),
+                "aarch64-v8.4" => std::arch::is_aarch64_feature_detected!("i8mm"),
+                "aarch64-v9" => std::arch::is_aarch64_feature_detected!("sve2"),
+                _ => false,
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            false
+        }
+    }
 }
 
 /// The package ids `tilo-install` has already installed here, read
@@ -210,7 +275,7 @@ pub fn available() -> CatalogueListing {
             Ok(result) => match result {
                 Ok(entries) => {
                     for v in &entries {
-                        if let Some(app) = entry_to_app(v, &reg.name) {
+                        if let Some(app) = entry_to_app_for_channel(v, &reg.name, reg.channel) {
                             apps.push(app);
                         }
                     }
@@ -233,6 +298,21 @@ mod tests {
     use super::*;
     use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
 
+    fn native_baseline_isa() -> &'static str {
+        #[cfg(target_arch = "x86_64")]
+        {
+            "x86_64"
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            "aarch64"
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            "unsupported"
+        }
+    }
+
     fn entry(id: &str, name: &str, categories: Vec<&str>) -> RegistryEntry {
         let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
         let mut e = RegistryEntry {
@@ -250,6 +330,12 @@ mod tests {
                 qpkg_root_hash_hex: "ab".repeat(32),
                 qpkg_size_bytes: 10,
                 released_at_unix: 5,
+                qpkg_blake3_hex: Some("ef".repeat(32)),
+                target: Some(registry_types::RegistryTarget {
+                    architecture: std::env::consts::ARCH.into(),
+                    isa: native_baseline_isa().into(),
+                    runtime: None,
+                }),
             }],
             updated_at_unix: 7,
             signature_hex: String::new(),
@@ -273,6 +359,7 @@ mod tests {
             }],
             entries: vec![e.clone()],
             owner_signature_hex: String::new(),
+            channel_authorization: None,
         };
         registry_types::sign_snapshot(&mut snapshot, &owner).unwrap();
         client::classify_snapshot(
@@ -342,6 +429,12 @@ mod tests {
                 qpkg_root_hash_hex: "11".repeat(32),
                 qpkg_size_bytes: 10,
                 released_at_unix: 100,
+                qpkg_blake3_hex: Some("ef".repeat(32)),
+                target: Some(registry_types::RegistryTarget {
+                    architecture: std::env::consts::ARCH.into(),
+                    isa: native_baseline_isa().into(),
+                    runtime: None,
+                }),
             },
             RegistryVersion {
                 version: "2027.01".into(),
@@ -349,6 +442,12 @@ mod tests {
                 qpkg_root_hash_hex: "22".repeat(32),
                 qpkg_size_bytes: 20,
                 released_at_unix: 200,
+                qpkg_blake3_hex: Some("fe".repeat(32)),
+                target: Some(registry_types::RegistryTarget {
+                    architecture: std::env::consts::ARCH.into(),
+                    isa: native_baseline_isa().into(),
+                    runtime: None,
+                }),
             },
         ];
         sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
@@ -357,6 +456,43 @@ mod tests {
         assert_eq!(app.version, "2027.01");
         assert_eq!(app.download_url, "https://apps.example/timeline-new.qpkg");
         assert_eq!(app.qpkg_size_bytes, 20);
+    }
+
+    #[test]
+    fn catalogue_channels_separate_stable_and_continuous_updates() {
+        use pkg::version::ReleaseChannel;
+        let mut e = entry("dev.tilo.channel-test", "Channel", vec![]);
+        let template = e.versions[0].clone();
+        e.versions = ["0.1.0", "0.1.1-dev.9+gffff", "0.1.1-dev.10+gaaaa"]
+            .into_iter()
+            .map(|version| RegistryVersion {
+                version: version.into(),
+                ..template.clone()
+            })
+            .collect();
+        sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+        let current = verified(e.clone());
+        assert_eq!(entry_to_app(&current, "main").unwrap().version, "0.1.0");
+        assert_eq!(
+            entry_to_app_for_channel(&current, "main", ReleaseChannel::Development)
+                .unwrap()
+                .version,
+            "0.1.1-dev.10+gaaaa"
+        );
+        e.versions.push(RegistryVersion {
+            version: "0.1.1".into(),
+            ..template
+        });
+        sign_entry(&mut e, &ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]));
+        let promoted = verified(e);
+        for channel in [ReleaseChannel::Stable, ReleaseChannel::Development] {
+            assert_eq!(
+                entry_to_app_for_channel(&promoted, "main", channel)
+                    .unwrap()
+                    .version,
+                "0.1.1"
+            );
+        }
     }
 
     #[test]
@@ -383,6 +519,10 @@ mod tests {
                 download_url: "https://x/y.qpkg".into(),
                 qpkg_root_hash_hex: "ab".repeat(32),
                 qpkg_size_bytes: 10,
+                qpkg_blake3_hex: "ef".repeat(32),
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
                 publisher_pubkey_hex: "cd".repeat(32),
                 trust: "verified".into(),
             }],
@@ -394,7 +534,7 @@ mod tests {
         let json = serde_json::to_string(&listing).expect("encodes");
         assert_eq!(
             json,
-            r#"{"apps":[{"package_id":"dev.tilo.sheets","display_name":"Sheets","description":"a spreadsheet","category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.qpkg","qpkg_root_hash_hex":"abababababababababababababababababababababababababababababababab","qpkg_size_bytes":10,"publisher_pubkey_hex":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
+            r#"{"apps":[{"package_id":"dev.tilo.sheets","display_name":"Sheets","description":"a spreadsheet","category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.qpkg","qpkg_root_hash_hex":"abababababababababababababababababababababababababababababababab","qpkg_size_bytes":10,"qpkg_blake3_hex":"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","architecture":"x86_64","isa":"x86_64-v3","runtime":null,"publisher_pubkey_hex":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
         );
     }
 

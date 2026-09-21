@@ -677,12 +677,6 @@ impl WindowGroup {
         true
     }
 
-    /// Select a tab on behalf of an explicit shell navigation command.
-    /// Unlike model reconciliation, this publishes a writeback edge.
-    pub fn activate_tab(&mut self, id: u64) -> bool {
-        self.bar.activate(id)
-    }
-
     pub fn cycle_active_tab(&mut self, dir: i32) -> bool {
         let n = self.bar.tabs().len();
         if n < 2 || dir.signum() == 0 {
@@ -1751,10 +1745,7 @@ impl Widget for WindowGroup {
         // `fold`, not `any`: every child's flag must be drained even if
         // an earlier one already reported dirty.
         let bar = self.bar.take_structure_dirty();
-        #[allow(
-            clippy::unnecessary_fold,
-            reason = "fold drains every hosted child flag instead of short-circuiting"
-        )]
+        #[allow(clippy::unnecessary_fold)] // see comment above: must not short-circuit
         let hosts = self
             .hosts
             .iter_mut()

@@ -3,16 +3,16 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ui::State;
-use ui::num::f32_of_u32;
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point};
-use ui::widget::Widget;
+use tilo_ui::State;
+use tilo_ui::num::f32_of_u32;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::vello::Scene;
+use tilo_ui::vello::kurbo::{Affine, Point};
+use tilo_ui::widget::Widget;
 
 use super::chart_gallery_scene;
 
@@ -55,7 +55,7 @@ fn shoot(theme: &Theme, width: u32, height: u32, inspected: bool, out: &Path) {
 }
 
 pub fn run(_args: &[String]) {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
     let dir = PathBuf::from(
         std::env::var("CHART_GALLERY_SHOTS_OUT")
             .unwrap_or_else(|_| "target/chart-gallery-shots".into()),
