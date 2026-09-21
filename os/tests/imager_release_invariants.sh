@@ -355,7 +355,9 @@ grep -Fq 'tilo-os/homebrew-tilo' "$repo/apps/imager/packaging/publish-homebrew-t
   && grep -Fq 'state=open&base=master&head=' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq 'homebrew "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
   && grep -Fq 'winget "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
-  && grep -Fq 'ALLOW_STATIC_BOOTSTRAP' "$workflow" \
+  && grep -Fq 'IMAGER_HOMEBREW_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_WINGET_CREDENTIAL_BROKER' "$workflow" \
+  && ! grep -Fq 'ALLOW_STATIC_BOOTSTRAP' "$workflow" \
   && ok 'first-party Homebrew and public WinGet promotion are automated' \
   || bad 'a package-index promotion path is missing'
 
@@ -559,7 +561,8 @@ winget_monitor="$repo/.forgejo/workflows/monitor-winget.yml"
 winget_reconcile="$repo/apps/imager/packaging/monitor-winget-acceptance.sh"
 grep -Fq 'cron: "23 */6 * * *"' "$winget_monitor" \
   && grep -Fq "IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases'" "$winget_monitor" \
-  && grep -Fq "if: vars.IMAGER_SITE_CREDENTIAL_BROKER != '' || vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP == '1'" "$winget_monitor" \
+  && grep -Fq "if: vars.IMAGER_SITE_CREDENTIAL_BROKER != ''" "$winget_monitor" \
+  && ! grep -Fq 'secrets.' "$winget_monitor" \
   && grep -Fq 'enable-openid-connect: true' "$winget_monitor" \
   && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$winget_monitor" \
   && grep -Fq 'acquire-release-token.sh' "$winget_monitor" \
