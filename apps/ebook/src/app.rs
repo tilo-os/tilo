@@ -53,8 +53,8 @@ use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::metrics::Metrics;
 use ui::widget::{
-    Button, ButtonFace, EditOutcome, EditableLabel, FlapState, Slider, SliderFace, SplitLayout,
-    Toggle, ToggleFace, Widget,
+    Button, ButtonFace, Continuable, EditOutcome, EditableLabel, FlapState, Slider, SliderFace,
+    SplitLayout, Toggle, ToggleFace, Widget,
 };
 
 use crate::chrome::{self as chrome, pointer_target, rhythm};
@@ -4568,7 +4568,7 @@ impl BooksApp {
     }
 }
 
-impl Widget for BooksApp {
+impl Continuable for BooksApp {
     fn continuation_metadata(
         &self,
         _doc: &AutoCommit,
@@ -4630,6 +4630,16 @@ impl Widget for BooksApp {
         self.chapter = chapter;
         self.page = page;
         true
+    }
+}
+
+impl Widget for BooksApp {
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {

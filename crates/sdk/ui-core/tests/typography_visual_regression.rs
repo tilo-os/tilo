@@ -25,11 +25,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
 use crate::support::offscreen::OffscreenRenderer;
-use ui::State;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
+use tilo_ui::State;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Widget;
 
 #[path = "../examples/common/gallery_scene.rs"]
 mod gallery_scene;
@@ -109,7 +109,7 @@ fn render(case: Case) -> Frame {
     let mut state = State::new();
     widget.sync(&mut state.doc, &state.root);
 
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+    let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
         "en-US",
     );
@@ -239,7 +239,7 @@ fn record_evidence(case: Case, frame: &Frame) {
         "display_scale": case.display_scale,
         "text_scale": case.text_scale,
         "light": case.light,
-        "font_manifest_sha256": ui::font_catalog::catalog_manifest_sha256(),
+        "font_manifest_sha256": tilo_ui::font_catalog::catalog_manifest_sha256(),
         "font_scope": "controlled-product-and-fixtures",
         "font_locale": "en-US",
         "os": std::env::consts::OS,
@@ -258,7 +258,7 @@ fn record_evidence(case: Case, frame: &Frame) {
 
 #[test]
 fn multilingual_gallery_matches_scale_matrix() {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
     let baseline_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/typography");
     let update = std::env::var_os("UPDATE_TYPOGRAPHY_BASELINES").is_some();
     let mut failures = Vec::new();

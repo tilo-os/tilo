@@ -15,6 +15,7 @@ fn directory_snapshot_bound_route_permission_and_closed_owner_expire_projection(
     assert_eq!(capture_bound_directory(&mut fixture), revision);
     let alias = fixture
         .app
+        .actions
         .bound_publication
         .alias(&fixture.bindings[1], "bound:probe")
         .unwrap();
@@ -26,6 +27,7 @@ fn directory_snapshot_bound_route_permission_and_closed_owner_expire_projection(
     ));
     fixture
         .app
+        .actions
         .bound_broker_route_for_test
         .as_mut()
         .unwrap()
@@ -36,7 +38,7 @@ fn directory_snapshot_bound_route_permission_and_closed_owner_expire_projection(
             .resolve_action_directory(&revision, &alias, "follow-up"),
         runtime_collab::ActionDirectoryResolution::StaleRevision
     ));
-    assert!(fixture.app.action_directory_snapshot.is_none());
+    assert!(fixture.app.actions.action_directory_snapshot.is_none());
     let revision = capture_bound_directory(&mut fixture);
     *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
         crate::permissions::Actor::person(None, "fixture-user"),
@@ -49,7 +51,7 @@ fn directory_snapshot_bound_route_permission_and_closed_owner_expire_projection(
             .resolve_action_directory(&revision, &alias, "follow-up"),
         runtime_collab::ActionDirectoryResolution::StaleRevision
     ));
-    assert!(fixture.app.action_directory_snapshot.is_none());
+    assert!(fixture.app.actions.action_directory_snapshot.is_none());
     *fixture.permissions.borrow_mut() = crate::permissions::PermissionContext::permissive();
     let revision = capture_bound_directory(&mut fixture);
     fixture.app.close_components();
@@ -59,7 +61,7 @@ fn directory_snapshot_bound_route_permission_and_closed_owner_expire_projection(
             .resolve_action_directory(&revision, &alias, "follow-up"),
         runtime_collab::ActionDirectoryResolution::StaleRevision
     ));
-    assert!(fixture.app.action_directory_snapshot.is_none());
+    assert!(fixture.app.actions.action_directory_snapshot.is_none());
 }
 
 #[test]
@@ -68,6 +70,7 @@ fn directory_snapshot_bound_document_mutation_and_remounted_owner_change_revisio
     let revision = capture_bound_directory(&mut fixture);
     let alias = fixture
         .app
+        .actions
         .bound_publication
         .alias(&fixture.bindings[0], "bound:probe")
         .unwrap();
@@ -93,9 +96,10 @@ fn directory_snapshot_bound_document_mutation_and_remounted_owner_change_revisio
         Box::new(crate::widget::Text::new("retired")),
     );
     fixture.app.root_widget = root;
-    fixture.app.bound_broker_route_for_test = replacement.app.bound_broker_route_for_test.clone();
+    fixture.app.actions.bound_broker_route_for_test =
+        replacement.app.actions.bound_broker_route_for_test.clone();
     assert_ne!(fixture.app.action_directory_revision(), revision);
-    assert!(fixture.app.action_directory_snapshot.is_none());
+    assert!(fixture.app.actions.action_directory_snapshot.is_none());
     let next = capture_bound_directory(&mut fixture);
     assert!(matches!(
         fixture
