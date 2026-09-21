@@ -48,14 +48,14 @@ class ProofTests(unittest.TestCase):
 
     def test_accepted_is_polled_without_reinvocation(self):
         calls = []
-        updates = iter([{'state': 'progress'}, {'state': 'succeeded', 'output': {'resources': ['qos.content:actual']}}])
+        updates = iter([{'state': 'progress'}, {'state': 'succeeded', 'output': {'resources': ['tilo.content:actual']}}])
         def tool(name, args):
             calls.append(name)
             if name == 'qos_invoke':
                 return {'invocation_id': 42, 'update': {'state': 'accepted'}}
             self.assertEqual(args, {'invocation_id': 42})
             return {'update': next(updates)}
-        self.assertEqual(proof.invoke(tool, {}, {}, timeout=1, interval=0)['resources'], ['qos.content:actual'])
+        self.assertEqual(proof.invoke(tool, {}, {}, timeout=1, interval=0)['resources'], ['tilo.content:actual'])
         self.assertEqual(calls, ['qos_invoke', 'qos_status', 'qos_status'])
 
     def test_failure_and_timeout_never_replay(self):
