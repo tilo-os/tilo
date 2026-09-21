@@ -455,6 +455,34 @@ test('synthetic leaf focus survives owner acknowledgements and reorder but obeys
   bridge.close();
 });
 
+test('focused custom app owner preserves accepted expression and button focus across snapshots',()=>{
+  const root=new Element('div'),calls=[];document.activeElement=document.body;
+  const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{});
+  const owner='desktop/calculator';
+  const view=(value,focused=true)=>({keyboard_focus_owner:focused?owner:null,root:{
+    path:owner,semantics:{role:'Group',name:'Calculator',state:{focusable:true,focused},children:[
+      {role:'TextInput',name:'Expression',value,action_target:'calculator.expression',state:{focusable:true,focused:false}},
+      {role:'Button',name:'Evaluate expression',action_target:'calculator.evaluate',state:{focusable:true,focused:false}},
+    ]},
+  }});
+  bridge.update(view('2'));
+  const group=root.children[0],expression=group.children[0],evaluate=group.children[1];
+  expression.focus();
+  assert.deepEqual(calls.at(-1),[owner,'calculator.expression','focus','',0,0]);
+  bridge.update(view(''));
+  assert.equal(expression.value,'','the editable canonical value stays empty after clear');
+  bridge.update(view('2^2'));
+  assert.equal(document.activeElement,expression);
+  assert.equal(expression.value,'2^2');
+  evaluate.focus();
+  assert.deepEqual(calls.at(-1),[owner,'calculator.evaluate','focus','',0,0]);
+  bridge.update(view('2^2'));
+  assert.equal(document.activeElement,evaluate);
+  bridge.update(view('2^2',false));
+  assert.equal(document.activeElement,document.body);
+  bridge.close();
+});
+
 test('focused retained child beats focused aggregate and reconciliation prevents scrolling',()=>{
   const root=new Element('div');document.activeElement=document.body;
   const bridge=semanticBridge(root,()=>true,()=>{});

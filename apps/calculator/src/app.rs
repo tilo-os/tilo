@@ -1565,11 +1565,7 @@ impl Widget for CalculatorApp {
                 let mut controls = Vec::new();
                 let mut display = AccessNode::new(Role::TextInput)
                     .with_name("Expression")
-                    .with_value(if self.model.expr.trim().is_empty() {
-                        "0".to_string()
-                    } else {
-                        self.model.expr.clone()
-                    })
+                    .with_value(self.model.expr.clone())
                     .with_description("Type an expression, then activate Evaluate or press Enter.")
                     .with_action_target("calculator.expression")
                     .with_state(AccessState::new().focusable(true))
@@ -1683,6 +1679,11 @@ impl Widget for CalculatorApp {
                     self.model.expr.clone()
                 })
                 .with_description("Calculator and graphing workspace")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.host_focused),
+                )
                 .with_children(children),
         )
     }

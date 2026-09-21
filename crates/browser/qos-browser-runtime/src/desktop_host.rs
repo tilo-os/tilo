@@ -3926,6 +3926,159 @@ mod tests {
         }
         find(&frame.inspection().root, label).expect("exported browser semantic route")
     }
+    fn browser_owned_semantic_node(
+        frame: &ui::headless::FrameHarness,
+        owner: &str,
+        label: &str,
+    ) -> ui::a11y::AccessNode {
+        fn access(node: &ui::a11y::AccessNode, label: &str) -> Option<ui::a11y::AccessNode> {
+            if node.name.as_deref() == Some(label) {
+                return Some(node.clone());
+            }
+            node.children.iter().find_map(|node| access(node, label))
+        }
+        fn find<'a>(
+            node: &'a ui::headless::InspectionNode,
+            owner: &str,
+        ) -> Option<&'a ui::headless::InspectionNode> {
+            (node.path == owner)
+                .then_some(node)
+                .or_else(|| node.children.iter().find_map(|node| find(node, owner)))
+        }
+        let inspection = frame.inspection();
+        find(&inspection.root, owner)
+            .and_then(|node| node.semantics.as_ref())
+            .and_then(|node| access(node, label))
+            .expect("exported browser semantic node")
+    }
+    #[test]
+    fn focused_calculator_expression_clear_and_type_preserve_the_semantic_editor() {
+        let (root, handle, _) = fixture();
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            Box::new(root),
+            (1280, 720),
+            Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        let calculator = handle.navigation.borrow()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["label"] == "Calculator")
+            .unwrap()["route"]
+            .clone();
+        handle
+            .navigate(
+                &mut frame,
+                crate::desktop_navigation::Command::Select {
+                    generation: handle.generation.clone(),
+                    route: serde_json::from_value(calculator).unwrap(),
+                },
+            )
+            .unwrap();
+        let (owner, expression_target) = browser_semantic_route(&frame, "Expression");
+        handle
+            .perform_semantic_input(
+                &mut frame,
+                &owner,
+                Some(&expression_target),
+                &ui::a11y::Action::Focus,
+            )
+            .unwrap();
+        let keyboard_owner = frame
+            .inspection()
+            .keyboard_focus_owner
+            .expect("Calculator owns keyboard input");
+        for value in ["2", ""] {
+            handle
+                .perform_semantic_input(
+                    &mut frame,
+                    &owner,
+                    Some(&expression_target),
+                    &ui::a11y::Action::SetValue(value.into()),
+                )
+                .unwrap();
+        }
+        let expression = browser_owned_semantic_node(&frame, &owner, "Expression");
+        assert_eq!(expression.value.as_deref(), Some(""));
+        assert!(!expression.state.focused);
+        assert!(
+            browser_owned_semantic_node(&frame, &owner, "Calculator")
+                .state
+                .focused
+        );
+        assert_eq!(
+            frame.inspection().keyboard_focus_owner.as_deref(),
+            Some(keyboard_owner.as_str())
+        );
+
+        handle
+            .perform_semantic_input(
+                &mut frame,
+                &owner,
+                Some(&expression_target),
+                &ui::a11y::Action::SetValue("2^2".into()),
+            )
+            .unwrap();
+        let expression = browser_owned_semantic_node(&frame, &owner, "Expression");
+        assert_eq!(expression.value.as_deref(), Some("2^2"));
+        assert!(!expression.state.focused);
+        assert!(
+            browser_owned_semantic_node(&frame, &owner, "Calculator")
+                .state
+                .focused
+        );
+        assert_eq!(
+            frame.inspection().keyboard_focus_owner.as_deref(),
+            Some(keyboard_owner.as_str())
+        );
+        assert_eq!(
+            browser_owned_semantic_node(&frame, &owner, "Result 4")
+                .name
+                .as_deref(),
+            Some("Result 4")
+        );
+
+        frame.key("Enter");
+        let calculator = handle
+            .records
+            .borrow()
+            .values()
+            .find(|record| record.app == "dev.qos.calculator")
+            .unwrap()
+            .clone();
+        let history = calculator
+            .store
+            .read(&calculator.checkout.id, |doc| {
+                calculator::doc::load(doc).unwrap().history
+            })
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].expr, "2^2");
+        assert_eq!(history[0].result, "4");
+
+        let (_, evaluate_target) = browser_semantic_route(&frame, "Evaluate expression");
+        handle
+            .perform_semantic_input(
+                &mut frame,
+                &owner,
+                Some(&evaluate_target),
+                &ui::a11y::Action::Focus,
+            )
+            .unwrap();
+        assert!(
+            !browser_owned_semantic_node(&frame, &owner, "Expression")
+                .state
+                .focused,
+            "focusing another Calculator control must release semantic Expression focus"
+        );
+        assert_eq!(
+            frame.inspection().keyboard_focus_owner.as_deref(),
+            Some(keyboard_owner.as_str())
+        );
+    }
     #[test]
     fn desktop_cold_keyboard_focus_reveals_chat_without_prior_writer_focus() {
         let (mut root, handle, _storage) = fixture();
