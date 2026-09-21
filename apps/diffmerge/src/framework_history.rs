@@ -17,7 +17,7 @@ use vello::{
     peniko::{BlendMode, Fill},
 };
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.diffmerge",
+    app_id: "so.tilo.diffmerge",
     scopes: &[HistoryScopeDefinition {
         key: "output",
         title: "Merge output",

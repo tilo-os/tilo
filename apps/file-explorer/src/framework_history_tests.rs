@@ -325,7 +325,7 @@ fn framework_history_embedded_files_root_has_shared_entry_and_preserves_incident
     let directory = tempfile::tempdir().unwrap();
     let mut owners = ui::record::RecordOwners::new(directory.path().to_path_buf());
     let store = owners
-        .open("dev.tilo.file-explorer", "embedded-history-test")
+        .open("so.tilo.file-explorer", "embedded-history-test")
         .unwrap();
     let checkout = ui::RecordCheckout::new(
         ui::RecordId::for_tab(501),
