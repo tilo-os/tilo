@@ -1392,7 +1392,10 @@ impl DrmDispatchState {
     }
 
     /// Route one gesture: to the shell when the finger count says so, otherwise on to the focused client.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "gesture events are consumed as protocol state-machine inputs"
+    )]
     fn handle_gesture(&mut self, ev: GestureEvent) {
         // Decide ownership *before* touching the tracker. Only `begin`
         // carries a finger count, so every later event asks what the
