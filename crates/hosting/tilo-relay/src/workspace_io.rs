@@ -138,6 +138,24 @@ async fn fresh_membership_inner(
     let (store, lane) = authority_handles(workspace).await;
     membership_phase(trace, "delivery_membership_handles_acquired");
     membership_phase(trace, "delivery_membership_lane_wait");
+    #[cfg(test)]
+    let _lane = if trace.is_some() {
+        use std::{future::Future as _, task::Poll};
+
+        let root = store.root().to_path_buf();
+        let mut waiting = Box::pin(lane.lock_owned());
+        std::future::poll_fn(move |cx| match waiting.as_mut().poll(cx) {
+            Poll::Ready(guard) => Poll::Ready(guard),
+            Poll::Pending => {
+                crate::store::test_barrier::signal(&root, "delivery-membership-lane-pending");
+                Poll::Pending
+            }
+        })
+        .await
+    } else {
+        lane.lock_owned().await
+    };
+    #[cfg(not(test))]
     let _lane = lane.lock_owned().await;
     membership_phase(trace, "delivery_membership_lane_acquired");
     let mut members = authorization_io(move || store.load_membership(), trace).await?;

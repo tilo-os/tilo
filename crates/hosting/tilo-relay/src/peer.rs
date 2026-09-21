@@ -899,20 +899,7 @@ async fn replay_wait<T, W: tokio::io::AsyncWrite + Unpin>(
         let receipt = admission.await?;
         crate::persistence::receipt(receipt).await
     };
-    tokio::pin!(completed);
-    let mut private_open = session.v2;
-    loop {
-        tokio::select! {
-            biased;
-            result = &mut completed => return Ok(result?),
-            private = private_rx.recv(), if private_open => {
-                match private {
-                    Some(private) => write_private(private, peer, session, write).await?,
-                    None => private_open = false,
-                }
-            }
-        }
-    }
+    replay_direct_wait(completed, peer, session, private_rx, write).await
 }
 
 async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
@@ -930,7 +917,28 @@ async fn replay_direct_wait<T, W: tokio::io::AsyncWrite + Unpin>(
             result = &mut operation => return Ok(result?),
             private = private_rx.recv(), if private_open => {
                 match private {
-                    Some(private) => write_private(private, peer, session, write).await?,
+                    Some(private) => {
+                        let writing = write_private(private, peer, session, write);
+                        tokio::pin!(writing);
+                        let mut completed = None;
+                        loop {
+                            tokio::select! {
+                                biased;
+                                result = &mut writing => {
+                                    result?;
+                                    if let Some(result) = completed {
+                                        return Ok(result?);
+                                    }
+                                    break;
+                                }
+                                result = &mut operation, if completed.is_none() => {
+                                    // Finish the active private wire frame before
+                                    // propagating either replay success or failure.
+                                    completed = Some(result);
+                                }
+                            }
+                        }
+                    }
                     None => private_open = false,
                 }
             }

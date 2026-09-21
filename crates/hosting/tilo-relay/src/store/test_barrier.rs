@@ -45,6 +45,18 @@ pub(crate) fn install(
     );
     (Release { key, gate }, rx)
 }
+pub(crate) fn signal(root: &Path, operation: &'static str) {
+    let gate = gates()
+        .lock()
+        .unwrap()
+        .get(&(root.to_path_buf(), operation))
+        .cloned();
+    if let Some(gate) = gate
+        && let Some(reached) = gate.reached.lock().unwrap().take()
+    {
+        let _ = reached.send(());
+    }
+}
 pub(crate) fn pause(root: &Path, operation: &'static str) {
     let gate = gates()
         .lock()

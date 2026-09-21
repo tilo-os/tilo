@@ -35,12 +35,26 @@ impl Fixture {
         delivery_capacity: usize,
         workers: Arc<tokio::sync::Semaphore>,
     ) -> Self {
+        Self::with_delivery_capacity_workers_and_workspace(delivery_capacity, workers, 7)
+    }
+    fn with_workspace_id(workspace_id: u64) -> Self {
+        Self::with_delivery_capacity_workers_and_workspace(
+            32,
+            crate::persistence::isolated_test_workers(),
+            workspace_id,
+        )
+    }
+    fn with_delivery_capacity_workers_and_workspace(
+        delivery_capacity: usize,
+        workers: Arc<tokio::sync::Semaphore>,
+        workspace_id: u64,
+    ) -> Self {
         let (root, user) = UserIdentity::generate("owner", 1);
         let (author, _) = certified_device(&root, user.public_key, "author");
         let (recipient, _) = certified_device(&root, user.public_key, "recipient");
         let tmp = tempfile::tempdir().unwrap();
         let mut runtime =
-            WorkspaceRuntime::open(tmp.path(), 7, true, Membership::default()).unwrap();
+            WorkspaceRuntime::open(tmp.path(), workspace_id, true, Membership::default()).unwrap();
         for peer in [&author, &recipient] {
             runtime.admit_device(peer.device_public_key).unwrap();
         }
@@ -84,7 +98,10 @@ impl Fixture {
         };
         let store = runtime.store.clone();
         let workspace = Arc::new(AsyncMutex::new(runtime));
-        let registry = Arc::new(AsyncMutex::new(HashMap::from([(7, workspace.clone())])));
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+            workspace_id,
+            workspace.clone(),
+        )])));
         let (private, _) = mpsc::channel(8);
         Self {
             _tmp: tmp,
@@ -1088,9 +1105,15 @@ impl Fixture {
             revocations: &self.source.revocations,
         };
         let mut replay = None;
-        handle_subscribe(&self.recipient, &session, &mut Vec::new(), &mut replay, 7)
-            .await
-            .unwrap();
+        handle_subscribe(
+            &self.recipient,
+            &session,
+            &mut Vec::new(),
+            &mut replay,
+            self.store.workspace_id(),
+        )
+        .await
+        .unwrap();
         replay.unwrap()
     }
 }
@@ -1277,6 +1300,239 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
             assert_eq!(fixture.store.count_pending(&device).unwrap(), 0);
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_its_lane() {
+    let room = uuid::Uuid::from_u128(7);
+    let room_id = crate::room_workspace_id(&room.to_string()).unwrap();
+    let fixture = Arc::new(Fixture::with_workspace_id(room_id));
+    let (_, ticket, _, _) = fixture.subscribe_ticket().await;
+    let (source_private, _source_private_rx) = mpsc::channel(1);
+    let (recipient_private, _recipient_private_rx) = mpsc::channel(1);
+    {
+        let mut runtime = fixture.workspace.lock().await;
+        runtime.action_targets.insert(
+            fixture.source.peer.device_public_key,
+            ActionTarget {
+                broker_host: None,
+                broker_protocol: false,
+                room,
+                peer: fixture.source.peer.clone(),
+                state_tx: fixture.source.tx.clone(),
+                tx: source_private,
+            },
+        );
+        runtime.action_targets.insert(
+            fixture.recipient.device_public_key,
+            ActionTarget {
+                broker_host: None,
+                broker_protocol: false,
+                room,
+                peer: fixture.recipient.clone(),
+                state_tx: fixture.recipient_tx.clone(),
+                tx: recipient_private,
+            },
+        );
+    }
+    let (private_tx, mut private_rx) = mpsc::channel(1);
+    let (reply, _reply_rx) = mpsc::channel(1);
+    let action = DirectedAction {
+        room,
+        request_id: uuid::Uuid::from_u128(8),
+        source: fixture.source.peer.device_public_key,
+        target: fixture.recipient.device_public_key,
+        message: ActionMessage::CatalogueRefresh { scope: None },
+    };
+    let delivery = PrivateDelivery {
+        certified: false,
+        action: action.clone(),
+        source: fixture.source.peer.clone(),
+        source_tx: fixture.source.tx.clone(),
+        reply,
+        source_disconnect: fixture.source.disconnect.clone(),
+    };
+    let root = fixture.store.root().to_path_buf();
+    let (release_read, read_reached) =
+        crate::store::test_barrier::install(&root, "membership-read");
+    let (release_pending, lane_pending) =
+        crate::store::test_barrier::install(&root, "delivery-membership-lane-pending");
+    let writer = fixture.clone();
+    let task = tokio::spawn(async move {
+        let session = SessionCtx {
+            workspaces: &writer.registry,
+            autobind: None,
+            outbound: &writer.recipient_tx,
+            state_outbound: None,
+            connection_live: None,
+            own_user_public_key: &writer.source.own_user,
+            metrics: &writer.metrics,
+            trust_policy: &writer.source.policy,
+            disconnect: &writer.source.disconnect,
+            v2: true,
+            private_tx: &writer.private,
+            revocations: &writer.source.revocations,
+        };
+        let source = StateSource::new(&writer.recipient, &session);
+        let authority = ticket.authority.clone();
+        let replay = async {
+            let _ticket = ticket;
+            authorize_replay(&writer.workspace, &source, &authority).await
+        };
+        let mut wire = Vec::new();
+        let result = replay_direct_wait(
+            replay,
+            &writer.recipient,
+            &session,
+            &mut private_rx,
+            &mut wire,
+        )
+        .await;
+        (result, wire)
+    });
+
+    read_reached.await.unwrap();
+    private_tx
+        .send(PrivateOutbound::Delivery(delivery))
+        .await
+        .unwrap();
+    lane_pending.await.unwrap();
+    drop(release_pending);
+    drop(release_read);
+
+    let mut task = task;
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(3), &mut task).await;
+    let (result, wire) = match joined {
+        Ok(joined) => joined.unwrap(),
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            panic!("private delivery stopped replay from releasing its authorization lane");
+        }
+    };
+    result.unwrap();
+    let mut reader = SessionReader::new(wire.as_slice(), true);
+    assert!(matches!(
+        reader.read_next().await.unwrap(),
+        Some(EnvelopeV2::Delivered {
+            action: delivered,
+            ..
+        }) if delivered == action
+    ));
+    assert!(reader.read_next().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() {
+    struct GatedWrite {
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+        release: tokio::sync::oneshot::Receiver<()>,
+        bytes: Vec<u8>,
+    }
+    impl tokio::io::AsyncWrite for GatedWrite {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            use std::{future::Future as _, task::Poll};
+
+            if let Some(started) = self.started.take() {
+                self.bytes.push(bytes[0]);
+                let _ = started.send(());
+                return Poll::Ready(Ok(1));
+            }
+            match std::pin::Pin::new(&mut self.release).poll(cx) {
+                Poll::Ready(Ok(())) => {
+                    self.bytes.extend_from_slice(bytes);
+                    Poll::Ready(Ok(bytes.len()))
+                }
+                Poll::Ready(Err(_)) => {
+                    Poll::Ready(Err(std::io::Error::other("private write release dropped")))
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    let fixture = Arc::new(Fixture::new());
+    let (private_tx, mut private_rx) = mpsc::channel(1);
+    let frame = EnvelopeV2::ActionsReady {
+        room: uuid::Uuid::from_u128(9),
+        capability: crate::transport_v2::ActionCapability::TransportOnly,
+    };
+    private_tx
+        .send(PrivateOutbound::Reply(frame.clone()))
+        .await
+        .unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let (complete_tx, complete_rx) = tokio::sync::oneshot::channel();
+    let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+    let writer = fixture.clone();
+    let task = tokio::spawn(async move {
+        let session = SessionCtx {
+            workspaces: &writer.registry,
+            autobind: None,
+            outbound: &writer.recipient_tx,
+            state_outbound: None,
+            connection_live: None,
+            own_user_public_key: &writer.source.own_user,
+            metrics: &writer.metrics,
+            trust_policy: &writer.source.policy,
+            disconnect: &writer.source.disconnect,
+            v2: true,
+            private_tx: &writer.private,
+            revocations: &writer.source.revocations,
+        };
+        let operation = async move {
+            complete_rx.await.unwrap();
+            completed_tx.send(()).unwrap();
+            Err::<(), _>(crate::persistence::error("replay failed"))
+        };
+        let mut wire = GatedWrite {
+            started: Some(started_tx),
+            release: release_rx,
+            bytes: Vec::new(),
+        };
+        let result = replay_direct_wait(
+            operation,
+            &writer.recipient,
+            &session,
+            &mut private_rx,
+            &mut wire,
+        )
+        .await;
+        (result, wire.bytes)
+    });
+
+    started_rx.await.unwrap();
+    complete_tx.send(()).unwrap();
+    completed_rx.await.unwrap();
+    assert!(
+        !task.is_finished(),
+        "replay error interrupted an active private wire frame"
+    );
+    release_tx.send(()).unwrap();
+    let (result, bytes) = task.await.unwrap();
+    assert!(result.is_err());
+    let mut reader = SessionReader::new(bytes.as_slice(), true);
+    assert_eq!(reader.read_next().await.unwrap(), Some(frame));
+    assert!(reader.read_next().await.unwrap().is_none());
 }
 
 #[tokio::test]
