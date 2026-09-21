@@ -515,6 +515,12 @@ impl WindowGroup {
         self.hosts.iter().find(|(i, _)| *i == id).map(|(_, h)| h)
     }
 
+    pub(crate) fn discard_layout_nodes(&mut self) {
+        for (_, host) in &mut self.hosts {
+            host.discard_layout_nodes();
+        }
+    }
+
     /// Complete capture bounds for the active app, including this group's tab
     /// decoration. `None` preserves the normal whole-window capture path.
     pub fn complete_capture_rect(&self) -> Option<Rect> {
@@ -1669,6 +1675,11 @@ impl Widget for WindowGroup {
         let bar_node =
             (!self.external_navigation).then(|| self.bar.build_layout(taffy, theme, node_map));
         let active_id = self.bar.active_id();
+        for (id, host) in &mut self.hosts {
+            if *id != active_id {
+                host.discard_layout_nodes();
+            }
+        }
         // See `built_active`'s field doc: forces a rebuild when the
         // active tab switches.
         self.built_active = Some(active_id);

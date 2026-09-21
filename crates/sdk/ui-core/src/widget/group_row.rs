@@ -1490,6 +1490,11 @@ impl Widget for GroupRow {
     ) -> NodeId {
         self.node_ids.clear();
         if self.external_navigation && self.hidden {
+            // Retained groups remain lifecycle owners, but none of their
+            // History handles belong to this hidden row's one-node layout.
+            for group in &mut self.groups {
+                group.discard_layout_nodes();
+            }
             let node = taffy.leaf_node(Style {
                 display: Display::None,
                 ..Default::default()

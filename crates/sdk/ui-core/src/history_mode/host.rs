@@ -286,6 +286,21 @@ impl HistoryHost {
         }
         false
     }
+    /// Forget handles owned by a discarded Taffy composition. Logical History
+    /// custody, selection, and saved semantic focus remain retained.
+    pub(crate) fn discard_layout_nodes(&mut self) {
+        self.rect = Rect::ZERO;
+        self.cursor = Point::ORIGIN;
+        self.keyboard_active = false;
+        self.chrome_node = None;
+        self.live_node = None;
+        self.toolbar_node = None;
+        self.body_node = None;
+        self.timeline_node = None;
+        self.canvas_node = None;
+        self.unavailable_node = None;
+        self.review_node = None;
+    }
     pub(crate) fn live_interactive(&self) -> bool {
         !self.captures_input() && !self.invalid_owner
     }

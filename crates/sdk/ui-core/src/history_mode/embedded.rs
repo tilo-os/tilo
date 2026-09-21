@@ -334,3 +334,9 @@ pub(crate) fn keyboard_captured(
     });
     captured
 }
+
+pub(crate) fn captures_input(root: &dyn Widget) -> bool {
+    let mut captured = false;
+    root.visit_framework_history(&mut |history, _| captured |= history.captures_input());
+    captured
+}

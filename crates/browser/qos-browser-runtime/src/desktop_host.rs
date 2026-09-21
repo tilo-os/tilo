@@ -3718,6 +3718,25 @@ mod tests {
             handle.navigation.borrow()["scroll"].is_null(),
             "History owns input until returning to the live editor"
         );
+        let calculator = handle.navigation.borrow()["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["label"] == "Calculator")
+            .unwrap()["route"]
+            .clone();
+        assert_eq!(
+            handle
+                .navigate(
+                    &mut frame,
+                    Command::Select {
+                        generation: handle.generation.clone(),
+                        route: serde_json::from_value(calculator).unwrap(),
+                    },
+                )
+                .unwrap_err(),
+            "Finish the current dialog or command first"
+        );
         let after = handle
             .records
             .borrow()
@@ -6310,13 +6329,23 @@ mod tests {
                 0,
                 "{case:?}"
             );
+            frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
+                "must not reach the hidden app".into(),
+            )));
+            assert_eq!(
+                focused_controls_for_instance(&frame, &frame.inspection().root, initial),
+                0,
+                "{case:?}: IME must not restore the inactive retained owner"
+            );
         }
     }
 
     #[test]
     fn pointer_press_on_notes_nonfocusable_surface_clears_chat_composer_focus() {
         let (root, handle, _) = fixture_with_topology(|tree| {
+            let active_workspace = tree.active;
             let strip = &mut tree.workspaces[0].strips[0];
+            let strip_id = strip.id;
             let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
             let mut chat = None;
             let mut notes = None;
@@ -6345,7 +6374,8 @@ mod tests {
                     maximized: false,
                 },
             ];
-            tree.active_group.insert(strip.id, 3);
+            tree.active_strip.insert(active_workspace, strip_id);
+            tree.active_group.insert(strip_id, 3);
         });
         let mut root = Box::new(root);
         let root_ptr = std::ptr::from_mut(root.as_mut());

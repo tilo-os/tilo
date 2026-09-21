@@ -2516,11 +2516,7 @@ impl FrameHarness {
                 .history
                 .as_ref()
                 .is_some_and(|history| history.captures_input())
-            || crate::history_mode::embedded::keyboard_captured(
-                self.root.as_ref(),
-                self.focused,
-                &self.taffy,
-            )
+            || crate::history_mode::embedded::captures_input(self.root.as_ref())
         {
             Err("Finish the current dialog or command first".into())
         } else {

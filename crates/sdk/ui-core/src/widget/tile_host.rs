@@ -574,6 +574,13 @@ impl TileHost {
             .as_ref()
             .is_some_and(|history| history.request_open())
     }
+    /// Inactive retained tiles have no nodes in the current Taffy tree.
+    pub(crate) fn discard_layout_nodes(&mut self) {
+        self.live_callback_node = None;
+        if let Some(history) = &mut self.history {
+            history.discard_layout_nodes();
+        }
+    }
     pub fn register_document_history(
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
