@@ -568,16 +568,12 @@ impl RichTextLine {
     }
 
     pub fn mark_rects(&self, theme: &Theme, range: std::ops::Range<usize>) -> Vec<Rect> {
-        if self.wrap {
-            return self.inner.selection_rects(theme, range.start, range.end);
-        }
-        let x0 = self.pixel_x_for_byte(theme, range.start);
-        let x1 = self.pixel_x_for_byte(theme, range.end);
-        let rect = self.get_rect();
-        (x1 > x0)
-            .then_some(Rect::new(x0, rect.y0, x1, rect.y1))
-            .into_iter()
-            .collect()
+        // Selection geometry is also the painted geometry for a marked run.
+        // In particular it preserves right-to-left ranges (whose logical end
+        // can be left of their start) and disjoint bands in mixed-direction
+        // text. Collapsing those carets into one `x0..x1` interval either
+        // drops the RTL run or makes an unmarked visual gap clickable.
+        self.inner.selection_rects(theme, range.start, range.end)
     }
 }
 
