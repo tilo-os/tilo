@@ -293,6 +293,16 @@ impl NoteTreeView {
         ROW_HEIGHT * self.text_scale
     }
 
+    fn scrollbar_thumb_height(
+        &self,
+        track_height: f64,
+        viewport_height: f64,
+        content_height: f64,
+    ) -> f64 {
+        let minimum = self.scaled(24.0).min(track_height);
+        (track_height * viewport_height / content_height).clamp(minimum, track_height)
+    }
+
     /// The selected row's pill: inset `margin` from the pane's sides and
     /// half an `s1` from the row's top and bottom, so two neighbouring rows'
     /// pills sit one `s1` apart (HIG §7: nothing touches).
@@ -990,8 +1000,8 @@ impl Widget for NoteTreeView {
             let track_height = (track_bottom - track_top).max(1.0);
             let content_height = num::f64_of_usize(self.flat_rows.len()) * self.row_height();
             let viewport_height = (self.rect.height() - self.header_height()).max(1.0);
-            let thumb_height = (track_height * viewport_height / content_height)
-                .clamp(self.scaled(24.0), track_height);
+            let thumb_height =
+                self.scrollbar_thumb_height(track_height, viewport_height, content_height);
             let travel = (track_height - thumb_height).max(0.0);
             let fraction = (self.scroll_y / self.max_scroll_y).clamp(0.0, 1.0);
             let y0 = track_top + travel * fraction;
@@ -2910,6 +2920,38 @@ mod tests {
         );
         tree.reveal_row(0);
         assert!(tree.scroll_y.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn populated_sidebar_draws_when_scroll_track_is_shorter_than_minimum_thumb() {
+        let mut workspace = Workspace::new();
+        for _ in 0..12 {
+            workspace.create_page(None);
+        }
+        let mut tree = NoteTreeView::new();
+        tree.sync_from_workspace(&workspace);
+        tree.rect = Rect::new(0.0, 0.0, 240.0, tree.header_height() + 9.0);
+        tree.max_scroll_y = 500.0;
+
+        let mut scene = Scene::new();
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/sdk/ui-core/assets/fonts"),
+            "en-US",
+        );
+        let mut text_renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+
+        Widget::draw(
+            &mut tree,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text_renderer,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+
+        assert_eq!(tree.scrollbar_thumb_height(1.0, 1.0, 360.0), 1.0);
+        assert_eq!(tree.scrollbar_thumb_height(80.0, 200.0, 2_000.0), 24.0);
     }
 
     #[test]
