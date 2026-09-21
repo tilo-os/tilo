@@ -8158,10 +8158,18 @@ pub mod tests {
     #[cfg(test)]
     use ed25519_dalek::SigningKey;
 
+    /// Prepare an owned test directory for the production broker's socket check.
+    ///
+    /// # Errors
+    /// Returns the filesystem error if the directory's mode cannot be set to 0700.
+    pub fn secure_socket_parent(parent: &Path) -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+    }
+
     #[cfg(test)]
     fn lifecycle_socket(directory: &tempfile::TempDir, name: &str) -> PathBuf {
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-            .expect("secure temporary broker directory");
+        secure_socket_parent(directory.path()).expect("secure temporary broker directory");
         directory.path().join(format!("{name}.sock"))
     }
 
