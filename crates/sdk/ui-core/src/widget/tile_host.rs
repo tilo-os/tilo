@@ -6,8 +6,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::app_widget::AppWidget;
+use crate::widget::{Continuable, Widget};
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1354,7 +1354,44 @@ impl TileHost {
     }
 }
 
+impl Continuable for TileHost {
+    fn continuation_metadata(
+        &self,
+        state: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata> {
+        match &self.content {
+            TileContent::App(app) => app
+                .continuable()
+                .and_then(|continuable| continuable.continuation_metadata(state, path)),
+            _ => None,
+        }
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &crate::collaboration::ContinuationMetadata,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => app.continuable_mut().is_some_and(|continuable| {
+                continuable.restore_continuation_metadata(metadata, state, path)
+            }),
+            _ => false,
+        }
+    }
+}
+
 impl Widget for TileHost {
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
+    }
+
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         if let Some(error) = &self.record_error {
             return Some(Err(error.clone()));
@@ -1561,27 +1598,6 @@ impl Widget for TileHost {
     fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
         if let TileContent::App(live) = &mut self.content {
             live.handle_collab_event(event);
-        }
-    }
-    fn continuation_metadata(
-        &self,
-        state: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<crate::collaboration::ContinuationMetadata> {
-        match &self.content {
-            TileContent::App(app) => app.continuation_metadata(state, path),
-            _ => None,
-        }
-    }
-    fn restore_continuation_metadata(
-        &mut self,
-        metadata: &crate::collaboration::ContinuationMetadata,
-        state: &mut AutoCommit,
-        path: &ObjId,
-    ) -> bool {
-        match &mut self.content {
-            TileContent::App(app) => app.restore_continuation_metadata(metadata, state, path),
-            _ => false,
         }
     }
     fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {

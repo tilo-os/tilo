@@ -11,8 +11,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    AppKind, AppWidget, ContextMenu, IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget,
-    WindowCloseAdmission,
+    AppKind, AppWidget, ContextMenu, Continuable, IconDescriptor, MenuItem, TabDescriptor,
+    TaffyTreeExt, Widget, WindowCloseAdmission,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -861,7 +861,40 @@ impl BrowserTabs {
     }
 }
 
+impl Continuable for BrowserTabs {
+    fn continuation_metadata(
+        &self,
+        state: &AutoCommit,
+        root: &ObjId,
+    ) -> Option<ui::collaboration::ContinuationMetadata> {
+        self.active()
+            .continuable()
+            .and_then(|continuable| continuable.continuation_metadata(state, root))
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &ui::collaboration::ContinuationMetadata,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        self.active_mut()
+            .continuable_mut()
+            .is_some_and(|continuable| {
+                continuable.restore_continuation_metadata(metadata, state, root)
+            })
+    }
+}
+
 impl Widget for BrowserTabs {
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if self.fullscreen_hint_deadline.is_some()
             && !fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
@@ -1518,22 +1551,6 @@ impl Widget for BrowserTabs {
     }
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.active().cursor_shape(point)
-    }
-    fn continuation_metadata(
-        &self,
-        state: &AutoCommit,
-        root: &ObjId,
-    ) -> Option<ui::collaboration::ContinuationMetadata> {
-        self.active().continuation_metadata(state, root)
-    }
-    fn restore_continuation_metadata(
-        &mut self,
-        metadata: &ui::collaboration::ContinuationMetadata,
-        state: &mut AutoCommit,
-        root: &ObjId,
-    ) -> bool {
-        self.active_mut()
-            .restore_continuation_metadata(metadata, state, root)
     }
     fn name(&self) -> &'static str {
         "BrowserTabs"

@@ -22,6 +22,7 @@ use super::{
 use ui::surface;
 use ui::text_render::{NumericStyle, TextStyle};
 use ui::tokens::Spacing;
+use ui::widget::Continuable;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -685,27 +686,7 @@ fn draw_skeleton_block(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: &P
     scene.pop_layer();
 }
 
-impl Widget for MusicApp {
-    fn take_structure_dirty(&mut self) -> bool {
-        self.open_file_layout_visible != Some(matches!(self.view, View::Home))
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        if matches!(self.view, View::Home) {
-            vec![&self.open_file_button]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if matches!(self.view, View::Home) {
-            vec![&mut self.open_file_button]
-        } else {
-            Vec::new()
-        }
-    }
-
+impl Continuable for MusicApp {
     fn continuation_metadata(
         &self,
         _doc: &AutoCommit,
@@ -736,7 +717,6 @@ impl Widget for MusicApp {
             bytes,
         })
     }
-
     fn restore_continuation_metadata(
         &mut self,
         metadata: &ui::collaboration::ContinuationMetadata,
@@ -775,6 +755,36 @@ impl Widget for MusicApp {
         self.pb.playing = false;
         self.playhead_ms = position as f64;
         true
+    }
+}
+
+impl Widget for MusicApp {
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        self.open_file_layout_visible != Some(matches!(self.view, View::Home))
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if matches!(self.view, View::Home) {
+            vec![&self.open_file_button]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if matches!(self.view, View::Home) {
+            vec![&mut self.open_file_button]
+        } else {
+            Vec::new()
+        }
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {

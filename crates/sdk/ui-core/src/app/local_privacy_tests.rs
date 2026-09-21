@@ -4,6 +4,7 @@
 //! service I/O. They deliberately do not emulate a successful remote broker.
 
 use super::*;
+use crate::widget::Continuable;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -17,7 +18,35 @@ struct LocalEffectProbe {
     captured: Rc<RefCell<Option<crate::WakeHandle>>>,
 }
 
+impl Continuable for LocalEffectProbe {
+    fn continuation_metadata(
+        &self,
+        _: &automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata> {
+        None
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        _: &crate::collaboration::ContinuationMetadata,
+        _: &mut automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> bool {
+        self.restores.set(self.restores.get().saturating_add(1));
+        true
+    }
+}
+
 impl Widget for LocalEffectProbe {
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
+    }
+
     fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
 
     fn build_layout(
@@ -114,16 +143,6 @@ impl Widget for LocalEffectProbe {
         self.operations.set(self.operations.get().saturating_add(1));
         self.captured.borrow().as_ref().unwrap().wake();
         Ok(Some(tilo_actions::ActionOutput::default()))
-    }
-
-    fn restore_continuation_metadata(
-        &mut self,
-        _: &crate::collaboration::ContinuationMetadata,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-    ) -> bool {
-        self.restores.set(self.restores.get().saturating_add(1));
-        true
     }
 }
 
@@ -287,8 +306,8 @@ fn local_app_ignores_ambient_services_and_runs_effects() {
         .env("QOS_USER_ID", "ambient-workspace-user")
         .env("QOS_CONTINUITY_RESUME_HEX", "010203")
         .env("QOS_CONTINUITY_RESUME_SCHEMA", "42")
-        .env("QOS_A11Y_HIGH_CONTRAST", "1")
-        .env("QOS_A11Y_TEXT_SCALE", "1.25");
+        .env("TILO_A11Y_HIGH_CONTRAST", "1")
+        .env("TILO_A11Y_TEXT_SCALE", "1.25");
     for (service, fd) in services.into_iter().zip(inherited) {
         command.env(service, fd.to_string());
     }
