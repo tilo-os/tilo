@@ -206,6 +206,46 @@ class TransformTests(unittest.TestCase):
             with self.subTest(code=code), self.assertRaisesRegex(ValueError, message):
                 transform.bounded_process([sys.executable, '-c', code], environment, limit, timeout)
 
+    def test_failure_diagnostic_names_step_and_redacts_bounded_output(self):
+        secret = ('Bearer bearer-value password=hunter2 password="hunter two" '
+                  'AWS_SECRET_ACCESS_KEY=aws-secret GITHUB_TOKEN=github-secret '
+                  'CLIENT_SECRET=client-secret Authorization: Basic dXNlcjpwYXNz '
+                  'https://user:pass@example.test/path k8s-aws-v1.token ')
+        error = transform.CommandFailure('podman:pull', 'container command failed (exit 125)',
+                                         ('x' * 4096 + secret).encode())
+        diagnostic = transform.failure_diagnostic(error)
+        self.assertIn('podman:pull', diagnostic)
+        self.assertIn('exit 125', diagnostic)
+        self.assertIn('[truncated]', diagnostic)
+        self.assertNotIn('bearer-value', diagnostic)
+        self.assertNotIn('hunter2', diagnostic)
+        self.assertNotIn('hunter two', diagnostic)
+        self.assertNotIn('aws-secret', diagnostic)
+        self.assertNotIn('github-secret', diagnostic)
+        self.assertNotIn('client-secret', diagnostic)
+        self.assertNotIn('dXNlcjpwYXNz', diagnostic)
+        self.assertNotIn('user:pass', diagnostic)
+        self.assertNotIn('k8s-aws-v1.token', diagnostic)
+        self.assertLess(len(diagnostic), transform.DIAGNOSTIC_LIMIT + 512)
+
+    def test_failure_diagnostic_retains_safe_validation_reason(self):
+        diagnostic = transform.failure_diagnostic(ValueError('output kernel bytes differ'))
+        self.assertIn('ValueError', diagnostic)
+        self.assertIn('output kernel bytes differ', diagnostic)
+
+    def test_command_step_ignores_option_values(self):
+        self.assertEqual(transform.command_step([
+            '/usr/bin/podman', '--remote=false', '--hooks-dir', '/private/path',
+            'create', '--pull=never']), 'podman:create')
+
+    def test_post_eof_timeout_keeps_structured_bounded_diagnostic(self):
+        environment = {'PATH': os.environ.get('PATH', '')}
+        code = 'import os,time; os.close(1); os.close(2); time.sleep(5)'
+        with self.assertRaisesRegex(transform.CommandFailure, 'time bound') as raised:
+            transform.bounded_process([sys.executable, '-c', code], environment, 1024, 0.05)
+        self.assertEqual(raised.exception.step, Path(sys.executable).name)
+        self.assertEqual(raised.exception.output, b'')
+
 
 if __name__ == '__main__':
     unittest.main()

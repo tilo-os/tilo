@@ -39,6 +39,56 @@ OMITTED_MODULES = {'network', 'network-legacy', 'network-manager', 'nfs', 'iscsi
 MODULES = Path('usr/lib/tilo/initramfs-modules.txt')
 RUNTIME_FIELDS = ('Cmd', 'Entrypoint', 'Env', 'User', 'WorkingDir', 'StopSignal',
                   'Volumes', 'ExposedPorts', 'Healthcheck', 'Shell', 'OnBuild')
+DIAGNOSTIC_LIMIT = 2048
+
+
+class CommandFailure(ValueError):
+    def __init__(self, step, reason, output=b''):
+        super().__init__(reason)
+        self.step = step
+        self.reason = reason
+        self.output = bytes(output)
+
+
+def command_step(arguments):
+    executable = Path(arguments[0]).name if arguments else 'unknown'
+    operations = {'build', 'container', 'create', 'image', 'mount', 'pull', 'push',
+                  'rm', 'start', 'unmount'}
+    operation = next((value for value in arguments[1:] if value in operations), None)
+    return executable + (':' + operation if operation else '')
+
+
+def sanitized_diagnostic(value, limit=DIAGNOSTIC_LIMIT):
+    """Bound one diagnostic while removing common credential representations."""
+    text = value.decode('utf-8', 'replace') if isinstance(value, bytes) else str(value)
+    text = re.sub(r'-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----',
+                  '[REDACTED PRIVATE KEY]', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'(?i)Bearer\s+[^\s,;]+', 'Bearer [REDACTED]', text)
+    text = re.sub(r'\bk8s-aws-v1\.[A-Za-z0-9._~+/-]+={0,2}', '[REDACTED AWS TOKEN]', text)
+    text = re.sub(r'(?i)\b(authorization)\s*:\s*[^\r\n]+',
+                  lambda match: match.group(1) + ': [REDACTED]', text)
+    credential_name = (r'(?:[A-Za-z0-9]+_)*'
+                       r'(?:password|passwd|token|secret|authorization|credential|'
+                       r'api_key|access_key|private_key)'
+                       r'(?:_[A-Za-z0-9]+)*')
+    credential_value = r'(?:"[^"]*"|\'[^\']*\'|[^\s,;]+)'
+    text = re.sub(r'(?i)\b(' + credential_name + r')\s*[:=]\s*' + credential_value,
+                  lambda match: match.group(1) + '=[REDACTED]', text)
+    text = re.sub(r'([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s:]+:[^/@\s]+@', r'\1[REDACTED]@', text)
+    text = ''.join(character if character in '\n\t' or 32 <= ord(character) < 127 else '\ufffd'
+                   for character in text)
+    if len(text) > limit:
+        text = '[truncated] ' + text[-(limit - len('[truncated] ')):]
+    return text
+
+
+def failure_diagnostic(error):
+    detail = {'schema': 1, 'error_type': type(error).__name__,
+              'reason': sanitized_diagnostic(error)}
+    if isinstance(error, CommandFailure):
+        detail.update(step=error.step, output_tail=sanitized_diagnostic(error.output))
+    return 'development rootfs transformation failed: ' + json.dumps(
+        detail, sort_keys=True, separators=(',', ':')) + '\n'
 
 
 def bounded_process(arguments, environment, limit=8 * 1024 * 1024, timeout=900):
@@ -53,16 +103,23 @@ def bounded_process(arguments, environment, limit=8 * 1024 * 1024, timeout=900):
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0 or not selector.select(remaining):
-                        raise ValueError('container command exceeded time bound')
+                        raise CommandFailure(command_step(arguments),
+                                             'container command exceeded time bound', output)
                     chunk = os.read(process.stdout.fileno(), min(65536, limit + 1 - len(output)))
                     if not chunk:
                         break
                     output.extend(chunk)
                     if len(output) > limit:
-                        raise ValueError('container command exceeded output bound')
-            returncode = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+                        raise CommandFailure(command_step(arguments),
+                                             'container command exceeded output bound', output[-limit:])
+            try:
+                returncode = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired as error:
+                raise CommandFailure(command_step(arguments),
+                                     'container command exceeded time bound', output) from error
             if returncode:
-                raise ValueError(f'container command failed (exit {returncode})')
+                raise CommandFailure(command_step(arguments),
+                                     f'container command failed (exit {returncode})', output)
             return output.decode('utf-8')
         except BaseException:
             try:
@@ -272,8 +329,8 @@ def main():
         parser.add_argument('--' + name, required=True, type=int)
     try:
         print(json.dumps(transform(parser.parse_args()), sort_keys=True, indent=2))
-    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
-        parser.exit(1, 'development rootfs transformation failed\n')
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+        parser.exit(1, failure_diagnostic(error))
 
 
 if __name__ == '__main__':
