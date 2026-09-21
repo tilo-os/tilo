@@ -5,7 +5,10 @@ use crate::theme::Theme;
 use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
-use crate::widget::{Continuable, FloatingSurfaceProvider, FloatingSurfaceWidgetExt, Widget};
+use crate::widget::{
+    AudiencePresentationProvider, AudiencePresentationWidgetExt, Continuable,
+    FloatingSurfaceProvider, FloatingSurfaceWidgetExt, Widget,
+};
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -774,6 +777,57 @@ impl FloatingSurfaceProvider for TileHost {
     }
 }
 
+impl AudiencePresentationProvider for TileHost {
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+        match &self.content {
+            TileContent::App(app) => app.audience_presentation_request(),
+            _ => None,
+        }
+    }
+
+    fn on_audience_presentation_changed(&mut self, active: bool) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_audience_presentation_changed(active);
+        }
+    }
+
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => {
+                app.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_audience_presentation_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => app.handle_audience_presentation_event(event, state, path),
+            _ => false,
+        }
+    }
+
+    fn on_audience_presentation_closed(&mut self) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_audience_presentation_closed();
+        }
+    }
+}
+
 impl Widget for TileHost {
     fn continuable(&self) -> Option<&dyn Continuable> {
         Some(self)
@@ -811,50 +865,6 @@ impl Widget for TileHost {
     fn on_fullscreen_changed(&mut self, active: bool) {
         if let TileContent::App(app) = &mut self.content {
             app.on_fullscreen_changed(active);
-        }
-    }
-    fn audience_presentation_request(
-        &self,
-    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
-        match &self.content {
-            TileContent::App(app) => app.audience_presentation_request(),
-            _ => None,
-        }
-    }
-    fn on_audience_presentation_changed(&mut self, active: bool) {
-        if let TileContent::App(app) = &mut self.content {
-            app.on_audience_presentation_changed(active);
-        }
-    }
-    fn draw_audience_presentation(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: vello::kurbo::Rect,
-    ) -> bool {
-        match &mut self.content {
-            TileContent::App(app) => {
-                app.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
-            }
-            _ => false,
-        }
-    }
-    fn handle_audience_presentation_event(
-        &mut self,
-        event: &WindowEvent,
-        state: &mut AutoCommit,
-        path: &ObjId,
-    ) -> bool {
-        match &mut self.content {
-            TileContent::App(app) => app.handle_audience_presentation_event(event, state, path),
-            _ => false,
-        }
-    }
-    fn on_audience_presentation_closed(&mut self) {
-        if let TileContent::App(app) = &mut self.content {
-            app.on_audience_presentation_closed();
         }
     }
     fn view_state(&self) -> Option<crate::view::ViewContribution> {
@@ -1308,6 +1318,16 @@ impl Widget for TileHost {
     }
 
     fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
+
+    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
+        Some(self)
+    }
+
+    fn audience_presentation_provider_mut(
+        &mut self,
+    ) -> Option<&mut dyn AudiencePresentationProvider> {
         Some(self)
     }
     fn wants_pointer_capture(&self) -> bool {
