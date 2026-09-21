@@ -298,6 +298,24 @@ jobs:
           library=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /usr os/external-assets/github-assets.tsv)
           printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
 
+      # Imager deliberately rejects cache/source directories on the container
+      # overlay that also backs the operating-system root. The checked-out
+      # workspace is a host-backed qualified filesystem, so keep its native
+      # syscall fixtures there while retaining the container's ordinary /tmp
+      # behavior for every other package.
+      - name: Prepare qualified imager test filesystem
+        if: contains(matrix.test_packages, '-p imager')
+        run: |
+          root="$GITHUB_WORKSPACE/target/ci/imager-test-fs"
+          mkdir -p "$root/tmp" "$root/cache"
+          chmod 700 "$root/tmp" "$root/cache"
+          case "$(stat -f -c %T "$root")" in
+            ext2/ext3|ext2/ext3/ext4|xfs|btrfs) ;;
+            *) echo "workspace does not provide qualified imager semantics" >&2; exit 1 ;;
+          esac
+          printf 'TMPDIR=%s\n' "$root/tmp" >> "$GITHUB_ENV"
+          printf 'XDG_CACHE_HOME=%s\n' "$root/cache" >> "$GITHUB_ENV"
+
       # Build and run tests first. The resulting rlibs/rmeta are then reusable
       # by the all-target check; doing this in the opposite order makes rustc
       # perform metadata-only work before doing codegen for the same crates.

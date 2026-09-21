@@ -635,9 +635,10 @@ mod native {
             || !wrapper
                 .lines()
                 .any(|line| line.trim() == r#"exec "$SESSION_RUNNER" "$TILO_SHELL" "$@""#)
-            || !runner.lines().any(|line| {
-                line.trim()
-                    == r#""$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" &"#
+            || !runner.lines().collect::<Vec<_>>().windows(2).any(|lines| {
+                lines[0].trim()
+                    == r#""$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" \"#
+                    && lines[1].trim() == r#">"$flight_pipe" 2>&1 &"#
             })
         {
             return Err(
