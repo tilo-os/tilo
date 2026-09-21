@@ -84,6 +84,9 @@ const MAX_IMAGE_WORKERS: usize = 4;
 const IMAGE_JOB_QUEUE_LIMIT: usize = 64;
 const IMAGE_CACHE_ENTRY_LIMIT: usize = 64;
 const IMAGE_CACHE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
+const THUMBNAIL_MAX_DIMENSION: u32 = 600;
+// A single RGBA image must fit within the existing 64 MiB cache ceiling.
+const IMAGE_MAX_DIMENSION: u32 = 4096;
 
 fn slot_bytes(slot: &Slot) -> u64 {
     match slot {
@@ -144,6 +147,7 @@ pub struct HostImageLoader {
     requests: Receiver<String>,
     in_flight: std::collections::HashSet<String>,
     wake: crate::wake::WakeHandle,
+    max_dimension: u32,
 }
 impl HostImageLoader {
     pub fn take_requests(&mut self) -> Vec<String> {
@@ -188,7 +192,11 @@ impl HostImageLoader {
             return false;
         }
         if let Ok(mut slots) = self.shared.slots.lock() {
-            insert_settled(&mut slots, url.into(), decoded_slot(bytes));
+            insert_settled(
+                &mut slots,
+                url.into(),
+                decoded_slot(bytes, self.max_dimension),
+            );
         } else {
             return false;
         }
@@ -214,16 +222,29 @@ impl Drop for HostImageLoader {
 }
 
 thread_local! {
-    static HOST_FACTORY: std::cell::RefCell<Option<std::rc::Rc<dyn Fn() -> ImageStore>>> = const { std::cell::RefCell::new(None) };
+    static HOST_FACTORY: std::cell::RefCell<Option<std::rc::Rc<dyn Fn(u32) -> ImageStore>>> = const { std::cell::RefCell::new(None) };
 }
 
 impl ImageStore {
-    /// Construct app caches under a host's async service while preserving component wake custody.
+    /// Install a legacy host factory for thumbnail-sized browser images.
+    ///
+    /// New hosts that also serve document attachments should use
+    /// [`with_host_factory_with_max_dimension`](Self::with_host_factory_with_max_dimension)
+    /// so [`with_max_dimension`](Self::with_max_dimension) retains its bound.
     pub fn with_host_factory<R>(
         factory: std::rc::Rc<dyn Fn() -> Self>,
         construct: impl FnOnce() -> R,
     ) -> R {
-        struct Restore(Option<std::rc::Rc<dyn Fn() -> ImageStore>>);
+        Self::with_host_factory_with_max_dimension(std::rc::Rc::new(move |_| factory()), construct)
+    }
+
+    /// Construct app caches under a host's asynchronous service while retaining
+    /// the requested decoded-image bound and component wake custody.
+    pub fn with_host_factory_with_max_dimension<R>(
+        factory: std::rc::Rc<dyn Fn(u32) -> Self>,
+        construct: impl FnOnce() -> R,
+    ) -> R {
+        struct Restore(Option<std::rc::Rc<dyn Fn(u32) -> ImageStore>>);
         impl Drop for Restore {
             fn drop(&mut self) {
                 HOST_FACTORY.with_borrow_mut(|slot| *slot = self.0.take());
@@ -233,8 +254,14 @@ impl ImageStore {
         construct()
     }
 
-    /// A real cache driven by a host's asynchronous fetch executor, without threads.
+    /// A real thumbnail cache driven by a host's asynchronous fetch executor,
+    /// without worker threads.
     pub fn host_driven() -> (Self, HostImageLoader) {
+        Self::host_driven_with_max_dimension(THUMBNAIL_MAX_DIMENSION)
+    }
+
+    /// A host-driven cache with a bounded document-image decode dimension.
+    pub fn host_driven_with_max_dimension(max_dimension: u32) -> (Self, HostImageLoader) {
         let (tx, requests) = std::sync::mpsc::sync_channel(IMAGE_JOB_QUEUE_LIMIT);
         let shared = Arc::new(Shared {
             slots: Mutex::new(CacheState::default()),
@@ -250,6 +277,7 @@ impl ImageStore {
                 requests,
                 in_flight: Default::default(),
                 wake: crate::wake::WakeHandle::new(),
+                max_dimension: max_dimension.clamp(1, IMAGE_MAX_DIMENSION),
             },
         )
     }
@@ -257,7 +285,7 @@ impl ImageStore {
     /// Build a store with the default worker count.
     pub fn new(fetch: &Fetcher) -> Self {
         if let Some(factory) = HOST_FACTORY.with_borrow(Clone::clone) {
-            return factory();
+            return factory(THUMBNAIL_MAX_DIMENSION);
         }
         Self::with_workers(fetch, DEFAULT_IMAGE_WORKERS)
     }
@@ -266,6 +294,35 @@ impl ImageStore {
     /// to 1..=4 so each store has a predictable stack/scheduler footprint.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_workers(fetch: &Fetcher, workers: usize) -> Self {
+        Self::with_decode_options(fetch, workers, THUMBNAIL_MAX_DIMENSION)
+    }
+
+    /// Build a store for document images instead of small thumbnails.
+    ///
+    /// Decoded dimensions are bounded to 1..=4096; the worker, queue and
+    /// total cache memory limits remain the same as for the thumbnail store.
+    pub fn with_max_dimension(fetch: &Fetcher, max_dimension: u32) -> Self {
+        let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
+        if let Some(factory) = HOST_FACTORY.with_borrow(Clone::clone) {
+            return factory(max_dimension);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self::with_decode_options(fetch, DEFAULT_IMAGE_WORKERS, max_dimension)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = fetch;
+            let (store, host) = Self::host_driven_with_max_dimension(max_dimension);
+            drop(host);
+            tracing::warn!("native image fetch unavailable; install a host-driven image loader");
+            store
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn with_decode_options(fetch: &Fetcher, workers: usize, max_dimension: u32) -> Self {
+        let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
         let (tx, rx) = std::sync::mpsc::sync_channel::<String>(IMAGE_JOB_QUEUE_LIMIT);
         let shared = Arc::new(Shared {
             slots: Mutex::new(CacheState::default()),
@@ -278,7 +335,7 @@ impl ImageStore {
             let fetch = fetch.clone();
             let _ = std::thread::Builder::new()
                 .name(format!("ui-image-{i}"))
-                .spawn(move || worker_loop(&rx, &shared, &fetch));
+                .spawn(move || worker_loop(&rx, &shared, &fetch, max_dimension));
         }
         Self { shared, tx }
     }
@@ -383,7 +440,12 @@ impl ImageStore {
     }
 }
 
-fn worker_loop(rx: &Arc<Mutex<Receiver<String>>>, shared: &Arc<Shared>, fetch: &Fetcher) {
+fn worker_loop(
+    rx: &Arc<Mutex<Receiver<String>>>,
+    shared: &Arc<Shared>,
+    fetch: &Fetcher,
+    max_dimension: u32,
+) {
     loop {
         // Hold the receiver lock only long enough to pull one job.
         let url = {
@@ -393,7 +455,7 @@ fn worker_loop(rx: &Arc<Mutex<Receiver<String>>>, shared: &Arc<Shared>, fetch: &
                 Err(_) => break, // sender dropped: store gone
             }
         };
-        let slot = decoded_slot(fetch(&url).as_deref());
+        let slot = decoded_slot(fetch(&url).as_deref(), max_dimension);
         if let Ok(mut slots) = shared.slots.lock() {
             // Replace this request's Loading marker, then reclaim settled
             // entries until both the count and decoded-pixel ceilings fit.
@@ -404,13 +466,16 @@ fn worker_loop(rx: &Arc<Mutex<Receiver<String>>>, shared: &Arc<Shared>, fetch: &
 }
 
 /// Decode encoded image bytes (JPEG/PNG/WebP) into 8-bit RGBA + dimensions.
-/// Oversized sources are downscaled to 600px so texture memory stays bounded
-/// — album art never needs more.
-fn decode_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
-    const MAX: u32 = 600;
+/// Oversized sources are downscaled to the store's bounded decode size.
+fn decode_rgba(bytes: &[u8], max_dimension: u32) -> Option<(Vec<u8>, u32, u32)> {
+    let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
     let img = image::load_from_memory(bytes).ok()?;
-    let img = if img.width().max(img.height()) > MAX {
-        img.resize(MAX, MAX, image::imageops::FilterType::Triangle)
+    let img = if img.width().max(img.height()) > max_dimension {
+        img.resize(
+            max_dimension,
+            max_dimension,
+            image::imageops::FilterType::Triangle,
+        )
     } else {
         img
     };
@@ -693,13 +758,83 @@ mod tests {
     #[test]
     fn decode_downscales_oversized_sources_before_caching() {
         let bytes = png_bytes(700, 2, [20, 40, 60]);
-        let (_, width, height) = decode_rgba(&bytes).expect("valid PNG decodes");
+        let (_, width, height) =
+            decode_rgba(&bytes, THUMBNAIL_MAX_DIMENSION).expect("valid PNG decodes");
         assert!(width <= 600 && height <= 600);
+    }
+
+    #[test]
+    fn host_loader_honors_default_and_document_decode_bounds() {
+        let bytes = png_bytes(1200, 760, [20, 40, 60]);
+        for (store, mut host, expected) in [
+            {
+                let (store, host) = ImageStore::host_driven();
+                (store, host, (600, 380))
+            },
+            {
+                let (store, host) = ImageStore::host_driven_with_max_dimension(2048);
+                (store, host, (1200, 760))
+            },
+        ] {
+            assert!(store.get("scan.png").is_none());
+            assert_eq!(host.take_requests(), vec!["scan.png"]);
+            assert!(host.complete("scan.png", Some(&bytes)));
+            let image = store.get("scan.png").expect("host completion must decode");
+            assert_eq!((image.width, image.height), expected);
+        }
+    }
+
+    #[test]
+    fn document_store_preserves_scan_resolution_without_changing_thumbnail_defaults() {
+        let bytes = png_bytes(1200, 760, [20, 40, 60]);
+        let fetch: Fetcher = Arc::new(move |_| Some(bytes.clone()));
+        for (store, expected) in [
+            (ImageStore::new(&fetch), (600, 380)),
+            (ImageStore::with_max_dimension(&fetch, 4096), (1200, 760)),
+        ] {
+            assert!(store.get("scan.png").is_none());
+            store.block_until_idle(Duration::from_secs(5));
+            let image = store.get("scan.png").expect("scan must finish decoding");
+            assert_eq!((image.width, image.height), expected);
+            assert!(cache_bytes(&store.shared.slots.lock().unwrap()) <= IMAGE_CACHE_BYTE_LIMIT);
+        }
+    }
+
+    #[test]
+    fn document_decode_limit_cannot_exceed_the_cache_budget() {
+        let bytes = png_bytes(5000, 2, [20, 40, 60]);
+        let (_, width, height) = decode_rgba(&bytes, u32::MAX).unwrap();
+        assert_eq!(width, IMAGE_MAX_DIMENSION);
+        assert!(u64::from(width) * u64::from(height) * 4 <= IMAGE_CACHE_BYTE_LIMIT);
+    }
+
+    #[test]
+    fn document_images_can_remain_resident_together_without_redecoding() {
+        let bytes = png_bytes(2100, 2100, [20, 40, 60]);
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let counter = fetches.clone();
+        let fetch: Fetcher = Arc::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Some(bytes.clone())
+        });
+        let store = ImageStore::with_max_dimension(&fetch, 2048);
+        assert!(store.get("first-scan.png").is_none());
+        assert!(store.get("second-scan.png").is_none());
+        store.block_until_idle(Duration::from_secs(10));
+        for _ in 0..3 {
+            for url in ["first-scan.png", "second-scan.png"] {
+                let image = store.get(url).expect("both scans stay resident");
+                assert_eq!((image.width, image.height), (2048, 2048));
+            }
+        }
+        assert!(store.is_idle());
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        assert!(cache_bytes(&store.shared.slots.lock().unwrap()) <= IMAGE_CACHE_BYTE_LIMIT);
     }
 }
 
-fn decoded_slot(bytes: Option<&[u8]>) -> Slot {
-    match bytes.and_then(decode_rgba) {
+fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
+    match bytes.and_then(|bytes| decode_rgba(bytes, max_dimension)) {
         Some((rgba, w, h)) => {
             let blob = Blob::new(Arc::new(rgba));
             Slot::Ready(PenikoImage {
@@ -717,6 +852,22 @@ fn decoded_slot(bytes: Option<&[u8]>) -> Slot {
 #[cfg(test)]
 mod scoped_host_factory_tests {
     use super::*;
+    #[test]
+    fn dimension_aware_factory_receives_document_decode_bound() {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen_by_factory = seen.clone();
+        let factory = std::rc::Rc::new(move |max_dimension| {
+            seen_by_factory.borrow_mut().push(max_dimension);
+            let (store, _loader) = ImageStore::host_driven_with_max_dimension(max_dimension);
+            store
+        });
+        let fetch: Fetcher = Arc::new(|_| panic!("host factory must own browser fetch"));
+        let _store = ImageStore::with_host_factory_with_max_dimension(factory, || {
+            ImageStore::with_max_dimension(&fetch, 2048)
+        });
+        assert_eq!(&*seen.borrow(), &[2048]);
+    }
+
     #[test]
     fn host_factory_constructs_async_store_inside_the_component_scope() {
         let loaders = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));

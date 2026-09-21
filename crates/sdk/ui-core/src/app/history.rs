@@ -263,11 +263,11 @@ impl App {
                     .rev(),
             );
         }
-        self.focus_trap_active = self
+        self.accessibility.focus_trap_active = self
             .history
             .as_ref()
             .is_some_and(|history| history.review_is_open());
-        self.focus_before_trap = None;
+        self.accessibility.focus_before_trap = None;
     }
     pub(super) fn suspend_history_focus(&mut self, target: Option<NodeId>) {
         if unsafe {

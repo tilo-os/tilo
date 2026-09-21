@@ -31,7 +31,9 @@ apps/maps/src/livetest.rs white_or_black 1
 apps/maps/src/offline_panel.rs white_or_black 1
 apps/music/src/app/render.rs white_or_black 7
 apps/music/src/art.rs white_or_black 3
-apps/notes/src/shots.rs literal_color 1
+apps/notes/src/shots.rs literal_color 0
+apps/pdf-viewer/src/app_draw.rs literal_color 1
+apps/pdf-viewer/src/app_draw.rs white_or_black 0
 apps/pdf-viewer/src/render.rs literal_color 11
 apps/pdf-viewer/src/render.rs white_or_black 3
 apps/remote/src/app.rs literal_color 1

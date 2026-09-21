@@ -14,6 +14,49 @@ fn select(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
         .unwrap();
 }
 
+fn perform_named_target(
+    driver: &mut ui::headless::Driver,
+    name: &str,
+    target: &str,
+    action: &ui::a11y::Action,
+) {
+    fn visit_access(
+        node: &ui::a11y::AccessNode,
+        owner: &str,
+        name: &str,
+        target: &str,
+        found: &mut Vec<(String, Option<String>)>,
+    ) {
+        if node.name.as_deref() == Some(name) && node.action_target.as_deref() == Some(target) {
+            found.push((owner.to_owned(), node.action_target.clone()));
+        }
+        for child in &node.children {
+            visit_access(child, owner, name, target, found);
+        }
+    }
+    fn visit_inspection(
+        node: &ui::headless::InspectionNode,
+        name: &str,
+        target: &str,
+        found: &mut Vec<(String, Option<String>)>,
+    ) {
+        if let Some(access) = &node.semantics {
+            visit_access(access, &node.path, name, target, found);
+        }
+        for child in &node.children {
+            visit_inspection(child, name, target, found);
+        }
+    }
+
+    let mut routes = Vec::new();
+    visit_inspection(&driver.inspection().root, name, target, &mut routes);
+    assert_eq!(routes.len(), 1, "expected one {name:?}/{target:?} route");
+    let (owner, action_target) = routes.pop().unwrap();
+    driver
+        .perform_semantic_named(&owner, action_target.as_deref(), action)
+        .unwrap();
+}
+
 // Removing component registration, projecting the outer launcher State, or
 // restoring only page titles must fail this real saved-notebook exercise.
 #[test]
@@ -472,22 +515,311 @@ fn durable_import_without_retirement_marker_reopens_the_same_graph() {
     assert!(source.join(".notes-canonical-v1").is_file());
 }
 
+fn assert_historical_qos_custody(imported: bool) {
+    let f = LegacyFixture::rich();
+    let historical = f.write_qos_canonical_v1(imported);
+    let before_document = std::fs::read(&historical.document_path).unwrap();
+    let before_marker = std::fs::read(&historical.marker_path).unwrap();
+    assert_eq!(before_marker, historical.marker);
+    assert!(historical.record.ends_with(&historical.source_key));
+    assert!(ui::record::RecordId::parse(&historical.record).is_none());
+
+    let prepared =
+        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+            .unwrap_or_else(|error| {
+                panic!("deployed qOS custody must reopen without migration: {error}")
+            });
+    assert_eq!(prepared.checkout.id.as_str(), historical.record);
+    assert_eq!(prepared.checkout.kind.as_str(), "notes.notebook");
+    prepared
+        .records
+        .read(&prepared.checkout.id, notes::notebook::validate)
+        .expect("historical record remains open")
+        .expect("historical Notes document remains valid");
+    prepared.records.try_flush().unwrap();
+    assert_eq!(
+        std::fs::read(&historical.marker_path).unwrap(),
+        before_marker
+    );
+    assert_eq!(
+        std::fs::read(&historical.document_path).unwrap(),
+        before_document
+    );
+
+    let checkout = prepared.checkout.clone();
+    let records = prepared.records.clone();
+    let original_pages = records
+        .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+        .unwrap();
+    let selected = records
+        .read(&checkout.id, |doc| doc.base_heads()[0])
+        .unwrap();
+    let mut live = ui::headless::Driver::new_with_controlled_inputs(
+        ui::State::new(),
+        Box::new(prepared.root),
+        (1000, 700),
+        ui::Theme::dark(),
+        renderer(),
+        f.author.clone(),
+    );
+    perform_named_target(
+        &mut live,
+        "New note",
+        "notes:new-page",
+        &ui::a11y::Action::Activate,
+    );
+    // Owned semantic dispatch keeps its framework input frame active through
+    // the dispatching relayout. Drive the deterministic ordinary-host sequence
+    // that applies the queued intent and closes its admitted action bracket.
+    assert!(
+        live.wait_until(ui::clock::Duration::ZERO, |_| {
+            records
+                .read(&checkout.id, |doc| {
+                    doc.pending_ops() == 0 && NotesDoc::list_pages(doc).len() == original_pages + 1
+                })
+                .unwrap_or(false)
+        }),
+        "the admitted Notes action must commit on the next ordinary host sequence"
+    );
+    assert_eq!(
+        records
+            .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+            .unwrap(),
+        original_pages + 1
+    );
+    live.click_named("history-open").unwrap();
+    select(&mut live, selected);
+    live.click_named("history-restore").unwrap();
+    live.key("Enter");
+    assert_eq!(
+        records
+            .read(&checkout.id, |doc| NotesDoc::list_pages(doc).len())
+            .unwrap(),
+        original_pages
+    );
+    close_driver(&mut live);
+    let heads = records
+        .read(&checkout.id, Transactable::base_heads)
+        .unwrap();
+    drop(live);
+    drop(records);
+    drop(prepared.records);
+
+    let reopened =
+        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+            .unwrap();
+    assert_eq!(reopened.checkout.id.as_str(), historical.record);
+    assert_eq!(
+        reopened
+            .records
+            .read(&reopened.checkout.id, Transactable::base_heads)
+            .unwrap(),
+        heads
+    );
+    assert_eq!(
+        std::fs::read(&historical.marker_path).unwrap(),
+        before_marker
+    );
+
+    let tilo_key = notes::legacy_import::source_key(&f.source).unwrap();
+    let tilo = notes::legacy_import::destination(tilo_key);
+    assert!(
+        !f.document_path(&tilo).exists(),
+        "must not fork into Tilo custody"
+    );
+}
+
 #[test]
-fn actual_binary_launch_spec_prepares_the_notebook_and_shared_history() {
+fn production_reopens_exact_historical_qos_imported_custody() {
+    assert_historical_qos_custody(true);
+}
+
+#[test]
+fn production_reopens_exact_historical_qos_fresh_custody_without_receipt() {
+    assert_historical_qos_custody(false);
+}
+
+#[test]
+fn historical_qos_marker_tampering_never_opens_or_forks_custody() {
+    for case in [
+        "version",
+        "state_root",
+        "workspace",
+        "package",
+        "record",
+        "extra",
+    ] {
+        let f = LegacyFixture::rich();
+        let historical = f.write_qos_canonical_v1(true);
+        let document = std::fs::read(&historical.document_path).unwrap();
+        let mut marker: serde_json::Value = serde_json::from_slice(&historical.marker).unwrap();
+        match case {
+            "version" => marker["version"] = 2.into(),
+            "state_root" => {
+                marker["state_root"] = f
+                    .temp
+                    .path()
+                    .join("other-state")
+                    .to_string_lossy()
+                    .into_owned()
+                    .into();
+            }
+            "workspace" => marker["workspace"] = "other-room".into(),
+            "package" => marker["package"] = "dev.foreign.notes".into(),
+            "record" => {
+                marker["record"] = format!("derived:notes-legacy-v1@{}", "ab".repeat(32)).into()
+            }
+            "extra" => marker["unexpected"] = true.into(),
+            _ => unreachable!(),
+        }
+        let marker = serde_json::to_vec(&marker).unwrap();
+        std::fs::write(&historical.marker_path, &marker).unwrap();
+
+        assert!(
+            notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+                .is_err(),
+            "marker tamper {case} must fail"
+        );
+        assert_eq!(std::fs::read(&historical.marker_path).unwrap(), marker);
+        assert_eq!(std::fs::read(&historical.document_path).unwrap(), document);
+        let tilo =
+            notes::legacy_import::destination(notes::legacy_import::source_key(&f.source).unwrap());
+        assert!(!f.document_path(&tilo).exists());
+    }
+}
+
+#[test]
+fn historical_qos_document_and_receipt_tampering_fail_closed() {
+    for case in [
+        "id",
+        "kind",
+        "home",
+        "room",
+        "refs",
+        "current-meta",
+        "storage-schema",
+        "notes-schema",
+        "receipt-source",
+        "receipt-destination",
+        "receipt-format",
+        "receipt-version",
+        "receipt-snapshot-case",
+        "receipt-extra",
+    ] {
+        let f = LegacyFixture::rich();
+        let historical = f.write_qos_canonical_v1(true);
+        let marker = std::fs::read(&historical.marker_path).unwrap();
+        let mut doc =
+            automerge::AutoCommit::load(&std::fs::read(&historical.document_path).unwrap())
+                .unwrap();
+        let (_, meta) = doc.get(ROOT, "qos:record").unwrap().unwrap();
+        let (_, receipt) = doc.get(ROOT, "notes_import_v1").unwrap().unwrap();
+        match case {
+            "id" | "kind" | "home" | "room" => {
+                doc.put(&meta, case, "foreign").unwrap();
+            }
+            "refs" => {
+                doc.put_object(&meta, "refs", automerge::ObjType::Map)
+                    .unwrap();
+            }
+            "current-meta" => {
+                doc.put_object(ROOT, "tilo:record", automerge::ObjType::Map)
+                    .unwrap();
+            }
+            "storage-schema" => {
+                doc.put(ROOT, "qos:schema_version", 2_u64).unwrap();
+            }
+            "notes-schema" => {
+                doc.put(ROOT, "notes_schema_version", 3_u64).unwrap();
+            }
+            "receipt-source" => {
+                doc.put(&receipt, "source_key", "ab".repeat(32)).unwrap();
+            }
+            "receipt-destination" => {
+                doc.put(
+                    &receipt,
+                    "destination_id",
+                    "derived:foreign@tab:0000000000000000",
+                )
+                .unwrap();
+            }
+            "receipt-format" => {
+                doc.put(&receipt, "format", "foreign").unwrap();
+            }
+            "receipt-version" => {
+                doc.put(&receipt, "version", 2_u64).unwrap();
+            }
+            "receipt-snapshot-case" => {
+                doc.put(&receipt, "snapshot_digest", "AB".repeat(32))
+                    .unwrap();
+            }
+            "receipt-extra" => {
+                doc.put(&receipt, "unexpected", true).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let tampered = doc.save();
+        std::fs::write(&historical.document_path, &tampered).unwrap();
+        assert!(
+            notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+                .is_err(),
+            "document tamper {case} must fail"
+        );
+        assert_eq!(std::fs::read(&historical.marker_path).unwrap(), marker);
+        assert_eq!(std::fs::read(&historical.document_path).unwrap(), tampered);
+        let tilo =
+            notes::legacy_import::destination(notes::legacy_import::source_key(&f.source).unwrap());
+        assert!(!f.document_path(&tilo).exists());
+    }
+}
+
+#[test]
+fn historical_qos_missing_corrupt_and_contended_storage_never_falls_back() {
+    for case in ["missing", "corrupt", "contended"] {
+        let f = LegacyFixture::rich();
+        let historical = f.write_qos_canonical_v1(false);
+        let marker = std::fs::read(&historical.marker_path).unwrap();
+        let mut held = None;
+        match case {
+            "missing" => std::fs::remove_file(&historical.document_path).unwrap(),
+            "corrupt" => std::fs::write(&historical.document_path, b"corrupt").unwrap(),
+            "contended" => {
+                held = Some(
+                    app_state::DocStore::open_canonical_at(
+                        canonical::QOS_PACKAGE,
+                        historical.document_path.parent().unwrap(),
+                    )
+                    .unwrap(),
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+                .is_err(),
+            "unavailable historical storage {case} must fail"
+        );
+        drop(held);
+        assert_eq!(std::fs::read(&historical.marker_path).unwrap(), marker);
+        let tilo =
+            notes::legacy_import::destination(notes::legacy_import::source_key(&f.source).unwrap());
+        assert!(!f.document_path(&tilo).exists());
+    }
+}
+
+#[test]
+fn actual_binary_normal_launch_prepares_default_canonical_notebook_and_history() {
     let temp = tempfile::tempdir().unwrap();
-    let notebook = temp.path().join("notebook");
+    let profile = temp.path().join("application-state");
+    let workspace = "00000000-0000-0000-0000-000000000023";
     let dump = temp.path().join("inspection.json");
     let spec = serde_json::json!({"actions":[{"click_named":"history-open"}],"inspect":dump});
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_notes"))
-        .env("XDG_DATA_HOME", temp.path().join("application-state"))
+        .env("XDG_DATA_HOME", &profile)
         .env("TILO_PACKAGE_ID", canonical::PACKAGE)
-        .env("QOS_WORKSPACE_ID", "00000000-0000-0000-0000-000000000023")
-        .args([
-            "--notebook-dir",
-            notebook.to_str().unwrap(),
-            "--headless-drive",
-            &spec.to_string(),
-        ])
+        .env("TILO_WORKSPACE_ID", workspace)
+        .env("TILO_PARTICIPATION", "author")
+        .args(["--headless-drive", &spec.to_string()])
         .output()
         .unwrap();
     assert!(
@@ -498,7 +830,39 @@ fn actual_binary_launch_spec_prepares_the_notebook_and_shared_history() {
     );
     let inspection = std::fs::read_to_string(&dump).unwrap();
     assert!(inspection.contains("activity_timeline"), "{inspection}");
-    assert!(notebook.join(".notes-canonical-v1").is_file());
+    let checkout = notes::hosting::default_notebook();
+    let directory = app_state::DocStore::room_record_dir_at(
+        &profile,
+        canonical::PACKAGE,
+        workspace,
+        &checkout.id.storage_key(),
+    )
+    .unwrap();
+    assert!(directory.join(app_state::DOCUMENT_FILE).is_file());
+}
+
+#[test]
+fn actual_binary_refuses_legacy_notebook_selector_in_headless_mode_before_path_access() {
+    let temp = tempfile::tempdir().unwrap();
+    let notebook = temp.path().join("must-not-be-created");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_notes"))
+        .env("XDG_DATA_HOME", temp.path().join("application-state"))
+        .env("TILO_PACKAGE_ID", canonical::PACKAGE)
+        .args([
+            "--notebook-dir",
+            notebook.to_str().unwrap(),
+            "--headless-drive",
+            "{}",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("legacy notebook recovery cannot run in capture, audit, or headless mode"),
+        "stderr={stderr}"
+    );
+    assert!(!notebook.exists());
 }
 
 #[test]
@@ -597,6 +961,74 @@ fn production_close_failure_retains_the_saved_record_owner_for_retry() {
             .unwrap(),
         "Retained unsaved change"
     );
+}
+
+#[test]
+fn historical_qos_close_failure_retries_the_same_custody_and_reopens() {
+    let f = LegacyFixture::rich();
+    let historical = f.write_qos_canonical_v1(true);
+    let marker = std::fs::read(&historical.marker_path).unwrap();
+    let prepared =
+        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+            .unwrap();
+    let checkout = prepared.checkout.clone();
+    let records = prepared.records.clone();
+    let mut live = ui::headless::Driver::new_with_controlled_inputs(
+        ui::State::new(),
+        Box::new(prepared.root),
+        (1000, 700),
+        ui::Theme::dark(),
+        renderer(),
+        f.author.clone(),
+    );
+    std::fs::remove_file(&historical.document_path).unwrap();
+    std::fs::create_dir(&historical.document_path).unwrap();
+    records
+        .with_owned_action(
+            &checkout.id,
+            35,
+            canonical::QOS_PACKAGE,
+            f.author.clone(),
+            tilo_actions::ActionContext::default(),
+            |doc, _| {
+                let mut page = NotesDoc::list_pages(doc).into_iter().next().unwrap();
+                page.title = "Retained qOS change".into();
+                NotesDoc::upsert_page_meta(doc, &page);
+            },
+        )
+        .unwrap();
+    live.close_components();
+    let mut report = live
+        .take_component_close_reports()
+        .into_iter()
+        .find(|report| report.record_error.is_some())
+        .expect("historical save failure retains exact recovery owner");
+    assert_eq!(report.record_retry_target.as_ref(), Some(&checkout.id));
+    assert!(report.record_retry.is_some());
+    drop(live);
+    drop(records);
+    drop(prepared.records);
+
+    std::fs::remove_dir(&historical.document_path).unwrap();
+    report.retry_record().unwrap();
+    assert!(report.record_retry.is_none());
+    let reopened =
+        notes::production::prepare_notebook(&f.source, &f.state_root, canonical::ROOM, false)
+            .unwrap();
+    assert_eq!(reopened.checkout.id.as_str(), historical.record);
+    assert_eq!(
+        reopened
+            .records
+            .read(&reopened.checkout.id, |doc| NotesDoc::list_pages(doc)[0]
+                .title
+                .clone())
+            .unwrap(),
+        "Retained qOS change"
+    );
+    assert_eq!(std::fs::read(&historical.marker_path).unwrap(), marker);
+    let tilo =
+        notes::legacy_import::destination(notes::legacy_import::source_key(&f.source).unwrap());
+    assert!(!f.document_path(&tilo).exists());
 }
 
 #[derive(Clone, Copy)]

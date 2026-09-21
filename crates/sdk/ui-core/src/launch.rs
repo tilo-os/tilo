@@ -22,6 +22,10 @@ pub enum LaunchError {
         records: crate::record::RecordStore,
         reports: Vec<crate::application::ComponentCloseReport>,
     },
+    ComponentCapture {
+        source: Box<LaunchError>,
+        reports: Vec<crate::application::ComponentCloseReport>,
+    },
     MissingValue(String),
     Duplicate(String),
     InvalidViewport(String),
@@ -52,6 +56,7 @@ impl fmt::Display for LaunchError {
             Self::BindingMismatch => f.write_str("application binding does not match"),
             Self::RecoveryRequired => f.write_str("legacy state requires explicit recovery"),
             Self::ComponentSetup { source, .. } => write!(f, "application setup failed: {source}"),
+            Self::ComponentCapture { source, .. } => write!(f, "{source}"),
             Self::MissingValue(flag) => write!(f, "{flag} requires a value"),
             Self::Duplicate(flag) => write!(f, "{flag} was supplied more than once"),
             Self::InvalidViewport(value) => write!(
@@ -101,6 +106,11 @@ impl fmt::Debug for LaunchError {
                 .field("record", record)
                 .field("close_report_count", &reports.len())
                 .finish_non_exhaustive(),
+            Self::ComponentCapture { source, reports } => f
+                .debug_struct("ComponentCapture")
+                .field("source", source)
+                .field("close_report_count", &reports.len())
+                .finish_non_exhaustive(),
             Self::MissingValue(value) => f.debug_tuple("MissingValue").field(value).finish(),
             Self::Duplicate(value) => f.debug_tuple("Duplicate").field(value).finish(),
             Self::InvalidViewport(value) => f.debug_tuple("InvalidViewport").field(value).finish(),
@@ -137,7 +147,9 @@ impl std::error::Error for LaunchError {
         match self {
             Self::Record(error) => Some(error),
             Self::Restore(error) => Some(error),
-            Self::ComponentSetup { source, .. } => Some(source.as_ref()),
+            Self::ComponentSetup { source, .. } | Self::ComponentCapture { source, .. } => {
+                Some(source.as_ref())
+            }
             _ => None,
         }
     }
@@ -151,6 +163,7 @@ impl LaunchError {
                 | Self::Record(_)
                 | Self::Restore(_)
                 | Self::ComponentSetup { .. }
+                | Self::ComponentCapture { .. }
                 | Self::CapabilityDenied(_)
                 | Self::BindingMismatch
                 | Self::MissingComponentHost
@@ -172,6 +185,11 @@ pub type ComponentHostPreparer =
         &crate::application::ApplicationDefinition,
         &LaunchArgs,
     ) -> Result<crate::application::PreparedComponentInputs, LaunchError>;
+
+/// Drive a mounted capture through its normal actions/input before rendering.
+/// The callback receives no unbound root or document mutation shortcut.
+pub type ComponentCaptureScenario =
+    fn(&mut headless::FrameHarness, &LaunchArgs) -> Result<(), LaunchError>;
 
 /// Parsed common launch arguments. Extra flags are retained for an app's
 /// screenshot factory after being explicitly allow-listed by the native LaunchSpec.

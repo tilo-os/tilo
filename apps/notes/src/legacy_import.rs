@@ -114,14 +114,30 @@ fn hex(bytes: &[u8; 32]) -> String {
 /// # Errors
 /// Returns an error if the directory cannot be resolved.
 pub fn source_key(root: &Path) -> Result<LegacySourceKey, ImportError> {
+    source_key_with_domain(root, b"tilo-notes-legacy-source-v1\0")
+}
+
+pub(crate) fn qos_source_key(root: &Path) -> Result<LegacySourceKey, ImportError> {
+    source_key_with_domain(root, b"qos-notes-legacy-source-v1\0")
+}
+
+fn source_key_with_domain(root: &Path, domain: &[u8]) -> Result<LegacySourceKey, ImportError> {
     let canonical = root.canonicalize().map_err(|e| source_error(root, e))?;
     if !canonical.is_dir() {
         return Err(source_error(root, "source is not a directory"));
     }
     let mut hash = blake3::Hasher::new();
-    hash.update(b"tilo-notes-legacy-source-v1\0");
+    hash.update(domain);
     hash.update(canonical.as_os_str().as_encoded_bytes());
     Ok(LegacySourceKey::from_bytes(*hash.finalize().as_bytes()))
+}
+
+pub(crate) fn qos_destination(key: LegacySourceKey) -> String {
+    format!("derived:notes-legacy-v1@{}", hex(&key.0))
+}
+
+pub(crate) fn source_key_hex(key: LegacySourceKey) -> String {
+    hex(&key.0)
 }
 
 /// The fixed destination for a source identity, independent of source content.
@@ -157,6 +173,20 @@ pub fn import_legacy(
     key: LegacySourceKey,
 ) -> Result<ImportOutcome, ImportError> {
     import_with_hook(records, root, key, |_| Ok(()))
+}
+
+/// Import into an explicit host-selected notebook (for example its stable
+/// default notebook). A ready destination still requires the matching receipt;
+/// this never overwrites an existing user's notebook. Legacy sources are retained.
+/// # Errors
+/// Rejects foreign record kinds, conflicts, invalid sources and durability failures.
+pub fn import_legacy_into(
+    records: &RecordStore,
+    root: &Path,
+    key: LegacySourceKey,
+    checkout: RecordCheckout,
+) -> Result<ImportOutcome, ImportError> {
+    import_into_with_hook(records, root, key, checkout, |_| Ok(()))
 }
 
 fn source_error(path: &Path, error: impl std::fmt::Display) -> ImportError {
@@ -344,20 +374,23 @@ fn compile_page(
     let mut ops = Vec::new();
     let mut marks = Vec::new();
     let mut after = None;
-    for (index, (kind, inline)) in rows.into_iter().enumerate() {
+    let mut groups = BTreeMap::new();
+    for (index, (kind, inline, fence, nesting)) in rows.into_iter().enumerate() {
         let mut spans = Vec::new();
         for mut span in inline.marks {
-            if let Mark::Link(target) = &mut span.mark {
+            let transclusion = matches!(span.mark, Mark::Transclusion(_));
+            if let Mark::Link(target) | Mark::Transclusion(target) = &mut span.mark {
                 let label = inline
                     .text
                     .get(span.range.clone())
                     .ok_or_else(|| "invalid Markdown link range".to_string())?;
+                let prefix = if transclusion { "!" } else { "" };
                 match titles.get(label).map(Vec::as_slice) {
                     Some([page]) => *target = *page,
-                    Some(_) => return Err(format!("ambiguous page link [[{label}]]")),
+                    Some(_) => return Err(format!("ambiguous page link {prefix}[[{label}]]")),
                     None => {
                         warnings.push(format!(
-                            "unresolved page link [[{label}]] on page {id}; visible label retained"
+                            "unresolved page link {prefix}[[{label}]] on page {id}; visible label retained"
                         ));
                         continue;
                     }
@@ -372,6 +405,22 @@ fn compile_page(
             kind: markdown::block_kind_wire(&kind),
             text: inline.text,
         });
+        if nesting > 0 {
+            ops.push(BlockEditOp::SetNesting {
+                block_id: block_id.clone(),
+                depth: nesting,
+            });
+        }
+        if let Some(fence) = fence {
+            let group = groups
+                .entry(fence)
+                .or_insert_with(|| block_id.clone())
+                .clone();
+            ops.push(BlockEditOp::SetCodeGroup {
+                block_id: block_id.clone(),
+                group_id: Some(group),
+            });
+        }
         marks.push((block_id.clone(), spans));
         after = Some(block_id);
     }
@@ -464,9 +513,23 @@ fn import_with_hook(
     records: &RecordStore,
     root: &Path,
     key: LegacySourceKey,
+    hook: impl FnMut(ImportStep<'_>) -> Result<(), String>,
+) -> Result<ImportOutcome, ImportError> {
+    import_into_with_hook(records, root, key, destination(key), hook)
+}
+
+fn import_into_with_hook(
+    records: &RecordStore,
+    root: &Path,
+    key: LegacySourceKey,
+    checkout: RecordCheckout,
     mut hook: impl FnMut(ImportStep<'_>) -> Result<(), String>,
 ) -> Result<ImportOutcome, ImportError> {
-    let checkout = destination(key);
+    if checkout.kind != crate::definition().record_kind
+        || RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
+    {
+        return Err(ImportError::Record(RecordOpenError::IdentityMismatch));
+    }
     match records.try_open_record(&checkout) {
         Ok(_) => {
             let matches = records

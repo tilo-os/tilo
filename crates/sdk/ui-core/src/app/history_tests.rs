@@ -408,6 +408,645 @@ impl RoutedOwners {
             })
             .unwrap()
     }
+    fn observation(
+        &self,
+        index: usize,
+    ) -> (
+        Vec<automerge::ChangeHash>,
+        usize,
+        u64,
+        Option<u64>,
+        Vec<(
+            String,
+            crate::application::InstanceId,
+            crate::undo::UndoStatus,
+        )>,
+    ) {
+        let checkout = &self.bindings[index].checkout;
+        self.records
+            .with_action_state(&checkout.id, |doc, history, actions| {
+                (
+                    doc.base_heads(),
+                    doc.pending_ops(),
+                    history.revision(),
+                    actions.generation,
+                    actions.statuses_for_test(),
+                )
+            })
+            .unwrap()
+    }
+    fn convert_to_qos_metadata(&self, index: usize) {
+        let checkout = &self.bindings[index].checkout;
+        let workspace = self.bindings[index]
+            .broker_route()
+            .unwrap()
+            .cluster_id
+            .to_string();
+        self.records
+            .with_action_state(&checkout.id, |doc, history, _| {
+                doc.delete(ROOT, "tilo:record").unwrap();
+                let meta = doc
+                    .put_object(ROOT, "qos:record", automerge::ObjType::Map)
+                    .unwrap();
+                doc.put(&meta, "id", checkout.id.as_str()).unwrap();
+                doc.put(&meta, "kind", checkout.kind.as_str()).unwrap();
+                doc.put(&meta, "home", &workspace).unwrap();
+                doc.put(&meta, "room", &workspace).unwrap();
+                doc.put_object(&meta, "refs", automerge::ObjType::List)
+                    .unwrap();
+                doc.commit();
+                history.rebase(doc);
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn signed_owned_foreign_identity_is_rejected_without_mutating_live_record() {
+    use automerge::ReadDoc;
+
+    let mut fixture = RoutedOwners::new();
+    let binding = &fixture.bindings[0];
+    let before = fixture
+        .records
+        .read_history(&binding.checkout.id, |doc, history| {
+            (doc.base_heads(), doc.pending_ops(), history.revision())
+        })
+        .unwrap();
+    let generation = fixture
+        .records
+        .action_generation(&binding.checkout.id)
+        .unwrap();
+    let mut remote = fixture
+        .records
+        .read_checked(&binding.checkout.id, Clone::clone)
+        .unwrap();
+    remote.set_actor(automerge::ActorId::from(b"foreign-identity".as_slice()));
+    let metadata = remote.get(ROOT, "tilo:record").unwrap().unwrap().1;
+    remote
+        .put(&metadata, "id", "uuid:00000000-0000-4000-8000-000000000099")
+        .unwrap();
+    remote
+        .put(ROOT, "foreign-content", "must not enter")
+        .unwrap();
+    remote.commit();
+    let incoming = routed_document(
+        &binding.broker_route().unwrap(),
+        collab_types::DocumentMutation::Snapshot(remote.save()),
+    );
+
+    fixture.app.apply_signed_document_envelope(&incoming, None);
+
+    assert_eq!(
+        fixture
+            .records
+            .read_history(&binding.checkout.id, |doc, history| (
+                doc.base_heads(),
+                doc.pending_ops(),
+                history.revision(),
+            ))
+            .unwrap(),
+        before,
+    );
+    assert_eq!(
+        fixture
+            .records
+            .action_generation(&binding.checkout.id)
+            .unwrap(),
+        generation,
+    );
+    assert_eq!(fixture.value(0, "foreign-content"), None);
+    assert!(fixture.app.document_sync_status().is_some());
+}
+
+fn identity_mutation(
+    fixture: &RoutedOwners,
+    index: usize,
+    family: &str,
+    field: &str,
+    incremental: bool,
+) -> collab_types::SignedOp {
+    use automerge::ReadDoc;
+
+    let binding = &fixture.bindings[index];
+    let mut remote = fixture
+        .records
+        .read_checked(&binding.checkout.id, Clone::clone)
+        .unwrap();
+    let baseline = remote.base_heads();
+    remote.set_actor(automerge::ActorId::from(
+        format!("foreign-{family}-{field}").as_bytes(),
+    ));
+    let metadata = remote.get(ROOT, family).unwrap().unwrap().1;
+    let value = match field {
+        "id" => "uuid:00000000-0000-4000-8000-000000000099",
+        "kind" => "foreign-kind",
+        "room" => "00000000-0000-4000-8000-000000000099",
+        "home" => "foreign-origin",
+        _ => unreachable!(),
+    };
+    remote.put(&metadata, field, value).unwrap();
+    remote.put(ROOT, "foreign-content", field).unwrap();
+    remote.commit();
+    routed_document(
+        &binding.broker_route().unwrap(),
+        if incremental {
+            collab_types::DocumentMutation::Incremental(remote.save_after(&baseline))
+        } else {
+            collab_types::DocumentMutation::Snapshot(remote.save())
+        },
+    )
+}
+
+#[test]
+fn signed_owned_identity_mutations_are_atomic_invalid_and_recover_with_fresh_snapshot() {
+    use automerge::ReadDoc;
+
+    for qos in [false, true] {
+        for incremental in [false, true] {
+            for field in ["id", "kind", "room", "home"] {
+                let mut fixture = RoutedOwners::new();
+                if qos {
+                    fixture.convert_to_qos_metadata(0);
+                    fixture.app.refresh_document_routes();
+                }
+                let family = if qos { "qos:record" } else { "tilo:record" };
+                let incoming = identity_mutation(&fixture, 0, family, field, incremental);
+                let before = fixture.observation(0);
+                fixture.app.apply_signed_document_envelope(&incoming, None);
+                assert_eq!(fixture.observation(0), before, "{family} {field}");
+                assert_eq!(fixture.value(0, "foreign-content"), None);
+                assert!(
+                    fixture
+                        .app
+                        .document_sync_status()
+                        .is_some_and(|status| status.contains("could not be applied"))
+                );
+                let route = fixture.bindings[0].broker_route().unwrap();
+                let pending = &fixture
+                    .app
+                    .document_routes
+                    .owners
+                    .iter()
+                    .find(|entry| entry.route == route)
+                    .unwrap()
+                    .pending;
+                assert!(pending.is_empty(), "invalid front must be quarantined");
+
+                let mut recovery = fixture
+                    .records
+                    .read_checked(&fixture.bindings[0].checkout.id, Clone::clone)
+                    .unwrap();
+                recovery.set_actor(automerge::ActorId::from(b"valid-recovery".as_slice()));
+                recovery.put(ROOT, "valid-after-recovery", field).unwrap();
+                recovery.commit();
+                let recovery = routed_document(
+                    &route,
+                    collab_types::DocumentMutation::Snapshot(recovery.save()),
+                );
+                fixture.app.apply_signed_document_envelope(&recovery, None);
+                assert_eq!(
+                    fixture.value(0, "valid-after-recovery").as_deref(),
+                    Some(field)
+                );
+                assert_eq!(fixture.app.document_sync_status(), None);
+                if qos {
+                    fixture
+                        .records
+                        .read_checked(&fixture.bindings[0].checkout.id, |doc| {
+                            assert!(doc.get(ROOT, "qos:record").unwrap().is_some());
+                            assert!(doc.get(ROOT, "tilo:record").unwrap().is_none());
+                        })
+                        .unwrap();
+                }
+                let (_, _, revision, generation, statuses) = fixture.observation(0);
+                assert_eq!(revision, before.2);
+                assert_eq!(generation, before.3.and_then(|value| value.checked_add(1)));
+                assert!(statuses.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn signed_owned_corrupt_incremental_preserves_document_history_generation_and_statuses() {
+    let mut fixture = RoutedOwners::new();
+    let binding = &fixture.bindings[0];
+    let mut remote = fixture
+        .records
+        .read_checked(&binding.checkout.id, Clone::clone)
+        .unwrap();
+    let baseline = remote.base_heads();
+    remote.put(ROOT, "valid-prefix", "must not enter").unwrap();
+    remote.commit();
+    let mut bytes = remote.save_after(&baseline);
+    bytes.extend_from_slice(b"corrupt trailing chunk");
+    let incoming = routed_document(
+        &binding.broker_route().unwrap(),
+        collab_types::DocumentMutation::Incremental(bytes),
+    );
+    let before = fixture.observation(0);
+    fixture.app.apply_signed_document_envelope(&incoming, None);
+    assert_eq!(fixture.observation(0), before);
+    assert_eq!(fixture.value(0, "valid-prefix"), None);
+}
+
+#[test]
+fn signed_owned_concurrent_losing_identity_values_are_rejected() {
+    use automerge::ReadDoc;
+    for qos in [false, true] {
+        for incremental in [false, true] {
+            for field in ["id", "kind", "room", "home"] {
+                let mut fixture = RoutedOwners::new();
+                if qos {
+                    fixture.convert_to_qos_metadata(0);
+                    fixture.app.refresh_document_routes();
+                }
+                let binding = &fixture.bindings[0];
+                let family = if qos { "qos:record" } else { "tilo:record" };
+                let base = fixture
+                    .records
+                    .read_checked(&binding.checkout.id, Clone::clone)
+                    .unwrap();
+                let base_heads = base.base_heads();
+                let metadata = base.get(ROOT, family).unwrap().unwrap().1;
+                let expected = base
+                    .get(&metadata, field)
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                let mut remote = base.clone();
+                remote.set_actor(automerge::ActorId::from(b"foreign-concurrent".as_slice()));
+                let remote_meta = remote.get(ROOT, family).unwrap().unwrap().1;
+                remote
+                    .put(
+                        &remote_meta,
+                        field,
+                        if field == "id" {
+                            "uuid:00000000-0000-4000-8000-000000000099"
+                        } else {
+                            "foreign-concurrent"
+                        },
+                    )
+                    .unwrap();
+                remote.commit();
+                fixture
+                    .records
+                    .with_action_state(&binding.checkout.id, |doc, history, _| {
+                        let local_meta = doc.get(ROOT, family).unwrap().unwrap().1;
+                        doc.put(&local_meta, field, expected).unwrap();
+                        doc.commit();
+                        history.rebase(doc);
+                    })
+                    .unwrap();
+                let incoming = routed_document(
+                    &binding.broker_route().unwrap(),
+                    if incremental {
+                        collab_types::DocumentMutation::Incremental(remote.save_after(&base_heads))
+                    } else {
+                        collab_types::DocumentMutation::Snapshot(remote.save())
+                    },
+                );
+                let before = fixture.observation(0);
+                fixture.app.apply_signed_document_envelope(&incoming, None);
+                assert_eq!(fixture.observation(0), before, "{family} {field}");
+            }
+        }
+    }
+}
+
+#[test]
+fn signed_owned_metadata_family_cannot_switch_or_coexist() {
+    for qos in [false, true] {
+        for incremental in [false, true] {
+            let mut fixture = RoutedOwners::new();
+            if qos {
+                fixture.convert_to_qos_metadata(0);
+                fixture.app.refresh_document_routes();
+            }
+            let binding = &fixture.bindings[0];
+            let mut remote = fixture
+                .records
+                .read_checked(&binding.checkout.id, Clone::clone)
+                .unwrap();
+            let baseline = remote.base_heads();
+            remote.set_actor(automerge::ActorId::from(b"family-switch".as_slice()));
+            if qos {
+                remote.delete(ROOT, "qos:record").unwrap();
+            }
+            let other = if qos { "tilo:record" } else { "qos:record" };
+            let meta = remote
+                .put_object(ROOT, other, automerge::ObjType::Map)
+                .unwrap();
+            remote
+                .put(&meta, "id", binding.checkout.id.as_str())
+                .unwrap();
+            remote
+                .put(&meta, "kind", binding.checkout.kind.as_str())
+                .unwrap();
+            let workspace = binding.broker_route().unwrap().cluster_id.to_string();
+            remote.put(&meta, "home", &workspace).unwrap();
+            remote.put(&meta, "room", &workspace).unwrap();
+            remote
+                .put_object(&meta, "refs", automerge::ObjType::List)
+                .unwrap();
+            remote.commit();
+            let incoming = routed_document(
+                &binding.broker_route().unwrap(),
+                if incremental {
+                    collab_types::DocumentMutation::Incremental(remote.save_after(&baseline))
+                } else {
+                    collab_types::DocumentMutation::Snapshot(remote.save())
+                },
+            );
+            let before = fixture.observation(0);
+            fixture.app.apply_signed_document_envelope(&incoming, None);
+            assert_eq!(fixture.observation(0), before);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PrimaryMetadataShape {
+    None,
+    Tilo(bool),
+    Qos(bool),
+}
+impl PrimaryMetadataShape {
+    fn family(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Tilo(_) => Some("tilo:record"),
+            Self::Qos(_) => Some("qos:record"),
+        }
+    }
+    fn scoped(self) -> bool {
+        matches!(self, Self::Tilo(true) | Self::Qos(true))
+    }
+}
+
+#[allow(clippy::needless_pass_by_value, reason = "factory contract")]
+fn primary_routed_factory(
+    mut context: crate::application::HostContext,
+    target: crate::application::LaunchTarget,
+    restore: crate::application::RestoreInput,
+) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+    if matches!(target, crate::application::LaunchTarget::PrimaryNew) {
+        context
+            .initialize_new_record(|doc| {
+                doc.put(ROOT, "body", "initialized")
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .map_err(crate::launch::LaunchError::Record)?;
+    }
+    crate::application_test_support::probe_factory(context, target, restore)
+}
+
+struct RoutedPrimary {
+    app: App,
+    records: crate::RecordStore,
+    binding: crate::bound_dispatch::CallbackBinding,
+    _owners: crate::record::RecordOwners,
+    _temp: tempfile::TempDir,
+}
+impl RoutedPrimary {
+    fn new(shape: PrimaryMetadataShape) -> Self {
+        use crate::application::{ApplicationDefinition, HostContext, LaunchTarget, RestoreInput};
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().to_path_buf());
+        let workspace = "00000000-0000-4000-8000-000000000078";
+        let records = owners.open("dev.tilo.primary-probe", workspace).unwrap();
+        let views = std::rc::Rc::new(
+            crate::application_view::InstanceViewStore::new(
+                temp.path().to_path_buf(),
+                "D",
+                workspace,
+            )
+            .unwrap(),
+        );
+        let definition = ApplicationDefinition {
+            app_id: "dev.tilo.primary-probe",
+            title: "Primary Probe",
+            icon: crate::widget::IconDescriptor::Glyph("P"),
+            record_kind: crate::RecordKind::new("primary.probe"),
+            required: vec![],
+            optional: vec![],
+            create: primary_routed_factory,
+        };
+        let target = LaunchTarget::PrimaryNew;
+        let context = HostContext::prepare(
+            &definition,
+            records.clone(),
+            views,
+            "D".into(),
+            70,
+            std::rc::Rc::new(std::cell::RefCell::new(
+                crate::permissions::PermissionContext::permissive(),
+            )),
+            crate::permissions::UserId("primary-author".into()),
+            tilo_actions::ActionContext::default(),
+            &target,
+        )
+        .unwrap();
+        let mut component = definition
+            .instantiate(context, target, RestoreInput::None)
+            .unwrap();
+        let binding = component.callback_binding();
+        if let Some(family) = shape.family() {
+            records
+                .with_action_state(&binding.checkout.id, |doc, history, _| {
+                    let meta = doc
+                        .put_object(ROOT, family, automerge::ObjType::Map)
+                        .unwrap();
+                    if shape.scoped() {
+                        doc.put(&meta, "home", workspace).unwrap();
+                        doc.put(&meta, "room", workspace).unwrap();
+                    }
+                    doc.put_object(&meta, "refs", automerge::ObjType::List)
+                        .unwrap();
+                    doc.commit();
+                    history.rebase(doc);
+                })
+                .unwrap();
+        }
+        component.mount(|_| {}).unwrap();
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(crate::widget::BoundAppWidget { component }),
+        );
+        app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+            route: binding.broker_route().unwrap(),
+            epoch: uuid::Uuid::new_v4(),
+        });
+        app.refresh_document_routes();
+        Self {
+            app,
+            records,
+            binding,
+            _owners: owners,
+            _temp: temp,
+        }
+    }
+    fn observation(
+        &self,
+    ) -> (
+        Vec<automerge::ChangeHash>,
+        usize,
+        u64,
+        Option<u64>,
+        Vec<(
+            String,
+            crate::application::InstanceId,
+            crate::undo::UndoStatus,
+        )>,
+    ) {
+        self.records
+            .with_action_state(&self.binding.checkout.id, |doc, history, actions| {
+                (
+                    doc.base_heads(),
+                    doc.pending_ops(),
+                    history.revision(),
+                    actions.generation,
+                    actions.statuses_for_test(),
+                )
+            })
+            .unwrap()
+    }
+    fn value(&self, key: &str) -> Option<String> {
+        use automerge::ReadDoc;
+        self.records
+            .read_checked(&self.binding.checkout.id, |doc| {
+                doc.get(ROOT, key)
+                    .unwrap()
+                    .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            })
+            .unwrap()
+    }
+    fn envelope(
+        &self,
+        incremental: bool,
+        mutate: impl FnOnce(&mut automerge::AutoCommit),
+    ) -> collab_types::SignedOp {
+        let mut remote = self
+            .records
+            .read_checked(&self.binding.checkout.id, Clone::clone)
+            .unwrap();
+        let baseline = remote.base_heads();
+        remote.set_actor(automerge::ActorId::from(b"primary-peer".as_slice()));
+        mutate(&mut remote);
+        remote.commit();
+        routed_document(
+            &self.binding.broker_route().unwrap(),
+            if incremental {
+                collab_types::DocumentMutation::Incremental(remote.save_after(&baseline))
+            } else {
+                collab_types::DocumentMutation::Snapshot(remote.save())
+            },
+        )
+    }
+}
+
+#[test]
+fn signed_package_primary_preserves_each_existing_metadata_shape() {
+    for shape in [
+        PrimaryMetadataShape::None,
+        PrimaryMetadataShape::Tilo(false),
+        PrimaryMetadataShape::Tilo(true),
+        PrimaryMetadataShape::Qos(false),
+        PrimaryMetadataShape::Qos(true),
+    ] {
+        for incremental in [false, true] {
+            let mut fixture = RoutedPrimary::new(shape);
+            let before = fixture.observation();
+            let valid = fixture.envelope(incremental, |doc| {
+                doc.put(ROOT, "valid-primary", "remote").unwrap();
+            });
+            fixture.app.apply_signed_document_envelope(&valid, None);
+            assert_eq!(fixture.value("valid-primary").as_deref(), Some("remote"));
+            let after = fixture.observation();
+            assert_eq!(after.2, before.2);
+            assert_eq!(after.3, before.3.and_then(|value| value.checked_add(1)));
+            assert!(after.4.is_empty());
+        }
+    }
+}
+
+#[test]
+fn signed_package_primary_refuses_identity_stamps_scope_changes_and_family_switches() {
+    use automerge::ReadDoc;
+
+    for shape in [
+        PrimaryMetadataShape::None,
+        PrimaryMetadataShape::Tilo(false),
+        PrimaryMetadataShape::Tilo(true),
+        PrimaryMetadataShape::Qos(false),
+        PrimaryMetadataShape::Qos(true),
+    ] {
+        for incremental in [false, true] {
+            let mut attacks = vec!["id", "kind", "home", "room", "family"];
+            if shape.scoped() {
+                attacks.extend(["delete-home", "delete-room"]);
+            }
+            for attack in attacks {
+                let mut fixture = RoutedPrimary::new(shape);
+                let before = fixture.observation();
+                let incoming = fixture.envelope(incremental, |doc| {
+                    let family = shape.family().unwrap_or("tilo:record");
+                    let meta = if let Some((_, object)) = doc.get(ROOT, family).unwrap() {
+                        object
+                    } else {
+                        doc.put_object(ROOT, family, automerge::ObjType::Map)
+                            .unwrap()
+                    };
+                    match attack {
+                        "id" => doc
+                            .put(&meta, "id", "uuid:00000000-0000-4000-8000-000000000099")
+                            .unwrap(),
+                        "kind" => doc.put(&meta, "kind", "foreign-kind").unwrap(),
+                        "home" => doc.put(&meta, "home", "foreign-home").unwrap(),
+                        "room" => doc
+                            .put(&meta, "room", "00000000-0000-4000-8000-000000000099")
+                            .unwrap(),
+                        "delete-home" => {
+                            let _ = doc.delete(&meta, "home");
+                        }
+                        "delete-room" => {
+                            let _ = doc.delete(&meta, "room");
+                        }
+                        "family" => {
+                            let other = if family == "tilo:record" {
+                                "qos:record"
+                            } else {
+                                "tilo:record"
+                            };
+                            doc.put_object(ROOT, other, automerge::ObjType::Map)
+                                .unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                    doc.put(ROOT, "invalid-primary-content", attack).unwrap();
+                });
+                fixture.app.apply_signed_document_envelope(&incoming, None);
+                assert_eq!(fixture.observation(), before, "primary {attack}");
+                assert_eq!(fixture.value("invalid-primary-content"), None);
+                assert!(fixture.app.document_sync_status().is_some());
+                let pending = &fixture.app.document_routes.owners[0].pending;
+                assert!(pending.is_empty());
+
+                let recovery = fixture.envelope(false, |doc| {
+                    doc.put(ROOT, "primary-recovered", attack).unwrap();
+                });
+                fixture.app.apply_signed_document_envelope(&recovery, None);
+                assert_eq!(fixture.value("primary-recovered").as_deref(), Some(attack));
+                assert_eq!(fixture.app.document_sync_status(), None);
+            }
+        }
+    }
 }
 #[test]
 fn native_owned_routes_isolate_two_documents_and_outer_for_snapshot_incremental_and_publication() {

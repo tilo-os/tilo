@@ -534,14 +534,17 @@ impl DesktopRoot {
             },
         };
         let tree = handle.tree.borrow();
-        let surface = ui::ImageStore::with_host_factory(Self::image_factory(&handle), || {
-            DesktopSurface::build(
-                &tree,
-                &fallback,
-                &mut resolver,
-                Self::chrome(&tree, chrome.clone(), notify.clone()),
-            )
-        });
+        let surface = ui::ImageStore::with_host_factory_with_max_dimension(
+            Self::image_factory(&handle),
+            || {
+                DesktopSurface::build(
+                    &tree,
+                    &fallback,
+                    &mut resolver,
+                    Self::chrome(&tree, chrome.clone(), notify.clone()),
+                )
+            },
+        );
         drop(tree);
         let mut root = Self {
             source_heads: admission.source_heads,
@@ -571,10 +574,10 @@ impl DesktopRoot {
         root.refresh_navigation(true);
         Ok((root, handle))
     }
-    fn image_factory(handle: &DesktopHandle) -> Rc<dyn Fn() -> ui::ImageStore> {
+    fn image_factory(handle: &DesktopHandle) -> Rc<dyn Fn(u32) -> ui::ImageStore> {
         let images = handle.images.clone();
-        Rc::new(move || {
-            let (store, loader) = ui::ImageStore::host_driven();
+        Rc::new(move |max_dimension| {
+            let (store, loader) = ui::ImageStore::host_driven_with_max_dimension(max_dimension);
             images.borrow_mut().push(loader);
             store
         })
@@ -1270,12 +1273,13 @@ impl DesktopRoot {
         let tree = self.handle.tree.borrow();
         if changed {
             let factory = Self::image_factory(&self.handle);
-            let result = ui::ImageStore::with_host_factory(factory.clone(), || {
-                self.surface
-                    .reconcile(&tree, &self.fallback, &mut self.resolver)
-            });
+            let result =
+                ui::ImageStore::with_host_factory_with_max_dimension(factory.clone(), || {
+                    self.surface
+                        .reconcile(&tree, &self.fallback, &mut self.resolver)
+                });
             if result == ReconcileOutcome::RebuildRequired {
-                ui::ImageStore::with_host_factory(factory, || {
+                ui::ImageStore::with_host_factory_with_max_dimension(factory, || {
                     self.surface.rebuild_retaining(
                         &tree,
                         &self.fallback,

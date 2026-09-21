@@ -231,10 +231,10 @@ fn assert_local_app_behavior() {
         "private app must not claim its ambient package's shared surface"
     );
     assert!(
-        app.a11y.high_contrast,
+        app.a11y_settings().high_contrast,
         "ordinary local accessibility settings remain enabled"
     );
-    assert_eq!(app.text_scale, 1.25);
+    assert_eq!(app.text_scale(), 1.25);
 
     let second = App::from_scoped_parts_local(
         crate::WakeScope::new(),

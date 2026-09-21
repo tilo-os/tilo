@@ -179,6 +179,13 @@ impl SearchField {
         }
     }
 
+    /// Select the current query for conventional Find/Search re-entry.
+    pub fn select_all(&mut self) {
+        if !self.opens_palette {
+            self.input.select_all();
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.input.value().is_empty()
     }

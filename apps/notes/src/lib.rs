@@ -34,14 +34,19 @@
 
 pub mod actions;
 pub mod app;
+mod block_order;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod capture;
 pub mod component;
 pub mod framework_history;
 pub mod production;
 pub use component::definition;
 pub mod doc;
+pub mod hosting;
 pub mod legacy_import;
 pub mod main_panel;
 pub mod markdown;
+pub mod metadata;
 pub mod model;
 pub mod notebook;
 pub use ui::num;

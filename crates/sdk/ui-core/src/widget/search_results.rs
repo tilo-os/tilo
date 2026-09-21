@@ -42,9 +42,10 @@ const ICON_D: f64 = 18.0;
 const ICON_COL: f64 = 30.0; // icon box + gap when a row has an icon
 const EMPTY_H: f64 = 92.0;
 /// A lifted row (selection, hover) is inset this much top and bottom, so a
-/// selected row and its hovered neighbour keep one `s1` between them
-/// instead of fusing into one block (HIG §7 "nothing touches").
+/// selected row and its hovered neighbour keep one `s1` between them instead
+/// of fusing into one block (HIG §7 "nothing touches").
 const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
+const PREVIEW_H: f64 = 68.0;
 
 /// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64` matrix
 /// multiply-add with no overflow trap, so it cannot panic regardless of
@@ -232,6 +233,25 @@ impl SearchResultsView {
         self.groups.get(gi)?.results.get(ri)
     }
 
+    fn preview_result(&self) -> Option<&SearchResult> {
+        let at = |flat: usize| {
+            let (gi, ri) = *self.flat.get(flat)?;
+            self.groups
+                .get(gi)?
+                .results
+                .get(ri)
+                .filter(|result| result.preview.is_some())
+        };
+        self.hover.and_then(at).or_else(|| at(self.cursor))
+    }
+
+    fn has_previews(&self) -> bool {
+        self.groups
+            .iter()
+            .flat_map(|group| &group.results)
+            .any(|result| result.preview.is_some())
+    }
+
     pub fn selected_action_id(&self) -> Option<&str> {
         self.selected().map(|r| r.action_id.as_str())
     }
@@ -297,6 +317,9 @@ impl SearchResultsView {
             for r in &g.results {
                 h += self.row_height(r);
             }
+        }
+        if self.has_previews() {
+            h += PREVIEW_H;
         }
         h
     }
@@ -477,6 +500,69 @@ impl SearchResultsView {
             None,
         );
     }
+
+    fn draw_preview(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.has_previews() {
+            return;
+        }
+        let Some(result) = self.preview_result() else {
+            return;
+        };
+        let Some(preview) = result.preview.as_deref() else {
+            return;
+        };
+        let rect = Rect::new(
+            self.rect.x0 + ROW_INSET,
+            self.rect.y1 - PREVIEW_H,
+            self.rect.x1 - ROW_INSET,
+            self.rect.y1 - PAD,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &vello::kurbo::Line::new((rect.x0, rect.y0), (rect.x1, rect.y0)),
+        );
+        let title_size = theme.tokens.typography.scale.xs.max(10.0);
+        let body_size = theme.tokens.typography.scale.sm.max(11.0);
+        tr.draw_text_weighted(
+            scene,
+            "PREVIEW",
+            title_size,
+            theme.tokens.colors.text_dim,
+            compose(
+                transform,
+                Affine::translate((rect.x0 + 4.0, rect.y0 + 10.0)),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
+        let normalized = preview.split_whitespace().collect::<Vec<_>>().join(" ");
+        let available = (rect.width() - 8.0).max(0.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded on-screen preview width"
+        )]
+        let body = tr.elide_to_width(&normalized, body_size, available as f32);
+        tr.draw_text(
+            scene,
+            &body,
+            body_size,
+            theme.tokens.colors.text_primary,
+            compose(
+                transform,
+                Affine::translate((rect.x0 + 4.0, rect.y0 + 32.0)),
+            ),
+            None,
+        );
+    }
 }
 
 impl Default for SearchResultsView {
@@ -598,6 +684,7 @@ impl Widget for SearchResultsView {
         for row in &plan.rows {
             self.draw_row(scene, transform, text_renderer, theme, row);
         }
+        self.draw_preview(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -700,7 +787,8 @@ impl Widget for SearchResultsView {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let total = self.flat.len();
         let children = if self.flat.is_empty() {
             vec![
                 AccessNode::new(Role::StaticText)
@@ -711,18 +799,25 @@ impl Widget for SearchResultsView {
             self.plan()
                 .rows
                 .into_iter()
-                .map(|row| {
-                    let result = &self.groups[row.gi].results[row.ri];
-                    AccessNode::new(Role::ListItem)
-                        .with_name(&result.title)
-                        .with_optional_value(result.subtitle.clone())
+                .filter_map(|row| {
+                    let result = self.groups.get(row.gi)?.results.get(row.ri)?;
+                    let description = result
+                        .subtitle
+                        .iter()
+                        .chain(result.preview.iter())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(". ");
+                    let mut node = AccessNode::new(Role::ListItem)
+                        .with_name(result.title.clone())
                         .with_action_target(&result.action_id)
                         .with_bounds(row.rect)
-                        .with_position(row.flat + 1, self.flat.len())
-                        .with_state(crate::a11y::AccessState {
-                            selected: row.flat == self.cursor,
-                            ..Default::default()
-                        })
+                        .with_position(row.flat.saturating_add(1), total)
+                        .with_state(AccessState::new().selected(row.flat == self.cursor));
+                    if !description.is_empty() {
+                        node = node.with_description(description);
+                    }
+                    Some(node)
                 })
                 .collect()
         };
@@ -896,6 +991,31 @@ mod tests {
     }
 
     #[test]
+    fn preview_reserves_fixed_space_and_is_announced() {
+        let mut view = SearchResultsView::new();
+        view.set_results(vec![
+            SearchResult::new("Notes", "Design notes", "open")
+                .with_subtitle("Edited today")
+                .with_preview("A bounded note excerpt"),
+            SearchResult::new("Notes", "Plain note", "plain"),
+        ]);
+        let with_preview = view.desired_height();
+        view.set_cursor(1);
+        assert_eq!(
+            view.desired_height(),
+            with_preview,
+            "selection never changes result geometry"
+        );
+        let access = Widget::accessibility(&view).expect("result list semantics");
+        assert!(
+            access.children[0]
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("bounded note excerpt"))
+        );
+    }
+
+    #[test]
     fn keyboard_navigation_wraps_and_enter_activates() {
         let mut v = view_from("");
         let mut doc = AutoCommit::new();
@@ -1040,6 +1160,15 @@ mod tests {
         v.set_rect(Rect::new(0.0, 0.0, 360.0, v.desired_height()));
         assert!(v.is_empty());
         assert_eq!(v.selected(), None);
+        let access = Widget::accessibility(&v).expect("empty result list semantics");
+        assert_eq!(access.children.len(), 1);
+        assert_eq!(access.children[0].role, crate::a11y::Role::StaticText);
+        assert_eq!(access.children[0].name.as_deref(), Some("Nothing here"));
+        assert_eq!(
+            access.children[0].live,
+            Some(crate::a11y::Politeness::Polite),
+            "empty results remain a polite live announcement"
+        );
         v.activate_selected();
         assert_eq!(v.take_activated(), None, "no row ⇒ nothing to activate");
     }

@@ -8,7 +8,7 @@
 use super::legacy_document::*;
 use super::*;
 use crate::widget::{Column, TileContent, TileHost};
-use automerge::ReadDoc;
+use automerge::{ObjType, ReadDoc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use tilo_actions::{
@@ -336,6 +336,62 @@ impl Fixture {
             probe,
         }
     }
+    pub(crate) fn qos_notes_v1() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let room = "compat-room";
+        let source_key = "31".repeat(32);
+        let record = format!("derived:notes-legacy-v1@{source_key}");
+        let evidence =
+            crate::record::LocalCanonicalCompatibility::qos_notes_v1(room, &source_key, &record)
+                .unwrap();
+        let checkout = evidence.checkout().clone();
+        let directory = app_state::DocStore::room_record_dir_at(
+            &profile,
+            "dev.qos.notes",
+            room,
+            &checkout.id.storage_key(),
+        )
+        .unwrap();
+        drop(app_state::DocStore::open_canonical_at("dev.qos.notes", &directory).unwrap());
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "qos:schema_version", 1_u64).unwrap();
+        let meta = doc.put_object(ROOT, "qos:record", ObjType::Map).unwrap();
+        for (key, value) in [
+            ("id", checkout.id.as_str()),
+            ("kind", "notes.notebook"),
+            ("home", room),
+            ("room", room),
+        ] {
+            doc.put(&meta, key, value).unwrap();
+        }
+        doc.put_object(&meta, "refs", ObjType::List).unwrap();
+        doc.put(ROOT, "value", 1_i64).unwrap();
+        doc.put(ROOT, "owner", 35_u64).unwrap();
+        std::fs::write(directory.join(app_state::DOCUMENT_FILE), doc.save()).unwrap();
+
+        let mut owners = crate::record::RecordOwners::new(profile);
+        let store = owners.open("dev.qos.notes", room).unwrap();
+        store.try_open_local_compatibility(&evidence).unwrap();
+        let probe = Probe::new();
+        probe.expected_owner.set(35);
+        let mut tile = TileHost::new(TileContent::App(Box::new(probe.clone())));
+        tile.bind_record(store.clone(), checkout.clone());
+        let target = LegacyResourceTarget {
+            owner: tile.history_owner().unwrap(),
+            address: address(),
+        };
+        Self {
+            _temp: temp,
+            _owners: owners,
+            store,
+            checkout,
+            target,
+            tile,
+            probe,
+        }
+    }
     pub(crate) fn _temp_path_for_test(&self) -> std::path::PathBuf {
         self._temp.path().join("profile")
     }
@@ -389,6 +445,38 @@ fn invoke(
             ambient: None,
         },
     )
+}
+
+#[test]
+fn sealed_qos_notes_admission_executes_a_local_document_action() {
+    let mut fixture = Fixture::qos_notes_v1();
+    assert!(fixture.target.owner.broker_route().is_none());
+    let registry = registry();
+    let mut transport = LocalTransport::new();
+    let permissions = PermissionContext::permissive();
+
+    let outcome = invoke(
+        &mut fixture.tile,
+        &fixture.target,
+        &registry,
+        &mut transport,
+        &permissions,
+    )
+    .unwrap();
+
+    assert!(outcome.changed);
+    assert_eq!(
+        fixture
+            .store
+            .read(&fixture.checkout.id, |doc| doc
+                .get(ROOT, "value")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_i64())
+            .unwrap(),
+        Some(2)
+    );
 }
 #[test]
 fn legacy_route_two_owners_exact_envelope_noop_undo_and_no_outer_fallback() {

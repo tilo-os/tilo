@@ -15,6 +15,12 @@ class PreCommitContractTests(unittest.TestCase):
         for command in ("cargo check", "cargo clippy", "cargo test", "cargo nextest"):
             self.assertNotIn(command, hook)
 
+    def test_local_hook_checks_staged_allow_reasons(self) -> None:
+        hook = HOOK.read_text(encoding="utf-8")
+
+        self.assertIn("check_changed_rust_allows.py", hook)
+        self.assertIn("--staged", hook)
+
     def test_ci_owns_the_differential_clippy_gate(self) -> None:
         workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")
 

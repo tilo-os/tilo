@@ -19,6 +19,7 @@ use ui::{
 use uuid::Uuid;
 
 pub const PACKAGE: &str = "dev.tilo.notes";
+pub const QOS_PACKAGE: &str = "dev.qos.notes";
 pub const ROOM: &str = "fixture-room";
 pub const LAUNCH_BODY: &str = "# Heading **one**\n\n## Heading *two*\n\n### Heading three\n\né **bold** *ital* `λ` [[Projects]] [[Empty]]\n\n- bullet\n\n  - nested\n\n1. numbered\n\n  1. nested number\n\n- [ ] todo\n\n  - [x] done\n\n```rust\nlet x = 1;\nlet y = 2;\n```\n\n```\nplain code\n```\n\n---\n";
 pub struct LegacyFixture {
@@ -158,6 +159,117 @@ impl LegacyFixture {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
+
+    /// Write the exact canonical custody shape produced by the deployed qOS
+    /// Notes v1 code. Keep this test oracle independent of the compatibility
+    /// implementation: the domain, raw record grammar, FNV storage key and
+    /// qOS metadata/schema keys are all literal historical values.
+    pub fn write_qos_canonical_v1(&self, imported: bool) -> HistoricalQosCustody {
+        let canonical_source = self.source.canonicalize().unwrap();
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"qos-notes-legacy-source-v1\0");
+        hash.update(canonical_source.as_os_str().as_encoded_bytes());
+        let source_key = hash.finalize().to_hex().to_string();
+        let record = format!("derived:notes-legacy-v1@{source_key}");
+        let storage_key = historical_storage_key(&record);
+        std::fs::create_dir_all(&self.state_root).unwrap();
+        let state_root = self.state_root.canonicalize().unwrap();
+        let directory =
+            app_state::DocStore::room_record_dir_at(&state_root, QOS_PACKAGE, ROOM, &storage_key)
+                .unwrap();
+        // Establish the real canonical directory, actor and exclusive gate,
+        // then release it before publishing the historical document bytes.
+        drop(app_state::DocStore::open_canonical_at(QOS_PACKAGE, &directory).unwrap());
+
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "qos:schema_version", 1_u64).unwrap();
+        let meta = doc.put_object(ROOT, "qos:record", ObjType::Map).unwrap();
+        for (field, value) in [
+            ("id", record.as_str()),
+            ("kind", "notes.notebook"),
+            ("home", ROOM),
+            ("room", ROOM),
+        ] {
+            doc.put(&meta, field, value).unwrap();
+        }
+        doc.put_object(&meta, "refs", ObjType::List).unwrap();
+        let pages = doc.put_object(ROOT, "pages", ObjType::Map).unwrap();
+        doc.put_object(ROOT, "tags", ObjType::Map).unwrap();
+        doc.put_object(ROOT, "tag_assignments", ObjType::Map)
+            .unwrap();
+        doc.put(ROOT, "notes_schema_version", 1_u64).unwrap();
+        if imported {
+            let page_id = Uuid::from_u128(0x35ed_0001).to_string();
+            let page = doc
+                .put_object(&pages, page_id.as_str(), ObjType::Map)
+                .unwrap();
+            let title = doc.put_object(&page, "title", ObjType::Text).unwrap();
+            doc.splice_text(&title, 0, 0, "Historical qOS page")
+                .unwrap();
+            doc.put(&page, "parent", "").unwrap();
+            doc.put(&page, "order", 0_i64).unwrap();
+            doc.put_object(&page, "blocks", ObjType::List).unwrap();
+            let receipt = doc
+                .put_object(ROOT, "notes_import_v1", ObjType::Map)
+                .unwrap();
+            for (field, value) in [
+                ("source_key", source_key.as_str()),
+                ("snapshot_digest", "42".repeat(32).as_str()),
+                ("destination_id", record.as_str()),
+                ("format", "workspace-json-markdown-v1"),
+            ] {
+                doc.put(&receipt, field, value).unwrap();
+            }
+            doc.put(&receipt, "version", 1_u64).unwrap();
+        }
+        let document_path = directory.join(app_state::DOCUMENT_FILE);
+        std::fs::write(&document_path, doc.save()).unwrap();
+        let marker = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "state_root": state_root,
+            "workspace": ROOM,
+            "package": QOS_PACKAGE,
+            "record": record,
+        }))
+        .unwrap();
+        let marker_path = self.source.join(".notes-canonical-v1");
+        std::fs::write(&marker_path, &marker).unwrap();
+        HistoricalQosCustody {
+            source_key,
+            record,
+            document_path,
+            marker_path,
+            marker,
+        }
+    }
+}
+
+pub struct HistoricalQosCustody {
+    pub source_key: String,
+    pub record: String,
+    pub document_path: PathBuf,
+    pub marker_path: PathBuf,
+    pub marker: Vec<u8>,
+}
+
+fn historical_storage_key(record: &str) -> String {
+    let mut prefix = String::with_capacity(48);
+    for c in record.chars() {
+        if prefix.len() >= 40 {
+            break;
+        }
+        if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+            prefix.push(c);
+        } else {
+            prefix.push('_');
+        }
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in record.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{prefix}-{hash:016x}")
 }
 pub fn wrapped_json(json: &str) -> Vec<u8> {
     let mut doc = AutoCommit::new();

@@ -16,6 +16,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+mod host;
+pub use host::{ApplicationHost, NativeProcessHost};
+
 pub type InstanceId = u64;
 pub type ComponentFactory =
     fn(HostContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>;
@@ -77,6 +80,15 @@ pub struct ComponentRunnerInputs {
     pub text_renderer: crate::TextRenderer,
 }
 
+impl ComponentRunnerInputs {
+    /// Explicit native-runner discovery of the system's presentation settings
+    /// and fonts. Factories and capture hosts should use supplied inputs instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_native_process() -> Self {
+        crate::App::native_component_presentation()
+    }
+}
+
 /// Explicit host preparation completed before invoking the application factory.
 pub struct PreparedComponentInputs {
     pub context: HostContext,
@@ -105,6 +117,72 @@ impl HostContext {
         action_context: tilo_actions::ActionContext,
         target: &LaunchTarget,
     ) -> Result<Self, LaunchError> {
+        Self::prepare_scoped(
+            definition,
+            records,
+            views,
+            device_id,
+            instance_id,
+            permissions,
+            author,
+            action_context,
+            target,
+            None,
+        )
+    }
+
+    /// Reserve a host-named new record through the same checked construction
+    /// path. Useful for a workspace's default document, whose identity must
+    /// survive a restart even before the first local View has been saved.
+    /// Existing records are never adopted or reinitialized by this operation.
+    ///
+    /// # Errors
+    /// Rejects foreign namespaces, denied authority and occupied identities.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "explicit authenticated host inputs"
+    )]
+    pub fn prepare_new_record(
+        definition: &ApplicationDefinition,
+        records: RecordStore,
+        views: Rc<InstanceViewStore>,
+        device_id: String,
+        instance_id: InstanceId,
+        permissions: Rc<RefCell<PermissionContext>>,
+        author: UserId,
+        action_context: tilo_actions::ActionContext,
+        record_id: RecordId,
+    ) -> Result<Self, LaunchError> {
+        Self::prepare_scoped(
+            definition,
+            records,
+            views,
+            device_id,
+            instance_id,
+            permissions,
+            author,
+            action_context,
+            &LaunchTarget::New,
+            Some(record_id),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one validation path for minted and host-named records"
+    )]
+    fn prepare_scoped(
+        definition: &ApplicationDefinition,
+        records: RecordStore,
+        views: Rc<InstanceViewStore>,
+        device_id: String,
+        instance_id: InstanceId,
+        permissions: Rc<RefCell<PermissionContext>>,
+        author: UserId,
+        action_context: tilo_actions::ActionContext,
+        target: &LaunchTarget,
+        new_record_id: Option<RecordId>,
+    ) -> Result<Self, LaunchError> {
         validate_identity(definition.app_id).map_err(LaunchError::Restore)?;
         validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
@@ -123,13 +201,25 @@ impl HostContext {
             }
         }
         let (record, reservation) = match target {
-            LaunchTarget::New | LaunchTarget::PrimaryNew => {
+            LaunchTarget::New => {
                 let checkout = RecordCheckout::new(
-                    if matches!(target, LaunchTarget::PrimaryNew) {
-                        RecordId::package_primary()
-                    } else {
-                        RecordId::minted()
-                    },
+                    new_record_id.unwrap_or_else(RecordId::minted),
+                    definition.record_kind.clone(),
+                );
+                if RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id) {
+                    return Err(LaunchError::BindingMismatch);
+                }
+                let reservation = records
+                    .reserve_record(&checkout)
+                    .map_err(LaunchError::Record)?;
+                (checkout, Some(reservation))
+            }
+            LaunchTarget::PrimaryNew => {
+                if new_record_id.is_some() {
+                    return Err(LaunchError::BindingMismatch);
+                }
+                let checkout = RecordCheckout::new(
+                    RecordId::package_primary(),
                     definition.record_kind.clone(),
                 );
                 let reservation = records
@@ -138,7 +228,10 @@ impl HostContext {
                 (checkout, Some(reservation))
             }
             LaunchTarget::Record { checkout, .. } => {
-                if checkout.kind != definition.record_kind {
+                if checkout.kind != definition.record_kind
+                    || !checkout.id.is_package_primary()
+                        && RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
+                {
                     return Err(LaunchError::BindingMismatch);
                 }
                 records
@@ -990,7 +1083,7 @@ impl AppComponent {
                     }
                 })
                 .map_err(|error| error.to_string());
-            root.unmount_native_views();
+            crate::widget::unmount_native_views(root);
             result
         } else {
             Ok(())
@@ -1404,6 +1497,104 @@ mod bound_lifetime_tests {
         assert_eq!(context.app_id, "dev.qos.notes");
         assert_eq!(context.definition_app_id, "dev.tilo.notes");
     }
+
+    #[test]
+    fn host_named_new_and_package_primary_keep_distinct_identity_contracts() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
+        let definition = ApplicationDefinition {
+            app_id: "dev.tilo.mount-probe",
+            title: "Mount probe",
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: RecordKind::new("probe"),
+            required: vec![],
+            optional: vec![],
+            create: factory,
+        };
+        let supplied = RecordId::for_tab(55);
+        let prepare = |target, supplied| {
+            HostContext::prepare_scoped(
+                &definition,
+                records.clone(),
+                views.clone(),
+                "D".into(),
+                7,
+                Rc::new(RefCell::new(PermissionContext::permissive())),
+                UserId("probe-author".into()),
+                tilo_actions::ActionContext::default(),
+                target,
+                supplied,
+            )
+        };
+
+        let named = prepare(&LaunchTarget::New, Some(supplied.clone())).unwrap();
+        assert_eq!(named.record.id, supplied);
+        drop(named);
+
+        assert!(matches!(
+            prepare(&LaunchTarget::PrimaryNew, Some(RecordId::for_tab(56))),
+            Err(LaunchError::BindingMismatch)
+        ));
+        let primary = prepare(&LaunchTarget::PrimaryNew, None).unwrap();
+        assert!(primary.record.id.is_package_primary());
+    }
+
+    #[test]
+    fn existing_package_primary_is_local_while_invalid_ordinary_records_are_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let views = Rc::new(InstanceViewStore::new(temp.path().into(), "D", "A").unwrap());
+        let definition = ApplicationDefinition {
+            app_id: "dev.tilo.mount-probe",
+            title: "Mount probe",
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: RecordKind::new("probe"),
+            required: vec![],
+            optional: vec![],
+            create: factory,
+        };
+        let prepare = |checkout| {
+            HostContext::prepare(
+                &definition,
+                records.clone(),
+                views.clone(),
+                "D".into(),
+                7,
+                Rc::new(RefCell::new(PermissionContext::permissive())),
+                UserId("probe-author".into()),
+                tilo_actions::ActionContext::default(),
+                &LaunchTarget::Record {
+                    checkout,
+                    reveal: None,
+                },
+            )
+        };
+
+        let malformed = RecordCheckout::new(
+            RecordId::derived("invalid role", &RecordId::for_tab(55)),
+            definition.record_kind.clone(),
+        );
+        assert!(matches!(
+            prepare(malformed),
+            Err(LaunchError::BindingMismatch)
+        ));
+        let foreign = RecordCheckout::new(RecordId::for_tab(56), definition.record_kind.clone());
+        assert!(matches!(
+            prepare(foreign),
+            Err(LaunchError::Record(
+                crate::record::RecordOpenError::MissingRecord
+            ))
+        ));
+
+        let primary = RecordCheckout::package_primary(definition.record_kind.clone());
+        records.create_record(&primary).unwrap();
+        let context = prepare(primary).expect("an existing local package primary must reopen");
+        assert!(context.record.id.is_package_primary());
+    }
+
     #[test]
     fn actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry() {
         let temp = tempfile::tempdir().unwrap();

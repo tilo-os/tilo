@@ -299,6 +299,9 @@ impl HistoryOwner {
             OwnerKind::Legacy {
                 store, checkout, ..
             } => {
+                if store.is_local_compatibility(checkout) {
+                    return None;
+                }
                 let (_, package, workspace) = store.history_namespace(&checkout.id).ok()?;
                 if package.is_empty() {
                     return None;

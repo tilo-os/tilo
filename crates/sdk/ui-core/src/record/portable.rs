@@ -26,6 +26,7 @@ impl RecordOwners {
             root: PathBuf::new(),
             portable: Some(cache),
             owners: HashMap::new(),
+            profile_lifetime: None,
         }
     }
 }

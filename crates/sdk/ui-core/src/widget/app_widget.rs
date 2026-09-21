@@ -1622,3 +1622,59 @@ mod component_adapter {
     }
 }
 pub(crate) use component_adapter::BoundAppWidget;
+
+#[cfg(test)]
+mod native_lifecycle_tests {
+    use super::*;
+    use crate::application::{LaunchTarget, RestoreInput};
+    use crate::application_test_support as probe;
+
+    #[test]
+    fn free_native_lifecycle_walk_enters_bound_owner_once_and_refuses_closed_owner() {
+        let host = probe::ProbeHost::new();
+        let component =
+            probe::instantiate_probe(&host, 41, LaunchTarget::New, RestoreInput::None).unwrap();
+        let binding = component.callback_binding();
+        let mut widget = BoundAppWidget { component };
+        let native_host = crate::widget::NativeViewHost::headless(
+            crate::platform::PlatformConventions::default(),
+            1.0,
+        );
+
+        crate::widget::mount_native_views(&mut widget, &native_host);
+        crate::widget::native_view_frame_start(&mut widget);
+        crate::widget::unmount_native_views(&mut widget);
+        let observations = probe::take_native_lifecycle_observations();
+        assert_eq!(
+            observations
+                .iter()
+                .map(|(event, _)| *event)
+                .collect::<Vec<_>>(),
+            vec!["mount", "frame", "unmount"]
+        );
+        assert!(
+            observations
+                .iter()
+                .all(|(_, lifetime)| lifetime.is_active())
+        );
+
+        binding.closing.set(true);
+        crate::widget::mount_native_views(&mut widget, &native_host);
+        crate::widget::native_view_frame_start(&mut widget);
+        crate::widget::unmount_native_views(&mut widget);
+        assert!(probe::take_native_lifecycle_observations().is_empty());
+
+        widget.component.close();
+        assert!(
+            observations
+                .iter()
+                .all(|(_, lifetime)| !lifetime.is_active())
+        );
+        let teardown = probe::take_native_lifecycle_observations();
+        assert_eq!(
+            teardown.iter().map(|(event, _)| *event).collect::<Vec<_>>(),
+            vec!["unmount"]
+        );
+        assert!(teardown.iter().all(|(_, lifetime)| !lifetime.is_active()));
+    }
+}

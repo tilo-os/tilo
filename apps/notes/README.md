@@ -1,33 +1,37 @@
-# notes
+# Notes
 
-A native note-taking app for Tilo. Pages live in a side-tree; each page
-is a stack of editable blocks (paragraphs, headings, lists, checklists,
-quotes, code, formulas, tables, images and dividers) with inline marks for
-bold, italic, underline, strikethrough, code, external links and `[[Page]]`
-links. A standalone `![[Page]]` becomes a live, one-level
-embedded page card; its UUID target survives renames and bounded previews make
-cyclic embeds safe. Cmd-K jumps to any page. A transient status bubble
-tells you whether your edits are saved and how many words live on the
-current page without permanently stealing editor space.
+Notes is Tilo's native collaborative note-taking app. Notes live in a nested
+side tree, and each note contains editable paragraphs, headings, lists,
+checklists, quotes, code, formulas, tables, images and dividers. Inline marks
+include bold, italic, underline, strikethrough, code, external links and
+`[[Note]]` links. A standalone `![[Note]]` becomes a live, one-level embed; its
+stable target survives renames and bounded previews keep cyclic embeds safe.
 
-Fenced code uses grammar-backed, theme-derived syntax colours and exposes its
-language plus a one-click copy control. Tables keep editable GFM source with a
-live native grid. Workspace-relative Markdown images decode off-thread; the
-page menu's **Insert image** action copies a portal-selected PNG, JPEG or WebP
-into managed workspace assets. Right-click a page to export it as Markdown;
-managed images are copied beside the exported file and references rewritten
-portably without overwriting unrelated files. Right-click empty sidebar space
-to import a `.md` file. These flows are also published as resource actions.
+Created and last-edited dates sit below the title. The transient status bubble
+reports save state and word count without taking permanent editor space. The
+layout fills the available view, keeps the note header visible while the body
+scrolls, and collapses the note tree into a drawer at narrow widths.
 
-The layout is responsive: on a narrow window the page tree collapses
-into an overlay drawer reached from a top-bar button, and the editor
-takes the full width.
+The editor supports multiline blocks, mixed nested lists and cross-block
+selection. A block's drag handle appears while its text has the caret or when
+the pointer hovers it. Dragging previews the destination; `Alt-Up` and
+`Alt-Down` provide the same move from the keyboard. Right-click a note, press
+the Menu key, or press `Shift-F10` for note actions. Hover or focus a sidebar
+row to reveal its quick child-note action.
 
-Tags are reusable workspace metadata, shown as chips below a note title. Use
-Cmd-K / Ctrl-K to open a page's **Create and add tag** command, or choose an
-existing **Add tag …** action; the **Tags** resource lets keyboard and agent
-workflows browse, rename, or delete tags. Opening a tag changes only your
-local browse selection, never a collaborator's view.
+Fenced code uses grammar-backed, theme-derived syntax colours and a copy
+control. Type three backticks followed by a language, such as `python`, then
+press Enter to create a code block immediately. `Ctrl-Enter` exits to a
+paragraph after the fence, while `Ctrl-Shift-Enter` inserts one before it.
+Tables retain editable GFM source and also offer a native grid. Formula fences
+offer source and visual editing for TeX and Typst.
+
+Workspace-relative Markdown images decode off-thread. **Insert image** copies a
+portal-selected PNG, JPEG or WebP into managed assets. Markdown import and
+export preserve managed images with portable references and refuse unsafe
+paths. These operations, note navigation, editing, tags and block operations
+are all published as resources and actions for the platform palette,
+accessibility tools, scripts and agents.
 
 ## Running it
 
@@ -35,163 +39,126 @@ local browse selection, never a collaborator's view.
 cargo run -p notes --release
 ```
 
-The binary opens a window and restores the workspace from `~/notes/`. A fresh
-workspace is intentionally empty and presents a prominent **New note** action;
-the sidebar's **+** creates later root or child pages. The background saver
-flushes every change with a
-500 ms debounce; the status bar shows "Saving…" while a write is
-queued and "Saved" once it lands.
+The binary opens the host-owned default notebook. A new notebook starts empty
+and presents **New note**. The shared record host supplies persistence,
+history, undo and collaboration; the status bubble shows **Saving...** while a
+write is queued and **Saved** once it lands.
 
-Set `TILO_NOTES_ROOT` to an absolute directory to use a different notebook,
-including an isolated notebook for headless testing. Empty or relative values
-are rejected instead of opening the default notebook. The default remains
-`~/notes/` on every platform.
+On a standalone personal launch, Notes imports an existing legacy notebook
+from `~/notes/` once when no canonical notebook exists. Set `TILO_NOTES_ROOT`
+to an absolute directory to select another legacy import source. Empty and
+relative values are rejected. Passing one Markdown file on the command line
+imports it into the opened notebook.
 
-For headless visual review, render one offscreen frame to a PNG:
+For headless visual review, render the production component offscreen:
 
 ```bash
 cargo run -p notes --release -- --shots out.png --viewport 800x600
-# add `--scenario drawer` to show the open page drawer on a narrow width
-# add `--text-scale 1.5` to review the large-text layout
-# add `--scenario shortcuts` to review the shared keyboard-help dialog
+# add --scenario drawer for the narrow note drawer
+# add --text-scale 1.5 to inspect the large-text layout
+# add --scenario shortcuts for the keyboard reference
 ```
 
-## Storage layout
+## Canonical and legacy storage
 
-Everything lives under one workspace root (default `~/notes/`):
+The current app stores one host-owned `notes.notebook` Automerge record. Notes,
+blocks, tags, note memberships and managed assets share that document, so
+platform history, undo and collaboration observe the same operations.
 
-```
+Older standalone builds used this recoverable layout:
+
+```text
 ~/notes/
-├── workspace.automerge        # automerge save of WorkspaceData (page tree, selection)
-├── pages/
-│   └── {uuid}.md              # one markdown body per page
-└── assets/
-    └── {uuid}.{png,jpg,webp}  # managed image attachments
+|-- workspace.automerge
+|-- pages/
+|   `-- {uuid}.md
+`-- assets/
+    `-- {uuid}.{png,jpg,webp}
 ```
 
-The workspace file is a local JSON snapshot of page metadata, tags and keyed
-tag memberships. In collaboration, those records instead live as independent
-keyed Automerge maps (with deletion tombstones), while page bodies are plain markdown:
-crack one open with any editor and you'll get your work back even if
-the notes binary disappears.
+The app can migrate that layout into the canonical record. It leaves the
+legacy files untouched after import.
 
 ## Block-type reference
 
-| Block       | Markdown syntax                                |
-| ----------- | ---------------------------------------------- |
-| Paragraph   | anything else                                  |
-| Heading 1   | `# heading`                                    |
-| Heading 2   | `## heading`                                   |
-| Heading 3   | `### heading`                                  |
-| Quote       | `> quotation`                                 |
-| Bullet      | `- item`  (indent with two leading spaces)     |
-| Numbered    | `1. item` (renumbers automatically)            |
-| Checklist   | `- [ ] open` / `- [x] done`                    |
-| Code block  | ` ```lang ` … ` ``` `                         |
-| TeX formula | ` ```tex ` / ` ```latex ` / ` ```math `       |
-| Typst math  | ` ```typst ` / ` ```typst-math `               |
-| Table       | GFM pipe table                                  |
-| Image       | `![alternative text](relative/path.png)`        |
-| Divider     | a line of exactly `---`                        |
+| Block | Markdown syntax |
+| --- | --- |
+| Paragraph | anything else |
+| Heading 1 / 2 / 3 | `# heading` / `## heading` / `### heading` |
+| Quote | `> quotation` |
+| Bullet | `- item` (two leading spaces per nesting level) |
+| Numbered | `1. item` (ordinals render automatically) |
+| Checklist | `- [ ] open` / `- [x] done` |
+| Code block | three backticks plus an optional language |
+| TeX formula | fenced `tex`, `latex` or `math` source |
+| Typst formula | fenced `typst` or `typst-math` source |
+| Table | GFM pipe table |
+| Image | `![alternative text](relative/path.png)` |
+| Divider | a line containing exactly `---` |
 
-Each formula card identifies its TeX or Typst syntax and offers a direct
-**Source / Visual** switch. Source mode keeps the fenced text editable with a
-live preview; Visual mode uses the same structured two-dimensional editor as
-Calculator. New formulas created from the `/` block menu default to Visual,
-and the last mode selected becomes the default for the next formula in that
-editing session. The per-card choice persists in Markdown as a fence info
-attribute (for example, ` ```typst visual `), while switching modes without
-editing preserves the original source byte-for-byte.
+Formula cards expose a **Source / Visual** switch. Visual edits serialize back
+to canonical TeX or Typst; unsupported source remains visible and produces a
+diagnostic instead of being discarded.
 
-TeX coverage includes common symbols and operators,
-fractions, roots, scripts, large-operator limits, scalable delimiters,
-matrices/arrays/cases/alignment, accents, binomials, text operators, and common
-math alphabets. Typst math supports the corresponding expression syntax and
-constructors such as `frac`, `root`, `mat`, `vec`, and `cases`. Unsupported
-package macros remain visible and produce a preview diagnostic; source is never
-dropped. Once a user changes a formula in Visual mode, the semantic tree is
-serialized back to canonical native TeX or Typst.
+Inline marks inside non-code blocks:
 
-Inline marks inside any non-code block:
-
-| Mark        | Markdown                |
-| ----------- | ----------------------- |
-| Bold        | `**bold**`              |
-| Italic      | `*italic*`              |
-| Inline code | `` `code` ``            |
-| Underline   | `++underline++`          |
-| Strike      | `~~strikethrough~~`      |
-| Web link    | `[label](https://…)`     |
-| Page link   | `[[Page Title]]`        |
-| Page embed  | `![[Page Title]]`       |
+| Mark | Markdown |
+| --- | --- |
+| Bold | `**bold**` |
+| Italic | `*italic*` |
+| Inline code | `` `code` `` |
+| Underline | `++underline++` |
+| Strike | `~~strikethrough~~` |
+| Web link | `[label](https://example.com)` |
+| Note link | `[[Note Title]]` |
+| Note embed | `![[Note Title]]` |
 
 ## Keyboard shortcuts
 
-### Navigation
-| Action                       | Shortcut             |
-| ---------------------------- | -------------------- |
-| Jump to page (palette)       | `Cmd-K` / `Ctrl-K`   |
-| Move sidebar selection       | `↑` / `↓`            |
-| Collapse / expand branch     | `←` / `→`            |
-| Move into parent / child     | `←` / `→` at branch edge |
-| Open shortcuts overlay       | `?`                  |
-| Close overlay / popover      | `Esc`                |
-
-### Pages
-| Action                       | Shortcut             |
-| ---------------------------- | -------------------- |
-| New child of selected page   | `Cmd-N` / `Ctrl-N`   |
-| Rename selected page         | double-click / `F2`  |
-| Delete selected page         | `Delete`             |
-| Indent under previous page   | `Tab`                |
-| Outdent one level            | `Shift-Tab`          |
-| Reorder among siblings       | `Alt-↑` / `Alt-↓`      |
-
-### Editing
-| Action                       | Shortcut             |
-| ---------------------------- | -------------------- |
-| New paragraph                | `Enter`              |
-| Indent / outdent list item   | `Tab` / `Shift-Tab`  |
-| Open block menu              | `/`                  |
-| Insert page link             | `[[`                 |
-| Embed page                   | `![[`                |
-| Toggle checklist item        | click the checkbox   |
-
-### Formatting (inline marks)
-| Action                       | Shortcut             |
-| ---------------------------- | -------------------- |
-| Bold                         | `**bold**` / `Ctrl-B`|
-| Italic                       | `*italic*` / `Ctrl-I`|
-| Inline code                  | `` `code` `` / `Ctrl-E`|
-| Heading 1 / 2 / 3            | `# ` / `## ` / `### ` at line start |
+| Area | Action | Shortcut |
+| --- | --- | --- |
+| Platform | Search notes and actions | `Cmd-K` / `Ctrl-K` |
+| Navigation | Back / forward note | `Alt-Left` / `Alt-Right` |
+| Navigation | Move sidebar selection | `Up` / `Down` |
+| Navigation | Collapse / expand branch | `Left` / `Right` |
+| Navigation | Open shortcut reference | `?` |
+| Notes | New child of selected note | `Cmd-N` / `Ctrl-N` |
+| Notes | Rename selected note | double-click / `F2` |
+| Notes | Open note actions | Menu / `Shift-F10` |
+| Notes | Indent / outdent note | `Tab` / `Shift-Tab` |
+| Notes | Reorder among siblings | `Alt-Up` / `Alt-Down` |
+| Notes | Delete selected note | `Delete` |
+| Editing | Find in note | `Cmd-F` / `Ctrl-F` |
+| Editing | Continue or split a block | `Enter` |
+| Editing | Indent / outdent list item | `Tab` / `Shift-Tab` |
+| Editing | Move focused block | `Alt-Up` / `Alt-Down` |
+| Editing | Open block menu | `/` |
+| Editing | Link / embed another note | `[[` / `![[` |
+| Code | Exit after the code block | `Ctrl-Enter` |
+| Code | Insert a paragraph before | `Ctrl-Shift-Enter` |
+| Code | Insert a blank code line | `Shift-Enter` |
+| Code | Indent / outdent code | `Tab` / `Shift-Tab` |
+| Code | Copy the code block | `Ctrl-Shift-C` |
+| Formatting | Bold / italic / inline code | `Ctrl-B` / `Ctrl-I` / `Ctrl-E` |
 
 ## Current boundaries
 
-- **No simultaneous independent carets.** A single user can make a free-form
-  selection across blocks, but the editor does not expose multiple local
-  carets/selections at once. Remote collaborator carets are still shown.
-- **No comments yet.** Pages, folders (the page tree), tags, blocks, page links
-  and inline formatting are durable collaborative resources/actions. Tags are
-  separate keyed records with keyed note memberships; their current browse
-  filter is intentionally local to each person.
+- One person can select across blocks, but the editor does not expose multiple
+  independent local carets. Remote collaborator carets are still visible.
+- Comments are not implemented yet. Notes, folders, tags, blocks, links and
+  inline formatting are durable collaborative resources and actions.
 
 ## Architecture
 
-- `model.rs` — pure data: `WorkspaceData`, `PageMeta`, `PageId`.
-- `storage.rs` — disk IO + the two debounced savers (workspace +
-  per-page body). Each saver publishes a `SaveStatus` atomic the
-  status bar reads.
-- `markdown.rs` — block-list ⇄ markdown round-trip; the byte-stable
-  format the storage layer relies on.
-- `sidebar.rs` — `NoteTreeView`; flattens the workspace into a
-  scrollable row list with inline rename + keyboard shortcuts.
-- `main_panel.rs` — `MainPanel`; hosts the `BlockEditor` from `ui`
-  plus the page title.
-- `actions.rs` / `doc.rs` — canonical page, block and inline-mark actions;
-  formatting and links are native Automerge Text marks, not local chrome.
-- `status_bar.rs` — `StatusBar`; bottom strip with save indicator,
-  page path, page count + word count.
-- `shortcuts_overlay.rs` — `ShortcutsOverlay`; Notes' shortcut grid inside the
-  shared `ui::ModalFrame` chrome.
-- `app.rs` — `NotesApp`; wires it all together, owns the workspace
-  and the Cmd-K palette, drives the savers.
+- `notebook.rs` / `block_order.rs`: canonical Automerge schema, validation and
+  stable ordering for notes and blocks.
+- `actions.rs` / `doc.rs`: canonical note, block, tag and inline-mark actions.
+- `main_panel.rs`: title, metadata, scrolling and the shared `BlockEditor`.
+- `sidebar.rs`: responsive note tree, hover actions, context menus and
+  drag/reparent behavior.
+- `app.rs` / `hosting.rs` / `component.rs`: component lifecycle, published
+  resources/actions, record binding and local presentation state.
+- `markdown.rs`: block-list and Markdown conversion.
+- `model.rs` / `storage.rs` / `legacy_import.rs`: legacy standalone format and
+  its one-time migration into the canonical notebook.
+- `capture.rs`: semantic production-component fixtures for visual review.

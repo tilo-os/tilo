@@ -494,6 +494,18 @@ pub enum WindowCloseAdmission {
     Defer,
 }
 
+/// Optional lifecycle for widgets backed by a platform-native child view.
+pub trait NativeViewLifecycle {
+    /// Attach the native child after the host window exists.
+    fn mount_native_view(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>);
+
+    /// Tear the native child down while its parent window is still alive.
+    fn unmount_native_view(&mut self);
+
+    /// Hide the native child at the start of a frame until drawing reveals it.
+    fn native_view_frame_start(&mut self);
+}
+
 pub trait Widget {
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
@@ -741,10 +753,18 @@ pub trait Widget {
         self.children_mut()
     }
 
+    /// Expose platform-native child lifecycle only for widgets that own it.
+    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
+        None
+    }
+
     /// Attach native child views after the host window exists. The default
     /// recursively reaches retained descendants; leaf adapters make mounting
     /// idempotent so this can be repeated after a structural rebuild.
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+            lifecycle.mount_native_view(host);
+        }
         for child in self.children_mut() {
             child.mount_native_views(host);
         }
@@ -755,11 +775,17 @@ pub trait Widget {
         for child in self.children_mut() {
             child.unmount_native_views();
         }
+        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+            lifecycle.unmount_native_view();
+        }
     }
 
     /// Called before each live frame. Native adapters hide first, then their
     /// normal draw call reveals only views actually present in this frame.
     fn native_view_frame_start(&mut self) {
+        if let Some(lifecycle) = self.native_view_lifecycle_mut() {
+            lifecycle.native_view_frame_start();
+        }
         for child in self.children_mut() {
             child.native_view_frame_start();
         }
@@ -2119,6 +2145,24 @@ pub(crate) fn handle_collab_event(
     for child in widget.collaboration_children_mut() {
         handle_collab_event(child, event);
     }
+}
+
+/// Mount native views through each owner's retained lifecycle topology.
+pub(crate) fn mount_native_views(
+    widget: &mut dyn Widget,
+    host: &crate::widget::native_view::NativeViewHost<'_>,
+) {
+    widget.mount_native_views(host);
+}
+
+/// Unmount native views through each owner's retained lifecycle topology.
+pub(crate) fn unmount_native_views(widget: &mut dyn Widget) {
+    widget.unmount_native_views();
+}
+
+/// Begin a frame through each owner's retained lifecycle topology.
+pub(crate) fn native_view_frame_start(widget: &mut dyn Widget) {
+    widget.native_view_frame_start();
 }
 
 /// Panic-free node construction, used by every `build_layout` implementation

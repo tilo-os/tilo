@@ -12,7 +12,7 @@ use tilo_ui::permissions::{Actor, PermissionContext, PermissionScope, UserId, Ve
 use tilo_ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
-use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, NativeViewLifecycle, Widget};
 
 pub const APP: &str = "dev.tilo.application-probe";
 pub const DEVICE: &str = "D";
@@ -28,6 +28,11 @@ thread_local! {
     static OPERATIONS: RefCell<Vec<Rc<RefCell<Vec<String>>>>> = const { RefCell::new(vec![]) };
     static PROVIDERS: RefCell<Option<Rc<RefCell<ProviderObservations>>>> = const { RefCell::new(None) };
     static PRESENTATION: RefCell<Option<Rc<RefCell<PresentationObservations>>>> = const { RefCell::new(None) };
+    static NATIVE_LIFECYCLE: RefCell<Vec<(&'static str, WakeHandle)>> = const { RefCell::new(vec![]) };
+}
+
+pub fn take_native_lifecycle_observations() -> Vec<(&'static str, WakeHandle)> {
+    NATIVE_LIFECYCLE.with_borrow_mut(std::mem::take)
 }
 
 #[derive(Default)]
@@ -279,6 +284,7 @@ impl ProbeHost {
         INITIALIZATIONS.set(0);
         HANDLES.with_borrow_mut(Vec::clear);
         PROVIDERS.with_borrow_mut(|providers| *providers = None);
+        NATIVE_LIFECYCLE.with_borrow_mut(Vec::clear);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         let mut owners = RecordOwners::new(root.clone());
@@ -511,6 +517,9 @@ struct ProbeRoot {
     rect: vello::kurbo::Rect,
 }
 impl Widget for ProbeRoot {
+    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
+        Some(self)
+    }
     fn set_motion_reduced(&mut self, reduced: bool) {
         PRESENTATION.with_borrow(|slot| {
             if let Some(observations) = slot {
@@ -818,6 +827,26 @@ impl Widget for ProbeRoot {
         if self.corrupt_restore {
             self.scroll = vec![f64::NAN];
         }
+    }
+}
+
+impl NativeViewLifecycle for ProbeRoot {
+    fn mount_native_view(&mut self, _: &tilo_ui::widget::native_view::NativeViewHost<'_>) {
+        NATIVE_LIFECYCLE.with_borrow_mut(|events| {
+            events.push(("mount", WakeHandle::new()));
+        });
+    }
+
+    fn unmount_native_view(&mut self) {
+        NATIVE_LIFECYCLE.with_borrow_mut(|events| {
+            events.push(("unmount", WakeHandle::new()));
+        });
+    }
+
+    fn native_view_frame_start(&mut self) {
+        NATIVE_LIFECYCLE.with_borrow_mut(|events| {
+            events.push(("frame", WakeHandle::new()));
+        });
     }
 }
 impl AppWidget for ProbeRoot {

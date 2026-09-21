@@ -928,10 +928,7 @@ impl TileHost {
             return Some(crate::history_mode::HistoryOwner::component(binding));
         }
         let binding = self.binding.as_ref()?;
-        let checkout = binding
-            .store
-            .read_checked(&binding.live, crate::record::identity)
-            .ok()??;
+        let checkout = binding.store.verified_checkout(&binding.live).ok()?;
         Some(crate::history_mode::HistoryOwner::legacy(
             binding.store.clone(),
             checkout,
@@ -962,10 +959,7 @@ impl TileHost {
             return None;
         }
         let binding = self.binding.as_ref()?;
-        binding
-            .store
-            .read_checked(&binding.live, crate::record::identity)
-            .ok()??;
+        binding.store.verified_checkout(&binding.live).ok()?;
         Some(binding.live.clone())
     }
 
@@ -1891,10 +1885,7 @@ impl Widget for TileHost {
             return Some(crate::history_mode::HistoryOwner::component(binding));
         }
         let binding = self.binding.as_ref()?;
-        let checkout = binding
-            .store
-            .read_checked(&binding.live, crate::record::identity)
-            .ok()??;
+        let checkout = binding.store.verified_checkout(&binding.live).ok()?;
         Some(crate::history_mode::HistoryOwner::legacy(
             binding.store.clone(),
             checkout,

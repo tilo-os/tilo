@@ -11,6 +11,7 @@ exclude = [
     "vendor/vello_encoding",
     "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
+    "vendor/libspa-sys",
     "vendor/winit",
     "vendor/wgpu-hal",
     "vendor/automerge",

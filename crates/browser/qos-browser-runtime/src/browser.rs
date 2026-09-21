@@ -506,9 +506,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     .map_err(error)?;
     let loaders = Rc::new(RefCell::new(Vec::new()));
     let destination = loaders.clone();
-    let component = ui::ImageStore::with_host_factory(
-        Rc::new(move || {
-            let (image, loader) = ui::ImageStore::host_driven();
+    let component = ui::ImageStore::with_host_factory_with_max_dimension(
+        Rc::new(move |max_dimension| {
+            let (image, loader) = ui::ImageStore::host_driven_with_max_dimension(max_dimension);
             destination.borrow_mut().push(loader);
             image
         }),

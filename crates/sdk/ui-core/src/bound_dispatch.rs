@@ -1845,6 +1845,23 @@ impl Default for RecordActionState {
     }
 }
 impl RecordActionState {
+    #[cfg(test)]
+    pub(crate) fn statuses_for_test(
+        &self,
+    ) -> Vec<(
+        String,
+        crate::application::InstanceId,
+        crate::undo::UndoStatus,
+    )> {
+        let mut statuses = self
+            .statuses
+            .iter()
+            .map(|((author, instance), status)| (author.0.clone(), *instance, status.clone()))
+            .collect::<Vec<_>>();
+        statuses.sort_unstable_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+        statuses
+    }
+
     /// Persistence may close a storage transaction while retaining the logical
     /// undo burst; preserve its original provenance before serialization does so.
     pub(crate) fn commit_for_save(&self, doc: &mut AutoCommit) {
@@ -3155,6 +3172,11 @@ pub(crate) fn can_merge_remote_owned_document(
     checkout: &RecordCheckout,
 ) -> Result<bool, crate::history_mode::routes::RemoteApplyError> {
     use crate::history_mode::routes::RemoteApplyError;
+    if store.is_local_compatibility(checkout) {
+        return Err(RemoteApplyError::Unavailable(
+            "local compatibility records cannot receive remote mutations".into(),
+        ));
+    }
     store
         .open_existing_record_checked(checkout)
         .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?;
@@ -3178,9 +3200,17 @@ pub(crate) fn merge_remote_owned_document(
     mutation: &collab_types::DocumentMutation,
 ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
     use crate::history_mode::routes::RemoteApplyError;
+    if store.is_local_compatibility(checkout) {
+        return Err(RemoteApplyError::Unavailable(
+            "local compatibility records cannot receive remote mutations".into(),
+        ));
+    }
     store
         .open_existing_record_checked(checkout)
         .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?;
+    let identity = store
+        .replica_identity_stamp(checkout)
+        .map_err(RemoteApplyError::Unavailable)?;
     store
         .with_action_state(&checkout.id, |doc, history, state| {
             if doc.pending_ops() != 0
@@ -3196,8 +3226,13 @@ pub(crate) fn merge_remote_owned_document(
                 .ok_or_else(|| {
                     RemoteApplyError::Unavailable("document generation exhausted".into())
                 })?;
-            let changed = crate::history_mode::routes::merge_committed(doc, mutation)?;
+            let mut candidate = doc.clone();
+            let changed = crate::history_mode::routes::merge_committed(&mut candidate, mutation)?;
+            identity
+                .validate(&candidate)
+                .map_err(RemoteApplyError::InvalidMutation)?;
             if changed {
+                *doc = candidate;
                 // A clean continuation marker is not unfinished typing. Retire it
                 // after the merge so a later local burst starts at the remote heads.
                 state.pending = None;

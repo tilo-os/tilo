@@ -41,6 +41,7 @@ pub mod narrative;
 pub mod revert;
 pub mod run_undo;
 pub mod runs;
+pub mod schema_ops;
 pub mod seen;
 pub use authors::{
     AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, local_identity_author,
@@ -68,6 +69,7 @@ pub use runs::{
     AgentRun, RUNS_KEY, RunStep, forget_run, is_run_marker, read_runs, record_run,
     record_run_with_details, run_starting_at,
 };
+pub use schema_ops::{SchemaHistoryOp, SchemaObjectId, schema_operations_since};
 pub use seen::HistorySeenFrontier;
 
 /// The structural path materialises one snapshot per version, so cost is

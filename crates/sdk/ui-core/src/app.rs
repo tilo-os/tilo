@@ -9,6 +9,7 @@ use winit::{
 
 use std::cell::{Cell, RefCell};
 
+mod bound_record_sync;
 mod close_admission;
 #[path = "profiling/native_input_isolation.rs"]
 mod native_input_isolation;
@@ -431,6 +432,291 @@ mod animation_pump_tests {
     }
 }
 
+#[cfg(test)]
+mod private_continuity_route_tests {
+    use super::*;
+    use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport, RouteSpec};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct AcknowledgingPeer {
+        connected: bool,
+        acknowledged: Option<RouteSpec>,
+        requests: Rc<RefCell<Vec<CollabRequest>>>,
+    }
+
+    impl PeerTransport for AcknowledgingPeer {
+        fn is_connected(&self) -> bool {
+            self.connected
+        }
+
+        fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+            if let CollabRequest::Hello {
+                app_id,
+                cluster_id,
+                record,
+                ..
+            } = &request
+            {
+                self.acknowledged = Some(RouteSpec {
+                    app_id: app_id.clone(),
+                    cluster_id: *cluster_id,
+                    record: record.clone(),
+                });
+            }
+            self.requests.borrow_mut().push(request);
+            Ok(())
+        }
+
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            Vec::new()
+        }
+
+        fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+            self.acknowledged.take().map(Ok)
+        }
+    }
+
+    fn app_for_acknowledged_route(route: RouteSpec) -> (App, Rc<RefCell<Vec<CollabRequest>>>) {
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let mut manager = CollaborationManager::with_peer_transport(AcknowledgingPeer {
+            connected: true,
+            acknowledged: None,
+            requests: requests.clone(),
+        });
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: route.app_id,
+            cluster_id: route.cluster_id,
+            record: route.record,
+            handle: None,
+        }));
+        manager.poll();
+        requests.borrow_mut().clear();
+        let app = App::with_collaboration_manager(
+            State::new(),
+            Box::new(crate::widget::Text::new("continuity route fixture")),
+            manager,
+        );
+        (app, requests)
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn private_reports_use_each_acknowledged_continuation_route() {
+        let previous_app = std::env::var_os("TILO_DURABLE_APP_ID");
+        let previous_room = std::env::var_os("TILO_WORKSPACE_ID");
+        let ambient_room = uuid::Uuid::new_v4();
+        // SAFETY: guarded by the process_env serial group and restored below.
+        unsafe {
+            std::env::set_var("TILO_DURABLE_APP_ID", "ambient.app");
+            std::env::set_var("TILO_WORKSPACE_ID", ambient_room.to_string());
+        }
+        let playback = media::handoff::AppPlaybackHandle::new();
+        playback.publish(media::handoff::AppPlayback {
+            resource_uri: "music://track/route-fixture",
+            title: "Route fixture",
+            position_ms: 7,
+            duration_ms: Some(30),
+            playing: true,
+            has_video: false,
+            audible: true,
+            controller_bus_name: None,
+        });
+
+        let routes = [
+            RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:7"),
+            RouteSpec::record("dev.tilo.browser", uuid::Uuid::new_v4(), "continuation:91"),
+        ];
+        let observed = routes
+            .iter()
+            .cloned()
+            .map(|route| {
+                let (_app, requests) = app_for_acknowledged_route(route);
+                requests.borrow().clone()
+            })
+            .collect::<Vec<_>>();
+        drop(playback);
+
+        // Restore before asserting so a failure does not leak process state.
+        unsafe {
+            match previous_app {
+                Some(value) => std::env::set_var("TILO_DURABLE_APP_ID", value),
+                None => std::env::remove_var("TILO_DURABLE_APP_ID"),
+            }
+            match previous_room {
+                Some(value) => std::env::set_var("TILO_WORKSPACE_ID", value),
+                None => std::env::remove_var("TILO_WORKSPACE_ID"),
+            }
+        }
+
+        for (requests, expected) in observed.iter().zip(routes.iter()) {
+            let reported_apps = requests
+                .iter()
+                .filter_map(|request| match request {
+                    CollabRequest::ReportContinuation { app_id, .. }
+                    | CollabRequest::ClearContinuation { app_id } => Some(app_id.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(reported_apps, vec![expected.app_id.as_str()]);
+            let playback = requests
+                .iter()
+                .find_map(|request| match request {
+                    CollabRequest::ReportPlayback {
+                        app_id,
+                        reports_json,
+                    } => Some((app_id, reports_json)),
+                    _ => None,
+                })
+                .expect("eligible route reports live playback");
+            assert_eq!(playback.0, &expected.app_id);
+            let reports = serde_json::from_slice::<Vec<media::handoff::PlaybackReport>>(playback.1)
+                .expect("playback report JSON");
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].session.app_id, expected.app_id);
+            assert_eq!(reports[0].workspace_id, expected.cluster_id.to_string());
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn initial_empty_playback_is_suppressed() {
+        let route = RouteSpec::record("dev.tilo.music", uuid::Uuid::new_v4(), "continuation:8");
+        let (_app, requests) = app_for_acknowledged_route(route);
+        assert!(
+            requests
+                .borrow()
+                .iter()
+                .all(|request| !matches!(request, CollabRequest::ReportPlayback { .. }))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn authenticated_document_route_emits_no_private_continuity_requests() {
+        let route = RouteSpec::record("dev.qos.calculator", uuid::Uuid::new_v4(), "tab:0013");
+        let (_app, requests) = app_for_acknowledged_route(route);
+        assert!(requests.borrow().iter().all(|request| !matches!(
+            request,
+            CollabRequest::ReportContinuation { .. }
+                | CollabRequest::ClearContinuation { .. }
+                | CollabRequest::ReportPlayback { .. }
+        )));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn route_acknowledgement_does_not_lose_the_first_unchanged_projection() {
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let manager = CollaborationManager::with_peer_transport(AcknowledgingPeer {
+            connected: true,
+            acknowledged: None,
+            requests: requests.clone(),
+        });
+        let mut app = App::with_collaboration_manager(
+            State::new(),
+            Box::new(crate::widget::Text::new("delayed route fixture")),
+            manager,
+        );
+        assert!(app.last_published_continuation.is_none());
+        assert!(app.last_published_playback.is_none());
+        assert!(app.last_playback_publish.is_none());
+
+        let route = RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:42");
+        assert!(app.collab_manager.send(CollabRequest::Hello {
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id,
+            record: route.record.clone(),
+            handle: None,
+        }));
+        app.collab_manager.poll();
+        requests.borrow_mut().clear();
+        app.publish_continuation_metadata();
+        app.publish_playback_handoff();
+
+        assert!(requests.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::ReportContinuation { app_id, .. } if app_id == &route.app_id
+        )));
+        assert!(
+            requests
+                .borrow()
+                .iter()
+                .all(|request| !matches!(request, CollabRequest::ReportPlayback { .. }))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_new_acknowledgement_epoch_republishes_unchanged_continuity() {
+        let route = RouteSpec::record("dev.tilo.notes", uuid::Uuid::new_v4(), "continuation:42");
+        let (mut app, requests) = app_for_acknowledged_route(route.clone());
+        requests.borrow_mut().clear();
+
+        assert!(app.collab_manager.send(CollabRequest::Hello {
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id,
+            record: route.record.clone(),
+            handle: None,
+        }));
+        app.collab_manager.poll();
+        requests.borrow_mut().clear();
+        app.publish_continuation_metadata();
+
+        assert!(requests.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::ReportContinuation { app_id, .. } if app_id == &route.app_id
+        )));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn eligible_nonempty_to_empty_playback_publishes_a_clear() {
+        let route = RouteSpec::record("dev.tilo.music", uuid::Uuid::new_v4(), "continuation:8");
+        let (mut app, requests) = app_for_acknowledged_route(route.clone());
+        app.last_published_playback = Some(vec![media::handoff::PlaybackReport {
+            session: media::handoff::PlaybackSession {
+                id: "dev.tilo.music:media".into(),
+                app_id: route.app_id.clone(),
+                title: "Previous".into(),
+                content_id: format!("blake3:{}", "0".repeat(64)),
+                position_ms: 0,
+                duration_ms: None,
+                playing: false,
+                has_video: false,
+            },
+            workspace_id: route.cluster_id.to_string(),
+            source: media::handoff::HandoffSource::AppResource {
+                uri: "music://track/previous".into(),
+            },
+            controller_bus_name: None,
+            accepted_handoff_request: None,
+        }]);
+        app.last_playback_publish = None;
+        requests.borrow_mut().clear();
+
+        app.publish_playback_handoff();
+
+        let clears = requests
+            .borrow()
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::ReportPlayback {
+                    app_id,
+                    reports_json,
+                } => Some((app_id.clone(), reports_json.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(clears.len(), 1);
+        assert_eq!(clears[0].0, route.app_id);
+        assert_eq!(
+            serde_json::from_slice::<Vec<media::handoff::PlaybackReport>>(&clears[0].1).unwrap(),
+            Vec::new()
+        );
+    }
+}
+
 fn next_boundary(s: &str, byte: usize) -> usize {
     let mut b = byte.min(s.len());
     loop {
@@ -684,6 +970,7 @@ struct ActionRuntime {
     /// exact snapshot until the host crosses a state-mutation boundary.
     resource_cache: RefCell<Option<ResourceCache>>,
     bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
+    bound_record_sync: Option<bound_record_sync::BoundRecordSync>,
     bound_publication: crate::bound_dispatch::BoundPublication,
     last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
     #[cfg(test)]
@@ -733,6 +1020,7 @@ impl ActionRuntime {
             legacy_local_transport: true,
             resource_cache: RefCell::new(None),
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
+            bound_record_sync: None,
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
             last_published_bound_route: None,
             #[cfg(test)]
@@ -757,6 +1045,42 @@ impl ActionRuntime {
     }
 }
 
+/// Host-owned accessibility state and semantic projection.
+struct AccessibilityRuntime {
+    /// `None` makes every narration call site a no-op, so a reader-off build
+    /// remains unaffected.
+    screen_reader: Option<crate::screen_reader::ScreenReader>,
+    /// winit doesn't expose the Insert reader modifier as a `Modifiers` bit.
+    screen_reader_modifier_down: bool,
+    live_region_last: std::collections::HashMap<String, String>,
+    focus_trap_active: bool,
+    focus_before_trap: Option<NodeId>,
+    /// Kept separate from the effective theme so disabling high contrast
+    /// restores the configured theme exactly.
+    base_theme: Theme,
+    a11y: crate::a11y::A11ySettings,
+    text_scale: f32,
+    ui_scale: f32,
+    semantic_tree: crate::a11y_tree::SemanticTree,
+}
+
+impl AccessibilityRuntime {
+    fn new(base_theme: Theme, screen_reader: Option<crate::screen_reader::ScreenReader>) -> Self {
+        Self {
+            screen_reader,
+            screen_reader_modifier_down: false,
+            live_region_last: std::collections::HashMap::new(),
+            focus_trap_active: false,
+            focus_before_trap: None,
+            base_theme,
+            a11y: crate::a11y::A11ySettings::default(),
+            text_scale: 1.0,
+            ui_scale: 1.0,
+            semantic_tree: crate::a11y_tree::SemanticTree::new(),
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -777,6 +1101,7 @@ pub struct App {
     history_focus: Option<crate::widget::layout::CompositionFocus>,
     text_renderer: TextRenderer,
     palette_source: PaletteSource,
+    watch_system_settings: bool,
     layout: LayoutRuntime,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
@@ -858,29 +1183,7 @@ pub struct App {
     current_cursor: CursorIcon,
 
     tooltip_host: crate::widget::TooltipHost,
-
-    /// `None` makes every narration call site a no-op, so a reader-off
-    /// build is byte-for-byte unaffected.
-    screen_reader: Option<crate::screen_reader::ScreenReader>,
-    /// winit doesn't expose the **Insert** key (the NVDA/Orca reader
-    /// modifier) as a [`Modifiers`](winit::event::Modifiers) bit, so
-    /// press/release is tracked here for the `Insert + <key>` command layer.
-    screen_reader_modifier_down: bool,
-    live_region_last: std::collections::HashMap<String, String>,
-
-    /// Tracked to detect the open→close transition and restore focus.
-    focus_trap_active: bool,
-    focus_before_trap: Option<NodeId>,
-
-    /// Kept separate from the live [`Self::theme`] so disabling high
-    /// contrast restores it exactly.
-    base_theme: Theme,
-    a11y: crate::a11y::A11ySettings,
-    text_scale: f32,
-    /// Composes on top of the per-output device scale
-    /// ([`Theme::with_ui_scale`]) so the result stays crisp at any
-    /// fractional scale.
-    ui_scale: f32,
+    accessibility: AccessibilityRuntime,
 
     /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
     /// frame so a steady desired state issues one `set_fullscreen` call —
@@ -908,12 +1211,11 @@ pub struct App {
     last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
     last_published_playback: Option<Vec<media::handoff::PlaybackReport>>,
     last_playback_publish: Option<Instant>,
+    last_private_continuity_route: Option<crate::collaboration::PrimaryRouteWitness>,
     pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
     /// Generic view restoration waits until the first layout has built the
     /// focus order. App-specific projections still apply before first sync.
     pending_continuation_view: Option<crate::view::View>,
-    semantic_tree: crate::a11y_tree::SemanticTree,
-
     profiler: Option<crate::profiling::FrameProfiler>,
     native_input_probe: Option<Box<dyn Fn() -> serde_json::Value>>,
 
@@ -983,6 +1285,7 @@ struct AppConstructionInputs {
     configured_theme: ConstructionValue<Theme>,
     text_renderer: ConstructionValue<TextRenderer>,
     palette_source: PaletteSource,
+    watch_system_settings: bool,
     debug_mode: fn() -> bool,
     theme_store_stamp: fn() -> Option<std::time::SystemTime>,
     local_author: ConstructionValue<crate::permissions::UserId>,
@@ -1000,6 +1303,34 @@ struct AppConstructionInputs {
 }
 
 impl AppConstructionInputs {
+    fn native_component(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+    ) -> Self {
+        Self::component_with_services(
+            inputs,
+            binding,
+            Self::production(CollaborationManager::for_record(&binding.checkout.id)),
+        )
+    }
+
+    fn component_with_services(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        mut services: Self,
+    ) -> Self {
+        // Keep the explicit presentation and canonical author. Only the native
+        // runner supplies process services; the application factory stays pure.
+        services.configured_theme = ConstructionValue::Ready(inputs.theme);
+        services.text_renderer = ConstructionValue::Ready(inputs.text_renderer);
+        services.palette_source = PaletteSource::Host;
+        services.local_author = ConstructionValue::Ready(binding.author.clone());
+        let mut presence = services.presence_ctx.resolve();
+        presence.add_own_identity(&binding.author.0);
+        services.presence_ctx = ConstructionValue::Ready(presence);
+        services
+    }
+
     fn component(
         inputs: crate::application::ComponentRunnerInputs,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -1012,6 +1343,7 @@ impl AppConstructionInputs {
             configured_theme: ConstructionValue::Ready(inputs.theme),
             text_renderer: ConstructionValue::Ready(inputs.text_renderer),
             palette_source: PaletteSource::Host,
+            watch_system_settings: false,
             local_author: ConstructionValue::Ready(binding.author.clone()),
             presence_ctx: ConstructionValue::Ready(presence),
             surface_id: ConstructionValue::Ready(format!(
@@ -1042,6 +1374,7 @@ impl AppConstructionInputs {
                 renderer: TextRenderer::new,
                 field: crate::widget::SearchField::new,
             },
+            watch_system_settings: true,
             debug_mode: || cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             theme_store_stamp: || {
                 settings_store::settings_path()
@@ -1082,6 +1415,7 @@ impl AppConstructionInputs {
                 renderer: crate::font_catalog::fixture_renderer,
                 field: || crate::widget::SearchField::with_language("en_US"),
             },
+            watch_system_settings: true,
             debug_mode: || false,
             theme_store_stamp: || None,
             local_author: ConstructionValue::Lazy(|| {
@@ -1131,25 +1465,57 @@ impl App {
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
     ) -> Result<Self, crate::launch::LaunchError> {
-        Self::from_component_with_collaboration(component, inputs, CollaborationManager::disabled())
+        Self::from_component_using(component, inputs, AppConstructionInputs::component)
     }
 
     /// Mount a checked component on an explicitly admitted collaboration manager.
     /// The manager retains the certified SDK route; no ambient identity or service
     /// lookup is added. Component authority and record custody remain unchanged.
     pub fn from_component_with_collaboration(
-        mut component: crate::application::AppComponent,
+        component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
         collaboration: CollaborationManager,
     ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, |inputs, binding| {
+            let mut construction = AppConstructionInputs::component(inputs, binding);
+            construction.collab_manager = collaboration;
+            construction
+        })
+    }
+
+    /// Mount a standalone native component with the process's existing system
+    /// services, including record-scoped collaboration and accessibility.
+    /// Presentation, identity, storage and authority still belong to the host.
+    /// # Errors
+    /// Preserves the component's recovery owners on mount or route mismatch.
+    pub fn from_component_with_native_services(
+        component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, AppConstructionInputs::native_component)
+    }
+
+    fn from_component_using(
+        mut component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+        construction: impl FnOnce(
+            crate::application::ComponentRunnerInputs,
+            &crate::bound_dispatch::CallbackBinding,
+        ) -> AppConstructionInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
         let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
         let handle = scope.handle();
         if let Err(error) = component.mount(move |_| handle.wake()) {
             return Err(component.setup_error(error));
         }
-        let mut inputs = AppConstructionInputs::component(inputs, &component.callback_binding());
-        inputs.collab_manager = collaboration;
         let binding = component.callback_binding();
+        let inputs = construction(inputs, &binding);
+        if let Some(route) = inputs.collab_manager.primary_route()
+            && !binding.matches_broker_route(Some(route))
+        {
+            return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
+        }
         let history = component.history.take();
         let mut root = Box::new(crate::widget::BoundAppWidget { component });
         if let Some(registration) = &history
@@ -1179,10 +1545,29 @@ impl App {
         self.collab_manager.is_connected()
     }
 
+    pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
+        let theme = Theme::configured().with_a11y(
+            &crate::a11y::A11ySettings {
+                high_contrast: Self::high_contrast_env_enabled(),
+                reduce_motion: Self::reduce_motion_env_enabled(),
+                ..Default::default()
+            },
+            Self::text_scale_env().unwrap_or(1.0),
+            Self::ui_scale_env().unwrap_or(1.0),
+        );
+        let mut text_renderer = TextRenderer::new();
+        text_renderer.set_text_scale(theme.text_scale);
+        crate::application::ComponentRunnerInputs {
+            theme,
+            text_renderer,
+        }
+    }
+
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
         self.control_domain.close();
+        self.actions.bound_record_sync = None;
         self.component_close_reports
             .extend(self.root_widget.close_components());
         self.component_close_reports
@@ -1192,7 +1577,7 @@ impl App {
     }
     fn close_native_content(&mut self) {
         self.close_components();
-        self.root_widget.unmount_native_views();
+        crate::widget::unmount_native_views(self.root_widget.as_mut());
     }
 
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
@@ -1639,6 +2024,7 @@ impl App {
             history_focus: None,
             text_renderer: inputs.text_renderer.resolve(),
             palette_source: inputs.palette_source,
+            watch_system_settings: inputs.watch_system_settings,
             layout: LayoutRuntime::new(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             component_close_reports: vec![],
@@ -1676,16 +2062,7 @@ impl App {
             frame_tick: None,
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
-            // Auto-enable if the shell mirrored TILO_A11Y_* into this sandbox.
-            screen_reader: (inputs.screen_reader)(),
-            screen_reader_modifier_down: false,
-            live_region_last: std::collections::HashMap::new(),
-            focus_trap_active: false,
-            focus_before_trap: None,
-            base_theme: configured_theme,
-            a11y: crate::a11y::A11ySettings::default(),
-            text_scale: 1.0,
-            ui_scale: 1.0,
+            accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
             fullscreen_requested: false,
             fullscreen_active: false,
             autosave: None,
@@ -1703,9 +2080,9 @@ impl App {
             last_published_continuation: None,
             last_published_playback: None,
             last_playback_publish: None,
+            last_private_continuity_route: None,
             pending_continuation_restore: (inputs.pending_continuation_restore)(),
             pending_continuation_view: None,
-            semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: (inputs.profiler)(),
             native_input_probe: None,
             window_title: None,
@@ -1719,18 +2096,18 @@ impl App {
             floating_host_messages: Vec::new(),
         };
 
-        app.a11y.high_contrast = (inputs.high_contrast)();
-        app.a11y.reduce_motion = match app.palette_source {
-            PaletteSource::Host => app.base_theme.reduce_motion,
+        app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
+        app.accessibility.a11y.reduce_motion = match app.palette_source {
+            PaletteSource::Host => app.accessibility.base_theme.reduce_motion,
             PaletteSource::Owned { .. } => (inputs.reduce_motion)(),
         };
-        app.a11y.screen_reader = app.screen_reader.is_some();
-        app.text_scale = match app.palette_source {
+        app.accessibility.a11y.screen_reader = app.accessibility.screen_reader.is_some();
+        app.accessibility.text_scale = match app.palette_source {
             PaletteSource::Host => app.text_renderer.text_scale(),
             PaletteSource::Owned { .. } => (inputs.text_scale)(),
         };
-        app.ui_scale = match app.palette_source {
-            PaletteSource::Host => app.base_theme.ui_scale,
+        app.accessibility.ui_scale = match app.palette_source {
+            PaletteSource::Host => app.accessibility.base_theme.ui_scale,
             PaletteSource::Owned { .. } => (inputs.ui_scale)(),
         };
         app.rebuild_theme();
@@ -1757,24 +2134,28 @@ impl App {
     fn rebuild_theme(&mut self) {
         self.theme = match self.palette_source {
             PaletteSource::Host => {
-                self.text_renderer.set_text_scale(self.text_scale);
-                self.text_scale = self.text_renderer.text_scale();
-                let base = if self.a11y.high_contrast {
+                self.text_renderer
+                    .set_text_scale(self.accessibility.text_scale);
+                self.accessibility.text_scale = self.text_renderer.text_scale();
+                let base = if self.accessibility.a11y.high_contrast {
                     Theme::high_contrast()
                 } else {
-                    self.base_theme.clone()
+                    self.accessibility.base_theme.clone()
                 };
                 let theme = base
-                    .with_component_scales(self.text_scale, self.ui_scale)
-                    .with_reduce_motion(self.a11y.reduce_motion);
-                self.ui_scale = theme.ui_scale;
+                    .with_component_scales(
+                        self.accessibility.text_scale,
+                        self.accessibility.ui_scale,
+                    )
+                    .with_reduce_motion(self.accessibility.a11y.reduce_motion);
+                self.accessibility.ui_scale = theme.ui_scale;
                 theme
             }
-            PaletteSource::Owned { .. } => {
-                self.base_theme
-                    .clone()
-                    .with_a11y(&self.a11y, self.text_scale, self.ui_scale)
-            }
+            PaletteSource::Owned { .. } => self.accessibility.base_theme.clone().with_a11y(
+                &self.accessibility.a11y,
+                self.accessibility.text_scale,
+                self.accessibility.ui_scale,
+            ),
         };
         // Deliver motion policy before the event loop consults
         // `needs_animation_frame`. This lets custom roots settle their own
@@ -2544,7 +2925,11 @@ impl App {
             .with_native_presentation(|root, _, _, _| root.control_action_bindings())
             .unwrap_or_default();
         for binding in bindings {
-            for path in self.semantic_tree.control_paths(&binding.control_id) {
+            for path in self
+                .accessibility
+                .semantic_tree
+                .control_paths(&binding.control_id)
+            {
                 let Some(semantic_id) = path.last() else {
                     continue;
                 };
@@ -2556,6 +2941,7 @@ impl App {
                 );
                 let semantic_address = address.resource == format!("ui:{encoded_node_id}")
                     && self
+                        .accessibility
                         .semantic_tree
                         .action(semantic_id, &address.action)
                         .is_some();
@@ -2567,7 +2953,7 @@ impl App {
                 if !matches_address {
                     continue;
                 }
-                let Some(node) = self.semantic_tree.node(semantic_id) else {
+                let Some(node) = self.accessibility.semantic_tree.node(semantic_id) else {
                     continue;
                 };
                 routes.push(ActionUiRoute {
@@ -3714,9 +4100,12 @@ impl App {
     /// focus itself or start playing media.
     fn publish_continuation_metadata(&mut self) {
         self.apply_pending_continuation_restore();
-        if !self.collab_manager.is_connected() || self.pending_continuation_view.is_some() {
+        if self.pending_continuation_view.is_some() {
             return;
         }
+        let Some(route) = self.private_continuity_route() else {
+            return;
+        };
         let semantic = self.root_widget.continuable().and_then(|continuable| {
             continuable.continuation_metadata(&self.state.doc, &self.state.root)
         });
@@ -3726,7 +4115,7 @@ impl App {
             return;
         }
         if let Some(request) = continuation_publication(
-            crate::collaboration::local_app_id(),
+            route.app_id,
             metadata.as_ref(),
             self.last_published_continuation.is_some(),
         ) {
@@ -3739,9 +4128,9 @@ impl App {
     /// broker. Public cross-device state is derived by the shell and remains
     /// path/URL-free; this report never enters the room document.
     fn publish_playback_handoff(&mut self) {
-        if !self.collab_manager.is_connected() {
+        let Some(route) = self.private_continuity_route() else {
             return;
-        }
+        };
         let now = Instant::now();
         if self
             .last_playback_publish
@@ -3749,10 +4138,14 @@ impl App {
         {
             return;
         }
-        let app_id = crate::collaboration::local_app_id();
-        let workspace_id = crate::collaboration::local_cluster_id().to_string();
+        let app_id = route.app_id;
+        let workspace_id = route.cluster_id.to_string();
         let reports = media::handoff::playback_reports(&app_id, &workspace_id);
         if self.last_published_playback.as_ref() == Some(&reports) {
+            return;
+        }
+        if reports.is_empty() && self.last_published_playback.is_none() {
+            self.last_published_playback = Some(reports);
             return;
         }
         let Ok(reports_json) = serde_json::to_vec(&reports) else {
@@ -3765,6 +4158,24 @@ impl App {
             });
         self.last_published_playback = Some(reports);
         self.last_playback_publish = Some(now);
+    }
+
+    fn private_continuity_route(&mut self) -> Option<crate::collaboration::RouteSpec> {
+        let witness = self.collab_manager.primary_route()?.clone();
+        witness
+            .route
+            .record
+            .as_deref()?
+            .strip_prefix("continuation:")?
+            .parse::<u64>()
+            .ok()?;
+        if self.last_private_continuity_route.as_ref() != Some(&witness) {
+            self.last_published_continuation = None;
+            self.last_published_playback = None;
+            self.last_playback_publish = None;
+            self.last_private_continuity_route = Some(witness.clone());
+        }
+        Some(witness.route)
     }
 
     fn apply_pending_continuation_restore(&mut self) {
@@ -6050,32 +6461,32 @@ impl App {
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
     pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
-        let mut s = self.a11y;
-        s.screen_reader = self.screen_reader.is_some();
+        let mut s = self.accessibility.a11y;
+        s.screen_reader = self.accessibility.screen_reader.is_some();
         s
     }
 
     pub fn text_scale(&self) -> f32 {
-        self.text_scale
+        self.accessibility.text_scale
     }
 
     /// Layout grows to fit so text never clips; the value is clamped to a
     /// sane range by the theme.
     pub fn set_text_scale(&mut self, factor: f32) {
         let _entry = self.enter_wake_scope();
-        self.text_scale = factor;
+        self.accessibility.text_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
     }
 
     pub fn ui_scale(&self) -> f32 {
-        self.ui_scale
+        self.accessibility.ui_scale
     }
 
     pub fn set_ui_scale(&mut self, factor: f32) {
         let _entry = self.enter_wake_scope();
-        self.ui_scale = factor;
+        self.accessibility.ui_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -6119,16 +6530,16 @@ impl App {
     }
 
     pub fn high_contrast(&self) -> bool {
-        self.a11y.high_contrast
+        self.accessibility.a11y.high_contrast
     }
 
     /// Off restores the captured base theme, not a hard-coded default.
     pub fn set_high_contrast(&mut self, on: bool) {
         let _entry = self.enter_wake_scope();
-        if self.a11y.high_contrast == on {
+        if self.accessibility.a11y.high_contrast == on {
             return;
         }
-        self.a11y.high_contrast = on;
+        self.accessibility.a11y.high_contrast = on;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -6136,20 +6547,20 @@ impl App {
 
     pub fn toggle_high_contrast(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
-        self.set_high_contrast(!self.a11y.high_contrast);
-        self.a11y.high_contrast
+        self.set_high_contrast(!self.accessibility.a11y.high_contrast);
+        self.accessibility.a11y.high_contrast
     }
 
     pub fn reduce_motion(&self) -> bool {
-        self.a11y.reduce_motion
+        self.accessibility.a11y.reduce_motion
     }
 
     pub fn set_reduce_motion(&mut self, on: bool) {
         let _entry = self.enter_wake_scope();
-        if self.a11y.reduce_motion == on {
+        if self.accessibility.a11y.reduce_motion == on {
             return;
         }
-        self.a11y.reduce_motion = on;
+        self.accessibility.a11y.reduce_motion = on;
         self.rebuild_theme();
     }
 
@@ -6157,7 +6568,7 @@ impl App {
     /// theme doesn't discard them.
     pub fn set_theme(&mut self, theme: Theme) {
         let _entry = self.enter_wake_scope();
-        self.base_theme = theme;
+        self.accessibility.base_theme = theme;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -6167,24 +6578,24 @@ impl App {
     /// site to a no-op.
     pub fn set_screen_reader_enabled(&mut self, enabled: bool) {
         let _entry = self.enter_wake_scope();
-        match (enabled, self.screen_reader.is_some()) {
+        match (enabled, self.accessibility.screen_reader.is_some()) {
             (true, false) => {
-                self.screen_reader = Some(Self::configured_screen_reader());
+                self.accessibility.screen_reader = Some(Self::configured_screen_reader());
                 self.announce_current_focus();
             }
             (false, true) => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.stop();
                 }
-                self.screen_reader = None;
-                self.live_region_last.clear();
+                self.accessibility.screen_reader = None;
+                self.accessibility.live_region_last.clear();
             }
             _ => {}
         }
     }
 
     pub fn screen_reader_enabled(&self) -> bool {
-        self.screen_reader.is_some()
+        self.accessibility.screen_reader.is_some()
     }
 
     /// Installs a caller-provided reader (e.g. over a test `NullSpeaker` so
@@ -6192,12 +6603,12 @@ impl App {
     #[doc(hidden)]
     pub fn set_screen_reader(&mut self, reader: Option<crate::screen_reader::ScreenReader>) {
         let _entry = self.enter_wake_scope();
-        self.screen_reader = reader;
+        self.accessibility.screen_reader = reader;
     }
 
     #[doc(hidden)]
     pub fn screen_reader(&self) -> Option<&crate::screen_reader::ScreenReader> {
-        self.screen_reader.as_ref()
+        self.accessibility.screen_reader.as_ref()
     }
 
     fn announce_current_focus(&mut self) {
@@ -6206,7 +6617,7 @@ impl App {
             .inspect_node(id, |widget| widget.accessibility())
             .ok()
             .flatten();
-        if let (Some(node), Some(sr)) = (node, self.screen_reader.as_mut()) {
+        if let (Some(node), Some(sr)) = (node, self.accessibility.screen_reader.as_mut()) {
             sr.announce_focus(&node);
         }
     }
@@ -6232,7 +6643,7 @@ impl App {
         use winit::event::ElementState;
         use winit::keyboard::{Key, NamedKey};
 
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return false;
         }
         let WindowEvent::KeyboardInput { event: ke, .. } = event else {
@@ -6240,11 +6651,11 @@ impl App {
         };
 
         if let Key::Named(NamedKey::Insert) = ke.logical_key {
-            self.screen_reader_modifier_down = ke.state == ElementState::Pressed;
+            self.accessibility.screen_reader_modifier_down = ke.state == ElementState::Pressed;
             return false;
         }
 
-        if ke.state != ElementState::Pressed || !self.screen_reader_modifier_down {
+        if ke.state != ElementState::Pressed || !self.accessibility.screen_reader_modifier_down {
             return false;
         }
 
@@ -6254,7 +6665,7 @@ impl App {
             let shift = self.modifiers.state().shift_key();
             match c.to_ascii_lowercase().as_str() {
                 "h" => {
-                    if let Some(sr) = self.screen_reader.as_mut() {
+                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                         if shift {
                             sr.read_prev_heading(self.root_widget.as_ref());
                         } else {
@@ -6264,7 +6675,7 @@ impl App {
                     return true;
                 }
                 "f" => {
-                    if let Some(sr) = self.screen_reader.as_mut() {
+                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                         if shift {
                             sr.read_prev_control(self.root_widget.as_ref());
                         } else {
@@ -6282,19 +6693,19 @@ impl App {
         };
         match named {
             NamedKey::ArrowDown => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_all(self.root_widget.as_ref());
                 }
                 true
             }
             NamedKey::ArrowRight => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_next(self.root_widget.as_ref());
                 }
                 true
             }
             NamedKey::ArrowLeft => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_prev(self.root_widget.as_ref());
                 }
                 true
@@ -6304,7 +6715,7 @@ impl App {
                 true
             }
             NamedKey::Escape => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.stop();
                 }
                 true
@@ -6379,24 +6790,24 @@ impl App {
             return false;
         };
         let mut changed = false;
-        if intent.base_theme.name != self.base_theme.name {
-            self.base_theme = intent.base_theme;
+        if intent.base_theme.name != self.accessibility.base_theme.name {
+            self.accessibility.base_theme = intent.base_theme;
             changed = true;
         }
-        if intent.high_contrast != self.a11y.high_contrast {
-            self.a11y.high_contrast = intent.high_contrast;
+        if intent.high_contrast != self.accessibility.a11y.high_contrast {
+            self.accessibility.a11y.high_contrast = intent.high_contrast;
             changed = true;
         }
-        if intent.reduce_motion != self.a11y.reduce_motion {
-            self.a11y.reduce_motion = intent.reduce_motion;
+        if intent.reduce_motion != self.accessibility.a11y.reduce_motion {
+            self.accessibility.a11y.reduce_motion = intent.reduce_motion;
             changed = true;
         }
-        if (intent.text_scale - self.text_scale).abs() > f32::EPSILON {
-            self.text_scale = intent.text_scale;
+        if (intent.text_scale - self.accessibility.text_scale).abs() > f32::EPSILON {
+            self.accessibility.text_scale = intent.text_scale;
             changed = true;
         }
-        if (intent.ui_scale - self.ui_scale).abs() > f32::EPSILON {
-            self.ui_scale = intent.ui_scale;
+        if (intent.ui_scale - self.accessibility.ui_scale).abs() > f32::EPSILON {
+            self.accessibility.ui_scale = intent.ui_scale;
             changed = true;
         }
         if changed {
@@ -6424,8 +6835,8 @@ impl App {
         stamp: impl FnOnce() -> Option<std::time::SystemTime>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
-        // Prepared components retain the caller's presentation and local services.
-        if matches!(self.palette_source, PaletteSource::Host) {
+        // Only an explicitly native service host watches process settings.
+        if !self.watch_system_settings {
             return false;
         }
         if now.saturating_duration_since(self.last_theme_store_check) < Duration::from_millis(750) {
@@ -6445,17 +6856,17 @@ impl App {
     }
 
     fn apply_configured_theme(&mut self) {
-        self.base_theme = Theme::configured();
+        self.accessibility.base_theme = Theme::configured();
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
         let configured_reader = Self::persisted_accessibility_bool("screen_reader")
             || Self::screen_reader_env_enabled();
         self.set_screen_reader_enabled(configured_reader);
-        if let Some(reader) = self.screen_reader.as_mut() {
+        if let Some(reader) = self.accessibility.screen_reader.as_mut() {
             Self::configure_screen_reader(reader);
         }
-        self.a11y.screen_reader = self.screen_reader.is_some();
+        self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
 
     /// The smallest-area matching rect wins, so a nested child beats its
@@ -6668,20 +7079,25 @@ impl App {
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
         if self.collab_manager.is_connected() {
-            let (delta, heads) = self.state.pending_outbound_delta();
-            if !delta.is_empty() {
-                tracing::debug!(
-                    target: "tilo.state",
-                    event = "document_send",
-                    kind = "incremental",
-                    bytes = delta.len(),
-                    heads = heads.len(),
-                    "queueing document mutation"
-                );
-                if self.collab_manager.send(
-                    crate::collaboration::CollabRequest::document_incremental(delta),
-                ) {
-                    self.state.advance_outbound(heads);
+            match self.pending_primary_document_delta() {
+                Ok((delta, heads)) if !delta.is_empty() => {
+                    tracing::debug!(
+                        target: "tilo.state",
+                        event = "document_send",
+                        kind = "incremental",
+                        bytes = delta.len(),
+                        heads = heads.len(),
+                        "queueing document mutation"
+                    );
+                    if self.collab_manager.send(
+                        crate::collaboration::CollabRequest::document_incremental(delta),
+                    ) {
+                        self.advance_primary_document(heads);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "collab: primary document is unavailable");
                 }
             }
         }
@@ -6977,10 +7393,16 @@ impl App {
                     None => self.unfollow(),
                 },
                 CollabEvent::DocumentSnapshotRequested { .. } => {
-                    let data = self.state.save();
-                    let _ = self
-                        .collab_manager
-                        .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                    match self.primary_document_snapshot() {
+                        Ok(data) => {
+                            let _ = self
+                                .collab_manager
+                                .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "collab: primary snapshot refused");
+                        }
+                    }
                 }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     self.presence_ctx
@@ -7356,7 +7778,7 @@ impl App {
                     .unwrap_or(false)
             });
             self.focusable_order = node.into_iter().collect();
-            self.focus_trap_active = true;
+            self.accessibility.focus_trap_active = true;
             self.focused_node = node;
             return;
         }
@@ -7379,8 +7801,8 @@ impl App {
             .unwrap_or_default();
         self.focusable_order = order;
         if let Some(next) = crate::focus_navigation::reconcile_trap(
-            &mut self.focus_trap_active,
-            &mut self.focus_before_trap,
+            &mut self.accessibility.focus_trap_active,
+            &mut self.accessibility.focus_before_trap,
             self.focused_node,
             &self.focusable_order,
             trap_active,
@@ -7433,7 +7855,7 @@ impl App {
             RemotePresenceEffect::InteractionAdvanced => {
                 if let Some(interaction) = interaction
                     && let Some(text) = self.presence_ctx.interaction_announcement(&interaction)
-                    && let Some(reader) = self.screen_reader.as_mut()
+                    && let Some(reader) = self.accessibility.screen_reader.as_mut()
                 {
                     let assertive = matches!(
                         interaction.phase,
@@ -7646,12 +8068,14 @@ impl App {
             self.focused_node = new_id;
             if let Some(node) = new_id {
                 let _ = self.mutate_node(node, |widget| widget.set_focus(true));
-                if self.screen_reader.is_some() {
+                if self.accessibility.screen_reader.is_some() {
                     let access = self
                         .inspect_node(node, |widget| widget.accessibility())
                         .ok()
                         .flatten();
-                    if let (Some(access), Some(reader)) = (access, self.screen_reader.as_mut()) {
+                    if let (Some(access), Some(reader)) =
+                        (access, self.accessibility.screen_reader.as_mut())
+                    {
                         reader.announce_focus(&access);
                     }
                 }
@@ -7672,7 +8096,7 @@ impl App {
     }
 
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
-        self.screen_reader.as_ref()?;
+        self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
         let node = self
             .inspect_node(id, |widget| widget.accessibility())
@@ -7690,7 +8114,7 @@ impl App {
         if self.focused_node != Some(pre_id) {
             return;
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         let Some(node) = self
@@ -7704,13 +8128,13 @@ impl App {
         if now.is_empty() || now == pre_state {
             return;
         }
-        if let Some(sr) = self.screen_reader.as_mut() {
+        if let Some(sr) = self.accessibility.screen_reader.as_mut() {
             sr.announce_value_change(now);
         }
     }
 
     fn text_review_snapshot(&self) -> Option<(NodeId, usize, String)> {
-        self.screen_reader.as_ref()?;
+        self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
         let (caret, text) = self
             .inspect_node(id, |widget| widget.text_review())
@@ -7728,7 +8152,7 @@ impl App {
         if self.focused_node != Some(pre_id) {
             return;
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         let Some((now_caret, now_text)) = self
@@ -7753,11 +8177,11 @@ impl App {
                         .get(..now_caret)
                         .and_then(|s| s.chars().next_back())
                 });
-            if let (Some(ch), Some(sr)) = (ch, self.screen_reader.as_mut()) {
+            if let (Some(ch), Some(sr)) = (ch, self.accessibility.screen_reader.as_mut()) {
                 sr.echo_char(ch);
             }
         } else if let Some(word) = word_at(&now_text, now_caret)
-            && let Some(sr) = self.screen_reader.as_mut()
+            && let Some(sr) = self.accessibility.screen_reader.as_mut()
         {
             sr.echo_word(&word);
         }
@@ -7777,7 +8201,7 @@ impl App {
             }
             w.for_each_child(&mut |child| visit(child, out));
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         // A live region without an accessible name can't be tracked stably
@@ -7789,8 +8213,10 @@ impl App {
         let mut to_announce: Vec<(crate::a11y::Politeness, String)> = Vec::new();
         for (key, politeness, text) in seen {
             current_keys.insert(key.clone());
-            let changed = self.live_region_last.get(&key) != Some(&text);
-            self.live_region_last.insert(key, text.clone());
+            let changed = self.accessibility.live_region_last.get(&key) != Some(&text);
+            self.accessibility
+                .live_region_last
+                .insert(key, text.clone());
             // Clearing a region to empty updates the snapshot silently.
             if changed && !text.is_empty() {
                 to_announce.push((politeness, text));
@@ -7798,10 +8224,11 @@ impl App {
         }
         // Drop snapshots for regions that left the tree, so a region that
         // reappears with the same text announces afresh.
-        self.live_region_last
+        self.accessibility
+            .live_region_last
             .retain(|k, _| current_keys.contains(k));
 
-        if let Some(sr) = self.screen_reader.as_mut() {
+        if let Some(sr) = self.accessibility.screen_reader.as_mut() {
             for (politeness, text) in to_announce {
                 let (priority, interrupt) = match politeness {
                     // Assertive cuts in; polite is queued at notification
@@ -7842,7 +8269,10 @@ impl App {
     /// pointer click-through — gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
-        crate::focus_navigation::keyboard_nav_allowed(modal_rect, self.focus_trap_active)
+        crate::focus_navigation::keyboard_nav_allowed(
+            modal_rect,
+            self.accessibility.focus_trap_active,
+        )
     }
 
     /// Tab normally belongs to the host's focus order. A focused editor-like
@@ -8222,7 +8652,7 @@ impl App {
             .as_deref()
             .filter(|p| p.is_presented())
         {
-            return self.semantic_tree.refresh_bound(
+            return self.accessibility.semantic_tree.refresh_bound(
                 palette,
                 &self.layout.node_map,
                 self.focused_node,
@@ -8239,7 +8669,7 @@ impl App {
         )
         .unwrap_or_default();
         let mut tree = std::mem::replace(
-            &mut self.semantic_tree,
+            &mut self.accessibility.semantic_tree,
             crate::a11y_tree::SemanticTree::new(),
         );
         let delta = self
@@ -8255,11 +8685,51 @@ impl App {
                     &components,
                 )
             });
-        self.semantic_tree = tree;
+        self.accessibility.semantic_tree = tree;
         delta
     }
     pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
-        &self.semantic_tree
+        &self.accessibility.semantic_tree
+    }
+
+    fn invoke_bound_semantic_action(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        arg: Option<&str>,
+    ) -> Result<bool, String> {
+        let actor = self.local_author.0.clone();
+        match self.invoke_bound_target(target, arg, &actor, false, false, None, None, None) {
+            Ok(_) => Ok(true),
+            Err(tilo_actions::DoorError::ConfirmationRequired) => {
+                if let Some(value) = arg {
+                    let arguments = if let Some(json) =
+                        value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                    {
+                        crate::bound_dispatch::ControlContinuationArguments::Json(
+                            serde_json::from_str(json).map_err(|error| error.to_string())?,
+                        )
+                    } else {
+                        crate::bound_dispatch::ControlContinuationArguments::Text(value.to_owned())
+                    };
+                    return Ok(self.open_ordinary_confirmation(
+                        crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
+                            target.clone(),
+                        ),
+                        target.address.address.clone(),
+                        arguments,
+                    ));
+                }
+                self.open_action_palette();
+                let activated = self
+                    .actions
+                    .action_palette
+                    .as_deref_mut()
+                    .is_some_and(|palette| palette.activate_bound(target));
+                self.capture_ordinary_palette_request();
+                Ok(activated)
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     /// A [`Verb`](crate::a11y_tree::SemanticActionKind::Verb) routes through
@@ -8285,45 +8755,11 @@ impl App {
 
         let _entry = self.enter_wake_scope();
         // Cloned so the mutation below is free to borrow doc/registry/transport.
-        let Some(action) = self.semantic_tree.action(id, name).cloned() else {
+        let Some(action) = self.accessibility.semantic_tree.action(id, name).cloned() else {
             return Ok(false);
         };
-        if let Some(target) = self.semantic_tree.bound_target(id, name) {
-            let actor = self.local_author.0.clone();
-            match self.invoke_bound_target(&target, arg, &actor, false, false, None, None, None) {
-                Ok(_) => return Ok(true),
-                Err(tilo_actions::DoorError::ConfirmationRequired) => {
-                    if let Some(value) = arg {
-                        let arguments = if let Some(json) =
-                            value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-                        {
-                            crate::bound_dispatch::ControlContinuationArguments::Json(
-                                serde_json::from_str(json).map_err(|e| format!("{e}"))?,
-                            )
-                        } else {
-                            crate::bound_dispatch::ControlContinuationArguments::Text(
-                                value.to_owned(),
-                            )
-                        };
-                        return Ok(self.open_ordinary_confirmation(
-                            crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
-                                target.clone(),
-                            ),
-                            target.address.address.clone(),
-                            arguments,
-                        ));
-                    }
-                    self.open_action_palette();
-                    let activated = self
-                        .actions
-                        .action_palette
-                        .as_deref_mut()
-                        .is_some_and(|palette| palette.activate_bound(&target));
-                    self.capture_ordinary_palette_request();
-                    return Ok(activated);
-                }
-                Err(error) => return Err(error.to_string()),
-            }
+        if let Some(target) = self.accessibility.semantic_tree.bound_target(id, name) {
+            return self.invoke_bound_semantic_action(&target, arg);
         }
         match action.kind {
             SemanticActionKind::App(encoded) => {
@@ -8336,7 +8772,11 @@ impl App {
             }
             SemanticActionKind::AppPrompted { .. } => {
                 let arg = arg.unwrap_or("");
-                let Some(encoded) = self.semantic_tree.build_prompted(id, name, arg) else {
+                let Some(encoded) = self
+                    .accessibility
+                    .semantic_tree
+                    .build_prompted(id, name, arg)
+                else {
                     return Ok(false);
                 };
                 if self.is_history_encoded_local(&encoded) {
@@ -8353,7 +8793,7 @@ impl App {
                     other => other,
                 };
                 let Some((taffy_raw, semantic_target, bounds)) =
-                    self.semantic_tree.node(id).and_then(|n| {
+                    self.accessibility.semantic_tree.node(id).and_then(|n| {
                         n.widget_taffy_id
                             .map(|taffy| (taffy, n.semantic_target.clone(), n.bounds))
                     })
@@ -8557,7 +8997,7 @@ impl App {
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
         if self.autofocus_on_structure_change
-            && !self.focus_trap_active
+            && !self.accessibility.focus_trap_active
             && self.history.is_none()
             && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
         {
@@ -9451,7 +9891,7 @@ fn draw_frame_content(
         .is_none_or(|history| history.live_visible())
         && app.history_layout.is_none_or(|layout| layout.app_visible)
     {
-        app.root_widget.native_view_frame_start();
+        crate::widget::native_view_frame_start(app.root_widget.as_mut());
         app.root_widget.draw_with_presence(
             scene,
             transform,
@@ -9780,7 +10220,7 @@ fn run_layout_pass(
                         Some(&app.focusable_order),
                     )
                 };
-                if app.focus_trap_active && app.focused_node.is_none() {
+                if app.accessibility.focus_trap_active && app.focused_node.is_none() {
                     app.set_focused_node(app.focusable_order.first().copied());
                 }
             } else {
@@ -9852,14 +10292,14 @@ fn run_layout_pass(
             .is_none_or(|history| history.live_interactive())
         && let Some(host) = native_host
     {
-        app.root_widget.mount_native_views(host);
+        crate::widget::mount_native_views(app.root_widget.as_mut(), host);
     }
     if app
         .history
         .as_ref()
         .is_some_and(|history| !history.live_interactive())
     {
-        app.root_widget.unmount_native_views();
+        crate::widget::unmount_native_views(app.root_widget.as_mut());
     }
     app.layout.last_layout_logical = Some(logical);
     app.layout.layout_dirty = false;
@@ -10923,9 +11363,10 @@ impl AppHandler {
                 (progress.pending, palette.take_search_announcement())
             });
         needs_followup_redraw |= search_pending;
-        if let (Some(reader), Some(announcement)) =
-            (app.screen_reader.as_mut(), search_announcement)
-        {
+        if let (Some(reader), Some(announcement)) = (
+            app.accessibility.screen_reader.as_mut(),
+            search_announcement,
+        ) {
             reader.announce(announcement, tts::Priority::Notification, false);
         }
 
@@ -12210,12 +12651,10 @@ impl AppHandler {
             WindowEvent::ScaleFactorChanged { .. } => {
                 // The render path reads `window.scale_factor()` each frame,
                 // so we just need to invalidate layout and redraw.
-                self.app
-                    .root_widget
-                    .mount_native_views(&crate::widget::NativeViewHost::live(
-                        &window,
-                        self.app.platform,
-                    ));
+                crate::widget::mount_native_views(
+                    self.app.root_widget.as_mut(),
+                    &crate::widget::NativeViewHost::live(&window, self.app.platform),
+                );
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
             }
@@ -12538,12 +12977,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             &window,
             self.a11y_proxy.clone(),
         ));
-        self.app
-            .root_widget
-            .mount_native_views(&crate::widget::NativeViewHost::live(
-                &window,
-                self.app.platform,
-            ));
+        crate::widget::mount_native_views(
+            self.app.root_widget.as_mut(),
+            &crate::widget::NativeViewHost::live(&window, self.app.platform),
+        );
         #[cfg(windows)]
         if let Err(reason) = self.init_render(&window) {
             crate::diag!("tilo: {reason}");
@@ -14194,7 +14631,7 @@ mod focus_trap_tests {
             ));
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
         assert!(app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 100.0, 100.0))));
         let first = app.focusable_order[0];
@@ -14212,7 +14649,10 @@ mod focus_trap_tests {
     fn closed_modal_does_not_trap_focus() {
         let (mut app, _open) = host_app();
         app.init_layout();
-        assert!(!app.focus_trap_active, "no trap while the modal is closed");
+        assert!(
+            !app.accessibility.focus_trap_active,
+            "no trap while the modal is closed"
+        );
         assert_eq!(
             app.focusable_order.len(),
             2,
@@ -14229,7 +14669,10 @@ mod focus_trap_tests {
         open.set(true);
         app.refresh_focus_order();
 
-        assert!(app.focus_trap_active, "an open modal traps focus");
+        assert!(
+            app.accessibility.focus_trap_active,
+            "an open modal traps focus"
+        );
         assert_eq!(
             app.focusable_order.len(),
             2,
@@ -14248,7 +14691,7 @@ mod focus_trap_tests {
         app.init_layout();
         open.set(true);
         app.refresh_focus_order();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
         let modal_set: std::collections::HashSet<_> = app.focusable_order.iter().copied().collect();
         let first = app.focusable_order[0];
@@ -14293,7 +14736,7 @@ mod focus_trap_tests {
         // switch off the App's own Tab/arrow navigation.
         let (mut app, _open) = host_app();
         app.init_layout();
-        assert!(!app.focus_trap_active);
+        assert!(!app.accessibility.focus_trap_active);
         assert!(
             app.keyboard_nav_allowed(None),
             "with no modal, Tab runs normally"
@@ -14313,13 +14756,13 @@ mod focus_trap_tests {
 
         open.set(true);
         app.refresh_focus_order();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_ne!(app.focused_node, Some(outer), "focus moved into the modal");
 
         open.set(false);
         app.refresh_focus_order();
         assert!(
-            !app.focus_trap_active,
+            !app.accessibility.focus_trap_active,
             "trap released when the modal closes"
         );
         assert_eq!(
@@ -19476,6 +19919,7 @@ mod bound_component_tests {
 
     include!("app/action_directory_snapshot_bound_tests.rs");
     include!("app/owner_publication_tests.rs");
+    include!("app/bound_record_sync_tests.rs");
 
     #[test]
     fn task4_bound_publication_preserves_contracts_and_directed_owner() {
@@ -19611,7 +20055,11 @@ mod bound_component_tests {
     fn task4_semantic_and_palette_targets_keep_equal_id_lifetimes() {
         let mut fixture = ActionFixture::new();
         fixture.app.refresh_semantic_tree();
-        let targets = fixture.app.semantic_tree.bound_actions_for_test();
+        let targets = fixture
+            .app
+            .accessibility
+            .semantic_tree
+            .bound_actions_for_test();
         let (id, _) = targets
             .iter()
             .find(|(_, target)| {
@@ -20888,6 +21336,47 @@ mod prepared_runner_tests {
     }
 
     #[test]
+    fn prepared_native_services_keep_explicit_presentation_and_watch_system_updates() {
+        fn services(
+            inputs: crate::application::ComponentRunnerInputs,
+            binding: &crate::bound_dispatch::CallbackBinding,
+        ) -> AppConstructionInputs {
+            let mut services = AppConstructionInputs::controlled();
+            services.debug_mode = || true;
+            let mut presence = PresenceCtx::empty();
+            presence.set_own_identity(["announced-handle"]);
+            services.presence_ctx = ConstructionValue::Ready(presence);
+            AppConstructionInputs::component_with_services(inputs, binding, services)
+        }
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 11);
+        let mut app =
+            App::from_component_using(component, presentation_inputs(2.0), services).unwrap();
+        assert_eq!(app.local_author(), &author());
+        assert!(app.presence_ctx.is_own_identity(&author().0));
+        assert!(app.presence_ctx.is_own_identity("announced-handle"));
+        assert!(app.debug_mode);
+        assert!(app.watch_system_settings);
+        assert_presentation(&app.theme, 1.5, 1.25);
+        let due = app.last_theme_store_check + Duration::from_millis(750);
+        assert!(app.reconcile_configured_theme_with(
+            due,
+            || Some(std::time::SystemTime::UNIX_EPOCH),
+            |app| {
+                app.accessibility.base_theme = Theme::light();
+            },
+        ));
+        assert_eq!(app.theme.name, Theme::light().name);
+        assert_eq!(app.theme.text_scale, 1.5);
+        assert_eq!(app.theme.ui_scale, 1.25);
+        assert!(app.theme.reduce_motion);
+        draw_prepared_component_test_frame(&mut app);
+        app.close_components();
+        assert_eq!(app.component_close_reports().len(), 1);
+        assert!(app.component_close_reports()[0].record_error.is_none());
+    }
+
+    #[test]
     fn prepared_native_due_theme_poll_preserves_explicit_inputs_without_discovery() {
         let host = ProbeHost::new();
         let component = editable_component(&host, 11);
@@ -20904,9 +21393,9 @@ mod prepared_runner_tests {
             },
             |app| {
                 applies.set(applies.get() + 1);
-                app.base_theme = Theme::light();
+                app.accessibility.base_theme = Theme::light();
                 // This controlled stand-in never creates a narrator or reads settings.
-                app.a11y.screen_reader = true;
+                app.accessibility.a11y.screen_reader = true;
             },
         );
         draw_prepared_component_test_frame(&mut app);
@@ -20918,9 +21407,9 @@ mod prepared_runner_tests {
         assert_eq!(applies.get(), 0);
         assert!(!changed);
         assert!(app.theme_store_stamp.is_none());
-        assert!(app.screen_reader.is_none());
-        assert!(!app.a11y.screen_reader);
-        assert_presentation(&app.base_theme, 2.0, 1.25);
+        assert!(app.accessibility.screen_reader.is_none());
+        assert!(!app.accessibility.a11y.screen_reader);
+        assert_presentation(&app.accessibility.base_theme, 2.0, 1.25);
         let observation = observed.borrow();
         let (theme, renderer_scale) = observation.draws.last().unwrap();
         assert_eq!(*renderer_scale, 1.5);
@@ -20953,7 +21442,7 @@ mod prepared_runner_tests {
                 },
                 |app| {
                     applies.set(applies.get() + 1);
-                    app.base_theme = Theme::light();
+                    app.accessibility.base_theme = Theme::light();
                 },
             );
             assert_eq!(changed, expected_changed);
@@ -20961,7 +21450,7 @@ mod prepared_runner_tests {
             assert_eq!(applies.get(), expected_applies);
             assert_eq!(app.layout.layout_dirty, expected_changed);
             assert_eq!(app.layout.structure_dirty, expected_changed);
-            assert!(app.screen_reader.is_none());
+            assert!(app.accessibility.screen_reader.is_none());
         }
         assert!(app.theme_store_stamp.is_none());
         assert_eq!(app.theme.name, Theme::light().name);
@@ -22646,7 +23135,7 @@ mod viewport_composition_tests {
             .unwrap();
         for width in [920, 600, 1200] {
             frame(&mut app, width);
-            assert!(app.focus_trap_active);
+            assert!(app.accessibility.focus_trap_active);
             let focused = app.focused_node.expect("modal editor remains focused");
             assert!(app.focusable_order.contains(&focused));
             assert_eq!(
@@ -22681,7 +23170,7 @@ mod viewport_composition_tests {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
         let host = crate::widget::NativeViewHost::headless(app.platform, 1.0);
-        app.root_widget.mount_native_views(&host);
+        crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
         for width in [1200, 920] {
             let mounts = calls
                 .borrow()
@@ -22755,13 +23244,13 @@ mod viewport_composition_tests {
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
         app.init_layout();
         frame(&mut app, 1200);
-        assert!(!app.focus_trap_active);
+        assert!(!app.accessibility.focus_trap_active);
         let outside = app.focusable_order[0];
         app.set_focused_node(Some(outside));
         app.mutate_node(outside, |widget| widget.set_state("5:b:1"))
             .unwrap();
         frame(&mut app, 920);
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         let focused = app.focused_node.expect("modal owns focus");
         assert!(app.focusable_order.contains(&focused));
         assert!(
@@ -24565,3 +25054,7 @@ mod legacy_control_feedback_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "app/notes_rich_controls_tests.rs"]
+mod notes_rich_controls_tests;

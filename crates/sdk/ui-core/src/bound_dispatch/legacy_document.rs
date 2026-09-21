@@ -691,11 +691,12 @@ fn execute_owned(
     let app = authorize_legacy_owner(&target.owner, &current, services.author)
         .map_err(|e| refused("permission_denied", e))?;
     let (store, checkout) = target.owner.store_checkout();
+    let admission = store
+        .admission(checkout)
+        .map_err(|_| refused("closed_lifetime", "Record custody changed"))?;
     let outcome = store
         .with_action_state(&checkout.id, |doc, history, state| {
-            if target.owner.lifetime_id().is_none()
-                || crate::record::identity(doc).as_ref() != Some(checkout)
-            {
+            if target.owner.lifetime_id().is_none() || !admission.matches(doc, checkout) {
                 return Err(refused("closed_lifetime", "Record custody changed"));
             }
             if state.pending.is_some()
