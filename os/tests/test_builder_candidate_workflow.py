@@ -14,6 +14,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = (ROOT / '.forgejo/workflows/build-builder-image.yml').read_text()
+AWS_INSTALLER = (ROOT / 'os/dev/install-cached-aws-cli.sh').read_text()
+EXTERNAL_ASSETS = (ROOT / 'os/external-assets/github-assets.tsv').read_text()
 CHECK = (ROOT / '.forgejo/workflows/check.yml').read_text()
 SPEC = importlib.util.spec_from_file_location('builder_canary', ROOT / 'os/dev/builder-canary-inputs.py')
 CANARY = importlib.util.module_from_spec(SPEC)
@@ -355,25 +357,24 @@ class CanaryIdentity(unittest.TestCase):
         self.assertIn('125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder', replication)
         self.assertIn('podesta-burst-usw2-qos-builder-replication', replication)
 
-    def test_main_promotion_installs_aws_cli_from_ubuntu_universe(self):
+    def test_main_promotion_installs_checksum_pinned_aws_cli_v2(self):
         promotion = BUILD.split('  promote-builder:', 1)[1]
         tools = promotion.split('      - name: Install publication tools', 1)[1].split(
             '      - name: Verify and publish the tested native builder index', 1
         )[0]
-        enable_universe = 'sudo -n add-apt-repository --yes universe'
-        install_aws = (
-            'sudo -n apt-get install -y --no-install-recommends '
-            'awscli podman skopeo'
-        )
-        self.assertIn(
-            'sudo -n apt-get install -y --no-install-recommends '
-            'software-properties-common',
-            tools,
-        )
-        self.assertIn(enable_universe, tools)
-        self.assertIn(install_aws, tools)
-        self.assertLess(tools.index(enable_universe), tools.index(install_aws))
-        self.assertIn('sudo -n dnf install -y awscli podman skopeo', tools)
+        asset = 'awscli-exe-linux-x86_64-2.31.30.zip'
+        digest = '660c5623e7036d99780371a594589a5aae6e102d3ef4df0d01d02812b90674c7'
+        self.assertIn('./os/dev/install-cached-aws-cli.sh', tools)
+        self.assertNotRegex(tools, r'(?m)(?:apt-get|dnf).*\bawscli\b')
+        self.assertNotIn('curl ', tools)
+        self.assertNotIn('unzip ', tools)
+        self.assertIn('x86_64|amd64)', AWS_INSTALLER)
+        self.assertNotIn('aarch64|arm64)', AWS_INSTALLER)
+        self.assertIn('cache-github-assets.sh" "$asset"', AWS_INSTALLER)
+        self.assertNotIn('curl ', AWS_INSTALLER)
+        self.assertNotIn('unzip ', AWS_INSTALLER)
+        self.assertIn(f'{digest}\t{asset}\thttps://awscli.amazonaws.com/{asset}',
+                      EXTERNAL_ASSETS)
 
     def test_reuse_never_reaches_signing_or_promotion(self):
         signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]
