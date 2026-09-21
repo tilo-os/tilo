@@ -816,61 +816,93 @@ jobs:
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           snapshot="$RUNNER_TEMP/tilo-registry-snapshot.json"
           response="$RUNNER_TEMP/tilo-registry-response.txt"
+          publication_plan="$RUNNER_TEMP/tilo-registry-publication.tsv"
+          : > "$publication_plan"
           for index in release/*/index.json; do
             arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
             while IFS=$'\t' read -r id name file; do
-              tapp="${index%/index.json}/tapp/$file"
-              tapp_url="$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file"
-              accepted=false
-              for attempt in 1 2 3; do
-                curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
-                  --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
-                jq -e '.entries | type == "array"' "$snapshot" >/dev/null
-                matches=$(jq --arg id "$id" '[.entries[] | select(.package_id == $id)] | length' "$snapshot")
-                previous="$RUNNER_TEMP/tilo-registry-previous.json"
-                request="$RUNNER_TEMP/tilo-registry-request.json"
-                case "$matches" in
-                  0)
-                    "$registry_cli" entry --arch "$arch" --identity "$registry_identity" \
-                      --action add --url "$tapp_url" "$tapp" > "$request"
-                    ;;
-                  1)
-                    jq --arg id "$id" '.entries[] | select(.package_id == $id)' \
-                      "$snapshot" > "$previous"
-                    "$registry_cli" entry --arch "$arch" --identity "$registry_identity" \
-                      --action update --previous-entry "$previous" --url "$tapp_url" \
-                      "$tapp" > "$request"
-                    ;;
-                  *)
-                    printf 'registry snapshot contains duplicate package id %s\n' "$id" >&2
-                    exit 1
-                    ;;
-                esac
-                status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
-                  --retry 3 --retry-all-errors \
-                  --output "$response" --write-out '%{http_code}' --request POST \
-                  --header 'Content-Type: application/json' --data-binary "@$request" \
-                  "$registry_url/entries")
-                if [[ $status == 202 ]]; then
-                  accepted=true
-                  echo "::notice::submitted $id ($arch) to the Tilo registry"
-                  break
-                fi
-                # A concurrent publication can make the fetched predecessor
-                # stale. Re-read and regenerate the signed request before the
-                # next bounded attempt; all other failures remain visible.
-                [[ $status == 409 || $status == 429 || $status == 5?? ]] || {
-                  printf 'registry rejected %s with HTTP %s\n' "$id" "$status" >&2
-                  exit 1
-                }
-                sleep "$attempt"
-              done
-              [[ $accepted == true ]] || {
-                printf 'registry did not accept %s after bounded retries\n' "$id" >&2
-                exit 1
-              }
+              printf '%s\t%s\t%s\t%s\t%s\n' \
+                "$id" "$name" "$file" "$arch" "${index%/index.json}" >> "$publication_plan"
             done < <(jq -r '.apps[] | [.id,.name,.file] | @tsv' "$index")
           done
+          LC_ALL=C sort -t $'\t' -k1,1 -k4,4 -o "$publication_plan" "$publication_plan"
+
+          # One package id is one publisher-signed registry entry. Fold every
+          # architecture into that entry before POSTing so the registry never
+          # has to synthesize or re-sign publisher data. This also upgrades an
+          # already-published single-architecture entry append-only.
+          while IFS= read -r id; do
+            accepted=false
+            architectures=$(awk -F $'\t' -v id="$id" '$1 == id {print $4}' \
+              "$publication_plan" | paste -sd, -)
+            for attempt in 1 2 3; do
+              curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+                --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
+              jq -e '.entries | type == "array"' "$snapshot" >/dev/null
+              matches=$(jq --arg id "$id" '[.entries[] | select(.package_id == $id)] | length' "$snapshot")
+              previous="$RUNNER_TEMP/tilo-registry-previous.json"
+              aggregate="$RUNNER_TEMP/tilo-registry-aggregate.json"
+              request="$RUNNER_TEMP/tilo-registry-request.json"
+              rm -f "$previous" "$aggregate" "$request"
+              case "$matches" in
+                0) action=add ;;
+                1)
+                  action=update
+                  jq --arg id "$id" '.entries[] | select(.package_id == $id)' \
+                    "$snapshot" > "$previous"
+                  cp "$previous" "$aggregate"
+                  ;;
+                *)
+                  printf 'registry snapshot contains duplicate package id %s\n' "$id" >&2
+                  exit 1
+                  ;;
+              esac
+              while IFS=$'\t' read -r planned_id name file arch artifact_root; do
+                [[ $planned_id == "$id" ]] || continue
+                tapp="$artifact_root/tapp/$file"
+                tapp_url="$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file"
+                args=(entry --arch "$arch" --identity "$registry_identity" \
+                  --action "$action" --url "$tapp_url")
+                [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
+                "$registry_cli" "${args[@]}" "$tapp" > "$request"
+                jq -e --arg id "$id" '.entry | select(.package_id == $id)' \
+                  "$request" > "$aggregate.next"
+                mv "$aggregate.next" "$aggregate"
+              done < "$publication_plan"
+              [[ -s $request && -s $aggregate ]] || {
+                printf 'no registry artifacts planned for %s\n' "$id" >&2
+                exit 1
+              }
+              if [[ -f $previous ]] && jq -e -s '.[0] == .[1]' \
+                "$previous" "$aggregate" >/dev/null; then
+                accepted=true
+                echo "::notice::$id ($architectures) is already current in the Tilo registry"
+                break
+              fi
+              status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+                --retry 3 --retry-all-errors \
+                --output "$response" --write-out '%{http_code}' --request POST \
+                --header 'Content-Type: application/json' --data-binary "@$request" \
+                "$registry_url/entries")
+              if [[ $status == 202 ]]; then
+                accepted=true
+                echo "::notice::submitted $id ($architectures) to the Tilo registry"
+                break
+              fi
+              # A concurrent publication can make the fetched predecessor
+              # stale. Re-read and regenerate the signed aggregate before the
+              # next bounded attempt; all other failures remain visible.
+              [[ $status == 409 || $status == 429 || $status == 5?? ]] || {
+                printf 'registry rejected %s with HTTP %s\n' "$id" "$status" >&2
+                exit 1
+              }
+              sleep "$attempt"
+            done
+            [[ $accepted == true ]] || {
+              printf 'registry did not accept %s after bounded retries\n' "$id" >&2
+              exit 1
+            }
+          done < <(cut -f1 "$publication_plan" | uniq)
 
           [[ -n ${COLLECTION:-} ]] || exit 0
           collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
