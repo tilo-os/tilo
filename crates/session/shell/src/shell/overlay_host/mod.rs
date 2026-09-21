@@ -22991,11 +22991,12 @@ mod palette_dispatch_tests {
                 .focus_next(&chrome.borrow().quick_settings, false)
         );
 
-        assert_eq!(
-            host.qs_root
-                .activate_focused(host.rect, &mut chrome.borrow_mut().quick_settings),
-            RootAction::LayoutChanged,
-            "the first Tab after every direct open must select Edit"
+        let slider = host
+            .qs_root
+            .adjust_focused_slider(&mut chrome.borrow_mut().quick_settings, 1.0);
+        assert!(
+            matches!(slider, Some(SliderCommit::Brightness(_))),
+            "the first Tab after every direct open must select Brightness"
         );
     }
 
