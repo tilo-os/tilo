@@ -679,20 +679,25 @@ class LaneAdmission(unittest.TestCase):
         argv=detached.call_args.args[4]
         self.assertEqual(argv[argv.index('--copy-receipt')+1],'/work/disk-output/copy.json')
         self.assertIn('rm -f -- "$source" "$destination"',argv[2])
+        self.assertNotIn('exec "$@"',argv[2])
+        self.assertIn('status=$?',argv[2])
         self.assertNotIn(b'{"auths":{}}',repr(argv).encode())
         self.assertEqual(detached.call_args.kwargs['inputs']['registry-auth'],b'{"auths":{}}')
+        self.assertEqual(detached.call_args.kwargs['cleanup_paths'],('/work/registry-auth.json',))
 
     def test_detached_job_adopts_success_after_transport_reconnect(self):
         worker={'namespace':'kata-system','pod':'tilo-verify-run1','pod_uid':'verify-pod-uid',
           'node':'verify','node_uid':'verify-node-uid','spec':{},'image_id':lane.DISK_IMAGE}
         argv=['python3','-c','print("ok")'];inputs={'registry-auth':b'private'}
         operation='run1-installed-verification'
-        root=lane._detached_job_root(operation,worker,'disk',argv,inputs)
-        contract,content=lane._detached_job_contract(operation,worker,'disk',argv,inputs,root)
+        cleanup=('/work/registry-auth.json',)
+        root=lane._detached_job_root(operation,worker,'disk',argv,inputs,cleanup)
+        contract,content=lane._detached_job_contract(operation,worker,'disk',argv,inputs,root,cleanup)
         output=b'{"passed":true}\n'
         receipt={'schema':1,'purpose':'tilo-supervised-detached-job',
           'contract_sha256':hashlib.sha256(content).hexdigest(),'operation':operation,
           'worker':contract['worker'],'container':'disk','argv_sha256':contract['argv_sha256'],
+          'runner_sha256':contract['runner_sha256'],
           'input_identities':contract['input_identities'],'output_sha256':hashlib.sha256(output).hexdigest(),
           'output_bytes':len(output),'stdout_base64':base64.b64encode(output).decode(),
           'stderr_base64':'','stdout_truncated':False,'stderr_truncated':False,
@@ -706,11 +711,11 @@ class LaneAdmission(unittest.TestCase):
              patch.object(lane,'_stage_detached_input') as stage, \
              patch.object(lane,'_launch_detached_job') as launch:
             actual=lane.detached_job('ctx',worker,'disk','installed-verification',argv,
-              operation='run1',inputs=inputs,timeout=60,sleeper=sleeps.append)
+              operation='run1',inputs=inputs,cleanup_paths=cleanup,timeout=60,sleeper=sleeps.append)
         self.assertEqual(actual,output)
         self.assertEqual(sleeps,[1,10,10])
         self.assertEqual(stream.call_count,2);stage.assert_called_once();launch.assert_called_once()
-        self.assertEqual(require.call_count,2)
+        self.assertEqual(require.call_count,10)
 
     def test_detached_job_fails_closed_when_remote_process_dies(self):
         worker={'namespace':'kata-system','pod':'tilo-verify-run1','pod_uid':'verify-pod-uid',
@@ -725,13 +730,15 @@ class LaneAdmission(unittest.TestCase):
         worker={'namespace':'kata-system','pod':'tilo-verify-run1','pod_uid':'verify-pod-uid',
           'node':'verify','node_uid':'verify-node-uid','spec':{},'image_id':lane.DISK_IMAGE}
         operation='run1-raw-identity';argv=['true'];inputs={}
-        root=lane._detached_job_root(operation,worker,'disk',argv,inputs)
-        contract,content=lane._detached_job_contract(operation,worker,'disk',argv,inputs,root)
+        cleanup=('/work/registry-auth.json',)
+        root=lane._detached_job_root(operation,worker,'disk',argv,inputs,cleanup)
+        contract,content=lane._detached_job_contract(operation,worker,'disk',argv,inputs,root,cleanup)
         output=b'ok\n'
         receipt={'schema':1,'purpose':'tilo-supervised-detached-job',
           'contract_sha256':hashlib.sha256(content).hexdigest(),'operation':operation,
           'worker':dict(contract['worker'],pod_uid='wrong'),'container':'disk',
-          'argv_sha256':contract['argv_sha256'],'input_identities':contract['input_identities'],
+          'argv_sha256':contract['argv_sha256'],'runner_sha256':contract['runner_sha256'],
+          'input_identities':contract['input_identities'],
           'output_sha256':hashlib.sha256(output).hexdigest(),'output_bytes':len(output),
           'stdout_base64':base64.b64encode(output).decode(),'stderr_base64':'',
           'stdout_truncated':False,'stderr_truncated':False,'returncode':0,
@@ -741,6 +748,18 @@ class LaneAdmission(unittest.TestCase):
         receipt['worker']=contract['worker']
         with self.assertRaisesRegex(ValueError,'did not clean'):
             lane._validate_detached_receipt(receipt,contract,content)
+
+    def test_detached_contract_binds_runtime_auth_cleanup(self):
+        worker={'namespace':'kata-system','pod':'tilo-verify-run1','pod_uid':'verify-pod-uid',
+          'node':'verify','node_uid':'verify-node-uid','spec':{},'image_id':lane.DISK_IMAGE}
+        root=lane._detached_job_root('run1-installed-verification',worker,'disk',['true'],
+          {'registry-auth':b'private'},('/work/registry-auth.json',))
+        contract,_=lane._detached_job_contract('run1-installed-verification',worker,'disk',['true'],
+          {'registry-auth':b'private'},root,('/work/registry-auth.json',))
+        self.assertEqual(contract['cleanup_paths'],['/work/registry-auth.json'])
+        self.assertEqual(contract['runner_sha256'],hashlib.sha256(lane.DETACHED_JOB_RUNNER.encode()).hexdigest())
+        self.assertIn("for path in contract['cleanup_paths']",lane.DETACHED_JOB_RUNNER)
+        self.assertIn('os.path.lexists(path)',lane.DETACHED_JOB_RUNNER)
 
     def test_vm_preflight_checks_exact_runtime_before_media_transfer(self):
         worker={'namespace':'agent-sandboxes','pod':'tilo-vm-run1'}
