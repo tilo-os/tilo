@@ -49,7 +49,7 @@ impl App {
             &mut has_components,
         )?;
         let Some(binding) = found else {
-            self.bound_record_sync = None;
+            self.actions.bound_record_sync = None;
             return if has_components {
                 Err("no live component matches the admitted primary document route".into())
             } else {
@@ -57,7 +57,7 @@ impl App {
             };
         };
         let route = route.ok_or("primary document route is unavailable")?;
-        if let Some(sync) = self.bound_record_sync.as_mut()
+        if let Some(sync) = self.actions.bound_record_sync.as_mut()
             && sync.route == route
             && sync.binding.records.same_owner(&binding.records)
             && sync.binding.checkout == binding.checkout
@@ -65,7 +65,7 @@ impl App {
             // A second view of the same owner may outlive the original view.
             sync.binding = binding;
         } else {
-            self.bound_record_sync = Some(BoundRecordSync {
+            self.actions.bound_record_sync = Some(BoundRecordSync {
                 binding,
                 route,
                 // Include edits made before the connection was admitted.
@@ -82,6 +82,7 @@ impl App {
             return Ok(self.state.pending_outbound_delta());
         }
         let sync = self
+            .actions
             .bound_record_sync
             .as_mut()
             .ok_or("primary record is unavailable")?;
@@ -96,7 +97,7 @@ impl App {
     }
 
     pub(super) fn advance_primary_document(&mut self, heads: Vec<automerge::ChangeHash>) {
-        if let Some(sync) = self.bound_record_sync.as_mut() {
+        if let Some(sync) = self.actions.bound_record_sync.as_mut() {
             sync.frontier.advance(heads);
         } else {
             self.state.advance_outbound(heads);
@@ -108,6 +109,7 @@ impl App {
             return Ok(self.state.save());
         }
         let sync = self
+            .actions
             .bound_record_sync
             .as_ref()
             .ok_or("primary record is unavailable")?;
@@ -137,6 +139,7 @@ impl App {
             .map_err(|error| error.to_string());
         }
         let sync = self
+            .actions
             .bound_record_sync
             .as_mut()
             .ok_or("primary record is unavailable")?;
