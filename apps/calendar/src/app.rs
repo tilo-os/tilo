@@ -3608,7 +3608,12 @@ impl CalendarApp {
         // those rows in the same breakpoint domain as the painter so NOTES
         // never collides with a wrapped reminder/colour/timezone control.
         let chip_rows = if w < 440.0 {
-            if large_text { 4.0 } else { 3.0 }
+            // At 200% each of the six metadata controls can require its own
+            // row. Reserve the worst case; the detail pane scrolls when the
+            // resulting form is taller than the phone viewport.
+            if large_text { 6.0 } else { 3.0 }
+        } else if large_text {
+            3.0
         } else {
             2.0
         };
@@ -5879,7 +5884,8 @@ impl CalendarApp {
             } else {
                 ChipLead::None
             };
-            let width = Chip::natural_width_at(&label, height, lead, theme, tr);
+            let width = Chip::natural_width_at(&label, height, lead, theme, tr)
+                .min((max_x - label_x).max(1.0));
             if x > label_x && x + width > max_x {
                 x = label_x;
                 y += event_form_chip_row_pitch(theme.text_scale);
