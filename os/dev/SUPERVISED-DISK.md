@@ -68,8 +68,11 @@ digest and enters its private mount namespace; the explicit canonical target
 reference remains the installed system's upgrade origin.
 
 Nested Podman receives a temporary `fuse-overlayfs` copy-on-write view of the
-creator's verified rootful image store. The parent store is only the lower
-layer; all lock and metadata writes go to a root-owned private upper layer.
+creator's verified rootful image store. The parent store is mounted read-only
+at an alternate path. After the source container is fully running, its wrapper
+uses that path only as the lower layer; all lock and metadata writes go to a
+root-owned private upper layer. This ordering excludes the parent's in-progress
+container layer from the private store snapshot.
 Before bootc starts, the wrapper requires the container metadata, Podman image
 identity, raw manifest digest and config architecture to agree with the exact
 immutable source. The view is unmounted and deleted before the source hold can

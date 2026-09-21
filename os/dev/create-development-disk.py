@@ -54,74 +54,20 @@ TRANSIENT_REGISTRY_TLS_ERROR = (
 DIAGNOSTIC_STREAM_LIMIT = 256 * 1024
 
 
-def _private_directory(path):
-    info = path.lstat()
+@contextmanager
+def private_source_store_scratch(parent=Path('/work')):
+    info = parent.lstat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
             or stat.S_IMODE(info.st_mode) != 0o700):
-        raise ValueError(f'{path} is not a root-owned private directory')
-
-
-@contextmanager
-def private_source_store_view(lower=Path('/var/lib/containers'), scratch=Path('/work')):
-    """Give nested Podman a writable COW view without mutating its parent store."""
-    lower_info = lower.lstat()
-    if (not stat.S_ISDIR(lower_info.st_mode) or lower_info.st_uid != 0
-            or lower_info.st_gid != 0 or stat.S_IMODE(lower_info.st_mode) & 0o022):
-        raise ValueError('source container store is not a protected root-owned directory')
-    _private_directory(scratch)
-    root = Path(tempfile.mkdtemp(prefix='tilo-source-store-', dir=scratch))
+        raise ValueError('source store scratch parent is not root-owned and private')
+    root = Path(tempfile.mkdtemp(prefix='tilo-source-store-scratch-', dir=parent))
     os.chmod(root, 0o700)
-    upper, work, merged = (root / name for name in ('upper', 'work', 'merged'))
-    for path in (upper, work, merged):
-        path.mkdir(mode=0o700)
-        _private_directory(path)
-    process = None
-    mounted = False
-    cleanup_error = None
     try:
-        process = subprocess.Popen(
-            ['/usr/bin/fuse-overlayfs', '-f', '-o',
-             f'lowerdir={lower},upperdir={upper},workdir={work}', str(merged)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
-        for _ in range(100):
-            if process.poll() is not None:
-                raise ValueError('private source store view exited before mounting')
-            result = subprocess.run(
-                ['/usr/bin/findmnt', '-n', '-o', 'FSTYPE', '-T', str(merged)],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
-            if result.returncode == 0 and result.stdout.strip() == b'fuse.fuse-overlayfs':
-                mounted = True
-                break
-            time.sleep(0.1)
-        if not mounted:
-            raise ValueError('private source store view did not mount')
-        yield merged
+        yield root
     finally:
-        if mounted:
-            result = subprocess.run(
-                ['/usr/bin/fusermount3', '-u', str(merged)], stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
-            if result.returncode:
-                cleanup_error = ValueError('private source store view did not unmount')
-        if process is not None:
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=10)
-                cleanup_error = cleanup_error or ValueError(
-                    'private source store view did not stop after unmount')
-        try:
-            shutil.rmtree(root)
-        except OSError as error:
-            cleanup_error = cleanup_error or error
+        shutil.rmtree(root)
         if root.exists():
-            cleanup_error = cleanup_error or ValueError('private source store view survived cleanup')
-        if cleanup_error is not None:
-            raise cleanup_error
+            raise ValueError('source store scratch survived cleanup')
 
 
 def _bounded_stream(data):
@@ -392,10 +338,11 @@ def _create_verified_disk(args):
             # Only a newly allocated file is bound, never the guest root. The
             # operator must provision this VM without device passthrough;
             # privileged Podman still has access to the VM's own devices.
-            with private_source_store_view() as source_store:
+            with private_source_store_scratch() as store_scratch:
                 bootc_install([*run, '--privileged', '--network=host',
                     '--tmpfs', '/run/udev:ro,nosuid,nodev,noexec,mode=0755', *auth_args,
-                    '--volume', f'{source_store}:/var/lib/containers:rw',
+                    '--volume', '/var/lib/containers:/run/tilo-parent-containers:ro',
+                    '--volume', f'{store_scratch}:/run/tilo-source-store-scratch:rw',
                     '--volume', f'{path}:/output/disk.raw:rw',
                     '--volume', f'{wrapper}:/run/tilo-bootc-registry-wrapper.py:ro',
                     '--entrypoint=/usr/bin/python3', args.source,
