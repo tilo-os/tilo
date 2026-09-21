@@ -303,7 +303,10 @@ impl QueryComposition {
     /// Paint an unwrapped query into a clipped viewport. The shaped caret is
     /// kept visible by horizontal scrolling; placeholder, selection and
     /// preedit use the same layout and baseline.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Query text, selection, viewport and paint colors share one shaped layout and baseline."
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,

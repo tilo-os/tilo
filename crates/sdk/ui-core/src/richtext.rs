@@ -328,7 +328,10 @@ impl RichTextLayout {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The compatibility shaping entry point preserves block metrics and decorations while selecting installed browser emoji."
+    )]
     pub(crate) fn shape_browser(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -388,7 +391,10 @@ impl RichTextLayout {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Canonical block style, width and decoration ranges remain explicit alongside browser emoji availability."
+    )]
     pub(crate) fn shape_styled_browser(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -432,7 +438,10 @@ impl RichTextLayout {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Paragraph reuse adds a previous layout to the canonical shaping inputs and browser emoji availability."
+    )]
     pub(crate) fn shape_styled_reusing_browser(
         fs: &mut FontSystem,
         spans: &[RichSpan],
