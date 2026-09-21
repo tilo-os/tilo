@@ -225,6 +225,7 @@ fn operation_resource(operation: &OperationProjection) -> Resource {
         strings::t("imager-import-resource-operation"),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             "imager-import-detail-operation",
             &[
@@ -309,6 +310,7 @@ fn folder_resource(folder: &FolderProjection) -> Resource {
         ),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             "imager-import-detail-folder",
             &[
@@ -389,6 +391,7 @@ pub fn resource(state: &ImportProjection) -> Resource {
         strings::t("imager-import-resource-root"),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             "imager-import-detail-root",
             &[

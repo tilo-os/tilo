@@ -239,6 +239,7 @@ pub fn entry_resource(generation: u64) -> Resource {
         strings::t("imager-connected-resource-entry"),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t("imager-connected-detail-entry")),
         badge: Some(strings::t("imager-connected-badge-entry")),
     })
@@ -276,6 +277,7 @@ fn row_resource(state: &ManagementProjection, row: &ConnectionProjection) -> Res
         ),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(row_detail(row)),
         badge: Some(strings::t(if row.selected {
             "imager-connected-badge-selected-row"
@@ -372,6 +374,7 @@ pub fn resource(state: &ManagementProjection) -> Resource {
         strings::t("imager-connected-resource-root"),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             "imager-connected-detail-root",
             &[

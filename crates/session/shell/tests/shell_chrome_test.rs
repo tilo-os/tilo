@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use shell::shell::overview::OverviewView;
-use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+use shell::shell::state::{Workspace, WorkspaceExt as _, WorkspaceId, WorkspaceTree};
 
 /// Caller-supplied workspace id, so each test keeps a stable shape
 /// without minting fresh monotonic ids.

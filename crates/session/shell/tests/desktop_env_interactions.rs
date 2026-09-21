@@ -1188,7 +1188,7 @@ fn dropping_a_folder_opens_files_app() {
 #[test]
 fn pointer_focus_keeps_native_card_in_place_but_keyboard_focus_reveals_it() {
     let (tree, strip, ids) = single_strip_tree(&[100, 200]);
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
     let row = host.group_row_rect_for_tests(strip).unwrap();
     let clipped = host.group_at_for_tests(strip, 1).unwrap().get_rect();

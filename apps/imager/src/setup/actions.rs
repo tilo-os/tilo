@@ -314,6 +314,7 @@ fn folder_resource(
         ),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             if folder.overridden {
                 "imager-setup-detail-folder-override"
@@ -367,6 +368,7 @@ fn suggestion_resource(suggestion: &SuggestionProjection, choices_open: bool) ->
         ),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(if suggestion.available {
             strings::t("imager-setup-suggestion-available")
         } else {
@@ -414,6 +416,7 @@ fn desktop_resource(desktop: &DesktopProjection) -> Resource {
         strings::t("imager-setup-resource-desktop"),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             "imager-setup-detail-desktop",
             &[
@@ -443,6 +446,7 @@ fn internal_download_resource(download: &InternalDownloadProjection) -> Resource
         strings::t("imager-setup-resource-internal-download"),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             "imager-setup-detail-internal-download",
             &[
@@ -636,6 +640,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
         strings::t("imager-setup-resource-selection"),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             "imager-setup-detail-selection",
             &[
@@ -662,6 +667,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
         strings::t("imager-setup-resource-review"),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             "imager-setup-detail-review",
             &[
@@ -677,6 +683,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
         strings::t("imager-setup-resource-availability"),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             "imager-setup-detail-availability",
             &[
@@ -706,6 +713,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
         strings::t("imager-setup-resource-root"),
     )
     .with_presentation(ResourcePresentation {
+        preview: None,
         detail: Some(strings::t_args(
             "imager-setup-detail-root",
             &[
