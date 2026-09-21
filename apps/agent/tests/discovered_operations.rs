@@ -838,3 +838,58 @@ fn without_the_capability_a_discovered_operation_is_never_performed() {
         reply.text
     );
 }
+
+/// A grant for a retained qOS action route is not an alias for the current
+/// Tilo route with the same action name. The local invitation permits the
+/// current app, leaving the production broker's exact app/action authority as
+/// the only denial boundary exercised here.
+#[test]
+fn qos_action_grant_does_not_authorize_the_tilo_route() {
+    let _serial = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let replica = seed_document_with_image("Scribe: delete the image");
+    let (replica, acted, invocation_actor) = run(
+        &[("dev.qos.word-processor", "delete")],
+        |sock, room| Config {
+            endpoint: Some(sock),
+            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
+            app_id: APP.into(),
+            cluster: room,
+            record: Some(RECORD.into()),
+            agent_id: "Scribe".into(),
+            name: "Scribe".into(),
+            pace: Duration::from_millis(10),
+            once: true,
+            model: false,
+            model_timeout: Duration::from_secs(1),
+            await_document: Duration::ZERO,
+            settle: Duration::ZERO,
+            directory: None,
+            permissions: granted("Scribe", "word-processor"),
+        },
+        replica,
+        |doc| {
+            blocks(doc)
+                .iter()
+                .any(|block| block.text.starts_with("Scribe: I can't"))
+        },
+        Duration::from_secs(15),
+    );
+    assert!(acted, "the agent reports the exact-route refusal");
+    assert!(
+        invocation_actor.is_none(),
+        "a qOS grant authorized the same-named Tilo action"
+    );
+    let shown = blocks(&replica);
+    assert!(
+        shown.iter().any(|block| block.kind == "image"),
+        "the cross-route denied action changed the document: {shown:?}"
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|block| block.text.starts_with("Scribe: I can't")),
+        "the exact-route denial did not reach the user: {shown:?}"
+    );
+}
