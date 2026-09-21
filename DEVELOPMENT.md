@@ -65,10 +65,12 @@ for how selection and shared runtime compatibility interact. Use **Release / app
 dispatch for a development artifact, selecting the smallest applicable app and
 architecture set and leaving `publish` off unless publication is intended.
 
-The app registry is publicly reachable at `https://registry.sandbox.example`, but its
-signed catalogue is still empty. CI catalogue submission is not merged or enabled;
-Forgejo package publication alone does not make an app discoverable there. See the
-[production roadmap](docs/ci-production-roadmap.md) for the remaining acceptance gates.
+The app registry is publicly reachable at `https://registry.sandbox.example`. Main-branch
+app publication now submits each newly built immutable qpkg to it; separate collector
+and networkless signer jobs independently verify accepted requests before advancing
+the signed catalogue. Forgejo package publication remains a distinct artifact channel
+and alone does not make an app discoverable. See the [production roadmap](docs/ci-production-roadmap.md)
+for the remaining acceptance gates.
 
 OS publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually
 run **Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
