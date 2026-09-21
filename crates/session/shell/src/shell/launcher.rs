@@ -56,7 +56,7 @@ const SERVICE_LAUNCH_TTL: Duration = Duration::from_secs(30);
 /// The signed headless package the desktop is allowed to manage for Task
 /// Center work. Keeping this fixed prevents a task title or agent id from
 /// becoming an executable/package selector.
-pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "dev.tilo.agent";
+pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "so.tilo.agent";
 
 #[cfg(any(test, target_os = "linux"))]
 fn relay_capped_lines<R: Read>(mut reader: R, mut on_line: impl FnMut(String)) {
@@ -106,7 +106,7 @@ struct LaunchedProcess {
     /// Kept host-side; it is not trusted when read back from a sandbox.
     workspace_id: Option<String>,
     start_time: u64,
-    /// True only for a qpkg launch carrying compositor-minted service
+    /// True only for a tapp launch carrying compositor-minted service
     /// identity. Host/Flatpak launches are attributed to a room for placement
     /// and portals but their Wayland app ids remain compatibility-owned.
     confined: bool,
@@ -413,7 +413,7 @@ pub(crate) fn verified_package_for_descendant(pid: u32) -> Option<String> {
     verified_launch_for_descendant(pid).map(|identity| identity.package_id)
 }
 
-const FILES_PACKAGE_ID: &str = "dev.tilo.file-explorer";
+const FILES_PACKAGE_ID: &str = "so.tilo.file-explorer";
 const TRUSTED_IDENTITIES_FILE: &str = "trusted-identities.json";
 static PROJECTION_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TRUSTED_IDENTITY_PROJECTIONS: LazyLock<
@@ -713,7 +713,7 @@ pub(crate) fn launch_failure_title(display_name: &str) -> String {
 }
 
 /// Who a running launch is, for the event stream — a package id for a
-/// `.qpkg`, a desktop-file id for a host app.
+/// `.tapp`, a desktop-file id for a host app.
 #[cfg(any(test, target_os = "linux"))]
 struct LaunchIdentity {
     package_id: String,
@@ -813,12 +813,15 @@ fn identities_match(identities: &[String], app_id: &str) -> bool {
     !needle.is_empty() && identities.iter().any(|i| i.eq_ignore_ascii_case(needle))
 }
 
-/// The window identities a Tilo package id implies: the id itself, and
-/// its trailing component (`dev.tilo.hello` ↔ `hello`).
+/// The window identities a Tilo package id implies: its finite first-party
+/// rename family, when present, plus its trailing component
+/// (`so.tilo.hello` ↔ `hello`).
 fn identities_for_package(package_id: &str) -> Vec<String> {
-    let mut out = vec![package_id.to_string()];
-    if let Some(current) = ui::application::current_package_id_for_legacy(package_id) {
-        out.push(current.to_string());
+    let mut out: Vec<String> = ui::application::first_party_app_id_lookup_candidates(package_id)
+        .map(str::to_owned)
+        .collect();
+    if out.is_empty() {
+        out.push(package_id.to_string());
     }
     if let Some(last) = package_id.rsplit('.').next()
         && !last.is_empty()
@@ -1294,7 +1297,7 @@ fn default_app_candidates_from(apps: &[InstalledApp]) -> Vec<desktop_policy::App
         .collect()
 }
 
-/// `dev.tilo.text-editor` → `Text Editor`, derived from the trailing id
+/// `so.tilo.text-editor` → `Text Editor`, derived from the trailing id
 /// component since the manifest carries no display name. Lives in the
 /// `launcher` crate too, so a package's name can't differ between
 /// "offered" and "installed".
@@ -1588,7 +1591,7 @@ fn build_launch_command_for(
         service_identity: Some(ServiceLaunchIdentity {
             app_id: launch_app_id.to_string(),
             workspace_id: room.to_string(),
-            allowed_compat_entry_ids: if app.package_id == "dev.tilo.windows" {
+            allowed_compat_entry_ids: if app.package_id == "so.tilo.windows" {
                 lock(&WINDOWS_COMPAT_ENTRY_IDS).clone()
             } else {
                 Vec::new()
@@ -2088,7 +2091,7 @@ fn spawn_detached(app: InstalledApp, command: LaunchCommand) -> Result<(), Strin
 }
 
 /// Run `command` on a worker thread under `(package_id, display_name)`,
-/// reporting through [`EVENTS`]. Shared by both launch kinds — a `.qpkg`
+/// reporting through [`EVENTS`]. Shared by both launch kinds — a `.tapp`
 /// via `tilo-launcher run` and a host app via `run-host` — since they
 /// differ only in what the launcher does, not in how it's supervised.
 #[allow(
@@ -2315,7 +2318,7 @@ pub(crate) fn clear_launched_for_test() {
 }
 
 /// Matched textually: either the app-id is the package id, or its trailing
-/// component (`dev.tilo.hello` ↔ `hello`). An unrelated app-id keeps its own
+/// component (`so.tilo.hello` ↔ `hello`). An unrelated app-id keeps its own
 /// label — closing that gap needs the client correlated back to the
 /// spawned pid (`SO_PEERCRED`), not this module.
 pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
@@ -2715,12 +2718,12 @@ mod tests {
         clear_pending_placements();
         lock(&PENDING_CONTINUATION_RESUME).clear();
         set_pending_placement(
-            "dev.tilo.browser",
+            "so.tilo.browser",
             crate::shell::tab_binding::Placement::IntoTab(77),
         );
         stage_continuation_record(room, 77, 0xdead_beef);
         assert_eq!(
-            take_staged_resume_for_package("dev.tilo.browser", room),
+            take_staged_resume_for_package("so.tilo.browser", room),
             Some((None, 0xdead_beef))
         );
         clear_pending_placements();
@@ -2729,15 +2732,26 @@ mod tests {
     #[test]
     #[serial_test::serial(pending_placement)]
     fn renamed_package_window_claims_the_legacy_tabs_pending_placement() {
-        clear_pending_placements();
-        let wanted = crate::shell::tab_binding::Placement::IntoTab(78);
-        set_pending_placement("dev.qos.notes", wanted);
-        attach_continuity_instance("dev.tilo.notes", 0xfeed);
+        for package_id in ["dev.qos.notes", "dev.tilo.notes", "so.tilo.notes"] {
+            let identities = identities_for_package(package_id);
+            for expected in ["dev.qos.notes", "dev.tilo.notes", "so.tilo.notes"] {
+                assert!(
+                    identities.iter().any(|identity| identity == expected),
+                    "{package_id} must recognize the finite family member {expected}"
+                );
+            }
+        }
+        for (durable, tab, surface) in [("dev.qos.notes", 78, 101), ("dev.tilo.notes", 79, 102)] {
+            clear_pending_placements();
+            let wanted = crate::shell::tab_binding::Placement::IntoTab(tab);
+            set_pending_placement(durable, wanted);
+            attach_continuity_instance("so.tilo.notes", 0xfeed);
 
-        assert_eq!(
-            placement_and_instance_for_toplevel("dev.tilo.notes", 101),
-            Some((wanted, Some(0xfeed)))
-        );
+            assert_eq!(
+                placement_and_instance_for_toplevel("so.tilo.notes", surface),
+                Some((wanted, Some(0xfeed)))
+            );
+        }
         clear_pending_placements();
     }
 
@@ -2746,11 +2760,11 @@ mod tests {
     fn same_app_launch_placements_are_claimed_fifo() {
         clear_pending_placements();
         set_pending_placement(
-            "dev.tilo.same-app",
+            "so.tilo.same-app",
             crate::shell::tab_binding::Placement::IntoTab(11),
         );
         set_pending_placement(
-            "dev.tilo.same-app",
+            "so.tilo.same-app",
             crate::shell::tab_binding::Placement::IntoTab(22),
         );
 
@@ -2770,14 +2784,14 @@ mod tests {
     fn failed_newest_same_app_launch_keeps_older_destination() {
         clear_pending_placements();
         set_pending_placement(
-            "dev.tilo.same-app",
+            "so.tilo.same-app",
             crate::shell::tab_binding::Placement::IntoTab(11),
         );
         set_pending_placement(
-            "dev.tilo.same-app",
+            "so.tilo.same-app",
             crate::shell::tab_binding::Placement::IntoTab(22),
         );
-        clear_pending_placement("dev.tilo.same-app");
+        clear_pending_placement("so.tilo.same-app");
 
         assert_eq!(
             placement_for_toplevel("same-app", 101),
@@ -2792,7 +2806,7 @@ mod tests {
     #[serial_test::serial(pending_placement)]
     fn clean_parent_exit_keeps_delayed_window_placement_until_deadline() {
         clear_pending_placements();
-        let package = "dev.tilo.daemonised";
+        let package = "so.tilo.daemonised";
         let wanted = crate::shell::tab_binding::Placement::IntoTab(44);
         set_pending_placement(package, wanted);
 
@@ -2809,7 +2823,7 @@ mod tests {
     #[serial_test::serial(pending_placement)]
     fn windowless_clean_launch_expires_without_sleeping() {
         clear_pending_placements();
-        let package = "dev.tilo.windowless";
+        let package = "so.tilo.windowless";
         set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(55));
 
         let now = Instant::now();
@@ -2823,7 +2837,7 @@ mod tests {
     #[serial_test::serial(pending_placement)]
     fn claimed_placement_expires_without_a_second_surface() {
         clear_pending_placements();
-        let package = "dev.tilo.claimed-once";
+        let package = "so.tilo.claimed-once";
         let wanted = crate::shell::tab_binding::Placement::IntoTab(56);
         set_pending_placement(package, wanted);
 
@@ -2855,7 +2869,7 @@ mod tests {
     fn live_child_with_open_stderr_does_not_block_exit_supervision() {
         use std::os::unix::fs::PermissionsExt;
 
-        const PACKAGE_ID: &str = "dev.tilo.live-gui";
+        const PACKAGE_ID: &str = "so.tilo.live-gui";
         let tmp = tempfile::tempdir().unwrap();
         let script = tmp.path().join("live-gui");
         std::fs::write(
@@ -2988,22 +3002,22 @@ mod tests {
 
     #[test]
     fn display_name_title_cases_the_trailing_component() {
-        assert_eq!(display_name_for_package_id("dev.tilo.hello"), "Hello");
+        assert_eq!(display_name_for_package_id("so.tilo.hello"), "Hello");
         assert_eq!(
-            display_name_for_package_id("dev.tilo.text-editor"),
+            display_name_for_package_id("so.tilo.text-editor"),
             "Text Editor"
         );
         assert_eq!(display_name_for_package_id("Notes"), "Notes");
         // A degenerate id must not produce an empty (unclickable) label.
-        assert!(!display_name_for_package_id("dev.tilo.").is_empty());
+        assert!(!display_name_for_package_id("so.tilo.").is_empty());
     }
 
     #[test]
     #[serial_test::serial(process_env)]
     fn enumeration_reads_the_registry_and_flags_gui_apps() {
         let tmp = tempfile::tempdir().unwrap();
-        install_fixture(tmp.path(), "dev.tilo.hello", "gui");
-        install_fixture(tmp.path(), "dev.tilo.notes-cli", "cli");
+        install_fixture(tmp.path(), "so.tilo.hello", "gui");
+        install_fixture(tmp.path(), "so.tilo.notes-cli", "cli");
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
@@ -3015,14 +3029,14 @@ mod tests {
         assert_eq!(apps.len(), 2, "both packages enumerate: {apps:?}");
         let hello = apps
             .iter()
-            .find(|a| a.package_id == "dev.tilo.hello")
+            .find(|a| a.package_id == "so.tilo.hello")
             .expect("hello present");
         assert!(hello.has_gui, "gui entrypoint must be flagged as GUI");
         assert_eq!(hello.display_name, "Hello");
         assert_eq!(hello.version, "1.2.3");
         let cli = apps
             .iter()
-            .find(|a| a.package_id == "dev.tilo.notes-cli")
+            .find(|a| a.package_id == "so.tilo.notes-cli")
             .expect("cli package present");
         assert!(!cli.has_gui, "a cli-only package is not a GUI app");
 
@@ -3031,35 +3045,38 @@ mod tests {
         let offered_ids: Vec<&str> = offered.iter().map(|a| a.package_id.as_str()).collect();
         assert_eq!(
             offered_ids,
-            vec!["dev.tilo.hello"],
+            vec!["so.tilo.hello"],
             "only the GUI package is launchable from the palette",
         );
     }
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn legacy_first_party_id_reaches_the_current_installed_package_lookup() {
+    fn each_legacy_first_party_id_reaches_the_current_installed_package_lookup() {
         let tmp = tempfile::tempdir().unwrap();
-        install_fixture(tmp.path(), "dev.tilo.notes", "gui");
+        install_fixture(tmp.path(), "so.tilo.notes", "gui");
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         *lock(&WAYLAND_SOCKET) = None;
 
-        let result = launch("dev.qos.notes", RoomId::new());
+        let results = ["dev.qos.notes", "dev.tilo.notes"]
+            .map(|app_id| (app_id, launch(app_id, RoomId::new())));
 
         unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
         invalidate_app_cache();
-        assert!(
-            matches!(result, Err(LaunchError::NoDisplay)),
-            "the legacy id must pass installed-package lookup before launch preflight: {result:?}"
-        );
+        for (app_id, result) in results {
+            assert!(
+                matches!(result, Err(LaunchError::NoDisplay)),
+                "the exact durable id {app_id} must pass installed-package lookup before launch preflight: {result:?}"
+            );
+        }
     }
 
     #[test]
     #[serial_test::serial(process_env)]
     fn installed_continuity_lookup_reads_signed_manifest_contract() {
         let tmp = tempfile::tempdir().unwrap();
-        let payload = install_fixture(tmp.path(), "dev.tilo.browser", "gui");
+        let payload = install_fixture(tmp.path(), "so.tilo.browser", "gui");
         let manifest_path = payload.join("manifest.toml");
         let mut manifest = std::fs::OpenOptions::new()
             .append(true)
@@ -3073,8 +3090,8 @@ mod tests {
 
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let required = installed_continuity_contract("dev.tilo.browser");
-        let legacy = installed_continuity_contract("dev.tilo.not-installed");
+        let required = installed_continuity_contract("so.tilo.browser");
+        let legacy = installed_continuity_contract("so.tilo.not-installed");
         unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
 
         assert_eq!(
@@ -3093,7 +3110,7 @@ mod tests {
     #[test]
     fn launch_command_carries_manifest_payload_and_display() {
         let app = InstalledApp {
-            package_id: "dev.tilo.hello".into(),
+            package_id: "so.tilo.hello".into(),
             display_name: "Hello".into(),
             category: None,
             version: "0.1.0".into(),
@@ -3153,7 +3170,7 @@ mod tests {
             }
         }
         let command = build_launch_command(
-            &test_app("dev.tilo.settings"),
+            &test_app("so.tilo.settings"),
             Path::new("/usr/bin/tilo-launcher"),
             Path::new("/run/user/1000/wayland-3"),
             RoomId::new(),
@@ -3256,7 +3273,7 @@ mod tests {
     #[test]
     fn launch_command_omits_the_render_node_when_none_resolved() {
         let app = InstalledApp {
-            package_id: "dev.tilo.hello".into(),
+            package_id: "so.tilo.hello".into(),
             display_name: "Hello".into(),
             category: None,
             version: "0.1.0".into(),
@@ -3291,18 +3308,18 @@ mod tests {
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
-        let err = launch("dev.tilo.nope", RoomId::new()).unwrap_err();
+        let err = launch("so.tilo.nope", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(
             err,
             LaunchError::NotInstalled {
-                package_id: "dev.tilo.nope".into()
+                package_id: "so.tilo.nope".into()
             }
         );
         let message = err.user_message();
         assert!(
-            message.contains("dev.tilo.nope"),
+            message.contains("so.tilo.nope"),
             "the message must name the id it could not find: {message}"
         );
         // "installed" is not a word this desktop says to a user.
@@ -3327,17 +3344,17 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn launch_refuses_a_cli_only_package() {
         let tmp = tempfile::tempdir().unwrap();
-        install_fixture(tmp.path(), "dev.tilo.notes-cli", "cli");
+        install_fixture(tmp.path(), "so.tilo.notes-cli", "cli");
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
-        let err = launch("dev.tilo.notes-cli", RoomId::new()).unwrap_err();
+        let err = launch("so.tilo.notes-cli", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(
             err,
             LaunchError::NotAGuiApp {
-                package_id: "dev.tilo.notes-cli".into()
+                package_id: "so.tilo.notes-cli".into()
             }
         );
     }
@@ -3346,12 +3363,12 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn launch_refuses_when_no_compositor_socket_is_published() {
         let tmp = tempfile::tempdir().unwrap();
-        install_fixture(tmp.path(), "dev.tilo.hello", "gui");
+        install_fixture(tmp.path(), "so.tilo.hello", "gui");
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         set_wayland_socket_path(None);
-        let err = launch("dev.tilo.hello", RoomId::new()).unwrap_err();
+        let err = launch("so.tilo.hello", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(err, LaunchError::NoDisplay);
@@ -3365,7 +3382,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn launch_execs_the_launcher_binary_with_the_compositor_socket() {
         let tmp = tempfile::tempdir().unwrap();
-        install_fixture(tmp.path(), "dev.tilo.hello", "gui");
+        install_fixture(tmp.path(), "so.tilo.hello", "gui");
         let record = tmp.path().join("argv.txt");
         let fake = tmp.path().join("tilo-launcher");
         {
@@ -3391,7 +3408,7 @@ mod tests {
         set_wayland_socket_path(Some(PathBuf::from("/run/user/1000/wayland-7")));
         let _ = drain_events();
 
-        let app = launch("dev.tilo.hello", RoomId::new()).expect("launch accepted");
+        let app = launch("so.tilo.hello", RoomId::new()).expect("launch accepted");
         assert_eq!(app.display_name, "Hello");
 
         // wait for the worker to report the child's exit
@@ -3441,7 +3458,7 @@ mod tests {
         );
         assert!(
             argv.iter()
-                .any(|a| a.ends_with("payloads/dev.tilo.hello/manifest.toml")),
+                .any(|a| a.ends_with("payloads/so.tilo.hello/manifest.toml")),
             "the resolved manifest path is passed through: {argv:?}"
         );
         // The GPU choice must reach the launcher through the real
@@ -3470,7 +3487,7 @@ mod tests {
     #[test]
     fn launched_apps_are_matched_back_by_app_id() {
         remember_launch(&InstalledApp {
-            package_id: "dev.tilo.matchfixture".into(),
+            package_id: "so.tilo.matchfixture".into(),
             display_name: "Match Fixture".into(),
             category: None,
             version: "0.1.0".into(),
@@ -3483,7 +3500,7 @@ mod tests {
         });
         // full package id, trailing component, case-insensitivity
         assert_eq!(
-            display_name_for_app_id("dev.tilo.matchfixture").as_deref(),
+            display_name_for_app_id("so.tilo.matchfixture").as_deref(),
             Some("Match Fixture")
         );
         assert_eq!(
@@ -3522,7 +3539,7 @@ mod tests {
     #[test]
     fn launch_command_names_the_app_id_and_omits_capabilities_when_none_are_granted() {
         let cmd = build_launch_command(
-            &test_app("dev.tilo.books"),
+            &test_app("so.tilo.books"),
             Path::new("/usr/bin/tilo-launcher"),
             Path::new("/run/user/1000/wayland-3"),
             RoomId::new(),
@@ -3534,7 +3551,7 @@ mod tests {
         assert!(
             cmd.args
                 .windows(2)
-                .any(|w| w[0] == "--app-id" && w[1] == "dev.tilo.books"),
+                .any(|w| w[0] == "--app-id" && w[1] == "so.tilo.books"),
             "the launcher must be told which app id capabilities are addressed to: {:?}",
             cmd.args
         );
@@ -3547,44 +3564,46 @@ mod tests {
 
     #[test]
     fn renamed_package_launch_keeps_the_requested_durable_identity() {
-        let app = test_app("dev.tilo.notes");
-        let cmd = build_launch_command_for(
-            &app,
-            Path::new("/usr/bin/tilo-launcher"),
-            Some(Path::new("/run/user/1000/wayland-3")),
-            RoomId::new(),
-            &LaunchExtras {
-                launch_app_id: Some("dev.qos.notes"),
-                capabilities_file: None,
-                identity_path: None,
-                render_node: None,
-                document: None,
-                uri: None,
-                continuity_tab_id: None,
-            },
-        );
-        assert!(
-            cmd.args
-                .windows(2)
-                .any(|w| w[0] == "--app-id" && w[1] == "dev.qos.notes")
-        );
-        assert_eq!(
-            cmd.service_identity
-                .as_ref()
-                .map(|identity| identity.app_id.as_str()),
-            Some("dev.qos.notes")
-        );
+        let app = test_app("so.tilo.notes");
+        for route in ["dev.qos.notes", "dev.tilo.notes", "so.tilo.notes"] {
+            let cmd = build_launch_command_for(
+                &app,
+                Path::new("/usr/bin/tilo-launcher"),
+                Some(Path::new("/run/user/1000/wayland-3")),
+                RoomId::new(),
+                &LaunchExtras {
+                    launch_app_id: Some(route),
+                    capabilities_file: None,
+                    identity_path: None,
+                    render_node: None,
+                    document: None,
+                    uri: None,
+                    continuity_tab_id: None,
+                },
+            );
+            assert!(
+                cmd.args
+                    .windows(2)
+                    .any(|w| w[0] == "--app-id" && w[1] == route)
+            );
+            assert_eq!(
+                cmd.service_identity
+                    .as_ref()
+                    .map(|identity| identity.app_id.as_str()),
+                Some(route)
+            );
+        }
     }
 
     #[test]
     fn launch_command_names_the_capability_file_when_one_was_written() {
         let cmd = build_launch_command(
-            &test_app("dev.tilo.books"),
+            &test_app("so.tilo.books"),
             Path::new("/usr/bin/tilo-launcher"),
             Path::new("/run/user/1000/wayland-3"),
             RoomId::new(),
             Some(Path::new(
-                "/run/user/1000/tilo/capabilities/dev.tilo.books.json",
+                "/run/user/1000/tilo/capabilities/so.tilo.books.json",
             )),
             None,
             None,
@@ -3597,14 +3616,14 @@ mod tests {
             .expect("--capabilities flag");
         assert_eq!(
             cmd.args[pos + 1],
-            "/run/user/1000/tilo/capabilities/dev.tilo.books.json"
+            "/run/user/1000/tilo/capabilities/so.tilo.books.json"
         );
     }
 
     #[test]
     fn launch_command_names_the_workspace_selected_identity() {
         let cmd = build_launch_command(
-            &test_app("dev.tilo.books"),
+            &test_app("so.tilo.books"),
             Path::new("/usr/bin/tilo-launcher"),
             Path::new("/run/user/1000/wayland-3"),
             RoomId::new(),
@@ -3628,8 +3647,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn published_capabilities_are_filtered_to_the_launching_app() {
         set_workspace_capabilities(vec![
-            fs_grant("dev.tilo.books", "/var/workspace/books", Verb::Read),
-            fs_grant("dev.tilo.other", "/var/workspace/secrets", Verb::Write),
+            fs_grant("so.tilo.books", "/var/workspace/books", Verb::Read),
+            fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
             // A person's share is a capability in the same list but not
             // an app grant, and must not travel.
             CapOverride::grant(
@@ -3638,12 +3657,12 @@ mod tests {
                 Verb::Write,
             ),
         ]);
-        let mine = capabilities_for_app("dev.tilo.books");
+        let mine = capabilities_for_app("so.tilo.books");
         clear_workspace_capabilities();
 
         assert_eq!(mine.len(), 1, "only this app's grant travels: {mine:?}");
         assert_eq!(mine[0].scope, Scope::FsPath("/var/workspace/books".into()));
-        assert_eq!(mine[0].subject, Subject::app("dev.tilo.books"));
+        assert_eq!(mine[0].subject, Subject::app("so.tilo.books"));
     }
 
     #[test]
@@ -3651,7 +3670,7 @@ mod tests {
     fn nothing_published_means_nothing_granted() {
         clear_workspace_capabilities();
         assert!(
-            capabilities_for_app("dev.tilo.books").is_empty(),
+            capabilities_for_app("so.tilo.books").is_empty(),
             "with no workspace published, an app is granted nothing"
         );
     }
@@ -3667,12 +3686,12 @@ mod tests {
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
         set_workspace_capabilities(vec![
-            fs_grant("dev.tilo.books", "/var/workspace/books", Verb::Read),
-            fs_grant("dev.tilo.other", "/var/workspace/secrets", Verb::Write),
+            fs_grant("so.tilo.books", "/var/workspace/books", Verb::Read),
+            fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
         ]);
 
-        let caps = capabilities_for_app("dev.tilo.books");
-        let path = write_capabilities_file("dev.tilo.books", &caps)
+        let caps = capabilities_for_app("so.tilo.books");
+        let path = write_capabilities_file("so.tilo.books", &caps)
             .expect("write capability file")
             .expect("a granted app gets a file");
 
@@ -3682,7 +3701,7 @@ mod tests {
 
         let records = launcher::capabilities::load_capability_file(&path);
         let plan = launcher::capabilities::CapabilityPlan::for_app(
-            "dev.tilo.books",
+            "so.tilo.books",
             &records,
             Some(launcher::capabilities::now_unix()),
         );
@@ -3716,16 +3735,16 @@ mod tests {
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
 
         let granted = vec![fs_grant(
-            "dev.tilo.books",
+            "so.tilo.books",
             "/var/workspace/books",
             Verb::Read,
         )];
-        let path = write_capabilities_file("dev.tilo.books", &granted)
+        let path = write_capabilities_file("so.tilo.books", &granted)
             .unwrap()
             .expect("file written while granted");
         assert!(path.exists());
 
-        let after_revoke = write_capabilities_file("dev.tilo.books", &[]).unwrap();
+        let after_revoke = write_capabilities_file("so.tilo.books", &[]).unwrap();
         let still_there = path.exists();
         unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
 
@@ -3757,19 +3776,19 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn dbus_proxy_descendant_resolves_only_while_launcher_identity_is_live() {
         let parent = std::process::id();
-        register_launched_process(parent, "dev.tilo.mail", Some("room-mail"), true);
+        register_launched_process(parent, "so.tilo.mail", Some("room-mail"), true);
         let mut child = std::process::Command::new("sh")
             .args(["-c", "sleep 2"])
             .spawn()
             .expect("spawn descendant");
         assert_eq!(
             verified_package_for_descendant(child.id()).as_deref(),
-            Some("dev.tilo.mail")
+            Some("so.tilo.mail")
         );
         assert_eq!(
             verified_launch_for_descendant(child.id()),
             Some(VerifiedLaunchIdentity {
-                package_id: "dev.tilo.mail".into(),
+                package_id: "so.tilo.mail".into(),
                 workspace_id: Some("room-mail".into()),
                 confined: true,
             })
@@ -3837,7 +3856,7 @@ mod tests {
         LAUNCHED_PROCESSES.lock().unwrap().insert(
             pid,
             LaunchedProcess {
-                package_id: "dev.tilo.spoof".into(),
+                package_id: "so.tilo.spoof".into(),
                 workspace_id: Some("room-spoof".into()),
                 start_time: u64::MAX,
                 confined: true,
@@ -3855,7 +3874,7 @@ mod tests {
         register_trusted_service_launch(
             pid,
             ServiceLaunchIdentity {
-                app_id: "dev.tilo.windows".into(),
+                app_id: "so.tilo.windows".into(),
                 workspace_id: "room-1".into(),
                 allowed_compat_entry_ids: vec!["windows-reader".into()],
                 compat_entry_generation: 7,
@@ -3868,16 +3887,16 @@ mod tests {
             "a renamed id is not an authorization alias"
         );
         assert_eq!(
-            consume_trusted_service_launch(pid, start_time, "dev.tilo.windows", "wrong-room"),
+            consume_trusted_service_launch(pid, start_time, "so.tilo.windows", "wrong-room"),
             None,
             "a mismatch must deny without transferring the record"
         );
         assert_eq!(
-            consume_trusted_service_launch(pid, start_time, "dev.tilo.windows", "room-1"),
+            consume_trusted_service_launch(pid, start_time, "so.tilo.windows", "room-1"),
             Some(vec!["windows-reader".into()])
         );
         assert_eq!(
-            consume_trusted_service_launch(pid, start_time, "dev.tilo.windows", "room-1"),
+            consume_trusted_service_launch(pid, start_time, "so.tilo.windows", "room-1"),
             None,
             "the authority record is single-use"
         );
@@ -3889,7 +3908,7 @@ mod tests {
         let pid = std::process::id();
         lock(&TRUSTED_SERVICE_LAUNCHES).clear();
         assert_eq!(
-            attest_trusted_service_launch_for_pid(pid, "dev.tilo.agent", "room-1"),
+            attest_trusted_service_launch_for_pid(pid, "so.tilo.agent", "room-1"),
             None,
             "a direct tilo-launcher invocation must not mint the shell's one-shot authority"
         );
@@ -4010,7 +4029,7 @@ mod tests {
         assert_eq!(projection.file_name().unwrap(), TRUSTED_IDENTITIES_FILE);
         assert!(projection.starts_with(tmp.path()));
 
-        let other = test_app("dev.tilo.contacts");
+        let other = test_app("so.tilo.contacts");
         let mut other_command = command.clone();
         other_command.args.truncate(position);
         attach_trusted_identities_projection(&other, room, &mut other_command).unwrap();

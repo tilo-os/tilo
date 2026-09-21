@@ -14,7 +14,7 @@ fn set_payload(payload: &LocalState<String>, value: String) {
 )]
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
-    let payload = LocalState::new(String::from("https://tilo.dev"));
+    let payload = LocalState::new(String::from("https://tilo.so"));
     let output = ModelView::from_state(&payload, |payload| {
         let alt =
             ui::i18n::I18nManager::format("qr-output-alt", &[("payload", payload.as_str().into())]);
@@ -52,7 +52,7 @@ pub fn app_root() -> Box<dyn Widget> {
     let reset_binding = tilo_actions::ActionBinding::static_json_for(
         &resource,
         "set-payload",
-        serde_json::Map::from_iter([("payload".into(), serde_json::json!("https://tilo.dev"))]),
+        serde_json::Map::from_iter([("payload".into(), serde_json::json!("https://tilo.so"))]),
     )
     .expect("generated default payload matches the exported QR action");
     let reset = Button::new("qr-reset", "Reset QR code", None).on_action(reset_binding);

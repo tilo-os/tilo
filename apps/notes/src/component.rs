@@ -8,7 +8,7 @@ use ui::widget::IconDescriptor;
 
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
     std::sync::LazyLock::new(|| ApplicationDefinition {
-        app_id: "dev.tilo.notes",
+        app_id: "so.tilo.notes",
         title: "Notes",
         icon: IconDescriptor::Named("notes".into()),
         record_kind: RecordKind::new("notes.notebook"),

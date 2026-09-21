@@ -11,7 +11,7 @@
 //!
 //! ```ignore
 //! if let Some(spec) = ui::headless::spec_from_args(&args) {
-//!     std::process::exit(ui::headless::run(spec, my_app::app_root(), "dev.tilo.my-app"));
+//!     std::process::exit(ui::headless::run(spec, my_app::app_root(), "so.tilo.my-app"));
 //! }
 //! ```
 //!
@@ -9071,7 +9071,7 @@ mod tests {
     #[test]
     fn late_record_intent_uses_record_store_and_preserves_room_index() {
         const CHILD: &str = "TILO_LATE_RECORD_TEST_CHILD";
-        const PACKAGE: &str = "dev.tilo.late-record-test";
+        const PACKAGE: &str = "so.tilo.late-record-test";
         if let Ok(case) = std::env::var(CHILD) {
             use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet};
             use automerge::ReadDoc;
@@ -9230,7 +9230,7 @@ mod tests {
     #[test]
     fn automatic_record_restarts_keep_distinct_index_and_record_authors_and_fail_closed() {
         const CHILD: &str = "TILO_RECORD_RESTART_TEST_CHILD";
-        const PACKAGE: &str = "dev.tilo.record-restart-test";
+        const PACKAGE: &str = "so.tilo.record-restart-test";
         const ROOM: &str = "33333333-3333-4333-8333-333333333333";
         if std::env::var_os(CHILD).is_some() {
             use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet};
@@ -9451,21 +9451,10 @@ mod a11y_driver_tests {
             _pr: &PresenceCtx,
         ) {
         }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the fixture implements the fixed Widget::handle_event trait signature"
-        )]
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _n: NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -9776,23 +9765,11 @@ mod undo_driver_tests {
         ) {
         }
 
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the fixture implements the fixed Widget::handle_event trait signature"
-        )]
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            doc: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            handled: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
+
+            let doc = &mut *ctx.state;
+            let handled = &mut *ctx.handled;
             let WindowEvent::KeyboardInput { event: ke, .. } = event else {
                 return;
             };
@@ -10068,22 +10045,9 @@ mod dispatched_action_driver_tests {
         ) {
         }
 
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the fixture implements the fixed Widget::handle_event trait signature"
-        )]
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            doc: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            handled: &mut bool,
-            _ft: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+            let doc = &mut *ctx.state;
+            let handled = &mut *ctx.handled;
             let WindowEvent::KeyboardInput { event: ke, .. } = event else {
                 return;
             };

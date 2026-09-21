@@ -46,7 +46,7 @@ pub static SCHEMA: HistoryRestoreSchema = HistoryRestoreSchema {
 };
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.containers",
+    app_id: "so.tilo.containers",
     scopes: &[HistoryScopeDefinition {
         key: "create",
         title: "Container draft",

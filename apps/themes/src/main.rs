@@ -43,7 +43,7 @@ pub fn main() {
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.themes", themes::app_root)
+    LaunchSpec::new("so.tilo.themes", themes::app_root)
         .history(&themes::framework_history::HISTORY)
         .shot_root(shot_root)
         .configure_app(|app| themes::actions::register(app.action_registry_mut()))

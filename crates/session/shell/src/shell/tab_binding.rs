@@ -698,7 +698,7 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
 /// Turn a wayland app-id into a tab-bar label. The app's own name wins (this session's
 /// launches, the installed package's manifest, or a host `.desktop` entry), since a tab must
 /// never show a raw machine identifier. Otherwise the trailing component is humanised
-/// (`dev.tilo.word-processor` → `Word Processor`), the same transform the package registry
+/// (`so.tilo.word-processor` → `Word Processor`), the same transform the package registry
 /// applies. Shared with window cards, so an app is never named two different ways.
 pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
     if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
@@ -808,7 +808,7 @@ mod tests {
                 id: next_id(),
                 title: "Word Processor".into(),
                 tile: TileContent::PeerWindow {
-                    app_id: "dev.tilo.word-processor".into(),
+                    app_id: "so.tilo.word-processor".into(),
                     label: "Word Processor".into(),
                     note: "Opening here…".into(),
                 },
@@ -825,10 +825,10 @@ mod tests {
             .sum();
 
         crate::shell::launcher::set_pending_placement(
-            "dev.tilo.word-processor",
+            "so.tilo.word-processor",
             Placement::IntoTab(target),
         );
-        let landed = adopt_toplevel(&mut tree, 7777, Some("dev.tilo.word-processor".into()));
+        let landed = adopt_toplevel(&mut tree, 7777, Some("so.tilo.word-processor".into()));
 
         assert_eq!(
             landed, target,
@@ -850,7 +850,7 @@ mod tests {
         );
         match &tab_of(&tree, 7777).tile {
             TileContent::Foreign { app_id, surface_id } => {
-                assert_eq!(app_id, "dev.tilo.word-processor");
+                assert_eq!(app_id, "so.tilo.word-processor");
                 assert_eq!(*surface_id, 7777);
             }
             other => panic!("the tab must now host the real surface, got {other:?}"),
@@ -929,11 +929,11 @@ mod tests {
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
 
         crate::shell::launcher::set_pending_placement(
-            "dev.tilo.gone",
+            "so.tilo.gone",
             // An id no tab in the tree carries.
             Placement::IntoTab(next_id()),
         );
-        let landed = adopt_toplevel(&mut tree, 7878, Some("dev.tilo.gone".into()));
+        let landed = adopt_toplevel(&mut tree, 7878, Some("so.tilo.gone".into()));
 
         assert_eq!(
             tree.workspaces[0].strips[0].window_groups.len(),
@@ -1176,7 +1176,7 @@ mod tests {
         };
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
 
-        launcher::set_pending_placement("dev.tilo.placefixture", Placement::TabIn(named));
+        launcher::set_pending_placement("so.tilo.placefixture", Placement::TabIn(named));
         // The client announces the bare trailing component, as the reverse-DNS convention has it.
         let _ = adopt_toplevel(&mut tree, 8080, Some("placefixture".into()));
         assert_eq!(
@@ -1231,7 +1231,7 @@ mod tests {
         let mut rendered = protocol.clone();
         let groups_before = rendered.workspaces[0].strips[0].window_groups.len();
 
-        launcher::set_pending_placement("dev.tilo.twotrees", Placement::TabIn(opener));
+        launcher::set_pending_placement("so.tilo.twotrees", Placement::TabIn(opener));
 
         // Protocol side adopts first, then the rendered tree mirrors it.
         let _ = adopt_toplevel(&mut protocol, 4711, Some("twotrees".into()));
@@ -1364,7 +1364,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         tree.persist_path = Some(state_path.clone());
         let (strip_id, prior_group) = focus_lone_window(&mut tree);
-        const PACKAGE: &str = "dev.tilo.failed-host";
+        const PACKAGE: &str = "so.tilo.failed-host";
         const SURFACE: u64 = 0xface;
 
         crate::shell::launcher::set_pending_placement(PACKAGE, Placement::NewGroup);
@@ -1432,7 +1432,7 @@ mod tests {
     fn failure_cleanup_never_closes_a_foreign_surface_that_painted() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_demo();
-        const PACKAGE: &str = "dev.tilo.painted-child";
+        const PACKAGE: &str = "so.tilo.painted-child";
         const SURFACE: u64 = 0xfade;
         crate::shell::launcher::set_pending_placement(PACKAGE, Placement::NewGroup);
         let tab = adopt_toplevel(&mut tree, SURFACE, Some(PACKAGE.into()));
@@ -1462,7 +1462,7 @@ mod tests {
     fn concurrent_same_package_failure_does_not_guess_which_foreign_tab_to_close() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_demo();
-        const PACKAGE: &str = "dev.tilo.concurrent-host";
+        const PACKAGE: &str = "so.tilo.concurrent-host";
         const SURFACE: u64 = 0xc0de;
         crate::shell::launcher::set_pending_placement(PACKAGE, Placement::NewGroup);
         let tab = adopt_toplevel(&mut tree, SURFACE, Some(PACKAGE.into()));
@@ -1656,7 +1656,7 @@ mod tests {
                         group: 0,
                         tab: 0,
                     },
-                    LaunchIntent::app("dev.tilo.browser").unwrap(),
+                    LaunchIntent::app("so.tilo.browser").unwrap(),
                     None,
                     ContinuityStamp {
                         counter: 10,
@@ -1666,11 +1666,11 @@ mod tests {
             },
         );
         crate::shell::launcher::set_pending_placement(
-            "dev.tilo.browser",
+            "so.tilo.browser",
             Placement::IntoTab(0x7171),
         );
         assert_eq!(
-            adopt_toplevel(&mut tree, 8080, Some("dev.tilo.browser".into())),
+            adopt_toplevel(&mut tree, 8080, Some("so.tilo.browser".into())),
             0x7171
         );
         assert!(!tree.continuation_tabs.contains(&0x7171));
@@ -1921,11 +1921,11 @@ mod tests {
         crate::shell::launcher::clear_launched_for_test();
 
         assert_eq!(
-            tab_label_for_foreign("dev.tilo.word-processor"),
+            tab_label_for_foreign("so.tilo.word-processor"),
             "Word Processor"
         );
         assert_eq!(
-            tab_label_for_foreign("dev.tilo.file-explorer"),
+            tab_label_for_foreign("so.tilo.file-explorer"),
             "File Explorer"
         );
         // The documented behaviour for an already-camel-cased id is unchanged.
@@ -1940,17 +1940,17 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn a_tab_takes_the_name_the_package_declares_even_without_a_launch() {
         let tmp = tempfile::tempdir().unwrap();
-        install_named(tmp.path(), "dev.tilo.file-explorer", "Files");
+        install_named(tmp.path(), "so.tilo.file-explorer", "Files");
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_launched_for_test();
 
-        assert_eq!(tab_label_for_foreign("dev.tilo.file-explorer"), "Files");
+        assert_eq!(tab_label_for_foreign("so.tilo.file-explorer"), "Files");
         // And by the trailing-component convention the app-id may use.
         assert_eq!(tab_label_for_foreign("file-explorer"), "Files");
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let _ = adopt_toplevel(&mut tree, 4242, Some("dev.tilo.file-explorer".to_string()));
+        let _ = adopt_toplevel(&mut tree, 4242, Some("so.tilo.file-explorer".to_string()));
         assert_eq!(
             tab_of(&tree, 4242).title,
             "Files",
@@ -2049,7 +2049,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn adopted_tab_takes_the_launched_app_name() {
         crate::shell::launcher::remember_launch(&crate::shell::launcher::InstalledApp {
-            package_id: "dev.tilo.adoptfixture".into(),
+            package_id: "so.tilo.adoptfixture".into(),
             display_name: "Adopt Fixture".into(),
             category: None,
             version: "0.1.0".into(),
@@ -2078,7 +2078,7 @@ mod tests {
         assert!(rename_tab_for_app_id(
             &mut tree,
             31338,
-            "dev.tilo.adoptfixture".into()
+            "so.tilo.adoptfixture".into()
         ));
         assert_eq!(tab_of(&tree, 31338).title, "Adopt Fixture");
     }
@@ -2168,7 +2168,7 @@ mod tests {
         let target_id = tree.workspaces[1].id;
 
         let tab =
-            adopt_toplevel_in_room(&mut tree, 8_888, Some("dev.tilo.notes".into()), target_room)
+            adopt_toplevel_in_room(&mut tree, 8_888, Some("so.tilo.notes".into()), target_room)
                 .expect("known room is accepted");
 
         assert_eq!(
@@ -2213,7 +2213,7 @@ mod tests {
             adopt_toplevel_in_room(
                 &mut tree,
                 9_999,
-                Some("dev.tilo.notes".into()),
+                Some("so.tilo.notes".into()),
                 crate::shell::state::RoomId::new()
             ),
             None

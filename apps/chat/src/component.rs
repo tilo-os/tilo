@@ -5,7 +5,7 @@ use ui::application::{
 use ui::{launch::LaunchError, record::RecordKind, widget::IconDescriptor};
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
     std::sync::LazyLock::new(|| ApplicationDefinition {
-        app_id: "dev.qos.chat",
+        app_id: "so.tilo.chat",
         title: "Chat",
         icon: IconDescriptor::Named("chat".into()),
         record_kind: RecordKind::new("chat.workspace"),

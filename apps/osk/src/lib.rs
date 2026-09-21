@@ -79,7 +79,7 @@
 /// Stable package/window identity. The compositor only promotes this id to
 /// the keyboard overlay when it also arrived on the private OSK Wayland
 /// socket; the string alone never grants input-method privileges.
-pub const KEYBOARD_APP_ID: &str = "dev.tilo.osk";
+pub const KEYBOARD_APP_ID: &str = "so.tilo.osk";
 
 pub mod dict;
 pub mod futo;

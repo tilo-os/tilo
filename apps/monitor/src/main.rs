@@ -77,7 +77,7 @@ fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
 }
 
 fn launch_spec_base(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.monitor", root)
+    LaunchSpec::new("so.tilo.monitor", root)
         .shot_handler(render_shot)
         .scenarios(&[
             "detail",

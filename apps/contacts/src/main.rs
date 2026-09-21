@@ -191,7 +191,7 @@ fn render_shot_to_png(
 }
 
 fn launch_spec() -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.contacts", contacts::app_root)
+    LaunchSpec::new("so.tilo.contacts", contacts::app_root)
         .history(&contacts::framework_history::HISTORY)
         .shot_handler(shot_handler)
         .allowed_flags(&["--detail"])

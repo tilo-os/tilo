@@ -1,7 +1,7 @@
 name: Release / apps
 
 # PRs select affected apps without release-mode packaging. Main publishes only
-# affected qpkgs and reuses unchanged members of the prior immutable collection.
+# affected tapps and reuses unchanged members of the prior immutable collection.
 # Tags remain credential-free validation inputs only until a trusted
 # default-branch controller or server-enforced tag policy can authorize them.
 on:
@@ -244,6 +244,11 @@ jobs:
       publish: ${{ steps.plan.outputs.publish }}
       collection: ${{ steps.plan.outputs.collection }}
     steps:
+      - name: Disable automatic Git maintenance in the disposable job container
+        # Git 2.54 maintenance can rewrite shallow history between fetches.
+        # Checkout copies this global config before its first fetch.
+        run: git config --global maintenance.auto false
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
@@ -379,7 +384,7 @@ jobs:
             args+=(--collection "${REQUESTED_COLLECTION:-default}")
           else
             # Main still publishes the default collection below. Select
-            # affected qpkgs here so unchanged immutable members can be reused.
+            # affected tapps here so unchanged immutable members can be reused.
             base='${{ github.event.pull_request.base.sha }}'
             [[ -n $base && $base != null ]] || base='${{ github.event.before }}'
             if [[ -z $base || $base == 0000000000000000000000000000000000000000 ]]; then
@@ -530,18 +535,18 @@ jobs:
           [[ ${#rows[@]} -eq 1 ]]
           read -r observed ref extra <<<"${rows[0]}"
           [[ -z ${extra:-} && $ref == refs/heads/main && $observed == "$GITHUB_SHA" ]]
-      - name: Build and verify selected qpkgs once for this architecture
+      - name: Build and verify selected tapps once for this architecture
         env:
           TILO_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
-          QPKG_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.QPKG_PUBLISHER_IDENTITY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
         run: |
-          if [[ -n ${QPKG_PUBLISHER_IDENTITY:-} ]]; then
+          if [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]]; then
             identity="$RUNNER_TEMP/tilo-app-publisher.json"
-            (umask 077; printf '%s' "$QPKG_PUBLISHER_IDENTITY" > "$identity")
-            export QPKG_PUBLISHER_IDENTITY_FILE="$identity"
+            (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$identity")
+            export TAPP_PUBLISHER_IDENTITY_FILE="$identity"
           elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
-            printf 'QPKG_PUBLISHER_IDENTITY is required for publication\n' >&2
+            printf 'TAPP_PUBLISHER_IDENTITY is required for publication\n' >&2
             exit 1
           fi
           if [[ -n ${RUNTIME_BUNDLE_SIGNING_KEY:-} ]]; then
@@ -567,8 +572,8 @@ jobs:
             SCCACHE_RECACHE=1 dist/apps/package-apps.sh
           fi
           # The publish job reuses this already-built CLI to create signed
-          # registry mutations from the final qpkg bytes.
-          install -m 0755 target/release/tilo-pkg dist/app-release/tilo-pkg
+          # registry mutations from the final tapp bytes.
+          install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package
       - name: Generate unpublished receipt with canonical verifiers
         # Runs for publish=false too. Uses tools compiled by package-apps.sh;
         # adds no build, credentials, registry write or channel promotion.
@@ -577,7 +582,7 @@ jobs:
         run: |
           python3 tools/apps/create_app_receipt.py \
             --collection dist/app-release \
-            --pkg-binary target/release/tilo-pkg \
+            --pkg-binary target/release/tilo-app-package \
             --runtime-binary target/release/tilo-runtime-bundle \
             --signers dist/app-release/work/receipt-signers.json \
             --source-sha "$GITHUB_SHA" --architecture "$RECEIPT_ARCH"
@@ -585,13 +590,13 @@ jobs:
         with:
           name: tilo-apps-${{ matrix.arch }}
           path: |
-            dist/app-release/qpkg/*.qpkg
+            dist/app-release/tapp/*.tapp
             dist/app-release/runtime/**
             dist/app-release/SHA256SUMS
             dist/app-release/index.json
             dist/app-release/publication-receipt.json
             dist/app-release/verification-policy.json
-            dist/app-release/tilo-pkg
+            dist/app-release/tilo-app-package
           if-no-files-found: error
       - name: Report compiler-cache effectiveness
         if: always()
@@ -648,7 +653,7 @@ jobs:
             python3 -I tools/ci/python.py tools/assemble_verified_apps.py \
               --built "release/tilo-apps-$arch" --plan "$plan" --selected-apps "$SELECTED_APPS" \
               --output "dist/qualified-apps/$arch" --work "$RUNNER_TEMP/qualified-apps-$arch" \
-              --pkg-binary "$tools/tilo-pkg" --runtime-binary "$tools/tilo-runtime-bundle" \
+              --pkg-binary "$tools/tilo-app-package" --runtime-binary "$tools/tilo-runtime-bundle" \
               --trust-policy "$policy" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
               --source-sha "$GITHUB_SHA" --builder-image "$BUILDER_IMAGE" \
               --collection "$COLLECTION" --architecture "$arch" --intent "$COORDINATOR_INTENT" \
@@ -720,7 +725,7 @@ jobs:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release
-      - name: Publish reusable qpkgs and assemble immutable collections
+      - name: Publish reusable tapps and assemble immutable collections
         env:
           VERIFY_FINAL_RECEIPT: ${{ github.event.inputs.verify_final_receipt }}
           VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
@@ -736,8 +741,8 @@ jobs:
           PRIOR_ARM64_URL: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
           PRIOR_ARM64_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
-          TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL }}
-          QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}
+          TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
         run: |
           set -euo pipefail
           audience=$MAIN_AUDIENCE
@@ -755,7 +760,7 @@ jobs:
               --builder-image "$BUILDER_IMAGE" --output "$verifier_tools"
             python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
               --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" preflight \
-              --pkg-binary "$verifier_tools/tilo-pkg" --runtime-binary "$verifier_tools/tilo-runtime-bundle"
+              --pkg-binary "$verifier_tools/tilo-app-package" --runtime-binary "$verifier_tools/tilo-runtime-bundle"
           fi
           owner=${GITHUB_REPOSITORY%%/*}
           package_api="$GITHUB_SERVER_URL/api/packages/$owner/generic"
@@ -768,47 +773,68 @@ jobs:
           }
 
           # Every app/version/architecture is independently addressable. A
-          # one-app update uploads one qpkg; collection assembly below fetches
+          # one-app update uploads one tapp; collection assembly below fetches
           # all unchanged members instead of rebuilding them.
           upload_manifest="$RUNNER_TEMP/tilo-package-uploads.tsv"
           : > "$upload_manifest"
           for index in release/*/index.json; do
             while IFS=$'\t' read -r name version file; do
-              qpkg="${index%/index.json}/qpkg/$file"
-              test -f "$qpkg"
-              printf '%s\t%s\n' "$qpkg" \
+              tapp="${index%/index.json}/tapp/$file"
+              test -f "$tapp"
+              printf '%s\t%s\n' "$tapp" \
                 "$package_api/tilo-app-$name/$VERSION/$file" >> "$upload_manifest"
             done < <(jq -r '.apps[] | [.name,.version,.file] | @tsv' "$index")
           done
           TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
             tools/upload_immutable_packages.sh "$upload_manifest"
 
-          # Submit every newly built immutable qpkg to the signed registry.
-          # The request is signed by the same identity as the package; retries
-          # are idempotent and the registry's collector/publisher jobs perform
-          # independent verification before advancing the public snapshot.
+          # Product artwork is immutable alongside its tapp release.  The
+          # metadata builder always emits an accessible owned icon, and adds
+          # checked-in app screenshots where available, so a store card can
+          # never become a blank patch of UI again.
           registry_url=${TILO_REGISTRY_URL%/}
           [[ $registry_url == https://* && $registry_url != *'.svc.cluster.local'* ]] || {
             printf 'TILO_REGISTRY_URL must be a public HTTPS origin\n' >&2
             exit 1
           }
-          [[ -n ${QPKG_PUBLISHER_IDENTITY:-} ]] || {
-            printf 'QPKG_PUBLISHER_IDENTITY is required for registry publication\n' >&2
+          registry_metadata="$RUNNER_TEMP/tilo-registry-metadata"
+          registry_media="$RUNNER_TEMP/tilo-registry-media"
+          registry_apps=$(for index in release/*/index.json; do jq -r '.apps[].name' "$index"; done | sort -u | xargs)
+          [[ -n $registry_apps ]] || { printf 'no apps selected for registry metadata\n' >&2; exit 1; }
+          python3 -I tools/ci/python.py tools/apps/registry_metadata.py build \
+            --apps "$registry_apps" \
+            --media-base "$registry_url/artifacts/$owner/generic/tilo-app-metadata/$VERSION" \
+            --output "$registry_metadata" --media-output "$registry_media"
+          registry_media_uploads="$RUNNER_TEMP/tilo-registry-media-uploads.tsv"
+          : > "$registry_media_uploads"
+          while IFS= read -r media; do
+            printf '%s\t%s\n' "$registry_media/$media" \
+              "$package_api/tilo-app-metadata/$VERSION/$media" >> "$registry_media_uploads"
+          done < <(find "$registry_media" -maxdepth 1 -type f -printf '%f\n' | sort)
+          TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
+            tools/upload_immutable_packages.sh "$registry_media_uploads"
+
+          # Submit every newly built immutable tapp to the signed registry.
+          # The request is signed by the same identity as the package; retries
+          # are idempotent and the registry's collector/publisher jobs perform
+          # independent verification before advancing the public snapshot.
+          [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]] || {
+            printf 'TAPP_PUBLISHER_IDENTITY is required for registry publication\n' >&2
             exit 1
           }
           registry_identity="$RUNNER_TEMP/tilo-registry-publisher.json"
-          (umask 077; printf '%s' "$QPKG_PUBLISHER_IDENTITY" > "$registry_identity")
+          (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$registry_identity")
           trap 'rm -f "$registry_identity"' EXIT
           host_arch=$(uname -m)
           registry_cli=
           for index in release/*/index.json; do
             if [[ $(jq -er .architecture "$index") == "$host_arch" ]]; then
-              registry_cli="${index%/index.json}/tilo-pkg"
+              registry_cli="${index%/index.json}/tilo-app-package"
               break
             fi
           done
           [[ -n $registry_cli && -f $registry_cli ]] || {
-            printf 'no native tilo-pkg registry client artifact found for %s\n' "$host_arch" >&2
+            printf 'no native tilo-app-package registry client artifact found for %s\n' "$host_arch" >&2
             exit 1
           }
           chmod 0755 "$registry_cli"
@@ -816,61 +842,95 @@ jobs:
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           snapshot="$RUNNER_TEMP/tilo-registry-snapshot.json"
           response="$RUNNER_TEMP/tilo-registry-response.txt"
+          publication_plan="$RUNNER_TEMP/tilo-registry-publication.tsv"
+          : > "$publication_plan"
           for index in release/*/index.json; do
             arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
             while IFS=$'\t' read -r id name file; do
-              qpkg="${index%/index.json}/qpkg/$file"
-              qpkg_url="$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file"
-              accepted=false
-              for attempt in 1 2 3; do
-                curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
-                  --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
-                jq -e '.entries | type == "array"' "$snapshot" >/dev/null
-                matches=$(jq --arg id "$id" '[.entries[] | select(.package_id == $id)] | length' "$snapshot")
-                previous="$RUNNER_TEMP/tilo-registry-previous.json"
-                request="$RUNNER_TEMP/tilo-registry-request.json"
-                case "$matches" in
-                  0)
-                    "$registry_cli" entry --arch "$arch" --identity "$registry_identity" \
-                      --action add --url "$qpkg_url" "$qpkg" > "$request"
-                    ;;
-                  1)
-                    jq --arg id "$id" '.entries[] | select(.package_id == $id)' \
-                      "$snapshot" > "$previous"
-                    "$registry_cli" entry --arch "$arch" --identity "$registry_identity" \
-                      --action update --previous-entry "$previous" --url "$qpkg_url" \
-                      "$qpkg" > "$request"
-                    ;;
-                  *)
-                    printf 'registry snapshot contains duplicate package id %s\n' "$id" >&2
-                    exit 1
-                    ;;
-                esac
-                status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
-                  --retry 3 --retry-all-errors \
-                  --output "$response" --write-out '%{http_code}' --request POST \
-                  --header 'Content-Type: application/json' --data-binary "@$request" \
-                  "$registry_url/entries")
-                if [[ $status == 202 ]]; then
-                  accepted=true
-                  echo "::notice::submitted $id ($arch) to the Tilo registry"
-                  break
-                fi
-                # A concurrent publication can make the fetched predecessor
-                # stale. Re-read and regenerate the signed request before the
-                # next bounded attempt; all other failures remain visible.
-                [[ $status == 409 || $status == 429 || $status == 5?? ]] || {
-                  printf 'registry rejected %s with HTTP %s\n' "$id" "$status" >&2
-                  exit 1
-                }
-                sleep "$attempt"
-              done
-              [[ $accepted == true ]] || {
-                printf 'registry did not accept %s after bounded retries\n' "$id" >&2
-                exit 1
-              }
+              printf '%s\t%s\t%s\t%s\t%s\n' \
+                "$id" "$name" "$file" "$arch" "${index%/index.json}" >> "$publication_plan"
             done < <(jq -r '.apps[] | [.id,.name,.file] | @tsv' "$index")
           done
+          LC_ALL=C sort -t $'\t' -k1,1 -k4,4 -o "$publication_plan" "$publication_plan"
+
+          # One package id is one publisher-signed registry entry. Fold every
+          # architecture into that entry before POSTing so the registry never
+          # has to synthesize or re-sign publisher data. This also upgrades an
+          # already-published single-architecture entry append-only.
+          while IFS= read -r id; do
+            accepted=false
+            architectures=$(awk -F $'\t' -v id="$id" '$1 == id {print $4}' \
+              "$publication_plan" | paste -sd, -)
+            for attempt in 1 2 3; do
+              curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+                --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
+              jq -e '.entries | type == "array"' "$snapshot" >/dev/null
+              matches=$(jq --arg id "$id" '[.entries[] | select(.package_id == $id)] | length' "$snapshot")
+              previous="$RUNNER_TEMP/tilo-registry-previous.json"
+              aggregate="$RUNNER_TEMP/tilo-registry-aggregate.json"
+              request="$RUNNER_TEMP/tilo-registry-request.json"
+              rm -f "$previous" "$aggregate" "$request"
+              case "$matches" in
+                0) action=add ;;
+                1)
+                  action=update
+                  jq --arg id "$id" '.entries[] | select(.package_id == $id)' \
+                    "$snapshot" > "$previous"
+                  cp "$previous" "$aggregate"
+                  ;;
+                *)
+                  printf 'registry snapshot contains duplicate package id %s\n' "$id" >&2
+                  exit 1
+                  ;;
+              esac
+              while IFS=$'\t' read -r planned_id name file arch artifact_root; do
+                [[ $planned_id == "$id" ]] || continue
+                tapp="$artifact_root/tapp/$file"
+                metadata="$registry_metadata/$name.json"
+                test -f "$metadata"
+                tapp_url="$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file"
+                args=(entry --arch "$arch" --identity "$registry_identity" \
+                  --metadata "$metadata" --action "$action" --url "$tapp_url")
+                [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
+                "$registry_cli" "${args[@]}" "$tapp" > "$request"
+                jq -e --arg id "$id" '.entry | select(.package_id == $id)' \
+                  "$request" > "$aggregate.next"
+                mv "$aggregate.next" "$aggregate"
+              done < "$publication_plan"
+              [[ -s $request && -s $aggregate ]] || {
+                printf 'no registry artifacts planned for %s\n' "$id" >&2
+                exit 1
+              }
+              if [[ -f $previous ]] && jq -e -s '.[0] == .[1]' \
+                "$previous" "$aggregate" >/dev/null; then
+                accepted=true
+                echo "::notice::$id ($architectures) is already current in the Tilo registry"
+                break
+              fi
+              status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
+                --retry 3 --retry-all-errors \
+                --output "$response" --write-out '%{http_code}' --request POST \
+                --header 'Content-Type: application/json' --data-binary "@$request" \
+                "$registry_url/entries")
+              if [[ $status == 202 ]]; then
+                accepted=true
+                echo "::notice::submitted $id ($architectures) to the Tilo registry"
+                break
+              fi
+              # A concurrent publication can make the fetched predecessor
+              # stale. Re-read and regenerate the signed aggregate before the
+              # next bounded attempt; all other failures remain visible.
+              [[ $status == 409 || $status == 429 || $status == 5?? ]] || {
+                printf 'registry rejected %s with HTTP %s\n' "$id" "$status" >&2
+                exit 1
+              }
+              sleep "$attempt"
+            done
+            [[ $accepted == true ]] || {
+              printf 'registry did not accept %s after bounded retries\n' "$id" >&2
+              exit 1
+            }
+          done < <(cut -f1 "$publication_plan" | uniq)
 
           [[ -n ${COLLECTION:-} ]] || exit 0
           collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
@@ -881,8 +941,8 @@ jobs:
           channel_sha=
           for index in release/*/index.json; do
             arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
-            qpkg_dir="$RUNNER_TEMP/tilo-collection-$arch"
-            mkdir -p "$qpkg_dir"
+            tapp_dir="$RUNNER_TEMP/tilo-collection-$arch"
+            mkdir -p "$tapp_dir"
             prior_url=
             prior_sha=
             # Both continuous pushes and explicitly publishing manual runs on
@@ -896,22 +956,22 @@ jobs:
               esac
             fi
             TILO_PACKAGE_TOKEN="$jwt" tools/reuse_prior_app_collection.sh \
-              "$index" "$collection_plan" "$qpkg_dir" "$arch" "$prior_url" "$prior_sha"
+              "$index" "$collection_plan" "$tapp_dir" "$arch" "$prior_url" "$prior_sha"
             while IFS=$'\t' read -r name version; do
-              file="$name-$version-$arch.qpkg"
-              built="${index%/index.json}/qpkg/$file"
+              file="$name-$version-$arch.tapp"
+              built="${index%/index.json}/tapp/$file"
               if [[ -f $built ]]; then
-                find "$qpkg_dir" -maxdepth 1 -type f -name "$name-*-$arch.qpkg" -delete
-                cp "$built" "$qpkg_dir/$file"
+                find "$tapp_dir" -maxdepth 1 -type f -name "$name-*-$arch.tapp" -delete
+                cp "$built" "$tapp_dir/$file"
               fi
-              test -f "$qpkg_dir/$file" || {
+              test -f "$tapp_dir/$file" || {
                 printf 'collection member %s was neither rebuilt nor reusable\n' "$file" >&2
                 exit 1
               }
             done < <(jq -r '.catalog[] | [.name,.version] | @tsv' "$collection_plan")
             out="dist/app-collections/$arch"
             TILO_APP_COLLECTION_PLAN="$collection_plan" \
-              TILO_APP_ARCH="$arch" TILO_APP_QPKG_DIR="$qpkg_dir" \
+              TILO_APP_ARCH="$arch" TILO_APP_TAPP_DIR="$tapp_dir" \
               TILO_APP_RUNTIME_DIR="${index%/index.json}/runtime" \
               TILO_APP_COLLECTION_OUT="$out" SOURCE_DATE_EPOCH="$source_epoch" \
               dist/apps/assemble-collection.sh
@@ -922,7 +982,7 @@ jobs:
             if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
               python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
                 --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
-                --collection "$out" --pkg-binary "$verifier_tools/tilo-pkg" \
+                --collection "$out" --pkg-binary "$verifier_tools/tilo-app-package" \
                 --runtime-binary "$verifier_tools/tilo-runtime-bundle" \
                 --source-sha "$GITHUB_SHA" --architecture "$arch"
             fi

@@ -82,7 +82,7 @@ pub fn main() {
     }
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.browser", browser_root)
+        &LaunchSpec::new_with_args("so.tilo.browser", browser_root)
             .runtime_attachment(|args| !launch_browsing_mode(args).is_private())
             .shot_handler(render_shot)
             .open_state_with_args(open_browser_state)
@@ -304,7 +304,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
         ));
     }
 
-    let (state, autosave) = open_browser_state("dev.tilo.browser", args);
+    let (state, autosave) = open_browser_state("so.tilo.browser", args);
     let mode = prepare_launch(args).map_err(LaunchError::Operation)?.mode;
     let mut app = if mode.is_private() {
         ui::App::from_scoped_parts_local(wake_scope, state, Box::new(widget))
@@ -497,7 +497,7 @@ fn render_overlay_shot(
     let mut widget = BrowserWidget::new_headless();
     widget.debug_force_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/tilo/tilo".into(),
+            url: "https://github.com/qos/qos".into(),
             title: "Tilo on code.podesta.ai".into(),
             last_visit: 3,
             visit_count: 12,
@@ -533,7 +533,7 @@ fn render_suggestions_shot(out: &std::path::Path, args: &LaunchArgs) {
     let mut overlay = AddressSuggestions::new();
     overlay.set_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/tilo/tilo".into(),
+            url: "https://github.com/qos/qos".into(),
             title: "Tilo — code.podesta.ai".into(),
             last_visit: 3,
             visit_count: 12,
@@ -667,7 +667,8 @@ fn render_live_shot_to_png(
         widget.apply_layout(&taffy, child, Point::ORIGIN);
 
         if pip_probe_started && pip_request.is_none() {
-            pip_request = Widget::take_floating_surface_request(&mut widget);
+            pip_request =
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut widget);
         }
 
         let page = probe.state();

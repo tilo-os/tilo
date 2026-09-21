@@ -423,6 +423,25 @@ else
   bad "profile identity or locale is dropped before first boot"
 fi
 
+locale_catalog="$repo_root/os/usr/share/tilo/installer-locales.txt"
+locale_packs_complete=1
+while IFS= read -r locale; do
+  [ -n "$locale" ] || continue
+  language="${locale%%_*}"
+  awk -v package="glibc-langpack-$language" \
+    '$1 == package && $2 == "\\" { found = 1 } END { exit !found }' \
+    "$repo_root/os/Containerfile" || locale_packs_complete=0
+done < "$locale_catalog"
+if [ -s "$locale_catalog" ] \
+   && [ "$locale_packs_complete" -eq 1 ] \
+   && grep -Fq 'COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt' \
+      "$repo_root/os/Containerfile" \
+   && grep -Fq 'grep -Fxq -- "$LOCALE_VAL" "$LOCALE_CATALOG"' "$backend"; then
+  ok "every advertised install locale is shipped and revalidated by the privileged backend"
+else
+  bad "installation profiles can select locale data absent from the installed OS"
+fi
+
 if grep -Fq '"$DEPLOY_ETC/systemd/system/sshd.service"' "$backend" \
    && grep -Fq 'multi-user.target.wants/sshd.service' "$backend"; then
   ok "live-only SSH state is removed from the installed target"

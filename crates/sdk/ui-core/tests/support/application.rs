@@ -14,7 +14,7 @@ use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
 use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, NativeViewLifecycle, Widget};
 
-pub const APP: &str = "dev.tilo.application-probe";
+pub const APP: &str = "so.tilo.application-probe";
 pub const DEVICE: &str = "D";
 pub const ROOM: &str = "A";
 thread_local! {

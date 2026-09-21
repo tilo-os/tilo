@@ -18,8 +18,8 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::TileContent;
 use crate::widget::{
-    DEFAULT_STRIP_USABLE_PX, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor, TileHost, Widget,
-    WindowGroup, WindowWidth,
+    DEFAULT_STRIP_USABLE_PX, FloatingSurfaceProvider, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor,
+    TileHost, Widget, WindowGroup, WindowWidth,
 };
 
 /// Idle time before the strip snaps to the nearest group's left edge.
@@ -30,6 +30,14 @@ const SNAP_ANIM_MS: u32 = 200;
 /// matches `window_group.rs`'s spawn fade (420ms cubic-out), which runs
 /// at the same moment, so the two read as one event.
 const MAKE_SPACE_ANIM_MS: u32 = 420;
+
+/// Empty canvas kept after the final group at the legal end of a strip.
+/// A fifth of the viewport is enough breathing room to make the end legible
+/// without letting the focused app feel abandoned in the middle of the screen.
+const TRAILING_REVEAL_FRAC: f64 = 0.20;
+/// Maximum *additional* visual give while a three-finger pan pulls beyond a
+/// legal end. The shared rubber-band curve approaches this asymptotically.
+const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
 
 /// Touchpad px per wheel detent for the discrete jump gestures; also the
 /// scale for hi-res wheel notches reported as pixel deltas.
@@ -162,10 +170,12 @@ pub struct GroupRow {
     /// "drop here" here. Cleared on release or when no child is dragging.
     hover_gap_idx: Option<usize>,
     /// Horizontal scroll offset (px): each child renders at `-scroll_x`.
-    /// Clamped to `[0, max(0, content_w - viewport_w)]` after each layout.
+    /// At rest it is bounded by [`Self::pan_max_scroll_x`]; an active direct
+    /// gesture may hold a resisted transient value just outside either end.
     scroll_x: f64,
-    /// Absolute external viewport navigation stays bounded through geometry changes.
-    absolute_pan: bool,
+    /// Scroll offset at the start of the current direct-manipulation gesture.
+    /// Gesture updates carry total travel, so this remains fixed until End.
+    strip_pan_origin: Option<f64>,
     /// Total content width incl. gaps; cached so the wheel handler can
     /// clamp `scroll_x` without re-summing children.
     content_w: f64,
@@ -314,7 +324,7 @@ impl GroupRow {
             structure_dirty: false,
             hover_gap_idx: None,
             scroll_x: 0.0,
-            absolute_pan: false,
+            strip_pan_origin: None,
             content_w: 0.0,
             group_left_edges: Vec::new(),
             last_wheel_at: None,
@@ -635,6 +645,80 @@ impl GroupRow {
 
     pub fn max_scroll_x(&self) -> f64 {
         (self.content_w - self.rect.width()).max(0.0)
+    }
+
+    /// Furthest legal resting offset for direct strip panning. Unlike the
+    /// content-tight focus bound, this leaves a deliberate glimpse of canvas
+    /// after the final app. Content which already fits stays pinned at home.
+    pub fn pan_max_scroll_x(&self) -> f64 {
+        let viewport = self.rect.width().max(1.0);
+        (self.content_w + viewport * TRAILING_REVEAL_FRAC - viewport).max(0.0)
+    }
+
+    /// Rebase total-travel updates onto the strip's current visual position.
+    /// A fresh axis lock calls this even if a prior stream lost its End at a
+    /// lock/session boundary, preventing stale gesture state from jumping.
+    pub fn begin_strip_pan(&mut self) {
+        self.strip_pan_origin = Some(self.scroll_x);
+        self.snap_anim = None;
+        self.last_wheel_at = None;
+    }
+
+    /// Track a three-finger horizontal gesture in direct-manipulation space.
+    /// `travel` is total signed scroll travel since Begin (positive moves
+    /// toward later groups). Legal canvas tracks 1:1; beyond either end the
+    /// shared iOS-style curve supplies continuously increasing resistance.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the shared rubber-band token accepts f32 screen-pixel distances; viewport-sized \
+                  f64 values are safely representable at sub-pixel precision and the result is \
+                  immediately widened back into the row's f64 geometry"
+    )]
+    pub fn update_strip_pan(&mut self, travel: f64) -> bool {
+        let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
+        let requested = origin + travel;
+        let max = self.pan_max_scroll_x();
+        let reach = self.rect.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC;
+        let next = if requested < 0.0 {
+            -f64::from(crate::tokens::rubber_band(
+                (-requested) as f32,
+                reach as f32,
+            ))
+        } else if requested > max {
+            max + f64::from(crate::tokens::rubber_band(
+                (requested - max) as f32,
+                reach as f32,
+            ))
+        } else {
+            requested
+        };
+        if (next - self.scroll_x).abs() <= f64::EPSILON {
+            return false;
+        }
+        self.scroll_x = next;
+        self.scroll_dirty = true;
+        self.snap_anim = None;
+        self.last_wheel_at = None;
+        true
+    }
+
+    /// Release/cancel direct manipulation. In-range positions remain exactly
+    /// where the fingers left them; only elastic overpull settles to an end.
+    pub fn end_strip_pan(&mut self, now: Instant) -> bool {
+        self.strip_pan_origin = None;
+        let target = self.scroll_x.clamp(0.0, self.pan_max_scroll_x());
+        if (target - self.scroll_x).abs() <= 0.5 {
+            self.scroll_x = target;
+            return false;
+        }
+        self.snap_anim = Some(SnapAnim {
+            from: self.scroll_x,
+            to: target,
+            started: now,
+        });
+        self.last_wheel_at = None;
+        self.scroll_dirty = true;
+        true
     }
 
     /// A group focused the same frame it was spliced in hasn't been
@@ -1343,6 +1427,80 @@ impl GroupRow {
     }
 }
 
+impl FloatingSurfaceProvider for GroupRow {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        self.groups
+            .iter_mut()
+            .find_map(FloatingSurfaceProvider::take_floating_surface_request)
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+        self.groups
+            .iter_mut()
+            .find_map(FloatingSurfaceProvider::take_capture_studio_request)
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.groups
+            .iter_mut()
+            .flat_map(FloatingSurfaceProvider::take_floating_surface_source_updates)
+            .collect()
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::draw_floating_surfaces(
+                group,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::set_floating_surface_bounds(group, bounds);
+        }
+    }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        self.groups
+            .iter()
+            .flat_map(FloatingSurfaceProvider::floating_surface_presentations)
+            .collect()
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.groups
+            .iter()
+            .flat_map(FloatingSurfaceProvider::active_floating_surface_ids)
+            .collect()
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        for group in &mut self.groups {
+            FloatingSurfaceProvider::on_floating_surface_host_message(group, message);
+        }
+    }
+}
+
 impl Widget for GroupRow {
     // Modal capture and presentation polling follow visible content, never inactive tabs.
     fn modal_capture(&self) -> Option<Rect> {
@@ -1678,21 +1836,12 @@ impl Widget for GroupRow {
         if self.shift_hold.is_none() && self.shift_anim.is_some() && self.shift_anim_t() >= 1.0 {
             self.shift_anim = None;
         }
-        // Same widened upper bound the wheel handler uses (max_scroll_x
-        // OR three viewports past the rightmost group) — clamping to
-        // `max_scroll_x` alone would reset scroll every frame on a
-        // single-group strip, killing the "scroll into empty space" feel.
-        let viewport = self.rect.width().max(1.0);
-        let upper = if self.absolute_pan {
-            self.max_scroll_x()
-        } else {
-            self.max_scroll_x().max(viewport * 3.0)
-        };
-        if self.scroll_x > upper {
-            self.scroll_x = upper;
-        }
-        if self.scroll_x < 0.0 {
-            self.scroll_x = 0.0;
+        // Preserve transient rubber-band travel while fingers are down or a
+        // release settle is in flight. At rest, geometry changes clamp to the
+        // deliberate trailing allowance instead of the old three-viewports
+        // of unbounded empty canvas.
+        if self.strip_pan_origin.is_none() && self.snap_anim.is_none() {
+            self.scroll_x = self.scroll_x.clamp(0.0, self.pan_max_scroll_x());
         }
         if spans_aligned {
             self.reframe_on_geometry_change(spans);
@@ -1866,66 +2015,12 @@ impl Widget for GroupRow {
         self.rect
     }
 
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        self.groups
-            .iter_mut()
-            .find_map(super::Widget::take_floating_surface_request)
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
     }
 
-    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
-        self.groups
-            .iter_mut()
-            .find_map(super::Widget::take_capture_studio_request)
-    }
-
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        self.groups
-            .iter_mut()
-            .flat_map(super::Widget::take_floating_surface_source_updates)
-            .collect()
-    }
-
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        for group in &mut self.groups {
-            group.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
-        for group in &mut self.groups {
-            group.set_floating_surface_bounds(bounds);
-        }
-    }
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-        self.groups
-            .iter()
-            .flat_map(super::Widget::floating_surface_presentations)
-            .collect()
-    }
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.groups
-            .iter()
-            .flat_map(super::Widget::active_floating_surface_ids)
-            .collect()
-    }
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &crate::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        for group in &mut self.groups {
-            group.on_floating_surface_host_message(message);
-        }
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -2049,8 +2144,8 @@ impl Widget for GroupRow {
         let own = std::mem::take(&mut self.structure_dirty);
         #[allow(
             clippy::unnecessary_fold,
-            reason = "Every group must clear its structure-dirty flag even when an earlier group already reported a change."
-        )] // see comment above: must not short-circuit
+            reason = "all child dirty flags must be drained without short-circuiting"
+        )]
         let children = self
             .groups
             .iter_mut()
@@ -4378,76 +4473,89 @@ mod tests {
     }
 
     #[test]
-    fn absolute_pan_is_finite_bounded_and_preserves_group_geometry() {
-        let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
-        let before = row
-            .groups
-            .iter()
-            .map(WindowGroup::get_rect)
-            .collect::<Vec<_>>();
-        let content = row.content_width();
-        let max = row.max_scroll_x();
-        assert!(max > 0.0, "test requires a real overflowing strip");
-        row.snap_anim = Some(SnapAnim {
-            from: 0.0,
-            to: max,
-            started: Instant::now(),
-        });
-        row.last_wheel_at = Some(Instant::now());
-        assert!(!row.pan_to(f64::NAN));
-        assert_eq!(row.scroll_x(), 0.0, "invalid pan cannot move the strip");
-        assert!(
-            row.snap_anim.is_some(),
-            "invalid pan cannot cancel existing presentation state"
-        );
-        assert!(row.pan_to(max + 500.0));
-        assert_eq!(row.scroll_x(), max);
-        assert!(row.snap_anim.is_none());
-        assert!(row.last_wheel_at.is_none());
-        row.apply_layout(&taffy, root, Point::ORIGIN);
+    fn direct_pan_keeps_a_fifth_viewport_after_the_last_app() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        row.set_content_w_for_test(2200.0);
+
         assert_eq!(
-            row.content_width(),
-            content,
-            "panning cannot resize strip content"
-        );
-        for (was, group) in before.iter().zip(&row.groups) {
-            let now = group.get_rect();
-            assert_eq!(now.width(), was.width(), "panning cannot resize a group");
-            assert_eq!(now.height(), was.height(), "panning cannot resize a group");
-            assert!(
-                now.x0 < was.x0,
-                "panning right moves real group rectangles left"
-            );
-        }
-        row.tick_snap_at(Instant::now() + Duration::from_secs(1));
-        assert_eq!(
-            row.scroll_x(),
-            max,
-            "a cancelled snap cannot override manual pan"
-        );
-        // Removing windows changes the real content range; an absolute pan
-        // clamps to that range instead of snapping back to the selected card.
-        row.groups.truncate(3);
-        let mut resized = TaffyTree::new();
-        let theme = Theme::dark();
-        let root = row.build_layout(&mut resized, &theme, &mut HashMap::new());
-        resized
-            .compute_layout(
-                root,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(1200.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-            )
-            .unwrap();
-        row.apply_layout(&resized, root, Point::ORIGIN);
-        assert_eq!(
-            row.scroll_x(),
             row.max_scroll_x(),
-            "geometry clamps a manual pan to its new end"
+            1200.0,
+            "focus-follow stays content-tight"
         );
-        assert!(row.pan_to(-500.0));
-        assert_eq!(row.scroll_x(), 0.0);
+        assert_eq!(
+            row.pan_max_scroll_x(),
+            1400.0,
+            "direct pan reveals 20% of the viewport beyond the last app"
+        );
+
+        row.set_content_w_for_test(700.0);
+        assert_eq!(
+            row.pan_max_scroll_x(),
+            0.0,
+            "a strip which already fits must not drift into empty canvas"
+        );
+    }
+
+    #[test]
+    fn direct_pan_tracks_reversals_and_only_settles_elastic_overpull() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        row.set_content_w_for_test(2200.0);
+
+        assert!(row.update_strip_pan(450.0));
+        assert!((row.scroll_x() - 450.0).abs() < 0.01);
+        assert!(row.update_strip_pan(320.0));
+        assert!(
+            (row.scroll_x() - 320.0).abs() < 0.01,
+            "total gesture travel must reverse without rebasing its origin"
+        );
+        assert!(
+            !row.end_strip_pan(Instant::now()),
+            "an in-range release must not snap away from the fingers"
+        );
+        assert!((row.scroll_x() - 320.0).abs() < 0.01);
+
+        // A new physical stream explicitly rebases, so a missing End at a
+        // lock/session boundary cannot carry old total travel into it.
+        row.begin_strip_pan();
+        assert!(row.update_strip_pan(10.0));
+        assert!((row.scroll_x() - 330.0).abs() < 0.01);
+        let _ = row.end_strip_pan(Instant::now());
+    }
+
+    #[test]
+    fn direct_pan_overpull_has_diminishing_gain_and_returns_to_resting_end() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        row.set_content_w_for_test(2200.0);
+        let end = row.pan_max_scroll_x();
+
+        assert!(row.update_strip_pan(end));
+        let mut previous = row.scroll_x();
+        let mut previous_gain = f64::INFINITY;
+        for extra in [100.0, 200.0, 300.0, 400.0] {
+            assert!(row.update_strip_pan(end + extra));
+            let gain = row.scroll_x() - previous;
+            assert!(
+                gain > 0.0 && gain < previous_gain,
+                "each equal pull must still move, but less than the one before: {gain} >= {previous_gain}"
+            );
+            assert!(
+                row.scroll_x() < end + 280.0,
+                "the 28%-viewport asymptote is never crossed"
+            );
+            previous = row.scroll_x();
+            previous_gain = gain;
+        }
+
+        let now = Instant::now();
+        assert!(row.end_strip_pan(now));
+        row.tick_snap_at(now + Duration::from_millis(u64::from(SNAP_ANIM_MS) + 1));
+        assert!(
+            (row.scroll_x() - end).abs() < 0.01,
+            "release must return exactly to the legal trailing rest"
+        );
     }
 
     #[test]

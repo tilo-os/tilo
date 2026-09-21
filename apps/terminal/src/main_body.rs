@@ -171,7 +171,7 @@ pub(crate) fn is_public_web_link(url: &str) -> bool {
         return false;
     }
     // An authority is required. A slash is optional (for example
-    // `https://tilo.example`), but a path cannot be mistaken for one.
+    // `https://example.test`), but a path cannot be mistaken for one.
     authority_and_path
         .split_once('/')
         .map_or(!authority_and_path.is_empty(), |(authority, _)| {

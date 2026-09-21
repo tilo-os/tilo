@@ -41,7 +41,7 @@ const GAP: f64 = 10.0;
 /// Returns the dismiss "×" rect when `dismissible`, else `Rect::ZERO`.
 #[allow(
     clippy::too_many_arguments,
-    reason = "shared banner painting combines render context with bounds, severity, icon, text and dismiss-button hover state"
+    reason = "the shared painter keeps scene, transform, text, theme and interaction state explicit"
 )]
 fn paint_banner(
     scene: &mut Scene,
@@ -301,7 +301,7 @@ impl Banner {
     /// pointer state; pass `hover` for the ×-hover tint.
     #[allow(
         clippy::too_many_arguments,
-        reason = "immediate banner painting forwards render context, content, bounds and dismissal state to the retained widget painter"
+        reason = "the immediate-mode API mirrors the shared banner painter inputs"
     )]
     pub fn paint(
         scene: &mut Scene,
@@ -687,7 +687,7 @@ mod tests {
     fn long_message_wraps_and_grows_to_its_painted_height() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let message = "qOS found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
+        let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
         let banner = Banner::warning("Your existing identity needs recovery").with_message(message);
         let width = 700.0;
         let height = banner.content_height(&theme, &mut text, width);

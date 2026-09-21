@@ -121,12 +121,12 @@ impl App {
         let joins = self.document_routes.reconcile(
             self.root_widget.as_ref(),
             witness,
-            self.autosave_generation,
+            self.persistence.autosave_generation,
             &self.state.doc,
         );
         // The exact live owner map exists before any join can deliver callbacks.
         for route in joins {
-            self.collab_manager.join_route(route);
+            self.collaboration.manager.join_route(route);
         }
         if self.document_sync_status() != before.as_deref() {
             self.layout.layout_dirty = true;
@@ -135,7 +135,7 @@ impl App {
     fn send_owned_document(&mut self, route: RouteSpec, request: CollabRequest) -> bool {
         #[cfg(test)]
         let observation = (route.clone(), request.clone());
-        if !self.collab_manager.try_send_to_route(route, request) {
+        if !self.collaboration.manager.try_send_to_route(route, request) {
             return false;
         }
         #[cfg(test)]
@@ -265,7 +265,7 @@ impl App {
                 self.action_publication_failure = Some(format!(
                     "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
                 ));
-                self.collab_manager.stop_after_publication_failure();
+                self.collaboration.manager.stop_after_publication_failure();
                 self.layout.layout_dirty = true;
                 false
             }
@@ -353,9 +353,10 @@ impl App {
     ) {
         // Before the first record checkout the launcher's unqualified route
         // carries room-index discovery, never the editable record document.
-        if self.records.is_some() && self.room_collab_manager.is_none() {
+        if self.persistence.records.is_some() && self.collaboration.room_manager.is_none() {
             if let Some(route) = self
-                .collab_manager
+                .collaboration
+                .manager
                 .primary_route()
                 .map(|witness| witness.route.clone())
             {
@@ -384,11 +385,13 @@ impl App {
             let active = !self.document_routes.retired_route(&witness.route)
                 && match witness.route.record.as_deref() {
                     Some(record) => self
+                        .persistence
                         .records
                         .as_ref()
                         .and_then(|set| set.active())
                         .is_some_and(|id| id.as_str() == record),
                     None => self
+                        .persistence
                         .records
                         .as_ref()
                         .is_none_or(|set| set.active().is_none()),

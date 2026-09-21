@@ -299,7 +299,7 @@ mod device_fabric_ui_tests {
                     local_can_control: false,
                 }],
                 local_media: vec![FabricMediaView {
-                    session_id: "dev.qos.video:7".into(),
+                    session_id: "so.tilo.video:7".into(),
                     title: "Shared film".into(),
                     playing: true,
                     has_video: true,
@@ -488,7 +488,7 @@ mod device_fabric_ui_tests {
         let actions = actions.borrow();
         assert!(actions.contains(&DeviceFabricUiAction::RouteLocalAudio { node_id: 41 }));
         assert!(actions.contains(&DeviceFabricUiAction::HandoffMedia {
-            session_id: "dev.qos.video:7".into(),
+            session_id: "so.tilo.video:7".into(),
             target: remote,
         }));
         assert!(actions.contains(&DeviceFabricUiAction::Place {
@@ -506,7 +506,7 @@ mod device_fabric_ui_tests {
         view.media_handoffs = vec![
             crate::shell::device_fabric_runtime::MediaHandoffStatusView {
                 request_id: [7; 16],
-                session_id: "dev.qos.video:7".into(),
+                session_id: "so.tilo.video:7".into(),
                 title: "Shared film".into(),
                 target: remote,
                 target_label: "Travel laptop".into(),
@@ -694,7 +694,7 @@ mod device_fabric_ui_tests {
             forwarding_id: [7; 16],
             controller_label: "Arcade controller".into(),
             source_label: "Travel laptop".into(),
-            app_id: "dev.qos.game".into(),
+            app_id: "so.tilo.game".into(),
         }];
         let actions = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&actions);
@@ -2366,7 +2366,8 @@ impl ShellOverlayHost {
         let rows: Vec<_> = self.group_row_ids.values().copied().collect();
         for row in rows {
             {
-                crate::shell::desktop_row_mut(self.content.as_mut(), row).draw_floating_surfaces(
+                ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+                    crate::shell::desktop_row_mut(self.content.as_mut(), row),
                     &mut workspace,
                     transform,
                     text_renderer,
@@ -3411,7 +3412,7 @@ impl ShellOverlayHost {
             .values()
             .flat_map(|ptr| {
                 let row: &GroupRow = crate::shell::desktop_row(self.content.as_ref(), *ptr);
-                Widget::active_floating_surface_ids(row)
+                ui::widget::FloatingSurfaceWidgetExt::active_floating_surface_ids(row)
             })
             .collect()
     }
@@ -3422,7 +3423,7 @@ impl ShellOverlayHost {
     ) {
         for &ptr in self.group_row_ids.values() {
             let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
-            Widget::on_floating_surface_host_message(row, message);
+            ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(row, message);
         }
     }
 
@@ -5864,6 +5865,47 @@ impl ShellOverlayHost {
         row.set_group_active_tab(group, tab)
     }
 
+    /// Directly pan the active strip from a three-finger gesture. Focus is
+    /// deliberately unchanged: moving the canvas and choosing an app are
+    /// separate operations, just as they are during a pointer drag.
+    pub fn update_active_strip_pan(&mut self, travel: f64, began: bool) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let strip = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.active_strip.get(&tree.active).copied()
+        };
+        let Some(strip) = strip else { return false };
+        let Some(&row_id) = self.group_row_ids.get(&strip) else {
+            return false;
+        };
+        let row = crate::shell::desktop_row_mut(self.content.as_mut(), row_id);
+        if began {
+            row.begin_strip_pan();
+        }
+        row.update_strip_pan(travel)
+    }
+
+    /// Finish direct strip manipulation and start a boundary settle only if
+    /// the fingers released in elastic overpull.
+    pub fn end_active_strip_pan(&mut self, now: Instant) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let strip = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.active_strip.get(&tree.active).copied()
+        };
+        let Some(strip) = strip else { return false };
+        let Some(&row_id) = self.group_row_ids.get(&strip) else {
+            return false;
+        };
+        crate::shell::desktop_row_mut(self.content.as_mut(), row_id).end_strip_pan(now)
+    }
+
     /// Moves focus one or more windows along the active strip — the single
     /// implementation behind keyboard, scroll, touchpad and modifier-wheel
     /// navigation, so they can't drift into models that disagree at group
@@ -6890,7 +6932,9 @@ impl ShellOverlayHost {
     fn harvest_floating_surface_requests(&mut self) {
         for &ptr in self.group_row_ids.values() {
             let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
-            if let Some(request) = Widget::take_floating_surface_request(row) {
+            if let Some(request) =
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(row)
+            {
                 let already_queued = self
                     .pending_floating_surfaces
                     .iter()
@@ -6905,7 +6949,9 @@ impl ShellOverlayHost {
     fn harvest_floating_surface_source_updates(&mut self) {
         for &ptr in self.group_row_ids.values() {
             let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
-            for update in Widget::take_floating_surface_source_updates(row) {
+            for update in
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_source_updates(row)
+            {
                 if let Some(existing) = self
                     .pending_floating_surface_updates
                     .iter_mut()
@@ -6926,7 +6972,8 @@ impl ShellOverlayHost {
         let mut requested = None;
         for &ptr in self.group_row_ids.values() {
             let row: &mut GroupRow = crate::shell::desktop_row_mut(self.content.as_mut(), ptr);
-            requested = requested.or_else(|| Widget::take_capture_studio_request(row));
+            requested = requested
+                .or_else(|| ui::widget::FloatingSurfaceWidgetExt::take_capture_studio_request(row));
         }
         if let Some(mode) = requested {
             let _ = self.open_capture_studio(mode);
@@ -12922,7 +12969,7 @@ impl ShellOverlayHost {
                     st.overlays.quick_settings = false;
                     st.bump();
                 }
-                (self.app_launcher)(chrome, "dev.qos.settings", "Settings");
+                (self.app_launcher)(chrome, "so.tilo.settings", "Settings");
                 // A missing Settings package is already reported by the
                 // ordinary launcher as an actionable failure notification.
                 // Workspace settings controls sharing, members and room
@@ -14625,7 +14672,7 @@ impl Widget for ShellOverlayHost {
                 // combined-output coordinate space. Push the real boundary
                 // before child layout so both sides resolve one identical
                 // rect on the ownership-transfer frame.
-                Widget::set_floating_surface_bounds(row, self.rect);
+                ui::widget::FloatingSurfaceWidgetExt::set_floating_surface_bounds(row, self.rect);
             }
         }
         let Ok(children) = taffy.children(node) else {
@@ -14756,7 +14803,8 @@ impl Widget for ShellOverlayHost {
         let rows: Vec<_> = self.group_row_ids.values().copied().collect();
         for row in rows {
             {
-                crate::shell::desktop_row_mut(self.content.as_mut(), row).draw_floating_surfaces(
+                ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+                    crate::shell::desktop_row_mut(self.content.as_mut(), row),
                     scene,
                     transform,
                     text_renderer,
@@ -24985,7 +25033,7 @@ mod palette_dispatch_tests {
     #[serial_test::serial(launch_events)]
     fn clean_launch_exit_retires_its_pending_open_notice() {
         let (mut host, chrome) = launch_lifecycle_host_with_chrome();
-        let package_id = "dev.qos.exit-before-window-fixture";
+        let package_id = "so.tilo.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,
             crate::compositor::tab_binding::Placement::NewGroup,
@@ -25125,7 +25173,7 @@ mod palette_dispatch_tests {
             Some(crate::shell::chrome_state::SearchResourceScope {
                 peer_id: 9,
                 cluster_id: "room".into(),
-                app_id: "dev.qos.reader".into(),
+                app_id: "so.tilo.reader".into(),
                 resource: "book:42".into(),
                 label: "Book of Tilo".into(),
             });
@@ -25585,7 +25633,7 @@ mod palette_dispatch_tests {
         drop(state);
         assert_eq!(
             launches.borrow().as_slice(),
-            &[("dev.qos.settings".into(), "Settings".into())],
+            &[("so.tilo.settings".into(), "Settings".into())],
             "the app-launch service receives the exact Personal Settings identity"
         );
     }
@@ -25998,7 +26046,7 @@ mod palette_dispatch_tests {
                 "Loading…",
             ))
         };
-        crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
+        crate::shell::catalogue::note_pending_notice("so.tilo.retirefixture", notice);
 
         assert!(
             !h.retire_notices_for_opened_windows(),
@@ -26024,7 +26072,7 @@ mod palette_dispatch_tests {
             crate::compositor::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
-                Some("dev.qos.retirefixture".to_string()),
+                Some("so.tilo.retirefixture".to_string()),
             );
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
@@ -26080,7 +26128,7 @@ mod palette_dispatch_tests {
                 "Loading…",
             ))
         };
-        crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
+        crate::shell::catalogue::note_pending_notice("so.tilo.retirefixture", notice);
 
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
@@ -26090,7 +26138,7 @@ mod palette_dispatch_tests {
             crate::compositor::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
-                Some("dev.qos.retirefixture".to_string()),
+                Some("so.tilo.retirefixture".to_string()),
             );
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
@@ -27976,7 +28024,7 @@ mod overlay_event_absorb_tests {
             Some(crate::shell::chrome_state::SearchResourceScope {
                 peer_id: 7,
                 cluster_id: "room:test".into(),
-                app_id: "dev.qos.reader".into(),
+                app_id: "so.tilo.reader".into(),
                 resource: "book:42".into(),
                 label: "Book of Tilo".into(),
             });
@@ -30786,7 +30834,7 @@ mod tests {
         use crate::shell::chrome_state::SearchScope;
 
         let tmp = tempfile::tempdir().unwrap();
-        install_gui_fixture(tmp.path(), "dev.qos.zzyzx", "Zzyzx");
+        install_gui_fixture(tmp.path(), "so.tilo.zzyzx", "Zzyzx");
         let previous_apps_data_dir = std::env::var_os("TILO_APPS_DATA_DIR");
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
@@ -30843,7 +30891,7 @@ mod tests {
                     .collect::<Vec<_>>()
             )
         });
-        assert_eq!(hit.id, "dev.qos.zzyzx");
+        assert_eq!(hit.id, "so.tilo.zzyzx");
         assert_eq!(hit.title, "Open Zzyzx");
 
         // SAFETY: restore the process-wide override before releasing the serial lock.
@@ -31895,7 +31943,7 @@ mod resync_strips_tests {
                             state.tree_mut().native_document_tabs.insert(
                                 tab,
                                 crate::shell::state::NativeDocumentReference {
-                                    provider_id: "dev.qos.notes".into(),
+                                    provider_id: "so.tilo.notes".into(),
                                     path: "/untouched/original.txt".into(),
                                 },
                             );

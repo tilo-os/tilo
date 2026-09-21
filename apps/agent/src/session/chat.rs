@@ -31,6 +31,15 @@ fn chat_reply_id(agent_id: &str, summons_id: &str) -> String {
     format!("agent-reply-{}", digest.0.simple())
 }
 
+fn matching_document_route(
+    contract: &'static AppContract,
+    cluster_id: &str,
+    artifact: collab_types::ArtifactId,
+) -> Option<&'static str> {
+    ui::application::first_party_app_id_lookup_candidates(contract.app_id)
+        .find(|app_id| artifact == collab_types::document_artifact_id(app_id, cluster_id, ""))
+}
+
 impl Session {
     /// The artifact id is part of the authenticated envelope, unlike a
     /// schema discovered by inspecting untrusted document contents.
@@ -98,13 +107,7 @@ impl Session {
             .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?;
         let cluster_id = self.cfg.cluster.to_string();
         let route_for = |contract: &'static AppContract| {
-            std::iter::once(contract.app_id)
-                .chain(ui::application::first_party_app_id_lookup_alias(
-                    contract.app_id,
-                ))
-                .find(|app_id| {
-                    envelope.artifact == collab_types::document_artifact_id(app_id, &cluster_id, "")
-                })
+            matching_document_route(contract, &cluster_id, envelope.artifact)
         };
         let chat_contract = surface::CONTRACTS
             .iter()
@@ -569,6 +572,27 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routed_document_lookup_returns_the_exact_authenticated_family_member() {
+        let contract = surface::for_namespace("photos").unwrap();
+        let cluster = "6a462c9b-9d6f-41f0-a0d4-3fe31b451102";
+        for route in ["dev.qos.photos", "dev.tilo.photos", "so.tilo.photos"] {
+            let artifact = collab_types::document_artifact_id(route, cluster, "");
+            assert_eq!(
+                matching_document_route(contract, cluster, artifact),
+                Some(route)
+            );
+        }
+        assert_eq!(
+            matching_document_route(
+                contract,
+                cluster,
+                collab_types::document_artifact_id("so.tilo.notes", cluster, "")
+            ),
+            None
+        );
+    }
 
     #[test]
     fn reply_id_is_bounded_canonical_and_tuple_stable() {

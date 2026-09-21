@@ -55,7 +55,7 @@ fn native_legacy_route_exact_owner_publication_and_repeat_idle_do_not_touch_sibl
     let original_a = a.snapshot();
     let original_b = b.snapshot();
     let outer = app.state.doc.save();
-    app.collab_manager = CollaborationManager::with_peer_transport(DocumentRouteTransport);
+    app.collaboration.manager = CollaborationManager::with_peer_transport(DocumentRouteTransport);
     app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: crate::collaboration::RouteSpec::app("controlled-shell", room),
         epoch: uuid::Uuid::new_v4(),
@@ -164,7 +164,7 @@ fn native_legacy_route_old_changed_and_noop_actionhost_edges_have_one_boundary_e
         for _ in 0..3 {
             assert!(
                 app.bindings
-                    .legacy_status(status_node, &app.local_author)
+                    .legacy_status(status_node, &app.collaboration.local_author)
                     .is_some()
             );
         }
@@ -591,7 +591,7 @@ fn round1_unique_component_bare(lazy: bool, duplicate: bool) {
     app.init_layout();
     let outer = app.state.doc.save();
     let before = sibling.snapshot();
-    let actor = app.local_author.0.clone();
+    let actor = app.collaboration.local_author.0.clone();
     let result =
         app.invoke_resource_action(&address(), None, &actor, false, false, None, None, None);
     if duplicate {

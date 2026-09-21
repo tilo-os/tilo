@@ -10,7 +10,7 @@ fn framework_history_real_root_declares_preferences() {
     let definition = keyboard
         .document_history_definition()
         .expect("real OSK root must declare History");
-    assert_eq!(definition.app_id, "dev.tilo.osk");
+    assert_eq!(definition.app_id, "so.tilo.osk");
     assert_eq!(definition.scopes.len(), 1);
     assert!(definition.scopes[0].content_schema.is_some());
 }

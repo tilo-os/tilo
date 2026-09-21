@@ -59,7 +59,7 @@ pub fn main() {
 }
 
 fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.backups", root)
+    LaunchSpec::new("so.tilo.backups", root)
         .shot_root(shot_root)
         .scenarios(&[
             "status",

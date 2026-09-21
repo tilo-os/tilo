@@ -33,7 +33,7 @@ use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 mod typed_peer;
 use typed_peer::{TypedPeer, document_mutation};
 
-const APP: &str = "dev.tilo.word-processor";
+const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 
 /// What the person types while the agent's app action is still in flight.

@@ -367,6 +367,12 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
             ("dev.tilo.word-processor", "place-image"),
             ("dev.tilo.photos", "rotate-right"),
             ("dev.tilo.photos", "export-edited-content"),
+            ("so.tilo.word-processor", "align-center"),
+            ("so.tilo.word-processor", "delete"),
+            ("so.tilo.word-processor", "insert-table"),
+            ("so.tilo.word-processor", "place-image"),
+            ("so.tilo.photos", "rotate-right"),
+            ("so.tilo.photos", "export-edited-content"),
         ],
     )
 }
@@ -449,15 +455,18 @@ pub fn spawn_with_agent_actions(
             )
             .expect("the harness owner admits an app fixture");
     }
-    // Integration fixtures exercise both currently launched Tilo routes and
-    // retained durable qOS routes. Grant each observed route explicitly: the
+    // Integration fixtures exercise the current canonical routes plus the
+    // retained Tilo and qOS routes. Grant each observed route explicitly: the
     // production capability check deliberately does not alias app authority.
     for (host, app) in [
         ("quinten", "dev.qos.chat"),
         ("quinten", "dev.qos.word-processor"),
         ("quinten", "dev.tilo.word-processor"),
+        ("quinten", "so.tilo.word-processor"),
         ("photos", "dev.tilo.photos"),
+        ("photos", "so.tilo.photos"),
         ("files", "dev.qos.file-explorer"),
+        ("files", "so.tilo.file-explorer"),
     ] {
         workspace
             .grant_as(

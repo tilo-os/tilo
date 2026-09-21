@@ -444,21 +444,10 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "The test widget must implement the complete Widget event-handler signature."
-        )]
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut AutoCommit,
-            _p: &ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<taffy::NodeId>,
-            _ni: taffy::NodeId,
-            _t: &TaffyTree<()>,
+            _event: &WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -646,7 +635,7 @@ mod tests {
         }
 
         let src = BrowserStub {
-            session: "tabs=[example.com, tilo.dev]; active=1".into(),
+            session: "tabs=[example.com, tilo.so]; active=1".into(),
         };
         let frozen = src.freeze();
 
@@ -655,7 +644,7 @@ mod tests {
         };
         dst.thaw(&frozen).expect("thaw the browser stub");
         assert_eq!(
-            dst.session, "tabs=[example.com, tilo.dev]; active=1",
+            dst.session, "tabs=[example.com, tilo.so]; active=1",
             "the non-CRDT state round-tripped through the serialize_state hook"
         );
 

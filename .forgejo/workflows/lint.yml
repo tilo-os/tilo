@@ -25,6 +25,11 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
+      - name: Disable automatic Git maintenance in the disposable job container
+        # Git 2.54 maintenance can rewrite shallow history between fetches.
+        # Checkout copies this global config before its first fetch.
+        run: git config --global maintenance.auto false
+
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

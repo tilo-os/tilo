@@ -1997,10 +1997,7 @@ impl FrameBuilder {
                 .unwrap_or_else(|| {
                     self.transient_overlays.push((
                         *surface_id,
-                        ForeignSurfaceWidget::new_floating(
-                            *surface_id,
-                            "dev.tilo.transient".into(),
-                        ),
+                        ForeignSurfaceWidget::new_floating(*surface_id, "so.tilo.transient".into()),
                     ));
                     self.transient_overlays.len().saturating_sub(1)
                 });

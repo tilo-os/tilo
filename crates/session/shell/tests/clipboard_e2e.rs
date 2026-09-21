@@ -3692,7 +3692,7 @@ fn spawn_word_processor(
         // What the launcher exports for a packaged app; `ui` announces it
         // as the Wayland app id, which is how the placement above is
         // matched to this window.
-        .env("TILO_PACKAGE_ID", "dev.tilo.word-processor")
+        .env("TILO_PACKAGE_ID", "so.tilo.word-processor")
         .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
         .env("XDG_CONFIG_HOME", compositor.runtime_dir.join("app-config"))
         .env("XDG_DATA_HOME", compositor.runtime_dir.join("app-data"))
@@ -3771,7 +3771,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     std::fs::write(&photo, TINY_PNG).expect("write the fixture image");
 
     let compositor = Compositor::start_with_home(Some(&home));
-    compositor.place_next_window("dev.tilo.word-processor");
+    compositor.place_next_window("so.tilo.word-processor");
 
     let (mut app, app_log) = spawn_word_processor(&compositor, &word_processor, &home);
     wait_for_word_processor_mapped(&compositor, &app_log);

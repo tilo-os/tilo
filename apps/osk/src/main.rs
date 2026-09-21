@@ -97,7 +97,7 @@ fn launch_spec() -> LaunchSpec {
 fn launch_spec_with_root(
     root: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>,
 ) -> LaunchSpec {
-    LaunchSpec::new_with_args("dev.tilo.osk", root)
+    LaunchSpec::new_with_args("so.tilo.osk", root)
         .history(&osk::framework_history::HISTORY)
         .shot_root(shot_root)
         .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
@@ -455,7 +455,7 @@ mod launch_tests {
         )
     }
     fn opener(app: &'static str) -> (ui::State, ui::persist::Autosave) {
-        assert_eq!(app, "dev.tilo.osk");
+        assert_eq!(app, "so.tilo.osk");
         OPENS.set(OPENS.get() + 1);
         let mut store = ui::persist::DocStore::open_canonical_at(
             app,

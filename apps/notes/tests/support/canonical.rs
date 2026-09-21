@@ -18,7 +18,7 @@ use ui::{
 };
 use uuid::Uuid;
 
-pub const PACKAGE: &str = "dev.tilo.notes";
+pub const PACKAGE: &str = "so.tilo.notes";
 pub const QOS_PACKAGE: &str = "dev.qos.notes";
 pub const ROOM: &str = "fixture-room";
 pub const LAUNCH_BODY: &str = "# Heading **one**\n\n## Heading *two*\n\n### Heading three\n\né **bold** *ital* `λ` [[Projects]] [[Empty]]\n\n- bullet\n\n  - nested\n\n1. numbered\n\n  1. nested number\n\n- [ ] todo\n\n  - [x] done\n\n```rust\nlet x = 1;\nlet y = 2;\n```\n\n```\nplain code\n```\n\n---\n";

@@ -24,7 +24,7 @@ pub struct InspectionPolicy {
 impl Default for InspectionPolicy {
     fn default() -> Self {
         Self {
-            max_package_bytes: app_registry::MAX_APP_QPKG_BYTES,
+            max_package_bytes: app_registry::MAX_APP_TAPP_BYTES,
             timeout: Duration::from_secs(30),
             allow_insecure_local: false,
         }
@@ -130,15 +130,15 @@ fn fetch_and_inspect(
     version: &RegistryVersion,
     policy: InspectionPolicy,
 ) -> Result<(InspectedVersion, Vec<u8>), BundleReviewError> {
-    if version.qpkg_size_bytes > policy.max_package_bytes {
+    if version.tapp_size_bytes > policy.max_package_bytes {
         return Err(BundleReviewError::TooLarge {
             version: version.version.clone(),
-            size: version.qpkg_size_bytes,
+            size: version.tapp_size_bytes,
             limit: policy.max_package_bytes,
         });
     }
-    let url = reqwest::Url::parse(&version.qpkg_url).map_err(|error| BundleReviewError::Url {
-        url: version.qpkg_url.clone(),
+    let url = reqwest::Url::parse(&version.tapp_url).map_err(|error| BundleReviewError::Url {
+        url: version.tapp_url.clone(),
         reason: error.to_string(),
     })?;
     let scheme_allowed =
@@ -149,32 +149,32 @@ fn fetch_and_inspect(
         || url.fragment().is_some()
     {
         return Err(BundleReviewError::Url {
-            url: version.qpkg_url.clone(),
+            url: version.tapp_url.clone(),
             reason: "expected HTTPS without credentials or a fragment".into(),
         });
     }
     let host = url.host_str().ok_or_else(|| BundleReviewError::Url {
-        url: version.qpkg_url.clone(),
+        url: version.tapp_url.clone(),
         reason: "host is missing".into(),
     })?;
     let port = url
         .port_or_known_default()
         .ok_or_else(|| BundleReviewError::Url {
-            url: version.qpkg_url.clone(),
+            url: version.tapp_url.clone(),
             reason: "port is missing".into(),
         })?;
     let addresses: Vec<SocketAddr> = (host, port)
         .to_socket_addrs()
         .map_err(|error| BundleReviewError::Resolve {
-            url: version.qpkg_url.clone(),
+            url: version.tapp_url.clone(),
             reason: error.to_string(),
         })?
         .collect();
     let Some(address) = addresses.first().copied() else {
-        return Err(BundleReviewError::PrivateAddress(version.qpkg_url.clone()));
+        return Err(BundleReviewError::PrivateAddress(version.tapp_url.clone()));
     };
     if !policy.allow_insecure_local && addresses.iter().any(|addr| !public_ip(addr.ip())) {
-        return Err(BundleReviewError::PrivateAddress(version.qpkg_url.clone()));
+        return Err(BundleReviewError::PrivateAddress(version.tapp_url.clone()));
     }
     // Pin the already-checked address to prevent DNS rebinding.
     let client = reqwest::blocking::Client::builder()
@@ -189,7 +189,7 @@ fn fetch_and_inspect(
         .map_err(|error| fetch_error(version, &error))?;
     if response.status().is_redirection() {
         return Err(BundleReviewError::Fetch {
-            url: version.qpkg_url.clone(),
+            url: version.tapp_url.clone(),
             reason: "redirects are not allowed during moderation review".into(),
         });
     }
@@ -201,7 +201,7 @@ fn fetch_and_inspect(
     }
     let read_limit = policy
         .max_package_bytes
-        .min(version.qpkg_size_bytes)
+        .min(version.tapp_size_bytes)
         .saturating_add(1);
     let mut bytes = Vec::new();
     response
@@ -209,7 +209,7 @@ fn fetch_and_inspect(
         .take(read_limit)
         .read_to_end(&mut bytes)
         .map_err(|error| BundleReviewError::Fetch {
-            url: version.qpkg_url.clone(),
+            url: version.tapp_url.clone(),
             reason: error.to_string(),
         })?;
     check_size(version, bytes.len() as u64, policy.max_package_bytes)?;
@@ -233,7 +233,7 @@ fn fetch_error(version: &RegistryVersion, error: &reqwest::Error) -> BundleRevie
         source = cause.source();
     }
     BundleReviewError::Fetch {
-        url: version.qpkg_url.clone(),
+        url: version.tapp_url.clone(),
         reason,
     }
 }
@@ -246,10 +246,10 @@ fn check_size(version: &RegistryVersion, actual: u64, limit: u64) -> Result<(), 
             limit,
         });
     }
-    if actual != version.qpkg_size_bytes {
+    if actual != version.tapp_size_bytes {
         return Err(BundleReviewError::SizeMismatch {
             version: version.version.clone(),
-            expected: version.qpkg_size_bytes,
+            expected: version.tapp_size_bytes,
             actual,
         });
     }
@@ -269,11 +269,7 @@ pub fn inspect_bytes(
 ) -> Result<InspectedVersion, BundleReviewError> {
     check_size(version, bytes.len() as u64, u64::MAX)?;
     let actual_hash = blake3::hash(bytes).to_hex().to_string();
-    if !version
-        .qpkg_blake3_hex
-        .as_ref()
-        .is_some_and(|expected| expected.eq_ignore_ascii_case(&actual_hash))
-    {
+    if !version.tapp_blake3_hex.eq_ignore_ascii_case(&actual_hash) {
         return Err(BundleReviewError::ContentHashMismatch {
             version: version.version.clone(),
         });
@@ -283,7 +279,7 @@ pub fn inspect_bytes(
             version: version.version.clone(),
             reason,
         })?;
-    let expected = format!("qpkg:{}", version.qpkg_root_hash_hex)
+    let expected = format!("tapp:{}", version.tapp_root_hash_hex)
         .parse()
         .map_err(|error| BundleReviewError::PackageId {
             version: version.version.clone(),
@@ -295,7 +291,7 @@ pub fn inspect_bytes(
             reason: error.to_string(),
         }
     })?;
-    let meta = app_registry::qpkg::load(bytes).map_err(|error| BundleReviewError::Verify {
+    let meta = app_registry::tapp::load(bytes).map_err(|error| BundleReviewError::Verify {
         version: version.version.clone(),
         reason: error.to_string(),
     })?;
@@ -314,15 +310,15 @@ pub fn inspect_bytes(
             expected_version: version.version.clone(),
         });
     }
-    let target = version
-        .target
-        .as_ref()
-        .ok_or_else(|| BundleReviewError::UnsupportedTarget {
+    let target = &version.target;
+    if target.platform != registry_types::TILO_OS_PLATFORM {
+        return Err(BundleReviewError::UnsupportedTarget {
             version: version.version.clone(),
-        })?;
+        });
+    }
     let architecture = match target.architecture.as_str() {
-        "x86_64" => pkg::manifest::Arch::X86_64,
-        "aarch64" => pkg::manifest::Arch::AArch64,
+        "x86_64" => tilo_app_package::manifest::Arch::X86_64,
+        "aarch64" => tilo_app_package::manifest::Arch::AArch64,
         _ => {
             return Err(BundleReviewError::UnsupportedTarget {
                 version: version.version.clone(),
@@ -394,36 +390,36 @@ fn public_v6(ip: Ipv6Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pkg::pack::{SigningIdentity, pack};
-    use pkg::{Manifest, MemoryBlobStore};
+    use tilo_app_package::pack::{SigningIdentity, pack};
+    use tilo_app_package::{Manifest, MemoryBlobStore};
 
     #[test]
     fn default_review_policy_enforces_the_app_limit_before_download() {
         let policy = InspectionPolicy::default();
-        assert_eq!(policy.max_package_bytes, app_registry::MAX_APP_QPKG_BYTES);
+        assert_eq!(policy.max_package_bytes, app_registry::MAX_APP_TAPP_BYTES);
 
-        let mut entry = sample_entry("https://example.com/app.qpkg");
-        entry.versions[0].qpkg_size_bytes = app_registry::MAX_APP_QPKG_BYTES + 1;
+        let mut entry = sample_entry("https://example.com/app.tapp");
+        entry.versions[0].tapp_size_bytes = app_registry::MAX_APP_TAPP_BYTES + 1;
         assert!(matches!(
             inspect_entry(&entry, policy),
             Err(BundleReviewError::TooLarge { limit, .. })
-                if limit == app_registry::MAX_APP_QPKG_BYTES
+                if limit == app_registry::MAX_APP_TAPP_BYTES
         ));
     }
 
     #[test]
     fn review_fetch_refuses_local_and_credentialed_urls_before_network_io() {
-        let mut entry = sample_entry("http://127.0.0.1/app.qpkg");
+        let mut entry = sample_entry("http://127.0.0.1/app.tapp");
         assert!(matches!(
             inspect_entry(&entry, InspectionPolicy::default()),
             Err(BundleReviewError::Url { .. })
         ));
-        entry.versions[0].qpkg_url = "https://user@example.com/app.qpkg".into();
+        entry.versions[0].tapp_url = "https://user@example.com/app.tapp".into();
         assert!(matches!(
             inspect_entry(&entry, InspectionPolicy::default()),
             Err(BundleReviewError::Url { .. })
         ));
-        entry.versions[0].qpkg_url = "https://127.0.0.1/app.qpkg".into();
+        entry.versions[0].tapp_url = "https://127.0.0.1/app.tapp".into();
         assert!(matches!(
             inspect_entry(&entry, InspectionPolicy::default()),
             Err(BundleReviewError::PrivateAddress(_))
@@ -443,12 +439,12 @@ mod tests {
     #[test]
     fn package_inspection_verifies_identity_manifest_and_size() {
         let identity = SigningIdentity::generate();
-        let (bytes, package_id) = signed_qpkg(&identity);
-        let mut entry = sample_entry("https://example.com/app.qpkg");
+        let (bytes, package_id) = signed_tapp(&identity);
+        let mut entry = sample_entry("https://example.com/app.tapp");
         entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
-        entry.versions[0].qpkg_root_hash_hex = hex::encode(package_id.as_bytes());
-        entry.versions[0].qpkg_size_bytes = bytes.len() as u64;
-        entry.versions[0].qpkg_blake3_hex = Some(blake3::hash(&bytes).to_hex().to_string());
+        entry.versions[0].tapp_root_hash_hex = hex::encode(package_id.as_bytes());
+        entry.versions[0].tapp_size_bytes = bytes.len() as u64;
+        entry.versions[0].tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
 
         let inspected = inspect_bytes(&entry, &entry.versions[0], &bytes).unwrap();
         assert_eq!(inspected.version, "1.0.0");
@@ -456,7 +452,7 @@ mod tests {
         assert_eq!(inspected.sandbox["landlock"], "strict");
 
         let mut wrong_size = entry.versions[0].clone();
-        wrong_size.qpkg_size_bytes += 1;
+        wrong_size.tapp_size_bytes += 1;
         assert!(matches!(
             inspect_bytes(&entry, &wrong_size, &bytes),
             Err(BundleReviewError::SizeMismatch { .. })
@@ -470,7 +466,7 @@ mod tests {
         ));
 
         let mut wrong_manifest = entry.clone();
-        wrong_manifest.package_id = "dev.tilo.other".into();
+        wrong_manifest.package_id = "so.tilo.other".into();
         assert!(matches!(
             inspect_bytes(&wrong_manifest, &wrong_manifest.versions[0], &bytes),
             Err(BundleReviewError::ManifestMismatch { .. })
@@ -480,32 +476,32 @@ mod tests {
     #[test]
     fn arm_artifact_inspection_binds_architecture_and_isa() {
         let identity = SigningIdentity::generate();
-        let (bytes, package_id) = signed_qpkg_arch(&identity, "aarch64 = \"v8.2-a\"");
-        let mut entry = sample_entry("https://example.com/arm.qpkg");
+        let (bytes, package_id) = signed_tapp_arch(&identity, "aarch64 = \"v8.2-a\"");
+        let mut entry = sample_entry("https://example.com/arm.tapp");
         entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
         let version = &mut entry.versions[0];
-        version.qpkg_root_hash_hex = hex::encode(package_id.as_bytes());
-        version.qpkg_size_bytes = bytes.len() as u64;
-        version.qpkg_blake3_hex = Some(blake3::hash(&bytes).to_hex().to_string());
-        let target = version.target.as_mut().unwrap();
+        version.tapp_root_hash_hex = hex::encode(package_id.as_bytes());
+        version.tapp_size_bytes = bytes.len() as u64;
+        version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+        let target = &mut version.target;
         target.architecture = "aarch64".into();
         target.isa = "aarch64-v8.2".into();
         assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
-        entry.versions[0].target.as_mut().unwrap().isa = "aarch64-v9".into();
+        entry.versions[0].target.isa = "aarch64-v9".into();
         assert!(matches!(
             inspect_bytes(&entry, &entry.versions[0], &bytes),
             Err(BundleReviewError::TargetMismatch { .. })
         ));
     }
 
-    fn signed_qpkg(identity: &SigningIdentity) -> (Vec<u8>, pkg::PackageId) {
-        signed_qpkg_arch(identity, "x86_64 = \"v3\"")
+    fn signed_tapp(identity: &SigningIdentity) -> (Vec<u8>, tilo_app_package::PackageId) {
+        signed_tapp_arch(identity, "x86_64 = \"v3\"")
     }
 
-    fn signed_qpkg_arch(
+    fn signed_tapp_arch(
         identity: &SigningIdentity,
         architecture: &str,
-    ) -> (Vec<u8>, pkg::PackageId) {
+    ) -> (Vec<u8>, tilo_app_package::PackageId) {
         let publisher = hex::encode(identity.public_key_bytes());
         let dir = tempfile::tempdir().unwrap();
         let payload = dir.path().join("payload");
@@ -514,7 +510,7 @@ mod tests {
         let manifest = Manifest::from_toml_str(&format!(
             r#"
 [package]
-id = "dev.tilo.editor"
+id = "so.tilo.editor"
 version = "1.0.0"
 kind = "app"
 
@@ -541,31 +537,37 @@ type = "gui"
         .unwrap();
         let mut store = MemoryBlobStore::new();
         let id = pack(&payload, &manifest, identity, &mut store).unwrap();
-        (app_registry::qpkg::write_bytes(id, &store).unwrap(), id)
+        (app_registry::tapp::write_bytes(id, &store).unwrap(), id)
     }
 
     fn sample_entry(url: &str) -> RegistryEntry {
         RegistryEntry {
-            package_id: "dev.tilo.editor".into(),
+            package_id: "so.tilo.editor".into(),
             name: "Editor".into(),
             description: "Text editor".into(),
+            tagline: "Edit together".into(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
+            supported_languages: vec!["en".into()],
             categories: vec!["Productivity".into()],
-            icon_url: None,
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: "aa".repeat(32),
             versions: vec![RegistryVersion {
                 version: "1.0.0".into(),
-                qpkg_url: url.into(),
-                qpkg_root_hash_hex: "bb".repeat(32),
-                qpkg_size_bytes: 10,
+                tapp_url: url.into(),
+                tapp_root_hash_hex: "bb".repeat(32),
+                tapp_size_bytes: 10,
                 released_at_unix: 1,
-                qpkg_blake3_hex: Some("cc".repeat(32)),
-                target: Some(registry_types::RegistryTarget {
+                tapp_blake3_hex: "cc".repeat(32),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
-                }),
+                },
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),

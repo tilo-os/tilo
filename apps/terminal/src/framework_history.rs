@@ -5,7 +5,7 @@ use ui::history_mode::{HistoryDefinition, HistoryPresentation, HistoryScopeDefin
 pub const LIMITATION: &str = "Terminal History cannot reconstruct or restore a live process, its PTY, or process-produced screen output.";
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.terminal",
+    app_id: "so.tilo.terminal",
     scopes: &[HistoryScopeDefinition {
         key: "process-output",
         title: "Process output (not recorded)",

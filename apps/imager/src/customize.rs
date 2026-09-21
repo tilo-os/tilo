@@ -38,7 +38,7 @@ use ui::tokens::Metrics;
 use ui::widget::{Button, ButtonFace, Dropdown, TextInput, Widget};
 
 use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
-use crate::model::{Filesystem, InstallProfile};
+use crate::model::{Filesystem, InstallProfile, installer_locales};
 use crate::rhythm::{GROUP, LABEL, RELATED, SECTION, SIBLING};
 
 // The panel's rhythm (HIG §7b) is the crate's (`crate::rhythm`): a caption
@@ -51,32 +51,6 @@ const FIELD_H: f64 = Metrics::BASE.bar_height as f64;
 /// The Preview button is a small secondary action: the minimum pointer target.
 const BUTTON_H: f64 = Metrics::BASE.min_pointer_target as f64;
 const EXPORT_LABEL: &str = "Preview embedded setup";
-
-const LOCALES: &[&str] = &[
-    "ar_SA.UTF-8",
-    "cs_CZ.UTF-8",
-    "da_DK.UTF-8",
-    "de_DE.UTF-8",
-    "en_GB.UTF-8",
-    "en_US.UTF-8",
-    "es_ES.UTF-8",
-    "fi_FI.UTF-8",
-    "fr_FR.UTF-8",
-    "it_IT.UTF-8",
-    "ja_JP.UTF-8",
-    "ko_KR.UTF-8",
-    "nb_NO.UTF-8",
-    "nl_NL.UTF-8",
-    "pl_PL.UTF-8",
-    "pt_BR.UTF-8",
-    "pt_PT.UTF-8",
-    "ru_RU.UTF-8",
-    "sv_SE.UTF-8",
-    "tr_TR.UTF-8",
-    "uk_UA.UTF-8",
-    "zh_CN.UTF-8",
-    "zh_TW.UTF-8",
-];
 
 const KEYBOARDS: &[(&str, &str)] = &[
     ("English (US)", "us"),
@@ -291,7 +265,7 @@ impl CustomizePanel {
             keyboard: field(),
             filesystem: field(),
             locale_choice: Dropdown::from_state(
-                LOCALES.iter().map(|value| (*value).to_string()).collect(),
+                installer_locales().map(str::to_string).collect(),
                 &locale_state,
             )
             .with_id("imager.locale.choice")
@@ -371,7 +345,9 @@ impl CustomizePanel {
                 .into_iter()
                 .find(|filesystem| filesystem.label() == displayed)
                 .map(|filesystem| filesystem.key().to_string()),
-            CzField::Locale => LOCALES.contains(&displayed).then(|| displayed.to_string()),
+            CzField::Locale => installer_locales()
+                .any(|locale| locale == displayed)
+                .then(|| displayed.to_string()),
             CzField::Timezone => Some(displayed.to_string()),
             _ => None,
         }
@@ -382,7 +358,7 @@ impl CustomizePanel {
             return false;
         };
         match f {
-            CzField::Locale => LOCALES.contains(&value),
+            CzField::Locale => installer_locales().any(|locale| locale == value),
             CzField::Timezone => self.timezone_catalog.iter().any(|zone| zone == value),
             CzField::Keyboard => keyboard_id(value).is_some(),
             CzField::Filesystem => Filesystem::all()
@@ -396,7 +372,9 @@ impl CustomizePanel {
     /// visible choosers expose. Free-text identity fields remain unchanged.
     pub(crate) fn canonical_value(&self, f: CzField, value: &str) -> Option<String> {
         match f {
-            CzField::Locale => LOCALES.contains(&value).then(|| value.to_string()),
+            CzField::Locale => installer_locales()
+                .any(|locale| locale == value)
+                .then(|| value.to_string()),
             CzField::Timezone => self
                 .timezone_catalog
                 .iter()

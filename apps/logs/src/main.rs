@@ -77,7 +77,7 @@ fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
 }
 
 fn launch_spec_base(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
-    LaunchSpec::new("dev.tilo.logs", root)
+    LaunchSpec::new("so.tilo.logs", root)
         .shot_root(shot_root)
         .allowed_flags(&[
             "--detail",

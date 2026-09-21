@@ -6,7 +6,7 @@ use ui::{launch::LaunchError, record::RecordKind, widget::IconDescriptor};
 
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
     std::sync::LazyLock::new(|| ApplicationDefinition {
-        app_id: "dev.qos.word-processor",
+        app_id: "so.tilo.word-processor",
         title: "Writer",
         icon: IconDescriptor::Glyph("󰈬"),
         record_kind: RecordKind::new("document"),

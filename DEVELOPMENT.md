@@ -29,7 +29,7 @@ intent. An authorized operator then runs this command from the `PodestaAI/infra`
 checkout:
 
 ```sh
-python scripts/run-qos-reviewed-merge.py PR FULL_HEAD_SHA --execute
+python scripts/run-tilo-reviewed-merge.py PR FULL_HEAD_SHA --execute
 ```
 
 It runs the deployed merge worker, which rechecks scope, current main, CI and
@@ -37,7 +37,7 @@ author intent before integration. This command accepts only changes classified
 into the protected scope. Review state does not change a PR's scope or queue
 priority.
 Direct merges do not bypass that worker.
-The [deployed admission policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json)
+The [deployed admission policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/tilo-merge-controller/policy.json)
 defines the protected paths and bounded dependency exceptions. The OpenH264
 source-order exception additionally requires its pinned provenance and native
 dependency check; it is not ordinary vendored-source admission. Symlinks,
@@ -65,8 +65,8 @@ for how selection and shared runtime compatibility interact. Use **Release / app
 dispatch for a development artifact, selecting the smallest applicable app and
 architecture set and leaving `publish` off unless publication is intended.
 
-The app registry is publicly reachable at `https://registry.podesta.ai`. Main-branch
-app publication now submits each newly built immutable qpkg to it; separate collector
+The app registry is publicly reachable at `https://apps.tilo.so`. Main-branch
+app publication now submits each newly built immutable tapp to it; separate collector
 and networkless signer jobs independently verify accepted requests before advancing
 the signed catalogue. Forgejo package publication remains a distinct artifact channel
 and alone does not make an app discoverable. See the [production roadmap](docs/ci-production-roadmap.md)
@@ -749,7 +749,7 @@ Tilo apps before installing the update.
 Clocks saves private device state under `%LOCALAPPDATA%/tilo/clocks.json` on
 Windows (an absolute `XDG_STATE_HOME` overrides that location). Its live startup
 restores that state; screenshot scenarios never save or consume shell commands.
-The installer registers `dev.tilo.clocks` on the Start menu shortcut and in the
+The installer registers `so.tilo.clocks` on the Start menu shortcut and in the
 current user's notification display-name registry. The SDK's `notifications`
 feature provides Windows toast submission and app-scoped history inspection.
 Alerts obey Windows notification settings and Do Not Disturb. Clocks hands timer
@@ -771,8 +771,8 @@ normal Clocks window; it does not yet focus an already-running instance. The
 registered command ignores URI contents rather than forwarding them as arguments.
 
 For device verification, build `cargo build --locked -p ui --example windows-host
---features notifications`. The helper accepts `history dev.tilo.clocks` to inspect
-only Clocks' notifications and `remove dev.tilo.clocks TAG` to dismiss one test
+--features notifications`. The helper accepts `history so.tilo.clocks` to inspect
+only Clocks' notifications and `remove so.tilo.clocks TAG` to dismiss one test
 notification. `show ID TAG TITLE BODY` exercises the production SDK API; Windows
 may reject a settings query before the app's first notification is submitted.
 `schedule ID TAG SECONDS TITLE BODY`, `scheduled ID` and `cancel ID TAG` exercise

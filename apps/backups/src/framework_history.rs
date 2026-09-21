@@ -58,7 +58,7 @@ pub static SCHEMA: HistoryRestoreSchema = HistoryRestoreSchema {
 };
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.backups",
+    app_id: "so.tilo.backups",
     scopes: &[HistoryScopeDefinition {
         key: "retention",
         title: "Retention policy",

@@ -57,7 +57,7 @@ static SCHEMA_NONE: HistoryRestoreSchema = schema::<0>();
 macro_rules! definition {
     ($name:ident,$mask:literal,$schema:ident) => {
         pub static $name: HistoryDefinition = HistoryDefinition {
-            app_id: "dev.tilo.osk",
+            app_id: "so.tilo.osk",
             scopes: &[HistoryScopeDefinition {
                 key: SCOPE,
                 title: "Keyboard preferences",

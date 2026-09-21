@@ -5,7 +5,7 @@ use ui::history_mode::{HistoryDefinition, HistoryPresentation, HistoryScopeDefin
 pub const LIMITATION: &str = "Video Player does not retain versions of media or an edit journal; recent media is device-local viewing history. Restore is unavailable.";
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.video-player",
+    app_id: "so.tilo.video-player",
     scopes: &[HistoryScopeDefinition {
         key: "media-versions",
         title: "Media versions (not recorded)",

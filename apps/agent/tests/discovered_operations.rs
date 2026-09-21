@@ -28,7 +28,7 @@ use uuid::Uuid;
 mod typed_peer;
 use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
-const APP: &str = "dev.tilo.word-processor";
+const APP: &str = "so.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -232,7 +232,7 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
         "Scribe: delete the image, then give this a title, then delete the image again",
     );
     let (mut replica, acted, invocation_actor) = run(
-        &[("dev.tilo.word-processor", "delete")],
+        &[("so.tilo.word-processor", "delete")],
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -314,7 +314,7 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let replica = seed_document_with_image("Scribe: insert a table, then insert a table again");
     let (mut replica, acted, invocation_actor) = run(
-        &[("dev.tilo.word-processor", "insert-table")],
+        &[("so.tilo.word-processor", "insert-table")],
         |sock, room| Config {
             endpoint: Some(sock),
             endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
@@ -412,7 +412,7 @@ fn connect_photo_editor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Auto
     send(
         &mut photo_peer,
         &CollabRequest::Hello {
-            app_id: "dev.tilo.photos".into(),
+            app_id: "so.tilo.photos".into(),
             cluster_id: room,
             record: None,
             handle: Some("photos".into()),
@@ -469,7 +469,7 @@ fn drive_photo_peer(
     let deadline = Instant::now() + Duration::from_secs(15);
     typed_peer::publish_actions(
         &mut photo_peer,
-        "dev.tilo.photos",
+        "so.tilo.photos",
         &photos_resources(&photo_replica),
     );
     send(

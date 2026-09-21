@@ -75,7 +75,7 @@ pub fn main() {
 fn launch_spec_with_root(
     root: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>,
 ) -> LaunchSpec {
-    LaunchSpec::new_with_args("dev.tilo.terminal", root)
+    LaunchSpec::new_with_args("so.tilo.terminal", root)
         .history(&terminal::framework_history::HISTORY)
         .live_handler(run_live)
         .shot_handler(run_shot)

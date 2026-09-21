@@ -91,7 +91,7 @@ fn controlled_real_root_declares_video_player_history() {
     let definition = controlled_root()
         .document_history_definition()
         .expect("controlled real root declares framework History");
-    assert_eq!(definition.app_id, "dev.tilo.video-player");
+    assert_eq!(definition.app_id, "so.tilo.video-player");
     assert_eq!(definition.scopes.len(), 1);
     let scope = &definition.scopes[0];
     assert_eq!(scope.key, "media-versions");

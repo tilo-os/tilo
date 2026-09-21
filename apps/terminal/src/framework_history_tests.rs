@@ -16,7 +16,7 @@ fn real_terminal_root_declares_truthful_external_process_output_history() {
     let definition = widget
         .document_history_definition()
         .expect("the real Terminal root must declare framework History");
-    assert_eq!(definition.app_id, "dev.tilo.terminal");
+    assert_eq!(definition.app_id, "so.tilo.terminal");
     assert_eq!(definition.scopes.len(), 1);
     let scope = &definition.scopes[0];
     assert_eq!(scope.key, "process-output");

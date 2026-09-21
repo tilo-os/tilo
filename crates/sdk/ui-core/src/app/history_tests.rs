@@ -364,7 +364,7 @@ impl RoutedOwners {
         state.doc.put(ROOT, "outer", "outer only").unwrap();
         state.commit_action(None, None);
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
-        app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
+        app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
         app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
             route: crate::collaboration::RouteSpec::app(
                 "outer-shell",
@@ -878,7 +878,7 @@ impl RoutedPrimary {
             State::new(),
             Box::new(crate::widget::BoundAppWidget { component }),
         );
-        app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
+        app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
         app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
@@ -1232,7 +1232,7 @@ fn native_owned_remote_delivery_preserves_pending_edits_until_normal_boundary() 
 fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
     use automerge::ReadDoc;
     let mut fixture = RoutedOwners::new();
-    fixture.app.collab_manager = CollaborationManager::disabled();
+    fixture.app.collaboration.manager = CollaborationManager::disabled();
     fixture.app.actions.bound_broker_route_for_test = None;
     fixture.app.refresh_document_routes();
     fixture
@@ -1257,7 +1257,7 @@ fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
             ),
             epoch: uuid::Uuid::new_v4(),
         });
-    fixture.app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
+    fixture.app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
     fixture.app.publish_owned_documents();
     let (_, request) = fixture
         .app
@@ -1858,7 +1858,7 @@ fn native_tile_effect_isolation(semantic: bool) {
         .push(Box::new(tiles.remove(0)));
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
     layout(&mut app);
-    let actor = app.local_author.0.clone();
+    let actor = app.collaboration.local_author.0.clone();
     app.invoke_resource_action(
         &tilo_actions::ActionAddress::new("first", "export"),
         None,
@@ -1988,7 +1988,7 @@ fn check_admitted_legacy_effect_owner_retirement(close: bool) {
     let pointer = std::ptr::from_mut(tile.as_mut());
     let mut app = App::new_with_controlled_inputs(State::new(), tile);
     layout(&mut app);
-    let actor = app.local_author.0.clone();
+    let actor = app.collaboration.local_author.0.clone();
     app.invoke_resource_action(
         &tilo_actions::ActionAddress::new("retained", "export"),
         None,
@@ -4096,9 +4096,9 @@ fn native_history_tab_shift_tab_release_and_ime_keep_pending_live_editor_isolate
             .unwrap()
             .owns_node(node, &app.layout.taffy)
     }));
-    app.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
+    app.input.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
     native_key(&mut app, "Tab");
-    app.modifiers = winit::event::Modifiers::default();
+    app.input.modifiers = winit::event::Modifiers::default();
     native_key(&mut app, "Tab");
     assert_eq!(
         app.focused_node, tabbed,

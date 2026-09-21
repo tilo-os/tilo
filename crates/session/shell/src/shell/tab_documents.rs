@@ -399,7 +399,7 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn a_frame_offers_every_open_tab_to_its_writer() {
-        const PACKAGE: &str = "dev.qos.test-frame-writeback";
+        const PACKAGE: &str = "so.tilo.test-frame-writeback";
 
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`.

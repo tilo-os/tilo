@@ -27,7 +27,7 @@ fn name(value: &str) -> EntryName {
 fn owner() -> FsOwner {
     FsOwner {
         workspace: "test-room".into(),
-        app_id: "dev.tilo.file-explorer".into(),
+        app_id: "so.tilo.file-explorer".into(),
     }
 }
 fn rights() -> Vec<FsRight> {

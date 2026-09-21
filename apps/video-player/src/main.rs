@@ -69,7 +69,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn launch_spec(root: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>) -> LaunchSpec {
-    LaunchSpec::new_with_args("dev.tilo.video-player", root)
+    LaunchSpec::new_with_args("so.tilo.video-player", root)
         .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
         .shot_handler(render_shot)
         .allowed_live_options(&["--open"])

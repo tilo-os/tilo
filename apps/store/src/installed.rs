@@ -122,7 +122,7 @@ mod tests {
         let _g = scoped(&td);
         let text = r#"
 [[entry]]
-id = "dev.tilo.notes"
+id = "so.tilo.notes"
 version = "0.1.0"
 package_id_hex = "abcdef"
 payload_root = "/var/tmp/notes"
@@ -134,7 +134,7 @@ attested_by = ""
 cli_commands = []
 
 [[entry]]
-id = "dev.tilo.terminal"
+id = "so.tilo.terminal"
 version = "0.2.0"
 package_id_hex = "beadfe"
 payload_root = "/var/tmp/term"
@@ -146,10 +146,10 @@ installed_at = 1_800_000_001
         std::fs::write(td.path().join("registry.toml"), text).unwrap();
         let entries = load_installed();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].id, "dev.tilo.notes");
+        assert_eq!(entries[0].id, "so.tilo.notes");
         assert_eq!(entries[0].version, "0.1.0");
         assert!(entries[0].pinned, "first entry is pinned = true");
-        assert_eq!(entries[1].id, "dev.tilo.terminal");
+        assert_eq!(entries[1].id, "so.tilo.terminal");
         assert!(!entries[1].pinned, "second entry is pinned = false");
     }
 }

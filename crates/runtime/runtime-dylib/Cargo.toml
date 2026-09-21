@@ -25,7 +25,7 @@ cli = { path = "../cli" }
 # app enables a UI feature absent here, Cargo builds a second `ui` instance and
 # the app can link successfully but fail at runtime with undefined symbols.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris"] }
-# Heavy document engines belong in the versioned runtime rather than each qpkg.
+# Heavy document engines belong in the versioned runtime rather than each tapp.
 typst = "0.14"
 typst-render = "0.14"
 typst-pdf = "0.14"
@@ -39,7 +39,7 @@ rustypipe.workspace = true
 iroh.workspace = true
 # Desktop-owned service implementations are shared runtime code, not app
 # payload. Settings composes all of these control surfaces and would otherwise
-# statically repeat several megabytes of the same implementations in its qpkg.
+# statically repeat several megabytes of the same implementations in its tapp.
 settings-store = { path = "../../system/settings-store" }
 desktop-policy = { path = "../../system/desktop-policy" }
 launcher = { path = "../../packaging/launcher" }
@@ -59,7 +59,7 @@ tilo-model-gateway = { path = "../../agent/model-gateway" }
 media = { path = "../../media/core" }
 atomic-file = { path = "../../system/atomic-file" }
 # Versioned format/network engines used by system apps. Keeping these in the
-# runtime bundle lets qpkgs contain policy and UI while the replaceable engine
+# runtime bundle lets tapps contain policy and UI while the replaceable engine
 # implementations are stored once per runtime generation.
 chrono-tz = "0.10.4"
 vte = "0.15.0"
@@ -68,7 +68,7 @@ thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
 roxmltree = "0.20"
 xattr = "1.6.1"
 mime_guess = "2.0.5"
-app-catalogue = { path = "../../packaging/app-catalogue" }
+app-cli = { path = "../../packaging/app-cli" }
 app-host = { path = "../../packaging/app-host" }
 registry-types = { path = "../../packaging/registry-types" }
 

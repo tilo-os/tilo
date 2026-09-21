@@ -160,7 +160,10 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
     let mut index = 0usize;
     while index < blocks.len() {
         let Some(language) = languages.get(index).and_then(Option::as_deref) else {
-            blocks[index].line.set_transient_colors(Vec::new());
+            let Some(block) = blocks.get_mut(index) else {
+                break;
+            };
+            block.line.set_transient_colors(Vec::new());
             index = index.saturating_add(1);
             continue;
         };
@@ -175,7 +178,10 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
             && languages.get(index).and_then(Option::as_deref) == Some(language)
             && blocks[start].same_code_group(&blocks[index])
         {
-            let source = blocks[index].text();
+            let Some(block) = blocks.get_mut(index) else {
+                break;
+            };
+            let source = block.text();
             let with_newline = format!("{source}\n");
             let mut colors = Vec::new();
             let mut last = 0usize;
@@ -204,7 +210,7 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
                 }
             }
             colors.retain(|span| span.range.start < span.range.end);
-            blocks[index].line.set_transient_colors(colors);
+            block.line.set_transient_colors(colors);
             index = index.saturating_add(1);
         }
     }
@@ -5614,6 +5620,14 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "text layout accepts f32 widths; these values are finite viewport-sized geometry, so f64 precision beyond f32 subpixels is immaterial"
+)]
+fn text_layout_width(width: f64) -> f32 {
+    width as f32
+}
+
 /// See [`translated`]: `Affine * Point` is the same plain f64 math.
 #[allow(
     clippy::arithmetic_side_effects,
@@ -5886,7 +5900,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             rect.x0 + 58.0 * scale,
             rect.y0 + 18.0 * scale,
         ),
-        Some((rect.width() - 76.0 * scale).max(1.0) as f32),
+        Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
         crate::text_render::TextWeight::Medium,
         false,
         false,
@@ -5901,7 +5915,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             rect.x0 + 58.0 * scale,
             rect.y0 + 42.0 * scale,
         ),
-        Some((rect.width() - 76.0 * scale).max(1.0) as f32),
+        Some(text_layout_width((rect.width() - 76.0 * scale).max(1.0))),
     );
 }
 
@@ -10225,11 +10239,13 @@ impl BlockEditor {
         }
         let source = block.text();
         let split_at = clamp_char_boundary(source, split_at.min(source.len()));
-        let (prefix, suffix) = source.split_at(split_at);
+        let Some((before, after)) = source.split_at_checked(split_at) else {
+            return false;
+        };
         let mut updated = String::with_capacity(source.len().saturating_add(1));
-        updated.push_str(prefix);
+        updated.push_str(before);
         updated.push('\n');
-        updated.push_str(suffix);
+        updated.push_str(after);
         block.line.set_text(&updated);
         block.line.set_cursor_pos(split_at.saturating_add(1));
         self.dirty = true;

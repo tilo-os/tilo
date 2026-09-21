@@ -39,7 +39,7 @@ fn production_root_and_launch_declare_saved_place_history() {
             .document_history_definition()
             .unwrap()
             .app_id,
-        "dev.tilo.weather"
+        "so.tilo.weather"
     );
     assert!(include_str!("main.rs").contains(".history(&weather::framework_history::HISTORY)"));
 }

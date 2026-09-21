@@ -1768,7 +1768,7 @@ mod tests {
             results: vec![mk_result(
                 ResourceKind::Application,
                 "applications",
-                "dev.qos.calculator",
+                "so.tilo.calculator",
                 "Open Calculator",
                 100,
             )],
@@ -1793,7 +1793,7 @@ mod tests {
             out.iter().filter(|r| r.kind == ResourceKind::File).count(),
             out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
         );
-        assert_eq!(out[0].id, "dev.qos.calculator");
+        assert_eq!(out[0].id, "so.tilo.calculator");
     }
 
     /// A word that exactly names an app must not lose to a word buried in
@@ -1834,7 +1834,7 @@ mod tests {
                 results: vec![mk_result(
                     ResourceKind::Application,
                     "applications",
-                    "dev.qos.app",
+                    "so.tilo.app",
                     needle,
                     100,
                 )],
@@ -1883,7 +1883,7 @@ mod tests {
             results: vec![mk_result(
                 ResourceKind::Application,
                 "applications",
-                "dev.qos.wp",
+                "so.tilo.wp",
                 "Word Processor",
                 20,
             )],
@@ -2006,7 +2006,7 @@ mod tests {
             results: vec![mk_result(
                 ResourceKind::Application,
                 "applications",
-                "dev.qos.notes",
+                "so.tilo.notes",
                 "Open Notes",
                 100,
             )],
@@ -2039,8 +2039,8 @@ mod tests {
     fn typing_an_installed_apps_name_offers_the_app_first() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");
-        install_fake_app(tmp.path(), "dev.qos.calculator", "Calculator");
-        install_fake_app(tmp.path(), "dev.qos.notes", "Notes");
+        install_fake_app(tmp.path(), "so.tilo.calculator", "Calculator");
+        install_fake_app(tmp.path(), "so.tilo.notes", "Notes");
         let previous_apps_data_dir = std::env::var_os("TILO_APPS_DATA_DIR");
         // SAFETY: `serial_test::serial(process_env)` keeps the other tests that
         // repoint this variable from running concurrently.
@@ -2100,7 +2100,7 @@ mod tests {
                 out.iter().filter(|r| r.kind == ResourceKind::File).count(),
                 out.iter().take(3).map(|r| &r.title).collect::<Vec<_>>()
             );
-            assert_eq!(first.id, "dev.qos.calculator");
+            assert_eq!(first.id, "so.tilo.calculator");
         }
         // SAFETY: restore the process-wide override before releasing the serial lock.
         unsafe {
@@ -2119,7 +2119,7 @@ mod tests {
     fn a_capped_palette_still_leads_with_the_app() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");
-        install_fake_app(tmp.path(), "dev.qos.hex-editor", "Hex Editor");
+        install_fake_app(tmp.path(), "so.tilo.hex-editor", "Hex Editor");
         let previous_apps_data_dir = std::env::var_os("TILO_APPS_DATA_DIR");
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };

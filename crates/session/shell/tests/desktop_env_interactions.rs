@@ -1051,6 +1051,48 @@ fn wheel_over_strip_does_not_move_it() {
 }
 
 #[test]
+fn streamed_three_finger_pan_moves_the_live_strip_and_settles_overpull() {
+    let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300, 400]);
+    let active_group = tree.active_group_for(strip_id);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+
+    assert!(host.update_active_strip_pan(320.0, true));
+    assert_approx_eq!(
+        host.group_row_mut_for_tests(strip_id).unwrap().scroll_x(),
+        320.0,
+        "the live row must track total three-finger travel 1:1",
+    );
+    assert_eq!(
+        chrome.borrow().tree().active_group_for(strip_id),
+        active_group,
+        "panning the canvas must not silently change focused app",
+    );
+
+    let legal_end = host
+        .group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .pan_max_scroll_x();
+    assert!(host.update_active_strip_pan(legal_end + 500.0, false));
+    let held = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
+    assert!(
+        held > legal_end && held < legal_end + 500.0,
+        "overpull must keep moving with resistance: legal={legal_end}, held={held}"
+    );
+
+    let released = std::time::Instant::now();
+    assert!(host.end_active_strip_pan(released));
+    host.group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .tick_snap_at(released + std::time::Duration::from_millis(220));
+    assert_approx_eq!(
+        host.group_row_mut_for_tests(strip_id).unwrap().scroll_x(),
+        legal_end,
+        "release must settle the live strip to its legal trailing rest",
+    );
+}
+
+#[test]
 fn focusing_offscreen_group_scrolls_it_into_view() {
     // Four Normal (600 px) groups overflow the 1280 px viewport, so the last
     // starts off the right edge at scroll_x = 0.

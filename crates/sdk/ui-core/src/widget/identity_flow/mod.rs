@@ -1745,19 +1745,19 @@ impl InviteRedemptionAuthority {
 }
 
 // Hosted applications can use the certificate-pinned remote broker on every
-// host. Local authority storage is a qOS shell service with Unix ownership and
+// host. Local authority storage is a Tilo shell service with Unix ownership and
 // permission requirements; never substitute permissive files on other hosts.
 #[cfg(not(unix))]
 fn local_authority_unavailable() -> IdentityFlowError {
     IdentityFlowError::Io(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "local identity authority requires the qOS Unix broker; use a remote broker on this host",
+        "local identity authority requires the Tilo Unix broker; use a remote broker on this host",
     ))
 }
 
 #[cfg(not(unix))]
 impl InviteRedemptionAuthority {
-    /// Open the local qOS authority.
+    /// Open the local Tilo authority.
     ///
     /// # Errors
     /// Returns `Unsupported` on hosts without the Unix authority storage backend.
@@ -1884,7 +1884,7 @@ pub fn mint_invite(
 /// storage, encryption/signing failure, or an exhausted authority quota.
 #[allow(
     clippy::too_many_arguments,
-    reason = "Broker invites bind channel identity, owner signing identity, inviter label, role and expiry, redemption endpoint/certificate, and authority storage."
+    reason = "the identity card painter keeps renderer, geometry, content and interaction state explicit"
 )]
 pub fn mint_invite_for_broker(
     channel: ChannelId,
@@ -1926,7 +1926,7 @@ pub fn mint_invite_for_broker(
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "Invite signing binds channel and owner identity, recipient-visible label, role/expiry, redemption endpoint/certificate, and the issuing authority."
+    reason = "the identity action painter keeps renderer, geometry, label and interaction state explicit"
 )]
 fn mint_invite_at(
     channel: ChannelId,

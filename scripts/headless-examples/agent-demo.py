@@ -192,11 +192,11 @@ def main() -> None:
 
         # The word processor inherits the same connected service fd the real
         # launcher supplies.
-        control(ctl, {"op": "place_next_window", "app_id": "dev.tilo.word-processor"})
+        control(ctl, {"op": "place_next_window", "app_id": "so.tilo.word-processor"})
         wp_env = dict(env)
         wp_env.update({
             "WAYLAND_DISPLAY": display,
-            "TILO_PACKAGE_ID": "dev.tilo.word-processor",
+            "TILO_PACKAGE_ID": "so.tilo.word-processor",
             "TILO_WORKSPACE_ID": room,
             "QUICK_APP_ID": "quinten",
             "TILO_USER_ID": "quinten",

@@ -37,7 +37,7 @@ fn owner_publication_blocked_checked_action_cannot_send_terminal() {
     for background in [false, true] {
         let mut fixture = ActionFixture::broker();
         let sent = Rc::new(RefCell::new(vec![]));
-        fixture.app.collab_manager =
+        fixture.app.collaboration.manager =
             CollaborationManager::with_peer_transport(PublicationTransport(sent.clone()));
         fixture.app.publication_resources();
         let resource = fixture
@@ -98,7 +98,7 @@ fn owner_publication_blocked_checked_action_cannot_send_terminal() {
                 .any(|request| matches!(request, CollabRequest::Document { .. }))
         );
         assert!(
-            !fixture.app.collab_manager.is_connected(),
+            !fixture.app.collaboration.manager.is_connected(),
             "publication omission must withdraw health"
         );
         assert!(

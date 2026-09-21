@@ -212,7 +212,7 @@ impl Default for RunOptions {
             bwrap_bin: None,
             sandbox_shim_bin: None,
             minimal_libs: false,
-            // qpkg applications are untrusted by default.  A caller using the
+            // tapp applications are untrusted by default.  A caller using the
             // convenience constructor must not accidentally remove one of the
             // kernel-enforced confinement layers.
             landlock_enforce: true,
@@ -319,7 +319,7 @@ mod resource_claim_tests {
 
     fn browser_manifest() -> MinimalManifest {
         toml::from_str(
-            "package_id = \"dev.tilo.browser\"\nversion = \"1\"\n\
+            "package_id = \"so.tilo.browser\"\nversion = \"1\"\n\
              [entrypoint]\nbin = \"bin/browser\"\n\
              [providers]\nschemes = [\"https\"]\n",
         )
@@ -354,7 +354,7 @@ mod resource_claim_tests {
     #[test]
     fn only_gui_game_packages_receive_the_scheduler_hint() {
         let game: MinimalManifest = toml::from_str(
-            "[package]\nid = \"dev.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
+            "[package]\nid = \"so.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
              [entrypoint]\nbin = \"bin/game\"\n",
         )
         .unwrap();
@@ -394,7 +394,7 @@ mod managed_service_tests {
 
     fn manifest(kind: &str, entrypoint_type: &str) -> MinimalManifest {
         toml::from_str(&format!(
-            "[package]\nid = \"dev.tilo.worker\"\nversion = \"1\"\nkind = \"{kind}\"\n\
+            "[package]\nid = \"so.tilo.worker\"\nversion = \"1\"\nkind = \"{kind}\"\n\
              [entrypoint]\nbin = \"bin/worker\"\ntype = \"{entrypoint_type}\"\n"
         ))
         .unwrap()
@@ -441,7 +441,7 @@ mod managed_service_tests {
     #[test]
     fn managed_service_cannot_readdress_its_authenticated_identity() {
         let opts = RunOptions {
-            app_id: Some("dev.tilo.other".into()),
+            app_id: Some("so.tilo.other".into()),
             ..service_options()
         };
         assert!(matches!(
@@ -976,7 +976,7 @@ unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()>
     Ok(())
 }
 
-/// Bound per-process resources inherited by bwrap and the qpkg. Core dumps may
+/// Bound per-process resources inherited by bwrap and the tapp. Core dumps may
 /// contain workspace content or broker responses; an untrusted app also does not
 /// need an unbounded descriptor table. Both soft and hard limits are set so the
 /// app cannot raise them again.
@@ -1076,7 +1076,7 @@ mod durable_app_id_tests {
         let mut argv = vec![
             "--setenv".into(),
             "TILO_PACKAGE_ID".into(),
-            "dev.tilo.notes".into(),
+            "so.tilo.notes".into(),
             "/app/bin/notes".into(),
         ];
 
@@ -1097,7 +1097,7 @@ mod durable_app_id_tests {
         assert!(argv.windows(3).any(|window| {
             window[0] == "--setenv"
                 && window[1] == "TILO_PACKAGE_ID"
-                && window[2] == "dev.tilo.notes"
+                && window[2] == "so.tilo.notes"
         }));
         assert_eq!(argv.last().map(String::as_str), Some("/app/bin/notes"));
     }
@@ -1215,7 +1215,7 @@ fn splice_trusted_identities(
     manifest: &MinimalManifest,
     opts: &RunOptions,
 ) -> Result<(), RunError> {
-    if manifest.package_id == "dev.tilo.file-explorer"
+    if manifest.package_id == "so.tilo.file-explorer"
         && let Some(host_path) = opts.trusted_identities_host_path.as_deref()
     {
         let entry = pop_entry(argv)?;
@@ -2228,7 +2228,7 @@ type IdentityBrokerHandles = (
 
 /// [`run_with`] sibling that captures the child's stdout instead of inheriting
 /// it. It deliberately uses the same Landlock, seccomp, runtime, portal,
-/// identity, filesystem and egress decisions as a normal qpkg launch.
+/// identity, filesystem and egress decisions as a normal tapp launch.
 ///
 /// # Errors
 ///
@@ -2808,7 +2808,7 @@ mod app_dir_tests {
 
     #[test]
     fn workspace_launch_without_an_author_grant_is_read_only() {
-        let m = manifest("dev.tilo.fixture");
+        let m = manifest("so.tilo.fixture");
         let workspace = resolve_capabilities(&m, &opts_in(Some("room-a")));
         assert_eq!(
             workspace.participation,
@@ -2832,7 +2832,7 @@ mod app_dir_tests {
         // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
 
-        let m = manifest("dev.tilo.fixture");
+        let m = manifest("so.tilo.fixture");
         let a = resolve_app_dir(&m, &opts_in(Some("room-a"))).expect("room a");
         let b = resolve_app_dir(&m, &opts_in(Some("room-b"))).expect("room b");
         let personal = resolve_app_dir(&m, &opts_in(None)).expect("personal");
@@ -2870,8 +2870,8 @@ mod app_dir_tests {
         // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
 
-        let mut m = manifest("dev.tilo.fixture");
-        let victim = data.path().join("dev.tilo.totp");
+        let mut m = manifest("so.tilo.fixture");
+        let victim = data.path().join("so.tilo.totp");
         m.sandbox.fs.write.push(victim.display().to_string());
         let refused = run_with(&m, Path::new("/nonexistent"), &opts_in(None));
 

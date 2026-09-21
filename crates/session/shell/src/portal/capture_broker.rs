@@ -792,7 +792,7 @@ mod tests {
     #[test]
     fn batch_authorization_is_all_or_nothing() {
         let mut broker = broker();
-        let owner = binding("dev.tilo.chat", "work", "session-batch");
+        let owner = binding("so.tilo.chat", "work", "session-batch");
         let now = Instant::now();
         assert!(
             broker

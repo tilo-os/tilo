@@ -54,7 +54,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.vpn", vpn::app_root)
+        &LaunchSpec::new("so.tilo.vpn", vpn::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "confirm",

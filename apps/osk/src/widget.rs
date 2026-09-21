@@ -43,11 +43,12 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::actions::{Preference, PreferenceDrafts};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
+use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -55,9 +56,9 @@ use ui::tilo_actions::{OperationKind, Resource};
 use ui::widget::Widget;
 
 use crate::futo::FutoSwipeModel;
-use crate::layout::{InputPurpose, KeyAction, KeyId, KeyboardLayout, ShiftState};
+use crate::layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
 use crate::predict::Predictor;
-use crate::suggest::Suggestion;
+use crate::suggest::{Suggestion, suggestion_rects};
 use crate::swipe::{GeometricSwipeModel, SwipeModel};
 
 /// The default swipe decoder: the real FUTO `ExecuTorch` model when its libs
@@ -71,7 +72,7 @@ pub fn default_swipe_model() -> Box<dyn SwipeModel> {
         Box::new(GeometricSwipeModel::english())
     }
 }
-use crate::toolbar::{OskToolbarAction, OskToolbarItem};
+use crate::toolbar::{OskToolbarAction, OskToolbarItem, toolbar_rects};
 
 /// Default target height of a single key row, in logical px. Responsive
 /// sizing keeps the *width* filling the surface and uses this for height —
@@ -92,8 +93,7 @@ const MAX_KEY_LOG_ENTRIES: usize = 1_024;
 const MAX_TOOLBAR_LOG_ENTRIES: usize = 128;
 const MAX_GESTURE_POINTS: usize = 256;
 const MAX_TRACKED_WORD_SCALARS: usize = 128;
-#[cfg(test)]
-const MAX_KEYBOARD_CONTENT_WIDTH: f64 = 1120.0;
+const MAX_KEYBOARD_CONTENT_WIDTH: f64 = 1_120.0;
 const CONFIG_LAYOUT_KEY: &str = "osk.preferred_layout";
 const CONFIG_SUGGESTIONS_KEY: &str = "osk.suggestions_enabled";
 const CONFIG_PERSONALIZATION_KEY: &str = "osk.personalization_enabled";
@@ -982,6 +982,192 @@ fn read_config_bool(state: &AutoCommit, path: &ObjId, key: &str) -> Option<bool>
     }
 }
 
+/// Interaction/visual flags for one drawn cell, bundled so [`draw_cell`]
+/// doesn't take four separate `bool` parameters.
+#[derive(Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this struct IS the bool-bundling fix for draw_cell's argument count; \
+              its four fields are independent interaction/visual flags for one \
+              cell, and splitting them into sub-structs would not express any \
+              real invariant between them"
+)]
+struct CellState {
+    hovered: bool,
+    pressed: bool,
+    /// Accent styling (e.g. an active toggle key).
+    accent: bool,
+    /// Solid (vs. outline) icon glyph — used for a latched state like
+    /// Caps-Lock's Shift key.
+    icon_filled: bool,
+}
+
+/// Draw a rounded "button" cell (used for both keys and toolbar items).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the cell painter keeps renderer, geometry, label, theme and interaction state explicit"
+)]
+fn draw_cell(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    icon: Option<Icon>,
+    label: &str,
+    state: CellState,
+    font_scale: f64,
+) {
+    let CellState {
+        hovered,
+        pressed,
+        accent,
+        icon_filled,
+    } = state;
+    let t = &theme.tokens;
+    // Inset so adjacent cells have a visible gutter.
+    let pad = (rect.height() * 0.06).clamp(2.0, 6.0);
+    let cell = Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x1 - pad, rect.y1 - pad);
+    let bg = if pressed {
+        theme.bg_active
+    } else if hovered {
+        theme.bg_hover
+    } else if accent {
+        t.colors.surfaces.overlay
+    } else {
+        t.colors.surfaces.raised
+    };
+    let shape = RoundedRect::from_rect(cell, f64::from(t.radii.md));
+    scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
+    let border = if accent {
+        theme.border_focus
+    } else {
+        t.colors.border_standard
+    };
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        border,
+        None,
+        &shape,
+    );
+
+    let fg = if accent {
+        theme.accent_primary
+    } else {
+        t.colors.text_primary
+    };
+
+    if let Some(icon) = icon {
+        let s = (cell.height() * 0.5).clamp(14.0, 26.0);
+        let ix = cell.center().x - s / 2.0;
+        let iy = cell.center().y - s / 2.0;
+        let icon_rect = Rect::new(ix, iy, ix + s, iy + s);
+        if icon_filled {
+            // A latched state (e.g. Caps-Lock's Shift key) reads as a solid
+            // glyph, distinct from the outline of the momentary state.
+            icon.draw_filled(scene, transform, icon_rect, fg);
+        } else {
+            icons::draw_icon(
+                scene,
+                transform,
+                icon_rect,
+                icon,
+                fg,
+                icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
+        return;
+    }
+
+    if label.is_empty() {
+        return;
+    }
+    let font = (cell.height() * font_scale).clamp(11.0, 30.0) as f32;
+    let (tw, _th) = text_renderer.measure(label, font, None);
+    let tx = cell.center().x - f64::from(tw) / 2.0;
+    let ty = cell.y0 + (cell.height() - f64::from(font)) / 2.0;
+    text_renderer.draw_text(
+        scene,
+        label,
+        font,
+        fg,
+        transform * Affine::translate((tx, ty)),
+        None,
+    );
+}
+
+/// Draw one suggestion chip: a pill with the word, themed by state. The `top`
+/// (best / auto-inserted) chip is accented; the rest are neutral. All colours
+/// come from theme tokens.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the suggestion painter keeps renderer, geometry, word and chip state explicit"
+)]
+fn draw_suggestion_chip(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    word: &str,
+    hovered: bool,
+    pressed: bool,
+    top: bool,
+) {
+    let t = &theme.tokens;
+    let pad_x = (rect.width() * 0.06).clamp(3.0, 10.0);
+    let pad_y = (rect.height() * 0.14).clamp(2.0, 8.0);
+    let chip = Rect::new(
+        rect.x0 + pad_x,
+        rect.y0 + pad_y,
+        rect.x1 - pad_x,
+        rect.y1 - pad_y,
+    );
+    let bg = if pressed {
+        theme.bg_active
+    } else if hovered {
+        theme.bg_hover
+    } else if top {
+        // The accent fill at low alpha reads as "selected" without shouting.
+        theme.tokens.colors.surfaces.overlay
+    } else {
+        theme.tokens.colors.surfaces.base
+    };
+    let shape = RoundedRect::from_rect(chip, (chip.height() * 0.45).min(f64::from(t.radii.lg)));
+    scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
+    if top {
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5),
+            transform,
+            theme.border_focus,
+            None,
+            &shape,
+        );
+    }
+
+    let fg = if top {
+        theme.accent_primary
+    } else {
+        t.colors.text_primary
+    };
+    if word.is_empty() {
+        return;
+    }
+    let font = (chip.height() * 0.5).clamp(12.0, 22.0) as f32;
+    let (tw, _th) = text_renderer.measure(word, font, None);
+    let tx = chip.center().x - f64::from(tw) / 2.0;
+    let ty = chip.y0 + (chip.height() - f64::from(font)) / 2.0;
+    text_renderer.draw_text(
+        scene,
+        word,
+        font,
+        fg,
+        transform * Affine::translate((tx, ty)),
+        None,
+    );
+}
+
 impl Widget for OskWidget {
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
         Some(crate::framework_history::definition(
@@ -1125,20 +1311,52 @@ impl Widget for OskWidget {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        let geometry = crate::presentation::keyboard_geometry(
-            self.rect,
-            self.current_layout(),
-            &self.toolbar,
-            &self.suggestions,
-            self.shift,
-            self.toolbar_height,
-            self.suggestion_height,
+        let content_width = self.rect.width().min(MAX_KEYBOARD_CONTENT_WIDTH);
+        let content_x0 = self.rect.center().x - content_width * 0.5;
+        self.content_rect = Rect::new(
+            content_x0,
+            self.rect.y0,
+            content_x0 + content_width,
+            self.rect.y1,
         );
-        self.content_rect = geometry.content_rect;
-        self.toolbar_geom = geometry.toolbar;
-        self.suggestion_geom = geometry.suggestions;
-        self.suggestion_area = geometry.suggestion_area;
-        self.key_geom = geometry.keys;
+
+        // Top → bottom bands: toolbar, suggestion bar, keys (keys fill the
+        // rest). Clamp each band so a too-short surface degrades gracefully.
+        let h = self.content_rect.height();
+        let toolbar_h = f64::from(self.toolbar_height).min(h);
+        let suggestion_h = f64::from(self.suggestion_height).min((h - toolbar_h).max(0.0));
+        let toolbar_y1 = self.content_rect.y0 + toolbar_h;
+        let suggestion_y1 = toolbar_y1 + suggestion_h;
+
+        let toolbar_area = Rect::new(
+            self.content_rect.x0,
+            self.content_rect.y0,
+            self.content_rect.x1,
+            toolbar_y1,
+        );
+        let suggestion_area = Rect::new(
+            self.content_rect.x0,
+            toolbar_y1,
+            self.content_rect.x1,
+            suggestion_y1,
+        );
+        let key_area = Rect::new(
+            self.content_rect.x0,
+            suggestion_y1,
+            self.content_rect.x1,
+            self.content_rect.y1,
+        );
+
+        self.toolbar_geom = toolbar_rects(&self.toolbar, toolbar_area);
+        self.suggestion_geom = suggestion_rects(&self.suggestions, suggestion_area);
+        // Stash the suggestion-bar area so an empty bar can still render its
+        // background + hit-test correctly (suggestion_rects is empty then).
+        self.suggestion_area = suggestion_area;
+        let geom = {
+            let layout = self.current_layout();
+            key_rects(layout, key_area, self.shift)
+        };
+        self.key_geom = geom;
     }
 
     #[allow(
@@ -1158,29 +1376,126 @@ impl Widget for OskWidget {
         if !self.visible {
             return;
         }
-        crate::presentation::KeyboardPresentation {
-            rect: self.rect,
-            layout: self.current_layout(),
-            toolbar: &self.toolbar,
-            suggestions: &self.suggestions,
-            toolbar_geom: &self.toolbar_geom,
-            suggestion_geom: &self.suggestion_geom,
-            key_geom: &self.key_geom,
-            suggestion_area: self.suggestion_area,
-            shift: self.shift,
-            hovered_key: self.hovered_key,
-            pressed_key: self.pressed_key,
-            hovered_tool: self.hovered_tool,
-            pressed_tool: self.pressed_tool,
-            hovered_sugg: self.hovered_sugg,
-            pressed_sugg: self.pressed_sugg,
-            empty_hint: if self.suggestions_enabled {
-                "Type or swipe to see suggestions"
-            } else {
-                "Suggestions are off"
-            },
+        // Surface background.
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+
+        // Toolbar.
+        for (i, r) in &self.toolbar_geom {
+            // `toolbar_geom` is built from `self.toolbar` each frame, so `*i`
+            // is always in range; `get` avoids a panic if the geometry is
+            // ever stale for one frame.
+            let Some(item) = self.toolbar.get(*i) else {
+                continue;
+            };
+            let hovered = self.hovered_tool == Some(*i);
+            let pressed = self.pressed_tool == Some(*i);
+            draw_cell(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                *r,
+                item.icon,
+                &item.label,
+                CellState {
+                    hovered,
+                    pressed,
+                    ..Default::default()
+                },
+                0.34,
+            );
         }
-        .draw(scene, transform, text_renderer, theme);
+
+        // Suggestion bar: a subtle band, then a tappable chip per suggestion.
+        if self.suggestion_area.area() > 0.0 {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &self.suggestion_area,
+            );
+            for (i, r) in &self.suggestion_geom {
+                let Some(s) = self.suggestions.get(*i) else {
+                    continue;
+                };
+                let hovered = self.hovered_sugg == Some(*i);
+                let pressed = self.pressed_sugg == Some(*i);
+                // The top chip is the highlighted (auto / best) pick.
+                let top = *i == 0;
+                draw_suggestion_chip(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *r,
+                    &s.word,
+                    hovered,
+                    pressed,
+                    top,
+                );
+            }
+            if self.suggestion_geom.is_empty() {
+                let hint = if self.suggestions_enabled {
+                    "Type or swipe to see suggestions"
+                } else {
+                    "Suggestions are off"
+                };
+                let font = (self.suggestion_area.height() * 0.38).clamp(12.0, 18.0) as f32;
+                let (width, _) = text_renderer.measure(hint, font, None);
+                let x = self.suggestion_area.center().x - f64::from(width) * 0.5;
+                let y = self.suggestion_area.y0
+                    + (self.suggestion_area.height() - f64::from(font)) * 0.5;
+                text_renderer.draw_text(
+                    scene,
+                    hint,
+                    font,
+                    theme.tokens.colors.text_primary,
+                    transform * Affine::translate((x, y)),
+                    None,
+                );
+            }
+        }
+
+        // Keys.
+        let shift = self.shift;
+        let layout = self.current_layout();
+        for (id, rect) in &self.key_geom {
+            let Some(key) = layout.key(*id) else { continue };
+            let label = key.display_label(shift);
+            let is_action = !matches!(&key.action, KeyAction::Char(_));
+            let shift_active = matches!(&key.action, KeyAction::Shift) && shift.is_upper();
+            let hovered = self.hovered_key == Some(*id);
+            let pressed = self.pressed_key == Some(*id);
+            // Letters get a larger glyph; multi-char action labels smaller.
+            let font_scale = if Key::is_letter(key) { 0.42 } else { 0.30 };
+            // The Shift key's icon fills solid while Caps-Lock is latched, so a
+            // sticky upper-case reads differently from a one-shot shift.
+            let icon_filled =
+                matches!(&key.action, KeyAction::Shift) && shift == ShiftState::CapsLock;
+            draw_cell(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                *rect,
+                key.icon,
+                &label,
+                CellState {
+                    hovered,
+                    pressed,
+                    accent: is_action || shift_active,
+                    icon_filled,
+                },
+                font_scale,
+            );
+        }
     }
 
     fn handle_event(
@@ -2212,7 +2527,7 @@ mod tests {
         // The compositor recognises the keyboard by this exact app-id to keep
         // it out of the tile layout and own its visibility. If this drifts, the
         // keyboard would be treated as an ordinary window — so pin the value.
-        assert_eq!(crate::KEYBOARD_APP_ID, "dev.tilo.osk");
+        assert_eq!(crate::KEYBOARD_APP_ID, "so.tilo.osk");
     }
 
     #[test]

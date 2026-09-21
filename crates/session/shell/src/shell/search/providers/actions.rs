@@ -3145,7 +3145,7 @@ mod tests {
         assert!(
             !ws.allows(
                 &ws.actor_for_agent("operator"),
-                &crate::shell::state::ResourceRef::App("dev.qos.notes".into()),
+                &crate::shell::state::ResourceRef::App("so.tilo.notes".into()),
                 crate::shell::state::Verb::Write,
             ),
             "even the Operator profile requires an explicit scoped grant"
@@ -3768,7 +3768,7 @@ mod tests {
         let provider = ActionsProvider::new();
         let rules = serde_json::to_string(&vec![collab_types::PermissionProfileRule::grant(
             collab_types::Scope::Action {
-                app: "dev.qos.notes".into(),
+                app: "so.tilo.notes".into(),
                 action: "note.open".into(),
             },
             collab_types::Verb::Read,
@@ -3837,7 +3837,7 @@ mod tests {
         assert!(workspace.allows(
             &workspace.actor_for_agent("researcher"),
             &crate::shell::state::ResourceRef::Action {
-                app: "dev.qos.notes".into(),
+                app: "so.tilo.notes".into(),
                 action: "note.open".into(),
             },
             crate::shell::state::Verb::Read,

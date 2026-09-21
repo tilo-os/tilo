@@ -1166,12 +1166,12 @@ mod tests {
                 group: 0,
                 tab: 0,
             },
-            LaunchIntent::app("dev.tilo.browser").unwrap(),
+            LaunchIntent::app("so.tilo.browser").unwrap(),
             Some(
                 ResumeMetadata::new(
                     1,
                     ResumeSensitivity::Syncable,
-                    br#"{"url":"https://tilo.test/page/4"}"#.to_vec(),
+                    br#"{"url":"https://example.test/page/4"}"#.to_vec(),
                 )
                 .unwrap(),
             ),
@@ -1509,7 +1509,10 @@ mod tests {
         let mut apps = Vec::new();
         for id in 0..100 {
             let mut app = safe_app(id, &device, 1);
-            let url = format!("https://tilo.test/?q={}", "x".repeat(MAX_RESUME_BYTES - 64));
+            let url = format!(
+                "https://example.test/?q={}",
+                "x".repeat(MAX_RESUME_BYTES - 64)
+            );
             app.resume = Some(
                 ResumeMetadata::new(
                     1,
@@ -1544,7 +1547,10 @@ mod tests {
         let mut apps = Vec::new();
         for id in 0..90 {
             let mut app = safe_app(id, &device, 1);
-            let url = format!("https://tilo.test/?q={}", "x".repeat(MAX_RESUME_BYTES - 64));
+            let url = format!(
+                "https://example.test/?q={}",
+                "x".repeat(MAX_RESUME_BYTES - 64)
+            );
             app.resume = Some(
                 ResumeMetadata::new(
                     1,

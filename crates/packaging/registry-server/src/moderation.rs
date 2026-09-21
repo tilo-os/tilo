@@ -760,15 +760,7 @@ fn validate_version_history(
                 version: version.version.clone(),
             });
         }
-        let preserved_legacy = baseline.is_some_and(|current| {
-            current
-                .versions
-                .iter()
-                .any(|old| old == version && old.qpkg_blake3_hex.is_none() && old.target.is_none())
-        });
-        if !preserved_legacy {
-            validate_bound_version(proposed, version)?;
-        }
+        validate_bound_version(proposed, version)?;
     }
     if let Some(current) = baseline {
         for old in &current.versions {
@@ -798,25 +790,21 @@ fn same_version_identity(
     right: &registry_types::RegistryVersion,
 ) -> bool {
     left.version == right.version
-        && left
-            .target
-            .as_ref()
-            .map(|target| target.architecture.as_str())
-            == right
-                .target
-                .as_ref()
-                .map(|target| target.architecture.as_str())
+        && left.target.platform == right.target.platform
+        && left.target.architecture == right.target.architecture
 }
 
 fn validate_bound_version(
     entry: &RegistryEntry,
     version: &registry_types::RegistryVersion,
 ) -> Result<(), ModerationError> {
-    let hash_ok = version
-        .qpkg_blake3_hex
-        .as_ref()
-        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
-    let target_ok = version.target.as_ref().is_some_and(|target| {
+    let hash_ok = version.tapp_blake3_hex.len() == 64
+        && version
+            .tapp_blake3_hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit());
+    let target = &version.target;
+    let target_ok = target.platform == registry_types::TILO_OS_PLATFORM && {
         matches!(
             (target.architecture.as_str(), target.isa.as_str()),
             ("x86_64", "x86_64" | "x86_64-v2" | "x86_64-v3" | "x86_64-v4")
@@ -825,8 +813,11 @@ fn validate_bound_version(
                     "aarch64" | "aarch64-v8.2" | "aarch64-v8.4" | "aarch64-v9"
                 )
         )
-    });
-    if !hash_ok || !target_ok || version.qpkg_size_bytes == 0 {
+    };
+    let canonical_url = version
+        .tapp_url
+        .starts_with("https://apps.tilo.so/artifacts/");
+    if !hash_ok || !target_ok || !canonical_url || version.tapp_size_bytes == 0 {
         return Err(ModerationError::UnsupportedPackageTarget {
             package_id: entry.package_id.clone(),
             version: version.version.clone(),
@@ -968,26 +959,32 @@ mod tests {
     }
     fn entry(key: &SigningKey, timestamp: u64) -> RegistryEntry {
         RegistryEntry {
-            package_id: "dev.tilo.editor".into(),
+            package_id: "so.tilo.editor".into(),
             name: "Editor".into(),
-            description: String::new(),
+            description: "Native text editor".into(),
+            tagline: "Edit together".into(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
+            supported_languages: vec!["en".into()],
             categories: vec![],
-            icon_url: None,
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
             versions: vec![RegistryVersion {
                 version: format!("1.{timestamp}"),
-                qpkg_url: "https://example.test/e.qpkg".into(),
-                qpkg_root_hash_hex: "ab".repeat(32),
-                qpkg_size_bytes: 1,
+                tapp_url: "https://apps.tilo.so/artifacts/editor/e.tapp".into(),
+                tapp_root_hash_hex: "ab".repeat(32),
+                tapp_size_bytes: 1,
                 released_at_unix: timestamp,
-                qpkg_blake3_hex: Some("cd".repeat(32)),
-                target: Some(registry_types::RegistryTarget {
+                tapp_blake3_hex: "cd".repeat(32),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
-                }),
+                },
             }],
             updated_at_unix: timestamp,
             signature_hex: String::new(),
@@ -1039,7 +1036,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             service
-                .pending("dev.tilo.editor")
+                .pending("so.tilo.editor")
                 .unwrap()
                 .unwrap()
                 .change
@@ -1059,7 +1056,7 @@ mod tests {
         let key = SigningKey::generate(&mut OsRng);
         let mut aggregate = entry(&key, 10);
         let mut arm = aggregate.versions[0].clone();
-        let target = arm.target.as_mut().unwrap();
+        let target = &mut arm.target;
         target.architecture = "aarch64".into();
         target.isa = "aarch64-v8.2".into();
         aggregate.versions.push(arm);
@@ -1071,7 +1068,7 @@ mod tests {
             service.submit(change(&key, EntryAction::Add, 11), 101),
             Err(ModerationError::VersionHistoryRemoved { .. })
         ));
-        assert_eq!(service.pending("dev.tilo.editor").unwrap(), Some(pending));
+        assert_eq!(service.pending("so.tilo.editor").unwrap(), Some(pending));
     }
 
     #[test]
@@ -1104,7 +1101,7 @@ mod tests {
             .approve(&pending, "m", "", 102, &allow(&key))
             .unwrap();
         assert_eq!(review.decision, ReviewDecision::Approved);
-        assert!(service.pending("dev.tilo.editor").unwrap().is_none());
+        assert!(service.pending("so.tilo.editor").unwrap().is_none());
         assert_eq!(
             service.storage.load_review(&review.review_id).unwrap(),
             Some(review)
@@ -1122,13 +1119,13 @@ mod tests {
             .submit(sign_change_request(EntryAction::Delete, public, &key), 100)
             .unwrap();
         let review = service
-            .reject("dev.tilo.editor", "m", "revoked", 101)
+            .reject("so.tilo.editor", "m", "revoked", 101)
             .unwrap();
         assert_eq!(review.decision, ReviewDecision::Rejected);
         assert!(
             service
                 .storage
-                .load_entry("dev.tilo.editor")
+                .load_entry("so.tilo.editor")
                 .unwrap()
                 .is_some()
         );
@@ -1151,7 +1148,7 @@ mod tests {
         assert!(
             service
                 .storage
-                .load_entry("dev.tilo.editor")
+                .load_entry("so.tilo.editor")
                 .unwrap()
                 .is_none()
         );
@@ -1170,12 +1167,12 @@ mod tests {
 
         assert!(matches!(
             service.approve(&reviewed, "m", "", 102, &allow(&key)),
-            Err(ModerationError::PendingChanged(package)) if package == "dev.tilo.editor"
+            Err(ModerationError::PendingChanged(package)) if package == "so.tilo.editor"
         ));
         assert!(
             service
                 .storage
-                .load_entry("dev.tilo.editor")
+                .load_entry("so.tilo.editor")
                 .unwrap()
                 .is_none()
         );
@@ -1186,10 +1183,10 @@ mod tests {
         let (_dir, service) = setup();
         let key = SigningKey::generate(&mut OsRng);
         let first = service
-            .submit(change_for(&key, "dev.tilo.a", 10), 100)
+            .submit(change_for(&key, "so.tilo.a", 10), 100)
             .unwrap();
         let second = service
-            .submit(change_for(&key, "dev.tilo.b", 10), 100)
+            .submit(change_for(&key, "so.tilo.b", 10), 100)
             .unwrap();
         service
             .submit(append_change(&key, &second.change, 11), 101)
@@ -1197,10 +1194,10 @@ mod tests {
 
         assert!(matches!(
             service.approve_batch(&[first.clone(), second], "auto", "", 102, &allow(&key)),
-            Err(ModerationError::PendingChanged(package)) if package == "dev.tilo.b"
+            Err(ModerationError::PendingChanged(package)) if package == "so.tilo.b"
         ));
-        assert!(service.storage.load_entry("dev.tilo.a").unwrap().is_none());
-        assert_eq!(service.pending("dev.tilo.a").unwrap(), Some(first));
+        assert!(service.storage.load_entry("so.tilo.a").unwrap().is_none());
+        assert_eq!(service.pending("so.tilo.a").unwrap(), Some(first));
     }
 
     #[test]
@@ -1208,10 +1205,10 @@ mod tests {
         let (_dir, service) = setup();
         let key = SigningKey::generate(&mut OsRng);
         let first = service
-            .submit(change_for(&key, "dev.tilo.a", 10), 100)
+            .submit(change_for(&key, "so.tilo.a", 10), 100)
             .unwrap();
         let second = service
-            .submit(change_for(&key, "dev.tilo.b", 10), 100)
+            .submit(change_for(&key, "so.tilo.b", 10), 100)
             .unwrap();
         service
             .approve(&first, "auto", "", 101, &allow(&key))
@@ -1222,8 +1219,8 @@ mod tests {
             .unwrap();
         assert_eq!(reviews.len(), 2);
         assert!(service.pending_submissions().unwrap().is_empty());
-        assert!(service.storage.load_entry("dev.tilo.a").unwrap().is_some());
-        assert!(service.storage.load_entry("dev.tilo.b").unwrap().is_some());
+        assert!(service.storage.load_entry("so.tilo.a").unwrap().is_some());
+        assert!(service.storage.load_entry("so.tilo.b").unwrap().is_some());
     }
 
     #[test]
@@ -1405,11 +1402,11 @@ mod tests {
         sign_entry(&mut public, &key);
         service.storage.save_entry(&public).unwrap();
         service
-            .quarantine("dev.tilo.editor", "m", "hold", 100)
+            .quarantine("so.tilo.editor", "m", "hold", 100)
             .unwrap();
         assert!(matches!(
             service.restore_quarantined(
-                "dev.tilo.editor",
+                "so.tilo.editor",
                 "m",
                 "",
                 101,
@@ -1418,12 +1415,12 @@ mod tests {
             Err(ModerationError::PublisherNoLongerAllowed(_))
         ));
         service
-            .restore_quarantined("dev.tilo.editor", "m", "", 102, &allow(&key))
+            .restore_quarantined("so.tilo.editor", "m", "", 102, &allow(&key))
             .unwrap();
         assert!(
             service
                 .storage
-                .load_entry("dev.tilo.editor")
+                .load_entry("so.tilo.editor")
                 .unwrap()
                 .is_some()
         );

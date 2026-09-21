@@ -62,7 +62,7 @@ mod tests {
             "aa".repeat(32),
             "Tilo official",
             "The default registry shipped with Tilo.",
-            "https://apps.tilo.dev",
+            "https://apps.tilo.so",
         );
         let s = serde_json::to_string(&h).expect("encode");
         let back: RegistryHandshake = serde_json::from_str(&s).expect("decode");

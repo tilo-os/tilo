@@ -111,7 +111,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.imager", live_root)
+        &LaunchSpec::new_with_args("so.tilo.imager", live_root)
             .runtime_attachment(|_| !cfg!(target_os = "windows"))
             .shot_handler(render_shot)
             .shot_root(shot_root)

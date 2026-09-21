@@ -676,21 +676,21 @@ mod tests {
         let tree = tree.shared();
 
         assert!(matches!(
-            sign(&tree, &room, "dev.tilo.notes", "document.save", b"payload"),
+            sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
             Response::Denied(_)
         ));
         tree.write().workspaces[0]
             .capabilities
             .push(CapOverride::grant(
-                Subject::app("dev.tilo.notes"),
+                Subject::app("so.tilo.notes"),
                 Scope::Action {
-                    app: "dev.tilo.notes".into(),
+                    app: "so.tilo.notes".into(),
                     action: "document.save".into(),
                 },
                 Verb::Write,
             ));
         let Response::Signature(signature) =
-            sign(&tree, &room, "dev.tilo.notes", "document.save", b"payload")
+            sign(&tree, &room, "so.tilo.notes", "document.save", b"payload")
         else {
             panic!("granted action was not signed");
         };
@@ -711,13 +711,7 @@ mod tests {
             )
             .expect("valid device signature");
         assert!(matches!(
-            sign(
-                &tree,
-                &room,
-                "dev.tilo.notes",
-                "document.delete",
-                b"payload"
-            ),
+            sign(&tree, &room, "so.tilo.notes", "document.delete", b"payload"),
             Response::Denied(_)
         ));
 
@@ -734,7 +728,7 @@ mod tests {
             )
             .expect("revoke current device");
         assert!(matches!(
-            sign(&tree, &room, "dev.tilo.notes", "document.save", b"payload"),
+            sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
             Response::Denied(reason) if reason.contains("revoked")
         ));
 
@@ -768,7 +762,7 @@ mod tests {
 
         let room = RoomId::new();
         let workspace_id = room.to_string();
-        let app_id = "dev.tilo.notes";
+        let app_id = "so.tilo.notes";
         let record_id = "meeting-notes";
         let profile = crate::identity_registry::selected_identity_profile(&workspace_id)
             .expect("registry")
@@ -868,7 +862,7 @@ mod tests {
                 &room,
                 app_id,
                 &workspace_id,
-                "dev.tilo.calendar",
+                "so.tilo.calendar",
                 record_id,
                 &unsigned,
             ),
@@ -992,9 +986,9 @@ mod tests {
         workspace.room = room;
         workspace.set_owner(profile.principal_id());
         workspace.capabilities.push(CapOverride::grant(
-            Subject::app("dev.tilo.notes"),
+            Subject::app("so.tilo.notes"),
             Scope::Action {
-                app: "dev.tilo.notes".into(),
+                app: "so.tilo.notes".into(),
                 action: "document.save".into(),
             },
             Verb::Write,
@@ -1008,7 +1002,7 @@ mod tests {
             &mut client,
             &Handshake {
                 workspace_id: room.to_string(),
-                app_id: "dev.tilo.notes".into(),
+                app_id: "so.tilo.notes".into(),
             },
         )
         .expect("handshake");
@@ -1058,9 +1052,9 @@ mod tests {
             DocumentMutation::Incremental(b"automerge changes".to_vec())
                 .encode()
                 .expect("typed mutation"),
-            document_artifact_id("dev.tilo.notes", &workspace_id, record_id),
+            document_artifact_id("so.tilo.notes", &workspace_id, record_id),
             Ed25519PublicKey::from_bytes(identity.signing_public_key()),
-            document_attestation_id("dev.tilo.notes", &workspace_id, record_id),
+            document_attestation_id("so.tilo.notes", &workspace_id, record_id),
             collab_types::OpClass::Splice,
             now,
             1,
@@ -1068,7 +1062,7 @@ mod tests {
         let op_signature = identity
             .sign_collaboration_op(
                 &workspace_id,
-                "dev.tilo.notes",
+                "so.tilo.notes",
                 record_id,
                 &postcard::to_stdvec(&op).expect("unsigned envelope"),
             )

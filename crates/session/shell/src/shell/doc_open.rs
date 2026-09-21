@@ -758,9 +758,9 @@ mod tests {
         note_opening(
             &RecordId::for_file(&document),
             &document,
-            "dev.tilo.pdf-viewer",
+            "so.tilo.pdf-viewer",
         );
-        claim_surface_for_document("dev.tilo.pdf-viewer", 77);
+        claim_surface_for_document("so.tilo.pdf-viewer", 77);
 
         let reference = continuation_file_reference_for_surface(77)
             .expect("the root catalog supplies stable identity without a file xattr");
@@ -784,12 +784,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
-            "dev.tilo.word-processor",
+            "so.tilo.word-processor",
             "Word Processor",
             &["odt"],
         );
-        install(tmp.path(), "dev.tilo.pdf-viewer", "PDF Viewer", &["pdf"]);
-        install(tmp.path(), "dev.tilo.text-editor", "Text Editor", &["md"]);
+        install(tmp.path(), "so.tilo.pdf-viewer", "PDF Viewer", &["pdf"]);
+        install(tmp.path(), "so.tilo.text-editor", "Text Editor", &["md"]);
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         let log = install_recording_launcher(tmp.path());
@@ -797,9 +797,9 @@ mod tests {
 
         let chrome = chrome_with_workspace();
         let cases = [
-            ("report.odt", "dev.tilo.word-processor"),
-            ("manual.pdf", "dev.tilo.pdf-viewer"),
-            ("notes.md", "dev.tilo.text-editor"),
+            ("report.odt", "so.tilo.word-processor"),
+            ("manual.pdf", "so.tilo.pdf-viewer"),
+            ("notes.md", "so.tilo.text-editor"),
         ];
         for (name, _) in cases {
             let path = tmp.path().join(name);
@@ -848,7 +848,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
-            "dev.tilo.word-processor",
+            "so.tilo.word-processor",
             "Word Processor",
             &["odt"],
         );
@@ -963,7 +963,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
         std::fs::create_dir_all(&apps).unwrap();
-        install(&apps, "dev.tilo.word-processor", "Word Processor", &["odt"]);
+        install(&apps, "so.tilo.word-processor", "Word Processor", &["odt"]);
         let files = tmp.path().join("files");
         std::fs::create_dir_all(&files).unwrap();
         let doc = files.join("agenda.odt");
@@ -999,7 +999,7 @@ mod tests {
         let commands = launched_commands(&log, 1);
         assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
         assert!(
-            commands[0].contains("--app-id dev.tilo.word-processor")
+            commands[0].contains("--app-id so.tilo.word-processor")
                 && commands[0].contains(&format!("--open {}", doc.display())),
             "the explorer's activation had to reach the owning app with the \
              document: {}",
@@ -1011,7 +1011,7 @@ mod tests {
             let st = chrome.borrow();
             let tree = st.tree();
             let ws = tree.active_workspace().unwrap();
-            let want = Subject::app("dev.tilo.word-processor");
+            let want = Subject::app("so.tilo.word-processor");
             let scopes: Vec<Scope> = ws
                 .capabilities
                 .iter()
@@ -1033,7 +1033,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
         std::fs::create_dir_all(&apps).unwrap();
-        install(&apps, "dev.tilo.word-processor", "Word Processor", &["odt"]);
+        install(&apps, "so.tilo.word-processor", "Word Processor", &["odt"]);
         let files = tmp.path().join("files");
         std::fs::create_dir_all(&files).unwrap();
         std::fs::write(files.join("archive.zzz"), b"x").unwrap();
@@ -1087,7 +1087,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
-            "dev.tilo.word-processor",
+            "so.tilo.word-processor",
             "Word Processor",
             &["odt"],
         );
@@ -1139,7 +1139,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
-            "dev.tilo.word-processor",
+            "so.tilo.word-processor",
             "Word Processor",
             &["odt", "md"],
         );
@@ -1153,7 +1153,7 @@ mod tests {
                 app,
                 editable_document,
             } => {
-                assert_eq!(app.package_id, "dev.tilo.word-processor");
+                assert_eq!(app.package_id, "so.tilo.word-processor");
                 assert!(
                     editable_document,
                     "the format registry knows .odt is an editable document"
@@ -1177,7 +1177,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn document_with_no_installed_handler_is_distinguishable() {
         let tmp = tempfile::tempdir().unwrap();
-        install(tmp.path(), "dev.tilo.calculator", "Calculator", &[]);
+        install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         launcher::invalidate_app_cache();
@@ -1213,7 +1213,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
-            "dev.tilo.word-processor",
+            "so.tilo.word-processor",
             "Word Processor",
             &["odt"],
         );
@@ -1240,7 +1240,7 @@ mod tests {
         let st = chrome.borrow();
         let tree = st.tree();
         let ws = tree.active_workspace().unwrap();
-        let want_subject = Subject::app("dev.tilo.word-processor");
+        let want_subject = Subject::app("so.tilo.word-processor");
         let granted: Vec<_> = ws
             .capabilities
             .iter()
@@ -1283,7 +1283,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn unclaimed_extension_refuses_with_a_reportable_reason() {
         let tmp = tempfile::tempdir().unwrap();
-        install(tmp.path(), "dev.tilo.calculator", "Calculator", &[]);
+        install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         launcher::invalidate_app_cache();
@@ -1393,7 +1393,7 @@ mod tests {
                 .unwrap()
                 .contains(root.path().to_str().unwrap())
         );
-        install(root.path(), "dev.tilo.text-editor", "Text Editor", &["md"]);
+        install(root.path(), "so.tilo.text-editor", "Text Editor", &["md"]);
         // SAFETY: guarded by the process_env serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", root.path()) };
         let log = install_recording_launcher(root.path());

@@ -45,7 +45,7 @@ struct Cli {
     #[arg(long)]
     record: Option<String>,
     /// The app whose document this is (its manifest package id).
-    #[arg(long, default_value = "dev.tilo.word-processor")]
+    #[arg(long, default_value = "so.tilo.word-processor")]
     app: String,
     /// The display name used by name-addressed instructions. Structured
     /// mentions and authorship use the stable --agent-id.

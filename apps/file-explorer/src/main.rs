@@ -113,7 +113,7 @@ extern crate runtime_dylib;
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.file-explorer", live_root)
+        &LaunchSpec::new_with_args("so.tilo.file-explorer", live_root)
             .history(&file_explorer::framework_history::HISTORY)
             .open_state(open_state)
             .shot_handler(shot_handler)

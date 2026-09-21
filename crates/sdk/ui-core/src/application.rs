@@ -380,55 +380,264 @@ impl HostContext {
 /// This table is deliberately finite. It is used only when resolving an
 /// installed application definition or its persisted record namespace; it is
 /// never consulted by capability, signature, or document-route validation.
-const RENAMED_FIRST_PARTY_APP_IDS: &[(&str, &str)] = &[
-    ("dev.qos.agent", "dev.tilo.agent"),
-    ("dev.qos.api-tester", "dev.tilo.api-tester"),
-    ("dev.qos.backups", "dev.tilo.backups"),
-    ("dev.qos.browser", "dev.tilo.browser"),
-    ("dev.qos.calculator", "dev.tilo.calculator"),
-    ("dev.qos.calendar", "dev.tilo.calendar"),
-    ("dev.qos.camera", "dev.tilo.camera"),
-    ("dev.qos.chat", "dev.tilo.chat"),
-    ("dev.qos.code-editor", "dev.tilo.code-editor"),
-    ("dev.qos.contacts", "dev.tilo.contacts"),
-    ("dev.qos.containers", "dev.tilo.containers"),
-    ("dev.qos.db-client", "dev.tilo.db-client"),
-    ("dev.qos.diffmerge", "dev.tilo.diffmerge"),
-    ("dev.qos.disks", "dev.tilo.disks"),
-    ("dev.qos.ebook", "dev.tilo.ebook"),
-    ("dev.qos.feeds", "dev.tilo.feeds"),
-    ("dev.qos.file-explorer", "dev.tilo.file-explorer"),
-    ("dev.qos.firewall", "dev.tilo.firewall"),
-    ("dev.qos.git-client", "dev.tilo.git-client"),
-    ("dev.qos.hex-editor", "dev.tilo.hex-editor"),
-    ("dev.qos.imager", "dev.tilo.imager"),
-    ("dev.qos.logs", "dev.tilo.logs"),
-    ("dev.qos.mail", "dev.tilo.mail"),
-    ("dev.qos.maps", "dev.tilo.maps"),
-    ("dev.qos.monitor", "dev.tilo.monitor"),
-    ("dev.qos.music", "dev.tilo.music"),
-    ("dev.qos.notes", "dev.tilo.notes"),
-    ("dev.qos.osk", "dev.tilo.osk"),
-    ("dev.qos.pdf-viewer", "dev.tilo.pdf-viewer"),
-    ("dev.qos.photos", "dev.tilo.photos"),
-    ("dev.qos.remote", "dev.tilo.remote"),
-    ("dev.qos.scratchpad", "dev.tilo.scratchpad"),
-    ("dev.qos.settings", "dev.tilo.settings"),
-    ("dev.qos.sheets", "dev.tilo.sheets"),
-    ("dev.qos.slides", "dev.tilo.slides"),
-    ("dev.qos.snippets", "dev.tilo.snippets"),
-    ("dev.qos.store", "dev.tilo.store"),
-    ("dev.qos.terminal", "dev.tilo.terminal"),
-    ("dev.qos.themes", "dev.tilo.themes"),
-    ("dev.qos.totp", "dev.tilo.totp"),
-    ("dev.qos.tube", "dev.tilo.tube"),
-    ("dev.qos.typst-editor", "dev.tilo.typst-editor"),
-    ("dev.qos.video-editor", "dev.tilo.video-editor"),
-    ("dev.qos.video-player", "dev.tilo.video-player"),
-    ("dev.qos.vpn", "dev.tilo.vpn"),
-    ("dev.qos.weather", "dev.tilo.weather"),
-    ("dev.qos.windows", "dev.tilo.windows"),
-    ("dev.qos.word-processor", "dev.tilo.word-processor"),
+#[derive(Clone, Copy)]
+struct FirstPartyAppIdFamily {
+    qos: &'static str,
+    tilo: &'static str,
+    current: &'static str,
+}
+
+impl FirstPartyAppIdFamily {
+    fn contains(self, app_id: &str) -> bool {
+        app_id == self.qos || app_id == self.tilo || app_id == self.current
+    }
+
+    fn ids(self) -> [&'static str; 3] {
+        [self.current, self.tilo, self.qos]
+    }
+}
+
+const RENAMED_FIRST_PARTY_APP_IDS: &[FirstPartyAppIdFamily] = &[
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.agent",
+        tilo: "dev.tilo.agent",
+        current: "so.tilo.agent",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.api-tester",
+        tilo: "dev.tilo.api-tester",
+        current: "so.tilo.api-tester",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.backups",
+        tilo: "dev.tilo.backups",
+        current: "so.tilo.backups",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.browser",
+        tilo: "dev.tilo.browser",
+        current: "so.tilo.browser",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.calculator",
+        tilo: "dev.tilo.calculator",
+        current: "so.tilo.calculator",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.calendar",
+        tilo: "dev.tilo.calendar",
+        current: "so.tilo.calendar",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.camera",
+        tilo: "dev.tilo.camera",
+        current: "so.tilo.camera",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.chat",
+        tilo: "dev.tilo.chat",
+        current: "so.tilo.chat",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.code-editor",
+        tilo: "dev.tilo.code-editor",
+        current: "so.tilo.code-editor",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.contacts",
+        tilo: "dev.tilo.contacts",
+        current: "so.tilo.contacts",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.containers",
+        tilo: "dev.tilo.containers",
+        current: "so.tilo.containers",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.db-client",
+        tilo: "dev.tilo.db-client",
+        current: "so.tilo.db-client",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.diffmerge",
+        tilo: "dev.tilo.diffmerge",
+        current: "so.tilo.diffmerge",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.disks",
+        tilo: "dev.tilo.disks",
+        current: "so.tilo.disks",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.ebook",
+        tilo: "dev.tilo.ebook",
+        current: "so.tilo.ebook",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.feeds",
+        tilo: "dev.tilo.feeds",
+        current: "so.tilo.feeds",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.file-explorer",
+        tilo: "dev.tilo.file-explorer",
+        current: "so.tilo.file-explorer",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.firewall",
+        tilo: "dev.tilo.firewall",
+        current: "so.tilo.firewall",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.git-client",
+        tilo: "dev.tilo.git-client",
+        current: "so.tilo.git-client",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.hex-editor",
+        tilo: "dev.tilo.hex-editor",
+        current: "so.tilo.hex-editor",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.imager",
+        tilo: "dev.tilo.imager",
+        current: "so.tilo.imager",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.logs",
+        tilo: "dev.tilo.logs",
+        current: "so.tilo.logs",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.mail",
+        tilo: "dev.tilo.mail",
+        current: "so.tilo.mail",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.maps",
+        tilo: "dev.tilo.maps",
+        current: "so.tilo.maps",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.monitor",
+        tilo: "dev.tilo.monitor",
+        current: "so.tilo.monitor",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.music",
+        tilo: "dev.tilo.music",
+        current: "so.tilo.music",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.notes",
+        tilo: "dev.tilo.notes",
+        current: "so.tilo.notes",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.osk",
+        tilo: "dev.tilo.osk",
+        current: "so.tilo.osk",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.pdf-viewer",
+        tilo: "dev.tilo.pdf-viewer",
+        current: "so.tilo.pdf-viewer",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.photos",
+        tilo: "dev.tilo.photos",
+        current: "so.tilo.photos",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.remote",
+        tilo: "dev.tilo.remote",
+        current: "so.tilo.remote",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.scratchpad",
+        tilo: "dev.tilo.scratchpad",
+        current: "so.tilo.scratchpad",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.settings",
+        tilo: "dev.tilo.settings",
+        current: "so.tilo.settings",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.sheets",
+        tilo: "dev.tilo.sheets",
+        current: "so.tilo.sheets",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.slides",
+        tilo: "dev.tilo.slides",
+        current: "so.tilo.slides",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.snippets",
+        tilo: "dev.tilo.snippets",
+        current: "so.tilo.snippets",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.store",
+        tilo: "dev.tilo.store",
+        current: "so.tilo.store",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.terminal",
+        tilo: "dev.tilo.terminal",
+        current: "so.tilo.terminal",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.themes",
+        tilo: "dev.tilo.themes",
+        current: "so.tilo.themes",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.totp",
+        tilo: "dev.tilo.totp",
+        current: "so.tilo.totp",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.tube",
+        tilo: "dev.tilo.tube",
+        current: "so.tilo.tube",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.typst-editor",
+        tilo: "dev.tilo.typst-editor",
+        current: "so.tilo.typst-editor",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.video-editor",
+        tilo: "dev.tilo.video-editor",
+        current: "so.tilo.video-editor",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.video-player",
+        tilo: "dev.tilo.video-player",
+        current: "so.tilo.video-player",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.vpn",
+        tilo: "dev.tilo.vpn",
+        current: "so.tilo.vpn",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.weather",
+        tilo: "dev.tilo.weather",
+        current: "so.tilo.weather",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.windows",
+        tilo: "dev.tilo.windows",
+        current: "so.tilo.windows",
+    },
+    FirstPartyAppIdFamily {
+        qos: "dev.qos.word-processor",
+        tilo: "dev.tilo.word-processor",
+        current: "so.tilo.word-processor",
+    },
 ];
 
 /// Current package registration for a deployed first-party durable id.
@@ -437,32 +646,29 @@ const RENAMED_FIRST_PARTY_APP_IDS: &[(&str, &str)] = &[
 /// tabs, record routes, capabilities, and cryptographic domains.
 #[must_use]
 pub fn current_package_id_for_legacy(app_id: &str) -> Option<&'static str> {
-    RENAMED_FIRST_PARTY_APP_IDS
-        .iter()
-        .find_map(|(legacy, current)| (*legacy == app_id).then_some(*current))
+    RENAMED_FIRST_PARTY_APP_IDS.iter().find_map(|family| {
+        (app_id == family.qos || app_id == family.tilo).then_some(family.current)
+    })
 }
 
-/// The explicitly paired id used for definition/catalogue lookup.
+/// The exact finite family used for definition/catalogue lookup.
 #[must_use]
-pub fn first_party_app_id_lookup_alias(app_id: &str) -> Option<&'static str> {
+pub fn first_party_app_id_lookup_candidates(app_id: &str) -> impl Iterator<Item = &'static str> {
     RENAMED_FIRST_PARTY_APP_IDS
         .iter()
-        .find_map(|(legacy, current)| {
-            if *legacy == app_id {
-                Some(*current)
-            } else if *current == app_id {
-                Some(*legacy)
-            } else {
-                None
-            }
-        })
+        .find(|family| family.contains(app_id))
+        .into_iter()
+        .flat_map(|family| family.ids())
 }
 
 /// Whether two ids name the same explicitly renamed first-party app for
 /// definition or persisted-record lookup.
 #[must_use]
 pub fn lookup_compatible_first_party_app_ids(left: &str, right: &str) -> bool {
-    left == right || first_party_app_id_lookup_alias(left) == Some(right)
+    left == right
+        || RENAMED_FIRST_PARTY_APP_IDS
+            .iter()
+            .any(|family| family.contains(left) && family.contains(right))
 }
 impl Drop for HostContext {
     fn drop(&mut self) {
@@ -1275,8 +1481,8 @@ impl ApplicationCatalog {
         self.definitions
             .get(app_id)
             .or_else(|| {
-                first_party_app_id_lookup_alias(app_id)
-                    .and_then(|alias| self.definitions.get(alias))
+                first_party_app_id_lookup_candidates(app_id)
+                    .find_map(|candidate| self.definitions.get(candidate))
             })
             .copied()
             .ok_or_else(|| LaunchError::UnknownApplication(app_id.into()))
@@ -1449,7 +1655,7 @@ mod bound_lifetime_tests {
     fn application_catalog_resolves_only_explicit_first_party_rename_aliases() {
         static CURRENT: std::sync::LazyLock<ApplicationDefinition> =
             std::sync::LazyLock::new(|| ApplicationDefinition {
-                app_id: "dev.tilo.notes",
+                app_id: "so.tilo.notes",
                 title: "Notes",
                 icon: IconDescriptor::Named("notes".into()),
                 record_kind: RecordKind::new("notes.notebook"),
@@ -1462,7 +1668,11 @@ mod bound_lifetime_tests {
 
         assert_eq!(
             catalog.resolve("dev.qos.notes").unwrap().app_id,
-            "dev.tilo.notes"
+            "so.tilo.notes"
+        );
+        assert_eq!(
+            catalog.resolve("dev.tilo.notes").unwrap().app_id,
+            "so.tilo.notes"
         );
         assert!(matches!(
             catalog.resolve("dev.qos.not-a-first-party-app"),
@@ -1474,28 +1684,57 @@ mod bound_lifetime_tests {
             "legacy-app-id-device",
         )
         .unwrap();
-        let records = crate::record::RecordOwners::portable(cache.clone())
-            .open("dev.qos.notes", "legacy-app-id-room")
-            .unwrap();
-        let views = Rc::new(InstanceViewStore::portable(cache, "legacy-app-id-room").unwrap());
-        let context = HostContext::prepare(
-            &CURRENT,
-            records,
-            views,
-            "legacy-app-id-device".into(),
-            7,
-            Rc::new(RefCell::new(PermissionContext::permissive())),
-            UserId("legacy-app-id-author".into()),
-            tilo_actions::ActionContext::default(),
-            &LaunchTarget::New,
-        )
-        .expect("the current component must mount the deployed record namespace");
+        let mut contexts = Vec::new();
+        for (instance, durable) in [(7, "dev.qos.notes"), (8, "dev.tilo.notes")] {
+            let records = crate::record::RecordOwners::portable(cache.clone())
+                .open(durable, "legacy-app-id-room")
+                .unwrap();
+            let views =
+                Rc::new(InstanceViewStore::portable(cache.clone(), "legacy-app-id-room").unwrap());
+            let context = HostContext::prepare(
+                &CURRENT,
+                records,
+                views,
+                "legacy-app-id-device".into(),
+                instance,
+                Rc::new(RefCell::new(PermissionContext::permissive())),
+                UserId("legacy-app-id-author".into()),
+                tilo_actions::ActionContext::default(),
+                &LaunchTarget::New,
+            )
+            .expect("the current component must mount each deployed record namespace");
+            assert_eq!(context.records.canonical_namespace().unwrap().1, durable);
+            assert_eq!(context.app_id, durable);
+            assert_eq!(context.definition_app_id, "so.tilo.notes");
+            contexts.push(context);
+        }
+        assert_eq!(contexts.len(), 2, "both legacy namespaces stay mounted");
+    }
+
+    #[test]
+    fn first_party_lookup_is_finite_across_all_three_deployed_namespaces() {
+        for left in ["dev.qos.notes", "dev.tilo.notes", "so.tilo.notes"] {
+            for right in ["dev.qos.notes", "dev.tilo.notes", "so.tilo.notes"] {
+                assert!(lookup_compatible_first_party_app_ids(left, right));
+            }
+        }
         assert_eq!(
-            context.records.canonical_namespace().unwrap().1,
-            "dev.qos.notes"
+            current_package_id_for_legacy("dev.qos.notes"),
+            Some("so.tilo.notes")
         );
-        assert_eq!(context.app_id, "dev.qos.notes");
-        assert_eq!(context.definition_app_id, "dev.tilo.notes");
+        assert_eq!(
+            current_package_id_for_legacy("dev.tilo.notes"),
+            Some("so.tilo.notes")
+        );
+        assert_eq!(current_package_id_for_legacy("so.tilo.notes"), None);
+        assert!(!lookup_compatible_first_party_app_ids(
+            "dev.qos.notes",
+            "so.tilo.photos"
+        ));
+        assert!(!lookup_compatible_first_party_app_ids(
+            "dev.qos.unlisted",
+            "so.tilo.unlisted"
+        ));
     }
 
     #[test]
@@ -1599,10 +1838,10 @@ mod bound_lifetime_tests {
     fn actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry() {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let records = owners.open("so.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
+            app_id: "so.tilo.mount-probe",
             title: "Mount probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),
@@ -1681,10 +1920,10 @@ mod bound_lifetime_tests {
     fn task4_component_loan_checks_captured_registry_and_lifetime_before_delivery() {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = crate::record::RecordOwners::new(temp.path().into());
-        let records = owners.open("dev.tilo.mount-probe", "A").unwrap();
+        let records = owners.open("so.tilo.mount-probe", "A").unwrap();
         let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
         let definition = ApplicationDefinition {
-            app_id: "dev.tilo.mount-probe",
+            app_id: "so.tilo.mount-probe",
             title: "Mount probe",
             icon: IconDescriptor::Glyph("P"),
             record_kind: RecordKind::new("probe"),

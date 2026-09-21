@@ -1675,7 +1675,7 @@ impl NotesApp {
                 // one: the saver would replace the original bytes with it.
                 tracing::warn!(%error, page = %sel, "notes: page bind refused");
                 if self.legacy_read_blocked != Some(sel) {
-                    self.report_page_read_failure(&error.to_string());
+                    self.report_page_read_failure(&error);
                 }
                 self.legacy_read_blocked = Some(sel);
                 self.bound_page = None;
@@ -2363,7 +2363,7 @@ impl NotesApp {
                     let bodies = match bodies {
                         Ok(bodies) => bodies,
                         Err(error) => {
-                            self.report_page_read_failure(&error.to_string());
+                            self.report_page_read_failure(&error);
                             return;
                         }
                     };
@@ -2505,7 +2505,10 @@ impl NotesApp {
         }
     }
 
-    fn report_page_read_failure(&mut self, error: &str) {
+    fn report_page_read_failure<E>(&mut self, error: &E)
+    where
+        E: std::fmt::Display + ?Sized,
+    {
         tracing::warn!(%error, "notes: page read refused");
         self.transfer_toasts.push(
             format!("Could not read note: {error}"),

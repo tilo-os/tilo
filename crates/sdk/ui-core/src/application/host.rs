@@ -58,7 +58,7 @@ impl NativeProcessHost {
             Rc::new(RefCell::new(resolved.permissions)),
             tilo_actions::ActionContext::default(),
         )?;
-        host.package_id = Some(resolved.package_id);
+        host.durable_app_id = Some(resolved.durable_app_id);
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
@@ -82,6 +82,7 @@ impl NativeProcessHost {
 #[derive(Default)]
 struct NativeProcessEnvironment {
     package_id: Option<String>,
+    durable_app_id: Option<String>,
     quick_app_id: Option<String>,
     workspace_id: Option<String>,
     quick_workspace_id: Option<String>,
@@ -94,7 +95,7 @@ struct NativeProcessEnvironment {
 }
 
 struct ResolvedNativeProcessHost {
-    package_id: String,
+    durable_app_id: String,
     profile_root: PathBuf,
     device_id: String,
     workspace_id: String,
@@ -118,6 +119,7 @@ impl NativeProcessEnvironment {
         }
         Self {
             package_id: string("TILO_PACKAGE_ID"),
+            durable_app_id: string("TILO_DURABLE_APP_ID"),
             quick_app_id: string("QUICK_APP_ID"),
             workspace_id: string("TILO_WORKSPACE_ID"),
             quick_workspace_id: string("QUICK_CLUSTER_ID"),
@@ -143,6 +145,14 @@ impl NativeProcessEnvironment {
         if !super::lookup_compatible_first_party_app_ids(&package_id, app_id) {
             return Err(LaunchError::BindingMismatch);
         }
+        let durable_app_id = self
+            .durable_app_id
+            .as_deref()
+            .unwrap_or(&package_id)
+            .to_owned();
+        if !super::lookup_compatible_first_party_app_ids(&durable_app_id, app_id) {
+            return Err(LaunchError::BindingMismatch);
+        }
         let profile_root = self.persistent_profile_root()?;
         let device_id = persistent_device_id(&profile_root)?;
         let workspace = self
@@ -161,7 +171,7 @@ impl NativeProcessEnvironment {
         let permissions =
             permissions_for_participation(author, workspace_scoped, self.participation.as_deref())?;
         let instance_id = self.continuity_instance.map_or_else(
-            || Ok(stable_instance_id(&package_id)),
+            || Ok(stable_instance_id(&durable_app_id)),
             |value| {
                 value.parse::<u64>().map_err(|_| {
                     LaunchError::Operation("invalid launcher continuation identity".into())
@@ -169,7 +179,7 @@ impl NativeProcessEnvironment {
             },
         )?;
         Ok(ResolvedNativeProcessHost {
-            package_id,
+            durable_app_id,
             profile_root,
             device_id,
             workspace_id,
@@ -302,9 +312,9 @@ fn validate_device_id(value: &str) -> Result<String, LaunchError> {
 }
 
 pub struct ApplicationHost {
-    /// Exact launcher package for native processes. Explicit/capture hosts
-    /// select their package from the definition passed to `records_for`.
-    package_id: Option<String>,
+    /// Exact launcher-authenticated record route for native processes.
+    /// Explicit/capture hosts select it from the definition passed to `records_for`.
+    durable_app_id: Option<String>,
     owners: RecordOwners,
     views: Rc<InstanceViewStore>,
     device_id: String,
@@ -358,7 +368,7 @@ impl ApplicationHost {
                 .map_err(LaunchError::Restore)?,
         );
         Ok(Self {
-            package_id: None,
+            durable_app_id: None,
             owners: RecordOwners::new(profile_root),
             views,
             device_id,
@@ -381,7 +391,7 @@ impl ApplicationHost {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
             }
         }
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        let package_id = self.durable_app_id.as_deref().unwrap_or(definition.app_id);
         if !super::lookup_compatible_first_party_app_ids(package_id, definition.app_id) {
             return Err(LaunchError::BindingMismatch);
         }
@@ -405,7 +415,7 @@ impl ApplicationHost {
             return Err(LaunchError::BindingMismatch);
         }
         let saved = self.views.load(instance_id).map_err(LaunchError::Restore)?;
-        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        let package_id = self.durable_app_id.as_deref().unwrap_or(definition.app_id);
         if !super::lookup_compatible_first_party_app_ids(package_id, definition.app_id)
             || saved.as_ref().is_some_and(|saved| {
                 saved.app_id != package_id
@@ -556,16 +566,18 @@ mod native_process_tests {
         let temp = tempfile::tempdir().unwrap();
         let author = UserId("person-a".into());
         let mut legacy = environment(temp.path());
-        legacy.package_id = Some("dev.qos.notes".into());
-        let resolved = legacy.resolve("dev.tilo.notes", &author).unwrap();
-        assert_eq!(resolved.package_id, "dev.qos.notes");
+        legacy.package_id = Some("so.tilo.notes".into());
+        legacy.durable_app_id = Some("dev.qos.notes".into());
+        let resolved = legacy.resolve("so.tilo.notes", &author).unwrap();
+        assert_eq!(resolved.durable_app_id, "dev.qos.notes");
         assert_eq!(resolved.instance_id, stable_instance_id("dev.qos.notes"));
 
         let mut legacy = environment(temp.path());
-        legacy.package_id = Some("dev.qos.notes".into());
+        legacy.package_id = Some("so.tilo.notes".into());
+        legacy.durable_app_id = Some("dev.qos.notes".into());
         let mut native =
-            NativeProcessHost::open_with(&definition("dev.tilo.notes"), legacy, author).unwrap();
-        let current = definition("dev.tilo.notes");
+            NativeProcessHost::open_with(&definition("so.tilo.notes"), legacy, author).unwrap();
+        let current = definition("so.tilo.notes");
         let records = native.host_mut().records_for(&current).unwrap();
         assert_eq!(records.canonical_namespace().unwrap().1, "dev.qos.notes");
 
@@ -596,6 +608,40 @@ mod native_process_tests {
             native
                 .host
                 .saved_view_for(&current, native.instance_id, &checkout),
+            Err(LaunchError::BindingMismatch)
+        ));
+    }
+
+    #[test]
+    fn signed_package_and_exact_durable_route_are_validated_independently() {
+        let temp = tempfile::tempdir().unwrap();
+        let author = UserId("person-a".into());
+        for package in ["dev.qos.notes", "dev.tilo.notes", "so.tilo.notes"] {
+            for durable in ["dev.qos.notes", "dev.tilo.notes", "so.tilo.notes"] {
+                let mut environment = environment(temp.path());
+                environment.package_id = Some(package.into());
+                environment.durable_app_id = Some(durable.into());
+                let resolved = environment
+                    .resolve("so.tilo.notes", &author)
+                    .expect("each explicit deployed package and route pair remains available");
+                assert_eq!(resolved.durable_app_id, durable);
+                assert_eq!(resolved.instance_id, stable_instance_id(durable));
+            }
+        }
+
+        let mut foreign_package = environment(temp.path());
+        foreign_package.package_id = Some("so.tilo.photos".into());
+        foreign_package.durable_app_id = Some("dev.qos.notes".into());
+        assert!(matches!(
+            foreign_package.resolve("so.tilo.notes", &author),
+            Err(LaunchError::BindingMismatch)
+        ));
+
+        let mut foreign_durable = environment(temp.path());
+        foreign_durable.package_id = Some("so.tilo.notes".into());
+        foreign_durable.durable_app_id = Some("dev.qos.photos".into());
+        assert!(matches!(
+            foreign_durable.resolve("so.tilo.notes", &author),
             Err(LaunchError::BindingMismatch)
         ));
     }

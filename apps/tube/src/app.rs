@@ -27,7 +27,9 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ActionEmitter, AuthoredExtent, NavSplit, SplitMode, VideoPlayer, Widget};
+use ui::widget::{
+    ActionEmitter, AuthoredExtent, FullscreenProvider, NavSplit, SplitMode, VideoPlayer, Widget,
+};
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
 use crate::api::{Request, Update, Worker};
@@ -2449,7 +2451,28 @@ impl TubeApp {
     }
 }
 
+impl FullscreenProvider for TubeApp {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        FullscreenProvider::fullscreen_intent(&*self.player.borrow())
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        FullscreenProvider::fullscreen_params(&*self.player.borrow())
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        FullscreenProvider::on_fullscreen_changed(&mut *self.player.borrow_mut(), active);
+    }
+}
+
 impl Widget for TubeApp {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TUBE_OPERATION_TYPE]
     }
@@ -3079,23 +3102,6 @@ impl Widget for TubeApp {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-
-    // Forward the watch-page player's fullscreen contract up to `ui::App` (which
-    // only polls the ROOT widget). Without this the player's fullscreen button
-    // flips its own flag but never reaches the window. The player names the
-    // largest output via `fullscreen_params`, so hitting fullscreen promotes the
-    // surface onto the big screen through the shared mechanism.
-    fn fullscreen_intent(&self) -> Option<bool> {
-        self.player.borrow().fullscreen_intent()
-    }
-
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        self.player.borrow().fullscreen_params()
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        self.player.borrow_mut().on_fullscreen_changed(active);
-    }
 }
 
 #[cfg(test)]
@@ -3217,24 +3223,24 @@ mod tests {
         // since `ui::App` only polls the root widget.
         let (mut app, _) = fresh_synth();
         assert_eq!(
-            Widget::fullscreen_intent(&app),
+            FullscreenProvider::fullscreen_intent(&app),
             None,
             "no opinion until the user acts"
         );
         app.player.borrow_mut().toggle_fullscreen();
         assert_eq!(
-            Widget::fullscreen_intent(&app),
+            FullscreenProvider::fullscreen_intent(&app),
             Some(true),
             "toggle reaches the root"
         );
         assert_eq!(
-            Widget::fullscreen_params(&app).target,
+            FullscreenProvider::fullscreen_params(&app).target,
             ui::fullscreen::FullscreenTarget::Largest,
             "immersive video targets the big screen"
         );
         // A compositor-driven exit flows back to the player through the root.
-        Widget::on_fullscreen_changed(&mut app, false);
-        assert_eq!(Widget::fullscreen_intent(&app), Some(false));
+        FullscreenProvider::on_fullscreen_changed(&mut app, false);
+        assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(false));
     }
 
     #[test]

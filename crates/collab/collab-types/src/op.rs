@@ -891,23 +891,23 @@ mod tests {
 
     #[test]
     fn document_route_ids_are_stable_and_unambiguous() {
-        let first = document_artifact_id("dev.tilo.notes", "room-a", "record-b");
+        let first = document_artifact_id("so.tilo.notes", "room-a", "record-b");
         assert_eq!(
             first,
-            document_artifact_id("dev.tilo.notes", "room-a", "record-b")
+            document_artifact_id("so.tilo.notes", "room-a", "record-b")
         );
         assert_ne!(
             first,
-            document_artifact_id("dev.tilo.notes", "room-ar", "ecord-b")
+            document_artifact_id("so.tilo.notes", "room-ar", "ecord-b")
         );
         assert_ne!(
             first.0,
-            document_attestation_id("dev.tilo.notes", "room-a", "record-b").0,
+            document_attestation_id("so.tilo.notes", "room-a", "record-b").0,
             "artifact and attestation domains must not alias"
         );
         assert_ne!(
             first.0,
-            document_channel_id("dev.tilo.notes", "room-a", "record-b").0,
+            document_channel_id("so.tilo.notes", "room-a", "record-b").0,
             "artifact and MLS channel domains must not alias"
         );
         assert_eq!(first.0.get_version_num(), 8);

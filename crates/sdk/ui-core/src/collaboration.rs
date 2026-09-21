@@ -108,7 +108,7 @@ pub fn wifi_continuity_command(
     if !enqueue_sdk_command(
         &sender,
         SdkCommand::WifiContinuity {
-            app_id: "dev.tilo.settings".into(),
+            app_id: "so.tilo.settings".into(),
             command,
             reply: reply_tx,
         },
@@ -5652,7 +5652,7 @@ mod tests {
         let seen = calls.clone();
         let cluster_id = Uuid::new_v4();
         let expected = RouteSpec {
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             cluster_id,
             record: Some("note".into()),
         };
@@ -5674,7 +5674,7 @@ mod tests {
         });
         let result = CollaborationManager::for_route_host_blocking(
             connector,
-            "dev.tilo.notes",
+            "so.tilo.notes",
             cluster_id,
             Some("note".into()),
             None,
@@ -5715,7 +5715,7 @@ mod tests {
         let caller = thread::spawn(move || {
             let result = CollaborationManager::for_route_host_blocking(
                 connector,
-                "dev.tilo.notes",
+                "so.tilo.notes",
                 Uuid::new_v4(),
                 None,
                 None,
@@ -5747,7 +5747,7 @@ mod tests {
         });
         let result = CollaborationManager::for_route_host_blocking(
             connector,
-            "dev.tilo.notes",
+            "so.tilo.notes",
             Uuid::new_v4(),
             None,
             None,
@@ -5778,7 +5778,7 @@ mod tests {
         });
         let result = CollaborationManager::for_route_host_blocking(
             connector,
-            "dev.tilo.notes",
+            "so.tilo.notes",
             Uuid::new_v4(),
             None,
             None,
@@ -5840,7 +5840,7 @@ mod tests {
         });
         let mut manager = CollaborationManager::for_route_host_blocking(
             connector,
-            "dev.tilo.notes",
+            "so.tilo.notes",
             cluster_id,
             Some("note".into()),
             None,
@@ -5853,7 +5853,7 @@ mod tests {
         assert_eq!(joined.len(), 1);
         assert_eq!(
             joined[0].0,
-            channel_key::format("dev.tilo.notes", &cluster_id.to_string(), "note")
+            channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
         );
         let presentation = runtime_collab::CertifiedJoinIdentity::decode(&joined[0].1)
             .unwrap()
@@ -5878,7 +5878,7 @@ mod tests {
                 unsigned_op,
             } => {
                 assert_eq!(workspace_id, &cluster_id.to_string());
-                assert_eq!(app_id, "dev.tilo.notes");
+                assert_eq!(app_id, "so.tilo.notes");
                 assert_eq!(record_id, "note");
                 let op: SignedOp = postcard::from_bytes(unsigned_op).unwrap();
                 assert_eq!(
@@ -6014,7 +6014,7 @@ mod tests {
         let cluster_id = Uuid::new_v4();
         let result = CollaborationManager::for_route_host_blocking(
             connector,
-            "dev.tilo.notes",
+            "so.tilo.notes",
             cluster_id,
             Some("note".into()),
             None,
@@ -6029,7 +6029,7 @@ mod tests {
         }
         assert_eq!(
             attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-            channel_key::format("dev.tilo.notes", &cluster_id.to_string(), "note")
+            channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(
@@ -6054,7 +6054,7 @@ mod tests {
         let caller = thread::spawn(move || {
             let result = CollaborationManager::for_route_host_blocking(
                 connector,
-                "dev.tilo.notes",
+                "so.tilo.notes",
                 cluster_id,
                 Some("note".into()),
                 None,
@@ -6092,7 +6092,7 @@ mod tests {
         );
         assert_eq!(
             attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
-            channel_key::format("dev.tilo.notes", &cluster_id.to_string(), "note")
+            channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(

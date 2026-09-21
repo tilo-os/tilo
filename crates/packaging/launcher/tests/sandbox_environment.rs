@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
 use launcher::run::{RunOptions, run_with_captured};
 
-const PACKAGE: &str = "dev.tilo.envtest";
+const PACKAGE: &str = "so.tilo.envtest";
 
 /// A variable name no part of Tilo sets, so its presence inside the
 /// sandbox can only mean one thing: it walked in from the parent.
