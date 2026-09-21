@@ -2521,10 +2521,11 @@ impl NotesApp {
                     .legacy_fixture_storage
                     .as_ref()
                     .map(|legacy| legacy.root.clone()),
-                canonical_assets: self
-                    .canonical_assets
-                    .read()
-                    .map_or_else(|_| HashMap::new(), |assets| assets.clone()),
+                canonical_assets: if self.legacy_fixture_storage.is_none() {
+                    crate::notebook::asset_snapshot(doc)?
+                } else {
+                    HashMap::new()
+                },
             },
             channel,
         ));
