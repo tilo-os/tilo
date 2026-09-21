@@ -466,7 +466,7 @@ impl App {
                             focus,
                             node,
                             &self.layout.taffy,
-                        )
+                        );
                     },
                 )
             };
