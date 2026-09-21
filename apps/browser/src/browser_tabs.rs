@@ -11,8 +11,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    AppKind, AppWidget, ContextMenu, IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget,
-    WindowCloseAdmission,
+    AppKind, AppWidget, ContextMenu, Continuable, IconDescriptor, MenuItem, TabDescriptor,
+    TaffyTreeExt, Widget, WindowCloseAdmission,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1519,21 +1519,11 @@ impl Widget for BrowserTabs {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.active().cursor_shape(point)
     }
-    fn continuation_metadata(
-        &self,
-        state: &AutoCommit,
-        root: &ObjId,
-    ) -> Option<ui::collaboration::ContinuationMetadata> {
-        self.active().continuation_metadata(state, root)
+    fn continuable(&self) -> Option<&dyn Continuable> {
+        Some(self)
     }
-    fn restore_continuation_metadata(
-        &mut self,
-        metadata: &ui::collaboration::ContinuationMetadata,
-        state: &mut AutoCommit,
-        root: &ObjId,
-    ) -> bool {
-        self.active_mut()
-            .restore_continuation_metadata(metadata, state, root)
+    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
     }
     fn name(&self) -> &'static str {
         "BrowserTabs"
@@ -1563,6 +1553,25 @@ impl Widget for BrowserTabs {
     }
     fn take_window_close_intent(&mut self) -> bool {
         std::mem::take(&mut self.close_intent)
+    }
+}
+
+impl Continuable for BrowserTabs {
+    fn continuation_metadata(
+        &self,
+        state: &AutoCommit,
+        root: &ObjId,
+    ) -> Option<ui::collaboration::ContinuationMetadata> {
+        self.active().continuation_metadata(state, root)
+    }
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &ui::collaboration::ContinuationMetadata,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        self.active_mut()
+            .restore_continuation_metadata(metadata, state, root)
     }
 }
 impl Drop for BrowserTabs {
