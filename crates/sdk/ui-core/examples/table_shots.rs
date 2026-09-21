@@ -1,4 +1,4 @@
-//! Offscreen shots for the editable [`ui::widget::table::Table`].
+//! Offscreen shots for the editable [`tilo_ui::widget::table::Table`].
 //!
 //! Renders four frames through the widget's real five-pass pipeline and its
 //! real event handler (no private-field pokes):
@@ -26,12 +26,12 @@ use vello::kurbo::{Affine, Point};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
-use ui::widget::table::{self, Table};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Widget;
+use tilo_ui::widget::table::{self, Table};
 
 const MARGIN: f64 = 28.0;
 const LEFT_GUTTER: f64 = 24.0;

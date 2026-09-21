@@ -80,6 +80,7 @@ use crate::shell::capture_surface::{
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::collaborators_overlay::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
+    collaborator_roster_rows_with_local_user,
 };
 pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
@@ -1384,6 +1385,9 @@ pub struct ShellOverlayHost {
     /// construction — providers are stateful (own background indexers),
     /// so re-registration would leak worker threads.
     search_registry: crate::shell::search::SearchRegistry,
+    /// Starts an installed desktop app through the session launcher. Kept as
+    /// an explicit service so fixture hosts can remain process-free.
+    app_launcher: AppLauncher,
     /// Backs the current palette entries, indexed in lock-step with
     /// `palette.entries` so Enter/click resolves by ordinal.
     search_results: Vec<crate::shell::search::SearchResult>,
@@ -2453,6 +2457,28 @@ type QsFastFields = (
     Option<crate::shell::quick_settings::actions::BatteryInfo>,
 );
 
+type AppLauncher = std::rc::Rc<dyn Fn(&Chrome, &str, &str)>;
+
+/// Construction-time services whose production implementations may read
+/// persisted desktop state or start background work. Keeping them together
+/// makes the fixture boundary explicit: fixture hosts never need to construct
+/// real services merely to overwrite them afterwards.
+struct OverlayHostInputs {
+    search_registry: crate::shell::search::SearchRegistry,
+    app_launcher: AppLauncher,
+    room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
+    collaboration_preferences: CollaborationPreferences,
+    shortcut_config: settings_store::hardware::ShortcutConfig,
+    qs_root: QuickSettingsRoot,
+    qs_refresh: crate::shell::quick_settings::refresh::QsRefresh,
+    qs_actions: Box<dyn crate::shell::quick_settings::actions::QsActions>,
+    portal_dialogs: PortalDialogController,
+    room_activity: crate::shell::room_activity::RoomActivityPane,
+    history_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
+    status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
+    projection_overlay: ProjectionOverlay,
+}
+
 impl ShellOverlayHost {
     #[allow(
         clippy::too_many_lines,
@@ -2715,6 +2741,53 @@ impl ShellOverlayHost {
         reason = "constructor explicitly initializes the host's independent interaction surfaces"
     )]
     pub fn new(content: Box<dyn Widget>) -> Self {
+        let (search_registry, room_records) = Self::build_search_registry();
+        Self::from_inputs(
+            content,
+            OverlayHostInputs {
+                search_registry,
+                app_launcher: std::rc::Rc::new(|chrome, package_id, display_name| {
+                    let _ = crate::shell::search::providers::applications::launch_installed_app(
+                        chrome,
+                        package_id,
+                        display_name,
+                    );
+                }),
+                room_records,
+                collaboration_preferences: CollaborationPreferences::load(),
+                shortcut_config: settings_store::hardware::ShortcutConfig::load(),
+                qs_root: QuickSettingsRoot::load_persisted(),
+                qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::new(),
+                qs_actions: Box::new(crate::shell::quick_settings::actions::RealQsActions),
+                portal_dialogs: PortalDialogController::default(),
+                room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
+                history_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+                status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+                projection_overlay: ProjectionOverlay::default(),
+            },
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the constructor keeps the complete injected service bundle and retained host state in one auditable initialization"
+    )]
+    fn from_inputs(content: Box<dyn Widget>, inputs: OverlayHostInputs) -> Self {
+        let OverlayHostInputs {
+            search_registry,
+            app_launcher,
+            room_records,
+            collaboration_preferences,
+            shortcut_config,
+            qs_root,
+            qs_refresh,
+            qs_actions,
+            portal_dialogs,
+            room_activity,
+            history_narrator,
+            status_narrator,
+            projection_overlay,
+        } = inputs;
         // Palette entries come from the search registry on every
         // keystroke. New providers slot in via `SearchRegistry::register`;
         // the palette picks up their resource-kind chips automatically.
@@ -2723,8 +2796,6 @@ impl ShellOverlayHost {
         // The shell paints scope + kind controls into the palette's own
         // reserved filter band, inside the card.
         palette.set_host_filter_strip(true);
-        let (search_registry, room_records) = Self::build_search_registry();
-        let collaboration_preferences = CollaborationPreferences::load();
         Self {
             rect: Rect::ZERO,
             interaction: ui::InteractionEnvironment::default(),
@@ -2734,7 +2805,7 @@ impl ShellOverlayHost {
             shortcut_rebind: None,
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
-            shortcut_config: settings_store::hardware::ShortcutConfig::load(),
+            shortcut_config,
             content,
             workspace_scene_parts: None,
             onboarding: None,
@@ -2746,6 +2817,7 @@ impl ShellOverlayHost {
             palette,
             palette_visible: false,
             search_registry,
+            app_launcher,
             search_results: Vec::new(),
             pending_palette_action: None,
             pending_action_admissions: Vec::new(),
@@ -2791,7 +2863,7 @@ impl ShellOverlayHost {
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
-            qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::new(),
+            qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
             palette_was_visible: false,
             palette_transition: ui::Transition::closed(),
@@ -2805,7 +2877,7 @@ impl ShellOverlayHost {
             permission_prompt: None,
             portal_prompts: None,
             file_picker_overlay: FilePickerOverlay::default(),
-            portal_dialogs: PortalDialogController::default(),
+            portal_dialogs,
             peer_sync_enabled: false,
             peer_sync_bridge: None,
             clipboard_manager_bridge: None,
@@ -2832,24 +2904,24 @@ impl ShellOverlayHost {
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
-            qs_root: QuickSettingsRoot::load_persisted(),
-            qs_actions: Box::new(crate::shell::quick_settings::actions::RealQsActions),
+            qs_root,
+            qs_actions,
             qs_wifi_pane: QuickSettingsWifiPane::default(),
             qs_bluetooth_pane: QuickSettingsBluetoothPane::default(),
             qs_aux_drill_in: DrillInList::default(),
             qs_vpn_pane: QuickSettingsVpnPane::default(),
             status_bridge: None,
             session_audio_policy: None,
-            room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
-            history_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
-            status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+            room_activity,
+            history_narrator,
+            status_narrator,
             status_narrative_request: None,
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
             activity_awareness_workspace: None,
             activity_pending_reveal: None,
             collaborators_overlay: CollaboratorsOverlay::default(),
-            projection_overlay: ProjectionOverlay::default(),
+            projection_overlay,
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -2871,7 +2943,6 @@ impl ShellOverlayHost {
     }
 
     pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
-        let mut host = Self::new(content);
         let mut search_registry = crate::shell::search::SearchRegistry::new();
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NotesProvider::new(),
@@ -2880,21 +2951,36 @@ impl ShellOverlayHost {
             crate::shell::search::providers::EditorProvider::new(),
         ));
         let records = crate::shell::search::providers::RecordsProvider::new();
-        host.room_records = records.index();
+        let room_records = records.index();
         search_registry.register(std::rc::Rc::new(records));
-        host.search_registry = search_registry;
-        host.shortcut_config = settings_store::hardware::ShortcutConfig::default();
-        host.qs_root = QuickSettingsRoot::with_config(
-            settings_store::hardware::QuickSettingsConfig::default(),
-        );
-        host.qs_refresh = crate::shell::quick_settings::refresh::QsRefresh::without_os_reads();
-        host.qs_actions = Box::new(crate::shell::quick_settings::actions::UnavailableQsActions);
-        host.room_activity =
-            crate::shell::room_activity::RoomActivityPane::with_local_user("shell-fixture".into());
-        host.projection_overlay = ProjectionOverlay::from_controller(
-            crate::shell::projection::ProjectionController::unavailable(),
-        );
-        host
+        Self::from_inputs(
+            content,
+            OverlayHostInputs {
+                search_registry,
+                app_launcher: std::rc::Rc::new(|_, _, _| {}),
+                room_records,
+                collaboration_preferences: CollaborationPreferences::from_values(
+                    &serde_json::Map::new(),
+                ),
+                shortcut_config: settings_store::hardware::ShortcutConfig::default(),
+                qs_root: QuickSettingsRoot::with_config(
+                    settings_store::hardware::QuickSettingsConfig::default(),
+                ),
+                qs_refresh: crate::shell::quick_settings::refresh::QsRefresh::without_os_reads(),
+                qs_actions: Box::new(crate::shell::quick_settings::actions::UnavailableQsActions),
+                portal_dialogs: PortalDialogController::new(
+                    crate::shell::portal_dialog::PortalDialogQueue::default(),
+                ),
+                room_activity: crate::shell::room_activity::RoomActivityPane::with_local_user(
+                    "shell-fixture".into(),
+                ),
+                history_narrator: crate::shell::history_narrative::LocalHistoryNarrator::disabled(),
+                status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::disabled(),
+                projection_overlay: ProjectionOverlay::from_controller(
+                    crate::shell::projection::ProjectionController::unavailable(),
+                ),
+            },
+        )
     }
 
     /// Gate this host behind the shell-owned identity ceremony.
@@ -4693,6 +4779,25 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Whether the requested fullscreen/maximized group is represented by a
+    /// live retained row. Chrome stays visible until this becomes true.
+    fn fullscreen_group_is_owned(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let group = {
+            let state = chrome.borrow();
+            state.fullscreen_group().or_else(|| state.maximized_group())
+        };
+        group.is_some_and(|group| {
+            self.group_row_ptrs.values().any(|&row| {
+                // SAFETY: same retained-row ownership contract as
+                // `sync_fullscreen_from_chrome`; this is read-only.
+                unsafe { (*row).group_ids().contains(&group) }
+            })
+        })
+    }
+
     fn reconcile_active_group_off_closing(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -4801,6 +4906,14 @@ impl ShellOverlayHost {
         if changed {
             tree.flush_to_disk();
         }
+        drop(tree);
+        drop(st);
+
+        // The Expand interaction takes effect at this harvest boundary,
+        // before the next layout. Mirror retained-row ownership into chrome
+        // now so the top bar and wheel observe the same atomic transition.
+        let fullscreen = self.fullscreen_group_is_owned();
+        chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
     }
 
     /// Mirrors the widget-side `TabBar::active_id` back into the persisted
@@ -6463,7 +6576,8 @@ impl ShellOverlayHost {
         let peer_id = self.followed_peer.as_deref()?;
         let chrome = self.chrome.as_ref()?;
         let state = chrome.borrow();
-        collaborator_roster_rows(&state.tree())
+        let local_user = state.active_local_user();
+        collaborator_roster_rows_with_local_user(&state.tree(), &local_user)
             .into_iter()
             .find(|row| row.id == peer_id && row.followable)
     }
@@ -8681,10 +8795,7 @@ impl ShellOverlayHost {
         let local_ids = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let mut ids = vec![
-                state.local_user_id.clone(),
-                crate::shell::state::local_user_id(),
-            ];
+            let mut ids = vec![state.local_user_id.clone()];
             if let Some(workspace) = tree.active_workspace() {
                 ids.push(state.local_user_for_room(&workspace.room));
             }
@@ -8952,7 +9063,11 @@ impl ShellOverlayHost {
     /// for one set of rooms and painted with another.
     fn overview_cards(&self) -> Vec<crate::shell::overview::RoomCard> {
         match self.chrome.as_ref() {
-            Some(c) => crate::shell::overview::room_cards(&c.borrow().tree()),
+            Some(chrome) => {
+                let state = chrome.borrow();
+                let local_user = state.active_local_user();
+                crate::shell::overview::room_cards_with_local_user(&state.tree(), &local_user)
+            }
             None => Vec::new(),
         }
     }
@@ -9240,7 +9355,10 @@ impl ShellOverlayHost {
     /// sees it: the file picker (genuinely modal — a D-Bus call is
     /// parked on the answer), an in-flight peer-sync token prompt, and
     /// the projection sheet.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Modal event routing forwards the complete input context and its two mutable dispatch results without hiding ownership in a context object."
+    )]
     fn route_modal_absorbing_overlays(
         &mut self,
         event: &WindowEvent,
@@ -9638,7 +9756,10 @@ impl ShellOverlayHost {
     /// `pump_permission_prompt` drains `pending_choice` next tick.
     /// Gated on the prompt's rect so its hit zone doesn't swallow
     /// clicks outside the bar.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Permission prompts share the complete shell event context with other ordered input routes."
+    )]
     fn route_permission_prompt_event(
         &mut self,
         event: &WindowEvent,
@@ -11400,7 +11521,11 @@ impl ShellOverlayHost {
             let member_count = self
                 .chrome
                 .as_ref()
-                .map(|chrome| collaborator_roster_rows(&chrome.borrow().tree()).len())
+                .map(|chrome| {
+                    let state = chrome.borrow();
+                    let local_user = state.active_local_user();
+                    collaborator_roster_rows_with_local_user(&state.tree(), &local_user).len()
+                })
                 .unwrap_or_default();
             self.collaborators_overlay
                 .change_people_page(hit == CollaboratorsHit::NextPeople, member_count);
@@ -11410,7 +11535,8 @@ impl ShellOverlayHost {
         if let CollaboratorsHit::ToggleFollow(index) = hit {
             let target = self.chrome.as_ref().and_then(|chrome| {
                 let state = chrome.borrow();
-                collaborator_roster_rows(&state.tree())
+                let local_user = state.active_local_user();
+                collaborator_roster_rows_with_local_user(&state.tree(), &local_user)
                     .get(index)
                     .filter(|row| row.followable)
                     .cloned()
@@ -12759,11 +12885,7 @@ impl ShellOverlayHost {
                     st.overlays.quick_settings = false;
                     st.bump();
                 }
-                let _ = crate::shell::search::providers::applications::launch_installed_app(
-                    chrome,
-                    "dev.tilo.settings",
-                    "Settings",
-                );
+                (self.app_launcher)(chrome, "dev.tilo.settings", "Settings");
                 // A missing Settings package is already reported by the
                 // ordinary launcher as an actionable failure notification.
                 // Workspace settings controls sharing, members and room
@@ -12814,7 +12936,10 @@ impl ShellOverlayHost {
         }
     }
     /// Shells out to the OS for changes returned by the root component.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Each optional value is one independent quick-settings control dispatched to its matching OS action."
+    )]
     fn dispatch_quick_settings_toggle_actions(
         &self,
         pending_wifi: Option<bool>,
@@ -13193,6 +13318,10 @@ impl ShellOverlayHost {
             if self.add_workspace_rect.area() > 0.0 && self.add_workspace_rect.contains(p) {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
+                    // Creation switches to the new workspace. Release the
+                    // overview's input grab in the same transaction so the
+                    // first navigation gesture reaches that workspace.
+                    st.overlays.overview = false;
                     // Mirrors the wheel-disc slot: both create
                     // affordances seed "Untitled".
                     st.add_workspace("Untitled");
@@ -13223,7 +13352,10 @@ impl ShellOverlayHost {
     /// Palette-owned input, ahead of the sidebar/content dispatch: kind
     /// chips, a click on a result row, keyboard Enter, then everything
     /// else the palette widget itself wants (typing, arrow selection).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Palette routing needs the complete input context plus the retained palette node and layout tree."
+    )]
     fn route_palette_event(
         &mut self,
         event: &WindowEvent,
@@ -13331,7 +13463,10 @@ impl ShellOverlayHost {
     /// content dispatch, then the horizontal-wheel fallback that steps
     /// focus along the strip (the same step Super+Left/Right takes;
     /// 0.5 rejects trackpad noise).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The final pointer route forwards the complete input context, retained children, and layout tree in dispatch order."
+    )]
     fn dispatch_pointer_and_content_event(
         &mut self,
         event: &WindowEvent,
@@ -13716,11 +13851,15 @@ impl Widget for ShellOverlayHost {
         // fullscreen collapse and per-display width resolution are in
         // effect — the latter is what makes a single-frame offscreen
         // render match the live shell's geometry.
+        // A client can request fullscreen before its group is adopted into
+        // the rendered tree. Keep that request in chrome for the later
+        // reconcile, but suppress desktop chrome only once a live row owns
+        // the group. Otherwise a stale or racing id blanks the entire shell.
         self.sync_fullscreen_from_chrome();
-        let fullscreen = self
-            .chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().is_fullscreen());
+        let fullscreen = self.fullscreen_group_is_owned();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
+        }
         let spans = self.strip_output_spans();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as every other `group_row_ptrs`
@@ -13827,6 +13966,20 @@ impl Widget for ShellOverlayHost {
         children.extend(self.capture_mirror_nodes.iter().copied());
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             let onboarding_node = onboarding.build_layout(taffy, theme, node_map);
+            // The desktop already consumes the root flex row. The tutorial is
+            // modal chrome above that desktop, not another sibling pane: make
+            // it fill the viewport without participating in flex placement.
+            if let Ok(style) = taffy.style(onboarding_node) {
+                let mut overlay_style = style.clone();
+                overlay_style.position = Position::Absolute;
+                overlay_style.inset = TaffyRect {
+                    left: LengthPercentageAuto::length(0.0),
+                    right: LengthPercentageAuto::length(0.0),
+                    top: LengthPercentageAuto::length(0.0),
+                    bottom: LengthPercentageAuto::length(0.0),
+                };
+                let _ = taffy.set_style(onboarding_node, overlay_style);
+            }
             self.onboarding_node = Some(onboarding_node);
             children.push(onboarding_node);
         }
@@ -16230,6 +16383,10 @@ impl ShellOverlayHost {
         bounds
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the single paint pass keeps roster decoration, action geometry, and overlay rendering synchronized"
+    )]
     fn draw_collaborators_dropdown(
         &mut self,
         scene: &mut Scene,
@@ -16244,8 +16401,9 @@ impl ShellOverlayHost {
                 || (Vec::new(), None, None),
                 |chrome| {
                     let state = chrome.borrow();
+                    let local_user = state.active_local_user();
                     (
-                        collaborator_roster_rows(&state.tree()),
+                        collaborator_roster_rows_with_local_user(&state.tree(), &local_user),
                         state.collab_unavailable.clone(),
                         collaborators_screen_exposure(&state),
                     )
@@ -17499,7 +17657,10 @@ impl ShellOverlayHost {
     /// `right_x`, centred on `cy`. `ground` must match the surface behind
     /// the stack — the separator ring is a hole punched in the face below.
     /// An absent member stays at reduced opacity rather than disappearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Face-stack painting keeps explicit renderer, theme, geometry, roster, color, and background inputs at the draw boundary."
+    )]
     fn draw_face_stack(
         scene: &mut Scene,
         transform: Affine,
@@ -17590,7 +17751,10 @@ impl ShellOverlayHost {
     }
 
     /// One room row in the "go to" list.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Overview-row painting keeps explicit renderer, theme, geometry, row identity, content, and selection inputs at the draw boundary."
+    )]
     fn draw_overview_room_row(
         &self,
         scene: &mut Scene,
@@ -18618,6 +18782,7 @@ impl ShellOverlayHost {
             return Vec::new();
         };
         let state = chrome.borrow();
+        let local_user = state.active_local_user();
         let tree = state.tree();
         let Some(workspace) = tree.active_workspace() else {
             return Vec::new();
@@ -18625,7 +18790,7 @@ impl ShellOverlayHost {
         let key = PresenceKey::Workspace {
             id: workspace.room.to_string(),
         };
-        let rows = collaborator_roster_rows(&tree);
+        let rows = collaborator_roster_rows_with_local_user(&tree, &local_user);
         let Some(pointers) = presence.pointers.get(&key) else {
             return Vec::new();
         };
@@ -18725,13 +18890,11 @@ impl ShellOverlayHost {
         // Scope by the workspace's room, not local `WorkspaceId` — the room
         // is the durable identity apps address collaboration to (stamped in
         // as `TILO_WORKSPACE_ID`); the local id differs per machine.
-        let room = {
+        let (room, local) = {
             let chrome = chrome_rc.borrow();
-            let tree = chrome.tree();
-            tree.workspaces
-                .iter()
-                .find(|w| w.id == tree.active)
-                .map(|w| w.room.to_string())
+            let local = chrome.active_local_user();
+            let room = chrome.tree().active_workspace().map(|w| w.room.to_string());
+            (room, local)
         };
         let Some(room) = room else {
             return Vec::new();
@@ -18744,7 +18907,6 @@ impl ShellOverlayHost {
         // Settle colours over the whole room (including the local user)
         // before filtering to what's on screen, so every host computes
         // the same assignment and a person is one colour everywhere.
-        let local = crate::shell::state::local_user_id();
         let mut room_ids: Vec<&str> = peers.iter().map(|(u, _)| u.0.as_str()).collect();
         room_ids.push(local.as_str());
         let reserved: Vec<(u8, u8, u8)> = presence.color_overrides.values().copied().collect();
@@ -21182,9 +21344,10 @@ mod empty_workspace_tests {
                 "Tasks",
                 "Plan a meeting",
                 "Invite people",
-                "Catch up"
+                "Catch up",
+                "Open an app"
             ],
-            "first use presents the actual collaboration jobs, not a generic app picker"
+            "first use presents collaboration jobs plus the explicit app escape hatch"
         );
         let rect = launchpad_rect(host.content.as_ref()).expect("launchpad is mounted");
         assert!(
@@ -22058,7 +22221,8 @@ mod palette_dispatch_tests {
     fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
-        let host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(chrome.clone());
         (host, chrome)
     }
 
@@ -22165,7 +22329,12 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
+        let settings = tempfile::tempdir().expect("isolated settings directory");
+        let old_config = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: the process_env serial group excludes concurrent env users.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", settings.path()) };
         let (mut host, _) = host_with_chrome();
         let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let capture = std::rc::Rc::clone(&published);
@@ -22194,11 +22363,22 @@ mod palette_dispatch_tests {
             &automerge::ROOT,
             &mut handled,
         ));
+        assert!(
+            host.pump_presence_requests(),
+            "the next production update applies the queued semantic status request"
+        );
         assert_eq!(host.local_status.as_deref(), Some("Preparing Q2 review"));
         assert_eq!(
             published.borrow().as_slice(),
             &[Some("Preparing Q2 review".into())]
         );
+        // SAFETY: restore the serialised process environment.
+        unsafe {
+            match old_config {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
     }
 
     #[test]
@@ -22398,29 +22578,6 @@ mod palette_dispatch_tests {
         let events = published.borrow();
         assert_eq!(events.len(), 2);
         assert_eq!(events[1], (first[0].0, first[0].1, false));
-    }
-
-    fn install_gui_fixture(dir: &std::path::Path, package_id: &str, name: &str) {
-        let payload = dir.join("payloads").join(package_id);
-        std::fs::create_dir_all(payload.join("bin")).unwrap();
-        let manifest_path = payload.join("manifest.toml");
-        std::fs::write(
-            &manifest_path,
-            format!(
-                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
-                 version = \"1.2.3\"\n[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("registry.toml"),
-            format!(
-                "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
-                payload.display().to_string(),
-                manifest_path.display().to_string()
-            ),
-        )
-        .unwrap();
     }
 
     #[test]
@@ -23129,47 +23286,19 @@ mod palette_dispatch_tests {
         );
     }
 
-    #[allow(
-        clippy::items_after_statements,
-        reason = "the local test helper is deliberately introduced beside the scenario that exercises it"
-    )]
     #[test]
-    #[serial_test::serial(process_env)]
     fn quick_settings_settings_opens_personal_settings_app_not_workspace_settings() {
-        let tmp = tempfile::tempdir().unwrap();
-        install_gui_fixture(tmp.path(), "dev.tilo.settings", "Settings");
-        let launcher = tmp.path().join("record-launch.sh");
-        let launch_log = tmp.path().join("launch.log");
-        std::fs::write(
-            &launcher,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
-                launch_log.display()
-            ),
-        )
-        .unwrap();
-        let mut permissions = std::fs::metadata(&launcher).unwrap().permissions();
-        use std::os::unix::fs::PermissionsExt;
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&launcher, permissions).unwrap();
-
-        // SAFETY: process-wide launcher overrides are serialized by `process_env`.
-        unsafe {
-            std::env::set_var("TILO_APPS_DATA_DIR", tmp.path());
-            std::env::set_var("TILO_LAUNCHER_BIN", &launcher);
-        }
-        crate::shell::launcher::invalidate_app_cache();
-        crate::shell::launcher::clear_pending_placements();
-        crate::shell::launcher::set_wayland_socket_path(Some(tmp.path().join("wayland-0")));
-
         let (mut host, chrome) = host_with_chrome();
+        let launches = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = std::rc::Rc::clone(&launches);
+        host.app_launcher = std::rc::Rc::new(move |_, package_id, display_name| {
+            recorded
+                .borrow_mut()
+                .push((package_id.to_string(), display_name.to_string()));
+        });
         chrome.borrow_mut().overlays.quick_settings = true;
         host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !launch_log.is_file() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
         let state = chrome.borrow();
         assert!(!state.overlays.quick_settings, "the source popover closes");
         assert!(
@@ -23177,20 +23306,11 @@ mod palette_dispatch_tests {
             "device Settings must not be confused with workspace-sharing settings"
         );
         drop(state);
-        let log = std::fs::read_to_string(&launch_log).expect("Settings launch was recorded");
-        assert!(
-            log.contains("dev.tilo.settings"),
-            "the ordinary app launcher must receive Personal Settings: {log:?}"
+        assert_eq!(
+            launches.borrow().as_slice(),
+            &[("dev.tilo.settings".into(), "Settings".into())],
+            "the app-launch service receives the exact Personal Settings identity"
         );
-
-        // SAFETY: restore process-wide overrides before releasing the serial test lock.
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-            std::env::remove_var("TILO_LAUNCHER_BIN");
-        }
-        crate::shell::launcher::set_wayland_socket_path(None);
-        crate::shell::launcher::invalidate_app_cache();
-        crate::shell::launcher::clear_pending_placements();
     }
 
     #[test]
@@ -23207,7 +23327,11 @@ mod palette_dispatch_tests {
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
 
-        let (mut host, chrome) = host_with_chrome();
+        // This is deliberately the production constructor: the behavior under
+        // test is its real app-launch service and unavailable-package notice.
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.quick_settings = true;
         host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
 
@@ -26155,6 +26279,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn first_login_tour_composes_with_the_real_desktop() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        host.enable_host_desktop_onboarding(std::path::PathBuf::from(
+            "/var/empty/tilo-first-login-tour-test",
+        ));
+        host.set_onboarding_visual_state_for_snapshot(
+            crate::onboarding_view::OnboardingVisualState::TourNavigate,
+        );
+
+        assert!(
+            host.onboarding
+                .as_ref()
+                .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context),
+            "starting the first-login tour must release the opaque setup backdrop"
+        );
+        let harness = build_harness_with_host(host, chrome);
+        assert!(
+            harness.host.content_node.is_some(),
+            "the real desktop stays in the first-login tour layout"
+        );
+        assert!(
+            harness.host.onboarding_node.is_some(),
+            "the first-login tour remains modal above the desktop"
+        );
+        let tour_rect = harness
+            .host
+            .onboarding
+            .as_ref()
+            .expect("first-login tour")
+            .get_rect();
+        assert_eq!(
+            tour_rect,
+            Rect::new(0.0, 0.0, 1600.0, 900.0),
+            "the tutorial overlay must cover the visible desktop rather than landing beside it"
+        );
+    }
+
     /// Bundle of host + chrome + the taffy state needed to dispatch
     /// real `WindowEvent`s through `host.handle_event(...)`.
     struct Harness {
@@ -26169,7 +26334,7 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let content = Box::new(StubContent::new());
-        let host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        let host = ShellOverlayHost::with_fixture_content(content).with_chrome(chrome.clone());
         build_harness_with_host(host, chrome)
     }
 
@@ -26414,6 +26579,8 @@ mod tests {
             let mut chrome = h.chrome.borrow_mut();
             chrome
                 .tree_mut()
+                .active_workspace_mut()
+                .expect("fixture has an active workspace")
                 .collaborators
                 .push(crate::shell::state::Collaborator::new("ada", "Ada").with_role("editor"));
             chrome.overlays.collaborators = true;
@@ -27518,6 +27685,9 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
 
         let mut h = build_harness();
+        h.host.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::ApplicationsProvider::new(),
+        ));
         h.host
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .unwrap();
@@ -27574,7 +27744,7 @@ mod tests {
     }
 
     /// Search must reach the focused app's own *content*, not just its tab
-    /// title. `nir` appears only in the note's body, so
+    /// title. `Welcome` appears only in the note's body, so
     /// a provider looking it up by tab id rather than by document
     /// answers nothing.
     #[test]
@@ -27606,7 +27776,7 @@ mod tests {
         assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
 
-        h.host.palette.set_query("nir");
+        h.host.palette.set_query("Welcome");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
 
         let hit = h
@@ -28793,7 +28963,7 @@ mod resync_strips_tests {
         reason = "the frame-writeback regression keeps input, persistence, and next-frame assertions together"
     )]
     #[test]
-    fn active_tab_writeback_is_flushed_before_the_next_frame() {
+    fn active_tab_focus_is_flushed_before_the_next_frame() {
         let (mut tree, strip_id, group_id) = one_group_seed();
         let state_dir = tempfile::tempdir().expect("state directory");
         let state_path = state_dir.path().join("state.json");
@@ -28809,9 +28979,7 @@ mod resync_strips_tests {
                 },
             });
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
-        assert!(host.focus_window_widget(strip_id, group_id, 2));
-
-        host.flush_active_tab_writeback();
+        assert!(host.focus_window_on_strip(strip_id, group_id, 2));
 
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("selection writeback creates valid durable state");

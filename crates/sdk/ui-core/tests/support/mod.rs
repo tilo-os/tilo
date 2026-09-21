@@ -16,10 +16,10 @@ pub mod typed_collab;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use ui::App;
-use ui::collaboration::{CollabEvent, CollabRequest};
-use ui::state::State;
-use ui::widget::{Column, Text};
+use tilo_ui::App;
+use tilo_ui::collaboration::{CollabEvent, CollabRequest};
+use tilo_ui::state::State;
+use tilo_ui::widget::{Column, Text};
 
 type PeerInboxes = HashMap<String, VecDeque<CollabEvent>>;
 
@@ -128,10 +128,10 @@ pub fn pump(relay: &mut MemoryRelay) {
         match req {
             CollabRequest::Document { mutation } => {
                 let mutation = match mutation {
-                    ui::collaboration::DocumentMutation::Incremental(data) => {
+                    tilo_ui::collaboration::DocumentMutation::Incremental(data) => {
                         collab_types::DocumentMutation::Incremental(data)
                     }
-                    ui::collaboration::DocumentMutation::Snapshot(data) => {
+                    tilo_ui::collaboration::DocumentMutation::Snapshot(data) => {
                         collab_types::DocumentMutation::Snapshot(data)
                     }
                 };
@@ -178,7 +178,7 @@ pub fn pump(relay: &mut MemoryRelay) {
                     && let Some(inbox) = inboxes.get_mut(id)
                 {
                     inbox.push_back(CollabEvent::DocumentSnapshotRequested {
-                        route: ui::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
+                        route: tilo_ui::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
                     });
                 }
             }

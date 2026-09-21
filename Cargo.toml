@@ -2,7 +2,8 @@
 # qdoc-codec-markdown-wasm is intentionally excluded from default `cargo build`
 # runs: it must be compiled with `--target wasm32-wasip2` and produces a
 # Component Model `.wasm`, not a host-target library. Build it explicitly:
-# `cargo build -p qdoc-codec-markdown-wasm --target wasm32-wasip2 --release`.
+# `cargo build --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml
+# --target wasm32-wasip2 --release --locked`.
 exclude = [
     "fuzz",
     "crates/doc/qdoc-codec-markdown-wasm",
@@ -10,8 +11,10 @@ exclude = [
     "vendor/vello_encoding",
     "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
+    "vendor/libspa-sys",
     "vendor/winit",
     "vendor/wgpu-hal",
+    "vendor/openh264-sys2",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -109,8 +112,8 @@ members = [
     "crates/dev/collab-probe",
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
-    "crates/dev/tilo-dev",
-    "crates/dev/tilo-dev-template-smoke",
+    "crates/dev/tilo-app-cli",
+    "crates/dev/tilo-app-template-smoke",
     "crates/dev/ui-builder",
     "crates/dev/ui-graph",
 
@@ -465,6 +468,9 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Keep native archive inputs independent of registry filesystem enumeration.
+# See vendor/openh264-sys2/TILO-PATCH.md.
+openh264-sys2 = { path = "vendor/openh264-sys2" }
 # libspa-sys 0.10.1 lets bindgen discover newer PipeWire inline functions
 # through transitive headers, but its emitted C wrapper includes only the
 # narrower wrapper.h. Keep the missing direct includes locally until upstream

@@ -931,7 +931,7 @@ fn bound_pointer_reparent_duplicate_and_checklist_are_owned_actions() {
             assert_eq!(workspace.get(f.empty).unwrap().order, 1);
         })
         .unwrap();
-    context_menu_select(&mut a, f.root, 3);
+    context_menu_select(&mut a, f.root, "Duplicate");
     assert_eq!(revision(&f, &checkout), 2);
     let copied_root = f
         .records
@@ -985,7 +985,7 @@ fn bound_pointer_reparent_duplicate_and_checklist_are_owned_actions() {
             notes::notebook::validate(doc).unwrap();
         })
         .unwrap();
-    context_menu_select(&mut a, copied_root, 4);
+    context_menu_select(&mut a, copied_root, "Delete");
     assert_eq!(revision(&f, &checkout), 4);
     f.records
         .read(&checkout.id, |doc| {
@@ -999,7 +999,29 @@ fn bound_pointer_reparent_duplicate_and_checklist_are_owned_actions() {
     close_driver(&mut a);
 }
 
-fn context_menu_select(driver: &mut ui::headless::Driver, page: notes::PageId, steps: usize) {
+fn context_menu_select(driver: &mut ui::headless::Driver, page: notes::PageId, label: &str) {
+    fn menu_items(node: &ui::a11y::AccessNode, out: &mut Vec<(String, bool)>) {
+        if node.state.hidden {
+            return;
+        }
+        if node.role == ui::a11y::Role::MenuItem {
+            out.push((
+                node.name.clone().expect("menu item label"),
+                node.state.focused,
+            ));
+        }
+        for child in &node.children {
+            menu_items(child, out);
+        }
+    }
+    fn items(node: &ui::headless::InspectionNode, out: &mut Vec<(String, bool)>) {
+        if let Some(semantics) = &node.semantics {
+            menu_items(semantics, out);
+        }
+        for child in &node.children {
+            items(child, out);
+        }
+    }
     let point = page_rect(driver, page).center();
     move_pointer(driver, point);
     mouse(
@@ -1007,10 +1029,26 @@ fn context_menu_select(driver: &mut ui::headless::Driver, page: notes::PageId, s
         winit::event::MouseButton::Right,
         winit::event::ElementState::Pressed,
     );
-    for _ in 0..steps {
+    let mut visible = Vec::new();
+    items(&driver.inspection().root, &mut visible);
+    assert_eq!(
+        visible.iter().filter(|(name, _)| name == label).count(),
+        1,
+        "expected exactly one visible {label} menu item: {visible:?}"
+    );
+    for _ in 0..=visible.len() {
+        let mut current = Vec::new();
+        items(&driver.inspection().root, &mut current);
+        if current
+            .iter()
+            .any(|(name, focused)| name == label && *focused)
+        {
+            driver.key("Enter");
+            return;
+        }
         driver.key("ArrowDown");
     }
-    driver.key("Enter");
+    panic!("keyboard navigation never focused {label}");
 }
 
 #[test]
@@ -1088,9 +1126,20 @@ fn inspected_widget<'a>(
 fn placeholder_key(driver: &ui::headless::Driver) -> String {
     let snapshot = driver.inspection();
     let editor = inspected_widget(&snapshot.root, "block_editor").unwrap();
-    let blocks = &editor.semantics.as_ref().unwrap().children;
-    assert_eq!(blocks.len(), 1);
-    blocks[0].semantic_key.clone().unwrap()
+    let block_nodes = editor
+        .semantics
+        .as_ref()
+        .unwrap()
+        .children
+        .iter()
+        .filter(|node| {
+            node.semantic_key
+                .as_deref()
+                .is_some_and(|key| key.starts_with("notes.block:"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(block_nodes.len(), 1);
+    block_nodes[0].semantic_key.clone().unwrap()
 }
 
 fn has_selected_node(node: &ui::headless::InspectionNode) -> bool {

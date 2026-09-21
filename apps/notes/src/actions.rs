@@ -36,9 +36,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionRegistry, ActionSpec,
-    Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider,
-    ResultSpec, RetryPolicy,
+    Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
+    ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
+    Resource, ResourcePresentation, ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::NotesDoc;
@@ -99,7 +99,16 @@ pub fn parse_backlink_resource_id(id: &str) -> Option<(PageId, PageId, &str)> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotesOperation {
+    NavigateBack,
+    NavigateForward,
     ImportMarkdown,
+    /// Import supplied Markdown without a file chooser. This is the semantic
+    /// door used by agents, scripts and accessible action surfaces; the
+    /// ordinary sidebar command keeps using the system file portal.
+    ImportMarkdownContent {
+        title: String,
+        body: String,
+    },
     InsertImage {
         page: PageId,
     },
@@ -250,6 +259,14 @@ pub enum NotesAction {
     /// Notes path allowed to mutate collaborative block data: widgets emit a
     /// semantic delta, and the action validates and applies it atomically.
     ApplyBlockOps { page: String, ops: Vec<BlockEditOp> },
+    /// Add one content-addressed image and its referencing block edit in the
+    /// same replayable mutation. The digest is verified before either write.
+    AddImageAsset {
+        page: String,
+        digest: String,
+        bytes: Vec<u8>,
+        op: BlockEditOp,
+    },
     /// Replace the Notes-owned inline formatting and page-link marks on one
     /// stable block. The ranges are UTF-8 byte offsets in the block text;
     /// [`crate::doc::NotesDoc`] validates them and writes native Automerge
@@ -280,6 +297,7 @@ pub enum NotesAction {
         page: PageData,
         ops: Vec<BlockEditOp>,
         marks: Vec<(String, Vec<InlineMarkSpan>)>,
+        assets: Vec<(String, Vec<u8>)>,
     },
 }
 
@@ -292,17 +310,17 @@ fn update_page_tree(doc: &mut Doc, before: &[PageData], after: &[PageData]) -> R
         .collect::<Vec<_>>();
     current.sort_by(|a, b| a.id.cmp(&b.id));
     if current != before {
-        return Err("page tree changed since the action was authored".into());
+        return Err("note tree changed since the action was authored".into());
     }
     if before.len() != after.len() || before.iter().zip(after).any(|(a, b)| a.id != b.id) {
-        return Err("page tree update must preserve every existing page identity".into());
+        return Err("note tree update must preserve every existing note identity".into());
     }
     let pages = after
         .iter()
         .map(|data| {
-            let page = data.to_meta().ok_or("invalid page identity")?;
+            let page = data.to_meta().ok_or("invalid note identity")?;
             if page.id.is_nil() || (!data.parent.is_empty() && page.parent.is_none()) {
-                return Err("invalid page or parent identity");
+                return Err("invalid note or parent identity");
             }
             Ok(page)
         })
@@ -402,8 +420,16 @@ pub struct DuplicatePage {
 /// Refuses a missing source or invalid notebook.
 pub fn duplicate_subtree_action(doc: &AutoCommit, source: PageId) -> Result<NotesAction, String> {
     let workspace = crate::notebook::project(doc, None)?;
+    duplicate_subtree_from_workspace(doc, source, &workspace)
+}
+
+fn duplicate_subtree_from_workspace(
+    doc: &AutoCommit,
+    source: PageId,
+    workspace: &crate::Workspace,
+) -> Result<NotesAction, String> {
     if workspace.get(source).is_none() {
-        return Err("source page no longer exists".into());
+        return Err("source note no longer exists".into());
     }
     let mut subtree = HashSet::new();
     let mut pending = vec![source];
@@ -446,11 +472,11 @@ enum PageTreeCommand {
 }
 
 fn page_tree_action(
-    doc: &AutoCommit,
+    workspace: &crate::Workspace,
     page: PageId,
     command: PageTreeCommand,
 ) -> Option<NotesAction> {
-    let mut workspace = crate::notebook::project(doc, None).ok()?;
+    let mut workspace = workspace.clone();
     let mut before = workspace
         .pages()
         .iter()
@@ -496,13 +522,13 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
     let mut context = tilo_actions::ActionContext::for_action("org.tilo.Notes", "Notes", action);
     let (label, resource_id, kind, title) = match action {
         NotesAction::UpdatePageTree { .. } => (
-            "Move page",
+            "Move note",
             "notes.notebook".into(),
             "notes.notebook",
             "Notes".into(),
         ),
         NotesAction::UpsertPage(page) => (
-            "Update page",
+            "Update note",
             format!("notes.page:{}", page.id),
             "notes.page",
             page.title.clone(),
@@ -514,19 +540,25 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             page.title.clone(),
         ),
         NotesAction::DuplicateSubtree { source, .. } => (
-            "Duplicate page",
+            "Duplicate note",
             format!("notes.page:{source}"),
             "notes.page",
-            "Page".into(),
+            "Note".into(),
         ),
         NotesAction::DeletePage { id } => (
-            "Delete page",
+            "Delete note",
             format!("notes.page:{id}"),
             "notes.page",
-            "Page".to_string(),
+            "Note".to_string(),
         ),
         NotesAction::ApplyBlockOps { page, .. } => (
             "Edit note",
+            format!("notes.page:{page}"),
+            "notes.page",
+            "Note".to_string(),
+        ),
+        NotesAction::AddImageAsset { page, .. } => (
+            "Insert image",
             format!("notes.page:{page}"),
             "notes.page",
             "Note".to_string(),
@@ -652,7 +684,12 @@ impl Action for NotesAction {
     )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            NotesAction::ImportPage { page, ops, marks } => {
+            NotesAction::ImportPage {
+                page,
+                ops,
+                marks,
+                assets,
+            } => {
                 let meta = page
                     .to_meta()
                     .ok_or_else(|| ActionError::Refused("invalid imported page identity".into()))?;
@@ -666,6 +703,9 @@ impl Action for NotesAction {
                     return Err(ActionError::Refused(
                         "import requires a new root page".into(),
                     ));
+                }
+                for (digest, bytes) in assets {
+                    crate::notebook::put_asset(doc, digest, bytes).map_err(ActionError::Refused)?;
                 }
                 NotesDoc::upsert_page_meta(doc, &meta);
                 NotesDoc::apply_block_ops(doc, meta.id, ops).map_err(ActionError::Refused)?;
@@ -695,7 +735,7 @@ impl Action for NotesAction {
             NotesAction::DuplicateSubtree { source, pages } => {
                 let source = source
                     .parse::<PageId>()
-                    .map_err(|_| ActionError::Refused("page id is invalid".into()))?;
+                    .map_err(|_| ActionError::Refused("note id is invalid".into()))?;
                 NotesDoc::duplicate_subtree(doc, source, pages).map_err(ActionError::Refused)?;
             }
             NotesAction::DeletePage { id } => {
@@ -759,8 +799,23 @@ impl Action for NotesAction {
             NotesAction::ApplyBlockOps { page, ops } => {
                 let page = page
                     .parse::<PageId>()
-                    .map_err(|_| ActionError::Refused("page id is invalid".into()))?;
+                    .map_err(|_| ActionError::Refused("note id is invalid".into()))?;
                 NotesDoc::apply_block_ops(doc, page, ops).map_err(ActionError::Refused)?;
+            }
+            NotesAction::AddImageAsset {
+                page,
+                digest,
+                bytes,
+                op,
+            } => {
+                crate::notebook::validate_asset_payload(digest, bytes)
+                    .map_err(ActionError::Refused)?;
+                let page = page
+                    .parse::<PageId>()
+                    .map_err(|_| ActionError::Refused("note id is invalid".into()))?;
+                NotesDoc::apply_block_ops(doc, page, std::slice::from_ref(op))
+                    .map_err(ActionError::Refused)?;
+                crate::notebook::put_asset(doc, digest, bytes).map_err(ActionError::Refused)?;
             }
             NotesAction::SetBlockMarks {
                 page,
@@ -769,7 +824,7 @@ impl Action for NotesAction {
             } => {
                 let page = page
                     .parse::<PageId>()
-                    .map_err(|_| ActionError::Refused("page id is invalid".into()))?;
+                    .map_err(|_| ActionError::Refused("note id is invalid".into()))?;
                 NotesDoc::set_block_marks(doc, page, block_id, marks)
                     .map_err(ActionError::Refused)?;
             }
@@ -893,6 +948,16 @@ pub fn apply_block_ops_action(page: PageId, ops: Vec<BlockEditOp>) -> NotesActio
     }
 }
 
+pub fn add_image_asset_action(page: PageId, bytes: Vec<u8>, op: BlockEditOp) -> NotesAction {
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    NotesAction::AddImageAsset {
+        page: page.to_string(),
+        digest,
+        bytes,
+        op,
+    }
+}
+
 /// Replace a block's Notes-owned inline formatting through the same action
 /// executor that owns its text and structure.
 pub fn set_block_marks_action(
@@ -961,6 +1026,8 @@ pub struct NotesResourceCtx {
     pub blocks: std::collections::HashMap<PageId, Vec<NoteBlockResource>>,
     pub tags: Vec<TagMeta>,
     pub tag_assignments: Vec<(PageId, TagId)>,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1017,7 +1084,17 @@ fn view_operation_spec(id: &str, label: &str, operation: &NotesOperation) -> Opt
         operation,
     )
     .ok()
-    .map(|spec| spec.retry_policy(RetryPolicy::Idempotent))
+    .map(|spec| {
+        let retry = if matches!(
+            operation,
+            NotesOperation::NavigateBack | NotesOperation::NavigateForward
+        ) {
+            RetryPolicy::AtMostOnce
+        } else {
+            RetryPolicy::Idempotent
+        };
+        spec.retry_policy(retry)
+    })
 }
 
 fn effect_operation_spec(id: &str, label: &str, operation: &NotesOperation) -> Option<ActionSpec> {
@@ -1093,6 +1170,42 @@ fn file_operation(id: &str, label: &str, page: Option<PageId>) -> ActionSpec {
         },
         execution: ExecutionMode::Background { cancellable: false },
         result: ResultSpec::Job,
+        ..ActionContract::default()
+    })
+}
+
+fn markdown_content_operation() -> ActionSpec {
+    ActionSpec::typed_operation(
+        "import-markdown-content",
+        "Import Markdown content",
+        "Create a note from Markdown text",
+        OperationKind::Effect,
+        NOTES_OPERATION_TYPE,
+        vec![
+            ActionParam::required("title", ParamType::Text, "Note title"),
+            ActionParam::required("body", ParamType::Text, "Markdown content"),
+        ],
+        |args| {
+            EncodedAction::encode_operation(
+                NOTES_OPERATION_TYPE,
+                &NotesOperation::ImportMarkdownContent {
+                    title: args.text("title").unwrap_or_default().to_owned(),
+                    body: args.text("body").unwrap_or_default().to_owned(),
+                },
+            )
+            .unwrap_or_else(|error| EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: format!("Markdown import could not be serialized: {error}").into_bytes(),
+            })
+        },
+    )
+    .with_contract(ActionContract {
+        risk: tilo_actions::RiskLevel::Low,
+        confirmation: tilo_actions::ConfirmationPolicy::None,
+        execution: ExecutionMode::Immediate,
+        result: ResultSpec::Resource {
+            resource_kind: "notes.page".into(),
+        },
         ..ActionContract::default()
     })
 }
@@ -1274,22 +1387,31 @@ impl<'a> PageResourceIndex<'a> {
 pub(crate) fn page_resource(m: &PageMeta, pages: &[PageMeta], doc: &AutoCommit) -> Resource {
     let index = PageResourceIndex::new(pages);
     let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
-    page_resource_from_index(m, &index, doc, 0, &mut remaining)
+    let workspace = crate::notebook::project(doc, None).ok();
+    page_resource_from_index(m, &index, doc, workspace.as_ref(), 0, &mut remaining)
 }
 
 fn page_resource_from_index(
     m: &PageMeta,
     index: &PageResourceIndex<'_>,
     doc: &AutoCommit,
+    workspace: Option<&crate::Workspace>,
     depth: usize,
     remaining: &mut usize,
 ) -> Resource {
     *remaining = remaining.saturating_sub(1);
     let mut res = Resource::new(page_resource_id(m.id), "notes.page", page_label(m));
+    if let Some(detail) = page_preview_detail(doc, m.id) {
+        res = res.with_presentation(ResourcePresentation {
+            detail: Some("Note preview".into()),
+            badge: None,
+            preview: Some(detail),
+        });
+    }
 
     if let Some(open) = view_operation_spec(
         "open",
-        "Open page",
+        "Open note",
         &NotesOperation::OpenPage {
             page: m.id,
             block_id: None,
@@ -1304,16 +1426,20 @@ fn page_resource_from_index(
     ) {
         res = res.with_action(copy_link);
     }
-    if let Ok(action) = duplicate_subtree_action(doc, m.id) {
-        res = res.with_action(immediate_spec("duplicate", "Duplicate page", &action));
+    if let Some(workspace) = workspace
+        && let Ok(action) = duplicate_subtree_from_workspace(doc, m.id, workspace)
+    {
+        res = res.with_action(immediate_spec("duplicate", "Duplicate note", &action));
     }
     for (id, label, command) in [
-        ("move-up", "Move page up", PageTreeCommand::MoveUp),
-        ("move-down", "Move page down", PageTreeCommand::MoveDown),
-        ("indent", "Indent page", PageTreeCommand::Indent),
-        ("outdent", "Outdent page", PageTreeCommand::Outdent),
+        ("move-up", "Move note up", PageTreeCommand::MoveUp),
+        ("move-down", "Move note down", PageTreeCommand::MoveDown),
+        ("indent", "Indent note", PageTreeCommand::Indent),
+        ("outdent", "Outdent note", PageTreeCommand::Outdent),
     ] {
-        if let Some(action) = page_tree_action(doc, m.id, command) {
+        if let Some(workspace) = workspace
+            && let Some(action) = page_tree_action(workspace, m.id, command)
+        {
             res = res.with_action(immediate_spec(id, label, &action));
         }
     }
@@ -1335,9 +1461,9 @@ fn page_resource_from_index(
     let meta = m.clone();
     res = res.with_action(ActionSpec::prompted(
         "rename",
-        "Rename page",
+        "Rename note",
         "Title",
-        "page title…",
+        "note title…",
         ExecutionLocus::ClientLocal,
         move |title: &str| encode(&rename_page_action(&meta, title.trim())),
     ));
@@ -1345,7 +1471,7 @@ fn page_resource_from_index(
     // Delete the whole page (and its subtree).
     res = res.with_action(immediate_spec(
         "delete",
-        "Delete page",
+        "Delete note",
         &delete_page_action(m.id),
     ));
 
@@ -1355,9 +1481,9 @@ fn page_resource_from_index(
     let order = index.next_order(Some(m.id));
     res = res.with_action(ActionSpec::prompted(
         "new-child",
-        "New child page",
+        "New child note",
         "Title",
-        "page title…",
+        "note title…",
         ExecutionLocus::ClientLocal,
         move |title: &str| {
             let t = title.trim();
@@ -1378,12 +1504,32 @@ fn page_resource_from_index(
                 child,
                 index,
                 doc,
+                workspace,
                 depth.saturating_add(1),
                 remaining,
             ));
         }
     }
     res
+}
+
+fn page_preview_detail(doc: &AutoCommit, page: PageId) -> Option<String> {
+    let text = NotesDoc::page_block_snapshots(doc, page)
+        .into_iter()
+        .map(|(_, text)| text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|text| !text.is_empty())?;
+    let mut end = text.len().min(ResourcePresentation::MAX_DETAIL_BYTES);
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    let mut detail = text.get(..end)?.to_string();
+    if end < text.len() {
+        while detail.len() + '…'.len_utf8() > ResourcePresentation::MAX_DETAIL_BYTES {
+            detail.pop();
+        }
+        detail.push('…');
+    }
+    Some(detail)
 }
 
 pub(crate) fn block_resource(page: PageId, block: &NoteBlockResource) -> Option<Resource> {
@@ -1480,7 +1626,7 @@ fn block_resource_in_page(
 }
 
 /// Build the resource tree Notes currently has open: the notebook (always
-/// present, exporting a "New page" action) and its pages, nested by the page
+/// present, exporting a "New note" action) and its pages, nested by the page
 /// tree, each exporting rename / delete / new-child. Every document-mutating
 /// operation is exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
@@ -1497,6 +1643,18 @@ pub fn provide_resources(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Vec<Resour
 fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
     let mut notebook = Resource::new("notes.notebook", "notes.notebook", "Notes");
 
+    if ctx.can_go_back
+        && let Some(action) = view_operation_spec("back", "Back", &NotesOperation::NavigateBack)
+    {
+        notebook = notebook.with_action(action);
+    }
+    if ctx.can_go_forward
+        && let Some(action) =
+            view_operation_spec("forward", "Forward", &NotesOperation::NavigateForward)
+    {
+        notebook = notebook.with_action(action);
+    }
+
     // Notebook-level: create a new root page. The uuid is minted once when the
     // title argument is committed, then baked into the envelope, so replay stays
     // deterministic.
@@ -1504,9 +1662,9 @@ fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
     let order = index.next_order(None);
     notebook = notebook.with_action(ActionSpec::prompted(
         "new-page",
-        "New page",
+        "New note",
         "Title",
-        "page title…",
+        "note title…",
         ExecutionLocus::ClientLocal,
         move |title: &str| {
             let t = title.trim();
@@ -1515,8 +1673,14 @@ fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
         },
     ));
     notebook = notebook.with_action(file_operation("import-markdown", "Import Markdown", None));
+    notebook = notebook.with_action(markdown_content_operation());
+    notebook = with_daily_note_action(notebook, ctx, &index);
 
     let mut remaining = RESOURCE_PAGE_SNAPSHOT_LIMIT;
+    // Every action in this publication reads the same immutable document.
+    // Validate it once; revalidating every block for each note's four tree
+    // actions and duplicate action made ordinary typing stall on menu refresh.
+    let workspace = crate::notebook::project(doc, None).ok();
     for root in index.children_of(None) {
         if remaining == 0 {
             break;
@@ -1525,12 +1689,39 @@ fn notebook_resource(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Resource {
             root,
             &index,
             doc,
+            workspace.as_ref(),
             0,
             &mut remaining,
         ));
     }
     decorate_tag_actions(&mut notebook, ctx);
     notebook
+}
+
+fn with_daily_note_action(
+    notebook: Resource,
+    ctx: &NotesResourceCtx,
+    index: &PageResourceIndex<'_>,
+) -> Resource {
+    let title = chrono::Local::now().format("%Y-%m-%d").to_string();
+    if let Some(page) = ctx.pages.iter().find(|page| page.title == title) {
+        if let Some(open) = view_operation_spec(
+            "daily-note",
+            "Open today's note",
+            &NotesOperation::OpenPage {
+                page: page.id,
+                block_id: None,
+            },
+        ) {
+            return notebook.with_action(open);
+        }
+        return notebook;
+    }
+    notebook.with_action(immediate_spec(
+        "daily-note",
+        "Create today's note",
+        &new_page_action(Uuid::new_v4(), None, index.next_order(None), &title),
+    ))
 }
 
 fn tags_resource(ctx: &NotesResourceCtx) -> Resource {
@@ -1645,9 +1836,9 @@ fn tag_resource(tag: &TagMeta, ctx: &NotesResourceCtx) -> Resource {
     // makes malformed, deleted, or stale page ids harmless no-ops.
     resource = resource.with_action(ActionSpec::prompted(
         "assign-page",
-        "Add tag to page",
-        "Page ID",
-        "page UUID…",
+        "Add tag to note",
+        "Note ID",
+        "note UUID…",
         ExecutionLocus::ClientLocal,
         move |page: &str| {
             let page = page
@@ -1659,9 +1850,9 @@ fn tag_resource(tag: &TagMeta, ctx: &NotesResourceCtx) -> Resource {
     ));
     resource = resource.with_action(ActionSpec::prompted(
         "unassign-page",
-        "Remove tag from page",
-        "Page ID",
-        "page UUID…",
+        "Remove tag from note",
+        "Note ID",
+        "note UUID…",
         ExecutionLocus::ClientLocal,
         move |page: &str| {
             let page = page
@@ -1686,7 +1877,7 @@ fn tag_resource(tag: &TagMeta, ctx: &NotesResourceCtx) -> Resource {
         let mut page_ref = Resource::new(page_resource_id(page.id), "notes.page", page_label(page));
         if let Some(open) = view_operation_spec(
             "open",
-            "Open page",
+            "Open note",
             &NotesOperation::OpenPage {
                 page: page.id,
                 block_id: None,
@@ -1777,6 +1968,7 @@ impl ResourceProvider for crate::app::NotesApp {
 mod tests {
     use super::*;
     use crate::model::Workspace;
+    use automerge::transaction::Transactable;
     use tilo_actions::{ActionInput, LocalTransport};
     use uuid::Uuid;
 
@@ -1784,6 +1976,91 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    #[test]
+    fn canonical_actions_accept_every_editor_block_kind_and_reject_invalid_table_modes() {
+        use automerge::ReadDoc;
+        use ui::widget::BlockKind;
+        let mut doc = AutoCommit::new();
+        crate::notebook::initialize_empty(&mut doc).unwrap();
+        let mut workspace = Workspace::new();
+        let page = workspace.create_page(None);
+        let action = upsert_page_action(workspace.get(page).unwrap());
+        tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+        let kinds = [
+            BlockKind::Paragraph,
+            BlockKind::Quote,
+            BlockKind::Heading(1),
+            BlockKind::Heading(2),
+            BlockKind::Heading(3),
+            BlockKind::Bullet { indent: 5 },
+            BlockKind::Numbered { indent: 5 },
+            BlockKind::Checklist {
+                indent: 5,
+                done: false,
+            },
+            BlockKind::Checklist {
+                indent: 5,
+                done: true,
+            },
+            BlockKind::CodeBlock {
+                lang: Some("rust".into()),
+            },
+            BlockKind::Table { visual: false },
+            BlockKind::Table { visual: true },
+            BlockKind::Divider,
+        ];
+        let mut after = None;
+        let ops = kinds
+            .iter()
+            .map(|kind| {
+                let id = Uuid::new_v4().to_string();
+                let op = BlockEditOp::Insert {
+                    block_id: id.clone(),
+                    after: after.clone(),
+                    kind: crate::markdown::block_kind_wire(kind),
+                    text: "Preserved content".into(),
+                };
+                after = Some(id);
+                op
+            })
+            .collect();
+        let action = apply_block_ops_action(page, ops);
+        let mut peer = doc.clone();
+        let applied = tilo_actions::dispatch(
+            &mut doc,
+            &action,
+            encode(&action),
+            &mut LocalTransport::new(),
+        )
+        .unwrap();
+        tilo_actions::replay(&mut peer, applied.envelope(), &registry()).unwrap();
+        assert_eq!(doc.get_heads(), peer.get_heads());
+        crate::notebook::validate(&doc).unwrap();
+        let list = NotesDoc::page_blocks_list(&doc, page).unwrap();
+        assert_eq!(doc.length(&list), kinds.len());
+        for (index, kind) in kinds.iter().enumerate() {
+            assert_eq!(
+                NotesDoc::block_kind(&doc, &list, index),
+                crate::markdown::block_kind_wire(kind)
+            );
+        }
+        for kind in ["table", "table:2", "table:true", "table:01", "table:1:0"] {
+            let before = doc.get_heads();
+            let action = apply_block_ops_action(
+                page,
+                vec![BlockEditOp::SetKind {
+                    block_id: after.clone().unwrap(),
+                    kind: kind.into(),
+                }],
+            );
+            assert!(
+                tilo_actions::apply_local(&mut doc, &action, encode(&action)).is_err(),
+                "invalid kind accepted: {kind}"
+            );
+            assert_eq!(doc.get_heads(), before);
+        }
     }
 
     #[test]
@@ -1799,6 +2076,7 @@ mod tests {
                 block_id: "missing-block".into(),
             }],
             marks: vec![],
+            assets: vec![],
         };
         assert!(
             tilo_actions::dispatch(
@@ -1821,6 +2099,7 @@ mod tests {
             page: meta,
             ops,
             marks,
+            assets: vec![],
         };
         let applied =
             tilo_actions::dispatch(&mut doc, &valid, encode(&valid), &mut LocalTransport::new())
@@ -1960,10 +2239,12 @@ mod tests {
             blocks: std::collections::HashMap::new(),
             tags: NotesDoc::list_tags(doc),
             tag_assignments: NotesDoc::list_tag_assignments(doc),
+            can_go_back: false,
+            can_go_forward: false,
         }
     }
 
-    /// Ctrl+K on Notes yields the nested tree: the notebook with a "New page"
+    /// Ctrl+K on Notes yields the nested tree: the notebook with a "New note"
     /// action, a `notes.page` child per root page exporting rename / delete /
     /// new-child, and grandchildren nested underneath. Drives the real
     /// resource-builder path.
@@ -1976,6 +2257,7 @@ mod tests {
         assert_eq!(notebook.kind, "notes.notebook");
         let nb_actions: Vec<&str> = notebook.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(nb_actions.contains(&"new-page"), "{nb_actions:?}");
+        assert!(nb_actions.contains(&"daily-note"), "{nb_actions:?}");
 
         // Two root pages, in order.
         assert_eq!(notebook.children.len(), 2, "Projects + Inbox");
@@ -1983,7 +2265,7 @@ mod tests {
             .children
             .iter()
             .find(|r| r.label == "Projects")
-            .expect("a Projects page resource");
+            .expect("a Projects note resource");
         assert_eq!(projects.kind, "notes.page");
         let p_actions: Vec<&str> = projects.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(p_actions.contains(&"rename"), "{p_actions:?}");
@@ -2010,13 +2292,13 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New page")), "{labels:?}");
+        assert!(labels.iter().any(|l| l.contains("New note")), "{labels:?}");
         assert!(
-            labels.iter().any(|l| l.contains("Rename page")),
+            labels.iter().any(|l| l.contains("Rename note")),
             "{labels:?}"
         );
         assert!(
-            labels.iter().any(|l| l.contains("Delete page")),
+            labels.iter().any(|l| l.contains("Delete note")),
             "{labels:?}"
         );
     }
@@ -2082,7 +2364,7 @@ mod tests {
             .actions
             .iter()
             .find(|action| action.id == "copy-link")
-            .expect("page publishes copy-link");
+            .expect("note publishes copy-link");
         assert_eq!(copy.kind, OperationKind::Effect);
         let encoded = immediate_encode(copy);
         assert_eq!(
@@ -2093,7 +2375,7 @@ mod tests {
             .actions
             .iter()
             .find(|action| action.id == "duplicate")
-            .expect("canonical page publishes duplicate");
+            .expect("canonical note publishes duplicate");
         let encoded = immediate_encode(duplicate);
         let NotesAction::DuplicateSubtree { source, pages } =
             serde_json::from_slice(&encoded.payload).unwrap()
@@ -2106,7 +2388,7 @@ mod tests {
             .actions
             .iter()
             .find(|action| action.id == "insert-image")
-            .expect("page publishes image insertion");
+            .expect("note publishes image insertion");
         let encoded = immediate_encode(insert_image);
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
@@ -2175,6 +2457,38 @@ mod tests {
         let updated = NotesDoc::list_pages(&doc);
         assert_eq!(updated.iter().find(|page| page.id == b).unwrap().order, 0);
         assert_eq!(updated.iter().find(|page| page.id == a).unwrap().order, 1);
+        let moved = updated.iter().find(|page| page.id == b).unwrap();
+        let refreshed = page_resource(moved, &updated, &doc);
+        assert!(
+            !refreshed
+                .actions
+                .iter()
+                .any(|action| action.id == "move-up")
+        );
+        assert!(
+            refreshed
+                .actions
+                .iter()
+                .any(|action| action.id == "move-down")
+        );
+        assert!(
+            refreshed
+                .actions
+                .iter()
+                .any(|action| action.id == "duplicate")
+        );
+
+        // Sharing validation is confined to one immutable publication. A new
+        // refresh must refuse malformed data rather than reuse a past snapshot.
+        doc.put(automerge::ROOT, "notes_schema_version", 999_u64)
+            .unwrap();
+        let invalid = page_resource(moved, &updated, &doc);
+        assert!(!invalid.actions.iter().any(|action| {
+            matches!(
+                action.id.as_str(),
+                "duplicate" | "move-up" | "move-down" | "indent" | "outdent"
+            )
+        }));
     }
 
     #[test]
@@ -2232,18 +2546,20 @@ mod tests {
             blocks: HashMap::new(),
             tags: Vec::new(),
             tag_assignments: Vec::new(),
+            can_go_back: false,
+            can_go_forward: false,
         };
         let resources = provide_resources(&ctx, &AutoCommit::new());
         assert!(
             resource_count(&resources[0]) <= RESOURCE_PAGE_SNAPSHOT_LIMIT + 1,
             "notebook context must remain bounded"
         );
-        let late = pages.last().expect("late page");
+        let late = pages.last().expect("late note");
         let lazy = page_resource(late, &pages, &AutoCommit::new());
         assert_eq!(lazy.id.as_str(), page_resource_id(late.id));
         assert!(
             lazy.actions.iter().any(|action| action.id == "open"),
-            "an omitted page remains addressable by its stable id"
+            "an omitted note remains addressable by its stable id"
         );
     }
 
@@ -2268,6 +2584,8 @@ mod tests {
             blocks: HashMap::new(),
             tags,
             tag_assignments: vec![(page, late.id); RESOURCE_TAG_PAGE_SNAPSHOT_LIMIT + 40],
+            can_go_back: false,
+            can_go_forward: false,
         };
 
         let resources = provide_resources(&ctx, &AutoCommit::new());
@@ -2279,7 +2597,7 @@ mod tests {
         let page_resource = &resources[0].children[0];
         assert!(
             page_resource.actions.len() <= RESOURCE_PAGE_TAG_ACTION_LIMIT + 12,
-            "per-page tag actions must not grow with the whole vocabulary"
+            "per-note tag actions must not grow with the whole vocabulary"
         );
 
         let late_resource = tag_resource(&late, &ctx);
@@ -2359,13 +2677,13 @@ mod tests {
         assert_eq!(
             NotesDoc::list_pages(&state.doc).len(),
             before + 1,
-            "the action created a page"
+            "the action created a note"
         );
         assert!(
             NotesDoc::list_pages(&state.doc)
                 .iter()
                 .any(|p| p.id == new_id),
-            "the created page is present"
+            "the created note is present"
         );
         assert!(
             state.peek_last_undo().is_some(),
@@ -2377,13 +2695,13 @@ mod tests {
         assert_eq!(
             NotesDoc::list_pages(&state.doc).len(),
             before,
-            "undo reverted the created page and nothing else"
+            "undo reverted the created note and nothing else"
         );
         assert!(
             !NotesDoc::list_pages(&state.doc)
                 .iter()
                 .any(|p| p.id == new_id),
-            "the created page is gone after undo"
+            "the created note is gone after undo"
         );
     }
 
@@ -2519,6 +2837,9 @@ mod tests {
             NotesAction::ApplyBlockOps { .. } => {
                 panic!("new-child built the wrong action: ApplyBlockOps")
             }
+            NotesAction::AddImageAsset { .. } => {
+                panic!("new-child built the wrong action: AddImageAsset")
+            }
             NotesAction::SetBlockMarks { .. } => {
                 panic!("new-child built the wrong action: SetBlockMarks")
             }
@@ -2591,7 +2912,7 @@ mod tests {
         assert_eq!(notebook.name.as_deref(), Some("Notes"));
         assert!(
             notebook.action("new-page").is_some(),
-            "the notebook affords new-page"
+            "the notebook affords new-note"
         );
         let ids1: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
 
@@ -2604,8 +2925,8 @@ mod tests {
         // the delete affordance carries the on-screen control's exact action.
         let page = tree
             .node(&ui::SemanticId(format!("r:notes.page:{projects}")))
-            .expect("projects page node");
-        assert!(page.action("rename").is_some(), "page affords rename");
+            .expect("projects note node");
+        assert!(page.action("rename").is_some(), "note affords rename");
         let exposed = match &page.action("delete").expect("delete affordance").kind {
             ui::SemanticActionKind::App(enc) => enc.clone(),
             other => panic!("expected an app action, got {other:?}"),
@@ -2638,7 +2959,7 @@ mod tests {
             .collect();
         assert_eq!(
             a, b,
-            "invoking the a11y affordance deletes the same page + subtree"
+            "invoking the a11y affordance deletes the same note + subtree"
         );
         assert_eq!(
             NotesDoc::list_pages(&via_a11y).len(),
@@ -2655,8 +2976,8 @@ mod tests {
             parent: String::new(),
             order: 0,
         }));
-        assert_eq!(context.action_label, "Update page");
-        let resource = context.resource.expect("page resource");
+        assert_eq!(context.action_label, "Update note");
+        let resource = context.resource.expect("note resource");
         assert_eq!(resource.id, "notes.page:page-7");
         assert_eq!(resource.label, "Launch brief");
     }
@@ -2917,7 +3238,7 @@ mod tests {
             .children
             .iter()
             .find(|resource| resource.id.as_str() == page_resource_id(projects))
-            .expect("tagged page resource");
+            .expect("tagged note resource");
         assert!(
             page.actions
                 .iter()

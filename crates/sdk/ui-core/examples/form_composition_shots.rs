@@ -1,10 +1,10 @@
 //! Automatic, guided and equivalent primitive account-form source fixtures.
 //! `cargo run -p ui --example form-composition-shots -- /tmp/form-composition`
 use std::path::PathBuf;
-use ui::headless::FrameHarness;
-use ui::theme::Theme;
-use ui::tokens::TextRole;
-use ui::widget::{
+use tilo_ui::headless::FrameHarness;
+use tilo_ui::theme::Theme;
+use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::{
     Actions, Button, Checkbox, Column, Container, Density, Element, Field, Form, FormPage,
     FormSection, LabelPlacement, Row, Scrollable, Text, TextInput,
 };
@@ -214,7 +214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => automatic(),
             };
             let mut harness = FrameHarness::new_with_theme(
-                ui::State::new(),
+                tilo_ui::State::new(),
                 root,
                 viewport,
                 Theme::dark().with_text_scale(scale),
@@ -236,8 +236,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    let mut resized =
-        FrameHarness::new_with_theme(ui::State::new(), automatic(), (1080, 800), Theme::dark());
+    let mut resized = FrameHarness::new_with_theme(
+        tilo_ui::State::new(),
+        automatic(),
+        (1080, 800),
+        Theme::dark(),
+    );
     resized.resize((340, 800))?;
     resized.render_png(&output.join("automatic-resized-narrow.png"));
     std::fs::write(

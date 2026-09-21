@@ -32,6 +32,8 @@ head_json="$scratch/head.json"
 base_stderr="$scratch/base.stderr"
 head_stderr="$scratch/head.stderr"
 changed_paths="$scratch/changed-paths"
+base_metadata="$scratch/base-metadata.json"
+head_metadata="$scratch/head-metadata.json"
 
 cleanup() {
     git -C "$root" worktree remove --force "$base_tree" >/dev/null 2>&1 || true
@@ -40,6 +42,12 @@ cleanup() {
 trap cleanup EXIT
 
 git -C "$root" worktree add --quiet --detach "$base_tree" "$base" || exit 2
+git -C "$root" diff --name-status -M "$base..HEAD" >"$changed_paths"
+
+cargo metadata --manifest-path "$base_tree/Cargo.toml" --locked --offline \
+    --no-deps --format-version 1 >"$base_metadata" || exit 2
+cargo metadata --manifest-path "$root/Cargo.toml" --locked --offline \
+    --no-deps --format-version 1 >"$head_metadata" || exit 2
 
 head_args=("$@")
 base_args=()
@@ -47,9 +55,37 @@ declare -A base_packages=()
 while IFS= read -r package; do
     base_packages["$package"]=1
 done < <(
-    cargo metadata --manifest-path "$base_tree/Cargo.toml" --locked --offline \
-        --no-deps --format-version 1 |
-        python3 -c 'import json,sys; print("\n".join(p["name"] for p in json.load(sys.stdin)["packages"]))'
+    python3 -c 'import json,sys; print("\n".join(p["name"] for p in json.load(open(sys.argv[1]))["packages"]))' \
+        "$base_metadata"
+)
+declare -A renamed_base_packages=()
+while IFS=$'\t' read -r head_package base_package; do
+    renamed_base_packages["$head_package"]=$base_package
+done < <(python3 - "$base_metadata" "$head_metadata" "$base_tree" "$root" "$changed_paths" <<'PY'
+import json
+import pathlib
+import sys
+
+base = json.load(open(sys.argv[1], encoding="utf-8"))
+head = json.load(open(sys.argv[2], encoding="utf-8"))
+base_root = pathlib.Path(sys.argv[3]).resolve()
+head_root = pathlib.Path(sys.argv[4]).resolve()
+renames = {}
+for line in pathlib.Path(sys.argv[5]).read_text(encoding="utf-8").splitlines():
+    fields = line.split("\t")
+    if fields[0].startswith("R") and len(fields) == 3:
+        renames[fields[1]] = fields[2]
+
+base_by_head_manifest = {}
+for package in base["packages"]:
+    relative = pathlib.Path(package["manifest_path"]).resolve().relative_to(base_root).as_posix()
+    base_by_head_manifest[renames.get(relative, relative)] = package["name"]
+for package in head["packages"]:
+    relative = pathlib.Path(package["manifest_path"]).resolve().relative_to(head_root).as_posix()
+    base_name = base_by_head_manifest.get(relative)
+    if base_name and base_name != package["name"]:
+        print(f'{package["name"]}\t{base_name}')
+PY
 )
 
 base_package_count=0
@@ -65,6 +101,9 @@ while [ "$index" -lt "${#head_args[@]}" ]; do
         package=${head_args[$next]}
         if [ -n "${base_packages[$package]:-}" ]; then
             base_args+=("$argument" "$package")
+            base_package_count=$((base_package_count + 1))
+        elif [ -n "${renamed_base_packages[$package]:-}" ]; then
+            base_args+=("$argument" "${renamed_base_packages[$package]}")
             base_package_count=$((base_package_count + 1))
         fi
         index=$((index + 2))
@@ -179,8 +218,6 @@ else
     : >"$base_json"
 fi
 
-git -C "$root" diff --name-only "$base..HEAD" >"$changed_paths"
-
 python3 - "$base_json" "$head_json" "$base_tree" "$root" "$base_compiled" "$changed_paths" <<'PY'
 import collections
 import json
@@ -188,8 +225,9 @@ import pathlib
 import sys
 
 
-def diagnostics(path, tree):
+def diagnostics(path, tree, path_map=None):
     tree = pathlib.Path(tree).resolve()
+    path_map = path_map or {}
     sites = set()
     fingerprints = collections.Counter()
     examples = collections.defaultdict(list)
@@ -221,11 +259,18 @@ def diagnostics(path, tree):
                     except ValueError:
                         continue
                 else:
-                    file_name = file_path.as_posix().removeprefix("./")
+                    try:
+                        file_name = (tree / file_path).resolve().relative_to(tree).as_posix()
+                    except ValueError:
+                        continue
                 if file_name.startswith(("vendor/", "../")):
                     continue
-                source = "\n".join(part.get("text", "").strip() for part in span.get("text", []))
-                fingerprint = (code, file_name, message.get("message", ""), source)
+                file_name = path_map.get(file_name, file_name)
+                # Count a diagnostic kind/message per file rather than treating
+                # edited source text as a new lint site. Line/column remain in
+                # `site` for de-duplication, while the Counter still detects an
+                # increased number of equivalent warnings in that file.
+                fingerprint = (code, file_name, message.get("message", ""), "")
                 site = fingerprint + (span.get("line_start"), span.get("column_start"))
             if site in sites:
                 continue
@@ -235,7 +280,21 @@ def diagnostics(path, tree):
     return fingerprints, examples
 
 
-base, _ = diagnostics(sys.argv[1], sys.argv[3])
+changed = set()
+renames = {}
+for line in pathlib.Path(sys.argv[6]).read_text(encoding="utf-8").splitlines():
+    fields = line.split("\t")
+    status = fields[0]
+    if status.startswith("R") and len(fields) == 3:
+        old_path, new_path = fields[1:]
+        renames[old_path] = new_path
+        changed.add(new_path)
+    elif len(fields) >= 2:
+        changed.add(fields[-1])
+
+# Map base paths to their HEAD location so moving a file does not reset its lint
+# budget. New duplicate sites still increase the counter and fail.
+base, _ = diagnostics(sys.argv[1], sys.argv[3], renames)
 head, examples = diagnostics(sys.argv[2], sys.argv[4])
 introduced = head - base
 if sys.argv[5] != "true":
@@ -243,7 +302,6 @@ if sys.argv[5] != "true":
     # so a partial baseline cannot prove those diagnostics are new. Continue to
     # reject every diagnostic in a file the branch changed; unchanged base code
     # remains the base branch's responsibility until it compiles again.
-    changed = set(pathlib.Path(sys.argv[6]).read_text(encoding="utf-8").splitlines())
     introduced = collections.Counter(
         {
             fingerprint: count
