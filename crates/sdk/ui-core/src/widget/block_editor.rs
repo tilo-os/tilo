@@ -2205,7 +2205,13 @@ impl BlockEditor {
             return false;
         };
         if !parent.kind.supports_indent() && parent.indent() == 0 {
-            return false;
+            let can_join_outline = idx
+                .checked_sub(1)
+                .and_then(|idx| self.blocks.get(idx))
+                .is_some_and(|previous| previous.indent() > 0 || previous.kind.supports_indent());
+            if !can_join_outline {
+                return false;
+            }
         }
         let depth = parent.indent();
         let end = self.list_subtree_end(last);
@@ -11374,6 +11380,14 @@ mod tests {
         e.blocks[0].line.set_text("body");
         assert!(!e.try_indent(0, 1));
         assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+    }
+
+    #[test]
+    fn try_indent_paragraph_joins_the_preceding_outline() {
+        let mut e = BlockEditor::new();
+        e.set_blocks(vec![Block::numbered(0, "item"), Block::paragraph("detail")]);
+        assert!(e.try_indent(1, 1));
+        assert_eq!(e.blocks()[1].nesting, 1);
     }
 
     #[test]

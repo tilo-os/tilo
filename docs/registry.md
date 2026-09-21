@@ -214,10 +214,10 @@ artifact reproduces the existing entry, while reusing a version/target identity
 for different bytes fails closed.
 
 Each signed version binds the package root, exact final-file BLAKE3 and size,
-architecture, minimum ISA and runtime ABI. The official registry currently
-accepts only `x86_64`; CI still retains immutable `aarch64` artifacts for the
-future multi-target lane. Do not publish a macOS package through this Linux
-qpkg lane.
+architecture, minimum ISA and runtime ABI. The official registry accepts
+`x86_64` and `aarch64` targets. Pass the qpkg's target with
+`tilo-pkg entry --arch`; do not publish a macOS package through this Linux qpkg
+lane.
 
 ### 6. Moderator workflow
 
