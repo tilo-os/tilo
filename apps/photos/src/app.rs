@@ -321,11 +321,6 @@ const LIBRARY_ONE_COLUMN_MAX_W: f64 = 460.0;
 /// The full masthead needs room for destinations, density and selection.
 /// Tablets retain photo density but use the compact masthead below this width.
 const LIBRARY_DESKTOP_MASTHEAD_MIN_W: f64 = 960.0;
-/// The gallery controls use the shared 44px minimum target with a little
-/// breathing room. Keeping this one value in both paint and test geometry
-/// prevents a visual refinement from silently shrinking an accessible hit.
-const LIBRARY_ACTION_H: f64 = 48.0;
-
 /// Presentation-only density for the chronological library.  It is deliberately
 /// pure: a pinch and the visible +/- buttons must land on the same geometry.
 /// The lower bound protects the 44 px card actions; the upper bound keeps a
