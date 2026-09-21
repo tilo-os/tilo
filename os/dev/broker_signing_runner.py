@@ -22,6 +22,13 @@ SPEC.loader.exec_module(transport)
 CONTEXT = 'broker-authenticated-api'
 MAX_STREAM = spool.MAX_INPUT + 65536
 INSPECT = '{"Id":{{json .Id}},"Image":{{json .Image}},"State":{{json .State}},"RestartCount":{{json .RestartCount}}}'
+TARGETS = {
+    'on-prem': {'mode': 'in-cluster', 'kubeconfig': None, 'region': None, 'cluster': None},
+    'aws-eu-central-1': {'mode': 'eks', 'kubeconfig': '/etc/sandbox-broker/clusters/eks.yaml',
+                         'region': 'eu-central-1', 'cluster': 'burst-eu'},
+    'aws-us-west-2': {'mode': 'eks', 'kubeconfig': '/etc/sandbox-broker/clusters/eks-us-west-2.yaml',
+                      'region': 'us-west-2', 'cluster': 'burst-us'},
+}
 
 # Watchdog runs in the pinned worker even if the API connection disappears.
 REMOTE_WRAPPER = r'''
@@ -53,20 +60,50 @@ sys.exit(result)
 
 # Runs in the existing broker. No command is derived from remote output.
 BRIDGE = r'''
-import json,sys,time
+import json,os,sys,time
 from kubernetes import client,config
+from kubernetes.client.exceptions import ApiException
 from kubernetes.stream import stream
 line=sys.stdin.buffer.readline(262145)
 if len(line)>262144 or not line.endswith(b'\n'): raise ValueError('header bound')
 p=json.loads(line)
 deadline=time.monotonic()+p['timeout']
-cfg=client.Configuration()
-config.load_kube_config('/etc/sandbox-broker/clusters/eks.yaml',client_configuration=cfg)
-cfg.refresh_api_key_hook=None
-cfg.api_key['authorization']='Bearer '+p['token']
-a=client.ApiClient(cfg);v=client.CoreV1Api(a)
-pod=v.read_namespaced_pod(p['pod'],p['namespace'],_request_timeout=min(15,p['timeout']))
-if pod.metadata.uid!=p['uid']: raise ValueError('pinned pod changed')
+profiles=json.loads(os.environ['BROKER_CLUSTER_TARGETS'])
+if (not isinstance(profiles,list) or not all(isinstance(x,dict) and isinstance(x.get('name'),str) for x in profiles)
+    or len({x['name'] for x in profiles})!=len(profiles)): raise ValueError('invalid broker target inventory')
+enabled={x['name']:x for x in profiles if x.get('ci_enabled') is True}
+if not enabled or not set(enabled) <= set(TARGETS): raise ValueError('unknown enabled CI target')
+selected=p.get('target')
+if selected not in enabled or selected not in TARGETS or set(p['auth']) != {selected}:
+ raise ValueError('pinned broker target differs')
+candidates={selected:enabled[selected]}
+matches=[]
+for name in sorted(candidates):
+ target=TARGETS[name];profile=candidates[name];cfg=client.Configuration()
+ expected=target['kubeconfig']
+ if profile.get('kubeconfig') != expected: raise ValueError('broker target path differs')
+ if target['mode']=='in-cluster':
+  if p['auth'][name] is not None: raise ValueError('in-cluster authorization differs')
+  config.load_incluster_config(client_configuration=cfg)
+ else:
+  token=p['auth'][name]
+  if not isinstance(token,str) or not token.startswith('k8s-aws-v1.') or len(token)>32768:
+   raise ValueError('EKS authorization differs')
+  config.load_kube_config(expected,client_configuration=cfg)
+  cfg.refresh_api_key_hook=None;cfg.api_key['authorization']='Bearer '+token
+ a=client.ApiClient(cfg);v=client.CoreV1Api(a)
+ try: pod=v.read_namespaced_pod(p['pod'],p['namespace'],_request_timeout=min(15,p['timeout']))
+ except ApiException as error:
+  if error.status==404: continue
+  raise
+ labels=pod.metadata.labels or {};containers={x.name for x in pod.spec.containers}
+ if (pod.metadata.uid==p['uid'] and pod.status.phase=='Running'
+     and labels.get('app.kubernetes.io/managed-by')=='sandbox-broker'
+     and labels.get('sandbox.example/workload')=='forgejo-ci'
+     and labels.get('sandbox.example/cluster')==name and {'runner','dind'} <= containers):
+  matches.append((name,a,v,pod))
+if len(matches)!=1: raise ValueError('pinned pod must match exactly one enabled CI target')
+target_name,a,v,pod=matches[0]
 if p['operation']=='get':
  data=json.dumps(a.sanitize_for_serialization(pod)).encode()
  if len(data)>p['limit']: raise ValueError('output bound')
@@ -108,12 +145,15 @@ else:
    raise ValueError('remote operation failed')
  finally: w.close()
 '''
-BRIDGE = "REMOTE_WRAPPER = " + repr(REMOTE_WRAPPER) + "\n" + BRIDGE
+BRIDGE = "REMOTE_WRAPPER = " + repr(REMOTE_WRAPPER) + "\nTARGETS = " + repr(TARGETS) + "\n" + BRIDGE
 
 
 class BrokerRunner:
     def __init__(self, binding, *, local_user='xemmerling', process=transport.bounded_process):
         self.binding = transport.validate_binding(binding)
+        self.target = self.binding.get('cluster')
+        if self.target not in TARGETS:
+            raise ValueError('invalid pinned broker target')
         if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', local_user):
             raise ValueError('invalid existing operator user')
         self.user = local_user
@@ -187,16 +227,23 @@ class BrokerRunner:
                     if count > MAX_STREAM or time.monotonic() >= deadline:
                         raise ValueError('broker input exceeds admission')
                     public.write(data)
-            token_output = io.BytesIO()
-            self.process(['runuser', '-u', self.user, '--', 'aws', 'eks', 'get-token', '--profile',
-                'tilo-eks-operator', '--region', 'eu-central-1', '--cluster-name', 'burst-eu'],
-                token_output, 65536, timeout=min(30, max(0.01, deadline-time.monotonic())))
-            token = json.loads(token_output.getvalue())['status']['token']
-            if not isinstance(token, str) or not token.startswith('k8s-aws-v1.') or len(token) > 32768:
-                raise ValueError('existing operator token unavailable')
+            targets = {self.target: TARGETS[self.target]}
+            auth = {}
+            for name, target in targets.items():
+                if target['mode'] == 'in-cluster':
+                    auth[name] = None
+                    continue
+                token_output = io.BytesIO()
+                self.process(['runuser', '-u', self.user, '--', 'aws', 'eks', 'get-token', '--profile',
+                    'tilo-eks-operator', '--region', target['region'], '--cluster-name', target['cluster']],
+                    token_output, 65536, timeout=min(30, max(0.01, deadline-time.monotonic())))
+                token = json.loads(token_output.getvalue())['status']['token']
+                if not isinstance(token, str) or not token.startswith('k8s-aws-v1.') or len(token) > 32768:
+                    raise ValueError('existing operator token unavailable')
+                auth[name] = token
             remaining = deadline-time.monotonic()
             if remaining <= 0: raise ValueError('broker operation deadline')
-            header = {'token': token, 'operation': operation, 'command': command,
+            header = {'auth': auth, 'target': self.target, 'operation': operation, 'command': command,
                 'pod': self.binding['pod'], 'namespace': self.binding['namespace'],
                 'uid': self.binding['pod_uid'], 'container': self.binding['container'],
                 'input_bytes': count, 'limit': limit, 'timeout': remaining}

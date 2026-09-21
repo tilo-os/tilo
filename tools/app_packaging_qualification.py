@@ -4,13 +4,15 @@ import json
 import os
 import re
 import subprocess
+import sys
 import uuid
 
 import app_packaging_contract as contract
 from ci.resolve_builder import resolve
 
 
-def validate(env, ancestor=None):
+def prevalidate(env):
+    """Reject malformed or disabled coordinator requests before costly work."""
     intent = env.get('COORDINATOR_INTENT', '')
     extra = [env.get(name, '') for name in ('REQUESTED_BUILDER', 'BASELINE_SHA', 'BASELINE_RECEIPT_SHA256',
                                           'BASELINE_RUN_ID', 'COORDINATOR_POLICY_SHA256', 'BASELINE_EVIDENCE')]
@@ -49,6 +51,15 @@ def validate(env, ancestor=None):
                     'architectures': env.get('REQUESTED_ARCHITECTURES', '').split(','),
                     'policy_sha256': policy_sha}
         contract.validate_evidence(proof, contract.validate_desired(expected), int(run_id))
+    return True
+
+
+def validate(env, ancestor=None):
+    if not prevalidate(env):
+        return False
+    baseline = env.get('BASELINE_SHA', '')
+    source = env['GITHUB_SHA']
+    if baseline:
         if ancestor is None:
             subprocess.run(['git', 'merge-base', '--is-ancestor', baseline, source], check=True)
         elif not ancestor(baseline, source):
@@ -57,5 +68,10 @@ def validate(env, ancestor=None):
 
 
 if __name__ == '__main__':
-    if validate(os.environ):
+    arguments = sys.argv[1:]
+    if arguments == ['--preflight']:
+        prevalidate(os.environ)
+    elif arguments:
+        raise SystemExit('usage: app_packaging_qualification.py [--preflight]')
+    elif validate(os.environ):
         contract.validate_local_cargo_inputs('.')
