@@ -17,7 +17,7 @@ path = "src/main.rs"
 # Mirrors the dep set used by the in-tree `ui`-based apps
 # (file-explorer / terminal): the toolkit plus the trait crates its
 # `Widget` impls reference directly.
-ui = { path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 automerge.workspace = true
 vello.workspace = true
 winit.workspace = true

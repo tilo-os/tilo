@@ -1270,7 +1270,7 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
         environment_scale.as_deref(),
     ));
     // Screenshot review must use the same motion policy as a real app.  The
-    // headless harness does not construct `ui::App`, where this environment
+    // headless harness does not construct `tilo_ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.
     theme.with_reduce_motion(shot_motion_reduced())
 }
@@ -1311,7 +1311,7 @@ pub fn shot_text_scale(cli: Option<f32>, environment: Option<&str>) -> f32 {
 
 /// Read the user motion preference for the headless screenshot path.
 ///
-/// Keep this deliberately in lockstep with `ui::App`'s startup gate: a test
+/// Keep this deliberately in lockstep with `tilo_ui::App`'s startup gate: a test
 /// image should not claim reduced-motion support while a launched app animates
 /// (or vice versa).
 fn shot_motion_reduced() -> bool {
@@ -2603,8 +2603,8 @@ mod tests {
                     "--nocapture",
                 ])
                 .env("QOS_LAUNCH_REEXEC_TEST", mode)
-                .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
-                .env("QOS_SVC_IDENTITY_FD", fds[1].to_string())
+                .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+                .env("TILO_SVC_IDENTITY_FD", fds[1].to_string())
                 .env_remove("QOS_RUNTIME_RESUME_LIVE");
             if mode == "resumed" || mode == "descendant" {
                 child.env("QOS_RUNTIME_RESUME_LIVE", "dev.qos.reexec-test");
