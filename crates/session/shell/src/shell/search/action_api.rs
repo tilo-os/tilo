@@ -491,7 +491,7 @@ mod tests {
     use std::sync::Arc;
 
     fn chrome_rc() -> Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
+        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::bootstrap_default()));
         ChromeState::new_with_handle(handle)
     }
 

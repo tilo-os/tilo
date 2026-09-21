@@ -213,10 +213,10 @@ mod identity_fs_tests {
         let xdg = temp.path().join("config");
         let system = temp.path().join("system");
         let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let old_root = std::env::var_os("QOS_IDENTITY_ROOT");
+        let old_root = std::env::var_os("TILO_IDENTITY_ROOT");
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
-            std::env::set_var("QOS_IDENTITY_ROOT", &system);
+            std::env::set_var("TILO_IDENTITY_ROOT", &system);
         }
         let identity_dir = xdg.join("tilo/identity");
         let paths = tilo_user_identity::IdentityPaths::under(&system);
@@ -277,8 +277,8 @@ mod identity_fs_tests {
                 None => std::env::remove_var("XDG_CONFIG_HOME"),
             }
             match old_root {
-                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
-                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
+                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
+                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
             }
         }
     }

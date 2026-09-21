@@ -171,7 +171,10 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "peer.invite.named" | "agent.invite" => {
             contract.permission = PermissionRequirement::Invite;
         }
-        "peer.invite" | "peer.connect" => contract = ActionContract::view(),
+        "peer.invite" | "peer.connect" => {
+            contract = ActionContract::view();
+            contract.permission = PermissionRequirement::Invite;
+        }
         "text.insert" | "record.bring" => {
             contract.permission = PermissionRequirement::Write;
             contract.reversible = true;
@@ -2481,6 +2484,23 @@ mod tests {
         (result.on_open)(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap();
     }
 
+    fn begin_lifecycle_action(
+        results: &[crate::shell::search::SearchResult],
+        id: &str,
+        chrome: &Chrome,
+    ) -> crate::shell::search::InvocationDisposition {
+        let result = results
+            .iter()
+            .find(|result| result.id == id)
+            .unwrap_or_else(|| panic!("action provider did not return {id}"));
+        let begin = result
+            .on_begin_invoke
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id} must use lifecycle dispatch"));
+        let mut document = AutoCommit::new();
+        begin(&mut document, &automerge::ROOT, chrome, &ActionArgs::none()).unwrap()
+    }
+
     #[test]
     fn panel_actions_share_the_provider_dispatch_path() {
         let provider = ActionsProvider::new();
@@ -2521,13 +2541,28 @@ mod tests {
         chrome.borrow_mut().peer_sync_enabled = true;
         let results = action_results(&provider, &chrome);
 
-        invoke_action(&results, "peer.invite", &chrome);
-        invoke_action(&results, "peer.connect", &chrome);
+        assert!(matches!(
+            begin_lifecycle_action(&results, "peer.invite", &chrome),
+            crate::shell::search::InvocationDisposition::Pending(_)
+        ));
+        assert!(matches!(
+            begin_lifecycle_action(&results, "peer.connect", &chrome),
+            crate::shell::search::InvocationDisposition::Pending(_)
+        ));
 
+        let queued = chrome.borrow_mut().take_peer_sync_requests();
+        assert_eq!(queued.len(), 2);
+        let actions = queued
+            .into_iter()
+            .map(|request| match request {
+                crate::shell::overlay_host::PeerSyncAction::Tracked { action, .. } => *action,
+                other => panic!("lifecycle request must remain tracked, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            chrome.borrow_mut().take_peer_sync_requests(),
+            actions,
             vec![
-                crate::shell::overlay_host::PeerSyncAction::IssueInvite,
+                crate::shell::overlay_host::PeerSyncAction::PromptInvite,
                 crate::shell::overlay_host::PeerSyncAction::PromptConnect,
             ]
         );
@@ -2903,7 +2938,7 @@ mod tests {
             .iter()
             .find(|r| r.id == "room.activity.open")
             .expect("typing 'activity' must surface the room-activity action");
-        assert_eq!(action.title, "Review workspace activity");
+        assert_eq!(action.title, "Show workspace activity");
         assert!(!c.borrow().overlays.room_activity, "starts closed");
         (action.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none())
             .expect("a nullary chrome action must run");

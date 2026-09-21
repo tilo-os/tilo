@@ -2035,15 +2035,16 @@ mod tests {
     /// Driven through the applications provider against an installed-app
     /// registry on disk rather than the fixtures above.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn typing_an_installed_apps_name_offers_the_app_first() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");
         install_fake_app(tmp.path(), "dev.qos.calculator", "Calculator");
         install_fake_app(tmp.path(), "dev.qos.notes", "Notes");
-        // SAFETY: `serial_test::serial` keeps the other tests that
+        let previous_apps_data_dir = std::env::var_os("TILO_APPS_DATA_DIR");
+        // SAFETY: `serial_test::serial(process_env)` keeps the other tests that
         // repoint this variable from running concurrently.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         crate::shell::launcher::invalidate_app_cache();
 
         let mut reg = SearchRegistry::new();
@@ -2101,19 +2102,27 @@ mod tests {
             );
             assert_eq!(first.id, "dev.qos.calculator");
         }
-        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        // SAFETY: restore the process-wide override before releasing the serial lock.
+        unsafe {
+            match previous_apps_data_dir {
+                Some(value) => std::env::set_var("TILO_APPS_DATA_DIR", value),
+                None => std::env::remove_var("TILO_APPS_DATA_DIR"),
+            }
+        }
         crate::shell::launcher::invalidate_app_cache();
     }
 
     /// The app group must survive the trim that keeps a forty-hit file
     /// group from filling the card.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn a_capped_palette_still_leads_with_the_app() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");
         install_fake_app(tmp.path(), "dev.qos.hex-editor", "Hex Editor");
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        let previous_apps_data_dir = std::env::var_os("TILO_APPS_DATA_DIR");
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         crate::shell::launcher::invalidate_app_cache();
 
         let mut reg = SearchRegistry::new();
@@ -2187,7 +2196,13 @@ mod tests {
             "the app landed at row {app_row}, past the visible list: {:?}",
             flat.iter().take(10).map(|r| &r.title).collect::<Vec<_>>()
         );
-        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        // SAFETY: restore the process-wide override before releasing the serial lock.
+        unsafe {
+            match previous_apps_data_dir {
+                Some(value) => std::env::set_var("TILO_APPS_DATA_DIR", value),
+                None => std::env::remove_var("TILO_APPS_DATA_DIR"),
+            }
+        }
         crate::shell::launcher::invalidate_app_cache();
     }
 
