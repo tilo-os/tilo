@@ -2286,6 +2286,151 @@ fn trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position() {
     assert!(wp.zoom.factor() < 1.025);
 }
 
+/// Window groups offer an unclaimed event to each visible app in presentation
+/// order. A zoom gesture must therefore leave an unfocused Writer untouched,
+/// so the Writer selected by the host can receive it instead. When a
+/// non-Writer owns focus neither retained Writer may consume or mutate it.
+#[test]
+fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
+    use winit::{
+        dpi::PhysicalPosition,
+        event::{DeviceId, MouseScrollDelta, TouchPhase},
+        keyboard::ModifiersState,
+    };
+
+    let (mut first_state, mut first) = populated();
+    let (mut second_state, mut second) = populated();
+    for (writer, state) in [
+        (&mut first, &mut first_state),
+        (&mut second, &mut second_state),
+    ] {
+        writer.set_zoom(1.0);
+        pipeline_draw(writer, state, 1000, 700);
+        writer.pointer = Point::new(500.0, 300.0);
+    }
+
+    // The first visible Writer is stale/unfocused; the selected second Writer
+    // must receive the same native pinch after the first declines it.
+    first.set_focus(false);
+    second.set_focus(true);
+    assert!(
+        !pinch(&mut first, &mut first_state, 0.025, TouchPhase::Moved),
+        "an unfocused Writer must leave pinch for the selected sibling"
+    );
+    assert!(pinch(
+        &mut second,
+        &mut second_state,
+        0.025,
+        TouchPhase::Moved
+    ));
+    assert_eq!(first.zoom.factor(), 1.0);
+    assert_eq!(second.zoom.factor(), 1.025);
+
+    // Browser trackpads encode the same gesture as Ctrl + pixel wheel. The
+    // same unfocused-first/focused-second delivery order must select the
+    // second Writer, rather than letting the first visible Writer steal it.
+    let ctrl: Modifiers = ModifiersState::CONTROL.into();
+    let ctrl_wheel = WindowEvent::MouseWheel {
+        device_id: DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 24.0)),
+        phase: TouchPhase::Moved,
+    };
+    let mut first_handled = false;
+    first.handle_event(
+        &ctrl_wheel,
+        1.0,
+        &ctrl,
+        &mut first_state.doc,
+        &first_state.root,
+        &mut first_handled,
+        &mut None,
+        NodeId::new(0),
+        &TaffyTree::new(),
+    );
+    assert!(
+        !first_handled,
+        "an unfocused Writer must leave browser Ctrl+wheel for the selected sibling"
+    );
+    assert_eq!(first.zoom.factor(), 1.0);
+    let mut second_handled = false;
+    second.handle_event(
+        &ctrl_wheel,
+        1.0,
+        &ctrl,
+        &mut second_state.doc,
+        &second_state.root,
+        &mut second_handled,
+        &mut None,
+        NodeId::new(0),
+        &TaffyTree::new(),
+    );
+    assert!(second_handled, "the focused Writer owns Ctrl+wheel zoom");
+    assert_eq!(
+        second.zoom.factor(),
+        1.1,
+        "Ctrl+wheel uses Writer's tenth-step zoom quantization"
+    );
+
+    // Focus may switch back to the first Writer; it then owns ordinary
+    // native pinch while the second document remains exactly unchanged.
+    first.set_focus(true);
+    second.set_focus(false);
+    assert!(pinch(
+        &mut first,
+        &mut first_state,
+        0.025,
+        TouchPhase::Moved
+    ));
+    assert_eq!(first.zoom.factor(), 1.025);
+    assert_eq!(second.zoom.factor(), 1.1);
+
+    // Selecting a non-Writer leaves every Writer unfocused. Neither may
+    // claim or mutate a subsequent pinch; this is the regression reported by
+    // the browser host where a hidden Writer used to zoom in the background.
+    first.set_focus(false);
+    let first_before = first.zoom.factor();
+    let second_before = second.zoom.factor();
+    // Focus ownership blocks zoom only. A plain wheel remains pointer-routed,
+    // so an unfocused Writer still pans if its document has overflow.
+    let plain_wheel = WindowEvent::MouseWheel {
+        device_id: DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -24.0)),
+        phase: TouchPhase::Moved,
+    };
+    let first_scroll_before = first.scroll_y;
+    let mut plain_handled = false;
+    first.handle_event(
+        &plain_wheel,
+        1.0,
+        &Modifiers::default(),
+        &mut first_state.doc,
+        &first_state.root,
+        &mut plain_handled,
+        &mut None,
+        NodeId::new(0),
+        &TaffyTree::new(),
+    );
+    assert!(plain_handled, "plain wheel remains pointer-routed");
+    assert!(
+        first.scroll_y > first_scroll_before,
+        "plain wheel pans overflow"
+    );
+    assert!(!pinch(
+        &mut first,
+        &mut first_state,
+        0.025,
+        TouchPhase::Moved
+    ));
+    assert!(!pinch(
+        &mut second,
+        &mut second_state,
+        0.025,
+        TouchPhase::Moved
+    ));
+    assert_eq!(first.zoom.factor(), first_before);
+    assert_eq!(second.zoom.factor(), second_before);
+}
+
 #[test]
 fn trackpad_pinch_respects_overlays_bounds_and_invalid_deltas() {
     use winit::event::TouchPhase;

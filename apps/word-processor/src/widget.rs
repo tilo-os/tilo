@@ -10011,10 +10011,19 @@ impl Widget for WordProcessorWidget {
             // drop point (see `handle_dropped_file`).
             WindowEvent::DroppedFile(path) => self.handle_dropped_file(state, path, handled),
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(delta, scale_factor, ctrl, handled);
+                // Window groups offer unclaimed events to visible apps in
+                // presentation order. Ctrl+wheel represents a browser
+                // trackpad pinch, so an unfocused Writer must leave it for
+                // the host-selected app rather than zoom in the background.
+                if self.lifecycle.focused || !ctrl {
+                    self.handle_mouse_wheel(delta, scale_factor, ctrl, handled);
+                }
             }
             WindowEvent::PinchGesture { delta, phase, .. } => {
-                if self.zoom_viewport.contains(self.pointer) {
+                // Native pinch follows the same host-ownership rule as the
+                // browser's Ctrl+wheel form above. Pointer geometry still
+                // determines where a focused Writer zooms.
+                if self.lifecycle.focused && self.zoom_viewport.contains(self.pointer) {
                     *handled = true;
                     if delta.is_finite()
                         && *delta != 0.0
