@@ -1,7 +1,7 @@
 //! Installer and device-verification entry point for the Windows host APIs.
 #[cfg(windows)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use ui::host_notifications::{HostNotifications, register_shortcut};
+    use tilo_ui::host_notifications::{HostNotifications, register_shortcut};
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [command, id, title, exe, link] if command == "register" => {
