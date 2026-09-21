@@ -457,6 +457,30 @@ pub trait Continuable {
     ) -> bool;
 }
 
+/// Optional session collaboration capability for widgets that own live
+/// broker-backed activity.
+pub trait Collaborative {
+    /// Drain session-local requests for the authenticated collaboration host.
+    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+        Vec::new()
+    }
+
+    /// Receive one session-local broker event.
+    fn handle_collab_event(&mut self, _event: &crate::collaboration::CollabEvent) {}
+}
+
+/// Optional lifecycle for widgets backed by a platform-native child view.
+pub trait NativeViewLifecycle {
+    /// Attach the native child after the host window exists.
+    fn mount_native_view(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>);
+
+    /// Tear the native child down while its parent window is still alive.
+    fn unmount_native_view(&mut self);
+
+    /// Hide the native child at the start of a frame until drawing reveals it.
+    fn native_view_frame_start(&mut self);
+}
+
 pub trait Widget {
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
@@ -540,46 +564,14 @@ pub trait Widget {
         Ok(())
     }
 
-    /// Session-local broker requests emitted by an application widget. These
-    /// are never document mutations; the host drains them onto its already
-    /// authenticated collaboration channel.
-    fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        self.children_mut()
-            .into_iter()
-            .flat_map(Widget::take_collab_requests)
-            .collect()
+    /// Expose session collaboration only for widgets that own it.
+    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+        None
     }
 
-    /// Receive session-local broker events. The default recursively forwards
-    /// them so only the application owning a session id consumes it.
-    fn handle_collab_event(&mut self, event: &crate::collaboration::CollabEvent) {
-        for child in self.children_mut() {
-            child.handle_collab_event(event);
-        }
-    }
-
-    /// Attach native child views after the host window exists. The default
-    /// recursively reaches retained descendants; leaf adapters make mounting
-    /// idempotent so this can be repeated after a structural rebuild.
-    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
-        for child in self.children_mut() {
-            child.mount_native_views(host);
-        }
-    }
-
-    /// Tear native children down while their parent window is still alive.
-    fn unmount_native_views(&mut self) {
-        for child in self.children_mut() {
-            child.unmount_native_views();
-        }
-    }
-
-    /// Called before each live frame. Native adapters hide first, then their
-    /// normal draw call reveals only views actually present in this frame.
-    fn native_view_frame_start(&mut self) {
-        for child in self.children_mut() {
-            child.native_view_frame_start();
-        }
+    /// Expose platform-native child lifecycle only for widgets that own it.
+    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
+        None
     }
 
     /// Receive host-selected platform conventions. The default propagates to
@@ -1827,6 +1819,65 @@ pub trait Widget {
     }
 }
 
+/// Drain collaboration capabilities throughout a retained widget tree.
+pub(crate) fn take_collab_requests(
+    widget: &mut dyn Widget,
+) -> Vec<crate::collaboration::CollabRequest> {
+    let mut requests = widget
+        .collaborative_mut()
+        .map_or_else(Vec::new, Collaborative::take_collab_requests);
+    for child in widget.children_mut() {
+        requests.extend(take_collab_requests(child));
+    }
+    requests
+}
+
+/// Deliver a collaboration event to every explicit capability in the tree.
+pub(crate) fn handle_collab_event(
+    widget: &mut dyn Widget,
+    event: &crate::collaboration::CollabEvent,
+) {
+    if let Some(collaborative) = widget.collaborative_mut() {
+        collaborative.handle_collab_event(event);
+    }
+    for child in widget.children_mut() {
+        handle_collab_event(child, event);
+    }
+}
+
+/// Mount every native-view capability in a retained widget tree.
+pub(crate) fn mount_native_views(
+    widget: &mut dyn Widget,
+    host: &crate::widget::native_view::NativeViewHost<'_>,
+) {
+    if let Some(lifecycle) = widget.native_view_lifecycle_mut() {
+        lifecycle.mount_native_view(host);
+    }
+    for child in widget.children_mut() {
+        mount_native_views(child, host);
+    }
+}
+
+/// Unmount every native-view capability before the parent window disappears.
+pub(crate) fn unmount_native_views(widget: &mut dyn Widget) {
+    for child in widget.children_mut() {
+        unmount_native_views(child);
+    }
+    if let Some(lifecycle) = widget.native_view_lifecycle_mut() {
+        lifecycle.unmount_native_view();
+    }
+}
+
+/// Begin a frame for every native-view capability in the retained tree.
+pub(crate) fn native_view_frame_start(widget: &mut dyn Widget) {
+    if let Some(lifecycle) = widget.native_view_lifecycle_mut() {
+        lifecycle.native_view_frame_start();
+    }
+    for child in widget.children_mut() {
+        native_view_frame_start(child);
+    }
+}
+
 /// Panic-free node construction, used by every `build_layout` implementation
 /// in this module. `TaffyTree::new_leaf` and `new_with_children` are typed
 /// `-> TaffyResult<NodeId>` for API generality, but taffy 0.10's
@@ -2236,6 +2287,90 @@ mod a11y_tree_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct CollabProbe {
+        events: Rc<Cell<u32>>,
+        child: Option<Box<dyn Widget>>,
+    }
+
+    impl Collaborative for CollabProbe {
+        fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+            vec![crate::collaboration::CollabRequest::ClearContinuation {
+                app_id: "probe".into(),
+            }]
+        }
+
+        fn handle_collab_event(&mut self, _event: &crate::collaboration::CollabEvent) {
+            self.events.set(self.events.get().saturating_add(1));
+        }
+    }
+
+    impl Widget for CollabProbe {
+        fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+            Some(self)
+        }
+
+        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            _node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.leaf_node(taffy::Style::default())
+        }
+
+        fn apply_layout(
+            &mut self,
+            _taffy: &TaffyTree<()>,
+            _node: NodeId,
+            _origin: vello::kurbo::Point,
+        ) {
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            let Some(child) = self.child.as_mut() else {
+                return Vec::new();
+            };
+            let child: &mut (dyn Widget + '_) = child.as_mut();
+            vec![child]
+        }
+
+        fn name(&self) -> &'static str {
+            "CollabProbe"
+        }
+
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
+    }
 
     /// Pinned so a future edit that removes the default blanket-breaks
     /// every widget impl that hasn't opted into a stable test id.
@@ -2246,6 +2381,26 @@ mod tests {
             Widget::test_id(&s).is_none(),
             "default Widget::test_id should be None"
         );
+    }
+
+    #[test]
+    fn collaboration_capabilities_are_discovered_through_the_widget_tree() {
+        let events = Rc::new(Cell::new(0));
+        let child = CollabProbe {
+            events: Rc::clone(&events),
+            child: None,
+        };
+        let mut root = CollabProbe {
+            events: Rc::clone(&events),
+            child: Some(Box::new(child)),
+        };
+
+        assert_eq!(take_collab_requests(&mut root).len(), 2);
+        handle_collab_event(
+            &mut root,
+            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+        );
+        assert_eq!(events.get(), 2);
     }
 
     #[test]
