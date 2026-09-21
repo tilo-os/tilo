@@ -3349,9 +3349,9 @@ mod tests {
             None,
             "no opinion until asked"
         );
-        assert!(dispatch(&mut vp, &press(Key::Character("f".into()))));
+        assert!(vp.handle_key_input(&Key::Character("f".into()), ElementState::Pressed));
         assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(true));
-        assert!(dispatch(&mut vp, &press(Key::Character("F".into()))));
+        assert!(vp.handle_key_input(&Key::Character("F".into()), ElementState::Pressed));
         assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(false));
     }
 
