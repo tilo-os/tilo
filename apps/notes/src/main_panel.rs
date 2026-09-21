@@ -106,6 +106,7 @@ fn notes_editor() -> BlockEditor {
 /// chips sit `s2` apart (related siblings). One description for the painter
 /// and the layout tests, so the band the row reserves (`TAG_ROW_HEIGHT` plus
 /// the title ↔ editor gap) is checked against what is drawn.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TagChipBand {
     /// Base size of a chip label. A *base* size, not `typography.scale.sm`:
@@ -119,6 +120,7 @@ pub(crate) struct TagChipBand {
     pub gap: f64,
 }
 
+#[cfg(test)]
 impl TagChipBand {
     /// Base size of the chip label (see [`TagChipBand::text`]).
     pub(crate) fn label_size() -> f32 {
@@ -126,6 +128,7 @@ impl TagChipBand {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn tag_chip_band(
     spacing: &ui::tokens::spacing::Spacing,
     title_bottom: f64,
