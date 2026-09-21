@@ -8193,10 +8193,21 @@ pub mod tests {
         let original =
             std::os::unix::net::UnixListener::bind(&replaced_path).expect("original socket");
         let original_identity = socket_identity(&replaced_path).expect("original identity");
-        drop(original);
-        std::fs::remove_file(&replaced_path).expect("remove original pathname");
+        // Retain the old inode while replacing its pathname: unlinking its last
+        // name would let the filesystem reuse that inode for the new socket.
+        let displaced_path = lifecycle_socket(&directory, "displaced");
+        std::fs::rename(&replaced_path, &displaced_path).expect("retain original socket inode");
+        assert_eq!(
+            socket_identity(&displaced_path).expect("retained original identity"),
+            original_identity
+        );
         let replacement =
             std::os::unix::net::UnixListener::bind(&replaced_path).expect("replacement socket");
+        assert_ne!(
+            socket_identity(&replaced_path).expect("replacement identity"),
+            original_identity,
+            "the replacement fixture must exercise a distinct live inode"
+        );
         assert!(
             !remove_socket_if_owned(&replaced_path, original_identity)
                 .expect("replacement identity check"),
@@ -8204,6 +8215,8 @@ pub mod tests {
         );
         assert!(std::os::unix::net::UnixStream::connect(&replaced_path).is_ok());
         drop(replacement);
+        drop(original);
+        std::fs::remove_file(&displaced_path).expect("remove retained original pathname");
 
         let racing_path = lifecycle_socket(&directory, "publish-race");
         let (staged, stage) = bind_socket_stage(&racing_path).expect("private socket staging");
