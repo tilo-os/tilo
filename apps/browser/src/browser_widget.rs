@@ -39,9 +39,9 @@ use ui::webview::{
 };
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
-    AppKind, AppWidget, Button, Column, Container, Continuable, EmptyState,
-    FloatingSurfaceProvider, IconDescriptor, ProgressBar, Row, ScrollAxis, Scrollable, Spacer,
-    Text, TextInput, TextInputKind, WebView, Widget,
+    AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
+    FloatingSurfaceProvider, IconDescriptor, MenuItem, ProgressBar, Row, ScrollAxis, Scrollable,
+    Spacer, Text, TextInput, TextInputKind, WebView, Widget,
 };
 
 use crate::actions::{

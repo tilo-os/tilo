@@ -226,6 +226,7 @@ pub struct TextInput {
     single_attributes: Option<SingleLineAttributes>,
     single_origin: Point,
     shaped_layout_signature: u64,
+    shaped_layout_epoch: Option<Arc<()>>,
     /// Complete authored runs supplied by a shared rich-text widget. They
     /// participate in the same shaping as wrapping, carets and hit-testing.
     rich_spans: Option<Vec<RichSpan>>,
@@ -399,6 +400,7 @@ impl TextInput {
             single_attributes: None,
             single_origin: Point::ZERO,
             shaped_layout_signature: u64::MAX,
+            shaped_layout_epoch: None,
             rich_spans: None,
             preedit: String::new(),
             preedit_cursor: None,
@@ -892,6 +894,48 @@ impl TextInput {
                     // happen since `cursor_pos` is always kept on one, but
                     // fall back to keeping the span intact rather than
                     // panicking on a slice.
+                    display.push(span);
+                    display.push(RichSpan::new(&self.preedit));
+                }
+                inserted = true;
+            } else {
+                display.push(span);
+            }
+            consumed = end;
+        }
+        if !inserted {
+            display.push(RichSpan::new(&self.preedit));
+        }
+        display
+    }
+
+    fn insert_preedit_span(&self, spans: Vec<RichSpan>) -> Vec<RichSpan> {
+        if self.preedit.is_empty() {
+            return spans;
+        }
+        let at = self.cursor_pos.min(self.text.len());
+        let mut display = Vec::with_capacity(spans.len().saturating_add(2));
+        let mut consumed = 0usize;
+        let mut inserted = false;
+        for span in spans {
+            let end = consumed.saturating_add(span.text.len());
+            if !inserted && at <= end {
+                let local = at.saturating_sub(consumed);
+                if let (Some(before_str), Some(after_str)) =
+                    (span.text.get(..local), span.text.get(local..))
+                {
+                    if !before_str.is_empty() {
+                        let mut before = span.clone();
+                        before.text = before_str.to_string();
+                        display.push(before);
+                    }
+                    display.push(RichSpan::new(&self.preedit));
+                    if !after_str.is_empty() {
+                        let mut after = span.clone();
+                        after.text = after_str.to_string();
+                        display.push(after);
+                    }
+                } else {
                     display.push(span);
                     display.push(RichSpan::new(&self.preedit));
                 }
@@ -1906,8 +1950,9 @@ impl TextInput {
     ) -> f32 {
         self.gutter_text_scale = f64::from(theme.text_scale);
         let available = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
+        let style = self.multiline_style(theme.text_scale);
         #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
-        self.ensure_shaped_layout(tr, theme, self.effective_font_size(), available as f32);
+        self.ensure_shaped_layout(tr, theme, &style, available as f32);
         let minimum = self.effective_font_size() * theme.text_scale * LINE_HEIGHT_RATIO;
         let height = self
             .single_layout

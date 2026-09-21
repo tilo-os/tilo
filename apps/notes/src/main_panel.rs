@@ -2568,8 +2568,13 @@ mod tests {
 
         let title_top = PADDING_PX;
         let title_bottom = title_top + panel.title_height();
-        let tags_top = title_bottom + (TITLE_TO_EDITOR_GAP + 4.0) * panel.text_scale;
-        let tags_bottom = tags_top + 22.0 * panel.text_scale;
+        let theme = Theme::dark();
+        let label_line_h = ui::text_metrics::line_height_px(
+            TagChipBand::label_size(),
+            num::f32_of_f64(panel.text_scale),
+        );
+        let band = tag_chip_band(&theme.tokens.spacing, title_bottom, label_line_h);
+        let tags_bottom = band.y0 + band.height;
         let first_block_top = panel.editor_top_inset();
 
         assert!(title_bottom < band.y0, "title must not overlap tag chips");

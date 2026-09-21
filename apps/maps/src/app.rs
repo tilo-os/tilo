@@ -32,7 +32,12 @@ use ui::tilo_actions::{
     ExecutionMode, InvocationId, InvocationUpdate, OperationKind, PermissionRequirement, Resource,
     ResultSpec, RetryPolicy,
 };
-use ui::widget::{ContextMenu, MenuItem};
+use ui::tokens::Metrics;
+use ui::tokens::spacing::Spacing;
+use ui::tokens::typography::TypeScale;
+#[cfg(test)]
+use ui::widget::FloatingSurfaceWidgetExt;
+use ui::widget::{Button, ButtonFace, ContextMenu, MenuItem};
 use ui::widget::{FloatingSurfaceProvider, ResourceOperationStart, Widget};
 
 use crate::actions::{MAPS_ACTION_TYPE, MapsAction};
@@ -6529,7 +6534,7 @@ mod local_layout_tests {
         assert_eq!(a.info_sheet.current(), Some(MapInfo::Licenses));
         a.info_sheet.close();
         a.overflow_select(3);
-        let request = Widget::take_floating_surface_request(&mut a)
+        let request = FloatingSurfaceWidgetExt::take_floating_surface_request(&mut a)
             .expect("sample route produces a live navigation float");
         assert_eq!(request.role, ui::floating_surface::FloatingRole::Navigation);
 
@@ -7932,7 +7937,10 @@ mod local_layout_tests {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut a = app_at(1280.0, 720.0);
-        Widget::set_floating_surface_bounds(&mut a, Rect::new(0.0, 0.0, 1680.0, 900.0));
+        FloatingSurfaceWidgetExt::set_floating_surface_bounds(
+            &mut a,
+            Rect::new(0.0, 0.0, 1680.0, 900.0),
+        );
         assert!(
             a.model.route.is_some(),
             "offline fixture has an active route"
@@ -7956,10 +7964,10 @@ mod local_layout_tests {
             before + (outside - origin),
             "navigation's transfer frame preserves exact geometry"
         );
-        let request = Widget::take_floating_surface_request(&mut a)
+        let request = FloatingSurfaceWidgetExt::take_floating_surface_request(&mut a)
             .expect("navigation publishes one native-surface handoff");
         let prepared_content = a.navigation_rect();
-        Widget::on_floating_surface_host_message(
+        FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut a,
             &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
                 id: request.id.clone(),
@@ -7971,7 +7979,7 @@ mod local_layout_tests {
             },
         );
         assert!(!a.navigation_placement.is_desktop_adopted());
-        Widget::on_floating_surface_host_message(
+        FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut a,
             &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
                 id: request.id,
@@ -7984,11 +7992,11 @@ mod local_layout_tests {
         assert!(move_to(&mut a, returned_pointer.x, returned_pointer.y));
         assert!(a.navigation_placement.is_return_pending());
         let final_shell_rect = a.navigation_rect();
-        let presentations = Widget::floating_surface_presentations(&a);
+        let presentations = FloatingSurfaceWidgetExt::floating_surface_presentations(&a);
         assert_eq!(presentations.len(), 1);
         assert!(presentations[0].returning_to_app);
         let request_id = a.active_navigation_request().unwrap().id;
-        Widget::on_floating_surface_host_message(
+        FloatingSurfaceWidgetExt::on_floating_surface_host_message(
             &mut a,
             &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id },
         );

@@ -39,6 +39,11 @@ use ui::widget::{Button, ButtonFace, Dropdown, TextInput, Widget};
 
 use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
 use crate::model::{Filesystem, InstallProfile, installer_locales};
+use crate::rhythm::{GROUP, LABEL, RELATED, SECTION, SIBLING};
+
+const FIELD_H: f64 = Metrics::BASE.bar_height as f64;
+const BUTTON_H: f64 = Metrics::BASE.min_pointer_target as f64;
+const EXPORT_LABEL: &str = "Preview embedded setup";
 
 const KEYBOARDS: &[(&str, &str)] = &[
     ("English (US)", "us"),

@@ -215,8 +215,8 @@ fn assert_local_app_behavior() {
         0,
         "ambient continuation must never reach the private root"
     );
-    assert!(app.pending_continuation_restore.is_none());
-    assert!(app.pending_continuation_view.is_none());
+    assert!(app.continuation.pending_restore.is_none());
+    assert!(app.continuation.pending_view.is_none());
     assert!(!app.collab_manager.is_connected());
     assert!(app.collab_manager.primary_route().is_none());
     assert!(app.floating_surface_client.is_none());
@@ -230,10 +230,10 @@ fn assert_local_app_behavior() {
         "private app must not claim its ambient package's shared surface"
     );
     assert!(
-        app.a11y.high_contrast,
+        app.accessibility.a11y.high_contrast,
         "ordinary local accessibility settings remain enabled"
     );
-    assert_eq!(app.text_scale, 1.25);
+    assert_eq!(app.text_scale(), 1.25);
 
     let second = App::from_scoped_parts_local(
         crate::WakeScope::new(),

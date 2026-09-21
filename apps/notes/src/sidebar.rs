@@ -303,6 +303,16 @@ impl NoteTreeView {
         (child, more)
     }
 
+    fn selection_pill(row: Rect, margin: f64, tokens: &ui::tokens::Tokens) -> Rect {
+        let half_gap = f64::from(tokens.spacing.s1) / 2.0;
+        Rect::new(
+            row.x0 + margin,
+            row.y0 + half_gap,
+            row.x1 - margin,
+            row.y1 - half_gap,
+        )
+    }
+
     fn scroll_by(&mut self, delta: f64) -> bool {
         let before = self.scroll_y;
         self.scroll_y = (self.scroll_y + delta).clamp(0.0, self.max_scroll_y);
@@ -1422,17 +1432,15 @@ impl NoteTreeView {
         } else {
             ChipStyle::quiet()
         };
-        let btn = vello::kurbo::RoundedRect::from_rect(
-            self.new_page_btn_rect,
-            f64::from(tokens.radii.sm),
-        );
-        scene.fill(vello::peniko::Fill::NonZero, transform, btn_bg, None, &btn);
-        // Vector bounds keep the icon centred independently of font metrics.
-        Icon::Plus.draw(
+        Chip::draw_at(
             scene,
             transform,
-            self.new_page_btn_rect.inset(-self.scaled(5.0)),
-            tokens.colors.text_primary,
+            self.new_page_btn_rect,
+            "",
+            ChipLead::Glyph(Icon::Plus),
+            style,
+            theme,
+            text_renderer,
         );
     }
 
@@ -1520,24 +1528,21 @@ impl NoteTreeView {
             && self
                 .last_cursor
                 .is_some_and(|point| row_rect.contains(point));
-        if self.selected == Some(row.id) || hovered {
-            // An inset rounded pill rather than an edge-to-edge bar, so
-            // the selection reads as a chip with breathing room.
-            let pill = RoundedRect::new(
-                row_rect.x0 + self.scaled(ROW_PILL_MARGIN),
-                row_rect.y0 + self.scaled(1.0),
-                row_rect.x1 - self.scaled(ROW_PILL_MARGIN),
-                row_rect.y1 - self.scaled(1.0),
-                f64::from(tokens.radii.md),
+        for level in 0..row.depth {
+            let gx = row_rect.x0
+                + self.scaled(ROW_INSET_X)
+                + (level as f64) * self.scaled(INDENT_PX)
+                + self.scaled(GLYPH_WIDTH) / 2.0;
+            let guide = Rect::new(
+                gx - self.scaled(0.5),
+                row_rect.y0,
+                gx + self.scaled(0.5),
+                row_rect.y1,
             );
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                if self.selected == Some(row.id) {
-                    theme.accent_primary.with_alpha_factor(0.22)
-                } else {
-                    tokens.colors.lift(0.72)
-                },
+                edge_on(tokens.colors.surfaces.raised),
                 None,
                 &guide,
             );

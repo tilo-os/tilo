@@ -42,6 +42,7 @@ const ICON_D: f64 = 18.0;
 const ICON_COL: f64 = 30.0; // icon box + gap when a row has an icon
 const EMPTY_H: f64 = 92.0;
 const PREVIEW_H: f64 = 68.0;
+const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 
 /// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64` matrix
 /// multiply-add with no overflow trap, so it cannot panic regardless of

@@ -122,7 +122,7 @@ impl StatusBubble {
 /// through [`crate::text_metrics::renderer_type_size`] — never a raw
 /// `theme.tokens.typography.scale.*` value, which paints 4× at 200 %.
 pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64) -> (f64, f64) {
-    let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
+    let (tw, _th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let pad_x = 14.0;
     let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
     // `TextRenderer` applies the user's text scale to metrics, so the pill

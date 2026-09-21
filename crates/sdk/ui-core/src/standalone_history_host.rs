@@ -476,6 +476,23 @@ impl StandaloneHistoryHost {
         Ok(())
     }
 
+    pub(crate) fn validated_local_resources(
+        &self,
+        context: &HistoryReadContext<'_>,
+        layout: HostHistoryLayout,
+    ) -> Result<Vec<Resource>, HistoryHostError> {
+        self.validate_presentation(context, layout)?;
+        let mut resources = vec![open_resource()];
+        if self.has_search() {
+            resources.push(search_resource());
+        }
+        if let Some(session) = self.session_id {
+            resources.push(session_resource(session));
+            crate::widget::collect_widget_resources(&self.pane, context.document, &mut resources);
+        }
+        Ok(resources)
+    }
+
     pub(crate) fn toolbar_mut(&mut self) -> &mut Button {
         &mut self.toolbar
     }
