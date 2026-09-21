@@ -1057,22 +1057,29 @@ grep -Fxq 0 "$EVIDENCE/exit-status.txt"
     return cycle
 
 
-def acceptance_evidence(context, vm, cycle):
-    paths = {'conversion_info':'/work/verified/conversion-info.json',
+def cycle_evidence_paths(cycle):
+    return {'conversion_info':'/work/verified/conversion-info.json',
              'conversion_sha256':'/work/verified/conversion.sha256',
              'verdict':f'/work/{cycle}-evidence/verdict.txt',
              'exit_status':f'/work/{cycle}-evidence/exit-status.txt',
              'oobe_intro':f'/work/{cycle}-evidence/08-oobe-intro.txt',
              'oobe_backup':f'/work/{cycle}-evidence/09-oobe-backup.txt',
-             'oobe_ready':f'/work/{cycle}-evidence/10-oobe-ready.txt',
-             'tour_move':f'/work/{cycle}-evidence/11-tour-move.txt',
-             'tour_arrange':f'/work/{cycle}-evidence/12-tour-arrange.txt',
-             'tour_share':f'/work/{cycle}-evidence/13-tour-share.txt',
-             'tour_start':f'/work/{cycle}-evidence/14-tour-start.txt',
-             'desktop_ocr':f'/work/{cycle}-evidence/15-desktop-config.txt',
+             'oobe_backup_resumed':f'/work/{cycle}-evidence/10-oobe-backup-resumed.txt',
+             'oobe_ready':f'/work/{cycle}-evidence/11-oobe-ready.txt',
+             'tour_move':f'/work/{cycle}-evidence/12-tour-move.txt',
+             'tour_arrange':f'/work/{cycle}-evidence/13-tour-arrange.txt',
+             'tour_share':f'/work/{cycle}-evidence/14-tour-share.txt',
+             'tour_start':f'/work/{cycle}-evidence/15-tour-start.txt',
+             'desktop_ocr':f'/work/{cycle}-evidence/16-desktop-config.txt',
              'browser_ocr':f'/work/{cycle}-evidence/18-browser-offline.txt',
+             'reboot_greeter':f'/work/{cycle}-evidence/19-reboot-greeter.txt',
+             'reboot_login':f'/work/{cycle}-evidence/20-reboot-login.txt',
              'browser_fixture':f'/work/{cycle}-evidence/browser-offline-fixture.txt',
              'browser_fixture_html':f'/work/{cycle}-evidence/browser-offline-fixture.html'}
+
+
+def acceptance_evidence(context, vm, cycle):
+    paths = cycle_evidence_paths(cycle)
     script = "import json,pathlib,sys;p=json.loads(sys.argv[1]);print(json.dumps({k:pathlib.Path(v).read_text() for k,v in p.items()},sort_keys=True))"
     evidence = json.loads(command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu',
       '--','python3','-c',script,json.dumps(paths)),timeout=60))
@@ -1089,6 +1096,7 @@ def validate_gui_evidence(evidence):
     required_ocr={
       'oobe_intro':r'create\s+your\s+local',
       'oobe_backup':r'back\s+up\s+your\s+tilo\s+identity',
+      'oobe_backup_resumed':r'back\s+up\s+your\s+tilo\s+identity',
       'oobe_ready':r'your\s+identity\s+is\s+ready',
       'tour_move':r'everything\s+is\s+close\s+at\s+hand',
       'tour_arrange':r'a\s+place\s+for\s+each\s+kind\s+of\s+work',
@@ -1099,6 +1107,10 @@ def validate_gui_evidence(evidence):
             raise ValueError('cycle evidence lacks complete OOBE and tutorial proof')
     if not re.search(r'cycle\W*tilo', evidence.get('desktop_ocr',''), re.IGNORECASE):
         raise ValueError('cycle evidence lacks the installed desktop hostname')
+    if not re.search(r'welcome\s+back|sign\s+in', evidence.get('reboot_greeter',''), re.IGNORECASE):
+        raise ValueError('cycle evidence lacks the post-OOBE cold-boot greeter')
+    if not re.search(r'cycle\W*tilo', evidence.get('reboot_login',''), re.IGNORECASE):
+        raise ValueError('cycle evidence lacks the post-OOBE authenticated desktop')
     if not re.search(r'tilo\s+browser\s+offline\s+ready', evidence.get('browser_ocr',''), re.IGNORECASE):
         raise ValueError('cycle evidence lacks rendered offline Browser content')
     rows={}
@@ -1155,10 +1167,11 @@ def collect_cycle_archive(context, vm, cycle, destination, limit=512*1024*1024):
                 names.add('/'.join(path.parts[1:]))
             required={'verdict.txt','exit-status.txt','boot-timing.txt',
                       'alongside-preservation-before-target-boot.txt',
-                      '07-target-greeter.png','15-desktop-config.png',
-                      '08-oobe-intro.png','09-oobe-backup.png','10-oobe-ready.png',
-                      '11-tour-move.png','12-tour-arrange.png','13-tour-share.png',
-                      '14-tour-start.png',
+                      '07-first-boot-oobe.png','16-desktop-config.png',
+                      '08-oobe-intro.png','09-oobe-backup.png',
+                      '10-oobe-backup-resumed.png','11-oobe-ready.png',
+                      '12-tour-move.png','13-tour-arrange.png','14-tour-share.png',
+                      '15-tour-start.png','19-reboot-greeter.png','20-reboot-login.png',
                       '17-browser-open.png','18-browser-offline.png',
                       'browser-offline-fixture.txt','browser-offline-fixture.html'}
             if not required.issubset(names):
