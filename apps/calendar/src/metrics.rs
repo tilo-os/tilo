@@ -32,14 +32,6 @@ pub(crate) fn at_least_whole(minimum: f64, measured: f64) -> f64 {
     ui::text_metrics::at_least_whole(minimum, measured)
 }
 
-fn sanitized(text_scale: f32) -> f32 {
-    if text_scale.is_finite() {
-        text_scale.clamp(0.5, 4.0)
-    } else {
-        1.0
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
