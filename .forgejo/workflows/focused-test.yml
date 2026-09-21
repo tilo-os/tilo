@@ -16,17 +16,27 @@ on:
         required: true
         type: string
       operation:
-        description: 'Run one integration test or compile all tests of this package'
+        description: 'Run exact tests in one target or compile package tests'
         required: true
         default: test
         type: choice
         options: [test, check-tests]
       test_target:
-        description: 'Integration target for test, e.g. it; empty for check-tests'
+        description: 'Integration target, e.g. it; empty for lib or check-tests'
         required: false
         type: string
+      target_kind:
+        description: 'Integration target or package library tests'
+        required: true
+        default: integration
+        type: choice
+        options: [integration, lib]
       test_name:
-        description: 'Exact Rust test path; empty for check-tests'
+        description: 'One exact Rust test path; mutually exclusive with test_names'
+        required: false
+        type: string
+      test_names:
+        description: 'JSON array of 1-32 exact Rust test paths in the same target'
         required: false
         type: string
 
@@ -36,6 +46,8 @@ env:
   OPERATION: ${{ github.event.inputs.operation }}
   TEST_TARGET: ${{ github.event.inputs.test_target }}
   TEST_NAME: ${{ github.event.inputs.test_name }}
+  TEST_NAMES: ${{ github.event.inputs.test_names }}
+  TARGET_KIND: ${{ github.event.inputs.target_kind }}
   CARGO_HOME: /cargo-home
   CARGO_BUILD_JOBS: '4'
   CARGO_INCREMENTAL: '0'
