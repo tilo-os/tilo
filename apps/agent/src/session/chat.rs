@@ -23,6 +23,14 @@ fn now() -> i64 {
         .map_or(0, |elapsed| elapsed.as_secs().min(i64::MAX as u64) as i64)
 }
 
+fn chat_reply_id(agent_id: &str, summons_id: &str) -> String {
+    // This stable, length-delimited derivation mints a Chat message identifier.
+    // The returned UUID payload is never used as a document artifact or route grant.
+    let digest =
+        collab_types::document_artifact_id("tilo-agent-chat-reply-v1", agent_id, summons_id);
+    format!("agent-reply-{}", digest.0.simple())
+}
+
 impl Session {
     /// The artifact id is part of the authenticated envelope, unlike a
     /// schema discovered by inspecting untrusted document contents.
@@ -367,14 +375,7 @@ impl Session {
         };
         let reply = crate::listen::record_of(&messages, &self.cfg.agent_id, &summons.message)
             .map_or_else(
-                || {
-                    format!(
-                        "agent-reply:{}:{}:{}",
-                        self.cfg.agent_id.len(),
-                        self.cfg.agent_id,
-                        summons.message
-                    )
-                },
+                || chat_reply_id(&self.cfg.agent_id, &summons.message),
                 |record| record.id.clone(),
             );
         if crate::listen::record_of(&messages, &self.cfg.agent_id, &summons.message).is_none() {
@@ -562,5 +563,37 @@ impl Session {
         self.active_run = None;
         self.chat_run = None;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reply_id_is_bounded_canonical_and_tuple_stable() {
+        let agent_id = format!("Reader:/? #{}", "読り手🧪".repeat(80));
+        let summons_id = "s".repeat(128);
+        let reply = chat_reply_id(&agent_id, &summons_id);
+
+        assert_eq!(reply, chat_reply_id(&agent_id, &summons_id));
+        assert_ne!(chat_reply_id("ab", "c"), chat_reply_id("a", "bc"));
+        assert_eq!(reply.len(), 44);
+        assert!(
+            reply
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        );
+
+        let mut document = automerge::AutoCommit::new();
+        ChatDoc::seed_starter(&mut document, "human-author", "Human", "HU");
+        assert!(ChatDoc::accepts_message_action(
+            &document,
+            "c_general",
+            &reply,
+            "",
+            None,
+            None,
+        ));
     }
 }

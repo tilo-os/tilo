@@ -427,13 +427,9 @@ pub fn spawn_with_agent_actions(
             )
             .expect("the harness owner grants a reviewed test action");
     }
-    // App fixtures use the same agent-only endpoint as Scribe. Admission and
-    // app authority remain separate, so each host receives only its own app.
-    for (host, app) in [
-        ("quinten", "dev.tilo.word-processor"),
-        ("photos", "dev.tilo.photos"),
-        ("files", "dev.tilo.file-explorer"),
-    ] {
+    // App fixtures use the same agent-only endpoint as Scribe. Device
+    // enrollment, room membership, and exact app authority remain separate.
+    for host in ["quinten", "photos", "files"] {
         workspace
             .grant_as(
                 &principal,
@@ -444,6 +440,17 @@ pub fn spawn_with_agent_actions(
                 ),
             )
             .expect("the harness owner admits an app fixture");
+    }
+    // Integration fixtures exercise both currently launched Tilo routes and
+    // retained durable qOS routes. Grant each observed route explicitly: the
+    // production capability check deliberately does not alias app authority.
+    for (host, app) in [
+        ("quinten", "dev.qos.chat"),
+        ("quinten", "dev.qos.word-processor"),
+        ("quinten", "dev.tilo.word-processor"),
+        ("photos", "dev.tilo.photos"),
+        ("files", "dev.qos.file-explorer"),
+    ] {
         workspace
             .grant_as(
                 &principal,
