@@ -41,6 +41,24 @@ window, and reboot before measuring again. Restore the checkpoint and reboot
 immediately after the shrink. Running build workloads without active paging is
 not a safe steady state.
 
+The helper makes that exceptional preparation explicit and reversible. Run it
+only after image assembly and VM work have stopped:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\scripts\windows-dual-boot-preflight.ps1 `
+  -PrepareShrink -CheckpointPath C:\tilo-handoff\windows-shrink-checkpoint.json
+# Reboot, then run the default read-only report again.
+```
+
+After the supported Windows shrink, restore the recorded paging configuration
+and reboot:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\scripts\windows-dual-boot-preflight.ps1 `
+  -RestoreWindowsState `
+  -RestoreCheckpointPath C:\tilo-handoff\windows-shrink-checkpoint.json
+```
+
 Disabling hibernation with `powercfg /hibernate off` also disables Fast Startup
 and removes `hiberfil.sys`; it is reversible with `powercfg /hibernate on`.
 Do this before the final supported shrink measurement, then keep Fast Startup

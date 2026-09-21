@@ -68,3 +68,29 @@ Internal installation is ready to proceed only when all of these are true:
 7. The installer selects only the newly unallocated 151.54 GiB region, creates its exact 2 GiB ESP plus Tilo root there, and preserves partitions 1, 2, 3, and 4.
 
 At present, item 2 is the hard partitioning blocker and item 1 is its likely prerequisite.
+
+## Latest shrink diagnosis and fastest safe sequence
+
+The latest read-only Application event 259 (2026-09-21 23:38 Europe/Berlin)
+identifies `\pagefile.sys::$DATA` as the last immovable allocation. C: currently
+has about 44 GiB free. Reaching the exact 800 GiB target therefore needs about
+108 GiB more free merely to fit, or about 148 GiB more free to retain the
+planned 40 GiB of Windows headroom.
+
+Do not change paging while local image extraction or a VM is active. Once the
+local Tilo boot attempt is complete, the shortest evidence-driven sequence is:
+
+1. Remove completed local build/VM artifacts and other reviewed data until the
+   read-only report shows `AdditionalFreeBytesNeeded` is zero.
+2. Close applications and VMs. In one elevated PowerShell, run
+   `scripts/windows-dual-boot-preflight.ps1 -PrepareShrink` with a checkpoint
+   path outside temporary build storage. This records paging configuration,
+   disables paging and hibernation, and performs no resize or BitLocker action.
+3. Reboot Windows. Run the default report elevated and require
+   `SupportedSize.SizeMin <= 858993459200` plus a clean `chkdsk` and enabled
+   WinRE. If event 259 names a different tail file, handle that exact file;
+   do not generically delete restore points, the USN journal, or WinRE.
+4. Suspend BitLocker separately only for the bounded installation window, then
+   run the single reviewed `Resize-Partition` command from the install plan.
+5. Restore the checkpoint with `-RestoreWindowsState` and reboot. Normal paging
+   must be active before returning to build workloads.
