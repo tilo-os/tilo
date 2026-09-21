@@ -1774,7 +1774,10 @@ impl Widget for WindowGroup {
         // `fold`, not `any`: every child's flag must be drained even if
         // an earlier one already reported dirty.
         let bar = self.bar.take_structure_dirty();
-        #[allow(clippy::unnecessary_fold)] // see comment above: must not short-circuit
+        #[allow(
+            clippy::unnecessary_fold,
+            reason = "all host dirty flags must be drained without short-circuiting"
+        )]
         let hosts = self
             .hosts
             .iter_mut()
