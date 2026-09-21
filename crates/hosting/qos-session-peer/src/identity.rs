@@ -2,7 +2,7 @@
 use crate::store::{Custody, check_dir, custody, private_dir, sync_dir};
 use anyhow::{Result, bail};
 use ed25519_dalek::SigningKey;
-use std::path::Path;
+use std::{fs, io::ErrorKind, path::Path};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity,
     persist::{self, IdentityPaths},
@@ -14,13 +14,78 @@ pub(crate) struct Identity {
     pub native_cert: DeviceCert,
     pub host: SigningKey,
     pub host_cert: DeviceCert,
-    _custody: Custody,
+    _custody: Vec<Custody>,
 }
 fn directories(root: &Path) -> Result<IdentityPaths> {
     private_dir(root)?;
     private_dir(&root.join("user-identity"))?;
     private_dir(&root.join("device"))?;
+    private_dir(&root.join("device-private"))?;
     Ok(IdentityPaths::under(root))
+}
+
+fn identity_custody(root: &Path, host: &Path) -> Result<Vec<Custody>> {
+    let mut roots = vec![fs::canonicalize(root)?, fs::canonicalize(host)?];
+    roots.sort();
+    roots.dedup();
+    roots
+        .into_iter()
+        .map(|root| custody(&root.join("session-custody.lock")))
+        .collect()
+}
+
+fn ensure_device_private_directory(root: &Path) -> Result<()> {
+    let path = root.join("device-private");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                bail!("device private storage must be a real directory");
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+                    bail!("device private storage must be owned and not externally writable");
+                }
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => private_dir(&path),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn artifact_present(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn adopt_legacy_identity(root: &Path, paths: &IdentityPaths) -> Result<()> {
+    ensure_device_private_directory(root)?;
+    let legacy_key_path = root.join("device/keypair.bin");
+    let legacy_present = artifact_present(&legacy_key_path)?;
+    let canonical_present = artifact_present(&paths.device_privkey)?;
+    if legacy_present && canonical_present {
+        let legacy = persist::read_legacy_device_key(&legacy_key_path)?;
+        let canonical = persist::read_device_key(&paths.device_privkey)?;
+        if legacy.to_bytes() != canonical.to_bytes() {
+            bail!("legacy and canonical device identities disagree");
+        }
+    }
+    if canonical_present {
+        return Ok(());
+    }
+    if !legacy_present {
+        bail!("identity has no device key to adopt");
+    }
+    if !persist::adopt_legacy_system_identity(paths, root)? {
+        bail!("identity has no matching device key to adopt");
+    }
+    sync_dir(&root.join("device-private"))?;
+    sync_dir(root)
 }
 fn enroll(
     root: &SigningKey,
@@ -59,6 +124,7 @@ pub(crate) fn initialize(root: &Path, host: &Path) -> Result<Identity> {
     for dir in [root, host] {
         sync_dir(&dir.join("user-identity"))?;
         sync_dir(&dir.join("device"))?;
+        sync_dir(&dir.join("device-private"))?;
         sync_dir(dir)?;
     }
     load(root, host)
@@ -69,9 +135,11 @@ pub(crate) fn load(root: &Path, host: &Path) -> Result<Identity> {
         check_dir(&dir.join("user-identity"))?;
         check_dir(&dir.join("device"))?;
     }
-    let lock = custody(&root.join("session-custody.lock"))?;
+    let locks = identity_custody(root, host)?;
     let paths = IdentityPaths::under(root);
     let hp = IdentityPaths::under(host);
+    adopt_legacy_identity(root, &paths)?;
+    adopt_legacy_identity(host, &hp)?;
     for path in [
         &paths.user_privkey,
         &paths.user_pubkey,
@@ -113,6 +181,6 @@ pub(crate) fn load(root: &Path, host: &Path) -> Result<Identity> {
         native_cert,
         host: host_key,
         host_cert,
-        _custody: lock,
+        _custody: locks,
     })
 }
