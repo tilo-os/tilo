@@ -32,8 +32,8 @@ use ui::tilo_actions::{
 };
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
-    Button, Column, EmptyState, NavShell, ScrollAxis, Scrollable, ShellMode, Spacer, Spinner, Text,
-    TextInput, Widget,
+    Button, Collaborative, Column, EmptyState, NavShell, ScrollAxis, Scrollable, ShellMode, Spacer,
+    Spinner, Text, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
@@ -7090,8 +7090,8 @@ impl FileExplorerWidget {
 #[path = "native_observer.rs"]
 mod native_observer;
 
-impl Widget for FileExplorerWidget {
-    fn history_registration(
+impl FileExplorerWidget {
+    fn history_registration_impl(
         &self,
     ) -> Result<
         Option<ui::history_mode::HistoryRegistration>,
@@ -7107,7 +7107,7 @@ impl Widget for FileExplorerWidget {
         .map(Some)
     }
 
-    fn has_action_control_bindings(&self) -> bool {
+    fn has_action_control_bindings_impl(&self) -> bool {
         // Own accessibility actions are semantic; preserve the same modal child
         // exposure as the complete binding inventory.
         let mut found = false;
@@ -7119,39 +7119,16 @@ impl Widget for FileExplorerWidget {
         found
     }
 
-    fn native_input_snapshot(
+    fn native_input_snapshot_impl(
         &self,
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
     ) -> Option<serde_json::Value> {
         Some(native_observer::snapshot(self))
     }
+}
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "files.refresh",
-            "files.new-folder",
-            "files.paste",
-            "files.new-from-template",
-            "files.open",
-            "files.reveal-record",
-            "files.folder-command",
-            "files.entry-command",
-            "files.nearby-send",
-            "files.nearby-decide",
-            "files.nearby-retry",
-            "files.nearby-cancel",
-            "files.rename",
-            "files.share-link",
-            "files.remote-account",
-            "files.remote-dav",
-            // The hand-positioned recovery Button still publishes through the
-            // normal action door; this handler delegates its stable control
-            // resource back to the retained widget.
-            "tilo.ui.control.invoke",
-        ]
-    }
-
+impl Collaborative for FileExplorerWidget {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         self.nearby_send.poll_if_due(Instant::now());
         self.nearby_send.take_requests()
@@ -7248,6 +7225,58 @@ impl Widget for FileExplorerWidget {
             }
         }
         self.structure_dirty = true;
+    }
+}
+
+impl Widget for FileExplorerWidget {
+    fn history_registration(
+        &self,
+    ) -> Result<
+        Option<ui::history_mode::HistoryRegistration>,
+        ui::history_mode::HistoryRegistrationError,
+    > {
+        self.history_registration_impl()
+    }
+
+    fn has_action_control_bindings(&self) -> bool {
+        self.has_action_control_bindings_impl()
+    }
+
+    fn native_input_snapshot(
+        &self,
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Option<serde_json::Value> {
+        self.native_input_snapshot_impl(doc, path)
+    }
+
+    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+        Some(self)
+    }
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "files.refresh",
+            "files.new-folder",
+            "files.paste",
+            "files.new-from-template",
+            "files.open",
+            "files.reveal-record",
+            "files.folder-command",
+            "files.entry-command",
+            "files.nearby-send",
+            "files.nearby-decide",
+            "files.nearby-retry",
+            "files.nearby-cancel",
+            "files.rename",
+            "files.share-link",
+            "files.remote-account",
+            "files.remote-dav",
+            // The hand-positioned recovery Button still publishes through the
+            // normal action door; this handler delegates its stable control
+            // resource back to the retained widget.
+            "tilo.ui.control.invoke",
+        ]
     }
 
     #[allow(

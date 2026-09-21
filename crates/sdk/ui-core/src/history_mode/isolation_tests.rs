@@ -51,7 +51,18 @@ struct LiveOwner {
     undo_request: Rc<Cell<Option<crate::undo::UndoRequest>>>,
     active: Option<tilo_actions::InvocationId>,
 }
+
+impl crate::widget::Collaborative for LiveOwner {
+    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
+        self.collab_events.set(self.collab_events.get() + 1);
+    }
+}
+
 impl Widget for LiveOwner {
+    fn collaborative_mut(&mut self) -> Option<&mut dyn crate::widget::Collaborative> {
+        Some(self)
+    }
+
     fn name(&self) -> &str {
         "Live owner"
     }
@@ -110,9 +121,6 @@ impl Widget for LiveOwner {
     }
     fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
         self.undo_request.take()
-    }
-    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
-        self.collab_events.set(self.collab_events.get() + 1);
     }
     fn handle_local_undo_request(&mut self, _: crate::undo::UndoRequest) -> bool {
         self.local_events.set(self.local_events.get() + 1);
