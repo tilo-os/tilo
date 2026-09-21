@@ -187,6 +187,40 @@ pub unsafe fn compute_widget_layout(
     bindings: &BoundNodeMap,
     text: &mut TextRenderer,
 ) -> Result<(), WidgetLayoutError> {
+    // SAFETY: forwards the caller's exact live-tree ownership contract.
+    unsafe { compute_widget_layout_depth(taffy, root, available, nodes, bindings, text, 0) }
+}
+
+pub(super) unsafe fn compute_widget_layout_depth(
+    taffy: &mut TaffyTree<()>,
+    root: NodeId,
+    available: Size<AvailableSpace>,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    bindings: &BoundNodeMap,
+    text: &mut TextRenderer,
+    depth: usize,
+) -> Result<(), WidgetLayoutError> {
+    if depth > 32 {
+        return Err(WidgetLayoutError::ManualNestingLimit);
+    }
+    let mut policies = Vec::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        let policy = unsafe {
+            crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
+                widget.manual_layout_policy()
+            })
+        }
+        .ok()
+        .flatten();
+        if let Some(policy) = policy {
+            policies.push((node, policy));
+        }
+        pending.extend(taffy.children(node)?.into_iter().rev());
+    }
+    if !policies.is_empty() {
+        taffy.disable_rounding();
+    }
     // Intrinsic content can change without changing a Taffy style or topology.
     // Invalidate the measured node itself: marking only the root leaves cached
     // descendant heights intact and clips paragraphs as they wrap while typing.

@@ -9,6 +9,13 @@ use winit::{
 
 use std::cell::{Cell, RefCell};
 
+#[path = "profiling/native_input_isolation.rs"]
+mod native_input_isolation;
+
+#[path = "animation_schedule.rs"]
+mod animation_schedule;
+
+mod action_directory_snapshot;
 mod bound_record_sync;
 mod close_admission;
 mod document_history;
@@ -952,6 +959,8 @@ pub struct App {
 
     pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
     persistence: PersistenceRuntime,
+    autosave_generation: u64,
+    document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
 
     actions: ActionRuntime,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
@@ -1685,6 +1694,8 @@ impl App {
             fullscreen_active: false,
             legacy_persistence: crate::launch::LegacyPersistencePolicy::Host,
             persistence: PersistenceRuntime::new(),
+            autosave_generation: 0,
+            document_routes: crate::history_mode::routes::OwnerDocumentRoutes::default(),
             actions: ActionRuntime::new(),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
@@ -6008,37 +6019,6 @@ impl App {
         }
     }
 
-    fn apply_signed_document_envelope(
-        &mut self,
-        envelope: &collab_types::SignedOp,
-        decrypted_payload: Option<&[u8]>,
-    ) {
-        if self.persistence.records.is_some() && self.room_collab_manager.is_none() {
-            let _ = self.apply_room_index_document_envelope(envelope, decrypted_payload);
-            return;
-        }
-        let applied = match collab_types::DocumentMutation::decode(
-            decrypted_payload.unwrap_or(&envelope.payload),
-        ) {
-            Ok(mutation) => match self.apply_primary_document(mutation) {
-                Ok(changed) => changed,
-                Err(error) => {
-                    tracing::warn!(%error, "collab: primary document mutation refused");
-                    false
-                }
-            },
-            Err(error) => {
-                tracing::warn!(%error, "collab: broker delivered an untyped signed document op");
-                false
-            }
-        };
-        if applied {
-            self.invalidate_widget_resource_cache();
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-        }
-    }
-
     /// Apply a document envelope received on the unqualified room route.
     /// The broker authenticated the route; discovery still validates and
     /// bounds its names before exposing them to the app.
@@ -7838,6 +7818,17 @@ impl App {
         reason = "storage identity must fail closed rather than wrap and admit an old owner"
     )]
     pub fn with_autosave(mut self, autosave: crate::persist::Autosave) -> Self {
+        self.autosave_generation = self
+            .autosave_generation
+            .checked_add(1)
+            .expect("autosave generation exhausted");
+        if let Some(history) = &mut self.history {
+            self.layout.node_map.clear();
+            self.bindings.clear();
+            self.focused_node = None;
+            history.invalidate_owner();
+            self.layout.structure_dirty = true;
+        }
         self.persistence.autosave = Some(autosave);
         self
     }
@@ -7848,12 +7839,12 @@ impl App {
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        if self.records.is_some() {
+        if self.persistence.records.is_some() {
             return Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner);
         }
         let registration = crate::history_mode::HistoryRegistration::installed_app_state(
             definition,
-            self.autosave.as_ref(),
+            self.persistence.autosave.as_ref(),
             uuid::Uuid::new_v4(),
         )?;
         self.install_history(registration)
@@ -11201,12 +11192,9 @@ impl AppHandler {
     ) {
         self.route_window_event(
             event_loop,
-            &window,
-            self.a11y_proxy.clone(),
-        ));
-        crate::widget::mount_native_views(
-            self.app.root_widget.as_mut(),
-            &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
+            window_id,
+            event,
+            native_input_isolation::EventOrigin::Injected,
         );
     }
 
@@ -11777,7 +11765,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         ));
         crate::widget::mount_native_views(
             self.app.root_widget.as_mut(),
-            &crate::widget::NativeViewHost::live(&window, self.app.platform),
+            &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
         );
         #[cfg(windows)]
         if let Err(reason) = self.init_render(&window) {
@@ -13436,7 +13424,7 @@ mod focus_trap_tests {
             ));
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
         assert!(app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 100.0, 100.0))));
         let first = app.focusable_order[0];
@@ -21928,6 +21916,62 @@ mod card_composition_tests;
 #[cfg(test)]
 #[path = "app/form_composition_tests.rs"]
 mod form_composition_tests;
+
+#[cfg(test)]
+#[path = "app/manual_composition_tests.rs"]
+mod manual_composition_tests;
+
+#[cfg(test)]
+#[path = "app/number_input_layout_tests.rs"]
+mod number_input_layout_tests;
+
+#[cfg(test)]
+#[path = "app/history_tests.rs"]
+mod framework_history_tests;
+
+#[path = "app/history.rs"]
+mod framework_history;
+
+#[path = "app/document_routes.rs"]
+mod document_routes;
+
+#[cfg(test)]
+#[path = "app/focus_selection_tests.rs"]
+mod focus_selection_tests;
+
+#[cfg(test)]
+#[path = "app/local_privacy_tests.rs"]
+mod local_privacy_tests;
+
+/// Finish the current writer and every retained outgoing-owner failure before
+/// reporting widget-owned durability. Reports remain owned by the runner.
+pub(crate) fn flush_widget_owned_persistence(
+    root: &mut dyn Widget,
+    reports: &mut Vec<crate::application::ComponentCloseReport>,
+) -> Result<(), String> {
+    reports.extend(root.take_component_close_reports());
+    let current = root
+        .try_flush_owned_persistence()
+        .unwrap_or_else(|| Err("widget-owned persistence requires a checked flush hook".into()));
+    reports.extend(root.take_component_close_reports());
+    for report in reports.iter_mut() {
+        if report.record_error.is_some() && report.record_retry.is_some() {
+            let _ = report.retry_record();
+        }
+    }
+    current?;
+    for report in reports.iter() {
+        if let Some(error) = report
+            .record_error
+            .as_ref()
+            .or(report.view_error.as_ref())
+            .or(report.teardown_error.as_ref())
+        {
+            return Err(error.clone());
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 #[path = "app/notes_rich_controls_tests.rs"]

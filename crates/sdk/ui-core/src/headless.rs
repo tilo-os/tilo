@@ -26,6 +26,8 @@
 //! second loads the store and dumps the document as JSON. Diffing the two
 //! dumps is the persistence proof for the app's document.
 
+mod document_history;
+
 use std::collections::{HashMap, HashSet};
 
 use taffy::prelude::*;
@@ -416,6 +418,11 @@ pub struct FrameHarness {
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     root_node: NodeId,
     child_node: NodeId,
+    document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
+    history_chrome_enabled: bool,
+    history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
+    history_focus_pending: bool,
+    history_pointer_owned: bool,
     text: TextRenderer,
     theme: Theme,
     /// Scratch scene for the draw pass. Never rasterised — see
@@ -832,6 +839,11 @@ impl FrameHarness {
             component_close_reports: vec![],
             root_node: NodeId::from(0usize),
             child_node: NodeId::from(0usize),
+            document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
+            history_chrome_enabled: false,
+            history_layout: None,
+            history_focus_pending: false,
+            history_pointer_owned: false,
             text,
             theme,
             scene: Scene::new(),

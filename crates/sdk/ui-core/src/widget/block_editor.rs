@@ -577,6 +577,8 @@ pub struct BlockEditor {
     /// Current accessibility text scale, retained for prefix and gutter
     /// geometry that is resolved after the taffy pass.
     text_scale: f64,
+    /// Drag-handle geometry captured from the active theme.
+    handle: HandleMetrics,
     /// Reflow text blocks to the available width instead of giving each
     /// block a horizontally scrolling single line.
     wrap_lines: bool,
@@ -2475,6 +2477,16 @@ impl BlockEditor {
             block.kind.font_size(),
             self.text_scale,
         );
+        let HandleMetrics {
+            width,
+            height,
+            gap,
+            min_target,
+        } = self.handle;
+        let half_height = ((height * self.text_scale) / 2.0)
+            .max(min_target.min(line.height()) / 2.0)
+            .min(line.height() / 2.0);
+        let right = leading_edge - gap;
         Some(Rect::new(
             right - width,
             center_y - half_height,
@@ -2784,6 +2796,10 @@ impl BlockEditor {
             }
             let color = tokens.colors.text_primary.with_alpha_factor(0.72);
             let center = handle.center();
+            let scale = self.text_scale;
+            let dot_r = 1.25 * scale;
+            let col_pitch = (3.0 * scale).min(handle.width() / 2.0 - dot_r);
+            let row_pitch = 5.0 * scale;
             if active || handle.contains(self.last_mouse_pos) {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -2793,8 +2809,8 @@ impl BlockEditor {
                     &vello::kurbo::RoundedRect::from_rect(handle, 4.0),
                 );
             }
-            for col in [-3.0, 3.0] {
-                for row in [-5.0, 0.0, 5.0] {
+            for col in [-col_pitch, col_pitch] {
+                for row in [-row_pitch, 0.0, row_pitch] {
                     let dot = Rect::new(
                         center.x + col - dot_r,
                         center.y + row - dot_r,
@@ -6140,12 +6156,14 @@ fn draw_numbered_prefix(
     let num = ctx.ordinals.get(idx).copied().unwrap_or(1).max(1);
     let label = format!("{num}.");
     let (label_w, _) = ctx.text_renderer.measure(&label, font_size, None);
-    // Matches RichTextLine's line height so the ordinal
-    // sits on the item text's baseline.
-    let line_height = f64::from(font_size * ctx.theme.text_scale) * 1.25;
-    let text_y =
-        first_row_center(line_rect, font_size, f64::from(ctx.theme.text_scale)) - line_height / 2.0;
-    let x = (line_rect.x0 - 6.0 - f64::from(label_w)).max(prefix_x0);
+    let origin = numbered_prefix_origin(
+        line_rect,
+        prefix_x0,
+        f64::from(label_w),
+        font_size,
+        ctx.theme.text_scale,
+        ctx.theme.tokens.metrics.icon_label_gap,
+    );
     ctx.text_renderer.draw_text(
         ctx.scene,
         &label,
@@ -6483,6 +6501,7 @@ impl Widget for BlockEditor {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
+        self.handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
         self.refresh_image_attachments();
         self.refresh_image_dimensions();
         self.table_editors.retain(|id, _| {

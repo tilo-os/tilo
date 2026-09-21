@@ -1772,9 +1772,9 @@ fn native_history_tab_shift_tab_release_and_ime_keep_pending_live_editor_isolate
             .unwrap()
             .owns_node(node, &app.layout.taffy)
     }));
-    app.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
+    app.input.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
     native_key(&mut app, "Tab");
-    app.modifiers = winit::event::Modifiers::default();
+    app.input.modifiers = winit::event::Modifiers::default();
     native_key(&mut app, "Tab");
     assert_eq!(
         app.focused_node, tabbed,
