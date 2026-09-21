@@ -99,13 +99,14 @@ class RegistryWarmupTests(unittest.TestCase):
 
     def test_prepared_target_requires_recursive_root_and_esp_mounts(self):
         argv=[wrapper.INSTALLER_BOOTC,'install','to-filesystem',
-              '--root-mount-spec=','/target']
+              '--root-mount-spec=','--source-imgref='+SOURCE,
+              '--target-transport=registry','/target']
         valid=('40 1 0:40 / /target rw - btrfs /dev/loop0p2 rw\n'
                '41 40 0:41 / /target/boot rw - vfat /dev/loop0p1 rw\n')
         with tempfile.TemporaryDirectory() as tmp:
             mountinfo=Path(tmp)/'mountinfo'
             mountinfo.write_text(valid)
-            self.assertIsNone(wrapper.require_install_target(argv,mountinfo))
+            self.assertIsNone(wrapper.require_install_target(argv,SOURCE,mountinfo))
             for content in (
                     valid.splitlines()[0]+'\n',
                     valid.replace(' - vfat ', ' - btrfs '),
@@ -114,10 +115,26 @@ class RegistryWarmupTests(unittest.TestCase):
                 with self.subTest(content=content):
                     mountinfo.write_text(content)
                     with self.assertRaisesRegex(ValueError,'recursively visible|ambiguous'):
-                        wrapper.require_install_target(argv,mountinfo)
+                        wrapper.require_install_target(argv,SOURCE,mountinfo)
             mountinfo.write_text(valid)
-            with self.assertRaisesRegex(ValueError,'prepared target exactly'):
-                wrapper.require_install_target(argv[:-1]+['/other'],mountinfo)
+            invalid = (
+                argv[:-1]+['/other'],
+                [item for item in argv if not item.startswith('--source-imgref=')],
+                [('--source-imgref=docker://registry.invalid/x@sha256:'+'2'*64)
+                 if item.startswith('--source-imgref=') else item for item in argv],
+                [item for item in argv if item != '--target-transport=registry'],
+                [item if item != '--target-transport=registry'
+                 else '--target-transport=containers-storage' for item in argv],
+                argv[:-1]+['--source-imgref='+SOURCE,'/target'],
+                argv[:-1]+['--source-imgref=docker://registry.invalid/x@sha256:'+'2'*64,
+                           '/target'],
+                argv[:-1]+['--target-transport=registry','/target'],
+                argv[:-1]+['--target-transport=containers-storage','/target'],
+            )
+            for command in invalid:
+                with self.subTest(command=command), \
+                        self.assertRaisesRegex(ValueError,'prepared target exactly'):
+                    wrapper.require_install_target(command,SOURCE,mountinfo)
         with patch.object(wrapper,'inspect_digest',return_value=False) as inspect, \
                 patch.object(wrapper.time,'sleep') as sleep:
             self.assertFalse(wrapper.warm(SOURCE,DIGEST,sleep=sleep))
