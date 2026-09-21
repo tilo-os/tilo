@@ -2299,7 +2299,7 @@ impl CollaborationManager {
     }
 
     /// Real socket-backed SDK transport for App lifecycle integration tests.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn connected_for_lifecycle_test() -> Self {
         tests::connected_manager()
     }
@@ -4583,6 +4583,7 @@ mod tests {
     use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
     #[cfg(unix)]
     use tokio::net::UnixStream as TokioUnixStream;
+    #[cfg(unix)]
     use tokio::task::LocalSet as TokioLocalSet;
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -5642,6 +5643,7 @@ mod tests {
         (client_fd, captures, handle)
     }
 
+    #[cfg(unix)]
     pub(super) fn connected_manager() -> CollaborationManager {
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(Captures::default())),
@@ -6041,6 +6043,7 @@ mod tests {
         assert_eq!(seen, vec![expected_bytes]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn owned_route_raw_documents_use_typed_signed_sdk_transport() {
         use automerge::transaction::Transactable;

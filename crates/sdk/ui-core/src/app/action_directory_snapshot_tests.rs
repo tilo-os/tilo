@@ -608,6 +608,7 @@ fn directory_snapshot_old_descriptor_never_bypasses_changed_confirmation_contrac
     assert_eq!(error, tilo_actions::DoorError::ConfirmationRequired);
 }
 
+#[cfg(unix)]
 fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
     let (mut app, calls) = declared_directory(1);
     app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
@@ -631,6 +632,7 @@ fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
     (app, calls)
 }
 
+#[cfg(unix)]
 #[test]
 fn directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query() {
     let (mut app, calls) = connected_declared_directory();
@@ -680,6 +682,7 @@ fn directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query() {
     assert_eq!(app.action_directory_revision(), revision);
 }
 
+#[cfg(unix)]
 #[test]
 fn directory_lifecycle_presence_eviction_recovers_on_normal_idle_without_input() {
     let (mut app, calls) = connected_declared_directory();
