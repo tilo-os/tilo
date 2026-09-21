@@ -2526,6 +2526,17 @@ pub(crate) mod control_result_probe {
                     arguments: serde_json::Map::new(),
                 });
         }
+        pub(crate) fn enqueue_text(&self, action: &str, text: &str) {
+            self.pending
+                .borrow_mut()
+                .push_back(tilo_actions::ControlInvocation {
+                    address: tilo_actions::ActionAddress::new("test.control-result", action),
+                    arguments: serde_json::Map::from_iter([(
+                        "text".to_string(),
+                        serde_json::Value::String(text.to_string()),
+                    )]),
+                });
+        }
     }
     pub(crate) struct Probe {
         observed: Observed,
