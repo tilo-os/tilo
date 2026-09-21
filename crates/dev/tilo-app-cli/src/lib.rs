@@ -4108,9 +4108,14 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     let code = rust_code_only(&source);
     let toolkit_host = code.contains("ui::widget::resource_actions::immediate(")
         || code.contains("ui::widget::resource_actions::background(")
-        || code.contains("ui::widget::resource_actions::form(");
+        || code.contains("ui::widget::resource_actions::form(")
+        || code.contains("resource_actions::immediate(")
+        || code.contains("resource_actions::background(")
+        || code.contains("resource_actions::form(");
     let toolkit_descriptor = code.contains("ui::widget::resource_actions::resource(")
         || code.contains("ui::widget::resource_actions::typed_resource(")
+        || code.contains("resource_actions::resource(")
+        || code.contains("resource_actions::typed_resource(")
         || code.contains("ActionForm::new(")
         || code.contains("ui::widget::resource_actions::ActionForm::new(");
     let custom_catalogue = code.contains("fn resources(") && code.contains("ActionSpec::");
