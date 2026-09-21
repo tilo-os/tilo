@@ -1065,7 +1065,7 @@ $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-0.1.0-1.fc43.x86_64.rpm
 
 $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-devel-0.1.0-1.fc43.x86_64.rpm
 /usr/libexec/tilo-session-dev
-/usr/share/wayland-sessions/tilo-app.desktop
+/usr/share/wayland-sessions/tilo-dev.desktop
 ```
 
 GDM reads session entries from `/usr/share/wayland-sessions/`. On an ostree host,
