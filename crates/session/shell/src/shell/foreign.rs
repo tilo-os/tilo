@@ -422,6 +422,60 @@ pub struct FrameSnapshot {
     pub seq: u64,
 }
 
+fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, y: i32) {
+    if child.rgba.is_empty() || child.width == 0 || child.height == 0 {
+        return;
+    }
+    for child_y in 0..child.height {
+        let destination_y = y.saturating_add(i32::try_from(child_y).unwrap_or(i32::MAX));
+        let Ok(destination_y) = u32::try_from(destination_y) else {
+            continue;
+        };
+        if destination_y >= root.height {
+            continue;
+        }
+        for child_x in 0..child.width {
+            let destination_x = x.saturating_add(i32::try_from(child_x).unwrap_or(i32::MAX));
+            let Ok(destination_x) = u32::try_from(destination_x) else {
+                continue;
+            };
+            if destination_x >= root.width {
+                continue;
+            }
+            let source =
+                usize::try_from((child_y * child.width + child_x) * 4).unwrap_or(usize::MAX);
+            let destination = usize::try_from((destination_y * root.width + destination_x) * 4)
+                .unwrap_or(usize::MAX);
+            let (Some(source), Some(destination)) = (
+                child.rgba.get(source..source.saturating_add(4)),
+                root.rgba
+                    .get_mut(destination..destination.saturating_add(4)),
+            ) else {
+                continue;
+            };
+            let alpha = u32::from(source[3]);
+            let inverse = 255_u32.saturating_sub(alpha);
+            for channel in 0..3 {
+                destination[channel] = u8::try_from(
+                    (u32::from(source[channel]) * alpha
+                        + u32::from(destination[channel]) * inverse)
+                        / 255,
+                )
+                .unwrap_or(255);
+            }
+            destination[3] =
+                u8::try_from(alpha + u32::from(destination[3]) * inverse / 255).unwrap_or(255);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildFrame {
+    pub surface: SurfaceId,
+    pub x: i32,
+    pub y: i32,
+}
+
 /// Process-wide capture + placement registry for foreign surfaces.
 ///
 /// A singleton rather than a field threaded through the widget tree,
@@ -430,6 +484,7 @@ pub struct FrameSnapshot {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
+    children: Mutex<HashMap<SurfaceId, Vec<ChildFrame>>>,
     /// Total completed buffer imports, of any route. A dmabuf import costs a
     /// GPU readback (or full-frame CPU map), so burst commits are coalesced and
     /// paint only reads the latest completed pixels.
@@ -1131,6 +1186,15 @@ impl ForeignFrameStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&id);
         drop(guard);
+        let mut children = self
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        children.remove(&id);
+        for tree in children.values_mut() {
+            tree.retain(|child| child.surface != id);
+        }
+        drop(children);
         #[cfg(target_os = "linux")]
         if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
             worker.forget_surface(id);
@@ -1139,11 +1203,22 @@ impl ForeignFrameStore {
 
     /// Current frame counter for `id`; `0` when nothing has landed.
     pub fn frame_seq(&self, id: SurfaceId) -> u64 {
+        let children = self
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
         let guard = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard.get(&id).map_or(0, |e| e.seq)
+        let mut seq = guard.get(&id).map_or(0, |e| e.seq);
+        for child in children {
+            seq = seq.wrapping_add(guard.get(&child.surface).map_or(0, |entry| entry.seq));
+        }
+        seq
     }
 
     /// Whether `id` has committed a non-null buffer and is therefore eligible
@@ -1175,7 +1250,57 @@ impl ForeignFrameStore {
             })
         };
         drop(guard);
-        snapshot
+        let mut snapshot = snapshot?;
+        let children = self
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+        let guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for child in children {
+            let Some(frame) = guard.get(&child.surface) else {
+                continue;
+            };
+            composite_child_rgba(&mut snapshot, frame, child.x, child.y);
+            snapshot.seq = snapshot.seq.wrapping_add(frame.seq);
+        }
+        Some(snapshot)
+    }
+
+    pub fn set_children(&self, root: SurfaceId, children: Vec<ChildFrame>) {
+        self.children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(root, children);
+    }
+
+    pub fn child_at(&self, root: SurfaceId, x: f64, y: f64) -> Option<(SurfaceId, f64, f64)> {
+        let children = self
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&root)
+            .cloned()?;
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        children.iter().rev().find_map(|child| {
+            let frame = entries.get(&child.surface)?;
+            let local_x = x - f64::from(child.x);
+            let local_y = y - f64::from(child.y);
+            (local_x >= 0.0
+                && local_y >= 0.0
+                && local_x < f64::from(frame.width)
+                && local_y < f64::from(frame.height)
+                && frame.mapped)
+                .then_some((child.surface, local_x, local_y))
+        })
     }
 
     /// Dimensions of the frame currently staged for `id`, without copying
@@ -2247,6 +2372,46 @@ mod tests {
         let drained: Vec<_> = std::iter::from_fn(|| pending.pop()).collect();
         assert_eq!(drained.len(), 1);
         assert!(drained.contains(&"other surface"));
+    }
+
+    #[test]
+    fn snapshot_composites_positioned_children_with_alpha_and_clipping() {
+        let frames = ForeignFrameStore::default();
+        let root = sid(70);
+        let child = sid(71);
+        frames.publish_rgba(root, &[10, 20, 30, 255].repeat(9), 3, 3);
+        frames.publish_rgba(
+            child,
+            &[
+                250, 0, 0, 255, 0, 250, 0, 128, 0, 0, 250, 255, 250, 250, 0, 255,
+            ],
+            2,
+            2,
+        );
+        frames.set_children(
+            root,
+            vec![ChildFrame {
+                surface: child,
+                x: 2,
+                y: 1,
+            }],
+        );
+
+        let snapshot = frames.snapshot(root).expect("composited root frame");
+        let pixel = |x: usize, y: usize| &snapshot.rgba[(y * 3 + x) * 4..][..4];
+        assert_eq!(pixel(0, 0), &[10, 20, 30, 255]);
+        assert_eq!(pixel(2, 1), &[250, 0, 0, 255]);
+        assert_eq!(pixel(2, 2), &[0, 0, 250, 255]);
+        assert_eq!(snapshot.rgba.len(), 3 * 3 * 4, "child is clipped to root");
+        let first_seq = frames.frame_seq(root);
+        frames.publish_rgba(child, &[1, 2, 3, 255].repeat(4), 2, 2);
+        assert_ne!(
+            frames.frame_seq(root),
+            first_seq,
+            "child damage repaints root"
+        );
+        assert_eq!(frames.child_at(root, 2.25, 1.5), Some((child, 0.25, 0.5)));
+        assert_eq!(frames.child_at(root, 0.5, 0.5), None);
     }
 
     #[test]
