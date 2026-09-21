@@ -197,11 +197,15 @@ def require_bound_source(source, expected):
         raise ValueError('private source store config identity mismatch')
 
 
-def require_install_target(argv, mountinfo=Path('/proc/self/mountinfo')):
+def require_install_target(argv, expected_source, mountinfo=Path('/proc/self/mountinfo')):
     """Fail closed unless bootc sees both prepared filesystems recursively."""
     if argv[1:3] != ['install', 'to-filesystem']:
         return
-    if (argv[-1:] != ['/target'] or argv.count('--root-mount-spec=') != 1):
+    sources = [item for item in argv if item.startswith('--source-imgref=')]
+    transports = [item for item in argv if item.startswith('--target-transport=')]
+    if (argv[-1:] != ['/target'] or argv.count('--root-mount-spec=') != 1
+            or sources != ['--source-imgref=' + expected_source]
+            or transports != ['--target-transport=registry']):
         raise ValueError('to-filesystem command must use the prepared target exactly')
     observed = {}
     for raw in mountinfo.read_text().splitlines():
@@ -254,7 +258,7 @@ def run_bootc(source, expected, argv, *, heartbeat_interval=30):
     if not argv or argv[0] != INSTALLER_BOOTC or heartbeat_interval <= 0:
         raise ValueError('invalid supervised bootc command')
     require_bound_source(source, expected)
-    require_install_target(argv)
+    require_install_target(argv, source)
     if not warm(source, expected):
         return 75
 

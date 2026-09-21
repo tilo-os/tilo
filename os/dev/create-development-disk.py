@@ -40,7 +40,7 @@ inspector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(inspector)
 
 FLAGS = ('--generic-image', '--composefs-backend', '--bootloader',
-         '--root-mount-spec', '--source-imgref', '--target-imgref',
+         '--root-mount-spec', '--source-imgref', '--target-imgref', '--target-transport',
          '--enforce-container-sigpolicy', '--run-fetch-check')
 
 TRANSIENT_CRUN_NAMESPACE_ERROR = (
@@ -381,7 +381,9 @@ def _create_verified_disk(args):
                     '/run/tilo-installer-bootc', 'install', 'to-filesystem',
                     '--root-mount-spec=', '--generic-image',
                     '--composefs-backend', '--bootloader=systemd',
+                    '--source-imgref=docker://' + args.source,
                     '--target-imgref=' + args.target,
+                    '--target-transport=registry',
                     '--enforce-container-sigpolicy', '--run-fetch-check', '/target'], disk,
                     args.output.with_name('bootc-install.failure.json'))
                 helper_runtime = installer_bootc_helper.verify_runtime_receipt(
