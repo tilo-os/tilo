@@ -39,7 +39,7 @@ fn app() -> App {
 }
 fn layout(app: &mut App) {
     app.init_layout();
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     assert!(run_layout_pass(app, root, 900, 650, 1.0, true, None).is_some());
 }
 #[test]
@@ -72,7 +72,8 @@ fn named(app: &mut App, label: &str) -> accesskit::NodeId {
         .unwrap()
 }
 fn node_for_test_id(app: &App, id: &str) -> NodeId {
-    app.node_map
+    app.layout
+        .node_map
         .keys()
         .copied()
         .find(|node| {
@@ -96,8 +97,8 @@ fn native_key(app: &mut App, key: &str) {
             "the complete History key frame is intercepted: {key} {state:?}"
         );
         app.dispatch_framework_history_event(&event, 1.0);
-        let root = app.root_node.unwrap();
-        let _ = run_layout_pass(app, root, 900, 650, 1.0, app.structure_dirty, None);
+        let root = app.layout.root_node.unwrap();
+        let _ = run_layout_pass(app, root, 900, 650, 1.0, app.layout.structure_dirty, None);
     }
 }
 #[test]
@@ -287,7 +288,7 @@ fn native_document_envelope_refuses_foreign_route_without_touching_outer_state()
     let mut app =
         App::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Text::new("root")));
     let installed = crate::collaboration::RouteSpec::app("installed-app", uuid::Uuid::new_v4());
-    app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: installed.clone(),
         epoch: uuid::Uuid::new_v4(),
     });
@@ -360,7 +361,7 @@ impl RoutedOwners {
         state.doc.put(ROOT, "outer", "outer only").unwrap();
         state.commit_action(None, None);
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
-        app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+        app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
             route: crate::collaboration::RouteSpec::app(
                 "outer-shell",
                 uuid::Uuid::parse_str(workspace).unwrap(),
@@ -563,7 +564,7 @@ fn native_owned_remote_delivery_preserves_pending_edits_until_normal_boundary() 
 fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
     use automerge::ReadDoc;
     let mut fixture = RoutedOwners::new();
-    fixture.app.bound_broker_route_for_test = None;
+    fixture.app.actions.bound_broker_route_for_test = None;
     fixture.app.refresh_document_routes();
     fixture
         .records
@@ -579,13 +580,14 @@ fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
         .unwrap();
     fixture.app.publish_owned_documents();
     assert!(fixture.app.document_routes.sent.is_empty());
-    fixture.app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
-        route: crate::collaboration::RouteSpec::app(
-            "outer-shell",
-            fixture.bindings[0].broker_route().unwrap().cluster_id,
-        ),
-        epoch: uuid::Uuid::new_v4(),
-    });
+    fixture.app.actions.bound_broker_route_for_test =
+        Some(crate::collaboration::PrimaryRouteWitness {
+            route: crate::collaboration::RouteSpec::app(
+                "outer-shell",
+                fixture.bindings[0].broker_route().unwrap().cluster_id,
+            ),
+            epoch: uuid::Uuid::new_v4(),
+        });
     fixture.app.publish_owned_documents();
     let (_, request) = fixture
         .app
@@ -909,13 +911,7 @@ fn native_tiled_history_preserves_first_pending_and_routes_sibling_at_to_second_
     );
     layout(&mut app);
     assert_eq!(
-        store
-            .with(&second.id, |doc| {
-                use automerge::ReadDoc;
-                let (_, text) = doc.get(ROOT, "body").unwrap().unwrap();
-                doc.text(text).unwrap()
-            })
-            .unwrap(),
+        crate::history_mode::integration_tests::legacy_body(&store, &second),
         "native second"
     );
     assert_eq!(
@@ -976,6 +972,7 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
     app.rebuild_structure();
     let exported = named(&mut app, "replaceable editor");
     let old_node = app
+        .layout
         .node_map
         .keys()
         .copied()
@@ -989,7 +986,7 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
         })
         .unwrap();
     app.bindings.clear();
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.focused_node = None;
     // App owns this stable boxed root exclusively, and raw descendant maps
     // were discarded before the supported owner rebind.
@@ -999,6 +996,7 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
     app.root_widget.sync(&mut app.state.doc, &ROOT);
     app.rebuild_structure();
     let new_node = app
+        .layout
         .node_map
         .keys()
         .copied()
@@ -1062,7 +1060,7 @@ fn native_hidden_resource_at_action_cannot_bypass_history_presentation() {
     let declared = app.collect_declared_resources();
     let violations = tilo_actions::validate_surface(
         &declared,
-        &app.action_registry,
+        &app.actions.action_registry,
         &app.root_widget.resource_operation_handlers(),
     );
     assert!(violations.is_empty(), "{violations:?}");
@@ -1080,7 +1078,7 @@ fn native_hidden_resource_at_action_cannot_bypass_history_presentation() {
     assert!(app.poll_directed_invocations());
     assert_eq!(probe.completions.get(), 1);
     assert!(
-        app.local_invocations.is_empty(),
+        app.actions.local_invocations.is_empty(),
         "hidden retry cannot be rejected merely because first invocation is in flight"
     );
     let target = named(&mut app, "History");
@@ -1235,7 +1233,7 @@ fn native_admitted_legacy_effect_cannot_poll_replacement_or_closed_owner() {
         )
         .unwrap();
         assert_eq!(probe.starts.get(), 1);
-        app.node_map.clear();
+        app.layout.node_map.clear();
         app.bindings.clear();
         // The retained allocation stays owned by App; no borrowed widget/map
         // references survive the supported close/rebind operation.
@@ -1256,7 +1254,7 @@ fn native_admitted_legacy_effect_cannot_poll_replacement_or_closed_owner() {
             0,
             "old operation cannot poll a replacement or closed owner"
         );
-        assert!(app.local_invocations.is_empty());
+        assert!(app.actions.local_invocations.is_empty());
     }
 }
 
@@ -1443,6 +1441,7 @@ fn native_route_epoch_change_retires_queued_bytes_before_later_drain() {
     fixture.app.apply_signed_document_envelope(&incoming, None);
     fixture
         .app
+        .actions
         .bound_broker_route_for_test
         .as_mut()
         .unwrap()
@@ -1474,6 +1473,7 @@ fn native_scrollback_and_live_share_exact_primary_and_owned_route_admission() {
     let second = fixture.remote(1, "scrollback-second", true);
     let primary = fixture
         .app
+        .actions
         .bound_broker_route_for_test
         .as_ref()
         .unwrap()
@@ -1583,7 +1583,7 @@ fn native_queued_remote_cannot_retarget_same_id_new_legacy_store() {
     tile.bind_record(first.clone(), checkout.clone());
     let pointer = std::ptr::from_mut(tile.as_mut());
     let mut app = App::new_with_controlled_inputs(State::new(), tile);
-    app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+    app.actions.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
         route: crate::collaboration::RouteSpec::app("shell", uuid::Uuid::parse_str(room).unwrap()),
         epoch: uuid::Uuid::new_v4(),
     });
@@ -1608,7 +1608,7 @@ fn native_queued_remote_cannot_retarget_same_id_new_legacy_store() {
     let before = replacement
         .read_checked(&checkout.id, |doc| doc.base_heads())
         .unwrap();
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.bindings.clear();
     unsafe {
         (*pointer).bind_record(replacement.clone(), checkout.clone());
@@ -1626,11 +1626,21 @@ fn native_queued_remote_cannot_retarget_same_id_new_legacy_store() {
             .unwrap()
             .contains("owner closed or changed")
     );
-    assert!(
+    assert_eq!(
         first
-            .read_checked(&checkout.id, |doc| doc.pending_ops())
-            .unwrap()
-            > 0
+            .read_checked(&checkout.id, |doc| {
+                use automerge::ReadDoc;
+                (
+                    doc.pending_ops(),
+                    doc.get(ROOT, "draft")
+                        .unwrap()
+                        .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+                    doc.get(ROOT, "remote").unwrap().is_some(),
+                )
+            })
+            .unwrap(),
+        (0, Some("pending".into()), false),
+        "owner replacement settles its local draft but never applies the queued remote snapshot"
     );
 }
 
@@ -1756,7 +1766,12 @@ fn native_history_tab_shift_tab_release_and_ime_keep_pending_live_editor_isolate
     layout(&mut app);
     native_key(&mut app, "Tab");
     let tabbed = app.focused_node;
-    assert!(tabbed.is_some_and(|node| app.history.as_ref().unwrap().owns_node(node, &app.taffy)));
+    assert!(tabbed.is_some_and(|node| {
+        app.history
+            .as_ref()
+            .unwrap()
+            .owns_node(node, &app.layout.taffy)
+    }));
     app.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
     native_key(&mut app, "Tab");
     app.modifiers = winit::event::Modifiers::default();
@@ -1900,7 +1915,7 @@ fn round1_top_level_native_history_preserves_legacy_custody_and_stale_at_refusal
     app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("denied".into()));
     assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit");
     app.set_permission_ctx(allowed);
-    app.node_map.clear();
+    app.layout.node_map.clear();
     app.bindings.clear();
     // Exclusive App retains the box; old maps cannot be dereferenced while rebinding.
     unsafe {
@@ -2005,7 +2020,7 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
         1.0,
     );
     app.init_layout();
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
     assert!(
@@ -2016,7 +2031,7 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
     );
     let target = named(&mut app, "History");
     app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     assert!(
         app.history.as_ref().unwrap().live_visible(),
@@ -2034,7 +2049,7 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
     );
     let target = named(&mut app, "History");
     app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
-    let root = app.root_node.unwrap();
+    let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
     assert_eq!(native.mounts.get(), 2);
@@ -2191,6 +2206,7 @@ fn round1_primary_malformed_remote_recovers_with_snapshot_after_local_edit_finis
         let mut fixture = RoutedOwners::new();
         let route = fixture
             .app
+            .actions
             .bound_broker_route_for_test
             .as_ref()
             .unwrap()
@@ -2430,6 +2446,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
     } else {
         fixture
             .app
+            .actions
             .bound_broker_route_for_test
             .as_ref()
             .unwrap()

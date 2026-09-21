@@ -442,7 +442,8 @@ dependencies = ["markdown-parser 1.1.0"]
             "0000000000000000000000000000000000000000 ]]",
             selection,
         )
-        self.assertIn("refs/heads/main) collection=default", workflow)
+        self.assertIn("if [[ $GITHUB_REF == refs/heads/main ]]; then", workflow)
+        self.assertIn("collection=default", workflow)
 
         catalog = app_release.app_catalog(ROOT)
         expected = sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS))

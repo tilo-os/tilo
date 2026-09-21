@@ -8,7 +8,7 @@
 //! QOS_SHOTS_THEME=light cargo run -p ui --example ui-lab -- channel_browser --shots o.png
 //! ```
 //!
-//! `--shots` mounts the sheet in a [`ui::headless::FrameHarness`] under the
+//! `--shots` mounts the sheet in a [`tilo_ui::headless::FrameHarness`] under the
 //! `QOS_SHOTS_THEME` palette (`dark` by default), composites it on the
 //! theme's background and writes `o.png` plus `o.inspection.json` — the
 //! rects `scripts/ux-bench/usability.py`'s `geometry_audit` lints.
@@ -23,9 +23,9 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use collab_types::ChannelId;
-use ui::headless::FrameHarness;
-use ui::widget::channel_browser::{ChannelBrowser, ChannelEntry};
-use ui::{App, State, Theme};
+use tilo_ui::headless::FrameHarness;
+use tilo_ui::widget::channel_browser::{ChannelBrowser, ChannelEntry};
+use tilo_ui::{App, State, Theme};
 
 /// Viewport for the headless frame: the sheet's own 640 px layout width
 /// plus a margin of ground on every side, so the sheet edge is visible.
@@ -79,9 +79,9 @@ pub fn run(args: &[String]) {
         .position(|a| a == "--shots")
         .and_then(|i| args.get(i.saturating_add(1)))
         .cloned();
-    let _detached = ui::wake::WakeScope::enter_detached();
-    let wake_scope = shot.is_none().then(ui::wake::WakeScope::new);
-    let _wake_entry = wake_scope.as_ref().map(ui::wake::WakeScope::enter);
+    let _detached = tilo_ui::wake::WakeScope::enter_detached();
+    let wake_scope = shot.is_none().then(tilo_ui::wake::WakeScope::new);
+    let _wake_entry = wake_scope.as_ref().map(tilo_ui::wake::WakeScope::enter);
     let now = clock(shot.is_some());
     // Mocked entries — two spaces, a mix of roles, pins, and unread
     // counts. Matches the shape the shell will produce in Phase 5

@@ -11,10 +11,10 @@
 /// chainable.
 ///
 /// ```
-/// use ui::tokens::TextRole;
-/// use ui::widget::{Text, TextInput};
+/// use tilo_ui::tokens::TextRole;
+/// use tilo_ui::widget::{Text, TextInput};
 ///
-/// let form = ui::column![
+/// let form = tilo_ui::column![
 ///     Text::new("profile-title").with_role(TextRole::Title),
 ///     TextInput::local().with_accessible_name("profile-name-label"),
 /// ]
@@ -32,9 +32,9 @@ macro_rules! column {
 /// Build a retained [`Row`](crate::widget::Row) from concrete child widgets.
 ///
 /// ```
-/// use ui::widget::{Button, Text};
+/// use tilo_ui::widget::{Button, Text};
 ///
-/// let actions = ui::row![
+/// let actions = tilo_ui::row![
 ///     Text::new("status-ready"),
 ///     Button::new("save", "save-label", None),
 /// ];
@@ -52,9 +52,9 @@ macro_rules! row {
 /// child widgets.
 ///
 /// ```
-/// use ui::widget::{Spinner, Text};
+/// use tilo_ui::widget::{Spinner, Text};
 ///
-/// let loading = ui::stack![Text::new("content"), Spinner::new()];
+/// let loading = tilo_ui::stack![Text::new("content"), Spinner::new()];
 /// ```
 #[macro_export]
 macro_rules! stack {

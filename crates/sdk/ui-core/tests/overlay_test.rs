@@ -15,14 +15,14 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{AvailableSpace, Dimension, Style};
 use taffy::{NodeId, Size, TaffyTree};
-use ui::offscreen::OffscreenRenderer;
-use ui::overlay::{FocusTrap, Modal, OverlayStack, Popover};
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::permission_prompt::{PROMPT_HEIGHT, PermissionPrompt};
-use ui::widget::popover_widget::PopoverSide;
-use ui::widget::{ModalDialog, PopoverWidget, Text, Widget};
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::overlay::{FocusTrap, Modal, OverlayStack, Popover};
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::permission_prompt::{PROMPT_HEIGHT, PermissionPrompt};
+use tilo_ui::widget::popover_widget::PopoverSide;
+use tilo_ui::widget::{ModalDialog, PopoverWidget, Text, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::Color;
@@ -63,7 +63,7 @@ const CANVAS_W: u32 = 640;
 const CANVAS_H: u32 = 420;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
-    ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
+    tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
 }
 
 fn dump(name: &str, rgba: &[u8]) {
@@ -97,10 +97,10 @@ fn assert_edge_registers(rgba: &[u8], panel: Rect, name: &str, surface: &str) {
     let delta = (luminance_of(edge) - luminance_of(inside)).abs();
     eprintln!("{surface}/{name}: edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
     assert!(
-        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+        delta >= tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA,
         "{surface}/{name}: edge {edge:?} does not register against fill {inside:?} \
          (Δlum={delta:.4} < {})",
-        ui::tokens::colors::HAIRLINE_MIN_DELTA
+        tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA
     );
 }
 

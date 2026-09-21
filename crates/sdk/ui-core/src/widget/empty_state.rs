@@ -1093,9 +1093,16 @@ mod tests {
         );
         let action = state.action_rect();
         assert!(rect.contains(action.center()));
+        let action_style = renderer.renderer_input_style(
+            &TextStyle::new(theme.tokens.typography.scale.sm)
+                .with_wrap_mode(TextWrapMode::WordOrGlyph)
+                .with_align(ParagraphAlign::Center),
+        );
+        let (_, action_line_height) =
+            renderer.measure_style("Try again", Some(width), &action_style);
         assert!(
             action.height()
-                >= f64::from(theme.tokens.typography.scale.sm) * f64::from(theme.text_scale) + 12.0,
+                >= f64::from(action_line_height) + f64::from(theme.tokens.spacing.s2) * 2.0,
             "large-text action reserves its label's full line height"
         );
     }
