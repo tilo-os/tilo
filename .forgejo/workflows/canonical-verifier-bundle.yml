@@ -5,10 +5,6 @@ name: Platform / canonical verifier bundles
 on:
   workflow_dispatch:
     inputs:
-      architectures:
-        description: 'Verifier architectures: x86_64, aarch64, or x86_64,aarch64; empty selects both.'
-        required: false
-        default: ''
       builder_image:
         description: 'Optional qualified immutable tilo-builder index; empty resolves the current index once.'
         required: false
@@ -29,22 +25,11 @@ jobs:
         password: ${{ secrets.REGISTRY_TOKEN }}
     outputs:
       image: ${{ steps.resolve.outputs.image }}
-      matrix: ${{ steps.architectures.outputs.matrix }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Select verifier architectures
-        id: architectures
-        env:
-          REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          matrix=$(python3 -I tools/ci/python.py tools/apps/app_release.py \
-            --architecture-matrix --architectures "$REQUESTED_ARCHITECTURES")
-          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
       - name: Resolve one compatible immutable builder
         id: resolve
         env:
@@ -64,7 +49,12 @@ jobs:
         password: ${{ secrets.REGISTRY_TOKEN }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.builder.outputs.matrix) }}
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner
+          - arch: aarch64
+            runner: runner-arm64
     env:
       CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: '0'
@@ -90,7 +80,6 @@ jobs:
           test "$(uname -m)" = "$VERIFIER_ARCH"
           cargo build --release --locked -p pkg-cli -p runtime-bundle
           target/release/tilo-pkg --help >/dev/null
-          target/release/tilo-pkg catalogue-entries --help >/dev/null
           target/release/tilo-runtime-bundle --help >/dev/null
           mkdir -p target/verifier-bundle target/verifier-repeat
           for directory in target/verifier-bundle target/verifier-repeat; do
