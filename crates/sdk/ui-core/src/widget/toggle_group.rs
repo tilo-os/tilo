@@ -35,12 +35,10 @@ fn usize_to_f32(n: usize) -> f32 {
 }
 
 /// Intrinsic strip geometry: 120 px per segment so a two-word label fits
-/// without truncation, 36 px tall — between the 32 px fine-pointer target and
-/// the 40 px button so the strip reads as a peer of a button row without
-/// dwarfing its own labels. `apply_layout` re-partitions whatever width the
-/// host actually assigns.
+/// without truncation. Its height comes from the theme's HIG panel-row metric,
+/// which keeps every segment a full touch target and follows UI density scaling.
+/// `apply_layout` re-partitions whatever width the host actually assigns.
 const SEGMENT_WIDTH: f32 = 120.0;
-const STRIP_HEIGHT: f32 = 36.0;
 
 pub struct Segment {
     pub label: String,
@@ -729,7 +727,7 @@ impl Widget for ToggleGroup {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // Segments always share the available width equally in `apply_layout`.
@@ -741,7 +739,13 @@ impl Widget for ToggleGroup {
                 } else {
                     Dimension::length(width)
                 },
-                height: Dimension::length(STRIP_HEIGHT),
+                height: Dimension::length(
+                    theme
+                        .tokens
+                        .metrics
+                        .panel_row_height
+                        .max(theme.tokens.metrics.min_pointer_target),
+                ),
             },
             // A segmented strip has an intrinsic label-bearing width. In a
             // horizontal `Scrollable`, shrinking it to the viewport defeats
