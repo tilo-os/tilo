@@ -171,6 +171,38 @@ fn open_dir(path: &Path) -> Result<Option<fs::ReadDir>, StoreError> {
     }
 }
 
+fn capture_continuity(
+    store: &WorkspaceStore,
+    source: &Path,
+    target: &Path,
+    pin: u64,
+    manifest: &mut File,
+    stats: &mut WorkStats,
+) -> Result<(), StoreError> {
+    if let Some(receipt) = super::continuity::copy_measured(store, source, target, stats, 0)? {
+        stats.peak_open_files = stats.peak_open_files.max(8);
+        write_meta(
+            manifest,
+            &Meta {
+                key: vec![
+                    receipt.group().into(),
+                    format!("{:016x}", u64::MAX - receipt.sequence).into(),
+                    hex::encode(receipt.id).into(),
+                    format!("{pin:016x}").into(),
+                ],
+                source: target
+                    .strip_prefix(store.root())
+                    .map_err(|_| invalid("continuity pin outside workspace"))?
+                    .into(),
+                pin,
+                len: 0,
+                pending: false,
+            },
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) struct ReplayBuild {
     root: PathBuf,
     workspace: PathBuf,
@@ -180,6 +212,7 @@ pub(crate) struct ReplayBuild {
     child: Option<(OsString, PathBuf, fs::ReadDir)>,
     sorter: Option<Sorter>,
     next_pin: u64,
+    continuity: Option<File>,
     selection: Option<super::shell_selection::Selection>,
     selected: Option<File>,
     shell_selected: bool,
@@ -194,6 +227,7 @@ impl ReplayBuild {
     }
 }
 struct Candidate {
+    continuity: Option<super::continuity::Receipt>,
     meta: Meta,
     coverage: bool,
     charge: u64,
@@ -206,6 +240,10 @@ pub(crate) struct ReplaySnapshot {
     pending_root: PathBuf,
     sorter: Option<Sorter>,
     ordered: Option<File>,
+    continuity_sorter: Option<Sorter>,
+    continuity_input: Option<File>,
+    continuity_ordered: Option<File>,
+    continuity_previous: Option<super::continuity::Receipt>,
     candidate: Option<Candidate>,
     output: File,
     cleanup: File,
@@ -227,7 +265,22 @@ impl ReplaySnapshot {
     fn pin(&self, pin: u64) -> PathBuf {
         self.root.join("pins").join(format!("{pin:016x}.frame"))
     }
-    fn classify(&mut self, mut meta: Meta) -> Result<(), StoreError> {
+    fn classify(&mut self, store: &WorkspaceStore, mut meta: Meta) -> Result<(), StoreError> {
+        let continuity =
+            super::continuity::load_measured(store, &self.pin(meta.pin), &mut self.stats)?;
+        if let Some(receipt) = &continuity {
+            let winner = super::continuity::read_receipt(&self.winner_path(&receipt.group()))?
+                .ok_or_else(|| invalid("invalid continuity winner"))?;
+            if winner.group() != receipt.group() {
+                return Err(invalid("continuity winner group mismatch"));
+            }
+            if &winner != receipt {
+                if meta.pending {
+                    write_meta(&mut self.cleanup, &meta)?;
+                }
+                return Ok(());
+            }
+        }
         let Some(bytes) = frame_bytes(&self.pin(meta.pin))? else {
             return Ok(());
         };
@@ -291,16 +344,20 @@ impl ReplaySnapshot {
         // Pin length is immutable. Store measured output reservation in the
         // ordering key only in the final manifest (ordering is already done).
         meta.len = bytes.len() as u64;
-        let index_path = self
-            .root
-            .join("index")
-            .join(format!("{}.idx", hex::encode(hash)));
+        // Marked copies have their own receipt identity. An earlier opaque,
+        // byte-identical record cannot substitute for the chosen marked copy.
+        let index_name = continuity.as_ref().map_or_else(
+            || format!("{}.idx", hex::encode(hash)),
+            |receipt| format!("c{}.idx", hex::encode(receipt.id)),
+        );
+        let index_path = self.root.join("index").join(index_name);
         let index = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .read(true)
             .open(index_path)?;
         self.candidate = Some(Candidate {
+            continuity,
             meta,
             coverage,
             charge,
@@ -308,9 +365,44 @@ impl ReplaySnapshot {
         });
         Ok(())
     }
+    fn winner_path(&self, group: &str) -> PathBuf {
+        self.root.join("index").join(format!(
+            "{}.winner",
+            blake3::hash(group.as_bytes()).to_hex()
+        ))
+    }
+    fn elect_continuity(&mut self, store: &WorkspaceStore, meta: Meta) -> Result<(), StoreError> {
+        let receipt =
+            super::continuity::load_measured(store, &self.pin(meta.pin), &mut self.stats)?
+                .ok_or_else(|| invalid("captured continuity association disappeared"))?;
+        let group = receipt.group();
+        let same_group = self
+            .continuity_previous
+            .as_ref()
+            .is_some_and(|previous| previous.group() == group);
+        if let Some(previous) = &self.continuity_previous
+            && same_group
+            && previous.sequence == receipt.sequence
+            && previous != &receipt
+        {
+            return Err(invalid("conflicting continuity receipt sequence"));
+        }
+        if !same_group {
+            let encoded = postcard::to_stdvec(&receipt)
+                .map_err(|_| invalid("continuity winner encoding failed"))?;
+            let mut winner = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(self.winner_path(&group))?;
+            winner.write_all(&encoded)?;
+        }
+        self.continuity_previous = Some(receipt);
+        Ok(())
+    }
     fn accept_candidate(&mut self, duplicate: bool) -> Result<(), StoreError> {
         let candidate = self.candidate.take().unwrap();
         let Candidate {
+            continuity,
             mut meta,
             coverage,
             charge,
@@ -320,10 +412,10 @@ impl ReplaySnapshot {
             write_meta(&mut self.cleanup, &meta)?;
         }
         if !duplicate {
-            if !meta.pending {
+            if !meta.pending || continuity.is_some() {
                 index.write_all(&meta.pin.to_le_bytes())?;
                 index.write_all(&meta.len.to_le_bytes())?;
-                index.write_all(&[u8::from(coverage)])?;
+                index.write_all(&[u8::from(coverage || continuity.is_some())])?;
             }
             meta.key = vec![charge.to_string().into()];
             write_meta(&mut self.output, &meta)?;
@@ -382,7 +474,7 @@ impl WorkspaceStore {
                 None
             },
             shell_selected: !pending_only && self.shell_authority().is_some(),
-            root,
+            root: root.clone(),
             workspace: self.root.clone(),
             device,
             phase: if pending_only { 3 } else { 0 },
@@ -390,6 +482,7 @@ impl WorkspaceStore {
             child: None,
             sorter: Some(sorter),
             next_pin: 0,
+            continuity: Some(File::create(root.join("continuity.manifest"))?),
         })
     }
     /// Invoke under one owner operation until Done; later mutations must not
@@ -445,6 +538,7 @@ impl WorkspaceStore {
             sorter.stats.last_step_work += 1;
             if build.phase == 4 {
                 build.phase = 5;
+                drop(build.continuity.take());
                 let output = File::create(build.root.join("replay.manifest"))?;
                 let cleanup = File::create(build.root.join("cleanup.manifest"))?;
                 return Ok(Step::Done(ReplaySnapshot {
@@ -454,6 +548,10 @@ impl WorkspaceStore {
                     pending_root: PathBuf::from("pending").join(hex::encode(build.device)),
                     sorter: build.sorter.take(),
                     ordered: None,
+                    continuity_sorter: None,
+                    continuity_input: Some(File::open(build.root.join("continuity.manifest"))?),
+                    continuity_ordered: None,
+                    continuity_previous: None,
                     candidate: None,
                     output,
                     cleanup,
@@ -478,6 +576,14 @@ impl WorkspaceStore {
                     let source = self.root.join(&meta.source);
                     let target = build.root.join("pins").join(format!("{pin:016x}.frame"));
                     fs::hard_link(&source, &target)?;
+                    capture_continuity(
+                        self,
+                        &source,
+                        &target,
+                        pin,
+                        build.continuity.as_mut().unwrap(),
+                        &mut sorter.stats,
+                    )?;
                     sorter.push(Meta {
                         key: vec!["1".into(), "0".into(), format!("{pin:016x}").into()],
                         source: meta.source,
@@ -578,6 +684,14 @@ impl WorkspaceStore {
                 increment(&mut build.next_pin)?;
                 let target = build.root.join("pins").join(format!("{pin:016x}.frame"));
                 fs::hard_link(&source, &target)?;
+                capture_continuity(
+                    self,
+                    &source,
+                    &target,
+                    pin,
+                    build.continuity.as_mut().unwrap(),
+                    &mut sorter.stats,
+                )?;
                 let len = fs::metadata(&target)?.len();
                 sorter.push(Meta {
                     key,
@@ -621,6 +735,75 @@ impl WorkspaceStore {
             if let Step::Done(path) = result {
                 snapshot.ordered = Some(File::open(path)?);
                 snapshot.sorter = None;
+                snapshot.continuity_sorter =
+                    Some(Sorter::new(snapshot.root.join("continuity-sort"))?);
+            }
+            return Ok(Step::More);
+        }
+        if let Some(sorter) = &mut snapshot.continuity_sorter {
+            if let Some(input) = &mut snapshot.continuity_input {
+                if sorter.spilling() {
+                    sorter.spill_step(limit)?;
+                } else {
+                    for _ in 0..limit.record_entries() {
+                        snapshot.stats.last_step_work += 1;
+                        let Some(meta) = read_meta(input)? else {
+                            snapshot.continuity_input = None;
+                            break;
+                        };
+                        sorter.push(meta)?;
+                        if sorter.spilling() {
+                            break;
+                        }
+                    }
+                }
+                snapshot.stats.peak_metadata_entries = snapshot
+                    .stats
+                    .peak_metadata_entries
+                    .max(sorter.stats.peak_metadata_entries);
+                snapshot.stats.peak_metadata_bytes = snapshot
+                    .stats
+                    .peak_metadata_bytes
+                    .max(sorter.stats.peak_metadata_bytes);
+                snapshot.stats.peak_open_files = snapshot
+                    .stats
+                    .peak_open_files
+                    .max(sorter.stats.peak_open_files + 4);
+                snapshot.stats.last_step_work = snapshot
+                    .stats
+                    .last_step_work
+                    .max(sorter.stats.last_step_work);
+                return Ok(Step::More);
+            }
+            let result = sorter.step(limit)?;
+            snapshot.stats.last_step_work = sorter.stats.last_step_work;
+            snapshot.stats.peak_metadata_entries = snapshot
+                .stats
+                .peak_metadata_entries
+                .max(sorter.stats.peak_metadata_entries);
+            snapshot.stats.peak_metadata_bytes = snapshot
+                .stats
+                .peak_metadata_bytes
+                .max(sorter.stats.peak_metadata_bytes);
+            snapshot.stats.peak_open_files = snapshot
+                .stats
+                .peak_open_files
+                .max(sorter.stats.peak_open_files + 3);
+            if let Step::Done(path) = result {
+                snapshot.continuity_ordered = Some(File::open(path)?);
+                snapshot.continuity_sorter = None;
+            }
+            return Ok(Step::More);
+        }
+        if snapshot.continuity_ordered.is_some() {
+            for _ in 0..limit.record_entries() {
+                snapshot.stats.last_step_work += 1;
+                let Some(meta) = read_meta(snapshot.continuity_ordered.as_mut().unwrap())? else {
+                    snapshot.continuity_ordered = None;
+                    snapshot.continuity_previous = None;
+                    return Ok(Step::More);
+                };
+                snapshot.elect_continuity(self, meta)?;
             }
             return Ok(Step::More);
         }
@@ -639,11 +822,22 @@ impl WorkspaceStore {
                 let compare =
                     len == candidate.meta.len && (!candidate.meta.pending || entry[16] == 1);
                 let candidate_pin = candidate.meta.pin;
-                if compare && equal_files(&snapshot.pin(candidate_pin), &snapshot.pin(pin))? {
+                let receipt = candidate.continuity.clone();
+                let same_receipt = if let Some(receipt) = &receipt {
+                    super::continuity::load_measured(self, &snapshot.pin(pin), &mut snapshot.stats)?
+                        .as_ref()
+                        == Some(receipt)
+                } else {
+                    true
+                };
+                if compare
+                    && same_receipt
+                    && equal_files(&snapshot.pin(candidate_pin), &snapshot.pin(pin))?
+                {
                     snapshot.accept_candidate(true)?;
                 }
             } else if let Some(meta) = read_meta(snapshot.ordered.as_mut().unwrap())? {
-                snapshot.classify(meta)?;
+                snapshot.classify(self, meta)?;
             } else {
                 snapshot.ready = true;
                 return Ok(Step::Done(ReplaySummary {
@@ -759,7 +953,10 @@ impl WorkspaceStore {
             }
             let source = self.root.join(&meta.source);
             let pin = snapshot.pin(meta.pin);
-            if same_inode(&source, &pin)? && equal_files(&source, &pin)? {
+            if !super::continuity::cleanup_pending(self, &source, &pin, &mut snapshot.stats)?
+                && same_inode(&source, &pin)?
+                && equal_files(&source, &pin)?
+            {
                 fs::remove_file(&source)?;
             }
             snapshot.cleanup_offset = input.stream_position()?;
@@ -786,7 +983,7 @@ pub(super) fn equal_files(a: &Path, b: &Path) -> Result<bool, StoreError> {
         }
     }
 }
-fn same_inode(a: &Path, b: &Path) -> Result<bool, StoreError> {
+pub(super) fn same_inode(a: &Path, b: &Path) -> Result<bool, StoreError> {
     let a = match fs::symlink_metadata(a) {
         Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -859,6 +1056,7 @@ impl WorkDiscard {
                         if kind.is_dir()
                             && [
                                 "sort",
+                                "continuity-sort",
                                 "shell-sort",
                                 "extras-sort",
                                 "extras-sort-fallback",
@@ -878,6 +1076,7 @@ impl WorkDiscard {
                             && [
                                 "replay.manifest",
                                 "cleanup.manifest",
+                                "continuity.manifest",
                                 "room.manifest",
                                 "extras.manifest",
                                 "retire.manifest",
@@ -946,10 +1145,16 @@ fn owned_work_file(dir: &std::ffi::OsStr, name: &std::ffi::OsStr) -> bool {
         return false;
     };
     if dir == "pins" {
-        name.strip_suffix(".frame").is_some_and(|s| is_hex(s, 16))
+        name.strip_suffix(".frame")
+            .or_else(|| name.strip_suffix(".frame.continuity-v1"))
+            .or_else(|| name.strip_suffix(".source-association"))
+            .is_some_and(|s| is_hex(s, 16))
     } else if dir == "index" {
-        name.strip_suffix(".idx").is_some_and(|s| is_hex(s, 64))
+        name.strip_suffix(".idx")
+            .is_some_and(|s| is_hex(s, 64) || s.strip_prefix('c').is_some_and(|s| is_hex(s, 32)))
+            || name.strip_suffix(".winner").is_some_and(|s| is_hex(s, 64))
     } else if dir == "sort"
+        || dir == "continuity-sort"
         || dir == "shell-sort"
         || dir == "extras-sort"
         || dir == "extras-sort-fallback"

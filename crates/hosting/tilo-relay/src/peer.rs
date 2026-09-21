@@ -1716,6 +1716,44 @@ enum LiveEnvelope {
     Original(Arc<Envelope>),
     Selected(Arc<crate::store::replay::ReplayBatch>),
 }
+// Return only channels subject to the ordinary once-per-request live gate.
+// This is delivery policy, not authority: callers must first revalidate the
+// current authenticated source and retain all recipient/session fences.
+fn gated_checkpoint_channel(
+    envelope: &LiveEnvelope,
+    source: Option<&StateSource>,
+) -> Option<[u8; 32]> {
+    let LiveEnvelope::Original(original) = envelope else {
+        return None;
+    };
+    let Envelope::Delta { delta, .. } = &**original else {
+        return None;
+    };
+    let (payload, outer_trailing) =
+        postcard::take_from_bytes::<crate::coedit::CoeditPayload>(delta).ok()?;
+    let crate::coedit::CoeditPayload::Checkpoint { channel, body } = payload else {
+        return None;
+    };
+    // Unknown wrapper suffixes retain the generic checkpoint gate.
+    if outer_trailing.is_empty()
+        && let Some(source) = source
+        && let Ok((msg, trailing)) =
+            postcard::take_from_bytes::<qos_peer_state::NeighbourMsg>(&body)
+        && trailing.is_empty()
+        && matches!(
+            &msg,
+            qos_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key, ..
+            } if *user_public_key == source.peer.user_public_key
+        )
+        && qos_peer_state::transport::retention(&msg, false)
+            == Some((channel, qos_peer_state::transport::Retention::Checkpoint))
+    {
+        return None;
+    }
+    Some(channel)
+}
+
 impl std::ops::Deref for LiveEnvelope {
     type Target = Envelope;
     fn deref(&self) -> &Envelope {
@@ -1749,6 +1787,7 @@ impl StateDelivery {
 }
 
 struct StateCommit {
+    continuity: Option<crate::store::continuity::Receipt>,
     envelope: Arc<Envelope>,
     pending: HashMap<[u8; 32], std::path::PathBuf>,
     persisted_bytes: u64,
@@ -1873,14 +1912,20 @@ struct ReplayPendingFrame {
     next_target: usize,
 }
 struct ReplayPendingWork {
+    continuity: Option<crate::store::continuity::Receipt>,
     publication: ReplayPendingPublication,
     targets: Vec<ReplayPendingTarget>,
     frame: Option<ReplayPendingFrame>,
     written: u64,
 }
 impl ReplayPendingWork {
-    fn original(envelope: Arc<Envelope>, targets: Vec<ReplayPendingTarget>) -> Self {
+    fn original(
+        envelope: Arc<Envelope>,
+        targets: Vec<ReplayPendingTarget>,
+        continuity: Option<crate::store::continuity::Receipt>,
+    ) -> Self {
         Self {
+            continuity,
             publication: ReplayPendingPublication::Original(Some(envelope)),
             targets,
             frame: None,
@@ -1892,6 +1937,7 @@ impl ReplayPendingWork {
         targets: Vec<ReplayPendingTarget>,
     ) -> Result<Self, crate::store::StoreError> {
         Ok(Self {
+            continuity: None,
             publication: ReplayPendingPublication::Selected(
                 crate::store::replay::PublicationCursor::open(generation)?,
             ),
@@ -1948,14 +1994,23 @@ impl ReplayPendingWork {
             let sequence = match frame.sequence {
                 Some(sequence) => sequence,
                 None => {
-                    let sequence = state.next_sequence()?;
+                    let sequence = match &self.continuity {
+                        Some(receipt) => receipt.sequence,
+                        None => state.next_sequence()?,
+                    };
                     frame.sequence = Some(sequence);
                     sequence
                 }
             };
-            state
-                .store
-                .enqueue_pending(&target.device, sequence, &frame.bytes)?;
+            if let Some(receipt) = &self.continuity {
+                state
+                    .store
+                    .enqueue_continuity_pending(&target.device, &frame.bytes, receipt)?;
+            } else {
+                state
+                    .store
+                    .enqueue_pending(&target.device, sequence, &frame.bytes)?;
+            }
             self.written = self.written.saturating_add(frame.bytes.len() as u64);
         }
         #[cfg(test)]
@@ -1967,6 +2022,7 @@ impl ReplayPendingWork {
 }
 
 struct CheckpointBatchInput {
+    continuity: Option<crate::store::continuity::Receipt>,
     envelope: Arc<Envelope>,
     delta: Vec<u8>,
     raw: Vec<u8>,
@@ -1990,6 +2046,7 @@ struct CheckpointBatch {
 fn new_checkpoint_batch(
     state: &mut crate::persistence::State,
     envelopes: Vec<Envelope>,
+    peer: Option<&AuthenticatedPeer>,
 ) -> Result<CheckpointBatch, crate::store::StoreError> {
     let root = state.store.root().join("store-work-v1").join(format!(
         "retain-{}",
@@ -2017,16 +2074,28 @@ fn new_checkpoint_batch(
         let incoming =
             crate::store::shell_selection::incoming_identity(&raw, state.store.workspace_id())
                 .ok_or_else(|| crate::persistence::error("invalid checkpoint identity"))?;
+        // Reservation is speculative until fresh authorization permits promotion.
+        // Keep the same ordered receipt through projection and serial fallback.
+        let sequence = state.next_sequence()?;
+        let continuity = peer
+            .and_then(|peer| crate::store::continuity::Evidence::authenticated(&envelope, peer))
+            .map(|evidence| evidence.accept(sequence));
         let stage = if state.store.checkpoint_lineage_exists(&channel, &raw)? {
-            Some(state.store.start_staged_checkpoint(
-                &channel,
-                raw.clone(),
-                root.join(format!("input-{index:02}")),
-            )?)
+            Some(
+                state
+                    .store
+                    .start_staged_checkpoint(
+                        &channel,
+                        raw.clone(),
+                        root.join(format!("input-{index:02}")),
+                    )?
+                    .with_continuity(continuity.clone()),
+            )
         } else {
             None
         };
         inputs.push(CheckpointBatchInput {
+            continuity,
             envelope: Arc::new(envelope),
             delta,
             raw,
@@ -2034,7 +2103,7 @@ fn new_checkpoint_batch(
             incoming,
             stage,
             prepared: None,
-            sequence: None,
+            sequence: Some(sequence),
             cleanup_registered: false,
         });
     }
@@ -2183,6 +2252,7 @@ fn state_commit_for(
         crate::store::shell_selection::Publication::Original => (true, None),
     };
     Ok(StateCommit {
+        continuity: input.continuity.clone(),
         envelope: input.envelope.clone(),
         pending: HashMap::new(),
         persisted_bytes: input.stage.as_ref().map_or(0, |stage| stage.written()),
@@ -2400,6 +2470,7 @@ impl ProjectedCheckpointCommit {
                     ReplayPendingWork::original(
                         commit.envelope.clone(),
                         commit.replay_targets.clone(),
+                        commit.continuity.clone(),
                     )
                 });
                 self.commit = Some(commit);
@@ -2446,6 +2517,7 @@ impl ProjectedCheckpointCommit {
                 }
             };
             let commit = StateCommit {
+                continuity: None,
                 envelope: batch.inputs.last().unwrap().envelope.clone(),
                 pending: HashMap::new(),
                 persisted_bytes: batch
@@ -2542,12 +2614,11 @@ impl ProjectedCheckpointCommit {
 }
 
 fn promote_checkpoint_input(
-    state: &mut crate::persistence::State,
+    _state: &mut crate::persistence::State,
     batch: &mut CheckpointBatch,
     index: usize,
 ) -> Result<(), crate::store::StoreError> {
     let input = &mut batch.inputs[index];
-    input.sequence = Some(state.next_sequence()?);
     input.stage.as_mut().unwrap().promote()
 }
 
@@ -2578,14 +2649,18 @@ impl SerialCheckpointCommit {
             state.retention_candidates.push(selector.cleanup_paths());
             (None, Some(selector))
         } else {
-            batch.inputs[index].sequence = Some(state.next_sequence()?);
             (
-                Some(state.store.start_retain_in(
-                    &batch.inputs[index].channel,
-                    None,
-                    batch.inputs[index].raw.clone(),
-                    batch.root.join(format!("serial-retain-{index:02}")),
-                )?),
+                Some(
+                    state
+                        .store
+                        .start_retain_in(
+                            &batch.inputs[index].channel,
+                            None,
+                            batch.inputs[index].raw.clone(),
+                            batch.root.join(format!("serial-retain-{index:02}")),
+                        )?
+                        .with_continuity(batch.inputs[index].continuity.clone()),
+                ),
                 None,
             )
         };
@@ -2673,6 +2748,7 @@ impl SerialCheckpointCommit {
                 Some(ReplayPendingWork::original(
                     commit.envelope.clone(),
                     commit.replay_targets.clone(),
+                    commit.continuity.clone(),
                 ))
             } else {
                 None
@@ -2775,20 +2851,6 @@ async fn publish_checkpoint_commit(
         } else {
             break;
         };
-        let checkpoint_channel = match &envelope {
-            LiveEnvelope::Original(original) => match &**original {
-                Envelope::Delta { delta, .. } => {
-                    match crate::coedit::CoeditPayload::decode(delta) {
-                        Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => {
-                            Some(channel)
-                        }
-                        _ => None,
-                    }
-                }
-                _ => None,
-            },
-            LiveEnvelope::Selected(_) => None,
-        };
         let mut runtime = crate::workspace_io::fresh_membership(workspace).await?;
         if !source.authorized(&runtime) {
             if activating {
@@ -2798,6 +2860,7 @@ async fn publish_checkpoint_commit(
             }
             break;
         }
+        let checkpoint_channel = gated_checkpoint_channel(&envelope, Some(source));
         for (recipient, original) in &commit.sessions {
             let Some(sub) = runtime.subscribers.get(recipient) else {
                 continue;
@@ -2977,12 +3040,20 @@ async fn enqueue_checkpoint_prefix(
             move |state, workers| async move {
                 let queue_wait_ms = admitted_at.map_or(0, |started| started.elapsed().as_millis());
                 let projection_started = diagnostics.then(std::time::Instant::now);
+                let runtime = crate::workspace_io::fresh_membership(&work_workspace).await?;
+                if !work_source.authorized(&runtime) {
+                    return Err(crate::persistence::error(
+                        "state source authorization changed",
+                    ));
+                }
+                drop(runtime);
+                let staging_peer = work_source.peer.clone();
                 let staging_state = state.clone();
                 let mut batch = crate::persistence::blocking(workers.clone(), move || {
                     let mut state = staging_state
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    new_checkpoint_batch(&mut state, envelopes)
+                    new_checkpoint_batch(&mut state, envelopes, Some(&staging_peer))
                 })
                 .await??;
                 let started = diagnostics.then(std::time::Instant::now);
@@ -3327,6 +3398,10 @@ async fn enqueue_state_inner(
     let failure = source.clone();
     let persist_metrics = metrics.clone();
     let prepare_workspace = workspace.clone();
+    let prepare_source = source.clone();
+    let continuity_evidence = source.as_ref().and_then(|source| {
+        crate::store::continuity::Evidence::authenticated(&envelope, &source.peer)
+    });
     let delta_len = delta.len();
     let mut envelope = Some(envelope);
     let mut commit: Option<StateCommit> = None;
@@ -3338,6 +3413,9 @@ async fn enqueue_state_inner(
         charge,
         async move {
             let runtime = crate::workspace_io::fresh_membership(&prepare_workspace).await?;
+            if prepare_source.as_ref().is_some_and(|source| !source.authorized(&runtime)) {
+                return Err(crate::persistence::error("state source authorization changed"));
+            }
             let mut recipients = runtime
                 .membership
                 .devices
@@ -3411,6 +3489,7 @@ async fn enqueue_state_inner(
                 let publish = !sync || state.would_materialize(delta);
                 if !publish {
                     return Ok(Step::Done(StateCommit {
+                        continuity: None,
                         envelope: Arc::new(envelope),
                         pending: HashMap::new(),
                         persisted_bytes: 0,
@@ -3425,6 +3504,7 @@ async fn enqueue_state_inner(
                 }
                 let seq = state.next_sequence()?;
                 sequence = Some(seq);
+                let continuity = continuity_evidence.clone().map(|evidence| evidence.accept(seq));
                 let raw = crate::transport::encode(&envelope)
                     .map_err(|e| crate::persistence::error(e.to_string()))?;
                 let retention =
@@ -3437,13 +3517,14 @@ async fn enqueue_state_inner(
                 if let Some((channel, seq)) = retention {
                     #[cfg(test)]
                     crate::store::test_barrier::pause(state.store.root(), "state-persist");
-                    let build = state.store.start_retain(&channel, seq, raw)?;
+                    let build = state.store.start_retain(&channel, seq, raw)?.with_continuity(continuity.clone());
                     state.retention_scratch = Some(build.scratch().to_owned());
                     retained_build = Some(build);
                 } else {
                     pending_work = Some((raw, recipients.into_iter()));
                 }
                 commit = Some(StateCommit {
+                    continuity,
                     envelope: Arc::new(envelope),
                     pending: HashMap::new(),
                     persisted_bytes: 0,
@@ -3497,6 +3578,7 @@ async fn enqueue_state_inner(
                                     replay_pending_work = Some(ReplayPendingWork::original(
                                         current.envelope.clone(),
                                         current.replay_targets.clone(),
+                                        current.continuity.clone(),
                                     ));
                                 }
                             }
@@ -3620,16 +3702,6 @@ async fn enqueue_state_inner(
                         };
                         (LiveEnvelope::Original(commit.envelope.clone()), budget)
                     } else { break };
-                    let checkpoint_channel = match &envelope {
-                        LiveEnvelope::Original(original) => match &**original {
-                            Envelope::Delta { delta, .. } => match crate::coedit::CoeditPayload::decode(delta) {
-                                Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => Some(channel),
-                                _ => None,
-                            },
-                            _ => None,
-                        },
-                        LiveEnvelope::Selected(_) => None,
-                    };
                     // Every hydration/worker wait precedes a fresh current-source,
                     // recipient membership and exact subscriber-channel fence.
                     let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
@@ -3637,6 +3709,7 @@ async fn enqueue_state_inner(
                         if activating { return Err(crate::persistence::error("activation source authorization changed")); }
                         break;
                     }
+                    let checkpoint_channel = gated_checkpoint_channel(&envelope, source.as_ref());
                     for (recipient, original) in &commit.sessions {
                         let Some(sub) = runtime.subscribers.get(recipient) else { continue };
                         if !sub.tx.same_channel(original) { continue; }
@@ -5169,7 +5242,7 @@ mod private_transport_tests {
         };
         runtime.admit_device(peer.device_public_key).unwrap();
         let (tx, _source_rx) = mpsc::channel(512);
-        let (disconnect, _disconnected) = mpsc::channel(1);
+        let (disconnect, mut source_disconnected) = mpsc::channel(1);
         runtime.add_subscriber(Subscriber {
             device_public_key: peer.device_public_key,
             role: peer.role,
@@ -5285,7 +5358,18 @@ mod private_transport_tests {
         .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), reached)
             .await
-            .expect("all-original prefix never reached the post-first-original barrier")
+            .unwrap_or_else(|_| {
+                let source_disconnect = match source_disconnected.try_recv() {
+                    Ok(()) => "signalled",
+                    Err(mpsc::error::TryRecvError::Empty) => "open",
+                    Err(mpsc::error::TryRecvError::Disconnected) => "closed",
+                };
+                let modes = batch_modes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                panic!(
+                    "all-original prefix never reached the post-first-original barrier: selection_count={} batch_modes={modes:?} source_disconnect={source_disconnect}",
+                    selection_count.load(std::sync::atomic::Ordering::SeqCst),
+                );
+            })
             .unwrap();
         let delivered_before_failure =
             tokio::time::timeout(std::time::Duration::from_secs(2), observer_state_rx.recv())
@@ -5576,7 +5660,7 @@ mod private_transport_tests {
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let mut batch = new_checkpoint_batch(&mut state, vec![envelope])?;
+                let mut batch = new_checkpoint_batch(&mut state, vec![envelope], None)?;
                 loop {
                     match step_checkpoint_batch(&mut state, &mut batch)? {
                         Step::More => {}

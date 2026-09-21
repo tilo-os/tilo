@@ -397,6 +397,7 @@ impl GenerationGc {
 }
 fn known_record(name: &std::ffi::OsStr) -> bool {
     name.to_str().is_some_and(|name| {
+        let name = name.strip_suffix(".continuity-v1").unwrap_or(name);
         name == "checkpoint.delta"
             || (name.strip_suffix(".delta").is_some_and(|prefix| {
                 matches!(prefix.len(), 8 | 16) && prefix.bytes().all(|b| b.is_ascii_hexdigit())
@@ -439,6 +440,8 @@ pub(crate) struct RetainBuild {
     publication: Option<super::shell_selection::Publication>,
     selected_obsolete: bool,
     staged_only: bool,
+    continuity: Option<super::continuity::Receipt>,
+    store: WorkspaceStore,
 }
 pub(crate) struct CheckpointStage {
     build: RetainBuild,
@@ -498,6 +501,15 @@ impl CheckpointDiscard {
     }
 }
 impl CheckpointStage {
+    pub(crate) fn with_continuity(mut self, receipt: Option<super::continuity::Receipt>) -> Self {
+        self.build.continuity = receipt;
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn stats(&self) -> &super::bounded::WorkStats {
+        &self.build.sorter.stats
+    }
     pub(crate) fn projected_generation(&self) -> &Path {
         self.build.staged.as_deref().unwrap_or(&self.build.active)
     }
@@ -573,6 +585,11 @@ impl CheckpointStage {
     }
 }
 impl RetainBuild {
+    pub(crate) fn with_continuity(mut self, receipt: Option<super::continuity::Receipt>) -> Self {
+        self.continuity = receipt;
+        self
+    }
+
     pub(crate) fn scratch(&self) -> &Path {
         &self.scratch
     }
@@ -639,6 +656,9 @@ impl RetainBuild {
                     let entry = entry?;
                     let name = entry.file_name();
                     let lossy = name.to_string_lossy();
+                    if let Some(slot) = super::continuity::reserved_slot(&lossy) {
+                        self.last = self.last.max(slot);
+                    }
                     if entry.file_type()?.is_file()
                         && lossy.ends_with(".delta")
                         && !lossy.starts_with('.')
@@ -667,13 +687,14 @@ impl RetainBuild {
                 for _ in 0..limit.record_entries() {
                     self.sorter.stats.last_step_work += 1;
                     let Some(meta) = read_meta(file)? else {
-                        if self.duplicate {
+                        if self.duplicate && self.continuity.is_none() {
                             self.phase = if self.staged_only {
                                 RetainPhase::Done
                             } else {
                                 RetainPhase::Collect(GenerationGc::new(self.lineage.clone())?)
                             };
-                        } else if self.checkpoint
+                        } else if self.continuity.is_none()
+                            && self.checkpoint
                             && !self.opaque
                             && covers(&self.bytes, &self.bytes, self.workspace)
                         {
@@ -708,10 +729,15 @@ impl RetainBuild {
                                 .last
                                 .checked_add(1)
                                 .ok_or_else(|| invalid("retained record sequence exhausted"))?;
-                            durable_write(
-                                &self.active.join(format!("{next:016x}.delta")),
-                                &self.bytes,
-                            )?;
+                            let path = self.active.join(format!("{next:016x}.delta"));
+                            if let Some(receipt) = &self.continuity {
+                                super::continuity::account_validation(
+                                    &mut self.sorter.stats,
+                                    self.bytes.len(),
+                                );
+                                super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
+                            }
+                            durable_write(&path, &self.bytes)?;
                             self.written = self.bytes.len() as u64;
                             self.phase = RetainPhase::Done;
                         }
@@ -754,14 +780,19 @@ impl RetainBuild {
                                 .last
                                 .checked_add(1)
                                 .ok_or_else(|| invalid("retained record sequence exhausted"))?;
-                            durable_write(
-                                &self
-                                    .staged
-                                    .as_ref()
-                                    .unwrap()
-                                    .join(format!("{next:016x}.delta")),
-                                &self.bytes,
-                            )?;
+                            let path = self
+                                .staged
+                                .as_ref()
+                                .unwrap()
+                                .join(format!("{next:016x}.delta"));
+                            if let Some(receipt) = &self.continuity {
+                                super::continuity::account_validation(
+                                    &mut self.sorter.stats,
+                                    self.bytes.len(),
+                                );
+                                super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
+                            }
+                            durable_write(&path, &self.bytes)?;
                         }
                         self.phase = RetainPhase::Commit;
                         return Ok(Step::More);
@@ -773,25 +804,37 @@ impl RetainBuild {
                         .stats
                         .peak_frame_bytes
                         .max(record.bytes.len() + self.bytes.len());
-                    if self.staged_append {
-                        fs::hard_link(
-                            &record.path,
+                    let destination = if self.staged_append {
+                        Some(
                             self.staged.as_ref().unwrap().join(
                                 record
                                     .path
                                     .file_name()
                                     .ok_or_else(|| invalid("retained record name"))?,
                             ),
-                        )?;
+                        )
                     } else if !covers(&self.bytes, &record.bytes, self.workspace) {
-                        fs::hard_link(
-                            &record.path,
-                            self.staged
-                                .as_ref()
-                                .unwrap()
-                                .join(format!("{:016x}.delta", self.survivors)),
-                        )?;
+                        let path = self
+                            .staged
+                            .as_ref()
+                            .unwrap()
+                            .join(format!("{:016x}.delta", self.survivors));
                         increment(&mut self.survivors)?;
+                        Some(path)
+                    } else {
+                        None
+                    };
+                    if let Some(destination) = destination {
+                        let source = record.path.clone();
+                        drop(record);
+                        fs::hard_link(&source, &destination)?;
+                        super::continuity::copy_measured(
+                            &self.store,
+                            &source,
+                            &destination,
+                            &mut self.sorter.stats,
+                            self.bytes.capacity(),
+                        )?;
                     }
                 }
             }
@@ -975,6 +1018,8 @@ impl WorkspaceStore {
             publication: None,
             selected_obsolete: false,
             staged_only: false,
+            continuity: None,
+            store: self.clone(),
         })
     }
     pub(super) fn retain_shared(

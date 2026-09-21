@@ -23,6 +23,7 @@
 //!   pin state — a peer can be offline and still catch up when it reconnects.
 
 pub(crate) mod bounded;
+pub(crate) mod continuity;
 pub(crate) mod replay;
 pub(crate) mod retained;
 #[cfg(test)]
@@ -557,6 +558,27 @@ impl WorkspaceStore {
         // durability instead of treating the atomic helper's best effort as a
         // successful publication barrier.
         for directory in pending_dir.ancestors().take(3) {
+            fs::File::open(directory)?.sync_all()?;
+        }
+        Ok(path)
+    }
+
+    pub(crate) fn enqueue_continuity_pending(
+        &self,
+        device: &[u8; 32],
+        bytes: &[u8],
+        receipt: &continuity::Receipt,
+    ) -> Result<PathBuf, StoreError> {
+        let directory = self.pending_dir_for(device);
+        fs::create_dir_all(&directory)?;
+        let path = directory.join(format!(
+            "{:016x}-continuity-{}.delta",
+            receipt.sequence,
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        continuity::write(self, &path, bytes, receipt)?;
+        atomic_file::write(&path, bytes)?;
+        for directory in directory.ancestors().take(3) {
             fs::File::open(directory)?.sync_all()?;
         }
         Ok(path)

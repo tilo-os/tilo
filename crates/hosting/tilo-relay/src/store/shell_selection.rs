@@ -448,6 +448,13 @@ impl Selection {
         // Every source belongs to an already durable retained generation. The
         // Commit phase syncs this hard-link directory before switching CURRENT.
         fs::hard_link(self.store.root.join(&meta.source), &path)?;
+        super::continuity::copy_measured(
+            &self.store,
+            &self.store.root.join(&meta.source),
+            &path,
+            &mut self.sorter.stats,
+            0,
+        )?;
         let mut selected = meta.clone();
         selected.source = path.strip_prefix(&self.store.root).unwrap().into();
         selected.key = vec![role.into()];
