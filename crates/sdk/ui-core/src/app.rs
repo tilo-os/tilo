@@ -8,8 +8,6 @@ use winit::{
 };
 
 use std::cell::Cell;
-#[cfg(test)]
-use std::cell::RefCell;
 
 mod bound_record_sync;
 mod close_admission;
@@ -2565,7 +2563,6 @@ impl App {
         (key, permission_generation)
     }
 
-    #[cfg(test)]
     fn collect_local_resources(&self) -> Vec<tilo_actions::Resource> {
         let (key, permission_generation) = self.ensure_local_resource_cache();
         let mut resources = self
@@ -4641,7 +4638,17 @@ impl App {
         ambient_context: Option<&tilo_actions::ActionContext>,
         legacy: Option<&crate::bound_dispatch::legacy_document::LegacyResourceTarget>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let mut resources = if actor == self.collaboration.local_author.0 {
+        // A legacy non-Document request carries its resolved owner from the
+        // initial door. Keep that captured target through the final resolve so
+        // a later tree change cannot redirect it to another same-address
+        // resource. Ordinary local requests use the permission-projected,
+        // cached resource surface (including retained bound and legacy rows).
+        let mut resources = if let Some(target) = legacy {
+            crate::bound_dispatch::legacy_document::resolve_legacy_invocation(
+                self.root_widget.as_ref(),
+                target,
+            )?
+        } else if actor == self.collaboration.local_author.0 {
             self.collect_local_resources()
         } else {
             let key = self.ensure_resource_cache();
@@ -4662,7 +4669,10 @@ impl App {
                 resources
             }
         };
-        if tilo_actions::door::resolve(&resources, address).is_none() {
+        // The legacy target above is an owner witness. If that owner no
+        // longer offers the action, reject it rather than resolving a same
+        // address from another live branch.
+        if legacy.is_none() && tilo_actions::door::resolve(&resources, address).is_none() {
             let fallback = crate::bound_dispatch::resolve_unbound_resource(
                 self.root_widget.as_ref(),
                 &self.state.doc,
@@ -4827,22 +4837,58 @@ impl App {
                 tilo_actions::ActionOutput::default(),
             ));
         }
-        let started = match crate::bound_dispatch::execute_resource_operation(
-            self.root_widget.as_mut(),
-            &mut self.state.doc,
-            &self.state.root,
-            &self.actions.action_registry,
-            self.actions.action_transport.as_mut(),
-            address,
-            resource,
-            resolved,
-            encoded,
-            actor,
-            &self.collaboration.local_author.0,
-            broker_admitted,
-            operation_invocation,
-            ambient_context,
-        ) {
+        let operation_result = if let Some(target) = legacy {
+            (|| {
+                crate::bound_dispatch::legacy_document::authorize_legacy_operation(
+                    target,
+                    &self.permission_ctx,
+                    resolved,
+                )?;
+                let started = crate::bound_dispatch::legacy_document::invoke_legacy_effect(
+                    self.root_widget.as_mut(),
+                    target,
+                    operation_invocation,
+                    kind,
+                    &encoded,
+                    &mut self.state.doc,
+                )?;
+                match &started {
+                    crate::widget::ResourceOperationStart::Accepted
+                        if resolved.contract.execution
+                            == tilo_actions::ExecutionMode::Immediate =>
+                    {
+                        return Err(tilo_actions::DoorError::Failed(
+                            "An immediate operation cannot remain pending".into(),
+                        ));
+                    }
+                    crate::widget::ResourceOperationStart::Completed(output) => resolved
+                        .contract
+                        .result
+                        .validate(output)
+                        .map_err(tilo_actions::DoorError::Failed)?,
+                    crate::widget::ResourceOperationStart::Accepted => {}
+                }
+                Ok(started)
+            })()
+        } else {
+            crate::bound_dispatch::execute_resource_operation(
+                self.root_widget.as_mut(),
+                &mut self.state.doc,
+                &self.state.root,
+                &self.actions.action_registry,
+                self.actions.action_transport.as_mut(),
+                address,
+                resource,
+                resolved,
+                encoded,
+                actor,
+                &self.collaboration.local_author.0,
+                broker_admitted,
+                operation_invocation,
+                ambient_context,
+            )
+        };
+        let started = match operation_result {
             Ok(started) => started,
             Err(message) => {
                 if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {

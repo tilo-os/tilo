@@ -173,6 +173,8 @@ pub struct GroupRow {
     /// At rest it is bounded by [`Self::pan_max_scroll_x`]; an active direct
     /// gesture may hold a resisted transient value just outside either end.
     scroll_x: f64,
+    /// Absolute external viewport navigation stays bounded through geometry changes.
+    absolute_pan: bool,
     /// Scroll offset at the start of the current direct-manipulation gesture.
     /// Gesture updates carry total travel, so this remains fixed until End.
     strip_pan_origin: Option<f64>,
@@ -324,6 +326,7 @@ impl GroupRow {
             structure_dirty: false,
             hover_gap_idx: None,
             scroll_x: 0.0,
+            absolute_pan: false,
             strip_pan_origin: None,
             content_w: 0.0,
             group_left_edges: Vec::new(),
