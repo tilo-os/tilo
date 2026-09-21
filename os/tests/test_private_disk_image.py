@@ -41,10 +41,12 @@ class LoopPartitionNodeTests(unittest.TestCase):
         self.devices.mkdir(); self.sys_class.mkdir(); (self.kernel / 'loop0').mkdir(parents=True)
         (self.kernel / 'loop0/dev').write_text('7:0\n')
         (self.sys_class / 'loop0').symlink_to(self.kernel / 'loop0', target_is_directory=True)
-        for number, minor in ((1, 1), (2, 2)):
+        for number, minor in ((1, 41), (2, 42)):
             entry = self.kernel / 'loop0' / f'loop0p{number}'
             entry.mkdir(); (entry / 'partition').write_text(f'{number}\n')
-            (entry / 'dev').write_text(f'7:{minor}\n')
+            (entry / 'dev').write_text(f'259:{minor}\n')
+            (entry / 'uevent').write_text(
+                f'MAJOR=259\nMINOR={minor}\nDEVNAME={entry.name}\nDEVTYPE=partition\nPARTN={number}\n')
             (self.sys_class / entry.name).symlink_to(entry, target_is_directory=True)
 
     def test_creates_yields_and_removes_only_exact_partition_nodes(self):
@@ -109,7 +111,7 @@ class LoopPartitionNodeTests(unittest.TestCase):
         for number in (1, 2):
             node = self.devices / f'loop0p{number}'
             node.touch(mode=0o600)
-            identities[str(node)] = os.makedev(7, number)
+            identities[str(node)] = os.makedev(259, 40 + number)
         with patch.object(Path, 'lstat', self._block_nodes(identities)), \
                 patch.object(disk.os, 'mknod') as mknod:
             with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
@@ -131,7 +133,7 @@ class LoopPartitionNodeTests(unittest.TestCase):
                     lstat = Path.lstat
                 else:
                     first.touch(mode=0o600)
-                    identities = ({str(first): os.makedev(7, 99)}
+                    identities = ({str(first): os.makedev(259, 99)}
                                   if case == 'wrong-rdev' else {})
                     lstat = self._block_nodes(identities)
                 with patch.object(Path, 'lstat', lstat), \
@@ -148,9 +150,22 @@ class LoopPartitionNodeTests(unittest.TestCase):
                     sys_class=self.sys_class, sleep=lambda _: None):
                 pass
 
+    def test_rejects_mismatched_partition_uevent_identity(self):
+        uevent = self.kernel / 'loop0/loop0p1/uevent'
+        for content in (
+                'MAJOR=259\nMINOR=41\nDEVNAME=loop0p9\nPARTN=1\n',
+                'MAJOR=259\nMINOR=41\nDEVNAME=loop0p1\nPARTN=9\n'):
+            with self.subTest(content=content):
+                uevent.write_text(content)
+                with self.assertRaisesRegex(ValueError, 'uevent identity differs'):
+                    with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
+                            sys_class=self.sys_class, sleep=lambda _: None):
+                        pass
+
     def test_rejects_extra_partition_inventory_before_device_creation(self):
         extra = self.kernel / 'loop0/loop0p3'; extra.mkdir()
         (extra / 'partition').write_text('3\n'); (extra / 'dev').write_text('7:3\n')
+        (extra / 'uevent').write_text('DEVNAME=loop0p3\nPARTN=3\n')
         (self.sys_class / 'loop0p3').symlink_to(extra, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, 'inventory'):
             with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
