@@ -2471,9 +2471,13 @@ mod tests {
             // Pill 1 (Files) — non-active source.
             let pill = rects[1];
             let from = pill.center();
-            // Release point: 100 px right of the source group's right
-            // edge, same y as the bar — squarely in the trailing gap.
-            let to = Point::new(group_rect.x1 + 100.0, from.y);
+            // Release inside the generous right body-edge band. The bootstrap
+            // group fills the viewport, so an apparent gap beyond x1 is not a
+            // reachable pointer target.
+            let to = Point::new(
+                group_rect.x1 - 24.0,
+                f64::midpoint(group.bar_rect().y1, group_rect.y1),
+            );
             (from, to)
         };
 
@@ -2609,7 +2613,10 @@ mod tests {
             assert_eq!(rects.len(), 4, "bar must have 4 pills after layout");
             let files_pill = rects[1];
             let from = files_pill.center();
-            let to = Point::new(group_rect.x1 + 100.0, from.y);
+            let to = Point::new(
+                group_rect.x1 - 24.0,
+                f64::midpoint(group.bar_rect().y1, group_rect.y1),
+            );
             (from, to)
         };
         d.drag(from, to, 16);
