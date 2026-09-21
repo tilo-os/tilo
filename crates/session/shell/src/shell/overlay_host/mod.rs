@@ -5446,7 +5446,10 @@ impl ShellOverlayHost {
                 let row: &mut GroupRow = unsafe { &mut *ptr };
                 // A group focused the same frame it appeared has no rect yet
                 // (no layout pass); leave the memo and retry once it does.
-                if !row.group_is_laid_out(group_id) {
+                // A reordered group likewise retains its old non-zero rect
+                // until the structural rebuild; that geometry cannot prove
+                // the group is visible in its new position.
+                if !row.group_geometry_is_current() || !row.group_is_laid_out(group_id) {
                     continue;
                 }
                 // Eased, not teleported — matches Niri's focus-column slide.
@@ -6285,11 +6288,13 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let (group_id, width) = {
+        let (strip_id, group_id, width) = {
             let st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
-            let strip_id = tree.active_strip.get(&tree.active).copied();
-            let Some(group_id) = strip_id.and_then(|id| tree.active_group_for(id)) else {
+            let Some(strip_id) = tree.active_strip.get(&tree.active).copied() else {
+                return false;
+            };
+            let Some(group_id) = tree.active_group_for(strip_id) else {
                 return false;
             };
             let Some(group) = tree
@@ -6298,7 +6303,7 @@ impl ShellOverlayHost {
                     workspace
                         .strips
                         .iter_mut()
-                        .find(|strip| Some(strip.id) == strip_id)
+                        .find(|strip| strip.id == strip_id)
                 })
                 .and_then(|strip| {
                     strip
@@ -6323,7 +6328,7 @@ impl ShellOverlayHost {
             }
             group.width = crate::shell::state::WindowWidth::Fraction(next);
             tree.flush_to_disk();
-            let result = (group_id, next);
+            let result = (strip_id, group_id, next);
             drop(tree);
             drop(st);
             result
@@ -6336,6 +6341,7 @@ impl ShellOverlayHost {
                 break;
             }
         }
+        self.last_scrolled_active_group.remove(&strip_id);
         chrome.borrow_mut().bump();
         true
     }
@@ -6346,7 +6352,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let changed = {
+        let (changed, strip_id) = {
             let st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
             let Some(strip_id) = tree.active_strip.get(&tree.active).copied() else {
@@ -6374,9 +6380,13 @@ impl ShellOverlayHost {
             } else {
                 current.saturating_add(1).min(last)
             };
-            tree.reorder_group_within_strip(strip_id, group_id, destination)
+            (
+                tree.reorder_group_within_strip(strip_id, group_id, destination),
+                strip_id,
+            )
         };
         if changed {
+            self.last_scrolled_active_group.remove(&strip_id);
             chrome.borrow_mut().bump();
         }
         changed
@@ -13227,7 +13237,7 @@ impl ShellOverlayHost {
                 self.workspace_settings_overlay.dismiss_member_sheet();
                 if let Some(chrome) = self.chrome.clone() {
                     let mut state = chrome.borrow_mut();
-                    state.overlays.room_activity = true;
+                    state.open_room_activity(None);
                     state.push_notification(
                         "Review workspace activity",
                         "History is open so you can inspect the related changes before deciding.",

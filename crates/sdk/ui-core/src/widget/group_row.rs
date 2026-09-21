@@ -681,6 +681,13 @@ impl GroupRow {
             .is_some_and(|g| g.get_rect().width() > 0.0)
     }
 
+    /// Whether group rectangles describe the current topology. A reorder can
+    /// leave valid-looking rectangles from the previous order until the next
+    /// layout rebuild; consumers must not memoize visibility against them.
+    pub fn group_geometry_is_current(&self) -> bool {
+        !self.structure_dirty
+    }
+
     /// Pan `scroll_x` so `group_id` is fully inside the viewport (Niri's
     /// "focused column follows into view"). Must be called after a layout
     /// pass (uses the group's live rect). Cancels any in-flight wheel-snap
