@@ -735,7 +735,7 @@ impl AppComponent {
     }
 
     /// Persist the current document and view through their original owners.
-    /// Unlike close(), refusal leaves callbacks, publication and the live tree
+    /// Unlike `close()`, refusal leaves callbacks, publication and the live tree
     /// intact. Retry captures the latest view and document, not a stale snapshot.
     pub(crate) fn checkpoint_for_close(&mut self) -> Vec<String> {
         let mut errors = crate::close_admission::retry_reports(&mut self.pending_reports);

@@ -153,7 +153,7 @@ impl StandaloneHistoryHost {
     }
 
     /// Presence is a host capability, not an OS check. Hosts without the
-    /// existing ActionPalette must leave this disabled (not a dead button).
+    /// existing `ActionPalette` must leave this disabled (not a dead button).
     #[expect(
         clippy::expect_used,
         reason = "fixed nullary Search action exists in the local host resource"
@@ -441,7 +441,7 @@ impl StandaloneHistoryHost {
             layout_root: layout.toolbar_group.unwrap_or(layout.toolbar),
             rect: layout
                 .toolbar_group
-                .and_then(|_| self.search.as_ref())
+                .and(self.search.as_ref())
                 .map_or(self.toolbar.get_rect(), |search| {
                     self.toolbar.get_rect().union(search.get_rect())
                 }),
