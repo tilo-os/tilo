@@ -1871,7 +1871,13 @@ impl TopBarChrome {
         );
         self.widget_editor_rect = panel;
         let rr = RoundedRect::from_rect(panel, 16.0);
-        scene.fill(Fill::NonZero, transform, theme.surfaces.overlay, None, &rr);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.overlay,
+            None,
+            &rr,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -1882,7 +1888,7 @@ impl TopBarChrome {
         text.draw_text_weighted(
             scene,
             "Edit top bar",
-            theme.tokens.typography.scale.md,
+            theme.tokens.typography.scale.base,
             theme.tokens.colors.text_primary,
             at(transform, (panel.x0 + 16.0, panel.y0 + 15.0)),
             None,
@@ -1918,7 +1924,7 @@ impl TopBarChrome {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.surfaces.raised,
+                theme.tokens.colors.surfaces.raised,
                 None,
                 &RoundedRect::from_rect(row, 10.0),
             );
@@ -1930,7 +1936,7 @@ impl TopBarChrome {
             text.draw_text(
                 scene,
                 "⠿",
-                theme.tokens.typography.scale.md,
+                theme.tokens.typography.scale.base,
                 theme.tokens.colors.text_dim,
                 at(transform, (row.x0 + 12.0, row.y0 + 11.0)),
                 None,
@@ -1947,12 +1953,15 @@ impl TopBarChrome {
                 scene,
                 "Remove",
                 theme.tokens.typography.scale.xs,
-                theme.tokens.colors.danger,
+                theme.tokens.colors.semantic.danger,
                 at(transform, (row.x1 - 60.0, row.y0 + 13.0)),
                 None,
             );
         }
-        if let Some(ghost) = self.widget_edit_drag.ghost_rect(&metrics) {
+        if let Some(ghost) =
+            self.widget_edit_drag
+                .ghost_rect(panel.x0 + 14.0, panel.x1 - 14.0, &metrics)
+        {
             scene.fill(
                 Fill::NonZero,
                 transform,
