@@ -173,7 +173,7 @@ pub fn start_file_drag(paths: &[PathBuf]) -> bool {
         match std::fs::read(single) {
             Ok(bytes) => offers.push((mime.to_string(), bytes)),
             Err(e) => tracing::warn!(
-                target: "ui::dnd",
+                target: "tilo_ui::dnd",
                 path = %single.display(),
                 error = %e,
                 "could not read the dragged file; offering only its name"
@@ -199,7 +199,7 @@ pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
         // Not an error: the compositor hosts several of these widgets in its
         // own process with no `App` and no window; reporting "no" is how it
         // learns to promote the drag itself.
-        tracing::debug!(target: "ui::dnd", "no window publishes a drag in this process");
+        tracing::debug!(target: "tilo_ui::dnd", "no window publishes a drag in this process");
         return false;
     };
     #[cfg(target_os = "linux")]
@@ -208,7 +208,7 @@ pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
         let started = window.start_drag(offers);
         if !started {
             tracing::warn!(
-                target: "ui::dnd",
+                target: "tilo_ui::dnd",
                 "the compositor did not take the drag — no pointer grab, or no \
                  wl_data_device_manager"
             );

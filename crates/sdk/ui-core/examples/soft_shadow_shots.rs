@@ -107,7 +107,7 @@ fn paint(
     // a light theme's shadows, which is what the live call sites now do.
     let intensity = intensity * theme.tokens.elevation.shadow_scale;
     soft_shadow(scene, Affine::IDENTITY, rect, tint, spread, off, intensity);
-    ui::surface::card(
+    tilo_ui::surface::card(
         scene,
         Affine::IDENTITY,
         rect,

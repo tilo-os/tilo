@@ -2265,7 +2265,7 @@ impl CollaborationManager {
     /// A manager scoped to **one record** — one document, one change graph,
     /// one channel — so two people editing different files in one room
     /// don't get handed each other's state. A process with several records
-    /// open holds several managers; `ui::App` swaps its manager on checkout
+    /// open holds several managers; `tilo_ui::App` swaps its manager on checkout
     /// change.
     pub fn for_record(record: &crate::record::RecordId) -> Self {
         Self::new_scoped(Some(record.as_str().to_string()))

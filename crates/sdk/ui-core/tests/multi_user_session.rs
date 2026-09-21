@@ -349,12 +349,12 @@ fn crdt_incremental_deltas_replay_on_remote_state() {
     let mut relay = MemoryRelay::new();
     let alice_peer = relay.attach("alice");
     let bob_peer = relay.attach("bob");
-    let mut alice_state = ui::state::State::new();
+    let mut alice_state = tilo_ui::state::State::new();
 
     // Establish the shared document history first. An incremental change
     // cannot be applied until the normal snapshot handshake has run.
     let snapshot = alice_state.save();
-    let mut bob_state = ui::state::State::load(&snapshot).expect("shared base loads");
+    let mut bob_state = tilo_ui::state::State::load(&snapshot).expect("shared base loads");
     let _ = alice_state.save_incremental();
 
     // In production a widget would mutate the doc as part of event

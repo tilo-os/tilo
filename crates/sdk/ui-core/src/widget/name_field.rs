@@ -9,7 +9,7 @@
 //!
 //! It is **not** a general-purpose text input: no selection, no clipboard, no
 //! caret movement. Those belong to the shared CRDT-backed editor core
-//! (`ui::widget::block_editor` and friends), which is far too much machinery for
+//! (`tilo_ui::widget::block_editor` and friends), which is far too much machinery for
 //! a label a user types once. What this does have is the behaviour a name field
 //! must not get wrong:
 //!

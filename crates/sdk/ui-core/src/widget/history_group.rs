@@ -58,7 +58,7 @@ pub struct NamedRange {
 /// document directly — neither widget has one, only the host does.
 ///
 /// An empty `label` is a request to **remove** the name: the host maps that
-/// onto `ui::history_source::groups::clear_name`.
+/// onto `tilo_ui::history_source::groups::clear_name`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupNameRequest {
     /// The naming record being replaced, when one already exists.

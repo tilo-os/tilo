@@ -13,10 +13,10 @@
 
 use std::path::PathBuf;
 
-use ui::State;
-use ui::headless::FrameHarness;
-use ui::theme::Theme;
-use ui::widget::Scrollable;
+use tilo_ui::State;
+use tilo_ui::headless::FrameHarness;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Scrollable;
 
 use super::gallery_scene;
 
@@ -35,7 +35,7 @@ pub fn run(args: &[String]) {
         std::process::exit(2);
     }
     let environment_scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
-    let text_scale = ui::launch::shot_text_scale(None, environment_scale.as_deref());
+    let text_scale = tilo_ui::launch::shot_text_scale(None, environment_scale.as_deref());
 
     for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         let theme = theme.with_text_scale(text_scale).with_reduce_motion(true);
@@ -43,7 +43,7 @@ pub fn run(args: &[String]) {
         let root = gallery_scene::build_showcase(&mut state, &theme);
         // The showcase is a tall column; the harness gives it a scroll owner
         // so the layout matches the live `gallery` example.
-        let page: Box<dyn ui::widget::Widget> =
+        let page: Box<dyn tilo_ui::widget::Widget> =
             Box::new(Scrollable::new_vertical().with_child(root));
         let harness = FrameHarness::new_with_theme(state, page, VIEWPORT, theme);
         let png = out.join(format!("gallery-{name}.png"));

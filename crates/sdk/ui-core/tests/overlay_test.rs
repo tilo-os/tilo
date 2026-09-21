@@ -63,7 +63,7 @@ const CANVAS_W: u32 = 640;
 const CANVAS_H: u32 = 420;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
-    ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
+    tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
 }
 
 fn dump(name: &str, rgba: &[u8]) {
@@ -97,10 +97,10 @@ fn assert_edge_registers(rgba: &[u8], panel: Rect, name: &str, surface: &str) {
     let delta = (luminance_of(edge) - luminance_of(inside)).abs();
     eprintln!("{surface}/{name}: edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
     assert!(
-        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+        delta >= tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA,
         "{surface}/{name}: edge {edge:?} does not register against fill {inside:?} \
          (Δlum={delta:.4} < {})",
-        ui::tokens::colors::HAIRLINE_MIN_DELTA
+        tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA
     );
 }
 
