@@ -1307,6 +1307,7 @@ enum AccessibleOverlay {
     PowerMenu,
     CommandPalette,
     MemberSheet,
+    Overview,
     WorkspaceSettings,
     Collaborators,
     RoomActivity,
@@ -2855,6 +2856,9 @@ impl ShellOverlayHost {
         }
         if self.workspace_settings_overlay.member_sheet_is_open() {
             order.push(AccessibleOverlay::MemberSheet);
+        }
+        if flags.overview {
+            order.push(AccessibleOverlay::Overview);
         }
         if flags.ws_settings {
             order.push(AccessibleOverlay::WorkspaceSettings);
@@ -16062,6 +16066,24 @@ impl Widget for ShellOverlayHost {
                         )
                         .with_state(AccessState::new().modal(true)),
                 ),
+                AccessibleOverlay::Overview => {
+                    let cards = self.overview_cards();
+                    let mut overview = AccessNode::new(Role::Dialog)
+                        .with_name("Workspace overview")
+                        .with_bounds(self.overview_panel_rect())
+                        .with_state(AccessState::new().modal(true));
+                    overview.children.extend(cards.iter().enumerate().map(|(index, card)| {
+                        AccessNode::new(Role::Button)
+                            .with_name(card.name.clone())
+                            .with_bounds(self.overview_row_rect(index))
+                    }));
+                    overview.children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name("New workspace")
+                            .with_bounds(self.overview_add_workspace_rect_for(cards.len())),
+                    );
+                    root.children.push(overview);
+                }
                 AccessibleOverlay::WorkspaceSettings => {
                     let mut settings = AccessNode::new(Role::Dialog)
                         .with_name("Workspace settings")
@@ -16853,6 +16875,16 @@ impl Widget for ShellOverlayHost {
                 [0] => Some(self.workspace_settings_overlay.ownership_action_rect()),
                 _ => None,
             },
+            AccessibleOverlay::Overview => match child_path {
+                [] => Some(self.overview_panel_rect()),
+                [index] if *index < self.overview_cards().len() => {
+                    Some(self.overview_row_rect(*index))
+                }
+                [index] if *index == self.overview_cards().len() => {
+                    Some(self.overview_add_workspace_rect_for(*index))
+                }
+                _ => None,
+            },
             AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => None,
         }
     }
@@ -16928,7 +16960,9 @@ impl Widget for ShellOverlayHost {
                         .area()
                         > 0.0
             }
-            AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => false,
+            AccessibleOverlay::Overview
+            | AccessibleOverlay::MemberSheet
+            | AccessibleOverlay::ShortcutHelp => false,
         }
     }
 
@@ -17732,8 +17766,11 @@ impl ShellOverlayHost {
         theme: &Theme,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
         self.draw_overview_overlay(scene, transform, text_renderer, theme, flags.overview);
         self.draw_ws_settings_overlay(scene, transform, text_renderer, theme, flags.ws_settings);
+        text_renderer.set_text_scale(renderer_scale);
     }
 
     /// The room-overview panel: scrim, scale/translate curve, then the
