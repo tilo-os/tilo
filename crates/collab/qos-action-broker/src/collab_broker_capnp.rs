@@ -10200,6 +10200,7 @@ pub mod tests {
         }
     }
 
+    #[cfg(test)]
     #[derive(Clone)]
     struct CountingCatalogueAuthority {
         tree: Arc<Mutex<qos_desktop::WorkspaceTree>>,
@@ -10207,6 +10208,7 @@ pub mod tests {
         failed: Arc<std::sync::atomic::AtomicBool>,
     }
 
+    #[cfg(test)]
     impl crate::services::WorkspaceAuthority for CountingCatalogueAuthority {
         fn snapshot(&self) -> Result<qos_desktop::WorkspaceTree, String> {
             self.calls
@@ -10221,6 +10223,7 @@ pub mod tests {
         }
     }
 
+    #[cfg(test)]
     fn catalogue_surface(peer_id: u64, cluster: &str, resource: &str) -> PublishedSurface {
         PublishedSurface {
             peer_id,
@@ -10245,6 +10248,7 @@ pub mod tests {
         }
     }
 
+    #[cfg(test)]
     struct CountingCatalogueFixture {
         state: Arc<CapnpBrokerState>,
         tree: Arc<Mutex<qos_desktop::WorkspaceTree>>,
@@ -10253,6 +10257,7 @@ pub mod tests {
         cluster: String,
     }
 
+    #[cfg(test)]
     fn counting_catalogue_state(owner: &str) -> CountingCatalogueFixture {
         let mut workspace = crate::test_support::Workspace::test_default(
             crate::test_support::WorkspaceId(29),
@@ -10288,6 +10293,7 @@ pub mod tests {
         }
     }
 
+    #[cfg(test)]
     fn catalogue_test_channel() -> (
         watch::Sender<ActionCatalogueSnapshot>,
         watch::Receiver<ActionCatalogueSnapshot>,
@@ -10295,6 +10301,7 @@ pub mod tests {
         watch::channel(Some(Arc::<str>::from("{}")))
     }
 
+    #[cfg(test)]
     fn current_catalogue(
         receiver: &mut watch::Receiver<ActionCatalogueSnapshot>,
     ) -> ActionCatalogueSnapshot {
