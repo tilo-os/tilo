@@ -63,7 +63,13 @@ impl QuickSettingsWifiPane {
         if state.wifi_joining.as_deref() == Some(ssid.as_str()) {
             return WifiPaneOutcome::DrillIn(DrillInOutcome::None);
         }
-        if network.secure && !network.connected {
+        if network.connected {
+            // The active row is status, not an invitation to repeat a
+            // potentially slow NetworkManager activation. Switching away is
+            // done by choosing another row; turning Wi-Fi off remains on the
+            // root card.
+            WifiPaneOutcome::DrillIn(DrillInOutcome::None)
+        } else if network.secure {
             state.wifi_password = Some(WifiPasswordPrompt::new(ssid));
             WifiPaneOutcome::DrillIn(DrillInOutcome::Changed)
         } else {
@@ -208,6 +214,21 @@ impl QuickSettingsWifiPane {
                 colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
+            if network.secure {
+                ui::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(
+                        row.x1 - 86.0,
+                        row.center().y - 7.0,
+                        row.x1 - 72.0,
+                        row.center().y + 7.0,
+                    ),
+                    ui::icons::Icon::Lock,
+                    colors.text_dim,
+                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
             let baseline = row.y0 + row.height() / 2.0 + 6.0;
             for bar in 0..4_u8 {
                 let x = row.x1 - 62.0 + f64::from(bar) * 4.0;
@@ -346,6 +367,28 @@ mod tests {
             pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
             WifiPaneOutcome::DrillIn(DrillInOutcome::None)
         );
+        assert!(actions.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn clicking_the_connected_row_is_a_no_op() {
+        let mut pane = QuickSettingsWifiPane::default();
+        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
+        let mut connected = network("Home", true);
+        connected.connected = true;
+        let mut state = QuickSettingsState {
+            wifi_networks: vec![connected],
+            ..Default::default()
+        };
+        let actions = RecordingActions::default();
+        pane.list.layout_from(panel, 1, 116.0);
+
+        assert_eq!(
+            pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
+            WifiPaneOutcome::DrillIn(DrillInOutcome::None)
+        );
+        assert!(state.wifi_password.is_none());
+        assert!(state.wifi_joining.is_none());
         assert!(actions.0.borrow().is_empty());
     }
 }
