@@ -19,7 +19,7 @@ use std::time::Instant;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -1328,21 +1328,30 @@ impl<Row> DataTable<Row> {
             if let Some(s) = &self.sort
                 && s.key == col.key
             {
-                let arrow = if s.ascending { "\u{25B2}" } else { "\u{25BC}" };
-                // The glyph shares the cell's trailing padding and the label's
-                // vertical centre, so the header reads as one aligned row.
-                let (arrow_w, arrow_h) = text_renderer.measure(arrow, text_size, None);
-                text_renderer.draw_text(
-                    scene,
-                    arrow,
-                    text_size,
+                // Use geometry rather than a font triangle: the latter's ink
+                // sits below its line-box centre and drifts farther at large
+                // text sizes. This marker stays visually centred by construction.
+                let d = f64::from(tokens.typography.scale.sm) * 0.65;
+                let x1 = cr.x1 - pad_x;
+                let x0 = x1 - d;
+                let cy = header_rect.center().y;
+                let mut arrow = BezPath::new();
+                if s.ascending {
+                    arrow.move_to((x0, cy + d / 2.0));
+                    arrow.line_to((x1, cy + d / 2.0));
+                    arrow.line_to(((x0 + x1) / 2.0, cy - d / 2.0));
+                } else {
+                    arrow.move_to((x0, cy - d / 2.0));
+                    arrow.line_to((x1, cy - d / 2.0));
+                    arrow.line_to(((x0 + x1) / 2.0, cy + d / 2.0));
+                }
+                arrow.close_path();
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
                     tokens.colors.text_dim,
-                    translated(
-                        transform,
-                        cr.x1 - pad_x - f64::from(arrow_w),
-                        centered_text_top(header_rect.y0, self.header_h, arrow_h),
-                    ),
                     None,
+                    &arrow,
                 );
             }
         }
