@@ -463,10 +463,6 @@ impl App {
 
     /// Shared by the per-frame tick and the headless test path. Returns
     /// `true` iff at least one event was processed.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered pump drains directory callbacks and applies every collaboration lifecycle event before the next frame"
-    )]
     pub fn pump_collab_presence(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
         let mut any = self.pump_room_index_events();
@@ -478,181 +474,208 @@ impl App {
         for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collaboration.manager.send(request);
         }
-        let events = self.collaboration.manager.poll();
-        for event in events {
-            any = true;
-            crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
-            match event {
-                CollabEvent::Context { collaborators, .. } => {
-                    self.apply_collab_context(collaborators);
-                }
-                CollabEvent::FollowChanged { peer_id } => match peer_id {
-                    Some(peer_id) => self.follow(peer_id),
-                    None => self.unfollow(),
-                },
-                CollabEvent::DocumentSnapshotRequested { .. } => {
-                    match self.primary_document_snapshot() {
-                        Ok(data) => {
-                            let _ = self
-                                .collaboration
-                                .manager
-                                .send(crate::collaboration::CollabRequest::document_snapshot(data));
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "collab: primary snapshot refused");
-                        }
-                    }
-                }
-                CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                    self.presence_ctx
-                        .upsert_remote_cursor(user_id, [x, y], None);
-                }
-                CollabEvent::RemotePresenceUpdate {
-                    user_id,
-                    key,
-                    payload,
-                } => {
-                    self.apply_remote_presence(user_id, key, payload);
-                }
-                CollabEvent::ActionArrived {
-                    type_id,
-                    payload,
-                    from_user_id,
-                } => {
-                    self.apply_collab_action_arrived(&type_id, &payload, &from_user_id);
-                }
-                CollabEvent::Document {
-                    envelope,
-                    decrypted_payload,
-                    ..
-                } => {
-                    // The broker already validated the envelope (signature +
-                    // role table + replay defence); the toolkit trusts it.
-                    tracing::debug!(
-                        target: "tilo.state",
-                        event = "document_receive",
-                        bytes = envelope.payload.len(),
-                        author = ?envelope.author,
-                        sequence = envelope.seq,
-                        encrypted = envelope.encryption.is_some(),
-                        "applying document mutation"
-                    );
-                    self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
-                }
-                CollabEvent::ScrollbackBatch {
-                    artifact: _,
-                    ops,
-                    decrypted_payloads,
-                    exhausted: _,
-                } => {
-                    // Broker pre-validated each envelope, trusted the same
-                    // way as a live document mutation.
-                    tracing::debug!(
-                        target: "tilo.state",
-                        event = "document_scrollback",
-                        operations = ops.len(),
-                        "applying document scrollback"
-                    );
-                    for (index, envelope) in ops.into_iter().enumerate() {
-                        let decrypted = decrypted_payloads
-                            .get(index)
-                            .and_then(|payload| payload.as_deref());
-                        self.apply_signed_document_envelope(&envelope, decrypted);
-                    }
-                }
-                CollabEvent::Invocation {
-                    id,
-                    resource,
-                    action,
-                    argument,
-                    actor,
-                    context,
-                } => {
-                    self.invoke_published_action(
-                        id,
-                        resource,
-                        action,
-                        argument.as_deref(),
-                        &actor,
-                        context.as_deref(),
-                    );
-                }
-                CollabEvent::InvocationCancellation { id } => {
-                    self.request_invocation_cancellation(id);
-                }
-                CollabEvent::PublishedInvocationResult { request_id, result } => {
-                    if self.close_broker_result(request_id, &result) {
-                        continue;
-                    }
-                    let Some(invocation) = self
-                        .actions
-                        .pending_application_launches
-                        .remove(&request_id)
-                    else {
-                        continue;
-                    };
-                    let Some(pending) = self.actions.directed_invocations.remove(&invocation)
-                    else {
-                        continue;
-                    };
-                    let update = match result {
-                        Ok((_id, tilo_actions::InvocationUpdate::Succeeded { output, .. })) => {
-                            tilo_actions::InvocationUpdate::Succeeded { invocation, output }
-                        }
-                        Ok((_id, tilo_actions::InvocationUpdate::Failed { error, .. })) => {
-                            tilo_actions::InvocationUpdate::Failed { invocation, error }
-                        }
-                        Ok((_id, tilo_actions::InvocationUpdate::Cancelled { message, .. })) => {
-                            tilo_actions::InvocationUpdate::Cancelled {
-                                invocation,
-                                message,
-                            }
-                        }
-                        Ok((_id, other)) => tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "application_launch_invalid_receipt".into(),
-                                message: format!(
-                                    "application launch returned non-terminal {other:?}"
-                                ),
-                                details: None,
-                                retryable: false,
-                            },
-                        },
-                        Err(message) => tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "application_launch_failed".into(),
-                                message,
-                                details: None,
-                                retryable: false,
-                            },
-                        },
-                    };
-                    self.collaboration
-                        .manager
-                        .send(CollabRequest::UpdateInvocation {
-                            id: pending.wire_id,
-                            update,
-                        });
-                }
-                // The generic catalogue/client responses are consumed by
-                // widgets such as Agent through their collaboration event
-                // hook; an ordinary application has no local state to apply.
-                CollabEvent::ActionCatalogue { .. }
-                | CollabEvent::TaskRun(_)
-                | CollabEvent::TaskActionInvocationResult { .. }
-                | CollabEvent::TaskRunCancellation { .. }
-                | CollabEvent::WorkspaceControl { .. }
-                | CollabEvent::RealtimeCommandResult { .. }
-                | CollabEvent::NearbyTransferCommandResult { .. }
-                | CollabEvent::Realtime(_) => {}
-            }
-        }
+        any |= self.drain_collab_presence_events();
         if any {
             self.invalidate_widget_resource_cache();
         }
         any
+    }
+
+    fn drain_collab_presence_events(&mut self) -> bool {
+        let events = self.collaboration.manager.poll();
+        let any = !events.is_empty();
+        for event in events {
+            crate::widget::handle_collab_event(self.root_widget.as_mut(), &event);
+            self.apply_collab_presence_event(event);
+        }
+        any
+    }
+
+    fn apply_collab_presence_event(&mut self, event: CollabEvent) {
+        match event {
+            CollabEvent::Context { collaborators, .. } => {
+                self.apply_collab_context(collaborators);
+            }
+            CollabEvent::FollowChanged { peer_id } => match peer_id {
+                Some(peer_id) => self.follow(peer_id),
+                None => self.unfollow(),
+            },
+            CollabEvent::DocumentSnapshotRequested { .. } => {
+                self.respond_primary_document_snapshot();
+            }
+            CollabEvent::RemoteCursorMoved { user_id, x, y } => {
+                self.presence_ctx
+                    .upsert_remote_cursor(user_id, [x, y], None);
+            }
+            CollabEvent::RemotePresenceUpdate {
+                user_id,
+                key,
+                payload,
+            } => {
+                self.apply_remote_presence(user_id, key, payload);
+            }
+            CollabEvent::ActionArrived {
+                type_id,
+                payload,
+                from_user_id,
+            } => {
+                self.apply_collab_action_arrived(&type_id, &payload, &from_user_id);
+            }
+            event @ (CollabEvent::Document { .. } | CollabEvent::ScrollbackBatch { .. }) => {
+                self.apply_document_collab_event(event);
+            }
+            CollabEvent::Invocation {
+                id,
+                resource,
+                action,
+                argument,
+                actor,
+                context,
+            } => {
+                self.invoke_published_action(
+                    id,
+                    resource,
+                    action,
+                    argument.as_deref(),
+                    &actor,
+                    context.as_deref(),
+                );
+            }
+            CollabEvent::InvocationCancellation { id } => {
+                self.request_invocation_cancellation(id);
+            }
+            CollabEvent::PublishedInvocationResult { request_id, result } => {
+                self.apply_published_invocation_result(request_id, result);
+            }
+            // The generic catalogue/client responses are consumed by
+            // widgets such as Agent through their collaboration event
+            // hook; an ordinary application has no local state to apply.
+            CollabEvent::ActionCatalogue { .. }
+            | CollabEvent::TaskRun(_)
+            | CollabEvent::TaskActionInvocationResult { .. }
+            | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::WorkspaceControl { .. }
+            | CollabEvent::RealtimeCommandResult { .. }
+            | CollabEvent::NearbyTransferCommandResult { .. }
+            | CollabEvent::Realtime(_) => {}
+        }
+    }
+
+    fn apply_document_collab_event(&mut self, event: CollabEvent) {
+        match event {
+            CollabEvent::Document {
+                envelope,
+                decrypted_payload,
+                ..
+            } => {
+                // The broker already validated the envelope (signature +
+                // role table + replay defence); the toolkit trusts it.
+                tracing::debug!(
+                    target: "tilo.state",
+                    event = "document_receive",
+                    bytes = envelope.payload.len(),
+                    author = ?envelope.author,
+                    sequence = envelope.seq,
+                    encrypted = envelope.encryption.is_some(),
+                    "applying document mutation"
+                );
+                self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
+            }
+            CollabEvent::ScrollbackBatch {
+                artifact: _,
+                ops,
+                decrypted_payloads,
+                exhausted: _,
+            } => {
+                // Broker pre-validated each envelope, trusted the same
+                // way as a live document mutation.
+                tracing::debug!(
+                    target: "tilo.state",
+                    event = "document_scrollback",
+                    operations = ops.len(),
+                    "applying document scrollback"
+                );
+                for (index, envelope) in ops.into_iter().enumerate() {
+                    let decrypted = decrypted_payloads
+                        .get(index)
+                        .and_then(|payload| payload.as_deref());
+                    self.apply_signed_document_envelope(&envelope, decrypted);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn respond_primary_document_snapshot(&mut self) {
+        match self.primary_document_snapshot() {
+            Ok(data) => {
+                let _ = self
+                    .collaboration
+                    .manager
+                    .send(crate::collaboration::CollabRequest::document_snapshot(data));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: primary snapshot refused");
+            }
+        }
+    }
+
+    fn apply_published_invocation_result(
+        &mut self,
+        request_id: u64,
+        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
+    ) {
+        if self.close_broker_result(request_id, &result) {
+            return;
+        }
+        let Some(invocation) = self
+            .actions
+            .pending_application_launches
+            .remove(&request_id)
+        else {
+            return;
+        };
+        let Some(pending) = self.actions.directed_invocations.remove(&invocation) else {
+            return;
+        };
+        let update = match result {
+            Ok((_id, tilo_actions::InvocationUpdate::Succeeded { output, .. })) => {
+                tilo_actions::InvocationUpdate::Succeeded { invocation, output }
+            }
+            Ok((_id, tilo_actions::InvocationUpdate::Failed { error, .. })) => {
+                tilo_actions::InvocationUpdate::Failed { invocation, error }
+            }
+            Ok((_id, tilo_actions::InvocationUpdate::Cancelled { message, .. })) => {
+                tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message,
+                }
+            }
+            Ok((_id, other)) => tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "application_launch_invalid_receipt".into(),
+                    message: format!("application launch returned non-terminal {other:?}"),
+                    details: None,
+                    retryable: false,
+                },
+            },
+            Err(message) => tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "application_launch_failed".into(),
+                    message,
+                    details: None,
+                    retryable: false,
+                },
+            },
+        };
+        self.collaboration
+            .manager
+            .send(CollabRequest::UpdateInvocation {
+                id: pending.wire_id,
+                update,
+            });
     }
 
     /// The self row carries the address others use for this participant (so
