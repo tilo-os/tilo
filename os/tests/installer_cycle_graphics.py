@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import hashlib
 import os
+import re
 import tempfile
 import unittest
 
@@ -11,13 +12,18 @@ SCRIPT = (Path(__file__).resolve().parents[1] / 'dev/test-installer-cycle.sh').r
 
 
 class CycleGraphicsTests(unittest.TestCase):
-    def test_selected_graphics_reaches_both_boots_with_either_tpm_mode(self):
+    def test_selected_graphics_reaches_every_boot_with_either_tpm_mode(self):
         parser = SCRIPT[SCRIPT.index('medium="${1:?'):SCRIPT.index('[ -f "$medium" ]')]
-        blocks = []
-        for boot in ('boot-installer', 'boot-target'):
-            start = SCRIPT.index('if [ "$software_tpm" -eq 1 ]; then\n  "$vm" ' + boot)
-            end = SCRIPT.index('\nfi', start) + 3
-            blocks.append(SCRIPT[start:end])
+        pattern = re.compile(
+            r'if \[ "\$software_tpm" -eq 1 \]; then\n'
+            r'  "\$vm" (boot-(?:installer|target)) "\$display_arg" --tpm\n'
+            r'else\n'
+            r'  "\$vm" \1 "\$display_arg" --no-tpm\n'
+            r'fi')
+        matches = list(pattern.finditer(SCRIPT))
+        self.assertEqual([match.group(1) for match in matches],
+                         ['boot-installer', 'boot-target', 'boot-target', 'boot-target'])
+        blocks = [match.group(0) for match in matches]
         script = 'set -euo pipefail\n' + parser + '\nvm=fixture\nfixture() { printf "%s|%s|%s\\n" "$1" "$2" "$3"; }\n' + '\n'.join(blocks)
         for graphics, flag in (('gl', '--gl'), ('software', '--2d')):
             for tpm in (False, True):
@@ -28,7 +34,8 @@ class CycleGraphicsTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 tpm_flag = '--tpm' if tpm else '--no-tpm'
                 self.assertEqual(result.stdout.splitlines(),
-                    [f'boot-installer|{flag}|{tpm_flag}', f'boot-target|{flag}|{tpm_flag}'])
+                    [f'boot-installer|{flag}|{tpm_flag}']
+                    + [f'boot-target|{flag}|{tpm_flag}'] * 3)
         result = subprocess.run(['bash', '-c', script, 'cycle', '/fixture/medium', '--graphics', 'bad'],
                                 text=True, capture_output=True)
         self.assertEqual(result.returncode, 2)
