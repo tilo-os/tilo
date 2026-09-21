@@ -592,7 +592,10 @@ pub struct ColorManagementOutputData {
     // Retains the protocol object this descriptor belongs to. Tests of the
     // pure descriptor contract use `None`; live output resources always use
     // `Some`. Color metadata is updated separately by the DRM path below.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "holding the live wl_output resource ties protocol user-data lifetime to the output descriptor even though requests read the color snapshot"
+    )]
     #[cfg(target_os = "linux")]
     output: Option<WlOutput>,
     /// Colorimetry the compositor tells clients this output actually
@@ -658,7 +661,10 @@ impl ColorManagementOutputData {
 pub struct ColorManagementSurfaceUserData {
     // Retains the protocol surface identity; pending/current color state lives
     // in the compositor surface data map and is applied on wl_surface.commit.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "holding the wl_surface preserves the protocol object's identity while pending color state lives in Smithay's surface data map"
+    )]
     surface: WlSurface,
 }
 
@@ -678,7 +684,10 @@ impl ColorManagementSurfaceUserData {
 #[cfg(target_os = "linux")]
 pub struct ColorManagementSurfaceFeedbackData {
     // Retains the surface identity for preferred-description feedback.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "holding the wl_surface preserves feedback-resource identity for future preferred-description updates"
+    )]
     surface: WlSurface,
 }
 
