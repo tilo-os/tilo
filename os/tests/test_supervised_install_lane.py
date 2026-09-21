@@ -125,10 +125,11 @@ class LaneAdmission(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             args,checkpoint,disk,creator,_,_=self.resumable_fixture(directory)
             vm=node('vm',kvm=True);verify=node('verify',disk=True)
-            with patch.object(lane,'create_worker',side_effect=lane.ControllerTransportError('lost')):
-                with self.assertRaisesRegex(ValueError,'creator paused'):
-                    lane.provision_verifier_or_pause(args,{'items':[disk,verify,vm]},
-                                                      checkpoint,disk,vm)
+            with patch.object(lane,'acquire_verifier',side_effect=lane.ControllerTransportError('lost')):
+                with self.assertRaises(lane.ControllerTransportError):
+                    lane.handoff_creator_to_verifier(Path('/root'),args,
+                      {'items':[disk,verify,vm]},checkpoint,disk,vm,creator,b'{}',
+                      {'size':64*1024**3,'sha256':'b'*64},b'helpers',b'public')
             paused=json.loads((Path(directory)/'paused-creator.json').read_text())
             self.assertEqual(paused['creator'],creator)
             self.assertEqual(paused['status'],'paused')
@@ -152,19 +153,129 @@ class LaneAdmission(unittest.TestCase):
             args,checkpoint,disk,creator,_,_=self.resumable_fixture(directory)
             vm=node('vm',kvm=True);verify=node('verify',disk=True)
             document={'items':[disk,verify,vm]}
-            with patch.object(lane,'require_same_worker') as same, \
+            with patch.object(lane,'optional_same_worker',return_value=creator) as same, \
                     patch.object(lane,'create_worker') as create:
                 loaded=lane.resume_creator(args,document)
             same.assert_called_once_with('ctx',creator)
             create.assert_not_called()
             self.assertTrue((Path(directory)/'paused-creator.json').exists())
             self.assertIs(loaded[4],disk)
-            selected={'namespace':'kata-system','pod':'tilo-verify-run1'}
+            selected=dict(creator,pod='tilo-verify-run1',pod_uid='verify-uid',node='verify')
             with patch.object(lane,'select_verifier_node',wraps=lane.select_verifier_node) as choose, \
+                    patch.object(lane,'adopt_worker',return_value=None), \
                     patch.object(lane,'create_worker',return_value=selected):
-                self.assertEqual(lane.provision_verifier_or_pause(
-                    args,document,checkpoint,loaded[4],loaded[5]),selected)
+                self.assertEqual(lane.acquire_verifier(
+                    args,document,checkpoint,loaded[4],loaded[5]),(selected,False))
             self.assertIs(choose.call_args.args[1],disk)
+
+    def test_lost_verifier_create_response_adopts_exact_worker_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,disk,creator,_,_=self.resumable_fixture(directory)
+            vm=node('vm',kvm=True);verify=node('verify',disk=True)
+            verifier=dict(creator,pod='tilo-verify-run1',pod_uid='verify-uid',node='verify')
+            with patch.object(lane,'adopt_worker',side_effect=[None,verifier]) as adopt, \
+                    patch.object(lane,'create_worker',side_effect=lane.ControllerTransportError('lost')) as create:
+                self.assertEqual(lane.acquire_verifier(
+                  args,{'items':[disk,verify,vm]},checkpoint,disk,vm),(verifier,False))
+            create.assert_called_once();self.assertEqual(adopt.call_count,2)
+            self.assertEqual(json.loads((Path(directory)/'verifier-handoff.json').read_text())['state'],'started')
+
+    def test_ready_verifier_resume_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,disk,creator,_,_=self.resumable_fixture(directory)
+            vm=node('vm',kvm=True);verify=node('verify',disk=True)
+            verifier=dict(creator,pod='tilo-verify-run1',pod_uid='verify-uid',node='verify')
+            lane.write_verifier_handoff(args,checkpoint,verifier,'ready')
+            with patch.object(lane,'optional_same_worker',return_value=verifier), \
+                    patch.object(lane,'create_worker') as create, \
+                    patch.object(lane,'delete_worker') as delete:
+                self.assertEqual(lane.acquire_verifier(
+                  args,{'items':[disk,verify,vm]},checkpoint,disk,vm),(verifier,True))
+            create.assert_not_called();delete.assert_not_called()
+
+    def test_verifier_receipt_failure_cleans_unrecorded_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,disk,creator,_,_=self.resumable_fixture(directory)
+            vm=node('vm',kvm=True);verify=node('verify',disk=True)
+            verifier=dict(creator,pod='tilo-verify-run1',pod_uid='verify-uid',node='verify')
+            with patch.object(lane,'adopt_worker',return_value=None), \
+                    patch.object(lane,'create_worker',return_value=verifier), \
+                    patch.object(lane,'write_verifier_handoff',side_effect=OSError('disk full')), \
+                    patch.object(lane,'delete_worker') as delete:
+                with self.assertRaisesRegex(OSError,'disk full'):
+                    lane.acquire_verifier(args,{'items':[disk,verify,vm]},checkpoint,disk,vm)
+            delete.assert_called_once_with('ctx',verifier)
+
+    def test_setup_failure_deletes_verifier_and_keeps_creator_paused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,disk,creator,creation,identity=self.resumable_fixture(directory)
+            lane.pause_creator(args,checkpoint,'creator-checkpoint-ready')
+            vm=node('vm',kvm=True);verify=node('verify',disk=True)
+            verifier=dict(creator,pod='tilo-verify-run1',pod_uid='verify-uid',node='verify')
+            with patch.object(lane,'acquire_verifier',return_value=(verifier,False)), \
+                    patch.object(lane,'host_agent',side_effect=ValueError('setup failed')), \
+                    patch.object(lane,'optional_same_worker',return_value=verifier), \
+                    patch.object(lane,'delete_worker') as delete:
+                with self.assertRaisesRegex(ValueError,'setup failed'):
+                    lane.handoff_creator_to_verifier(Path('/root'),args,
+                      {'items':[disk,verify,vm]},checkpoint,disk,vm,creator,creation,
+                      identity,b'helpers',b'public')
+            delete.assert_called_once_with('ctx',verifier)
+            self.assertTrue((Path(directory)/'paused-creator.json').exists())
+            self.assertFalse((Path(directory)/'verifier-handoff.json').exists())
+
+    def test_transfer_failure_deletes_partial_verifier_for_clean_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,disk,creator,creation,identity=self.resumable_fixture(directory)
+            lane.pause_creator(args,checkpoint,'creator-checkpoint-ready')
+            vm=node('vm',kvm=True);verify=node('verify',disk=True)
+            verifier=dict(creator,pod='tilo-verify-run1',pod_uid='verify-uid',node='verify')
+            lane.write_verifier_handoff(args,checkpoint,verifier,'started')
+            with patch.object(lane,'acquire_verifier',return_value=(verifier,False)), \
+                    patch.object(lane,'host_agent',return_value={'metadata':{'name':'agent'}}), \
+                    patch.object(lane,'controller'),patch.object(lane,'require_same_worker'), \
+                    patch.object(lane,'sparse_transfer',side_effect=ValueError('copy failed')), \
+                    patch.object(lane,'optional_same_worker',return_value=verifier), \
+                    patch.object(lane,'delete_worker') as delete:
+                with self.assertRaisesRegex(ValueError,'copy failed'):
+                    lane.handoff_creator_to_verifier(Path('/root'),args,
+                      {'items':[disk,verify,vm]},checkpoint,disk,vm,creator,creation,
+                      identity,b'helpers',b'public')
+            delete.assert_called_once_with('ctx',verifier)
+            self.assertFalse((Path(directory)/'verifier-handoff.json').exists())
+
+    def test_creator_delete_failure_keeps_ready_verifier_and_pause_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,checkpoint,_,creator,_,_=self.resumable_fixture(directory)
+            lane.pause_creator(args,checkpoint,'creator-checkpoint-ready')
+            verifier=dict(creator,pod='tilo-verify-run1',pod_uid='verify-uid',node='verify')
+            lane.write_verifier_handoff(args,checkpoint,verifier,'ready')
+            with patch.object(lane,'optional_same_worker',return_value=creator), \
+                    patch.object(lane,'delete_worker',side_effect=lane.ControllerTransportError('lost')):
+                with self.assertRaises(lane.ControllerTransportError):
+                    lane.release_creator_after_handoff(args,checkpoint,creator,verifier)
+            self.assertTrue((Path(directory)/'paused-creator.json').exists())
+            self.assertEqual(json.loads((Path(directory)/'verifier-handoff.json').read_text())['state'],'ready')
+            self.assertTrue((Path(directory)/'creator-release-attempt.json').exists())
+
+    def test_checkpoint_write_failure_deletes_creator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args,_,disk,creator,creation,identity=self.resumable_fixture(directory)
+            with patch.object(lane,'checkpoint_creator',side_effect=OSError('disk full')), \
+                    patch.object(lane,'delete_worker') as delete:
+                with self.assertRaisesRegex(OSError,'disk full'):
+                    lane.establish_creator_checkpoint(args,creator,disk,creation,identity,1234)
+            delete.assert_called_once_with('ctx',creator)
+
+    def test_adopted_worker_requires_exact_ownership_labels(self):
+        manifest=lane.disk_manifest('tilo-verify-run1',node('verify',disk=True),deadline=7200,
+          operation='run1',expires_at=1234)
+        manifest['spec']['nodeName']='verify'
+        pod={'metadata':{'name':'tilo-verify-run1','namespace':'kata-system','uid':'pod-uid','labels':{}},
+             'spec':manifest['spec'],'status':{'phase':'Running','containerStatuses':[{
+               'ready':True,'restartCount':0,'imageID':lane.DISK_IMAGE}]}}
+        with self.assertRaisesRegex(ValueError,'ownership'):
+            lane.binding(pod,{'metadata':{'uid':'node-uid'}},manifest)
 
     def test_resume_rejects_typed_checkpoint_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:

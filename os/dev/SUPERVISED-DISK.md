@@ -169,13 +169,18 @@ The creator-to-verifier boundary is resumable. Once `creation.json` and the raw
 identity are durable, the controller deletes its local registry-auth snapshot
 and writes a typed `creator-checkpoint.json` containing the complete selected
 creator node document and exact worker identity. A controller, network, or WSL
-failure while provisioning the verifier writes `paused-creator.json` and leaves
-that exact creator emptyDir available for `--resume`; resume never provisions a
-second creator. Creator/install failures remain terminal and delete their
-worker. Creator Pods carry an operation owner and absolute expiry label and
-have a 12-hour active deadline. The pause receipt records a credential-free
-cleanup command; it validates the checkpoint, Pod UID, ownership labels, and
-expiry before deleting anything.
+failure anywhere from verifier provisioning through transfer and creator
+release keeps `paused-creator.json` authoritative and leaves that exact creator
+emptyDir available for `--resume`. A verifier has its own typed handoff receipt.
+If its create response is lost, resume adopts only the exact pinned manifest,
+owner labels, Pod UID and node identity. A partially prepared verifier is
+deleted and recreated; a ready verifier is reused idempotently. The pause
+receipt becomes `creator-released.json` only after creator deletion succeeds.
+Creator/install failures and checkpoint-write failures remain terminal and
+delete their worker. Creator Pods carry an operation owner and absolute expiry
+label and have a 12-hour active deadline. The pause receipt records a
+credential-free cleanup command; it validates the checkpoint, Pod UID,
+ownership labels, and expiry before deleting anything.
 
 Run it from a clean Linux checkout at the exact helper commit:
 

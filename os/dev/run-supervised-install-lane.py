@@ -107,6 +107,24 @@ def api_json(context, *args):
     return json.loads(command(kubectl(context, *args, '-o', 'json'), timeout=30))
 
 
+def optional_api_json(context, *args):
+    try:
+        result=subprocess.run(kubectl(context,*args,'-o','json'),capture_output=True,
+                              text=True,timeout=30)
+    except (OSError,subprocess.TimeoutExpired) as error:
+        raise ControllerTransportError('kubectl transport failed') from error
+    if result.returncode:
+        stderr=result.stderr.lower()
+        if 'notfound' in stderr or 'not found' in stderr:
+            return None
+        transport=('unable to connect','connection refused','connection reset','context deadline',
+                   'i/o timeout','tls handshake timeout','timed out waiting','unexpected eof')
+        if any(row in stderr for row in transport):
+            raise ControllerTransportError(f'kubectl failed (exit {result.returncode})')
+        raise ValueError(f'kubectl failed (exit {result.returncode})')
+    return json.loads(result.stdout)
+
+
 def digest_reference(value):
     return isinstance(value, str) and re.fullmatch(r'[^\s@]+@sha256:[0-9a-f]{64}', value)
 
@@ -118,7 +136,7 @@ def ready(node):
                     for row in node['status'].get('conditions', [])))
 
 
-def select_nodes(document, disk_name=None, vm_name=None):
+def select_nodes(document, disk_name=None, vm_name=None, excluded_vm_names=()):
     nodes = [node for node in document['items']
              if node['metadata'].get('labels', {}).get('kubernetes.io/arch') == 'arm64' and ready(node)]
     by_name = {node['metadata']['name']: node for node in nodes}
@@ -134,11 +152,12 @@ def select_nodes(document, disk_name=None, vm_name=None):
         disk = sorted(choices, key=lambda row: row['metadata']['name'])[0]
     if vm_name:
         vm = by_name.get(vm_name)
-        if vm is None:
+        if vm is None or vm_name in set(excluded_vm_names):
             raise ValueError('requested VM node is not a ready ARM node')
     else:
         choices = [node for node in nodes
                    if node['metadata']['name'] != disk['metadata']['name']
+                   and node['metadata']['name'] not in set(excluded_vm_names)
                    and int(node['status'].get('allocatable', {}).get('devic.es/kvm', '0')) >= 1]
         if not choices:
             raise ValueError('no separate ready ARM KVM node exists')
@@ -156,6 +175,7 @@ def select_verifier_node(document, disk, vm, verifier_name=None):
     kernel=disk['metadata'].get('labels',{}).get('agent-sandbox.sandbox.example/disk-kernel')
     if verifier_name:
         choices=[node for node in nodes if node['metadata']['name']==verifier_name
+                 and node['metadata']['name'] not in {disk['metadata']['name'],vm['metadata']['name']}
                  and node['metadata'].get('labels',{}).get('agent-sandbox.sandbox.example/disk-kernel')==kernel]
     else:
         excluded={disk['metadata']['name'],vm['metadata']['name']}
@@ -370,6 +390,12 @@ def binding(pod, node, expected_manifest=None):
     if status[0].get('imageID') != expected or not digest_reference(expected):
         raise ValueError('running worker image differs from its pinned image')
     if expected_manifest is not None:
+        wanted_metadata=expected_manifest['metadata'];actual_metadata=pod['metadata']
+        if (actual_metadata.get('name')!=wanted_metadata.get('name')
+                or actual_metadata.get('namespace')!=wanted_metadata.get('namespace')
+                or any(actual_metadata.get('labels',{}).get(key)!=value
+                       for key,value in wanted_metadata.get('labels',{}).items())):
+            raise ValueError('admitted worker metadata differs from requested ownership')
         wanted=expected_manifest['spec']; actual=pod['spec']
         scalar=('runtimeClassName','restartPolicy','activeDeadlineSeconds','automountServiceAccountToken',
                 'nodeSelector','tolerations','imagePullSecrets','volumes')
@@ -394,6 +420,30 @@ def require_same_worker(context, expected):
     node = api_json(context, 'get', 'node', expected['node'], '--request-timeout=15s')
     if binding(pod, node) != expected:
         raise ValueError('worker identity or specification changed')
+
+
+def optional_same_worker(context, expected, expected_manifest=None):
+    pod=optional_api_json(context,'-n',expected['namespace'],'get','pod',expected['pod'],
+                          '--request-timeout=15s')
+    if pod is None:
+        return None
+    node=api_json(context,'get','node',expected['node'],'--request-timeout=15s')
+    observed=binding(pod,node,expected_manifest)
+    if observed!=expected:
+        raise ValueError('worker identity or specification changed')
+    return observed
+
+
+def adopt_worker(context, manifest):
+    namespace,name=manifest['metadata']['namespace'],manifest['metadata']['name']
+    pod=optional_api_json(context,'-n',namespace,'get','pod',name,'--request-timeout=15s')
+    if pod is None:
+        return None
+    command(kubectl(context,'-n',namespace,'wait','--for=condition=Ready',
+                    '--timeout=10m','pod/'+name),timeout=620)
+    pod=api_json(context,'-n',namespace,'get','pod',name,'--request-timeout=15s')
+    node=api_json(context,'get','node',pod['spec']['nodeName'],'--request-timeout=15s')
+    return binding(pod,node,manifest)
 
 
 def create_worker(context, manifest):
@@ -1060,20 +1110,183 @@ def resume_creator(args, nodes):
     if pause['cleanup_command']!=paused_cleanup_command(args.context,args.operation_dir):
         raise ValueError('paused creator cleanup command differs from this controller')
     disk=checkpoint['creator']
-    require_same_worker(args.context,disk)
+    handoff=load_verifier_handoff(args,checkpoint,required=False)
+    live=optional_same_worker(args.context,disk)
+    if live is None:
+        attempt=args.operation_dir/'creator-release-attempt.json'
+        if handoff is None or handoff['state'] not in ('ready','released') or not attempt.is_file():
+            raise ValueError('paused creator disappeared before a durable release attempt')
+        validate_release_attempt(json.loads(attempt.read_text()),checkpoint,handoff['verifier'])
     disk_node=current_creator_node(nodes,checkpoint)
-    _,vm_node=select_nodes(nodes,disk_node['metadata']['name'],args.vm_node)
+    excluded=(() if handoff is None else (handoff['verifier']['node'],))
+    _,vm_node=select_nodes(nodes,disk_node['metadata']['name'],args.vm_node,excluded)
     return checkpoint,creation,identity,disk,disk_node,vm_node
 
 
-def provision_verifier_or_pause(args, nodes, checkpoint, disk_node, vm_node):
+def verifier_manifest(args, node, checkpoint):
+    return disk_manifest('tilo-verify-'+args.acceptance_id,node,deadline=7200,
+                         operation=args.acceptance_id,expires_at=checkpoint['expires_at'])
+
+
+def verifier_handoff_document(args, checkpoint, verifier, state):
+    if state not in ('started','ready','released'):
+        raise ValueError('invalid verifier handoff state')
+    validate_creator_binding(verifier)
+    return {'schema':1,'purpose':'tilo-supervised-verifier-handoff','state':state,
+      'acceptance_id':args.acceptance_id,'verifier':verifier,
+      'creator_checkpoint_sha256':hashlib.sha256(
+        (args.operation_dir/'creator-checkpoint.json').read_bytes()).hexdigest()}
+
+
+def write_verifier_handoff(args, checkpoint, verifier, state):
+    document=verifier_handoff_document(args,checkpoint,verifier,state)
+    write_private(args.operation_dir/'verifier-handoff.json',
+                  (json.dumps(document,indent=2,sort_keys=True)+'\n').encode())
+    return document
+
+
+def load_verifier_handoff(args, checkpoint, required=True):
+    path=args.operation_dir/'verifier-handoff.json'
+    if not path.exists():
+        if required: raise ValueError('verifier handoff receipt is missing')
+        return None
+    value=json.loads(path.read_text())
+    required_keys={'schema','purpose','state','acceptance_id','verifier',
+                   'creator_checkpoint_sha256'}
+    expected=hashlib.sha256((args.operation_dir/'creator-checkpoint.json').read_bytes()).hexdigest()
+    if (not isinstance(value,dict) or set(value)!=required_keys or value['schema']!=1
+            or value['purpose']!='tilo-supervised-verifier-handoff'
+            or value['state'] not in ('started','ready','released')
+            or value['acceptance_id']!=checkpoint['acceptance_id']
+            or value['creator_checkpoint_sha256']!=expected):
+        raise ValueError('verifier handoff receipt has invalid metadata')
+    validate_creator_binding(value['verifier'])
+    return value
+
+
+def validate_release_attempt(value, checkpoint, verifier):
+    required={'schema','purpose','acceptance_id','creator_pod_uid','verifier_pod_uid',
+              'creator_checkpoint_sha256'}
+    expected=hashlib.sha256(json.dumps(checkpoint,sort_keys=True).encode()).hexdigest()
+    if (not isinstance(value,dict) or set(value)!=required or value['schema']!=1
+            or value['purpose']!='tilo-supervised-creator-release-attempt'
+            or value['acceptance_id']!=checkpoint['acceptance_id']
+            or value['creator_pod_uid']!=checkpoint['creator']['pod_uid']
+            or value['verifier_pod_uid']!=verifier['pod_uid']
+            or value['creator_checkpoint_sha256']!=expected):
+        raise ValueError('creator release attempt has invalid binding')
+
+
+def write_release_attempt(args, checkpoint, verifier):
+    value={'schema':1,'purpose':'tilo-supervised-creator-release-attempt',
+      'acceptance_id':args.acceptance_id,'creator_pod_uid':checkpoint['creator']['pod_uid'],
+      'verifier_pod_uid':verifier['pod_uid'],
+      'creator_checkpoint_sha256':hashlib.sha256(
+        json.dumps(checkpoint,sort_keys=True).encode()).hexdigest()}
+    validate_release_attempt(value,checkpoint,verifier)
+    write_private(args.operation_dir/'creator-release-attempt.json',
+                  (json.dumps(value,indent=2,sort_keys=True)+'\n').encode())
+
+
+def acquire_verifier(args, nodes, checkpoint, disk_node, vm_node):
+    handoff=load_verifier_handoff(args,checkpoint,required=False)
+    retained_node=handoff['verifier']['node'] if handoff is not None else args.verifier_node
+    verifier_node=select_verifier_node(nodes,disk_node,vm_node,retained_node)
+    manifest=verifier_manifest(args,verifier_node,checkpoint)
+    if handoff is not None:
+        verifier=handoff['verifier']
+        observed=optional_same_worker(args.context,verifier,manifest)
+        if handoff['state'] in ('ready','released'):
+            if observed is None:
+                raise ValueError('durable ready verifier disappeared')
+            return verifier,True
+        if observed is not None:
+            delete_worker(args.context,verifier)
+        (args.operation_dir/'verifier-handoff.json').unlink()
+    verifier=adopt_worker(args.context,manifest)
+    if verifier is None:
+        try:
+            verifier=create_worker(args.context,manifest)
+        except (ValueError,OSError,subprocess.TimeoutExpired) as original:
+            try: verifier=adopt_worker(args.context,manifest)
+            except (ValueError,OSError,subprocess.TimeoutExpired): raise original
+            if verifier is None: raise original
     try:
-        verifier_node=select_verifier_node(nodes,disk_node,vm_node,args.verifier_node)
-        return create_worker(args.context,disk_manifest('tilo-verify-'+args.acceptance_id,
-                                                        verifier_node,deadline=7200))
-    except (ControllerTransportError,OSError,subprocess.TimeoutExpired) as error:
-        pause_creator(args,checkpoint,type(error).__name__)
-        raise ValueError('creator paused after controller loss; use --resume') from error
+        write_verifier_handoff(args,checkpoint,verifier,'started')
+    except BaseException as error:
+        try: delete_worker(args.context,verifier)
+        except BaseException as cleanup_error:
+            error.add_note('unrecorded verifier cleanup failed: '+str(cleanup_error))
+        raise
+    return verifier,False
+
+
+def release_creator_after_handoff(args, checkpoint, disk, verifier):
+    write_release_attempt(args,checkpoint,verifier)
+    live=optional_same_worker(args.context,disk)
+    if live is not None:
+        delete_worker(args.context,disk)
+    write_verifier_handoff(args,checkpoint,verifier,'released')
+    paused=args.operation_dir/'paused-creator.json'
+    if paused.exists(): os.replace(paused,args.operation_dir/'creator-released.json')
+
+
+def handoff_creator_to_verifier(root,args,nodes,checkpoint,disk_node,vm_node,disk,
+                                creation,identity,helpers,public):
+    verifier=None
+    try:
+        verifier,ready=acquire_verifier(args,nodes,checkpoint,disk_node,vm_node)
+        if not ready:
+            write_private(args.operation_dir/'worker-bindings.json',
+              (json.dumps({'creator':disk,'verifier':verifier},indent=2,sort_keys=True)+'\n').encode())
+            verifier_agent=host_agent(args.context,verifier['node'])
+            controller(root,args,verifier,verifier_agent,True,'verifier-environment.json')
+            require_same_worker(args.context,disk);require_same_worker(args.context,verifier)
+            sparse_transfer(args.context,disk,verifier,target_container='disk',
+                            target_directory='/work/disk-output',target_name='disk.raw')
+            verifier_identity=raw_identity(args.context,verifier)
+            if verifier_identity!=identity:
+                raise ValueError('independent verifier received different raw media')
+            copied=transfer_receipt(creation,identity,remote_file_identity(args.context,verifier))
+            stream_tree(args.context,verifier['namespace'],verifier['pod'],'disk','/work/verifier',helpers)
+            stream_tree(args.context,verifier['namespace'],verifier['pod'],'disk','/work/public-trust',public)
+            stream_file(args.context,verifier['namespace'],verifier['pod'],'disk',
+                        '/work/disk-output/creation.json',creation)
+            stream_file(args.context,verifier['namespace'],verifier['pod'],'disk',
+                        '/work/disk-output/copy.json',
+                        (json.dumps(copied,sort_keys=True)+'\n').encode())
+            prepare_verifier_devices(args.context,verifier)
+            write_verifier_handoff(args,checkpoint,verifier,'ready')
+        release_creator_after_handoff(args,checkpoint,disk,verifier)
+        return verifier
+    except BaseException as error:
+        try: pause_creator(args,checkpoint,type(error).__name__)
+        except BaseException as pause_error:
+            error.add_note('pause receipt refresh failed: '+str(pause_error))
+        try: handoff=load_verifier_handoff(args,checkpoint,required=False)
+        except BaseException as receipt_error:
+            error.add_note('verifier handoff receipt read failed: '+str(receipt_error))
+            handoff=None
+        if verifier is not None and (handoff is None or handoff['state']=='started'):
+            try:
+                if optional_same_worker(args.context,verifier) is not None:
+                    delete_worker(args.context,verifier)
+                (args.operation_dir/'verifier-handoff.json').unlink(missing_ok=True)
+            except BaseException as cleanup_error:
+                error.add_note('verifier cleanup deferred to resume: '+str(cleanup_error))
+        raise
+
+
+def establish_creator_checkpoint(args,disk,disk_node,creation,identity,expires_at):
+    try:
+        checkpoint=checkpoint_creator(args,disk,disk_node,creation,identity,expires_at)
+        pause_creator(args,checkpoint,'creator-checkpoint-ready')
+        return checkpoint
+    except BaseException as error:
+        try: delete_worker(args.context,disk)
+        except BaseException as cleanup_error:
+            error.add_note('creator cleanup after checkpoint failure failed: '+str(cleanup_error))
+        raise
 
 
 def main():
@@ -1144,32 +1357,17 @@ def main():
                 try: atexit.unregister(cleanup_auth)
                 except Exception: pass
             raise
-        cleanup_auth();atexit.unregister(cleanup_auth);del auth_bytes
-        checkpoint=checkpoint_creator(args,disk,disk_node,creation,identity,expires_at)
+        try: cleanup_auth()
+        except BaseException:
+            delete_worker(args.context,disk)
+            raise
+        atexit.unregister(cleanup_auth);del auth_bytes
+        checkpoint=establish_creator_checkpoint(
+          args,disk,disk_node,creation,identity,expires_at)
     # Only now provision the verifier. It has a distinct new Kata sandbox and
     # never coexisted with the privileged image execution.
-    verifier=provision_verifier_or_pause(args,nodes,checkpoint,disk_node,vm_node)
-    paused=args.operation_dir/'paused-creator.json'
-    if paused.exists():
-        os.replace(paused,args.operation_dir/'creator-resumed.json')
-    write_private(args.operation_dir/'worker-bindings.json',
-                  (json.dumps({'creator':disk,'verifier':verifier},indent=2,sort_keys=True)+'\n').encode())
-    verifier_agent=host_agent(args.context,verifier['node'])
-    controller(root,args,verifier,verifier_agent,True,'verifier-environment.json')
-    require_same_worker(args.context,disk);require_same_worker(args.context,verifier)
-    sparse_transfer(args.context,disk,verifier,target_container='disk',
-                    target_directory='/work/disk-output',target_name='disk.raw')
-    verifier_identity=raw_identity(args.context,verifier)
-    if verifier_identity!=identity:
-        raise ValueError('independent verifier received different raw media')
-    copied=transfer_receipt(creation,identity,remote_file_identity(args.context,verifier))
-    stream_tree(args.context,verifier['namespace'],verifier['pod'],'disk','/work/verifier',helpers)
-    stream_tree(args.context,verifier['namespace'],verifier['pod'],'disk','/work/public-trust',public)
-    stream_file(args.context,verifier['namespace'],verifier['pod'],'disk','/work/disk-output/creation.json',creation)
-    stream_file(args.context,verifier['namespace'],verifier['pod'],'disk','/work/disk-output/copy.json',
-                (json.dumps(copied,sort_keys=True)+'\n').encode())
-    prepare_verifier_devices(args.context,verifier)
-    delete_worker(args.context,disk)
+    verifier=handoff_creator_to_verifier(root,args,nodes,checkpoint,disk_node,vm_node,
+      disk,creation,identity,helpers,public)
     # One authenticated exec installs its cleanup trap before reading the
     # credential stream, then removes the file on success, error or disconnect.
     auth_bytes=registry_auth(args)
