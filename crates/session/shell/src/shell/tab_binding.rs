@@ -250,6 +250,27 @@ pub fn active_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, G
     })
 }
 
+/// The workspace-activity tab only owns keyboard input when its ordinary
+/// tiled group is the workspace's focused group. A selected tab in another
+/// visible group may still paint and receive pointer input, but must not
+/// steal keystrokes from the focused window.
+pub fn focused_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, GroupId, TabId)> {
+    let workspace = tree.active_workspace()?;
+    let strip_id = tree.active_strip.get(&workspace.id).copied()?;
+    let group_id = tree.active_group_for(strip_id)?;
+    let group = workspace
+        .strips
+        .iter()
+        .find(|strip| strip.id == strip_id)?
+        .window_groups
+        .iter()
+        .find(|group| group.id == group_id)?;
+    let tab = group.tabs.iter().find(|tab| {
+        tab.id == group.active_tab && matches!(tab.tile, TileContent::WorkspaceActivity)
+    })?;
+    Some((strip_id, group_id, tab.id))
+}
+
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
 /// Placement and tree decide where a window lands, not what's inside it, so both foreign and
 /// hosted-app opens route through here. Returns `new_tab`'s id even when it can't be spliced (no active workspace).
@@ -861,6 +882,7 @@ mod tests {
         let second = open_workspace_activity(&mut tree);
         assert_eq!(second, first, "reopening focuses the existing singleton");
         assert_eq!(active_workspace_activity_tab(&tree), Some(first_location));
+        assert_eq!(focused_workspace_activity_tab(&tree), Some(first_location));
         assert_eq!(
             tree.active_workspace()
                 .expect("active workspace")
