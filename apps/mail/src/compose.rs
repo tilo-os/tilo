@@ -176,13 +176,6 @@ impl ComposeMetrics {
     }
 }
 
-struct DrawContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
-
 pub(crate) struct ComposeEventContext<'a> {
     pub(crate) scale_factor: f64,
     pub(crate) modifiers: winit::event::Modifiers,

@@ -93,13 +93,6 @@ const CONTEXT_MENU_HEADER_H: f64 = 42.0;
 const CONTEXT_MENU_ROW_H: f64 = 36.0;
 const CONTEXT_MENU_PAD: f64 = 6.0;
 
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
-
 struct EventContext<'a> {
     scale_factor: f64,
     modifiers: winit::event::Modifiers,
@@ -811,7 +804,6 @@ impl MailApp {
             .set_breakpoint(BREAKPOINT * f64::from(self.layout_theme.text_scale));
         self.publish_shell_flags();
         let (w, h) = (self.rect.width() as f32, self.rect.height() as f32);
-        let theme = self.layout_theme.clone();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let child = self
