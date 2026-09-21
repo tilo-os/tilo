@@ -109,7 +109,10 @@ struct Harness {
     taffy: TaffyTree<()>,
     // Kept alive so the raw `*mut dyn Widget` pointers `build_layout` stashed
     // stay valid; read indirectly via the measure closures during re-layout.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "keeps the layout node pointers alive for measure callbacks"
+    )]
     node_map: HashMap<NodeId, *mut dyn Widget>,
     root_node: NodeId,
     theme: Theme,
@@ -225,7 +228,10 @@ impl Harness {
 
     /// Unused on `tilo-shell` — the sidebar wheel swallows clicks at the
     /// topbar hit regions — kept for when that regression is fixed.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "retained for scenarios once top-bar click routing is restored"
+    )]
     fn click(&mut self, x: f64, y: f64) {
         self.pump(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
@@ -676,7 +682,7 @@ fn press_and_drag_to(ctx: &mut DragCtx<'_>, from: Point, to: Point) {
 /// renderer is available. Split out of [`e2e_tab_drag_reorder`] to keep
 /// that test short — its three capture points are otherwise identical.
 fn render_frame_to(
-    group: &mut dyn Widget,
+    group: &mut WindowGroup,
     tr: &mut TextRenderer,
     theme: &Theme,
     presence: &PresenceCtx,
@@ -686,6 +692,9 @@ fn render_frame_to(
     if let Some(r) = renderer_opt.as_mut() {
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, tr, theme, presence);
+        if group.drag_in_flight() {
+            group.draw_floating_surfaces(&mut s, Affine::IDENTITY, tr, theme, presence);
+        }
         r.render_png(&s, Color::from_rgb8(0x02, 0x06, 0x14), path);
     }
 }

@@ -170,6 +170,18 @@ pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<Opened, OpenErr
     open(path, chrome, None)
 }
 
+/// Open a document at an explicit shell placement. Drag-and-drop callers use
+/// this rather than smuggling a group id through [`open_in_group`], because a
+/// drop can name an exact tab gap or an exact inter-window seam. The placement
+/// is recorded before launch and consumed when the app's toplevel arrives.
+///
+/// # Errors
+///
+/// Same conditions as [`open_in_workspace`].
+pub fn open_at(path: &Path, chrome: &Chrome, placement: Placement) -> Result<Opened, OpenError> {
+    open(path, chrome, Some(placement))
+}
+
 /// [`open_in_workspace`] for a caller that already knows the target
 /// group — a drop target is the user's own instruction rather than a
 /// placement rule. Every other open asks [`placement_for_document_open`].
@@ -178,7 +190,7 @@ pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<Opened, OpenErr
 ///
 /// Same conditions as [`open_in_workspace`].
 pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Opened, OpenError> {
-    open(path, chrome, Some(Placement::TabIn(group)))
+    open_at(path, chrome, Placement::TabIn(group))
 }
 
 #[allow(
@@ -238,7 +250,20 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
     let record = RecordId::for_file(path);
     match existing_window_for(&record, chrome) {
         Some(Existing::Window(tab)) => {
-            focus(chrome, tab);
+            if let Some(placement) = placement {
+                let moved = {
+                    let state = chrome.borrow_mut();
+                    let mut tree = state.tree_mut();
+                    crate::shell::tab_binding::relocate_tab(&mut tree, tab.tab, placement)
+                };
+                if moved {
+                    chrome.borrow_mut().bump();
+                } else {
+                    focus(chrome, tab);
+                }
+            } else {
+                focus(chrome, tab);
+            }
             return Ok(Opened::Focused {
                 app: *app,
                 tab: Some(tab.tab),
@@ -833,6 +858,85 @@ mod tests {
             assert!(
                 started.iter().any(|p| p == package),
                 "the compositor did not record starting {package}: {started:?}"
+            );
+        }
+
+        clear_launch_env();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn explicit_drop_placement_survives_launch_until_toplevel_adoption() {
+        let tmp = tempfile::tempdir().unwrap();
+        install(
+            tmp.path(),
+            "dev.tilo.word-processor",
+            "Word Processor",
+            &["odt"],
+        );
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let log = install_recording_launcher(tmp.path());
+        reset_session_state();
+
+        let chrome = chrome_with_workspace();
+        let (strip_id, group_id, old_first) = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let strip = &tree.workspaces[0].strips[0];
+            (
+                strip.id,
+                strip.window_groups[0].id,
+                strip.window_groups[0].tabs[0].id,
+            )
+        };
+
+        let first = tmp.path().join("left.odt");
+        std::fs::write(&first, b"left").unwrap();
+        assert!(
+            open_at(&first, &chrome, Placement::TabAt(group_id, 0))
+                .unwrap()
+                .launched()
+        );
+        let _ = launched_commands(&log, 1);
+        let left_tab = {
+            let state = chrome.borrow();
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut state.tree_mut(),
+                71,
+                Some("word-processor".into()),
+            )
+        };
+        {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let group = &tree.workspaces[0].strips[0].window_groups[0];
+            assert_eq!(group.tabs[0].id, left_tab);
+            assert_eq!(group.tabs[1].id, old_first);
+        }
+
+        let second = tmp.path().join("seam.odt");
+        std::fs::write(&second, b"seam").unwrap();
+        assert!(
+            open_at(&second, &chrome, Placement::GroupAt(strip_id, 0))
+                .unwrap()
+                .launched()
+        );
+        let _ = launched_commands(&log, 2);
+        let seam_tab = {
+            let state = chrome.borrow();
+            crate::shell::tab_binding::adopt_toplevel(
+                &mut state.tree_mut(),
+                72,
+                Some("word-processor".into()),
+            )
+        };
+        {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            assert_eq!(
+                tree.workspaces[0].strips[0].window_groups[0].tabs[0].id,
+                seam_tab
             );
         }
 
