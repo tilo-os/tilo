@@ -3512,7 +3512,7 @@ impl Widget for ChatApp {
                     .with_action_target(hit.semantic_id());
                 if let Some(input) = input {
                     let (anchor, focus) = input
-                        .selection_range_public()
+                        .selection_anchor_focus_public()
                         .unwrap_or_else(|| (input.cursor_pos(), input.cursor_pos()));
                     node = node
                         .with_value(input.value())

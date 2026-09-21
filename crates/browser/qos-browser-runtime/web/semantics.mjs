@@ -1,8 +1,20 @@
 const roles={Window:'group',Group:'group',Generic:'group',Toolbar:'toolbar',TabBar:'tablist',Tab:'tab',TabPanel:'tabpanel',List:'list',ListItem:'listitem',Table:'table',Row:'row',Cell:'cell',Tree:'tree',TreeItem:'treeitem',Menu:'menu',MenuItem:'menuitem',Button:'button',ToggleButton:'button',Checkbox:'checkbox',RadioButton:'radio',Switch:'switch',Slider:'slider',SpinButton:'spinbutton',ComboBox:'combobox',TextInput:'textbox',MultilineTextInput:'textbox',Link:'link',ProgressBar:'progressbar',Spinner:'status',Tooltip:'tooltip',Image:'img',Document:'document',Paragraph:'paragraph',Dialog:'dialog'};
 const keyboardActivatable=new Set(['Tab','TreeItem','MenuItem','ToggleButton','Checkbox','RadioButton','Switch','Link','ListItem']);
 const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'});
+const utf8=new TextEncoder();
 let bridgeSequence=0;
 const graphemeIndex=(value,offset)=>[...segments.segment(value.slice(0,offset))].length;
+function graphemeIndexFromByteOffset(value,offset){
+  const target=Math.max(0,Number(offset)||0);
+  let bytes=0,index=0;
+  for(const segment of segments.segment(value)){
+    const next=bytes+utf8.encode(segment.segment).length;
+    if(target<next)return index;
+    bytes=next;index++;
+    if(target===bytes)return index;
+  }
+  return index;
+}
 function domOffset(value,index){
   if(index<=0)return 0;
   let count=0;
@@ -295,7 +307,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       if(editable){
         const state=element.qosState;
         state.canonicalValue=value;
-        state.canonicalSelection=node.text_selection?[node.text_selection.anchor,node.text_selection.focus]:null;
+        state.canonicalSelection=node.text_selection?[
+          graphemeIndexFromByteOffset(value,node.text_selection.anchor),
+          graphemeIndexFromByteOffset(value,node.text_selection.focus),
+        ]:null;
         if(!state.composing){
           const scroll=[element.scrollLeft,element.scrollTop];
           if(element.value!==value)element.value=value;

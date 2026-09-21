@@ -88,11 +88,11 @@ test('semantic selection preserves native forward, backward, and collapsed direc
   ]);
 });
 
-test('canonical backward grapheme selection restores the ordered native range, direction, scroll, and focus',()=>{
+test('canonical backward UTF-8 selection restores the ordered native range, direction, scroll, and focus',()=>{
   const calls=[];const root=new Element('div');const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{});
   bridge.update(snapshot({role:'MultilineTextInput',name:'Message composer',action_target:'chat.composer',value:'one\ntwo',state:{focusable:true,multiline:true,focused:true},text_selection:{anchor:0,focus:0}}));
   const editor=root.children[0];document.activeElement=editor;editor.scrollLeft=7;editor.scrollTop=42;
-  bridge.update(snapshot({role:'MultilineTextInput',name:'Message composer',action_target:'chat.composer',value:'Ae\u0301👋B',state:{focusable:true,multiline:true,focused:true},text_selection:{anchor:3,focus:1}}));
+  bridge.update(snapshot({role:'MultilineTextInput',name:'Message composer',action_target:'chat.composer',value:'Ae\u0301👋B',state:{focusable:true,multiline:true,focused:true},text_selection:{anchor:8,focus:1}}));
   assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[1,5,'backward']);
   assert.deepEqual([editor.scrollLeft,editor.scrollTop],[7,42]);
   assert.equal(document.activeElement,editor);
@@ -101,7 +101,7 @@ test('canonical backward grapheme selection restores the ordered native range, d
 
 test('composition cancellation restores canonical backward selection direction',()=>{
   const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{});
-  bridge.update(snapshot({role:'TextInput',name:'Title',action_target:'title',value:'Ae\u0301👋B',state:{focusable:true},text_selection:{anchor:3,focus:1}}));
+  bridge.update(snapshot({role:'TextInput',name:'Title',action_target:'title',value:'Ae\u0301👋B',state:{focusable:true},text_selection:{anchor:8,focus:1}}));
   const editor=root.children[0];editor.dispatchEvent(event('compositionstart'));
   editor.setSelectionRange(0,6,'forward');editor.dispatchEvent(event('compositioncancel'));
   assert.deepEqual([editor.selectionStart,editor.selectionEnd,editor.selectionDirection],[1,5,'backward']);
@@ -377,7 +377,7 @@ test('canonical multiline updates restore grapheme selection without moving scro
   const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{});
   bridge.update(snapshot({role:'MultilineTextInput',name:'Message composer',action_target:'chat.composer',value:'one\ntwo',state:{focusable:true,multiline:true},text_selection:{anchor:0,focus:0}}));
   const editor=root.children[0];document.activeElement=editor;editor.scrollLeft=7;editor.scrollTop=42;
-  bridge.update(snapshot({role:'MultilineTextInput',name:'Message composer',action_target:'chat.composer',value:'A👨‍👩‍👧‍👦中\nB',state:{focusable:true,multiline:true},text_selection:{anchor:1,focus:4}}));
+  bridge.update(snapshot({role:'MultilineTextInput',name:'Message composer',action_target:'chat.composer',value:'A👨‍👩‍👧‍👦中\nB',state:{focusable:true,multiline:true},text_selection:{anchor:1,focus:30}}));
   assert.equal(editor.value,'A👨‍👩‍👧‍👦中\nB');
   assert.deepEqual([editor.selectionStart,editor.selectionEnd],[1,editor.value.length-1]);
   assert.deepEqual([editor.scrollLeft,editor.scrollTop],[7,42]);

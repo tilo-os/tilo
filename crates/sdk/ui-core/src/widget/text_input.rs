@@ -1140,6 +1140,14 @@ impl TextInput {
         self.selection_range()
     }
 
+    /// The live selection endpoints in anchor/focus order for accessibility
+    /// bridges. Unlike [`Self::selection_range_public`], this preserves the
+    /// direction in which the user extended the selection.
+    pub fn selection_anchor_focus_public(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        (anchor != self.cursor_pos).then_some((anchor, self.cursor_pos))
+    }
+
     /// `len()` is `text.len() + 1`; empty until the first draw lands.
     pub fn char_x_positions(&self) -> &[f64] {
         &self.char_x_positions
@@ -6016,6 +6024,16 @@ mod tests {
             rebuilt.caret_position(),
             TextPosition::with_affinity(4, TextAffinity::After)
         );
+    }
+
+    #[test]
+    fn accessible_selection_preserves_anchor_and_focus_direction() {
+        let mut input = TextInput::local().with_initial_value("Ae\u{301}👋B");
+        input.selection_anchor = Some(8);
+        input.cursor_pos = 1;
+
+        assert_eq!(input.selection_range_public(), Some((1, 8)));
+        assert_eq!(input.selection_anchor_focus_public(), Some((8, 1)));
     }
 
     #[test]

@@ -6590,9 +6590,9 @@ impl ContactsApp {
         ];
         for input in &form.inputs {
             let (name, _) = form_field_metadata(input.slot);
-            let (anchor, focus) = input.ti.selection_range_public().unwrap_or_else(|| {
-                let end = input.ti.value().len();
-                (end, end)
+            let (anchor, focus) = input.ti.selection_anchor_focus_public().unwrap_or_else(|| {
+                let cursor = input.ti.cursor_pos();
+                (cursor, cursor)
             });
             let role = if input.slot == Slot::Notes {
                 Role::MultilineTextInput

@@ -2878,7 +2878,7 @@ impl Widget for ContainersApp {
                 let input = self.create_input(*field);
                 node = node.with_value(input.value());
                 let (anchor, focus) = input
-                    .selection_range_public()
+                    .selection_anchor_focus_public()
                     .unwrap_or_else(|| (input.cursor_pos(), input.cursor_pos()));
                 node = node.with_text_selection(anchor, focus);
             }

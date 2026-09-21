@@ -3245,6 +3245,34 @@ mod tests {
     }
 
     #[test]
+    fn composer_accessibility_keeps_a_backward_browser_selection_direction() {
+        let (mut app, mut doc) = app_with_doc();
+        app.composer_main.set_text("Ae\u{301}👋B");
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(ui::Widget::perform_action(
+            &mut app.composer_main,
+            &ui::a11y::Action::SetSelection {
+                anchor: 4,
+                focus: 2,
+            },
+            &mut doc,
+            &automerge::ROOT,
+        ));
+
+        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+        let composer = root
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some("chat.composer"))
+            .expect("the main composer remains semantic");
+        assert_eq!(
+            composer.text_selection,
+            Some(ui::a11y::AccessibleTextSelection { anchor: 9, focus: 4 }),
+            "the semantic bridge must retain the anchor at the right edge while Shift+Left moves focus backward"
+        );
+    }
+
+    #[test]
     fn narrow_elided_header_and_icon_controls_publish_hover_help() {
         let (mut app, _doc) = app_with_doc();
         app.seed_shot_scenario("narrow");
