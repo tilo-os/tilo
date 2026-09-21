@@ -374,7 +374,8 @@ fn vault_rejects_malformed_and_nonregular_keys_without_effects() {
                 };
                 fs::write(&key, vec![7; length]).unwrap();
             }
-            "unreadable" => fs::set_permissions(&key, fs::Permissions::from_mode(0o000)).unwrap(),
+            // A mode-only denial is ineffective when the test runs as root.
+            "unreadable" => {}
             "hardlink" => fs::hard_link(&key, root.dir().join("other-name")).unwrap(),
             "symlink" => {
                 fs::rename(&key, root.dir().join("real-key")).unwrap();
@@ -393,9 +394,18 @@ fn vault_rejects_malformed_and_nonregular_keys_without_effects() {
             _ => unreachable!(),
         }
         let before = fs::symlink_metadata(&key).unwrap();
+        let read_error_seen = Rc::new(RefCell::new(false));
+        let read_error_observer = read_error_seen.clone();
         with_key_hook(
-            |point| {
+            move |point| {
                 assert!(!matches!(point, KeyPoint::Generate | KeyPoint::Encrypt));
+                if shape == "unreadable" && point == KeyPoint::Read {
+                    *read_error_observer.borrow_mut() = true;
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "injected held key read denial",
+                    ));
+                }
                 Ok(())
             },
             || {
@@ -406,6 +416,12 @@ fn vault_rejects_malformed_and_nonregular_keys_without_effects() {
                 );
             },
         );
+        if shape == "unreadable" {
+            assert!(
+                *read_error_seen.borrow(),
+                "actual key reader was not reached"
+            );
+        }
         let after = fs::symlink_metadata(&key).unwrap();
         assert_eq!(
             (after.dev(), after.ino(), after.mode(), after.len()),
@@ -784,12 +800,18 @@ fn vault_equal_bytes_replacement_between_read_and_commit_is_refused() {
     let old_ciphertext = fs::read(root.dir().join("vault.enc")).unwrap();
     let reads = Rc::new(RefCell::new(0));
     let count = reads.clone();
-    // Construct the save before injecting so only save-time reads are counted.
+    let admissions = Rc::new(RefCell::new(0));
+    let admission_count = admissions.clone();
+    // try_save first authenticates existing ciphertext, then admits the held
+    // key for commit. Replace that second admission's name after its byte read.
     let vault = SecretVault::open_in(&root.0);
     let result = with_key_hook(
         move |point| {
             assert_ne!(point, KeyPoint::Encrypt);
-            if point == KeyPoint::Read {
+            if point == KeyPoint::Identity {
+                *admission_count.borrow_mut() += 1;
+            }
+            if point == KeyPoint::Read && *admission_count.borrow() == 2 {
                 *count.borrow_mut() += 1;
                 if *count.borrow() == 2 {
                     fs::rename(&path, path.with_file_name("original-key")).unwrap();
@@ -807,6 +829,7 @@ fn vault_equal_bytes_replacement_between_read_and_commit_is_refused() {
         || vault.try_save(),
     );
     assert!(result.unwrap_err().contains("existing key commit"));
+    assert_eq!(*admissions.borrow(), 2);
     assert_eq!(*reads.borrow(), 2);
     assert_ne!(identity(&root.dir().join("vault.key")), old_id);
     assert_eq!(
