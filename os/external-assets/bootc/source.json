@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "purpose": "tilo-installer-bootc-helper-source",
+  "upstream": "https://github.com/bootc-dev/bootc",
+  "source_tag": "v1.16.10",
+  "source_commit": "3e76c16556c55e6d15d31bd47602b231e2131cb2",
+  "patch": "0001-probe-missing-partition-metadata.patch",
+  "patch_sha256": "b8bd058f6a10010421d7847cd8ad36f91b224d7f8758b986ca8abab6c0fc2a3e",
+  "build_command": "cargo build --locked --release -p bootc"
+}

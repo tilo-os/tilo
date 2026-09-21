@@ -1,0 +1,178 @@
+From d18d5a38d892d2ba81a96025cbd4721025ade112 Mon Sep 17 00:00:00 2001
+From: Benn1x <xaver.emmerling@tum.de>
+Date: Mon, 21 Sep 2026 02:50:50 +0200
+Subject: [PATCH] fix(blockdev): probe missing partition metadata
+
+---
+ crates/blockdev/src/blockdev.rs | 113 +++++++++++++++++++++-----------
+ 1 file changed, 75 insertions(+), 38 deletions(-)
+
+diff --git a/crates/blockdev/src/blockdev.rs b/crates/blockdev/src/blockdev.rs
+index 56f38ca..d1f28ae 100644
+--- a/crates/blockdev/src/blockdev.rs
++++ b/crates/blockdev/src/blockdev.rs
+@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
+ use std::env;
+ use std::path::Path;
+ use std::process::{Command, Stdio};
+-use std::sync::OnceLock;
+ 
+ use anyhow::{Context, Result, anyhow};
+ use camino::{Utf8Path, Utf8PathBuf};
+@@ -12,28 +11,6 @@ use serde::Deserialize;
+ 
+ use bootc_utils::CommandRunExt;
+ 
+-/// Check whether the udev database is accessible (cached for the process lifetime).
+-///
+-/// When running inside a container or sandbox without `/run/udev`
+-/// bind-mounted, tools like `lsblk` that depend on the udev database
+-/// will return null for fields like `parttype` and `fstype`.
+-///
+-/// We check for `/run/udev/data` (the actual database directory) rather
+-/// than just `/run/udev` because the parent directory can exist as an
+-/// empty mount point without the database being populated.
+-fn have_udev() -> bool {
+-    static HAVE_UDEV: OnceLock<bool> = OnceLock::new();
+-    *HAVE_UDEV.get_or_init(|| {
+-        let r = Path::new("/run/udev/data").exists();
+-        if !r {
+-            tracing::debug!(
+-                "udev database not available, will use blkid -p for partition metadata"
+-            );
+-        }
+-        r
+-    })
+-}
+-
+ /// Probe a device with `blkid -p` and return all discovered properties
+ /// as key-value pairs.
+ ///
+@@ -341,9 +318,11 @@ impl Device {
+     /// Backfill properties that may be missing from lsblk output.
+     ///
+     /// Older versions of util-linux may lack `start` and `partn`; these are
+-    /// backfilled from sysfs. When the udev database is unavailable (e.g.
+-    /// inside a container sandbox), `parttype` and `pttype` are backfilled
+-    /// via `blkid -p` which reads directly from the disk.
++    /// backfilled from sysfs. Missing `parttype` and `pttype` values are
++    /// backfilled via `blkid -p`, which reads directly from the disk. This is
++    /// keyed off the values returned by `lsblk`, rather than the presence of
++    /// `/run/udev/data`: a mounted but incomplete udev database can still make
++    /// `lsblk` return null metadata.
+     pub fn backfill_missing(&mut self) -> Result<()> {
+         // The "start" parameter was only added in a version of util-linux that's only
+         // in Fedora 40 as of this writing.
+@@ -355,18 +334,7 @@ impl Device {
+         if self.partn.is_none() {
+             self.partn = self.read_sysfs_property("partition")?;
+         }
+-        // When udev is unavailable, lsblk can't populate parttype/pttype from
+-        // the udev database. Fall back to blkid -p which probes the disk
+-        // directly. See https://github.com/osbuild/osbuild/pull/2428
+-        if !have_udev() && (self.parttype.is_none() || self.pttype.is_none()) {
+-            let props = blkid_probe(&self.path())?;
+-            if self.parttype.is_none() {
+-                self.parttype = props.get("PART_ENTRY_TYPE").cloned();
+-            }
+-            if self.pttype.is_none() {
+-                self.pttype = props.get("PTTYPE").cloned();
+-            }
+-        }
++        self.backfill_partition_metadata_with(&blkid_probe)?;
+         // Recurse to child devices
+         for child in self.children.iter_mut().flatten() {
+             child.backfill_missing()?;
+@@ -374,6 +342,30 @@ impl Device {
+         Ok(())
+     }
+ 
++    fn backfill_partition_metadata_with<F>(&mut self, probe: &F) -> Result<()>
++    where
++        F: Fn(&str) -> Result<HashMap<String, String>>,
++    {
++        let missing_parttype = self.partn.is_some() && self.parttype.is_none();
++        let missing_pttype = self
++            .children
++            .as_ref()
++            .is_some_and(|children| !children.is_empty())
++            && self.pttype.is_none();
++        if !missing_parttype && !missing_pttype {
++            return Ok(());
++        }
++
++        let props = probe(&self.path())?;
++        if missing_parttype {
++            self.parttype = props.get("PART_ENTRY_TYPE").cloned();
++        }
++        if missing_pttype {
++            self.pttype = props.get("PTTYPE").cloned();
++        }
++        Ok(())
++    }
++
+     /// Query parent devices via `lsblk --inverse`.
+     ///
+     /// Returns `Ok(None)` if this device is already a root device (no parents).
+@@ -756,6 +748,7 @@ fn parse_partition_number_from_suffix(parent_path: &str, esp_path: &str) -> Opti
+ #[cfg(test)]
+ mod test {
+     use super::*;
++    use std::cell::Cell;
+ 
+     #[test]
+     fn test_parse_size_mib() {
+@@ -827,6 +820,50 @@ mod test {
+         assert!(dev.find_partition_of_bios_boot().is_none());
+     }
+ 
++    /// An existing `/run/udev/data` directory does not guarantee that udev has
++    /// records for a newly-created loop partition. `lsblk` can therefore leave
++    /// `parttype` empty even though the database itself is mounted. Backfill is
++    /// driven by the missing value, so this test does not need to alter the
++    /// host's udev database.
++    #[test]
++    fn test_backfill_partition_metadata_when_udev_database_is_incomplete() {
++        let fixture = include_str!("../tests/fixtures/lsblk-no-udev.json");
++        let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
++        let mut partition = devs.blockdevices[0].children.as_ref().unwrap()[1].clone();
++        let calls = Cell::new(0);
++
++        partition
++            .backfill_partition_metadata_with(&|path| {
++                calls.set(calls.get() + 1);
++                assert_eq!(path, "/dev/vda2");
++                Ok(HashMap::from([(
++                    "PART_ENTRY_TYPE".to_string(),
++                    ESP.to_string(),
++                )]))
++            })
++            .unwrap();
++
++        assert_eq!(calls.get(), 1);
++        assert_eq!(partition.parttype.as_deref(), Some(ESP));
++    }
++
++    #[test]
++    fn test_backfill_does_not_probe_complete_partition_metadata() {
++        let fixture = include_str!("../tests/fixtures/lsblk.json");
++        let devs: DevicesOutput = serde_json::from_str(fixture).unwrap();
++        let mut partition = devs.blockdevices[0].children.as_ref().unwrap()[1].clone();
++        partition.pttype = None;
++
++        partition
++            .backfill_partition_metadata_with(&|_| {
++                panic!("complete partition metadata must not invoke blkid")
++            })
++            .unwrap();
++
++        assert_eq!(partition.parttype.as_deref(), Some(ESP));
++        assert!(partition.pttype.is_none());
++    }
++
+     #[test]
+     fn test_parse_lsblk_mbr() {
+         let fixture = include_str!("../tests/fixtures/lsblk-mbr.json");
+-- 
+2.45.1.windows.1
+

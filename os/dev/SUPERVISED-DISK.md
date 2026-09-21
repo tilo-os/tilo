@@ -49,6 +49,9 @@ atomically persists the accepted receipt both beside `disk.raw` and locally.
 creation arguments with Python field names: source, target, architecture,
 revision, manifest_sha256, composefs_digest, systemd_version, public_bundle,
 output, generation, size_bytes, offline_key_signature and disposable_guest.
+It also contains `installer_bootc_directory` (fixed to
+`/work/installer-bootc-helper`) and the independently reviewed
+`installer_bootc_sha256`.
 Paths refer to the guest; source must be an immutable digest reference. A new
 exclusive regular file is the only installer target. The controller streams
 the local Python helpers instead of trusting guest-supplied helper code.
@@ -62,6 +65,26 @@ Its entrypoint requires that `/run/udev/data` is absent, the mount belongs to
 the inner PID 1 namespace and the filesystem is read-only before bootc starts.
 This keeps a later helper from creating an empty database directory that would
 disable bootc's direct block-device probing for guest-local loop partitions.
+
+The supervised creator also requires a native installer-only bootc artifact at
+`/work/installer-bootc-helper/{bootc,receipt.json}` and an independently
+reviewed `installer_bootc_sha256` in `verified-disk-inputs.json`. The receipt is
+fail-closed: it binds architecture, bootc version, upstream tag and commit, the
+tracked patch SHA-256, binary SHA-256 and GNU build ID, Rust/Cargo versions,
+target triple and exact build command. The reviewed source pin and patch live in
+`os/external-assets/bootc/`; they are provenance inputs, not OS payload.
+
+The creator verifies that contract before allocating a disk. It mounts the
+helper read-only at `/run/tilo-installer-bootc` and executes that explicit path;
+it never shadows the source image's `/usr/bin/bootc`. The in-container wrapper
+rechecks the binary hash, ELF architecture, build ID, version and actual
+read-only mountinfo before execution. Its runtime receipt and the original
+source `/usr/bin/bootc` identity are included in the creation receipt. The
+installed-disk verifier then requires installed `/usr/bin/bootc` to equal the
+freshly verified original source binary, to differ from the helper, and scans
+installed mutable state and the ESP for any file equal to the helper digest.
+This keeps the workaround available across bootc re-exec while proving it was
+not installed.
 The installer container itself is started by the already verified canonical
 digest reference. Bootc resolves that running container's exact local manifest
 digest and enters its private mount namespace; the explicit canonical target

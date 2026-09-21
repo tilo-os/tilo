@@ -27,7 +27,8 @@ class IdentityTests(unittest.TestCase):
                                      'identity': {'docker-reference': self.repository}}}]
         self.image = [{'Os': 'linux', 'Architecture': 'arm64', 'Digest': self.digest,
                        'RepoDigests': [self.reference], 'Id': 'c' * 64,
-                       'Labels': {'org.opencontainers.image.revision': self.revision}}]
+                       'Labels': {'org.opencontainers.image.revision': self.revision},
+                       'RootFS': {'Layers': ['sha256:' + 'e' * 64]}}]
 
     def test_pending_rebind_marker_rejects_file_directory_and_dangling_symlink(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -79,6 +80,9 @@ class IdentityTests(unittest.TestCase):
 
     def test_native_architecture_and_revision_are_bound(self):
         self.assertEqual(source.image_identity(json.dumps(self.image), self.reference, 'aarch64', self.revision), 'c' * 64)
+        self.assertEqual(source.oci_evidence(json.dumps(self.image), self.reference), {
+            'manifest_digest': self.digest, 'config_digest': 'sha256:' + 'c' * 64,
+            'layer_digests': ['sha256:' + 'e' * 64]})
         for key, value in (('Architecture', 'amd64'), ('Os', 'windows'), ('Digest', 'sha256:' + 'd' * 64),
                            ('RepoDigests', []), ('Labels', {}), ('Id', 'mutable-tag')):
             image = json.loads(json.dumps(self.image))

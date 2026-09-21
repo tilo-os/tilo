@@ -237,4 +237,54 @@ class Reopen(unittest.TestCase):
                         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1000000000))
 
 
+class InstallerBootcIsolation(unittest.TestCase):
+    def receipt(self, helper_sha):
+        artifact = {
+            'schema': 1, 'purpose': disk.installer_bootc_helper.PURPOSE,
+            'architecture': 'aarch64',
+            'bootc_version': disk.installer_bootc_helper.BOOTC_VERSION,
+            'source_tag': disk.installer_bootc_helper.SOURCE_TAG,
+            'source_commit': disk.installer_bootc_helper.SOURCE_COMMIT,
+            'patch_sha256': disk.installer_bootc_helper.PATCH_SHA256,
+            'binary_sha256': helper_sha, 'binary_build_id': 'ab' * 20,
+            'rustc_version': 'rustc 1.91.0', 'cargo_version': 'cargo 1.91.0',
+            'build_target': disk.installer_bootc_helper.TARGETS['aarch64'],
+            'build_command': disk.installer_bootc_helper.BUILD_COMMAND,
+        }
+        identity = {'architecture': 'aarch64', 'sha256': helper_sha,
+                    'build_id': artifact['binary_build_id']}
+        runtime = {'schema': 1, 'purpose': 'tilo-installer-bootc-runtime',
+                   'binary': identity,
+                   'mount': {'mount_point': '/run/tilo-installer-bootc',
+                             'read_only': True}}
+        original = {'architecture': 'aarch64', 'sha256': '1' * 64,
+                    'build_id': 'cd' * 20}
+        return {'installer_bootc_helper': {'artifact': artifact,
+                'source_binary': original, 'runtime': runtime}}, original
+
+    def test_installed_binary_matches_source_and_helper_is_absent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, installed, mutable, esp = [root / name for name in
+                                                ('source', 'installed', 'mutable', 'esp')]
+            for path in (source / 'usr/bin', installed / 'usr/bin', mutable, esp):
+                path.mkdir(parents=True)
+            (source / 'usr/bin/bootc').write_bytes(b'original')
+            (installed / 'usr/bin/bootc').write_bytes(b'original')
+            (mutable / 'state').write_bytes(b'state')
+            helper_sha = hashlib.sha256(b'helper').hexdigest()
+            receipt, original = self.receipt(helper_sha)
+            with patch.object(disk.installer_bootc_helper, 'binary_identity',
+                              return_value=original):
+                proof = disk.verify_installer_helper_isolation(
+                    receipt, source, installed, [mutable], esp, 'aarch64')
+            self.assertTrue(proof['helper_absent'])
+            (esp / 'leaked-helper').write_bytes(b'helper')
+            with patch.object(disk.installer_bootc_helper, 'binary_identity',
+                              return_value=original), self.assertRaisesRegex(
+                                  ValueError, 'leaked'):
+                disk.verify_installer_helper_isolation(
+                    receipt, source, installed, [mutable], esp, 'aarch64')
+
+
 if __name__ == '__main__': unittest.main()
