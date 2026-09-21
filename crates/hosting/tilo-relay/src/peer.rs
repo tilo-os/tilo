@@ -582,13 +582,23 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             let authority = ticket.authority.clone();
             let source = StateSource::new(peer, session);
             let workspace = ws.clone();
-            let admission = owner.submit_prepared_wait(
+            let mut acknowledged = written.take();
+            let admission = owner.submit_resumable_wait(
                 1,
                 async move {
                     authorize_replay(&workspace, &source, &authority).await?;
                     Ok(authority)
                 },
-                move |state, authority| state.advance_replay(&authority, written),
+                move |state, authority| {
+                    let result = state.advance_replay(
+                        authority.as_ref().expect("replay preparation"),
+                        acknowledged.take(),
+                    )?;
+                    match result {
+                        ReplayAdvance::Preparing => Ok(Step::More),
+                        result => Ok(Step::Done(result)),
+                    }
+                },
                 |result| async { result },
             );
             match replay_wait(admission, peer, session, private_rx, write).await? {

@@ -582,6 +582,8 @@ impl WorkspaceStore {
         snapshot: &mut ReplaySnapshot,
         limit: WorkLimit,
     ) -> Result<Step<ReplaySummary>, StoreError> {
+        #[cfg(test)]
+        super::test_barrier::pause(&self.root, "replay-manifest-prepare");
         let limit = limit.checked()?;
         if snapshot.workspace != self.root {
             return Err(invalid("replay store mismatch"));

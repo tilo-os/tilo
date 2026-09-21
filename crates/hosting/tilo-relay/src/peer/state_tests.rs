@@ -1232,9 +1232,9 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
             })
             .unwrap();
         reached.await.unwrap();
-        for _ in 0..queued_count {
-            owner.read(1, |_| Ok(())).unwrap();
-        }
+        let queued = (0..queued_count)
+            .map(|_| owner.read(1, |_| Ok(())).unwrap())
+            .collect::<Vec<_>>();
         let (private_tx, mut private_rx) = mpsc::channel(1);
         let reply = EnvelopeV2::ActionsReady {
             room: uuid::Uuid::new_v4(),
@@ -1294,6 +1294,13 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
             });
         }
         drop(release);
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            for receipt in queued {
+                crate::persistence::receipt(receipt).await.unwrap();
+            }
+        })
+        .await
+        .expect("admitted owner queue did not drain");
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), task)
             .await
             .unwrap()
@@ -1315,6 +1322,57 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
             assert_eq!(fixture.store.count_pending(&device).unwrap(), 0);
         }
     }
+}
+
+#[tokio::test]
+async fn replay_preparation_keeps_its_owner_position_ahead_of_later_retention() {
+    let fixture = Arc::new(Fixture::new());
+    let device = fixture.recipient.device_public_key;
+    fixture
+        .store
+        .enqueue_pending(
+            &device,
+            1,
+            &crate::transport::encode(&fixture.envelope(0)).unwrap(),
+        )
+        .unwrap();
+
+    let (prepare_release, prepare_reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "replay-manifest-prepare");
+    let (batch_release, batch_reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "replay-first-batch-ready");
+    let (retain_release, retain_reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "retain-sort");
+    let (mut write, read) = tokio::io::duplex(4096);
+    let writer = fixture.clone();
+    let replay = tokio::spawn(async move { writer.replay_to(&mut write).await });
+    prepare_reached.await.unwrap();
+
+    fixture.enqueue(1).await;
+    drop(prepare_release);
+
+    tokio::select! {
+        reached = retain_reached => {
+            reached.unwrap();
+            panic!("later retention overtook admitted replay preparation");
+        }
+        reached = batch_reached => {
+            reached.unwrap();
+        }
+    }
+
+    drop(batch_release);
+    let mut reader = crate::transport_v2::SessionReader::new(read, true);
+    assert!(matches!(
+        reader.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::Delta { .. }))
+    ));
+    drop(retain_release);
+    assert!(matches!(
+        reader.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::Ready { .. }))
+    ));
+    replay.await.unwrap().unwrap();
 }
 
 #[tokio::test]

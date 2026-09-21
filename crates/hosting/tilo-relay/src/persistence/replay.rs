@@ -233,6 +233,8 @@ impl State {
         }
         let batch = store.read_replay_batch(snapshot, ReplayLimits::default(), budget)?;
         entry.outstanding = Some((batch.number, batch.eof));
+        #[cfg(test)]
+        crate::store::test_barrier::pause(store.root(), "replay-first-batch-ready");
         if super::diagnostics() {
             tracing::info!(
                 phase = "replay_batch",
