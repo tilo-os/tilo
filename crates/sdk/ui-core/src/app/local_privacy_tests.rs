@@ -116,6 +116,24 @@ impl Widget for LocalEffectProbe {
         Ok(Some(tilo_actions::ActionOutput::default()))
     }
 
+    fn continuable(&self) -> Option<&dyn crate::widget::Continuable> {
+        Some(self)
+    }
+
+    fn continuable_mut(&mut self) -> Option<&mut dyn crate::widget::Continuable> {
+        Some(self)
+    }
+}
+
+impl crate::widget::Continuable for LocalEffectProbe {
+    fn continuation_metadata(
+        &self,
+        _: &automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Option<crate::collaboration::ContinuationMetadata> {
+        None
+    }
+
     fn restore_continuation_metadata(
         &mut self,
         _: &crate::collaboration::ContinuationMetadata,
