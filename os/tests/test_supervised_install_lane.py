@@ -176,6 +176,10 @@ class LaneAdmission(unittest.TestCase):
         with patch.object(lane,'command',return_value=json.dumps({'state':'missing'})):
             self.assertIsNone(lane.creator_input_status('ctx',worker))
 
+    def test_remote_creator_input_scripts_compile(self):
+        compile(lane.REMOTE_CREATOR_INPUT_STATUS, '<creator-input-status>', 'exec')
+        compile(lane.REMOTE_CREATOR_FAILED_JOB_RESET, '<creator-failed-job-reset>', 'exec')
+
     @unittest.skipUnless(hasattr(os,'O_NOFOLLOW') and getattr(os,'geteuid',lambda:1)()==0,
                          'remote receipt contract requires Linux root semantics')
     def test_remote_input_status_accepts_nested_component_directories(self):
