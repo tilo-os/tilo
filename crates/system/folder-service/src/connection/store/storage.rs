@@ -1264,6 +1264,22 @@ fn file_digest(
     }
     Ok((hash.finalize().into(), length))
 }
+fn child_fingerprint(child: &format::Child) -> Result<[u8; 32], StoreError> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(child.hash);
+    hash.update(child.count.to_be_bytes());
+    hash.update([child.level]);
+    for boundary in [&child.first, &child.last] {
+        hash.update(
+            u64::try_from(boundary.len())
+                .map_err(|_| StoreError::LimitExceeded)?
+                .to_be_bytes(),
+        );
+        hash.update(boundary);
+    }
+    Ok(hash.finalize().into())
+}
 fn parse_hash(name: &str) -> Option<[u8; 32]> {
     if name.len() != 64
         || !name
@@ -1280,6 +1296,104 @@ fn parse_hash(name: &str) -> Option<[u8; 32]> {
     Some(hash)
 }
 impl Storage {
+    // Every incoming Child is compared before cached membership can skip a
+    // descent. This preserves range/count validation for duplicate references
+    // without retaining their unbounded keys in memory.
+    fn collect_reachable_child(
+        &self,
+        child: format::Child,
+        baselines: bool,
+        visited_root: &mut u64,
+        visited_total: &mut u64,
+        seen: &mut std::collections::BTreeMap<[u8; 32], ([u8; 32], Option<bool>)>,
+        reachable: &mut std::collections::BTreeSet<[u8; 32]>,
+    ) -> Result<(), StoreError> {
+        *visited_root = visited_root
+            .checked_add(1)
+            .ok_or(StoreError::LimitExceeded)?;
+        if *visited_root > 2_097_152 {
+            return Err(StoreError::LimitExceeded);
+        }
+        *visited_total = visited_total
+            .checked_add(1)
+            .filter(|count| *count <= 2_097_152)
+            .ok_or(StoreError::LimitExceeded)?;
+        let fingerprint = child_fingerprint(&child)?;
+        let upgrade = match seen.get(&child.hash) {
+            Some((canonical, _)) if *canonical != fingerprint => {
+                return Err(StoreError::Corrupt);
+            }
+            Some((_, None)) => return Err(StoreError::Corrupt),
+            Some((_, Some(true))) => return Ok(()),
+            Some((_, Some(false))) if !baselines => return Ok(()),
+            Some((_, Some(false))) => true,
+            None => {
+                seen.insert(child.hash, (fingerprint, None));
+                false
+            }
+        };
+        if upgrade {
+            let Some((_, complete)) = seen.get_mut(&child.hash) else {
+                return Err(StoreError::Corrupt);
+            };
+            *complete = None;
+        }
+        let page = self.page(child.hash)?;
+        if page.reference(child.hash)? != child {
+            return Err(StoreError::Corrupt);
+        }
+        reachable.insert(child.hash);
+        match page.node {
+            format::Node::Index(children) => {
+                for child in children {
+                    self.collect_reachable_child(
+                        child,
+                        baselines,
+                        visited_root,
+                        visited_total,
+                        seen,
+                        reachable,
+                    )?;
+                }
+            }
+            format::Node::Leaf(rows) if baselines => {
+                for row in rows {
+                    let root = match row {
+                        format::Row::Connection(connection) => connection.baseline_root,
+                        format::Row::InitialChainReview(review) => Some(review.root),
+                        _ => None,
+                    };
+                    self.collect_reachable_root(root, false, visited_total, seen, reachable)?;
+                }
+            }
+            format::Node::Leaf(_) => (),
+        }
+        let Some((_, complete)) = seen.get_mut(&child.hash) else {
+            return Err(StoreError::Corrupt);
+        };
+        *complete = Some(baselines);
+        Ok(())
+    }
+    fn collect_reachable_root(
+        &self,
+        root: Option<[u8; 32]>,
+        baselines: bool,
+        visited_total: &mut u64,
+        seen: &mut std::collections::BTreeMap<[u8; 32], ([u8; 32], Option<bool>)>,
+        reachable: &mut std::collections::BTreeSet<[u8; 32]>,
+    ) -> Result<(), StoreError> {
+        let Some(hash) = root else { return Ok(()) };
+        let child = self.page(hash)?.reference(hash)?;
+        let mut visited_root = 0_u64;
+        self.collect_reachable_child(
+            child,
+            baselines,
+            &mut visited_root,
+            visited_total,
+            seen,
+            reachable,
+        )
+    }
     fn contains_page(
         &self,
         root: Option<[u8; 32]>,
@@ -1322,6 +1436,60 @@ impl Storage {
     }
 }
 impl super::ConnectionStore {
+    pub(super) fn gc_reachable_pages(
+        &self,
+    ) -> Result<std::collections::BTreeSet<[u8; 32]>, StoreError> {
+        use std::io::{Seek, SeekFrom};
+        let mut reachable = std::collections::BTreeSet::new();
+        let mut seen = std::collections::BTreeMap::new();
+        let mut visited = 0_u64;
+        self.storage.collect_reachable_root(
+            self.current.root,
+            true,
+            &mut visited,
+            &mut seen,
+            &mut reachable,
+        )?;
+        self.storage.collect_reachable_root(
+            self.candidate_pin,
+            false,
+            &mut visited,
+            &mut seen,
+            &mut reachable,
+        )?;
+        // Earlier candidate roots in this active log remain replay dependencies,
+        // even if a later baseline event superseded the connection's pointer.
+        let mut log = reread_file(&self.storage.root, &format!("log-{}", self.current.log))?;
+        let length = log.metadata()?.len();
+        if length > 16 * 1024 * 1024 {
+            return Err(StoreError::LimitExceeded);
+        }
+        log.seek(SeekFrom::Start(8))?;
+        let _: format::LogHeader = self
+            .storage
+            .read_log_record(&mut log, 0)?
+            .ok_or(StoreError::Corrupt)?;
+        let mut sequence = format::next(self.current.sequence)?;
+        while let Some(event) = self
+            .storage
+            .read_log_record::<format::Event>(&mut log, sequence)?
+        {
+            let root = match event.change {
+                format::Change::BaselineCommit { root, .. } => root,
+                format::Change::InitialReviewAccepted { review, .. } => Some(review.root),
+                _ => None,
+            };
+            self.storage.collect_reachable_root(
+                root,
+                false,
+                &mut visited,
+                &mut seen,
+                &mut reachable,
+            )?;
+            sequence = format::next(sequence)?;
+        }
+        Ok(reachable)
+    }
     pub(super) fn page_referenced(&self, wanted: [u8; 32]) -> Result<bool, StoreError> {
         use std::io::{Seek, SeekFrom};
         if self
@@ -1413,6 +1581,7 @@ impl super::ConnectionStore {
     pub(super) fn collect_garbage(&mut self) -> Result<usize, StoreError> {
         let _read_lease = self.storage.read_lease(false)?;
         self.resume_gc()?;
+        let reachable = self.gc_reachable_pages()?;
         let mut scan = match self.gc_scan.take() {
             Some(scan) => scan,
             None => GcScan {
@@ -1450,7 +1619,7 @@ impl super::ConnectionStore {
                 let Some(hash) = parse_hash(name) else {
                     continue;
                 };
-                if self.page_referenced(hash)? {
+                if reachable.contains(&hash) {
                     continue;
                 }
                 self.storage.page(hash)?;

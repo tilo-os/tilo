@@ -770,6 +770,83 @@ fn garbage_collection_is_bounded_and_reachability_checked() {
     assert!(ConnectionStore::open_at(&path).is_ok());
 }
 
+// The GC closure retains the current tree and its baseline subtree while
+// deleting a superseded checkpoint tree; membership caching must not flatten
+// the current-versus-baseline distinction.
+#[test]
+fn garbage_collection_closure_keeps_current_and_baseline_and_removes_stale() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 1);
+    store.checkpoint().unwrap();
+    let stale = store.current.root.unwrap();
+    let baseline = commit_test_baseline(&mut store, record.id);
+    store.checkpoint().unwrap();
+    let current = store.current.root.unwrap();
+    assert_ne!(current, stale);
+    // Candidate and current may legitimately name the same immutable page; the
+    // current traversal must still expand its baseline roots.
+    store.candidate_pin = Some(current);
+    for _ in 0..5 {
+        assert!(store.gc_step().unwrap() <= 32);
+    }
+    assert!(path.join("pages").join(format::hex(&current)).is_file());
+    assert!(path.join("pages").join(format::hex(&baseline)).is_file());
+    assert!(!path.join("pages").join(format::hex(&stale)).exists());
+}
+
+// A baseline walk may reach a later current-tree page before the primary walk
+// reaches it. The true-mode visit must upgrade that completed false-mode page
+// so its own baseline remains in the GC closure.
+#[test]
+fn garbage_collection_closure_upgrades_nested_baseline_alias() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let first = create(&mut store, 1);
+    let second = create(&mut store, 2);
+    let baseline = commit_test_baseline(&mut store, second.id);
+    commit_test_baseline(&mut store, first.id);
+    store.checkpoint().unwrap();
+
+    let second = store.connection(second.id).unwrap();
+    let second = store
+        .storage
+        .save_page_with(
+            &format::PageNode {
+                schema: 1,
+                node: format::Node::Leaf(vec![format::Row::Connection(second)]),
+            },
+            None,
+        )
+        .unwrap();
+    let mut first = store.connection(first.id).unwrap();
+    first.baseline_root = Some(second.hash);
+    let first = store
+        .storage
+        .save_page_with(
+            &format::PageNode {
+                schema: 1,
+                node: format::Node::Leaf(vec![format::Row::Connection(first)]),
+            },
+            None,
+        )
+        .unwrap();
+    let current = store
+        .storage
+        .save_page_with(
+            &format::PageNode {
+                schema: 1,
+                node: format::Node::Index(vec![first, second]),
+            },
+            None,
+        )
+        .unwrap();
+    store.current.root = Some(current.hash);
+
+    let reachable = store.gc_reachable_pages().unwrap();
+    assert!(reachable.contains(&baseline));
+}
+
 thread_local! {static CAPTURE_SUBSTITUTE:std::cell::Cell<bool>=const {std::cell::Cell::new(false)};}
 pub(super) fn before_capture(
     parent: &std::sync::Arc<storage::Directory>,
