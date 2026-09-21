@@ -5545,14 +5545,11 @@ impl App {
             }
         } else if self.persistence.records.is_some() && self.collaboration.manager.is_connected() {
             // Before the first record checkout the primary manager is the
-            // room route. It becomes `room_collab_manager` at that checkout.
+            // room route. It becomes `collaboration.room_manager` at that checkout.
             // Do not advance this cursor for ordinary (non-record) apps.
-            if self
-                .collab_manager
-                .send(crate::collaboration::CollabRequest::document_incremental(
-                    delta,
-                ))
-            {
+            if self.collaboration.manager.send(
+                crate::collaboration::CollabRequest::document_incremental(delta),
+            ) {
                 room.advance_outbound(heads);
             }
         }
@@ -5827,7 +5824,8 @@ impl App {
                     match self.primary_document_snapshot() {
                         Ok(data) => {
                             let _ = self
-                                .collab_manager
+                                .collaboration
+                                .manager
                                 .send(crate::collaboration::CollabRequest::document_snapshot(data));
                         }
                         Err(error) => {
@@ -6082,7 +6080,8 @@ impl App {
             CollabEvent::DocumentSnapshotRequested { .. } => {
                 let data = self.state.save();
                 let _ = self
-                    .collab_manager
+                    .collaboration
+                    .manager
                     .send(crate::collaboration::CollabRequest::document_snapshot(data));
             }
             CollabEvent::Context { collaborators, .. } => {
@@ -7491,7 +7490,8 @@ impl App {
                     self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
                 }
                 let _ = self
-                    .collab_manager
+                    .collaboration
+                    .manager
                     .send(crate::collaboration::CollabRequest::RequestDocumentSnapshot);
                 true
             }
