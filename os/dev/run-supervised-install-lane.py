@@ -1041,13 +1041,18 @@ def atomic(path, value):
  finally:
   try: os.unlink(temporary)
   except FileNotFoundError: pass
-private_regular(contract_path)
-with open(contract_path,'rb') as stream: contract_bytes=stream.read()
-contract=json.loads(contract_bytes); contract_sha256=hashlib.sha256(contract_bytes).hexdigest()
-with open(sys.argv[0],'rb') as stream:
- if hashlib.sha256(stream.read()).hexdigest()!=contract['runner_sha256']: raise RuntimeError('detached runner differs from contract')
-started=time.time_ns(); stdout=b''; stderr=b''; returncode=125; error=None; secrets=[]
+contract=None; contract_bytes=b''; contract_sha256=''; started=time.time_ns(); stdout=b''; stderr=b''; returncode=125; error=None; secrets=[]
 try:
+ private_regular(contract_path)
+ with open(contract_path,'rb') as stream: contract_bytes=stream.read()
+ contract=json.loads(contract_bytes); contract_sha256=hashlib.sha256(contract_bytes).hexdigest()
+ pid=os.getpid()
+ start=open('/proc/'+str(pid)+'/stat').read().split()[21]
+ cmd=hashlib.sha256(open('/proc/'+str(pid)+'/cmdline','rb').read()).hexdigest()
+ cgroup=hashlib.sha256(open('/proc/'+str(pid)+'/cgroup','rb').read()).hexdigest()
+ atomic(state_path,(json.dumps({'pid':pid,'start_time':start,'cmdline_sha256':cmd,'cgroup_sha256':cgroup},sort_keys=True)+'\n').encode())
+ with open(sys.argv[0],'rb') as stream:
+  if hashlib.sha256(stream.read()).hexdigest()!=contract['runner_sha256']: raise RuntimeError('detached runner differs from contract')
  for path in contract['secret_paths']:
   private_regular(path)
   with open(path,'rb') as stream: secrets.append(stream.read())
@@ -1059,27 +1064,27 @@ except BaseException as caught:
  error=type(caught).__name__+': '+str(caught)
 finally:
  cleaned=True
- for path in contract['secret_paths']:
+ for path in (contract or {}).get('secret_paths',[]):
   try:
    value=os.lstat(path)
    if stat.S_ISREG(value.st_mode) and not stat.S_ISLNK(value.st_mode): os.unlink(path)
    else: cleaned=False
   except FileNotFoundError: pass
   except OSError: cleaned=False
- for path in contract['cleanup_paths']:
+ for path in (contract or {}).get('cleanup_paths',[]):
   try:
    value=os.lstat(path)
    if stat.S_ISREG(value.st_mode) and not stat.S_ISLNK(value.st_mode) and value.st_uid == 0 and value.st_gid == 0 and value.st_nlink == 1 and stat.S_IMODE(value.st_mode) == 0o600: os.unlink(path)
    else: cleaned=False
   except FileNotFoundError: pass
   except OSError: cleaned=False
- for path in contract['cleanup_paths']:
+ for path in (contract or {}).get('cleanup_paths',[]):
   if os.path.lexists(path): cleaned=False
  for secret in secrets:
   if secret and (secret in stdout or secret in stderr): error='worker output contained a staged secret'; returncode=125; stdout=b''; stderr=b''
  out,out_truncated=stdout[:limit],len(stdout)>limit
  err,err_truncated=stderr[:limit],len(stderr)>limit
- receipt={'schema':1,'purpose':'tilo-supervised-detached-job','contract_sha256':contract_sha256,'operation':contract['operation'],'worker':contract['worker'],'container':contract['container'],'argv_sha256':contract['argv_sha256'],'input_identities':contract['input_identities'],'output_sha256':hashlib.sha256(stdout).hexdigest(),'output_bytes':len(stdout),'stdout_base64':base64.b64encode(out).decode(),'stderr_base64':base64.b64encode(err).decode(),'stdout_truncated':out_truncated,'stderr_truncated':err_truncated,'returncode':returncode,'secrets_cleaned':cleaned,'started_at_ns':started,'finished_at_ns':time.time_ns(),'status':'succeeded' if returncode == 0 and error is None and cleaned else 'failed'}
+ receipt={'schema':1,'purpose':'tilo-supervised-detached-job','contract_sha256':contract_sha256,'operation':contract['operation'],'worker':contract['worker'],'container':contract['container'],'argv_sha256':contract['argv_sha256'],'runner_sha256':contract['runner_sha256'],'input_identities':contract['input_identities'],'output_sha256':hashlib.sha256(stdout).hexdigest(),'output_bytes':len(stdout),'stdout_base64':base64.b64encode(out).decode(),'stderr_base64':base64.b64encode(err).decode(),'stdout_truncated':out_truncated,'stderr_truncated':err_truncated,'returncode':returncode,'secrets_cleaned':cleaned,'started_at_ns':started,'finished_at_ns':time.time_ns(),'status':'succeeded' if returncode == 0 and error is None and cleaned else 'failed'}
  if error is not None: receipt['error']=error
  atomic(receipt_path,(json.dumps(receipt,sort_keys=True,separators=(',',':'))+'\n').encode())
  try: os.unlink(state_path)
@@ -1109,7 +1114,7 @@ if regular(state):
    print(json.dumps({'state':'running' if (start,cmd,cgroup)==(value['start_time'],value['cmdline_sha256'],value['cgroup_sha256']) else 'dead'}))
   except (FileNotFoundError,IndexError): print(json.dumps({'state':'dead'}))
  raise SystemExit
-if os.path.isdir(claim): print(json.dumps({'state':'starting' if time.time()-os.stat(claim).st_mtime < 60 else 'dead'}))
+if os.path.isdir(claim): print(json.dumps({'state':'starting' if time.time()-os.stat(claim).st_mtime < 60 else 'stale'}))
 else: print(json.dumps({'state':'absent'}))
 '''
 
@@ -1185,7 +1190,7 @@ def _detached_job_status(context, worker, container, root):
     try:value=json.loads(output)
     except (TypeError,json.JSONDecodeError) as error:
         raise ValueError('detached job status is invalid') from error
-    if set(value)=={'state'} and value['state'] in {'absent','starting','running','dead'}: return value
+    if set(value)=={'state'} and value['state'] in {'absent','starting','running','dead','stale'}: return value
     if (set(value)=={'state','receipt'} and value['state']=='finished'
             and isinstance(value['receipt'],str)): return value
     raise ValueError('detached job status is invalid')
@@ -1228,21 +1233,18 @@ def _validate_detached_receipt(value, contract, contract_bytes):
 def _launch_detached_job(context, worker, container, root):
     script=r'''set -euo pipefail
 umask 077
-root="$1"; runner="$root/runner.py"; contract="$root/contract.json"; claim="$root/claim"; state="$root/state.json"; log="$root/runner.log"
+root="$1"; runner="$root/runner.py"; contract="$root/contract.json"; claim="$root/claim"; log="$root/runner.log"
 test ! -L "$root"; test -f "$runner"; test -f "$contract"
 if ! mkdir -- "$claim" 2>/dev/null; then exit 0; fi
-test ! -e "$state" && test ! -L "$state"; test ! -e "$log" && test ! -L "$log"
+test ! -e "$log" && test ! -L "$log"
 setsid python3 "$runner" "$root" 131072 </dev/null >"$log" 2>&1 &
-pid=$!
-temporary="$root/.state.$$"
-test -r "/proc/$pid/stat" && test -r "/proc/$pid/cmdline" && test -r "/proc/$pid/cgroup"
-start=$(awk '{print $22}' "/proc/$pid/stat")
-cmd=$(sha256sum "/proc/$pid/cmdline" | awk '{print $1}')
-cgroup=$(sha256sum "/proc/$pid/cgroup" | awk '{print $1}')
-printf '{"pid":%s,"start_time":"%s","cmdline_sha256":"%s","cgroup_sha256":"%s"}\n' "$pid" "$start" "$cmd" "$cgroup" > "$temporary"
-chmod 0600 "$temporary"
-mv -f -- "$temporary" "$state"
 '''
+    command(kubectl(context,'-n',worker['namespace'],'exec',worker['pod'],'-c',container,
+      '--','sh','-ceu',script,'sh',root),timeout=30)
+
+
+def _reconcile_stale_detached_job(context, worker, container, root):
+    script='test ! -L "$1"; test -d "$1/claim"; test ! -e "$1/state"; rm -rf -- "$1"'
     command(kubectl(context,'-n',worker['namespace'],'exec',worker['pod'],'-c',container,
       '--','sh','-ceu',script,'sh',root),timeout=30)
 
@@ -1274,6 +1276,10 @@ def detached_job(context, worker, container, purpose, argv, *, operation, inputs
             require_same_worker(context,worker)
             return _validate_detached_receipt(receipt,contract,contract_bytes)
         if status['state']=='dead': raise ValueError('detached job died without a receipt')
+        if status['state']=='stale':
+            require_same_worker(context,worker)
+            _reconcile_stale_detached_job(context,worker,container,root)
+            continue
         if status['state']=='absent':
             try:
                 require_same_worker(context,worker)

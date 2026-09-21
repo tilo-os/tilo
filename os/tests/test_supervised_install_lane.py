@@ -758,7 +758,7 @@ class LaneAdmission(unittest.TestCase):
           {'registry-auth':b'private'},root,('/work/registry-auth.json',))
         self.assertEqual(contract['cleanup_paths'],['/work/registry-auth.json'])
         self.assertEqual(contract['runner_sha256'],hashlib.sha256(lane.DETACHED_JOB_RUNNER.encode()).hexdigest())
-        self.assertIn("for path in contract['cleanup_paths']",lane.DETACHED_JOB_RUNNER)
+        self.assertIn("get('cleanup_paths',[])",lane.DETACHED_JOB_RUNNER)
         self.assertIn('os.path.lexists(path)',lane.DETACHED_JOB_RUNNER)
 
     def test_vm_preflight_checks_exact_runtime_before_media_transfer(self):
