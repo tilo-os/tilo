@@ -123,7 +123,7 @@ impl App {
             self.root_widget.handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 handled,
@@ -459,7 +459,7 @@ impl App {
                         widget.handle_event(
                             event,
                             scale,
-                            &self.modifiers,
+                            &self.input.modifiers,
                             doc,
                             path,
                             handled,
@@ -476,7 +476,7 @@ impl App {
             self.document_history.toolbar_mut().handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 handled,
@@ -492,7 +492,7 @@ impl App {
             search.handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 handled,
@@ -512,7 +512,7 @@ impl App {
             pane.handle_event(
                 event,
                 scale,
-                &self.modifiers,
+                &self.input.modifiers,
                 &mut self.state.doc,
                 &self.state.root,
                 handled,
@@ -614,7 +614,7 @@ impl App {
     /// root. Native windows enable this automatically; embedding remains opt-in.
     pub fn enable_document_history_chrome(&mut self) {
         self.history_chrome_enabled = true;
-        self.document_history.enable_search(self.platform);
+        self.document_history.enable_search(self.input.platform);
         self.remember_history_content();
         self.layout.structure_dirty = true;
         self.layout.layout_dirty = true;
