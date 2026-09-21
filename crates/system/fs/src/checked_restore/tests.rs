@@ -30,7 +30,7 @@ impl Fixture {
         let record = namespace.record_id_for(ino).unwrap();
         let namespace = Arc::new(Mutex::new(namespace));
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let signer = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
         let person = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
         let actor = FileActor {
@@ -94,7 +94,7 @@ impl Fixture {
             .unwrap(),
         ));
         let hydrator = self.fs.hydrator.clone();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let actor = self.fs.history.as_ref().unwrap().1;
         let workspace = self.fs.restore_workspace().unwrap();
         let history =
@@ -1825,7 +1825,7 @@ async fn checked_restore_production_startup_clears_exact_prepared_fence_after_pa
                 )
                 .unwrap(),
             );
-            let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+            let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let reopened = QuickFS::new(namespace.clone(), hydrator, heuristics)
                 .without_legacy_record_migration()
                 .with_checked_history_workspace(request.review.workspace_id)
