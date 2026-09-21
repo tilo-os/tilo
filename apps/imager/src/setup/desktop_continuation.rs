@@ -651,7 +651,7 @@ mod tests {
     use std::fs;
 
     fn fixture() -> (tempfile::TempDir, MigrationStore, Vec<FolderChoice>) {
-        let temp = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let base = temp.path().canonicalize().unwrap();
         let source = base.join("Documents");
         fs::create_dir(&source).unwrap();
@@ -799,6 +799,10 @@ mod tests {
         op.approve();
         let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
         let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        // Some CI overlay filesystems expose coarse ctime resolution. Cross a
+        // full timestamp tick so the metadata-preserving rewrite below still
+        // has a distinct change-time fact for the reviewed inventory.
+        std::thread::sleep(std::time::Duration::from_secs(1));
         fs::write(&file, b"edited").unwrap();
         fs::File::options()
             .write(true)
