@@ -844,6 +844,30 @@ class DetachedVmCycle(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'verifier release'):
             lane.vm_handoff_document('run1','verifier-release-intent',vm,identity)
 
+    def test_vm_created_handoff_repairs_binding_after_crash_window(self):
+        creator={'pod':'tilo-disk-run1','pod_uid':'c'*32,'namespace':'kata-system',
+                 'node':'disk','node_uid':'d'*32,'spec':{},
+                 'image_id':'registry.test/disk@sha256:'+'a'*64}
+        verifier={'pod':'tilo-verify-run1','pod_uid':'v'*32,'namespace':'agent-sandboxes',
+                  'node':'verify','node_uid':'r'*32,'spec':{},
+                  'image_id':'registry.test/vm@sha256:'+'b'*64}
+        vm={'pod':'tilo-vm-run1','pod_uid':'p'*32,'namespace':'agent-sandboxes',
+            'node':'arm1','node_uid':'n'*32,'spec':{},
+            'image_id':'registry.test/vm@sha256:'+'c'*64}
+        identity={'size':64*1024**3,'sha256':'d'*64}
+        with tempfile.TemporaryDirectory() as directory:
+            handoff=lane.persist_vm_handoff(directory,'run1','vm-created',vm,identity,verifier)
+            repaired=lane.repair_vm_handoff_bindings(
+                directory,handoff,creator,verifier,vm)
+            self.assertEqual(repaired,{'creator':creator,'verifier':verifier,'vm':vm})
+            self.assertEqual(json.loads((Path(directory)/'worker-bindings.json').read_text()),repaired)
+
+            wrong=dict(repaired,vm=dict(vm,pod_uid='x'*32))
+            lane.write_private(Path(directory)/'worker-bindings.json',
+                (json.dumps(wrong)+'\n').encode())
+            with self.assertRaisesRegex(ValueError,'different VM'):
+                lane.repair_vm_handoff_bindings(directory,handoff,creator,verifier,vm)
+
     def test_create_intent_and_local_cycle_receipt_bind_exact_state(self):
         vm_node=node('vm',kvm=True)
         manifest=lane.vm_manifest('tilo-vm-run1',vm_node)

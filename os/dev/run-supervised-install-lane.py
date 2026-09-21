@@ -1925,6 +1925,26 @@ def adopt_vm_handoff(context, operation_dir, operation, identity):
     return value
 
 
+def repair_vm_handoff_bindings(operation_dir, handoff, creator, verifier, vm):
+    if handoff.get('state')!='vm-created' or handoff.get('vm')!=vm \
+            or handoff.get('verifier')!=verifier:
+        raise ValueError('VM handoff is not eligible for binding repair')
+    validate_creator_binding(creator); validate_handoff_worker(verifier)
+    path=Path(operation_dir)/'worker-bindings.json'
+    if path.is_file():
+        value=json.loads(path.read_text())
+        if not isinstance(value,dict) or value.get('creator')!=creator \
+                or value.get('verifier')!=verifier:
+            raise ValueError('worker bindings differ before VM binding repair')
+    else:
+        value={'creator':creator,'verifier':verifier}
+    if 'vm' in value and value['vm']!=vm:
+        raise ValueError('worker bindings contain a different VM')
+    value['vm']=vm
+    write_private(path,(json.dumps(value,indent=2,sort_keys=True)+'\n').encode())
+    return value
+
+
 def detached_media_identity(context, vm, expected, operation, operation_dir=None):
     worker=cycle_worker_identity(context,vm)
     path='/work/verified/installer.raw'; output='/work/'+operation+'-media-identity.json'
@@ -2628,13 +2648,20 @@ def main():
         vm=adopt_worker(args.context,vm_manifest_value)
         if vm is None:
             raise ValueError('deterministic VM create intent has no live Pod to adopt')
-        persist_vm_handoff(args.operation_dir,args.acceptance_id,'vm-created',vm,identity)
     if args.resume and (args.operation_dir/'vm-handoff.json').is_file():
         resumed_handoff=load_vm_handoff(args.operation_dir,args.acceptance_id,
                                         expected_identity=identity)
         vm=resumed_handoff['vm']; adopt_vm_handoff(args.context,args.operation_dir,
                                                    args.acceptance_id,identity)
-        bindings=json.loads((args.operation_dir/'worker-bindings.json').read_text())
+        bindings_path=args.operation_dir/'worker-bindings.json'
+        bindings=json.loads(bindings_path.read_text()) if bindings_path.is_file() else None
+        if resumed_handoff['state']=='vm-created' and (
+                bindings is None or 'vm' not in bindings):
+            bindings=repair_vm_handoff_bindings(
+                args.operation_dir,resumed_handoff,disk,
+                resumed_handoff.get('verifier'),vm)
+        if bindings is None:
+            raise ValueError('VM handoff lacks worker bindings')
         if bindings.get('vm')!=vm:
             raise ValueError('VM handoff differs from worker bindings')
         verifier=resumed_handoff.get('verifier',bindings.get('verifier'))
@@ -2670,9 +2697,9 @@ def main():
         if resumed_handoff is None:
             persist_vm_create_intent(args.operation_dir,args.acceptance_id,vm_manifest_value)
             vm=create_or_adopt_worker(args.context,vm_manifest_value)
-            persist_vm_handoff(args.operation_dir,args.acceptance_id,'vm-created',vm,identity)
             write_private(args.operation_dir/'worker-bindings.json',
                           (json.dumps({'creator':disk,'verifier':verifier,'vm':vm},indent=2,sort_keys=True)+'\n').encode())
+            persist_vm_handoff(args.operation_dir,args.acceptance_id,'vm-created',vm,identity,verifier)
             stream_tree(args.context,vm['namespace'],vm['pod'],'qemu','/work/source',helpers)
             preflight_vm(args.context,vm)
         elif resumed_handoff['state']=='vm-created':
