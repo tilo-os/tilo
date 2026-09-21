@@ -71,6 +71,12 @@ pub enum Action {
         dx: f32,
         dy: f32,
     },
+    /// Feed total signed travel from a shell-owned three-finger horizontal
+    /// gesture into the active strip.
+    StripPan(f64),
+    /// Lift/cancel the synthetic three-finger stream and let elastic overpull
+    /// settle to the nearest legal strip edge.
+    EndStripPan,
     /// Move the cursor onto a named target's centre without pressing.
     /// Sibling of [`Action::ClickNamed`], for the affordances that are
     /// hover-driven — a tab pill opening its control cluster — where a
@@ -506,6 +512,14 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::Drag { from, to, steps } => driver.drag(*from, *to, *steps),
         Action::MiddleDrag { from, to, steps } => driver.middle_drag(*from, *to, *steps),
         Action::MouseWheel { dx, dy } => driver.mouse_wheel(*dx, *dy),
+        Action::StripPan(travel) => {
+            driver.host_mut().update_active_strip_pan(*travel, true);
+        }
+        Action::EndStripPan => {
+            driver
+                .host_mut()
+                .end_active_strip_pan(std::time::Instant::now());
+        }
         Action::Relayout => driver.relayout(),
         Action::MoveCursor(p) => driver.move_cursor(*p),
         Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
@@ -2154,22 +2168,24 @@ fn strip_scroll_across_apps() -> Scenario {
         Action::Wait(6),
         Action::Snapshot("05-strip-at-rest"),
     ];
-    // Travel the strip by focus, the only sanctioned view motion: a
-    // bare wheel deliberately does NOT move the strip (hard boundary,
-    // 2026-08-22 — scrolling is for content inside a window). Focusing
-    // the far window slides the whole strip across on the eased snap
-    // curve, exactly what the Alt+Shift wheel jump produces live.
-    actions.push(Action::SelectGroup(Some(3)));
-    // Let the eased travel settle on its target before reading it.
+    // Pull well past the final app and hold: the visual position remains
+    // bounded by the rubber-band asymptote rather than hitting a wall.
+    actions.push(Action::StripPan(10_000.0));
+    actions.push(Action::Relayout);
+    actions.push(Action::Snapshot("06-held-past-trailing-edge"));
+    // Release back to the legal 20%-viewport trailing canvas allowance.
+    actions.push(Action::EndStripPan);
     actions.push(Action::Wait(PAN_SETTLE_FRAMES));
-    actions.push(Action::Snapshot("06-panned-right"));
-    actions.push(Action::SelectGroup(Some(0)));
+    actions.push(Action::Snapshot("07-settled-trailing-room"));
+    // The reverse gesture remains direct manipulation and returns home.
+    actions.push(Action::StripPan(-10_000.0));
+    actions.push(Action::EndStripPan);
     actions.push(Action::Wait(PAN_SETTLE_FRAMES));
-    actions.push(Action::Snapshot("07-panned-back"));
+    actions.push(Action::Snapshot("08-panned-back"));
     Scenario {
         name: "strip_scroll_across_apps",
         description: "Open Notes, Files, Terminal and Editor as four windows along the strip, \
-                      then travel focus across them and back.",
+                      then directly pan into the resisted trailing edge and back.",
         actions,
     }
 }
