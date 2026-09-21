@@ -712,6 +712,18 @@ class LaneAdmission(unittest.TestCase):
         self.assertEqual(detached.call_args.kwargs['inputs']['registry-auth'],b'{"auths":{}}')
         self.assertEqual(detached.call_args.kwargs['cleanup_paths'],('/work/registry-auth.json',))
 
+    def test_creator_raw_identity_uses_detached_bound_job(self):
+        worker={'namespace':'kata-system','pod':'tilo-disk-run1','pod_uid':'disk-pod-uid',
+          'node':'disk','node_uid':'disk-node-uid','spec':{},'image_id':lane.DISK_IMAGE}
+        identity={'size':64*1024**3,'sha256':'a'*64}
+        with patch.object(lane,'detached_job',return_value=json.dumps(identity).encode()) as detached, \
+                patch.object(lane,'command') as command:
+            self.assertEqual(lane.raw_identity('ctx',worker,operation='run1'),identity)
+        command.assert_not_called()
+        self.assertEqual(detached.call_args.args[:4],('ctx',worker,'disk','raw-identity'))
+        self.assertEqual(detached.call_args.kwargs,{
+          'operation':'run1','inputs':{},'timeout':7200})
+
     def test_detached_job_adopts_success_after_transport_reconnect(self):
         worker={'namespace':'kata-system','pod':'tilo-verify-run1','pod_uid':'verify-pod-uid',
           'node':'verify','node_uid':'verify-node-uid','spec':{},'image_id':lane.DISK_IMAGE}

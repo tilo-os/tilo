@@ -2661,7 +2661,7 @@ def main():
                 creation=(args.operation_dir/'creation.json').read_bytes()
             with timer.stage('freeze_identity'):
                 freeze_raw(args.context,disk)
-                identity=raw_identity(args.context,disk)
+                identity=raw_identity(args.context,disk,operation=args.acceptance_id)
                 write_private(args.operation_dir/'raw-identity.json',
                               (json.dumps(identity,indent=2,sort_keys=True)+'\n').encode())
         except ControllerTransportError:
