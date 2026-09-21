@@ -64,7 +64,7 @@ if os.environ['MODE']=='edited_warning':
  source='head' if is_head else 'base'
  print(json.dumps({'reason':'compiler-message','message':{'level':'warning','code':{'code':'clippy::fixture'},'message':'existing warning','spans':[{'is_primary':True,'file_name':'lib.rs','line_start':1,'column_start':1,'text':[{'text':source}]}]}}))
 if os.environ['MODE']=='rename':
- file_name='new.rs' if is_head else 'old.rs'
+ file_name='nested/../new.rs' if is_head else 'old.rs'
  source='head' if is_head else 'base'
  print(json.dumps({'reason':'compiler-message','message':{'level':'warning','code':{'code':'clippy::fixture'},'message':'existing warning','spans':[{'is_primary':True,'file_name':file_name,'line_start':1,'column_start':1,'text':[{'text':source}]}]}}))
 ''')
