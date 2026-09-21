@@ -942,7 +942,7 @@ def create_on_worker(root, args, disk, agent, evidence_name='creator-environment
     controller(root, args, disk, agent, False, evidence_name, registry_auth_bytes)
 
 
-def verify_disk(context, disk, values, auth):
+def verify_disk(context, disk, values, auth, operation=None):
     argv = ['python3','-B','/work/verifier/os/dev/verify-installed-development-disk.py']
     mapping = [('source','source'),('target','target'),('architecture','architecture'),
       ('revision','revision'),('manifest-sha256','manifest_sha256'),('generation','generation'),
@@ -952,24 +952,34 @@ def verify_disk(context, disk, values, auth):
       '--creation-receipt','/work/disk-output/creation.json','--boot-profile','installer-media',
       '--copy-receipt','/work/disk-output/copy.json',
       '--source-live-uki',values['source_live_uki'],'--offline-key-signature']
-    cleanup="umask 077; trap 'rm -f -- /work/registry-auth.json' EXIT HUP INT TERM; cat > /work/registry-auth.json; test -s /work/registry-auth.json; \"$@\""
-    output=command(kubectl(context,'-n',disk['namespace'],'exec','-i',disk['pod'],'-c','disk','--',
-      'sh','-ceu',cleanup,'sh','/usr/bin/unshare','--mount','--propagation','private','--',*argv),
-      auth,timeout=7200,text=False).decode()
-    command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk','--',
-                    'sh','-ceu','test ! -e /work/registry-auth.json'),timeout=30)
-    return output
+    cleanup=r'''set -euo pipefail
+umask 077
+source="${TILO_DETACHED_SECRET_0:?}"; destination=/work/registry-auth.json
+trap 'rm -f -- "$source" "$destination"' EXIT HUP INT TERM
+test ! -e "$destination" && test ! -L "$destination"
+install -m 0600 -- "$source" "$destination"
+test -s "$destination"
+exec "$@"
+'''
+    inputs={'registry-auth':auth,'verification-inputs':_canonical_json(values)}
+    output=detached_job(context,disk,'disk','installed-verification',
+      ['sh','-ceu',cleanup,'sh','/usr/bin/unshare','--mount','--propagation','private','--',*argv],
+      operation=operation or 'verify-'+hashlib.sha256(disk['pod_uid'].encode()).hexdigest()[:12],
+      inputs=inputs,timeout=7200)
+    return output.decode()
 
 
-def verify_finalized_source(context, verifier, values, creation):
+def verify_finalized_source(context, verifier, values, creation, operation=None):
     argv=['python3','-B','/work/verifier/os/dev/verify-finalized-development-image.py',
       '--helpers','/work/verifier','--image-id',creation['source']['image_id'],
       '--target',values['target'],'--public-bundle','/work/public-trust',
       '--manifest-sha256',values['manifest_sha256'],'--architecture','aarch64',
       '--generation',str(values['generation']),'--composefs-digest',values['composefs_digest'],
       '--systemd-version',values['systemd_version'],'--boot-profile','installer-media']
-    document=json.loads(command(kubectl(context,'-n',verifier['namespace'],'exec',verifier['pod'],
-      '-c','disk','--',*argv),timeout=7200))
+    document=json.loads(detached_job(context,verifier,'disk','finalized-source-verification',argv,
+      operation=operation or 'finalized-'+hashlib.sha256(verifier['pod_uid'].encode()).hexdigest()[:12],
+      inputs={'creation-receipt':_canonical_json(creation),'verification-inputs':_canonical_json(values)},
+      timeout=7200))
     validate_finalized_verification(document,creation)
     return document
 
@@ -988,13 +998,260 @@ def validate_finalized_verification(document, creation, composefs_digest=None):
         raise ValueError('finalized source-layer verification does not bind the created medium')
 
 
-def raw_identity(context, disk, container='disk', path='/work/disk-output/disk.raw'):
+def raw_identity(context, disk, container='disk', path='/work/disk-output/disk.raw', operation=None):
     script = "import hashlib,json,os,sys; p=sys.argv[1]; s=os.stat(p); h=hashlib.sha256(); f=open(p,'rb'); [h.update(c) for c in iter(lambda:f.read(8*1024*1024),b'')]; print(json.dumps({'size':s.st_size,'sha256':h.hexdigest()}))"
-    value = json.loads(command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c',container,
-                                       '--','python3','-c',script,path),timeout=7200))
+    if operation is None:
+        value=json.loads(command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c',container,
+          '--','python3','-c',script,path),timeout=7200))
+    else:
+        value=json.loads(detached_job(context,disk,container,'raw-identity',
+          ['python3','-c',script,path],operation=operation,inputs={},timeout=7200).decode())
     if value.get('size') != 64*1024**3 or not re.fullmatch(r'[0-9a-f]{64}',value.get('sha256','')):
         raise ValueError('created raw media identity is invalid')
     return value
+
+
+# A long kubectl exec couples a multi-hour hash or verifier to the controller's
+# relay.  These receipts make the worker own that process; the controller only
+# starts it and polls its durable state with short execs.
+DETACHED_JOB_LOG_BYTES = 128 * 1024
+DETACHED_JOB_OUTPUT_BYTES = 512 * 1024
+DETACHED_JOB_POLL_SECONDS = 10
+
+
+DETACHED_JOB_RUNNER = r'''import base64, hashlib, json, os, stat, subprocess, sys, tempfile, time
+root = sys.argv[1]
+contract_path = root + '/contract.json'
+receipt_path = root + '/receipt.json'
+state_path = root + '/state.json'
+limit = int(sys.argv[2])
+def private_regular(path):
+ value=os.lstat(path)
+ if (not stat.S_ISREG(value.st_mode) or stat.S_ISLNK(value.st_mode) or value.st_uid != 0 or value.st_gid != 0 or value.st_nlink != 1 or stat.S_IMODE(value.st_mode) != 0o600): raise RuntimeError('unsafe detached job file')
+ return value
+def atomic(path, value):
+ fd, temporary=tempfile.mkstemp(prefix='.'+os.path.basename(path)+'-',dir=root)
+ try:
+  os.fchmod(fd,0o600)
+  with os.fdopen(fd,'wb') as stream: stream.write(value); stream.flush(); os.fsync(stream.fileno())
+  os.replace(temporary,path)
+ finally:
+  try: os.unlink(temporary)
+  except FileNotFoundError: pass
+private_regular(contract_path)
+with open(contract_path,'rb') as stream: contract_bytes=stream.read()
+contract=json.loads(contract_bytes); contract_sha256=hashlib.sha256(contract_bytes).hexdigest()
+started=time.time_ns(); stdout=b''; stderr=b''; returncode=125; error=None; secrets=[]
+try:
+ for path in contract['secret_paths']:
+  private_regular(path)
+  with open(path,'rb') as stream: secrets.append(stream.read())
+ environment=os.environ.copy()
+ for index,path in enumerate(contract['secret_paths']): environment['TILO_DETACHED_SECRET_'+str(index)]=path
+ completed=subprocess.run(contract['argv'],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=False,env=environment)
+ stdout,stderr,returncode=completed.stdout,completed.stderr,completed.returncode
+except BaseException as caught:
+ error=type(caught).__name__+': '+str(caught)
+finally:
+ cleaned=True
+ for path in contract['secret_paths']:
+  try:
+   value=os.lstat(path)
+   if stat.S_ISREG(value.st_mode) and not stat.S_ISLNK(value.st_mode): os.unlink(path)
+   else: cleaned=False
+  except FileNotFoundError: pass
+  except OSError: cleaned=False
+ for secret in secrets:
+  if secret and (secret in stdout or secret in stderr): error='worker output contained a staged secret'; returncode=125; stdout=b''; stderr=b''
+ out,out_truncated=stdout[:limit],len(stdout)>limit
+ err,err_truncated=stderr[:limit],len(stderr)>limit
+ receipt={'schema':1,'purpose':'tilo-supervised-detached-job','contract_sha256':contract_sha256,'operation':contract['operation'],'worker':contract['worker'],'container':contract['container'],'argv_sha256':contract['argv_sha256'],'input_identities':contract['input_identities'],'output_sha256':hashlib.sha256(stdout).hexdigest(),'output_bytes':len(stdout),'stdout_base64':base64.b64encode(out).decode(),'stderr_base64':base64.b64encode(err).decode(),'stdout_truncated':out_truncated,'stderr_truncated':err_truncated,'returncode':returncode,'secrets_cleaned':cleaned,'started_at_ns':started,'finished_at_ns':time.time_ns(),'status':'succeeded' if returncode == 0 and error is None and cleaned else 'failed'}
+ if error is not None: receipt['error']=error
+ atomic(receipt_path,(json.dumps(receipt,sort_keys=True,separators=(',',':'))+'\n').encode())
+ try: os.unlink(state_path)
+ except FileNotFoundError: pass
+'''
+
+
+DETACHED_JOB_STATUS = r'''import json, os, stat, sys, time
+root=sys.argv[1]
+def regular(path):
+ try:
+  value=os.lstat(path)
+  return stat.S_ISREG(value.st_mode) and not stat.S_ISLNK(value.st_mode) and value.st_nlink==1 and value.st_size<=1048576
+ except FileNotFoundError:return False
+receipt=root+'/receipt.json'; state=root+'/state.json'; claim=root+'/claim'
+if regular(receipt): print(json.dumps({'state':'finished','receipt':open(receipt).read()})); raise SystemExit
+if regular(state):
+ value=json.loads(open(state).read()); pid=value.get('pid')
+ if type(pid) is not int or pid <= 1: raise SystemExit(2)
+ try: os.kill(pid,0)
+ except ProcessLookupError: print(json.dumps({'state':'dead'}))
+ else: print(json.dumps({'state':'running'}))
+ raise SystemExit
+if os.path.isdir(claim): print(json.dumps({'state':'starting' if time.time()-os.stat(claim).st_mtime < 60 else 'dead'}))
+else: print(json.dumps({'state':'absent'}))
+'''
+
+
+def _canonical_json(value):
+    return json.dumps(value,sort_keys=True,separators=(',',':')).encode()
+
+
+def _detached_job_contract(operation, worker, container, argv, inputs, root):
+    required={'pod','pod_uid','namespace','node','node_uid','spec','image_id'}
+    if (not re.fullmatch(r'[a-z0-9][a-z0-9-]{2,64}',operation) or set(worker)!=required
+            or not digest_reference(worker['image_id']) or not isinstance(argv,list) or not argv
+            or not all(isinstance(row,str) and row for row in argv)):
+        raise ValueError('invalid detached job contract')
+    identities={}
+    for name,value in inputs.items():
+        if (not re.fullmatch(r'[a-z][a-z0-9-]{0,63}',name) or not isinstance(value,bytes)
+                or len(value)>1024*1024): raise ValueError('invalid detached job input')
+        identities[name]={'sha256':hashlib.sha256(value).hexdigest(),'size':len(value)}
+    binding={key:worker[key] for key in ('pod','pod_uid','namespace','node','node_uid','image_id')}
+    paths=[root+'/private/'+name for name in sorted(inputs)]
+    contract={'schema':1,'purpose':'tilo-supervised-detached-job','operation':operation,
+      'worker':binding,'container':container,'argv':argv,
+      'argv_sha256':hashlib.sha256(_canonical_json(argv)).hexdigest(),
+      'input_identities':identities,'secret_paths':paths}
+    return contract,_canonical_json(contract)+b'\n'
+
+
+def _detached_job_root(operation, worker, container, argv, inputs):
+    stable={'operation':operation,
+      'worker':{key:worker[key] for key in ('pod','pod_uid','namespace','node','node_uid','image_id')},
+      'container':container,'argv':argv,
+      'inputs':{name:hashlib.sha256(value).hexdigest() for name,value in sorted(inputs.items())}}
+    return '/work/.tilo-detached-jobs/'+hashlib.sha256(_canonical_json(stable)).hexdigest()
+
+
+def _stage_detached_input(context, worker, container, path, content, identity):
+    script = r'''set -euo pipefail
+umask 077
+path="$1"; expected="$2"; directory=${path%/*}
+test "$directory" != "$path"
+mkdir -p -m 0700 -- "$directory"
+test ! -L "$directory"
+if test -e "$path" || test -L "$path"; then
+  test ! -L "$path"
+  test "$(stat -c '%u:%g:%a:%F' "$path")" = '0:0:600:regular file'
+  printf '%s  %s\n' "$expected" "$path" | sha256sum -c - >/dev/null
+  exit 0
+fi
+temporary=$(mktemp "$directory/.input.XXXXXX")
+trap 'rm -f -- "$temporary"' EXIT HUP INT TERM
+cat > "$temporary"
+chmod 0600 "$temporary"
+printf '%s  %s\n' "$expected" "$temporary" | sha256sum -c - >/dev/null
+mv -n -- "$temporary" "$path"
+test ! -e "$temporary"
+test ! -L "$path"
+test "$(stat -c '%u:%g:%a:%F' "$path")" = '0:0:600:regular file'
+printf '%s  %s\n' "$expected" "$path" | sha256sum -c - >/dev/null
+'''
+    command(kubectl(context,'-n',worker['namespace'],'exec','-i',worker['pod'],'-c',container,
+      '--','sh','-ceu',script,'sh',path,identity),content,timeout=30,text=False)
+
+
+def _detached_job_status(context, worker, container, root):
+    output=command(kubectl(context,'-n',worker['namespace'],'exec',worker['pod'],'-c',container,
+      '--','python3','-c',DETACHED_JOB_STATUS,root),timeout=30)
+    try:value=json.loads(output)
+    except (TypeError,json.JSONDecodeError) as error:
+        raise ValueError('detached job status is invalid') from error
+    if set(value)=={'state'} and value['state'] in {'absent','starting','running','dead'}: return value
+    if (set(value)=={'state','receipt'} and value['state']=='finished'
+            and isinstance(value['receipt'],str)): return value
+    raise ValueError('detached job status is invalid')
+
+
+def _validate_detached_receipt(value, contract, contract_bytes):
+    expected={'schema':1,'purpose':'tilo-supervised-detached-job',
+      'contract_sha256':hashlib.sha256(contract_bytes).hexdigest(),'operation':contract['operation'],
+      'worker':contract['worker'],'container':contract['container'],
+      'argv_sha256':contract['argv_sha256'],'input_identities':contract['input_identities']}
+    permitted=set(expected)|{'output_sha256','output_bytes','stdout_base64','stderr_base64',
+      'stdout_truncated','stderr_truncated','returncode','secrets_cleaned','started_at_ns',
+      'finished_at_ns','status','error'}
+    if (not isinstance(value,dict) or not set(value).issubset(permitted) or not set(expected).issubset(value)
+            or any(value.get(key)!=item for key,item in expected.items())
+            or value.get('status') not in {'succeeded','failed'} or type(value.get('returncode')) is not int
+            or type(value.get('secrets_cleaned')) is not bool
+            or type(value.get('output_bytes')) is not int or not 0<=value['output_bytes']<=DETACHED_JOB_OUTPUT_BYTES
+            or not re.fullmatch(r'[0-9a-f]{64}',value.get('output_sha256',''))
+            or type(value.get('stdout_truncated')) is not bool or type(value.get('stderr_truncated')) is not bool
+            or type(value.get('started_at_ns')) is not int or type(value.get('finished_at_ns')) is not int
+            or value['finished_at_ns']<value['started_at_ns']):
+        raise ValueError('detached job receipt does not bind its requested execution')
+    try:
+        stdout=base64.b64decode(value['stdout_base64'],validate=True)
+        stderr=base64.b64decode(value['stderr_base64'],validate=True)
+    except (KeyError,TypeError,ValueError) as error:
+        raise ValueError('detached job receipt has invalid bounded logs') from error
+    if len(stdout)>DETACHED_JOB_LOG_BYTES or len(stderr)>DETACHED_JOB_LOG_BYTES:
+        raise ValueError('detached job receipt log exceeds bound')
+    if value['status']!='succeeded' or value['returncode']!=0 or not value['secrets_cleaned']:
+        raise ValueError('detached job failed or did not clean private inputs')
+    if (value['stdout_truncated'] or value['output_bytes']!=len(stdout)
+            or hashlib.sha256(stdout).hexdigest()!=value['output_sha256']):
+        raise ValueError('detached job output is incomplete or differs from its receipt')
+    return stdout
+
+
+def _launch_detached_job(context, worker, container, root):
+    script=r'''set -euo pipefail
+umask 077
+root="$1"; runner="$root/runner.py"; contract="$root/contract.json"; claim="$root/claim"; state="$root/state.json"; log="$root/runner.log"
+test ! -L "$root"; test -f "$runner"; test -f "$contract"
+if ! mkdir -- "$claim" 2>/dev/null; then exit 0; fi
+test ! -e "$state" && test ! -L "$state"; test ! -e "$log" && test ! -L "$log"
+setsid python3 "$runner" "$root" 131072 </dev/null >"$log" 2>&1 &
+pid=$!
+temporary="$root/.state.$$"
+printf '{"pid":%s}\n' "$pid" > "$temporary"
+chmod 0600 "$temporary"
+mv -f -- "$temporary" "$state"
+'''
+    command(kubectl(context,'-n',worker['namespace'],'exec',worker['pod'],'-c',container,
+      '--','sh','-ceu',script,'sh',root),timeout=30)
+
+
+def detached_job(context, worker, container, purpose, argv, *, operation, inputs, timeout,
+                 poll_seconds=DETACHED_JOB_POLL_SECONDS, sleeper=time.sleep):
+    """Run a worker-owned process and adopt the bound receipt after reconnect."""
+    if (not re.fullmatch(r'[a-z][a-z0-9-]{0,63}',purpose)
+            or not re.fullmatch(r'[a-z0-9][a-z0-9-]{2,64}',operation)
+            or not isinstance(inputs,dict) or timeout<=0 or poll_seconds<1):
+        raise ValueError('invalid detached job parameters')
+    full_operation=operation+'-'+purpose
+    root=_detached_job_root(full_operation,worker,container,argv,inputs)
+    contract,contract_bytes=_detached_job_contract(full_operation,worker,container,argv,inputs,root)
+    require_same_worker(context,worker)
+    started=time.monotonic(); retry_delay=1
+    while True:
+        try:
+            status=_detached_job_status(context,worker,container,root)
+            retry_delay=1
+        except ControllerTransportError:
+            if time.monotonic()-started>=timeout: raise
+            sleeper(retry_delay);retry_delay=min(retry_delay*2,10)
+            continue
+        if status['state']=='finished':
+            try:receipt=json.loads(status['receipt'])
+            except json.JSONDecodeError as error:raise ValueError('detached job receipt is invalid') from error
+            require_same_worker(context,worker)
+            return _validate_detached_receipt(receipt,contract,contract_bytes)
+        if status['state']=='dead': raise ValueError('detached job died without a receipt')
+        if status['state']=='absent':
+            stream_file(context,worker['namespace'],worker['pod'],container,root+'/contract.json',contract_bytes)
+            stream_file(context,worker['namespace'],worker['pod'],container,root+'/runner.py',DETACHED_JOB_RUNNER.encode())
+            for name in sorted(inputs):
+                _stage_detached_input(context,worker,container,root+'/private/'+name,inputs[name],
+                  contract['input_identities'][name]['sha256'])
+            _launch_detached_job(context,worker,container,root)
+        if time.monotonic()-started>=timeout: raise ValueError('detached job receipt did not arrive before its deadline')
+        sleeper(poll_seconds)
 
 
 def remote_file_identity(context, worker, container='disk', path='/work/disk-output/disk.raw'):
@@ -1716,7 +1973,7 @@ def handoff_creator_to_verifier(root,args,nodes,checkpoint,disk_node,vm_node,dis
             sparse_transfer(args.context,disk,verifier,target_container='disk',
                             target_directory='/work/disk-output',target_name='disk.raw',
                             operation=args.acceptance_id,identity=identity)
-            verifier_identity=raw_identity(args.context,verifier)
+            verifier_identity=raw_identity(args.context,verifier,operation=args.acceptance_id)
             if verifier_identity!=identity:
                 raise ValueError('independent verifier received different raw media')
             copied=transfer_receipt(creation,identity,remote_file_identity(args.context,verifier))
@@ -1863,7 +2120,7 @@ def main():
     with timer.stage('verification'):
         auth_bytes=registry_auth(args)
         try:
-            verification=verify_disk(args.context,verifier,values,auth_bytes)
+            verification=verify_disk(args.context,verifier,values,auth_bytes,args.acceptance_id)
         finally:
             del auth_bytes
         parsed=json.loads(verification)
@@ -1871,7 +2128,7 @@ def main():
                 or not parsed.get('checks') or not all(parsed['checks'].values())):
             raise ValueError('independent installed-disk verification did not pass')
         write_private(args.operation_dir/'installed-verification.json',(json.dumps(parsed,indent=2,sort_keys=True)+'\n').encode())
-        finalized=verify_finalized_source(args.context,verifier,values,json.loads(creation))
+        finalized=verify_finalized_source(args.context,verifier,values,json.loads(creation),args.acceptance_id)
         finalized_bytes=(json.dumps(finalized,indent=2,sort_keys=True)+'\n').encode()
         write_private(args.operation_dir/'finalized-verification.json',finalized_bytes)
         finalization_verification_sha256=hashlib.sha256(finalized_bytes).hexdigest()
