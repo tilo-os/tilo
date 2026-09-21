@@ -640,9 +640,15 @@ fn caller_revoked_after_request_capture_is_refused_at_execution() {
     if let CommitOperation::DesktopCommand { caller, .. } = &mut captured.operation {
         *caller = certificate;
     }
-    let root_key =
-        persist::read_signing_key(&IdentityPaths::under(path.join("identity")).user_privkey)
-            .unwrap();
+    let root_key = persist::read_signing_key(
+        &IdentityPaths::under(
+            std::fs::canonicalize(owner.root())
+                .unwrap()
+                .join("identity"),
+        )
+        .user_privkey,
+    )
+    .unwrap();
     let mut entry = RevocationEntry {
         user_public_key: root_key.verifying_key().to_bytes(),
         revoked_device_public_key: key.verifying_key().to_bytes(),
