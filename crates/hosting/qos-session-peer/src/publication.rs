@@ -41,6 +41,54 @@ impl PublicationCursor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
+
+    fn enrollment_proof(
+        authority: &mut crate::enrollment::EnrollmentAuthority,
+        owner: &SessionOwner,
+        key: &SigningKey,
+        request_id: u8,
+        now: u64,
+    ) -> qos_peer_state::enrollment::CompleteRequest {
+        let challenge = authority
+            .challenge(
+                owner,
+                qos_peer_state::enrollment::ChallengeRequest {
+                    device_public_key: hex::encode(key.verifying_key().to_bytes()),
+                    request_id: hex::encode([request_id; 32]),
+                },
+                now,
+            )
+            .unwrap();
+        qos_peer_state::enrollment::sign(
+            &qos_peer_state::enrollment::decode(&challenge.challenge).unwrap(),
+            key,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn verified_same_device_enrollment_does_not_reset_a_current_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        let key = SigningKey::from_bytes(&[41; 32]);
+        let now = tilo_relay::clock::now_ns();
+        let mut authority = crate::enrollment::EnrollmentAuthority::default();
+        let first = enrollment_proof(&mut authority, &owner, &key, 1, now);
+        authority.complete(&mut owner, first, now).unwrap();
+        let mut cursor = PublicationCursor::default();
+        cursor.send(&owner, |_, _| Ok(())).unwrap();
+
+        let second = enrollment_proof(&mut authority, &owner, &key, 2, now);
+        authority.complete(&mut owner, second, now).unwrap();
+
+        cursor
+            .send(&owner, |_, _| {
+                panic!("same committed device reset publication cursor")
+            })
+            .unwrap();
+    }
+
     #[test]
     fn send_failure_reconnect_and_compaction_replay_without_retiring_evidence() {
         let temp = tempfile::tempdir().unwrap();

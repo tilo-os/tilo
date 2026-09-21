@@ -157,6 +157,7 @@ impl EnrollmentAuthority {
             .iter()
             .find(|entry| entry.device_public_key == challenge.device_public_key)
             .map(|entry| entry.certificate.clone());
+        let reused_certificate = existing.is_some();
         let certificate = if let Some(certificate) = existing {
             certificate
         } else {
@@ -185,7 +186,7 @@ impl EnrollmentAuthority {
             cert
         };
         let mut candidate = owner.peer().clone();
-        candidate
+        let governance_changed = candidate
             .admit_certificate(
                 certificate.clone(),
                 &owner.identity.native,
@@ -205,24 +206,25 @@ impl EnrollmentAuthority {
             .ok_or_else(|| EnrollmentError::new(503, "canonical directory workspace missing"))?
             .member_devices
             .clone();
-        if !members.contains(&certificate.device_public_key) {
+        let directory_changed = !members.contains(&certificate.device_public_key);
+        if directory_changed {
             members.push(certificate.device_public_key);
             members.sort();
             directory
                 .set_member_devices(workspace, &members)
                 .map_err(EnrollmentError::unavailable)?;
         }
-        owner
-            .commit_enrollment(
-                candidate,
-                directory.save(),
-                Issuance {
-                    device_public_key: challenge.device_public_key,
-                    request_id: challenge.request_id,
-                    certificate: certificate.clone(),
-                },
-            )
-            .map_err(EnrollmentError::unavailable)?;
+        let issuance = Issuance {
+            device_public_key: challenge.device_public_key,
+            request_id: challenge.request_id,
+            certificate: certificate.clone(),
+        };
+        if reused_certificate && !governance_changed && !directory_changed {
+            owner.commit_existing_issuance(issuance)
+        } else {
+            owner.commit_enrollment(candidate, directory.save(), issuance)
+        }
+        .map_err(EnrollmentError::unavailable)?;
         Ok(certificate)
     }
 }

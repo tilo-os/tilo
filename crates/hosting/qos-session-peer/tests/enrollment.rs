@@ -4,6 +4,8 @@ use qos_session_peer::{
     SessionOwner,
     enrollment::{EnrollmentAuthority, public_bootstrap},
 };
+use ui::automerge::AutoCommit;
+use web_time::SystemTime;
 fn request(key: &SigningKey, id: u8) -> ChallengeRequest {
     ChallengeRequest {
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
@@ -19,6 +21,122 @@ fn proof(
 ) -> enrollment::CompleteRequest {
     let challenge = authority.challenge(owner, request(key, id), now).unwrap();
     enrollment::sign(&enrollment::decode(&challenge.challenge).unwrap(), key).unwrap()
+}
+
+fn owner_with_twenty_four_records(path: &std::path::Path) -> SessionOwner {
+    let mut owner = SessionOwner::initialize(path).unwrap();
+    let key = tilo_user_identity::persist::read_device_key(
+        &tilo_user_identity::persist::IdentityPaths::under(path.join("identity")).device_privkey,
+    )
+    .unwrap();
+    let mut candidate = owner.peer().clone();
+    for index in candidate.rows().len()..24 {
+        candidate
+            .publish_document(
+                "dev.qos.enrollment-fixture",
+                &format!("record-{index:02}"),
+                AutoCommit::new().save(),
+                &key,
+                SystemTime::now(),
+            )
+            .unwrap();
+    }
+    owner
+        .commit_mutation_candidate(candidate, owner.directory().to_vec())
+        .unwrap();
+    owner.refresh_checkpoint().unwrap();
+    assert_eq!(owner.status().records.len(), 24);
+    assert_eq!(owner.outgoing().len(), 25);
+    assert_eq!(owner.publication_baseline().1, 25);
+    owner
+}
+
+#[test]
+fn verified_same_device_new_request_preserves_the_exact_publication_basis() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("owner");
+    let mut owner = owner_with_twenty_four_records(&path);
+    let key = SigningKey::from_bytes(&[31; 32]);
+    let now = tilo_relay::clock::now_ns();
+    let mut service = EnrollmentAuthority::default();
+    let first = proof(&mut service, &owner, &key, 1, now);
+    let certificate = service.complete(&mut owner, first, now).unwrap();
+    let baseline = owner.publication_baseline();
+    let outgoing = owner.outgoing().to_vec();
+    let kinds = owner.outgoing_kinds().to_vec();
+    assert_eq!(outgoing.len(), 25);
+
+    let second = proof(&mut service, &owner, &key, 2, now);
+    assert_eq!(
+        service.complete(&mut owner, second, now).unwrap(),
+        certificate
+    );
+
+    assert_eq!(owner.enrollment_count(), 1);
+    assert_eq!(owner.peer().certificates().len(), 2);
+    assert_eq!(owner.publication_baseline(), baseline);
+    assert_eq!(owner.outgoing(), outgoing);
+    assert_eq!(owner.outgoing_kinds(), kinds);
+
+    let generation = owner.status().generation;
+    drop(owner);
+    let mut owner = SessionOwner::open(&path).unwrap();
+    let mut service = EnrollmentAuthority::default();
+    let retry = proof(&mut service, &owner, &key, 2, now);
+    assert_eq!(
+        service.complete(&mut owner, retry, now).unwrap(),
+        certificate
+    );
+    assert_eq!(owner.status().generation, generation);
+    assert_eq!(owner.publication_baseline(), baseline);
+    assert_eq!(owner.outgoing(), outgoing);
+}
+
+#[test]
+fn new_device_and_missing_directory_membership_still_replace_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+    let now = tilo_relay::clock::now_ns();
+    let mut service = EnrollmentAuthority::default();
+    let first_key = SigningKey::from_bytes(&[32; 32]);
+    let first = proof(&mut service, &owner, &first_key, 1, now);
+    service.complete(&mut owner, first, now).unwrap();
+
+    let before_new_device = owner.publication_baseline();
+    let second_key = SigningKey::from_bytes(&[33; 32]);
+    let second = proof(&mut service, &owner, &second_key, 2, now);
+    service.complete(&mut owner, second, now).unwrap();
+    assert_ne!(owner.publication_baseline(), before_new_device);
+
+    let mut directory = tilo_user_identity::WorkspaceDirectory::load(
+        owner.peer().authority().user_public_key,
+        owner.peer().authority().device_public_key,
+        owner.directory(),
+    )
+    .unwrap();
+    let workspace = tilo_relay::room_workspace_id(owner.peer().room()).unwrap();
+    directory
+        .set_member_devices(workspace, &[owner.peer().authority().device_public_key])
+        .unwrap();
+    owner
+        .commit_admission(owner.peer().clone(), directory.save())
+        .unwrap();
+    let before_readmission = owner.publication_baseline();
+
+    let readmit = proof(&mut service, &owner, &first_key, 3, now);
+    service.complete(&mut owner, readmit, now).unwrap();
+    assert_ne!(owner.publication_baseline(), before_readmission);
+    let directory = tilo_user_identity::WorkspaceDirectory::load(
+        owner.peer().authority().user_public_key,
+        owner.peer().authority().device_public_key,
+        owner.directory(),
+    )
+    .unwrap();
+    assert!(
+        directory.as_map()[&workspace]
+            .member_devices
+            .contains(&first_key.verifying_key().to_bytes())
+    );
 }
 #[test]
 fn eight_independent_keys_share_canonical_room_and_full_directory() {
@@ -163,6 +281,37 @@ fn failed_native_commit_cannot_publish_an_issuance_result() {
     );
     assert_eq!(owner.enrollment_count(), 0);
     assert_eq!(owner.status(), before);
+    assert!(!owner.permits_publication());
+}
+
+#[test]
+fn failed_same_device_audit_commit_cannot_return_enrollment_success() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("owner");
+    let mut owner = SessionOwner::initialize(&path).unwrap();
+    let key = SigningKey::from_bytes(&[34; 32]);
+    let now = tilo_relay::clock::now_ns();
+    let mut service = EnrollmentAuthority::default();
+    let first = proof(&mut service, &owner, &key, 1, now);
+    service.complete(&mut owner, first, now).unwrap();
+    let before = owner.status();
+    let baseline = owner.publication_baseline();
+    let outgoing = owner.outgoing().to_vec();
+    let second = proof(&mut service, &owner, &key, 2, now);
+
+    std::fs::rename(path.join("session.bin"), path.join("saved.bin")).unwrap();
+    std::fs::create_dir(path.join("session.bin")).unwrap();
+    assert_eq!(
+        service
+            .complete(&mut owner, second, now)
+            .unwrap_err()
+            .status,
+        503
+    );
+    assert_eq!(owner.status(), before);
+    assert_eq!(owner.enrollment_count(), 1);
+    assert_eq!(owner.publication_baseline(), baseline);
+    assert_eq!(owner.outgoing(), outgoing);
     assert!(!owner.permits_publication());
 }
 

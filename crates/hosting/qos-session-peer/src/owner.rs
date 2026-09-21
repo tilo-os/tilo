@@ -713,6 +713,49 @@ impl SessionOwner {
         next.issuances.push(issuance);
         self.commit(next, candidate)
     }
+    /// Persist a newly authorized request for an already admitted device without
+    /// replacing the committed publication basis. The exact request remains
+    /// auditable and idempotent across restart, while a current publisher cursor
+    /// has no new state to send.
+    pub(crate) fn commit_existing_issuance(
+        &mut self,
+        issuance: crate::enrollment::Issuance,
+    ) -> Result<CommitReceipt> {
+        if issuance.device_public_key != issuance.certificate.device_public_key
+            || !self
+                .peer
+                .certificates()
+                .iter()
+                .any(|certificate| certificate == &issuance.certificate)
+        {
+            bail!("existing issuance certificate is not admitted");
+        }
+        let directory = WorkspaceDirectory::load(
+            issuance.certificate.user_public_key,
+            self.peer.authority().device_public_key,
+            self.directory(),
+        )?;
+        let workspace = tilo_relay::room_workspace_id(self.peer.room())?;
+        if !directory
+            .as_map()
+            .get(&workspace)
+            .is_some_and(|entry| entry.member_devices.contains(&issuance.device_public_key))
+        {
+            bail!("existing issuance device is absent from the canonical directory");
+        }
+        if let Some(prior) = self.aggregate.issuances.iter().find(|prior| {
+            prior.device_public_key == issuance.device_public_key
+                && prior.request_id == issuance.request_id
+        }) {
+            if prior.certificate != issuance.certificate {
+                bail!("enrollment request ID names a different certificate");
+            }
+            return self.flush();
+        }
+        let mut next = self.aggregate.clone();
+        next.issuances.push(issuance);
+        self.commit(next, self.peer.clone())
+    }
     fn validate_admission(&self, candidate: &StatePeer, directory: &[u8]) -> Result<()> {
         fn preserves_document(before: &[u8], after: &[u8]) -> Result<()> {
             let mut before = ui::automerge::AutoCommit::load(before)?;
