@@ -157,6 +157,7 @@ impl FrameHarness {
         self.try_presentation(|root, _| InspectionSnapshot {
             viewport: [self.viewport.0, self.viewport.1],
             root: collect_inspection(root, "", &mut HashMap::new()),
+            presentation: None,
         })
     }
 
@@ -170,6 +171,7 @@ impl FrameHarness {
         self.presentation(|root, _| InspectionSnapshot {
             viewport: [self.viewport.0, self.viewport.1],
             root: collect_inspection(root, "", &mut HashMap::new()),
+            presentation: None,
         })
     }
 
