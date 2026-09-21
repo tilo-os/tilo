@@ -2182,6 +2182,7 @@ impl Widget for TileHost {
             return;
         };
         if let Some(history) = &mut self.history {
+            history.observe_pointer(event, scale_factor);
             if history.controls_event(event, scale_factor) {
                 history.route_event(
                     app.as_mut(),
@@ -3847,6 +3848,109 @@ mod tests {
             &taffy,
         );
         assert_eq!(calls.get(), 0);
+    }
+
+    /// Native Shell dispatches directly into TileHost: unlike App and the
+    /// headless Driver, it does not pre-observe embedded History pointers.
+    #[test]
+    fn live_body_pointer_edges_follow_motion_out_of_history_toolbar() {
+        use taffy::prelude::TaffyMaxContent;
+        use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase};
+
+        for scale in [1.0, 2.0] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = canonical_store(&directory.path().join("records"));
+            let checkout = tab_checkout(3914);
+            store
+                .reserve_record(&checkout)
+                .unwrap()
+                .initialize(|_| Ok(()))
+                .unwrap();
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut host = TileHost::new(TileContent::App(Box::new(EventProbe(calls.clone()))));
+            host.bind_record(store, checkout);
+            host.register_document_history(&DECLARED_HISTORY).unwrap();
+            let mut tree = TaffyTree::new();
+            let mut nodes = std::collections::HashMap::new();
+            let node = host.build_layout(&mut tree, &Theme::default(), &mut nodes);
+            let mut style = tree.style(node).unwrap().clone();
+            style.size = Size {
+                width: Dimension::length(800.0),
+                height: Dimension::length(480.0),
+            };
+            tree.set_style(node, style).unwrap();
+            tree.compute_layout(node, Size::MAX_CONTENT).unwrap();
+            host.apply_layout(&tree, node, Point::ORIGIN);
+            let history = host.history.as_ref().unwrap();
+            assert!(history.live_interactive());
+            let toolbar = history.children().first().unwrap().get_rect();
+            assert!(toolbar.width() > 0.0 && toolbar.height() > 0.0);
+            let body = Point::new(toolbar.center().x, toolbar.y1 + 40.0);
+            assert!(host.get_rect().contains(body) && !toolbar.contains(body));
+            let device = unsafe { std::mem::zeroed() };
+            let motion = |point: Point| WindowEvent::CursorMoved {
+                device_id: device,
+                position: (point.x * scale, point.y * scale).into(),
+            };
+            let mut doc = AutoCommit::new();
+            let mut send = |event: &WindowEvent| {
+                calls.set(0);
+                let mut handled = false;
+                host.handle_event(
+                    event,
+                    scale,
+                    &winit::event::Modifiers::default(),
+                    &mut doc,
+                    &ROOT,
+                    &mut handled,
+                    &mut None,
+                    node,
+                    &tree,
+                );
+                (handled, calls.get())
+            };
+            let wheel = WindowEvent::MouseWheel {
+                device_id: device,
+                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: TouchPhase::Moved,
+            };
+            assert_eq!(
+                send(&motion(toolbar.center())),
+                (true, 0),
+                "toolbar owns its motion"
+            );
+            assert_eq!(
+                send(&wheel),
+                (true, 0),
+                "toolbar input must not reach the app"
+            );
+            assert_eq!(
+                send(&motion(body)),
+                (false, 1),
+                "live body receives pointer motion"
+            );
+            let button = |state| WindowEvent::MouseInput {
+                device_id: device,
+                state,
+                button: MouseButton::Left,
+            };
+            for (edge, event) in [
+                ("press", button(ElementState::Pressed)),
+                ("release", button(ElementState::Released)),
+                ("wheel", wheel),
+            ] {
+                assert_eq!(
+                    send(&event),
+                    (false, 1),
+                    "live body must receive {edge} after leaving toolbar at scale {scale}"
+                );
+            }
+            assert_eq!(
+                send(&motion(toolbar.center())),
+                (true, 0),
+                "returning to toolbar restores its input ownership"
+            );
+        }
     }
 
     /// A tab with no file is its own record; a tab whose app has a file
