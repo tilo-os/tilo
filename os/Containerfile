@@ -1023,10 +1023,35 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # C2 time sync (chrony), C3 zram swap (zram-generator), C4 locale data,
 # C5 firewall (firewalld), C7 bluetooth (bluez), C8 power (power-profiles-daemon).
 # Audio (C6) reuses the pipewire stack installed above.
+# The Imager exposes a multilingual locale catalog. Ship every corresponding
+# glibc language pack so each accepted profile remains functional after first
+# boot; advertising languages backed by only glibc-langpack-en would silently
+# apply an unusable LANG value and fall back to English. Keep this curated set
+# in lock-step with os/usr/share/tilo/installer-locales.txt rather than pulling
+# the much larger all-locales archive into every download.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     chrony \
     zram-generator \
+    glibc-langpack-ar \
+    glibc-langpack-cs \
+    glibc-langpack-da \
+    glibc-langpack-de \
     glibc-langpack-en \
+    glibc-langpack-es \
+    glibc-langpack-fi \
+    glibc-langpack-fr \
+    glibc-langpack-it \
+    glibc-langpack-ja \
+    glibc-langpack-ko \
+    glibc-langpack-nb \
+    glibc-langpack-nl \
+    glibc-langpack-pl \
+    glibc-langpack-pt \
+    glibc-langpack-ru \
+    glibc-langpack-sv \
+    glibc-langpack-tr \
+    glibc-langpack-uk \
+    glibc-langpack-zh \
     firewalld \
     bluez \
     power-profiles-daemon \
@@ -1420,6 +1445,7 @@ COPY os/usr/lib/systemd/user/shell-peer-sync.service /usr/lib/systemd/user/shell
 COPY os/etc/systemd/zram-generator.conf /etc/systemd/zram-generator.conf
 COPY os/etc/locale.conf /etc/locale.conf
 COPY os/etc/chrony.conf /etc/chrony.conf
+COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt
 
 # Bundled documentation (the README in the OS submodule, plus the
 # peer-sync trade-off doc users are pointed at from the .desktop
