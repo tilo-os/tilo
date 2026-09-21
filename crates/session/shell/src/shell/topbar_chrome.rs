@@ -3790,11 +3790,13 @@ impl Widget for TopBarChrome {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // While any group holds fullscreen, collapse to zero height.
-        let fullscreen = self
-            .chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().is_fullscreen());
+        // A client-requested fullscreen owns the whole output. User maximize
+        // still fills the workspace, but keeps the OS-owned top bar available
+        // for navigation and session controls.
+        let fullscreen = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.fullscreen_group().is_some() && state.is_fullscreen()
+        });
         let style = Style {
             display: if fullscreen {
                 Display::None
