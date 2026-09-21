@@ -584,6 +584,15 @@ def create_or_adopt_worker(context, manifest):
     existing=adopt_worker(context,manifest)
     if existing is not None:
         return existing
+    try:
+        return create_worker(context,manifest)
+    except ValueError:
+        # A controller restart can race the original create after the API has
+        # accepted the Pod.  Adopt only the exact deterministic manifest.
+        existing=adopt_worker(context,manifest)
+        if existing is None:
+            raise
+        return existing
 
 
 def persist_creator_create_intent(operation_dir, operation, manifest):
@@ -605,15 +614,6 @@ def load_creator_create_intent(operation_dir, operation):
             or manifest.get('metadata',{}).get('namespace')!='kata-system'):
         raise ValueError('creator create intent has an invalid target')
     return value
-    try:
-        return create_worker(context,manifest)
-    except ValueError:
-        # A controller restart can race the original create after the API has
-        # accepted the Pod.  Adopt only the exact deterministic manifest.
-        existing=adopt_worker(context,manifest)
-        if existing is None:
-            raise
-        return existing
 
 
 def stream_file(context, namespace, pod, container, destination, content):
