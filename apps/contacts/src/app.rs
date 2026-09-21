@@ -97,13 +97,16 @@ fn contacts_export_request(current_name: &str) -> PickRequest {
 /// pointer target, both grown with these lines (see `toolbar_h`).
 const TOOLBAR_BUTTON_TEXT: f32 = 13.0;
 /// Authored 1× widths of the toolbar faces: the primary New button and the
-/// two file buttons (Import / Export). Grown by the measured label growth.
+/// two file buttons (Import / Export), and duplicate-review action. Grown by
+/// the measured label growth.
 const TOOLBAR_NEW_W: f64 = 104.0;
 const TOOLBAR_FILE_W: f64 = 86.0;
+const TOOLBAR_DUPLICATE_W: f64 = 112.0;
 /// The toolbar labels, shared by the painter and the width measurement so
 /// the face is always sized for the text it actually shows.
 const TOOLBAR_IMPORT_LABEL: &str = "Import";
 const TOOLBAR_EXPORT_LABEL: &str = "Export";
+const TOOLBAR_DUPLICATE_LABEL: &str = "Review duplicate";
 const TOOLBAR_NEW_LABEL: &str = "+ New";
 /// Authored 1× list row height; rows grow past it only when the measured
 /// name + subtitle lines need more (see [`ContactRowMetrics`]).
@@ -242,6 +245,7 @@ const FORM_CANCEL_LABEL: &str = "Cancel";
 struct LabelGrowth {
     import: f64,
     export: f64,
+    duplicate: f64,
     new: f64,
     add_phone: f64,
     add_email: f64,
@@ -275,6 +279,11 @@ impl LabelGrowth {
                 TOOLBAR_BUTTON_TEXT,
                 TextWeight::Medium,
             ),
+            duplicate: growth(
+                TOOLBAR_DUPLICATE_LABEL,
+                TOOLBAR_BUTTON_TEXT,
+                TextWeight::Medium,
+            ),
             new: growth(TOOLBAR_NEW_LABEL, TOOLBAR_BUTTON_TEXT, TextWeight::Medium),
             add_phone: growth(FORM_ADD_PHONE_LABEL, text_sm(), TextWeight::Medium),
             add_email: growth(FORM_ADD_EMAIL_LABEL, text_sm(), TextWeight::Medium),
@@ -291,6 +300,7 @@ impl LabelGrowth {
         let pairs = [
             (self.import, other.import),
             (self.export, other.export),
+            (self.duplicate, other.duplicate),
             (self.new, other.new),
             (self.add_phone, other.add_phone),
             (self.add_email, other.add_email),
@@ -3272,7 +3282,16 @@ impl ContactsApp {
         x -= new_w + if compact_toolbar { 6.0 } else { 10.0 };
         let exp_w = face_w(TOOLBAR_FILE_W, g.export);
         self.hit.export = Rect::new(x - exp_w, btn_y, x, btn_y + btn_h);
-        x -= exp_w + if compact_toolbar { 6.0 } else { 10.0 };
+        let gap = if compact_toolbar { 6.0 } else { 10.0 };
+        x -= exp_w + gap;
+        self.hit.duplicates = Rect::ZERO;
+        if self.has_duplicate_candidate() {
+            // This is the exact face drawn by `draw_toolbar`; its accessible
+            // and pointer targets therefore share one responsive rectangle.
+            let duplicate_w = face_w(TOOLBAR_DUPLICATE_W, g.duplicate);
+            self.hit.duplicates = Rect::new(x - duplicate_w, btn_y, x, btn_y + btn_h);
+            x -= duplicate_w + gap;
+        }
         let imp_w = face_w(TOOLBAR_FILE_W, g.import);
         self.hit.import = Rect::new(x - imp_w, btn_y, x, btn_y + btn_h);
     }
@@ -4267,7 +4286,11 @@ impl ContactsApp {
                     tr,
                     theme,
                     self.hit.duplicates,
-                    if compact { "2×" } else { "Review duplicate" },
+                    if compact {
+                        "2×"
+                    } else {
+                        TOOLBAR_DUPLICATE_LABEL
+                    },
                     false,
                     hov(self.hit.duplicates),
                     false,
@@ -10541,6 +10564,70 @@ mod local_layout_tests {
         assert!(app.hit.export.x1 < app.hit.new.x0 && app.hit.import.x1 < app.hit.export.x0);
     }
 
+    #[test]
+    fn duplicate_review_face_owns_its_drawn_hit_and_semantic_rect() {
+        let mut app = ContactsApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        let contacts = sample_contacts();
+        for contact in &contacts {
+            app.store.upsert(contact.clone());
+        }
+        app.duplicate_candidate = Some(crate::actions::DuplicateCandidate {
+            survivor_id: contacts[0].id,
+            source_id: contacts[1].id,
+            reasons: vec![crate::actions::DuplicateReason::Name],
+        });
+
+        app.layout();
+        let duplicate = app.hit.duplicates;
+        assert_eq!(
+            duplicate.width(),
+            TOOLBAR_DUPLICATE_W,
+            "wide toolbar draws the authored face at 1×"
+        );
+        assert!(app.hit.import.x1 <= duplicate.x0);
+        assert!(duplicate.x1 <= app.hit.export.x0);
+        let tree = app.accessibility().expect("contacts has semantics");
+        let action = access_target(&tree, "contacts.duplicates")
+            .expect("duplicate review is exposed as an action");
+        assert_eq!(
+            action.bounds.map(ui::a11y::AccessBounds::to_rect),
+            Some(duplicate),
+            "paint, pointer, and semantic routes share one rectangle"
+        );
+
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        app.text_scale = 2.0;
+        app.refresh_label_growth(&mut tr);
+        app.layout();
+        let scaled = app.hit.duplicates;
+        assert_eq!(
+            scaled.width(),
+            (TOOLBAR_DUPLICATE_W + app.label_growth.duplicate).ceil(),
+            "the drawn duplicate label and its target grow together at 2×"
+        );
+        assert!(scaled.width() > duplicate.width());
+        assert!(app.hit.import.x1 <= scaled.x0);
+        assert!(scaled.x1 <= app.hit.export.x0);
+        let tree = app.accessibility().expect("contacts has semantics");
+        assert_eq!(
+            access_target(&tree, "contacts.duplicates")
+                .and_then(|action| action.bounds)
+                .map(ui::a11y::AccessBounds::to_rect),
+            Some(scaled),
+            "scaled paint, pointer, and semantic routes share one rectangle"
+        );
+
+        app.duplicate_candidate = None;
+        app.layout();
+        assert_eq!(
+            app.hit.duplicates,
+            Rect::ZERO,
+            "removing the candidate clears the prior frame's hit target"
+        );
+    }
+
     /// The edit form's rows are the authored 1× design exactly and, at 2×,
     /// grow by their lines (whole pixels) so section labels, fields, type
     /// faces and the add / action buttons never overprint one another.
@@ -10626,10 +10713,15 @@ mod local_layout_tests {
         assert_eq!(app.hit.save.height(), two.action_h);
         assert_eq!(app.hit.add_phone.height(), two.add_h);
         assert!(
-            form.inputs
-                .iter()
-                .all(|f| (f.ti_rect().height() - two.field_h).abs() < 0.01),
-            "every field is one scaled row tall"
+            form.inputs.iter().all(|field| {
+                let expected = if field.slot == Slot::Notes {
+                    3.0 * two.field_h
+                } else {
+                    two.field_h
+                };
+                (field.ti_rect().height() - expected).abs() < 0.01
+            }),
+            "single-line fields use one row and Notes reserves three"
         );
         let first = form
             .inputs
@@ -10679,6 +10771,8 @@ mod local_layout_tests {
         for c in sample_contacts() {
             app.store.upsert(c);
         }
+        app.rebuild_resource_index();
+        app.refresh_search_provider();
         let id = app
             .store
             .contacts
@@ -10737,6 +10831,7 @@ mod local_layout_tests {
         for c in sample_contacts() {
             app.store.upsert(c);
         }
+        app.rebuild_resource_index();
         // Grace Hopper is in "Work" only; narrowing the list to "Friends"
         // (Alan Turing's group) filters her out of the visible set.
         app.group_filter = Some("Friends".to_string());
@@ -12423,8 +12518,7 @@ mod local_layout_tests {
         let Some(Popup::GroupFilter { anchor }) = h.app.popup else {
             panic!("the group chip opens the filter popup");
         };
-        let mut opts = vec!["All".to_string()];
-        opts.extend(h.app.store.all_groups());
+        let opts = h.app.group_filter_options();
         let idx = opts
             .iter()
             .position(|o| o == "Friends")
