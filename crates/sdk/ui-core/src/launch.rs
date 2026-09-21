@@ -2603,8 +2603,8 @@ mod tests {
                     "--nocapture",
                 ])
                 .env("QOS_LAUNCH_REEXEC_TEST", mode)
-                .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
-                .env("QOS_SVC_IDENTITY_FD", fds[1].to_string())
+                .env("TILO_SVC_COLLAB_FD", fds[0].to_string())
+                .env("TILO_SVC_IDENTITY_FD", fds[1].to_string())
                 .env_remove("QOS_RUNTIME_RESUME_LIVE");
             if mode == "resumed" || mode == "descendant" {
                 child.env("QOS_RUNTIME_RESUME_LIVE", "dev.qos.reexec-test");
