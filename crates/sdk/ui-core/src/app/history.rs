@@ -36,7 +36,7 @@ impl App {
     pub(super) fn discard_history_local_intents(&mut self) {
         let _ = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
         while self.root_widget.take_control_invocation().is_some() {}
-        self.action_palette = None;
+        self.actions.action_palette = None;
     }
     pub(super) fn refresh_framework_history(&mut self, width: f64) {
         self.refresh_document_routes();
