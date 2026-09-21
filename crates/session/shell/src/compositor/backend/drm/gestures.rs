@@ -133,21 +133,23 @@ impl GestureTracker {
         }
         self.delta.0 += dx;
         self.delta.1 += dy;
-        let (raw_dx, raw_dy) = self.delta;
-        let (raw_ax, raw_ay) = (raw_dx.abs(), raw_dy.abs());
+        let (horizontal, vertical) = self.delta;
+        let (horizontal_magnitude, vertical_magnitude) = (horizontal.abs(), vertical.abs());
         // Horizontal strip navigation is direct manipulation rather than a
         // thresholded one-shot focus command. Axis-lock after a tiny movement
         // so the first visible frame carries the complete finger travel; once
         // locked, reversals remain on the same surface.
         if fingers == 3
-            && (self.strip_pan_engaged || (raw_ax >= 8.0 && raw_ax >= raw_ay * AXIS_DOMINANCE))
+            && (self.strip_pan_engaged
+                || (horizontal_magnitude >= 8.0
+                    && horizontal_magnitude >= vertical_magnitude * AXIS_DOMINANCE))
         {
             let began = !self.strip_pan_engaged;
             self.strip_pan_engaged = true;
             let travel = if self.config.natural_scroll {
-                raw_dx
+                horizontal
             } else {
-                -raw_dx
+                -horizontal
             };
             return Some(GestureAction::StripPanUpdate { travel, began });
         }
