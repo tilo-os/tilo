@@ -59,7 +59,9 @@ pub(crate) fn run_isolated_native_consent_test(test_name: &str, assertions: impl
                 .env("XDG_STATE_HOME", environment.join("state"))
                 .env("XDG_RUNTIME_DIR", &runtime)
                 .env("QOS_IDENTITY_ROOT", environment.join("identity"))
-                .env("QOS_USER_ID", "environment-owner-must-not-select-identity");
+                .env("TILO_IDENTITY_ROOT", environment.join("identity"))
+                .env("QOS_USER_ID", "environment-owner-must-not-select-identity")
+                .env("TILO_USER_ID", "environment-owner-must-not-select-identity");
             let mut child = child.spawn().expect("spawn isolated native-consent test");
             let deadline = Instant::now() + Duration::from_secs(20);
             let status = loop {
