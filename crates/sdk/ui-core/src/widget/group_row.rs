@@ -605,6 +605,15 @@ impl GroupRow {
         (self.content_w + viewport * TRAILING_REVEAL_FRAC - viewport).max(0.0)
     }
 
+    /// Rebase total-travel updates onto the strip's current visual position.
+    /// A fresh axis lock calls this even if a prior stream lost its End at a
+    /// lock/session boundary, preventing stale gesture state from jumping.
+    pub fn begin_strip_pan(&mut self) {
+        self.strip_pan_origin = Some(self.scroll_x);
+        self.snap_anim = None;
+        self.last_wheel_at = None;
+    }
+
     /// Track a three-finger horizontal gesture in direct-manipulation space.
     /// `travel` is total signed scroll travel since Begin (positive moves
     /// toward later groups). Legal canvas tracks 1:1; beyond either end the
@@ -4268,6 +4277,13 @@ mod tests {
             "an in-range release must not snap away from the fingers"
         );
         assert!((row.scroll_x() - 320.0).abs() < 0.01);
+
+        // A new physical stream explicitly rebases, so a missing End at a
+        // lock/session boundary cannot carry old total travel into it.
+        row.begin_strip_pan();
+        assert!(row.update_strip_pan(10.0));
+        assert!((row.scroll_x() - 330.0).abs() < 0.01);
+        let _ = row.end_strip_pan(Instant::now());
     }
 
     #[test]
