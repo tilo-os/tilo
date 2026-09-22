@@ -53,10 +53,21 @@ hevc-codec-tests = ["hdr-decode"]
 # Stamps a build marker into the binary (see `compositor::dev_env`) so the
 # host session RPM's *developer* entry can tell a deliberately-built dev
 # compositor from any other executable before logging into it. Non-default,
-# and inert unless `debug_assertions` is also on, so a `--release` build never
-# carries the marker whatever features it was given. It enables no behaviour
-# on its own — the marker is the entire content of the feature.
+# and inert unless `debug_assertions` or `dev-overrides` is also on, so a plain
+# `--release --features dev-session` build never carries the marker. It enables
+# no behaviour on its own — the marker is the entire content of the feature.
 dev-session = []
+# Honour the developer environment overrides (`TILO_TEST_CONTROL`,
+# `TILO_TEST_STATE_DUMP`, `TILO_LOCK_TEST_PASSWORD`, `TILO_UNLOCK_HELPER`,
+# `TILO_LAUNCHER_BIN`, the app/runtime overlay forwarding) in a release build,
+# exactly as a debug build does. See `compositor::dev_env`.
+#
+# NEVER SHIP THIS. A `dev-overrides` binary accepts a fixed lock-screen
+# password from its environment and opens a socket that drives the session as
+# the user. It exists only so dev VM images can run release-speed binaries
+# that harnesses can still drive. `tools/policy/check_dev_overrides_contract.py`
+# fails the policy suite if a production image build enables it.
+dev-overrides = []
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
