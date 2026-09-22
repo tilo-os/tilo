@@ -99,7 +99,7 @@ use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::quick_settings::bluetooth::{BluetoothOutcome, QuickSettingsBluetoothPane};
 use crate::shell::quick_settings::drill_in::{DrillInList, DrillInOutcome};
 use crate::shell::quick_settings::root::{QuickSettingsRoot, RootAction, SliderCommit};
-use crate::shell::quick_settings::vpn::QuickSettingsVpnPane;
+use crate::shell::quick_settings::vpn::{QuickSettingsVpnPane, VpnPaneOutcome};
 use crate::shell::quick_settings::wifi::QuickSettingsWifiPane;
 use crate::shell::sidebar_wheel_disc::SidebarWheelDisc;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
@@ -1356,7 +1356,7 @@ pub struct ShellOverlayHost {
     content: Box<dyn Widget>,
     /// Exact production root layers, supplied only by `build_workspace_root`. This is a
     /// capability, not an invalidation hint: section drawing invokes these same widgets in their
-    /// established backdrop → topbar → workspace order.
+    /// established backdrop → workspace → topbar order.
     workspace_scene_parts: Option<crate::shell::WorkspaceSceneParts>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
@@ -6860,7 +6860,6 @@ impl ShellOverlayHost {
             .unwrap_or_default();
         if self.palette_visible && current_scope == effective {
             self.palette_visible = false;
-            return;
         }
         if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
@@ -7583,7 +7582,6 @@ impl ShellOverlayHost {
                 }
             }
             self.palette_visible = false;
-            return;
         }
     }
 
@@ -7918,6 +7916,8 @@ impl ShellOverlayHost {
             privacy,
             vpns,
         } = *reading;
+        st.quick_settings.brightness_available = brightness.is_some();
+        st.quick_settings.volume_available = volume.is_some();
         if let Some(radios) = radios {
             st.quick_settings.radios = radios;
         }
@@ -7956,8 +7956,20 @@ impl ShellOverlayHost {
                         brightness, volume, wifi, bluetooth, power, wired, battery, None, None,
                     )
                 }
-                QsReading::WifiNetworks(nets) => {
-                    (None, None, None, None, None, None, None, nets, None)
+                QsReading::WifiNetworks(result) => {
+                    st.quick_settings.wifi_scanning = false;
+                    match result {
+                        Ok(nets) => {
+                            st.quick_settings.wifi_scan_error = None;
+                            (None, None, None, None, None, None, None, Some(nets), None)
+                        }
+                        Err(error) => {
+                            tracing::warn!(target: "tilo::os_actions", op = "list_wifi_networks", %error, "Wi-Fi scan failed");
+                            st.quick_settings.wifi_scan_error = Some(error);
+                            st.bump();
+                            return;
+                        }
+                    }
                 }
                 QsReading::BtDevices(devs) => {
                     (None, None, None, None, None, None, None, None, devs)
@@ -8307,6 +8319,52 @@ impl ShellOverlayHost {
             let _ = self.scroll_qs_notification_history(movement);
         }
         true
+    }
+
+    /// Scroll the bounded Wi-Fi, Bluetooth, and VPN lists without allowing a
+    /// compact popover's wheel gesture to move the workspace underneath it.
+    fn handle_qs_drill_in_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        if !self
+            .last_cursor
+            .is_some_and(|point| self.quick_settings_rect().contains(point))
+        {
+            return false;
+        }
+        let state = chrome.borrow().quick_settings.clone();
+        let panel = self.quick_settings_rect();
+        let rows = match delta {
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
+            MouseScrollDelta::PixelDelta(position) => -position.y / (56.0 * scale_factor.max(0.1)),
+        };
+        match state.current_level() {
+            crate::shell::quick_settings::QsLevel::Wifi => {
+                let changed = self.qs_wifi_pane.scroll_wheel(panel, &state, rows);
+                if changed {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
+            crate::shell::quick_settings::QsLevel::Bluetooth => {
+                let changed = self
+                    .qs_bluetooth_pane
+                    .scroll_wheel(panel, &state.bt_devices, rows);
+                if changed {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
+            crate::shell::quick_settings::QsLevel::Vpn => {
+                let changed = self.qs_vpn_pane.scroll_wheel(panel, &state.vpns, rows);
+                if changed {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Keyboard navigation for the notification drill-in. It is deliberately
@@ -8860,15 +8918,24 @@ impl ShellOverlayHost {
             return Vec::new();
         };
         let state = chrome.borrow();
-        if !state.overlays.quick_settings
-            || !matches!(
-                state.quick_settings.current_level(),
-                crate::shell::quick_settings::QsLevel::Root
-            )
-        {
+        if !state.overlays.quick_settings {
             return Vec::new();
         }
-        self.qs_root.semantic_rects(&state.quick_settings)
+        match state.quick_settings.current_level() {
+            crate::shell::quick_settings::QsLevel::Root => {
+                self.qs_root.semantic_rects(&state.quick_settings)
+            }
+            crate::shell::quick_settings::QsLevel::Wifi => self
+                .qs_wifi_pane
+                .semantic_rects(self.quick_settings_rect(), &state.quick_settings),
+            crate::shell::quick_settings::QsLevel::Bluetooth => self
+                .qs_bluetooth_pane
+                .semantic_rects(self.quick_settings_rect(), &state.quick_settings.bt_devices),
+            crate::shell::quick_settings::QsLevel::Vpn => self
+                .qs_vpn_pane
+                .semantic_rects(self.quick_settings_rect(), &state.quick_settings.vpns),
+            _ => Vec::new(),
+        }
     }
 
     pub fn power_menu_semantic_rects(&self) -> Vec<(&'static str, Rect)> {
@@ -9660,20 +9727,8 @@ impl ShellOverlayHost {
                     .chrome
                     .as_ref()
                     .and_then(|chrome| self.qs_root.finish_drag(&chrome.borrow().quick_settings));
-                match commit {
-                    Some(SliderCommit::Brightness(value_pct)) => {
-                        crate::shell::quick_settings::actions::log_qs_result(
-                            "set_brightness",
-                            self.qs_actions.set_brightness(value_pct),
-                        );
-                    }
-                    Some(SliderCommit::Volume(value_pct)) => {
-                        crate::shell::quick_settings::actions::log_qs_result(
-                            "set_volume",
-                            self.qs_actions.set_volume(value_pct),
-                        );
-                    }
-                    None => {}
+                if let Some(commit) = commit {
+                    self.commit_quick_settings_slider(commit);
                 }
                 if finishing_layout_drag && let Some(chrome) = self.chrome.as_ref() {
                     // `finish_drag` commits the shared reorder controller on
@@ -12026,9 +12081,28 @@ impl ShellOverlayHost {
             &mut chrome.borrow_mut().quick_settings,
             self.qs_actions.as_ref(),
         );
+        self.apply_qs_wifi_outcome(&chrome, outcome);
+    }
+
+    fn apply_qs_wifi_outcome(
+        &mut self,
+        chrome: &Chrome,
+        outcome: crate::shell::quick_settings::wifi::WifiPaneOutcome,
+    ) {
         match outcome {
             crate::shell::quick_settings::wifi::WifiPaneOutcome::DrillIn(outcome) => {
-                Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+                Self::finish_quick_settings_drill_in_click(chrome, outcome);
+            }
+            crate::shell::quick_settings::wifi::WifiPaneOutcome::Reconcile => {
+                chrome.borrow_mut().bump();
+                self.qs_refresh.kick_fast();
+            }
+            crate::shell::quick_settings::wifi::WifiPaneOutcome::ActionFailed { action, error } => {
+                chrome.borrow_mut().push_notification(
+                    format!("{action} failed"),
+                    format!("{error}. The current device state is being refreshed."),
+                );
+                self.qs_refresh.kick_fast();
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::JoinOpen(ssid) => {
                 let mut state = chrome.borrow_mut();
@@ -12037,6 +12111,14 @@ impl ShellOverlayHost {
                 drop(state);
                 self.qs_refresh.kick_wifi_join(ssid, None, false);
             }
+        }
+        if self.qs_wifi_pane.take_rescan_request() {
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.wifi_scanning = true;
+            state.quick_settings.wifi_scan_error = None;
+            state.bump();
+            drop(state);
+            self.qs_refresh.kick_wifi_networks();
         }
         let _ = self.try_connect_with_shared_wifi_password();
     }
@@ -12053,9 +12135,29 @@ impl ShellOverlayHost {
             &mut state.quick_settings.bt_devices,
             self.qs_actions.as_ref(),
         );
+        drop(state);
+        self.apply_qs_bluetooth_outcome(&chrome, outcome);
+    }
+
+    fn apply_qs_bluetooth_outcome(&mut self, chrome: &Chrome, outcome: BluetoothOutcome) {
+        let mut state = chrome.borrow_mut();
         match outcome {
             BluetoothOutcome::Back => state.quick_settings.pop_level(),
-            BluetoothOutcome::Changed => {}
+            BluetoothOutcome::Changed => {
+                state.bump();
+                drop(state);
+                self.qs_refresh.kick_bt_devices();
+                return;
+            }
+            BluetoothOutcome::ActionFailed { device, error } => {
+                state.push_notification(
+                    format!("Could not connect {device}"),
+                    format!("{error}. The current device state is being refreshed."),
+                );
+                drop(state);
+                self.qs_refresh.kick_bt_devices();
+                return;
+            }
             BluetoothOutcome::OpenDetails { address } => {
                 state.quick_settings.push_level(
                     crate::shell::quick_settings::QsLevel::BluetoothDetails(address),
@@ -12068,6 +12170,25 @@ impl ShellOverlayHost {
         state.bump();
     }
 
+    fn apply_qs_vpn_outcome(&mut self, chrome: &Chrome, outcome: VpnPaneOutcome) {
+        match outcome {
+            VpnPaneOutcome::DrillIn(outcome) => {
+                Self::finish_quick_settings_drill_in_click(chrome, outcome);
+            }
+            VpnPaneOutcome::Reconcile => {
+                chrome.borrow_mut().bump();
+                self.qs_refresh.kick_fast();
+            }
+            VpnPaneOutcome::ActionFailed { profile, error } => {
+                chrome.borrow_mut().push_notification(
+                    format!("Could not change {profile}"),
+                    format!("{error}. The current device state is being refreshed."),
+                );
+                self.qs_refresh.kick_fast();
+            }
+        }
+    }
+
     fn handle_qs_vpn_click(&mut self, p: Point) {
         let Some(chrome) = self.chrome.clone() else {
             return;
@@ -12078,7 +12199,7 @@ impl ShellOverlayHost {
             &mut chrome.borrow_mut().quick_settings.vpns,
             self.qs_actions.as_ref(),
         );
-        Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+        self.apply_qs_vpn_outcome(&chrome, outcome);
     }
 
     fn handle_qs_notifications_click(&mut self, p: Point, back: Rect) {
@@ -12685,27 +12806,38 @@ impl ShellOverlayHost {
         match selected {
             Some(None) => {
                 let result = self.qs_actions.disconnect_bluetooth(&accessory.address);
-                if result.is_ok() {
-                    let mut state = chrome.borrow_mut();
-                    if let Some(device) = state
-                        .quick_settings
-                        .bt_devices
-                        .iter_mut()
-                        .find(|device| device.address.eq_ignore_ascii_case(&accessory.address))
-                    {
-                        device.connected = false;
+                match result {
+                    Ok(()) => {
+                        crate::shell::quick_settings::actions::log_qs_result(
+                            "disconnect_bluetooth",
+                            Ok(()),
+                        );
+                        let mut state = chrome.borrow_mut();
+                        if let Some(device) =
+                            state.quick_settings.bt_devices.iter_mut().find(|device| {
+                                device.address.eq_ignore_ascii_case(&accessory.address)
+                            })
+                        {
+                            device.connected = false;
+                        }
+                        state.quick_settings.pop_level();
+                        state.push_notification(
+                            "Bluetooth",
+                            format!("Disconnected {} from this device", accessory.name),
+                        );
                     }
-                    state.quick_settings.pop_level();
-                    state.push_notification(
-                        "Bluetooth",
-                        format!("Disconnected {} from this device", accessory.name),
-                    );
-                    state.bump();
+                    Err(error) => {
+                        crate::shell::quick_settings::actions::log_qs_result(
+                            "disconnect_bluetooth",
+                            Err(error.clone()),
+                        );
+                        chrome.borrow_mut().push_notification(
+                            format!("Could not disconnect {}", accessory.name),
+                            format!("{error}. The current device state is being refreshed."),
+                        );
+                    }
                 }
-                crate::shell::quick_settings::actions::log_qs_result(
-                    "disconnect_bluetooth",
-                    result,
-                );
+                self.qs_refresh.kick_bt_devices();
             }
             Some(Some(device)) if !device.is_local && device.online => {
                 self.finish_qs_device_action(
@@ -12927,6 +13059,77 @@ impl ShellOverlayHost {
             *handled = consumed;
             return consumed;
         }
+        if matches!(
+            history_level,
+            Some(crate::shell::quick_settings::QsLevel::Wifi)
+        ) {
+            let panel = self.quick_settings_rect();
+            let outcome = {
+                let mut state = chrome.borrow_mut();
+                self.qs_wifi_pane.handle_key(
+                    logical_key,
+                    backwards,
+                    panel,
+                    &mut state.quick_settings,
+                    self.qs_actions.as_ref(),
+                )
+            };
+            let Some(outcome) = outcome else {
+                return false;
+            };
+            // Focus-only movement also needs a frame even though its typed
+            // pane outcome deliberately carries no device mutation.
+            chrome.borrow_mut().bump();
+            self.apply_qs_wifi_outcome(&chrome, outcome);
+            *handled = true;
+            return true;
+        }
+        if matches!(
+            history_level,
+            Some(crate::shell::quick_settings::QsLevel::Bluetooth)
+        ) {
+            let panel = self.quick_settings_rect();
+            let outcome = {
+                let mut state = chrome.borrow_mut();
+                self.qs_bluetooth_pane.handle_key(
+                    logical_key,
+                    backwards,
+                    panel,
+                    &mut state.quick_settings.bt_devices,
+                    self.qs_actions.as_ref(),
+                )
+            };
+            let Some(outcome) = outcome else {
+                return false;
+            };
+            chrome.borrow_mut().bump();
+            self.apply_qs_bluetooth_outcome(&chrome, outcome);
+            *handled = true;
+            return true;
+        }
+        if matches!(
+            history_level,
+            Some(crate::shell::quick_settings::QsLevel::Vpn)
+        ) {
+            let panel = self.quick_settings_rect();
+            let outcome = {
+                let mut state = chrome.borrow_mut();
+                self.qs_vpn_pane.handle_key(
+                    logical_key,
+                    backwards,
+                    panel,
+                    &mut state.quick_settings.vpns,
+                    self.qs_actions.as_ref(),
+                )
+            };
+            let Some(outcome) = outcome else {
+                return false;
+            };
+            chrome.borrow_mut().bump();
+            self.apply_qs_vpn_outcome(&chrome, outcome);
+            *handled = true;
+            return true;
+        }
         let at_root = {
             let state = chrome.borrow();
             state.overlays.quick_settings
@@ -13008,23 +13211,72 @@ impl ShellOverlayHost {
             }
             commit
         };
-        match commit {
-            Some(SliderCommit::Brightness(value_pct)) => {
-                crate::shell::quick_settings::actions::log_qs_result(
-                    "set_brightness",
-                    self.qs_actions.set_brightness(value_pct),
-                );
-            }
-            Some(SliderCommit::Volume(value_pct)) => {
-                crate::shell::quick_settings::actions::log_qs_result(
-                    "set_volume",
-                    self.qs_actions.set_volume(value_pct),
-                );
-            }
-            None => return false,
-        }
+        let Some(commit) = commit else {
+            return false;
+        };
+        self.commit_quick_settings_slider(commit);
         *handled = true;
         true
+    }
+
+    /// Commit one level change through the same truthful feedback path as a
+    /// hardware key. A positive volume adjustment intentionally unmutes an
+    /// already-muted sink; otherwise the slider moves while sound stays off.
+    fn commit_quick_settings_slider(&mut self, commit: SliderCommit) {
+        let (label, result, osd) = match commit {
+            SliderCommit::Brightness(value_pct) => {
+                let result = self.qs_actions.set_brightness(value_pct);
+                (
+                    "brightness",
+                    result,
+                    crate::shell::osd::Osd::brightness(value_pct / 100.0),
+                )
+            }
+            SliderCommit::Volume(value_pct) => {
+                let previous = self
+                    .status_bridge
+                    .as_ref()
+                    .and_then(|bridge| bridge.snapshot().volume);
+                let mut result = self.qs_actions.set_volume(value_pct);
+                let should_unmute = value_pct > 0.0 && previous.is_some_and(|v| v.muted);
+                if result.is_ok() && should_unmute {
+                    result = self.qs_actions.set_mute(false);
+                }
+                let muted = previous.is_some_and(|v| v.muted) && !should_unmute;
+                if result.is_ok()
+                    && let (Some(bridge), Some(_)) = (self.status_bridge.as_ref(), previous)
+                {
+                    bridge.set_volume(os_actions::VolumeState {
+                        level: (value_pct / 100.0).clamp(0.0, 1.0),
+                        muted,
+                    });
+                }
+                (
+                    "volume",
+                    result,
+                    crate::shell::osd::Osd::volume(value_pct / 100.0, muted),
+                )
+            }
+        };
+        match result {
+            Ok(()) => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().show_osd(osd);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(target: "tilo::os_actions", op = label, %error, "quick setting failed");
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().push_notification(
+                        format!("Couldn’t change {label}"),
+                        "The control was restored to the current device value.",
+                    );
+                }
+                // Reconcile the optimistic slider with authoritative device
+                // state. Worker completion wakes the idle compositor.
+                self.qs_refresh.kick_fast();
+            }
+        }
     }
 
     #[allow(
@@ -13037,25 +13289,26 @@ impl ShellOverlayHost {
             RootAction::Enter(level) => {
                 match level {
                     crate::shell::quick_settings::QsLevel::Wifi => {
+                        self.qs_wifi_pane.reset_focus();
+                        let mut st = chrome.borrow_mut();
+                        st.quick_settings.wifi_scanning = true;
+                        st.quick_settings.wifi_scan_error = None;
+                        st.bump();
+                        drop(st);
                         self.qs_refresh.kick_wifi_networks();
                     }
                     crate::shell::quick_settings::QsLevel::Bluetooth => {
+                        self.qs_bluetooth_pane.reset_focus();
                         self.qs_refresh.kick_bt_devices();
+                    }
+                    crate::shell::quick_settings::QsLevel::Vpn => {
+                        self.qs_vpn_pane.reset_focus();
                     }
                     _ => {}
                 }
                 let mut st = chrome.borrow_mut();
                 st.quick_settings.push_level(level);
                 st.bump();
-            }
-            RootAction::OpenNotifications => {
-                let mut st = chrome.borrow_mut();
-                st.quick_settings
-                    .push_level(crate::shell::quick_settings::QsLevel::Notifications);
-                st.bump();
-                drop(st);
-                self.qs_notification_history_start = 0;
-                self.qs_notification_wheel_remainder = 0.0;
             }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
@@ -13090,43 +13343,9 @@ impl ShellOverlayHost {
                 // policy; opening it as a fallback would silently change the
                 // meaning of this personal/device-settings action.
             }
-            RootAction::Privacy | RootAction::OpenPowerMenu => {
+            RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
-                match action {
-                    RootAction::Privacy => {
-                        let active = st.quick_settings.privacy.active_media.clone();
-                        if active.is_empty() {
-                            let privacy = &st.quick_settings.privacy;
-                            let camera = format!("camera: {:?}", privacy.camera_kill);
-                            let microphone = format!("microphone: {:?}", privacy.microphone_kill);
-                            st.push_notification("Privacy", format!("{camera} · {microphone}"));
-                        } else {
-                            let mut failed = Vec::new();
-                            let mut seen = std::collections::BTreeSet::new();
-                            for use_ in &active {
-                                if seen.insert(use_.client_id)
-                                    && os_actions::revoke_media_client(use_.client_id).is_err()
-                                {
-                                    failed.push(use_.label.clone());
-                                }
-                            }
-                            if failed.is_empty() {
-                                st.quick_settings.privacy.active_media.clear();
-                                st.push_notification(
-                                    "Camera and microphone access stopped",
-                                    "The active PipeWire clients were disconnected.",
-                                );
-                            } else {
-                                st.push_notification(
-                                    "Could not stop all access",
-                                    format!("Still active: {}", failed.join(", ")),
-                                );
-                            }
-                        }
-                    }
-                    RootAction::OpenPowerMenu => self.power_menu.open(),
-                    _ => return,
-                }
+                self.power_menu.open();
                 st.overlays.quick_settings = false;
                 st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
                 st.bump();
@@ -13139,7 +13358,7 @@ impl ShellOverlayHost {
         reason = "Each optional value is one independent quick-settings control dispatched to its matching OS action."
     )]
     fn dispatch_quick_settings_toggle_actions(
-        &self,
+        &mut self,
         pending_wifi: Option<bool>,
         pending_bt: Option<bool>,
         pending_wired: Option<bool>,
@@ -13150,40 +13369,31 @@ impl ShellOverlayHost {
         pending_power: Option<crate::shell::quick_settings::PowerProfile>,
     ) {
         if let Some(v) = pending_wifi {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_wifi",
-                self.qs_actions.set_wifi(v),
-            );
+            let result = self.qs_actions.set_wifi(v);
+            self.finish_quick_settings_action("set_wifi", "Wi-Fi", result);
+            if v {
+                self.qs_refresh.kick_wifi_networks();
+            }
         }
         if let Some(v) = pending_bt {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_bluetooth",
-                self.qs_actions.set_bluetooth(v),
-            );
+            let result = self.qs_actions.set_bluetooth(v);
+            self.finish_quick_settings_action("set_bluetooth", "Bluetooth", result);
         }
         if let Some(v) = pending_wired {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_wired",
-                self.qs_actions.set_wired(v),
-            );
+            let result = self.qs_actions.set_wired(v);
+            self.finish_quick_settings_action("set_wired", "wired network", result);
         }
         if let Some(v) = pending_airplane {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_airplane_mode",
-                self.qs_actions.set_airplane_mode(v),
-            );
+            let result = self.qs_actions.set_airplane_mode(v);
+            self.finish_quick_settings_action("set_airplane_mode", "airplane mode", result);
         }
         if let Some(v) = pending_hotspot {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_hotspot",
-                self.qs_actions.set_hotspot(v),
-            );
+            let result = self.qs_actions.set_hotspot(v);
+            self.finish_quick_settings_action("set_hotspot", "personal hotspot", result);
         }
         if let Some(v) = pending_mobile {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_mobile_broadband",
-                self.qs_actions.set_mobile_broadband(v),
-            );
+            let result = self.qs_actions.set_mobile_broadband(v);
+            self.finish_quick_settings_action("set_mobile_broadband", "mobile broadband", result);
         }
         if let Some(v) = pending_night_light {
             let mut values = serde_json::Map::new();
@@ -13200,11 +13410,32 @@ impl ShellOverlayHost {
                 UiPP::Balanced => ActPP::Balanced,
                 UiPP::Performance => ActPP::Performance,
             };
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_power_profile",
-                self.qs_actions.set_power_profile(mapped),
-            );
+            let result = self.qs_actions.set_power_profile(mapped);
+            self.finish_quick_settings_action("set_power_profile", "power mode", result);
         }
+    }
+
+    /// Reconcile every optimistic device toggle after the OS accepts or
+    /// rejects it. Failures must not leave a switch claiming a state the
+    /// machine never entered.
+    fn finish_quick_settings_action(
+        &mut self,
+        operation: &'static str,
+        label: &'static str,
+        result: Result<(), String>,
+    ) {
+        if let Err(error) = result {
+            tracing::warn!(target: "tilo::os_actions", op = operation, %error, "quick setting failed");
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().push_notification(
+                    format!("Couldn’t change {label}"),
+                    "The control was restored to the current device state.",
+                );
+            }
+        }
+        // Even a successful daemon request can be normalized by hardware or
+        // policy. Read back the authoritative state; completion wakes paint.
+        self.qs_refresh.kick_fast();
     }
 
     /// Apply the typed hit produced by [`WorkspaceSettingsOverlay`]. Policy
@@ -13802,6 +14033,78 @@ const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 /// Height of the fade over the bottom of an overflowing room list, so a
 /// clipped row reads as "there is more" rather than unfinished.
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
+
+fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &[usize]) -> bool {
+    let drill_state = host.chrome.as_ref().and_then(|chrome| {
+        let state = chrome.borrow();
+        matches!(
+            state.quick_settings.current_level(),
+            crate::shell::quick_settings::QsLevel::Wifi
+                | crate::shell::quick_settings::QsLevel::Bluetooth
+                | crate::shell::quick_settings::QsLevel::Vpn
+        )
+        .then(|| state.quick_settings.clone())
+    });
+    if let Some(drill_state) = drill_state {
+        let focused = match drill_state.current_level() {
+            crate::shell::quick_settings::QsLevel::Wifi => host
+                .qs_wifi_pane
+                .focus_accessibility_path(child_path, host.quick_settings_rect(), &drill_state),
+            crate::shell::quick_settings::QsLevel::Bluetooth => {
+                host.qs_bluetooth_pane.focus_accessibility_path(
+                    child_path,
+                    host.quick_settings_rect(),
+                    &drill_state.bt_devices,
+                )
+            }
+            crate::shell::quick_settings::QsLevel::Vpn => {
+                host.qs_vpn_pane.focus_accessibility_path(
+                    child_path,
+                    host.quick_settings_rect(),
+                    &drill_state.vpns,
+                )
+            }
+            _ => false,
+        };
+        if focused && let Some(chrome) = host.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        return focused;
+    }
+    let notification_focus = host.chrome.as_ref().and_then(|chrome| {
+        let state = chrome.borrow();
+        if !matches!(
+            state.quick_settings.current_level(),
+            crate::shell::quick_settings::QsLevel::Notifications
+        ) {
+            return None;
+        }
+        match child_path {
+            [0, 1] if !state.notification_history().is_empty() => Some(false),
+            [0, index]
+                if state.can_undo_notification_history_clear()
+                    && *index
+                        == if state.notification_history().is_empty() {
+                            2
+                        } else {
+                            3
+                        } =>
+            {
+                Some(true)
+            }
+            _ => None,
+        }
+    });
+    if let Some(undo) = notification_focus {
+        host.qs_notification_action_focus = Some(undo);
+        true
+    } else {
+        host.chrome.as_ref().is_some_and(|chrome| {
+            host.qs_root
+                .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
+        })
+    }
+}
 
 impl Widget for ShellOverlayHost {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -14731,7 +15034,8 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
-            && (self.handle_qs_notification_wheel(*delta, scale_factor)
+            && (self.handle_qs_drill_in_wheel(*delta, scale_factor)
+                || self.handle_qs_notification_wheel(*delta, scale_factor)
                 || self.handle_qs_clipboard_wheel(*delta, scale_factor)
                 || self.handle_qs_device_fabric_wheel(*delta, scale_factor))
         {
@@ -15134,6 +15438,30 @@ impl Widget for ShellOverlayHost {
                                             .with_name("Bluetooth destinations")
                                             .with_children(items),
                                     ]),
+                            );
+                        } else if matches!(
+                            state.quick_settings.current_level(),
+                            crate::shell::quick_settings::QsLevel::Wifi
+                        ) {
+                            root.children.push(
+                                self.qs_wifi_pane
+                                    .accessibility_snapshot(&state.quick_settings),
+                            );
+                        } else if matches!(
+                            state.quick_settings.current_level(),
+                            crate::shell::quick_settings::QsLevel::Bluetooth
+                        ) {
+                            root.children.push(
+                                self.qs_bluetooth_pane
+                                    .accessibility_snapshot(&state.quick_settings.bt_devices),
+                            );
+                        } else if matches!(
+                            state.quick_settings.current_level(),
+                            crate::shell::quick_settings::QsLevel::Vpn
+                        ) {
+                            root.children.push(
+                                self.qs_vpn_pane
+                                    .accessibility_snapshot(&state.quick_settings.vpns),
                             );
                         } else if matches!(
                             state.quick_settings.current_level(),
@@ -15587,6 +15915,28 @@ impl Widget for ShellOverlayHost {
                 .collaborators_overlay
                 .accessibility_rect_for_path(child_path),
             AccessibleOverlay::QuickSettings => {
+                let drill_in_action = self.chrome.as_ref().and_then(|chrome| {
+                    let state = chrome.borrow();
+                    if matches!(child_path, [0]) {
+                        return Some(self.quick_settings_rect());
+                    }
+                    match state.quick_settings.current_level() {
+                        crate::shell::quick_settings::QsLevel::Wifi => {
+                            self.qs_wifi_pane.accessibility_rect_for_path(
+                                self.quick_settings_rect(),
+                                child_path,
+                                &state.quick_settings,
+                            )
+                        }
+                        crate::shell::quick_settings::QsLevel::Bluetooth => self
+                            .qs_bluetooth_pane
+                            .accessibility_rect_for_path(self.quick_settings_rect(), child_path),
+                        crate::shell::quick_settings::QsLevel::Vpn => self
+                            .qs_vpn_pane
+                            .accessibility_rect_for_path(self.quick_settings_rect(), child_path),
+                        _ => return None,
+                    }
+                });
                 let notification_action = self.chrome.as_ref().and_then(|chrome| {
                     let state = chrome.borrow();
                     if !matches!(
@@ -15614,7 +15964,9 @@ impl Widget for ShellOverlayHost {
                         _ => None,
                     }
                 });
-                notification_action.or_else(|| self.qs_root.accessibility_rect_for_path(child_path))
+                drill_in_action
+                    .or(notification_action)
+                    .or_else(|| self.qs_root.accessibility_rect_for_path(child_path))
             }
             AccessibleOverlay::WorkspaceSettings => match child_path {
                 [] => Some(self.workspace_settings_overlay.rect()),
@@ -15647,39 +15999,7 @@ impl Widget for ShellOverlayHost {
                 .collaborators_overlay
                 .focus_accessibility_path(child_path),
             AccessibleOverlay::QuickSettings => {
-                let notification_focus = self.chrome.as_ref().and_then(|chrome| {
-                    let state = chrome.borrow();
-                    if !matches!(
-                        state.quick_settings.current_level(),
-                        crate::shell::quick_settings::QsLevel::Notifications
-                    ) {
-                        return None;
-                    }
-                    match child_path {
-                        [0, 1] if !state.notification_history().is_empty() => Some(false),
-                        [0, index]
-                            if state.can_undo_notification_history_clear()
-                                && *index
-                                    == if state.notification_history().is_empty() {
-                                        2
-                                    } else {
-                                        3
-                                    } =>
-                        {
-                            Some(true)
-                        }
-                        _ => None,
-                    }
-                });
-                if let Some(undo) = notification_focus {
-                    self.qs_notification_action_focus = Some(undo);
-                    true
-                } else {
-                    self.chrome.as_ref().is_some_and(|chrome| {
-                        self.qs_root
-                            .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
-                    })
-                }
+                focus_quick_settings_accessibility(self, child_path)
             }
             AccessibleOverlay::WorkspaceSettings => {
                 matches!(child_path, [0])
@@ -15805,6 +16125,7 @@ impl Widget for ShellOverlayHost {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
+        let now = Instant::now();
         [
             self.onboarding
                 .as_ref()
@@ -15816,6 +16137,10 @@ impl Widget for ShellOverlayHost {
             self.notification_stack
                 .as_ref()
                 .and_then(Widget::next_wake_deadline),
+            self.chrome
+                .as_ref()
+                .and_then(|chrome| chrome.borrow().osd)
+                .and_then(|osd| osd.next_wake_deadline_at(now)),
         ]
         .into_iter()
         .flatten()
@@ -15868,6 +16193,11 @@ impl ShellOverlayHost {
             .notification_stack
             .as_ref()
             .is_some_and(Widget::needs_animation_frame);
+        let osd_frame = self
+            .chrome
+            .as_ref()
+            .and_then(|chrome| chrome.borrow().osd)
+            .is_some_and(|osd| osd.needs_animation_frame_at(now));
         self.transition_started.is_some()
             || qs_in_flight
             || ws_settings_in_flight
@@ -15885,6 +16215,7 @@ impl ShellOverlayHost {
             || mirror_frame
             || markup_frame
             || notification_frame
+            || osd_frame
     }
 }
 
@@ -16243,9 +16574,22 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Keep dense painting independent from segmented retained drawing: this is the oracle.
-        self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+        // Match the compositor's retained section order in the dense oracle:
+        // app content cannot cover OS-owned anchored chrome that extends
+        // below the reserved top-bar band.
+        if let Some(parts) = self.workspace_scene_parts {
+            // SAFETY: these pointers refer to distinct boxed children owned
+            // by `content`; this is the same sequential traversal used by
+            // `draw_workspace_sections`, only composed in final layer order.
+            unsafe {
+                (&mut *parts.backdrop).draw(scene, transform, text_renderer, theme, presence);
+                (&mut *parts.workspace).draw(scene, transform, text_renderer, theme, presence);
+                (&mut *parts.topbar).draw(scene, transform, text_renderer, theme, presence);
+            }
+        } else {
+            self.content
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
         self.draw_desktop_extras(scene, transform, text_renderer, theme, presence);
     }
 
@@ -16326,7 +16670,7 @@ impl ShellOverlayHost {
     }
 
     /// The production root has no painting container of its own, so its three typed children
-    /// may be recorded separately without changing the dense draw order. Unrecognised roots are
+    /// may be recorded separately without changing the final compositor layer order. Unrecognised roots are
     /// recorded as one opaque section.
     #[allow(
         clippy::too_many_arguments,
@@ -22778,12 +23122,46 @@ mod palette_dispatch_tests {
                 .focus_next(&chrome.borrow().quick_settings, false)
         );
 
-        assert_eq!(
-            host.qs_root
-                .activate_focused(host.rect, &mut chrome.borrow_mut().quick_settings),
-            RootAction::LayoutChanged,
-            "the first Tab after every direct open must select Edit"
+        let slider = host
+            .qs_root
+            .adjust_focused_slider(&mut chrome.borrow_mut().quick_settings, 1.0);
+        assert!(
+            matches!(slider, Some(SliderCommit::Brightness(_))),
+            "the first Tab after every direct open must select Brightness"
         );
+    }
+
+    #[test]
+    fn wifi_drill_in_keyboard_focus_can_activate_back() {
+        let (mut host, chrome) = host_with_chrome();
+        {
+            let mut state = chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state
+                .quick_settings
+                .push_level(crate::shell::quick_settings::QsLevel::Wifi);
+        }
+
+        let mut handled = false;
+        assert!(host.handle_quick_settings_keyboard(
+            &Key::Named(NamedKey::Tab),
+            false,
+            false,
+            &mut handled,
+        ));
+        assert!(handled);
+        handled = false;
+        assert!(host.handle_quick_settings_keyboard(
+            &Key::Named(NamedKey::Enter),
+            false,
+            false,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(matches!(
+            chrome.borrow().quick_settings.current_level(),
+            crate::shell::quick_settings::QsLevel::Root
+        ));
     }
 
     #[test]
@@ -24321,6 +24699,34 @@ mod modal_curve_tests {
         );
     }
 
+    #[test]
+    fn osd_sleeps_while_opaque_and_pumps_only_its_fade_tail() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::osd::{OSD_FADE, OSD_HOLD, Osd};
+        use crate::shell::state::WorkspaceTree;
+        use ui::widget::Container;
+
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        let osd = Osd::brightness(0.4);
+        let raised_at = osd.raised_at;
+        chrome.borrow_mut().show_osd(osd);
+
+        assert!(
+            !host.needs_animation_frame_at(raised_at),
+            "the static hold must not repaint continuously"
+        );
+        let expiry = raised_at.checked_add(OSD_HOLD).unwrap();
+        assert!(host.needs_animation_frame_at(expiry.checked_sub(OSD_FADE).unwrap()));
+        assert!(
+            host.needs_animation_frame_at(expiry.checked_sub(Duration::from_millis(1)).unwrap())
+        );
+        assert!(
+            !host.needs_animation_frame_at(raised_at + OSD_HOLD),
+            "the expired readout must let the compositor idle"
+        );
+    }
+
     /// The draw path consults `self.last_cursor` against each row rect, so
     /// the hit-test must stay honest with that geometry; `hit_test_overview`
     /// and `overview_row_rect` are the shared oracle.
@@ -25547,6 +25953,99 @@ mod overlay_event_absorb_tests {
                 "a notification-pane wheel must not scroll content underneath"
             );
         }
+    }
+
+    #[test]
+    fn compact_quick_settings_drill_ins_own_wheel_scrolling() {
+        use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
+
+        let (vw, vh) = (960.0, 540.0);
+        let wheel = MouseScrollDelta::LineDelta(0.0, -2.0);
+
+        let mut wifi = build_harness_sized(vw, vh);
+        {
+            let mut state = wifi.chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state.quick_settings.wifi = true;
+            state.quick_settings.wifi_networks = (0..18)
+                .map(|index| WifiNetwork {
+                    ssid: format!("Network {index}"),
+                    signal: 3,
+                    secure: false,
+                    connected: false,
+                })
+                .collect();
+            state.quick_settings.push_level(QsLevel::Wifi);
+        }
+        wifi.host.force_quick_settings_settled();
+        settle(&mut wifi, vw, vh);
+        let wifi_center = wifi.host.quick_settings_rect().center();
+        assert!(pump(&mut wifi, &cursor_moved_at(wifi_center)));
+        assert!(wifi.host.handle_qs_drill_in_wheel(wheel, 1.0));
+        let wifi_names = wifi
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        assert!(wifi_names.contains(&"quick_settings_wifi_network[2]".to_string()));
+        assert!(!wifi_names.contains(&"quick_settings_wifi_network[0]".to_string()));
+
+        let mut bluetooth = build_harness_sized(vw, vh);
+        {
+            let mut state = bluetooth.chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state.quick_settings.bt_devices = (0..18)
+                .map(|index| BtDevice {
+                    name: format!("Device {index}"),
+                    address: format!("02:00:00:00:00:{index:02X}"),
+                    battery: 70,
+                    connected: false,
+                })
+                .collect();
+            state.quick_settings.push_level(QsLevel::Bluetooth);
+        }
+        bluetooth.host.force_quick_settings_settled();
+        settle(&mut bluetooth, vw, vh);
+        let bluetooth_center = bluetooth.host.quick_settings_rect().center();
+        assert!(pump(&mut bluetooth, &cursor_moved_at(bluetooth_center)));
+        assert!(bluetooth.host.handle_qs_drill_in_wheel(wheel, 1.0));
+        let bluetooth_names = bluetooth
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        assert!(bluetooth_names.contains(&"quick_settings_bluetooth_device[2]".to_string()));
+        assert!(!bluetooth_names.contains(&"quick_settings_bluetooth_device[0]".to_string()));
+
+        let mut vpn = build_harness_sized(vw, vh);
+        {
+            let mut state = vpn.chrome.borrow_mut();
+            state.overlays.quick_settings = true;
+            state.quick_settings.vpns = (0..18)
+                .map(|index| os_actions::VpnConnectionInfo {
+                    name: format!("Profile {index}"),
+                    uuid: format!("profile-{index}"),
+                    active: false,
+                    kind: "wireguard".into(),
+                })
+                .collect();
+            state.quick_settings.push_level(QsLevel::Vpn);
+        }
+        vpn.host.force_quick_settings_settled();
+        settle(&mut vpn, vw, vh);
+        let vpn_center = vpn.host.quick_settings_rect().center();
+        assert!(pump(&mut vpn, &cursor_moved_at(vpn_center)));
+        assert!(vpn.host.handle_qs_drill_in_wheel(wheel, 1.0));
+        let vpn_names = vpn
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        assert!(vpn_names.contains(&"quick_settings_vpn_profile[2]".to_string()));
+        assert!(!vpn_names.contains(&"quick_settings_vpn_profile[0]".to_string()));
     }
 
     #[test]
