@@ -30,6 +30,11 @@ fn open_node(id: u64) -> tilo_actions::ActionOutput {
 
 /// A stable-id hierarchy with expansion, keyboard navigation, selection,
 /// accessibility, virtualization, reordering hooks, and structural motion.
+///
+/// # Panics
+///
+/// Panics if a generated node binding no longer matches the resource action
+/// declared by this template.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"

@@ -884,11 +884,14 @@ mod tests {
             let state = chrome.borrow();
             let tree = state.tree();
             let strip = &tree.workspaces[0].strips[0];
-            (
+            let ids = (
                 strip.id,
                 strip.window_groups[0].id,
                 strip.window_groups[0].tabs[0].id,
-            )
+            );
+            drop(tree);
+            drop(state);
+            ids
         };
 
         let first = tmp.path().join("left.odt");
@@ -913,6 +916,8 @@ mod tests {
             let group = &tree.workspaces[0].strips[0].window_groups[0];
             assert_eq!(group.tabs[0].id, left_tab);
             assert_eq!(group.tabs[1].id, old_first);
+            drop(tree);
+            drop(state);
         }
 
         let second = tmp.path().join("seam.odt");
@@ -938,6 +943,8 @@ mod tests {
                 tree.workspaces[0].strips[0].window_groups[0].tabs[0].id,
                 seam_tab
             );
+            drop(tree);
+            drop(state);
         }
 
         clear_launch_env();

@@ -56,6 +56,10 @@ fn item_label(id: u64) -> String {
     ui::i18n::I18nManager::lookup_plain(message)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the generated workspace action contains only serializable strings and integers"
+)]
 fn item_resource() -> tilo_actions::Resource {
     let mut resource = ui::widget::resource_actions::typed_resource(
         "generated.workspace-item",

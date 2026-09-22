@@ -306,7 +306,12 @@ mod tests {
 
     #[test]
     fn every_generated_template_publishes_an_invocable_resource_action() {
-        let mut templates: [(Box<dyn ui::widget::Widget>, &[u8], Option<&str>); 8] = [
+        type ResourceActionCase = (
+            Box<dyn ui::widget::Widget>,
+            &'static [u8],
+            Option<&'static str>,
+        );
+        let mut templates: [ResourceActionCase; 8] = [
             (super::starter::app_root(), br#"{"name":"Ada","updates":true,"refresh":30.0,"volume":0.5,"region":"Europe/Berlin"}"#, None),
             (super::data::app_root(), br#"{"id":3}"#, Some("generated.table.row:3")),
             (super::list::app_root(), br#"{"id":3}"#, Some("generated.activity:3")),

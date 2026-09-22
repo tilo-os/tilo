@@ -65,6 +65,8 @@ mod dropped_content_startup_tests {
             .find(|candidate| candidate.id == group)
             .unwrap();
         assert_eq!(group.tabs[0].id, tab);
+        drop(tree);
+        drop(state);
     }
 }
 

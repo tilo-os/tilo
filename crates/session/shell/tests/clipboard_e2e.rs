@@ -3264,10 +3264,12 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
         let shape = tree_shape(&tree);
         if shape.0 == before.0 + 1
             && shape.1 == before.1 + 1
-            && shape
-                .2
-                .iter()
-                .any(|title| !before.2.contains(title) && title.ends_with(".txt"))
+            && shape.2.iter().any(|title| {
+                !before.2.contains(title)
+                    && Path::new(title)
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
+            })
         {
             break (shape, tree);
         }
@@ -3287,7 +3289,12 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
         .0
         .2
         .iter()
-        .find(|title| !before.2.contains(title) && title.ends_with(".txt"))
+        .find(|title| {
+            !before.2.contains(title)
+                && Path::new(title)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
+        })
         .expect("the materialised text tab has a .txt title");
     let (_, opened_group_titles) = group_for_tab_title(&after.1, opened_title)
         .expect("the materialised text belongs to a durable window group");
@@ -3528,10 +3535,10 @@ fn tree_shape(tree: &serde_json::Value) -> (usize, usize, Vec<String>) {
     let mut titles = Vec::new();
     walk_json(tree, &mut |value| {
         if let Some(window_groups) = value.get("window_groups").and_then(|v| v.as_array()) {
-            groups += window_groups.len();
+            groups = groups.saturating_add(window_groups.len());
         }
         if let (Some(title), Some(_)) = (value.get("title"), value.get("tile")) {
-            tabs += 1;
+            tabs = tabs.saturating_add(1);
             if let Some(title) = title.as_str() {
                 titles.push(title.to_string());
             }

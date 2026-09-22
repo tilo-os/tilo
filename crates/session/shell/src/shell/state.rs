@@ -7356,6 +7356,10 @@ impl WorkspaceTree {
     /// Forgiving: `false` if `tab_id` or either strip id doesn't resolve.
     /// Searches every workspace since a drop could land outside the
     /// active one.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "cross-strip moves validate, mutate, and persist both strip topologies as one rollback-capable transaction"
+    )]
     pub fn move_tab_across_strips(
         &mut self,
         src_strip_id: StripId,

@@ -197,13 +197,16 @@ impl HostedTileInputs {
 
     pub(crate) fn files_for_tab(&self, tab: TabId) -> Option<file_explorer::StartupInputs> {
         let directory = self.file_directories.borrow().get(&tab).cloned()?;
-        let mut inputs = self.files.clone().unwrap_or(file_explorer::StartupInputs {
-            initial_dir: directory.clone(),
-            workspace_roots: Vec::new(),
-            record_roots: Vec::new(),
-            remote_accounts: Vec::new(),
-            trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
-        });
+        let mut inputs = self
+            .files
+            .clone()
+            .unwrap_or_else(|| file_explorer::StartupInputs {
+                initial_dir: directory.clone(),
+                workspace_roots: Vec::new(),
+                record_roots: Vec::new(),
+                remote_accounts: Vec::new(),
+                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+            });
         inputs.initial_dir = directory;
         Some(inputs)
     }

@@ -262,6 +262,10 @@ fn drop_over_right_group_routes_to_right_group_only() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the retained tree borrow is used for adjacent tab-order assertions"
+)]
 fn drop_on_left_side_of_first_tab_inserts_before_it() {
     let (tree, strip_id, g_left, _g_right) = two_group_one_strip_tree();
     let original_first = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
@@ -291,6 +295,10 @@ fn drop_on_left_side_of_first_tab_inserts_before_it() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the retained tree borrow is used for the complete seam topology assertion"
+)]
 fn drop_between_groups_creates_a_group_at_that_seam() {
     let (tree, strip_id, g_left, g_right) = two_group_one_strip_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -307,7 +315,7 @@ fn drop_between_groups_creates_a_group_at_that_seam() {
     hover_and_drop(
         &mut host,
         &layout,
-        Point::new((left.x1 + right.x0) / 2.0, left.center().y),
+        Point::new(f64::midpoint(left.x1, right.x0), left.center().y),
         "/drop/between.unknown",
     );
 

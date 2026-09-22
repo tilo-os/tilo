@@ -202,6 +202,10 @@ fn pump_no_op(host: &mut ShellOverlayHost, layout: &Layout) {
     reason = "tree is read from through the end of the function (tree_strip_a/b, \
               tree_a_total/b_total, tree_b_has_dragged), so st can't be dropped any earlier"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the test keeps the complete cross-strip gesture and both topology assertions together"
+)]
 fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     let (tree, s_a, s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
