@@ -8,7 +8,7 @@
 //   * `--shots <PATH> [--step <name>] [--viewport <WIDTH>x<HEIGHT>]` — render one screen into a PNG at
 //     `<PATH>` and exit. No window, no event loop. Headless snapshot for
 //     CI / visual inspection (output identical to the live binary's first
-//     frame). `<name>` ∈ {network, disk, account, keyboard, options, options-open,
+//     frame). `<name>` ∈ {network, disk, account, keyboard, options, options-open, profile-locale-repair,
 //     review, install, finish, finish-recovery, failed, failed-recovery} (with `user`/`confirm` accepted as
 //     legacy aliases); `options-open` renders the Options step with the
 //     time-zone dropdown popped open; `keyboard` renders the keyboard step
@@ -146,6 +146,11 @@ fn build_shot(name: &str) -> Option<(Box<dyn Widget>, bool)> {
     if name == "options-open" {
         let mut app = InstallerApp::for_shot(Step::Options);
         app.shot_open_timezone();
+        return Some((Box::new(app), true));
+    }
+    if name == "profile-locale-repair" {
+        let mut app = InstallerApp::for_shot(Step::Options);
+        app.shot_locale_repair();
         return Some((Box::new(app), true));
     }
 
@@ -382,5 +387,10 @@ mod tests {
         ] {
             assert!(build_shot(scenario).is_some(), "missing {scenario}");
         }
+    }
+
+    #[test]
+    fn transported_profile_repair_state_is_renderable() {
+        assert!(build_shot("profile-locale-repair").is_some());
     }
 }

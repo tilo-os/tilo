@@ -1407,18 +1407,18 @@ mod tests {
 
     #[test]
     fn document_routes_stay_with_their_app_and_record() {
-        let document = CrdtRoute::record("dev.tilo.notes", "room-1", "note-1");
+        let document = CrdtRoute::record("so.tilo.notes", "room-1", "note-1");
 
         assert!(document.delivers_to(&document));
         assert!(document.delivers_to(&CrdtRoute::cluster("room-1")));
-        assert!(!document.delivers_to(&CrdtRoute::record("dev.tilo.files", "room-1", "note-1",)));
-        assert!(!document.delivers_to(&CrdtRoute::record("dev.tilo.notes", "room-1", "note-2",)));
-        assert!(!document.delivers_to(&CrdtRoute::record("dev.tilo.notes", "room-2", "note-1",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("so.tilo.files", "room-1", "note-1",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("so.tilo.notes", "room-1", "note-2",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("so.tilo.notes", "room-2", "note-1",)));
     }
 
     #[test]
     fn remote_document_route_preserves_signed_kind_and_rejects_relabeling() {
-        let route = CrdtRoute::record("dev.tilo.notes", "room-1", "record-1");
+        let route = CrdtRoute::record("so.tilo.notes", "room-1", "record-1");
         let (signing, author) = collab_types::generate_keypair();
         let mut envelope = collab_types::SignedOp::new_unsigned(
             DocumentMutation::Snapshot(b"whole document".to_vec())
@@ -1440,7 +1440,7 @@ mod tests {
         ));
         assert_eq!(
             validate_document_route(
-                &CrdtRoute::record("dev.tilo.notes", "room-1", "record-2"),
+                &CrdtRoute::record("so.tilo.notes", "room-1", "record-2"),
                 &envelope,
             ),
             Err(ValidationError::DocumentRouteMismatch),
@@ -1455,7 +1455,7 @@ mod tests {
 
     #[test]
     fn remote_document_broker_routes_opaque_mls_only_for_bound_channel() {
-        let route = CrdtRoute::record("dev.tilo.notes", "room-1", "record-1");
+        let route = CrdtRoute::record("so.tilo.notes", "room-1", "record-1");
         let expected_channel =
             collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
         let (_, author) = collab_types::generate_keypair();

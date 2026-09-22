@@ -72,7 +72,7 @@ enum Cmd {
         /// Path to an identity JSON file for signing the bundle.
         /// Format: `{ "secret_key_hex": "<64-hex>" }`. When set, the
         /// finished `bundle.toml` gains `publisher_hex` +
-        /// `signature_hex`. Same shape as `tilo-pkg`'s identity files.
+        /// `signature_hex`. Same shape as `tilo-app-package`'s identity files.
         #[arg(long)]
         identity: Option<PathBuf>,
         /// Extra shared object to place at the top of the bundle's

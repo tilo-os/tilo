@@ -7,7 +7,7 @@
 
 
 [package]
-id       = "dev.tilo.diffmerge"
+id       = "so.tilo.diffmerge"
 name     = "Diff & Merge"
 category = "Development"
 version  = "0.1.0"

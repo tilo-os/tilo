@@ -32,7 +32,7 @@ name=${url##*/}
 [[ $header == 'Authorization: Bearer masked-test-token' ]]
 printf '%s\n' "$url" >> "$CURL_URL_LOG"
 case "$method:$name" in
-  PUT:parallel-*.qpkg)
+  PUT:parallel-*.tapp)
     : > "$PARALLEL_DIR/$name"
     ready=0
     for _ in {1..100}; do
@@ -47,24 +47,24 @@ case "$method:$name" in
     : > "$output"
     printf '201'
     ;;
-  PUT:identical.qpkg)
+  PUT:identical.tapp)
     : > "$output"
     printf '409'
     ;;
-  PUT:conflict.qpkg)
+  PUT:conflict.tapp)
     : > "$output"
     printf '409'
     ;;
-  PUT:failed.qpkg)
+  PUT:failed.tapp)
     printf 'registry unavailable' > "$output"
     printf '503'
     ;;
-  PUT:slow-failed.qpkg)
+  PUT:slow-failed.tapp)
     sleep 0.1
     printf 'slow failure' > "$output"
     printf '500'
     ;;
-  PUT:fast-failed.qpkg)
+  PUT:fast-failed.tapp)
     printf 'fast failure' > "$output"
     printf '502'
     ;;
@@ -73,10 +73,10 @@ case "$method:$name" in
     : > "$output"
     printf '201'
     ;;
-  GET:identical.qpkg)
+  GET:identical.tapp)
     cp "$upload_fixture" "$output"
     ;;
-  GET:conflict.qpkg)
+  GET:conflict.tapp)
     printf 'different bytes\n' > "$output"
     ;;
   *) exit 88 ;;
@@ -99,7 +99,7 @@ run_case() {
   shift 2
   : > "$manifest"
   while (($#)); do
-    printf '%s\t%s\n' "$work/$1" "https://packages.example.test/exact/$1" >> "$manifest"
+    printf '%s\t%s\n' "$work/$1" "https://apps.tilo.so.test/artifacts/exact/$1" >> "$manifest"
     shift
   done
   if tools/upload_immutable_packages.sh "$manifest" >"$work/$name.out" 2>"$work/$name.err"; then
@@ -110,46 +110,46 @@ run_case() {
   [[ $actual == "$expected" ]]
 }
 
-printf 'alpha\n' > "$work/success.qpkg"
+printf 'alpha\n' > "$work/success.tapp"
 : > "$CURL_URL_LOG"
-run_case success 0 success.qpkg
-cmp "$work/success.qpkg" "$work/remote/success.qpkg"
-grep -Fxq 'published success.qpkg' "$work/success.out"
-grep -Fxq 'https://packages.example.test/exact/success.qpkg' "$CURL_URL_LOG"
+run_case success 0 success.tapp
+cmp "$work/success.tapp" "$work/remote/success.tapp"
+grep -Fxq 'published success.tapp' "$work/success.out"
+grep -Fxq 'https://apps.tilo.so.test/artifacts/exact/success.tapp' "$CURL_URL_LOG"
 
-printf 'one\n' > "$work/parallel-one.qpkg"
-printf 'two\n' > "$work/parallel-two.qpkg"
-printf 'three\n' > "$work/parallel-three.qpkg"
-run_case bounded-parallel 0 parallel-one.qpkg parallel-two.qpkg parallel-three.qpkg
+printf 'one\n' > "$work/parallel-one.tapp"
+printf 'two\n' > "$work/parallel-two.tapp"
+printf 'three\n' > "$work/parallel-three.tapp"
+run_case bounded-parallel 0 parallel-one.tapp parallel-two.tapp parallel-three.tapp
 [[ $(find "$PARALLEL_DIR" -type f | wc -l) -eq 3 ]]
-[[ $(cat "$work/bounded-parallel.out") == $'published parallel-one.qpkg\npublished parallel-two.qpkg\npublished parallel-three.qpkg' ]]
+[[ $(cat "$work/bounded-parallel.out") == $'published parallel-one.tapp\npublished parallel-two.tapp\npublished parallel-three.tapp' ]]
 
-printf 'same\n' > "$work/identical.qpkg"
-export upload_fixture="$work/identical.qpkg"
+printf 'same\n' > "$work/identical.tapp"
+export upload_fixture="$work/identical.tapp"
 : > "$CURL_URL_LOG"
-run_case identical 0 identical.qpkg
-grep -Fxq 'already published identically: identical.qpkg' "$work/identical.out"
-[[ $(grep -Fxc 'https://packages.example.test/exact/identical.qpkg' "$CURL_URL_LOG") == 2 ]]
+run_case identical 0 identical.tapp
+grep -Fxq 'already published identically: identical.tapp' "$work/identical.out"
+[[ $(grep -Fxc 'https://apps.tilo.so.test/artifacts/exact/identical.tapp' "$CURL_URL_LOG") == 2 ]]
 
-printf 'local\n' > "$work/conflict.qpkg"
-run_case conflict 1 conflict.qpkg
-grep -Fxq 'immutable package version conflicts: https://packages.example.test/exact/conflict.qpkg' \
+printf 'local\n' > "$work/conflict.tapp"
+run_case conflict 1 conflict.tapp
+grep -Fxq 'immutable package version conflicts: https://apps.tilo.so.test/artifacts/exact/conflict.tapp' \
   "$work/conflict.err"
 
-printf 'first\n' > "$work/first.qpkg"
-printf 'failed\n' > "$work/failed.qpkg"
-printf 'last\n' > "$work/last.qpkg"
-run_case worker-failure 1 first.qpkg failed.qpkg last.qpkg
-cmp "$work/first.qpkg" "$work/remote/first.qpkg"
-cmp "$work/last.qpkg" "$work/remote/last.qpkg"
-grep -Fxq 'immutable package upload returned HTTP 503: https://packages.example.test/exact/failed.qpkg' \
+printf 'first\n' > "$work/first.tapp"
+printf 'failed\n' > "$work/failed.tapp"
+printf 'last\n' > "$work/last.tapp"
+run_case worker-failure 1 first.tapp failed.tapp last.tapp
+cmp "$work/first.tapp" "$work/remote/first.tapp"
+cmp "$work/last.tapp" "$work/remote/last.tapp"
+grep -Fxq 'immutable package upload returned HTTP 503: https://apps.tilo.so.test/artifacts/exact/failed.tapp' \
   "$work/worker-failure.err"
-[[ $(cat "$work/worker-failure.out") == $'published first.qpkg\npublished last.qpkg' ]]
-[[ $(cat "$work/worker-failure.err") == $'registry unavailable\nimmutable package upload returned HTTP 503: https://packages.example.test/exact/failed.qpkg' ]]
+[[ $(cat "$work/worker-failure.out") == $'published first.tapp\npublished last.tapp' ]]
+[[ $(cat "$work/worker-failure.err") == $'registry unavailable\nimmutable package upload returned HTTP 503: https://apps.tilo.so.test/artifacts/exact/failed.tapp' ]]
 
-printf 'slow\n' > "$work/slow-failed.qpkg"
-printf 'fast\n' > "$work/fast-failed.qpkg"
-run_case deterministic-errors 1 slow-failed.qpkg fast-failed.qpkg
-[[ $(cat "$work/deterministic-errors.err") == $'slow failure\nimmutable package upload returned HTTP 500: https://packages.example.test/exact/slow-failed.qpkg\nfast failure\nimmutable package upload returned HTTP 502: https://packages.example.test/exact/fast-failed.qpkg' ]]
+printf 'slow\n' > "$work/slow-failed.tapp"
+printf 'fast\n' > "$work/fast-failed.tapp"
+run_case deterministic-errors 1 slow-failed.tapp fast-failed.tapp
+[[ $(cat "$work/deterministic-errors.err") == $'slow failure\nimmutable package upload returned HTTP 500: https://apps.tilo.so.test/artifacts/exact/slow-failed.tapp\nfast failure\nimmutable package upload returned HTTP 502: https://apps.tilo.so.test/artifacts/exact/fast-failed.tapp' ]]
 
 printf 'parallel immutable package upload tests passed\n'

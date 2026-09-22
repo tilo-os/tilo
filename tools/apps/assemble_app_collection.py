@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble a deterministic app collection from reusable qpkg artifacts."""
+"""Assemble a deterministic app collection from reusable tapp artifacts."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ ARCHITECTURES = {"x86_64", "aarch64"}
 def assemble(
     plan: dict,
     architecture: str,
-    qpkg_dir: Path,
+    tapp_dir: Path,
     runtime_dir: Path,
     source: str,
 ) -> dict:
@@ -32,10 +32,10 @@ def assemble(
             raise ValueError(f"unsafe app name: {name}")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
             raise ValueError(f"unsafe app version: {version}")
-        filename = f"{name}-{version}-{architecture}.qpkg"
-        path = qpkg_dir / filename
+        filename = f"{name}-{version}-{architecture}.tapp"
+        path = tapp_dir / filename
         if not path.is_file() or path.is_symlink():
-            raise ValueError(f"missing regular qpkg: {filename}")
+            raise ValueError(f"missing regular tapp: {filename}")
         expected.add(filename)
         entries.append(
             {
@@ -44,11 +44,11 @@ def assemble(
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             }
         )
-    actual = {path.name for path in qpkg_dir.glob("*.qpkg")}
+    actual = {path.name for path in tapp_dir.glob("*.tapp")}
     if actual != expected:
         extra = ", ".join(sorted(actual - expected)) or "none"
         missing = ", ".join(sorted(expected - actual)) or "none"
-        raise ValueError(f"qpkg set mismatch (missing: {missing}; extra: {extra})")
+        raise ValueError(f"tapp set mismatch (missing: {missing}; extra: {extra})")
     publisher_file = runtime_dir / "runtime-bundle-publisher.hex"
     publisher = publisher_file.read_text(encoding="utf-8").strip()
     if not re.fullmatch(r"[0-9a-fA-F]{64}", publisher):
@@ -74,7 +74,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--architecture", required=True)
-    parser.add_argument("--qpkg-dir", type=Path, required=True)
+    parser.add_argument("--tapp-dir", type=Path, required=True)
     parser.add_argument("--runtime-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source", required=True)
@@ -82,7 +82,7 @@ def main() -> int:
     try:
         plan = json.loads(args.plan.read_text(encoding="utf-8"))
         result = assemble(
-            plan, args.architecture, args.qpkg_dir, args.runtime_dir, args.source
+            plan, args.architecture, args.tapp_dir, args.runtime_dir, args.source
         )
         args.output.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"

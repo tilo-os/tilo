@@ -2,15 +2,15 @@ name: Release / imager
 
 # Ordinary commits exercise imager code and release-policy invariants in
 # check.yml. This workflow allocates native release hosts only for an explicit
-# manual rehearsal or an imager-v* tag. Tags expand to the enabled Linux and Windows hosts and
-# fail closed unless packages are signed. macOS packaging is deferred.
+# manual rehearsal or an imager-v* tag. Tags expand to every supported native
+# host and fail closed unless packages are signed and, on macOS, notarized.
 on:
   push:
     tags: ["imager-v*"]
   workflow_dispatch:
     inputs:
       full_native:
-        description: "Build Linux and Windows on both architectures instead of the Linux x86_64 smoke lane."
+        description: "Build Linux, Windows, and macOS on both architectures instead of the Linux x86_64 smoke lane."
         type: boolean
         required: false
         default: false
@@ -28,9 +28,12 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/imager-v') }}
 
 env:
-  # Public binaries live outside the private source repository. Override only
-  # to another pre-created public repository governed by the same broker.
-  TILO_RELEASE_REPOSITORY: ${{ vars.IMAGER_PUBLIC_RELEASE_REPOSITORY || 'qos/releases' }}
+  # Public binaries live on GitHub, outside the private Forgejo source repository.
+  # Override only to pre-created public repositories governed by the same App.
+  TILO_RELEASE_SERVER: https://github.com
+  TILO_RELEASE_API_URL: https://api.github.com
+  TILO_RELEASE_REPOSITORY: ${{ vars.IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases' }}
+  TILO_HOMEBREW_TAP_REPOSITORY: ${{ vars.IMAGER_HOMEBREW_TAP_REPOSITORY || 'tilo-os/homebrew-tilo' }}
 
 jobs:
   plan:
@@ -135,7 +138,7 @@ jobs:
             export DEBIAN_FRONTEND=noninteractive
             sudo -n apt-get update
             if [ "${{ matrix.arch }}" = x86_64 ]; then
-              native_packages='ovmf qemu-system-x86'
+              native_packages='ovmf python3-virt-firmware qemu-system-x86 swtpm'
               qemu_binary=qemu-system-x86_64
               display_device=virtio-vga-gl
             else
@@ -144,11 +147,11 @@ jobs:
               display_device=virtio-gpu-gl-pci
             fi
             sudo -n apt-get install -y --no-install-recommends \
-              dosfstools e2fsprogs fdisk imagemagick mtools ntfs-3g qemu-system-gui \
+              clang dosfstools e2fsprogs fdisk imagemagick lld mtools ntfs-3g qemu-system-gui \
               qemu-utils socat tesseract-ocr $native_packages
           elif command -v dnf >/dev/null; then
             if [ "${{ matrix.arch }}" = x86_64 ]; then
-              native_packages='edk2-ovmf qemu-device-display-virtio-vga-gl qemu-system-x86-core'
+              native_packages='edk2-ovmf python3-virt-firmware qemu-device-display-virtio-vga-gl qemu-system-x86-core swtpm'
               qemu_binary=qemu-system-x86_64
               display_device=virtio-vga-gl
             else
@@ -156,15 +159,18 @@ jobs:
               qemu_binary=qemu-system-aarch64
               display_device=virtio-gpu-gl-pci
             fi
-            sudo -n dnf install -y dosfstools e2fsprogs ImageMagick mtools ntfs-3g util-linux \
+            sudo -n dnf install -y clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux \
               qemu-img qemu-ui-egl-headless qemu-ui-opengl socat tesseract $native_packages
           else
             printf 'unsupported runner OS for installer VM cycle\n' >&2
             exit 1
           fi
-          command -v debugfs mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat mtype ntfscp \
-            qemu-img "$qemu_binary" sfdisk socat tesseract >/dev/null
+          command -v clang debugfs ld.lld mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat \
+            mtype ntfscp qemu-img "$qemu_binary" sfdisk socat tesseract >/dev/null
           command -v magick >/dev/null || command -v convert >/dev/null
+          if [ "${{ matrix.arch }}" = x86_64 ]; then
+            command -v swtpm virt-fw-vars >/dev/null
+          fi
           "$qemu_binary" -display help | grep -Fq egl-headless
           "$qemu_binary" -device help | grep -Fq "$display_device"
           test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
@@ -182,6 +188,21 @@ jobs:
           [[ "$encoder_sha256" =~ ^[0-9a-f]{64}$ ]]
           printf 'TILO_PROFILE_ENCODER=%s\nTILO_PROFILE_ENCODER_SHA256=%s\n' \
             "$encoder" "$encoder_sha256" >> "${GITHUB_ENV:?}"
+      - name: Prepare the release-certificate OVMF variable store
+        if: startsWith(github.ref, 'refs/tags/imager-v') && matrix.arch == 'x86_64'
+        run: |
+          set -euo pipefail
+          test -n "$TILO_PCR_PREDICTION_SIGNER"
+          test -n "$TILO_EFI_SIGNING_CERT_SHA256"
+          firmware="$(TILO_VM_ARCH=x86_64 TILO_SECBOOT_KEYS=none \
+            ./os/dev/vm.sh firmware --tpm)"
+          template="$(awk '$1 == "vars" { print $2 }' <<<"$firmware")"
+          test -f "$template"
+          varstore="${RUNNER_TEMP:?}/tilo-release-vars-${{ github.run_id }}-${{ github.run_attempt }}.qcow2"
+          ./os/dev/prepare-release-secureboot-vars.sh \
+            "$template" "$varstore" "$TILO_PCR_PREDICTION_SIGNER" \
+            "$TILO_EFI_SIGNING_CERT_SHA256"
+          printf 'TILO_RELEASE_SECBOOT_VARS=%s\n' "$varstore" >> "${GITHUB_ENV:?}"
       - name: Exercise the complete graphical installation cycle
         env:
           TILO_ACCEL: kvm
@@ -206,6 +227,14 @@ jobs:
               os/output/installer/qcow2/disk.qcow2 \
               --guided-alongside \
               --out dist/installer-guided-alongside-cycle
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* && "${{ matrix.arch }}" == x86_64 ]]; then
+            TILO_VM_CYCLE="${TILO_VM_CYCLE}-software-tpm-pin" \
+            TILO_SECBOOT_KEYS="${TILO_RELEASE_SECBOOT_VARS:?}" \
+              ./os/dev/test-installer-cycle.sh \
+                os/output/installer/qcow2/disk.qcow2 \
+                --software-tpm \
+                --out dist/installer-software-tpm-pin-cycle
+          fi
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
@@ -214,6 +243,7 @@ jobs:
             dist/installer-cycle
             dist/installer-alongside-cycle
             dist/installer-guided-alongside-cycle
+            dist/installer-software-tpm-pin-cycle
           if-no-files-found: error
       - name: Verify the installer-medium release payload
         run: |
@@ -505,7 +535,7 @@ jobs:
             "TILO_REQUIRE_NATIVE_PACKAGES=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             "TILO_VERSION=$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             if ($env:TILO_RELEASE_REPOSITORY -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw "release repository must be OWNER/REPOSITORY" }
-            "TILO_RELEASE_BASE_URL=$($env:GITHUB_SERVER_URL.TrimEnd('/'))/$env:TILO_RELEASE_REPOSITORY/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "TILO_RELEASE_BASE_URL=$($env:TILO_RELEASE_SERVER.TrimEnd('/'))/$env:TILO_RELEASE_REPOSITORY/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
       - shell: powershell
         run: cargo test -p imager --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc"
@@ -571,8 +601,7 @@ jobs:
 
   macos:
     timeout-minutes: 240
-    # Deferred for the alpha; tags and full_native must not allocate Mac hosts.
-    if: ${{ false }}
+    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
     needs: catalog
     enable-openid-connect: true
     strategy:
@@ -634,7 +663,7 @@ jobs:
                 echo "TILO_APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
                 echo "TILO_APPLE_APP_PASSWORD=$APPLE_APP_PASSWORD" >> "$GITHUB_ENV"
               else
-                printf 'configure IMAGER_CREDENTIAL_BROKER or explicitly enable static-signing bootstrap\n' >&2
+                printf 'configure IMAGER_MACOS_CREDENTIAL_BROKER or explicitly enable static-signing bootstrap\n' >&2
                 exit 1
               fi
               echo "TILO_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
@@ -722,7 +751,7 @@ jobs:
   publish:
     timeout-minutes: 60
     if: startsWith(github.ref, 'refs/tags/imager-v')
-    needs: [linux, windows]
+    needs: [linux, windows, macos]
     runs-on: runner
     enable-openid-connect: true
     steps:
@@ -737,7 +766,7 @@ jobs:
         run: |
           python3 apps/imager/packaging/generate-winget.py release-assets \
             --version "${GITHUB_REF_NAME#imager-v}" \
-            --base-url "${GITHUB_SERVER_URL%/}/${TILO_RELEASE_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+            --base-url "${TILO_RELEASE_SERVER%/}/${TILO_RELEASE_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
       - name: Require the complete native release matrix
         id: enabled-assets
         shell: bash
@@ -758,6 +787,10 @@ jobs:
             tilo-imager-windows-aarch64.exe
             tilo-imager-windows-aarch64.zip
             tilo-imager-setup-windows-aarch64.exe
+            tilo-imager-macos-x86_64.zip
+            tilo-imager-macos-x86_64.dmg
+            tilo-imager-macos-aarch64.zip
+            tilo-imager-macos-aarch64.dmg
           )
           for name in "${required[@]}"; do
             path="$(find release-assets -type f -name "$name" -print -quit)"
@@ -797,8 +830,14 @@ jobs:
           test ! -e "$token_file"
           apps/imager/packaging/acquire-release-token.sh \
             release "$CREDENTIAL_BROKER" "$token_file"
-          FORGEJO_TOKEN="$(cat "$token_file")" \
-            apps/imager/packaging/publish-forgejo-release.sh release-assets
+          release_token="$(cat "$token_file")"
+          revoke() {
+            GITHUB_INSTALLATION_TOKEN="$release_token" \
+              apps/imager/packaging/revoke-github-installation-token.sh || true
+          }
+          trap 'revoke; rm -f "$token_file"' EXIT
+          GITHUB_RELEASE_TOKEN="$release_token" \
+            apps/imager/packaging/publish-github-release.sh release-assets
 
   homebrew:
     timeout-minutes: 60
@@ -806,8 +845,7 @@ jobs:
     needs: publish
     runs-on: imager-linux-aarch64
     env:
-      # Keep the cask publisher available, but do not advance macOS packages.
-      TILO_IMAGER_MACOS_ENABLED: "0"
+      TILO_IMAGER_MACOS_ENABLED: "1"
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -833,7 +871,13 @@ jobs:
             printf 'configure the OIDC credential broker for Homebrew publication\n' >&2
             exit 1
           fi
-          HOMEBREW_TAP_TOKEN="$(cat "$token_file")" \
+          tap_token="$(cat "$token_file")"
+          revoke() {
+            GITHUB_INSTALLATION_TOKEN="$tap_token" \
+              apps/imager/packaging/revoke-github-installation-token.sh || true
+          }
+          trap 'revoke; rm -f "$token_file"' EXIT
+          HOMEBREW_TAP_TOKEN="$tap_token" \
             apps/imager/packaging/publish-homebrew-tap.sh release-assets
 
   homebrew-install-test:
@@ -856,7 +900,7 @@ jobs:
           set -euo pipefail
           command -v brew >/dev/null
           export HOMEBREW_NO_AUTO_UPDATE=1
-          brew tap tilo/tilo https://code.podesta.ai/qos/homebrew-tilo.git
+          brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git
           if [ "$PACKAGE_KIND" = formula ]; then
             brew install tilo/tilo/tilo-imager
             brew test tilo/tilo/tilo-imager
@@ -869,7 +913,7 @@ jobs:
 
   homebrew-macos-install-test:
     timeout-minutes: 90
-    if: ${{ false }} # Deferred with macOS packages; retain both native cask lanes.
+    if: startsWith(github.ref, 'refs/tags/imager-v')
     needs: homebrew
     strategy:
       matrix:
@@ -887,7 +931,7 @@ jobs:
           set -euo pipefail
           command -v brew >/dev/null
           export HOMEBREW_NO_AUTO_UPDATE=1
-          brew tap tilo/tilo https://code.podesta.ai/qos/homebrew-tilo.git
+          brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git
           if [ "$PACKAGE_KIND" = formula ]; then
             brew install tilo/tilo/tilo-imager
             brew test tilo/tilo/tilo-imager
@@ -935,7 +979,7 @@ jobs:
   site-downloads:
     timeout-minutes: 30
     if: startsWith(github.ref, 'refs/tags/imager-v')
-    needs: [homebrew-install-test, winget]
+    needs: [homebrew-install-test, homebrew-macos-install-test, winget]
     runs-on: runner
     enable-openid-connect: true
     steps:

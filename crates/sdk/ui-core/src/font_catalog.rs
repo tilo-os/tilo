@@ -36,7 +36,7 @@ pub(crate) fn windows_font_system(locale: String) -> Option<FontSystem> {
         }
     });
     database.as_ref().map(|db| {
-        FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::QosFallback)
+        FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::TiloFallback)
     })
 }
 
@@ -300,7 +300,7 @@ impl FontCatalog {
         Ok(FontSystem::new_with_locale_and_db_and_fallback(
             self.locale.clone(),
             db,
-            fallback::QosFallback,
+            fallback::TiloFallback,
         ))
     }
 }

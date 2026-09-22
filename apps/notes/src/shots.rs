@@ -7,25 +7,9 @@
 //! only ever lives on this path — the shipped app starts from the
 //! user's own pages.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::{fmt::Write as _, path::Path};
 
-use taffy::prelude::*;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::{PermissionContext, UserId};
-use ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange, draw_remote_presence};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, SmolStr};
-
-use crate::NotesApp;
 use crate::model::Workspace;
-use crate::num;
 use crate::storage;
 
 /// Default viewport when `--viewport` is omitted. A 16:9-ish desktop
@@ -45,10 +29,11 @@ pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
     clippy::too_many_lines,
     reason = "one visual fixture keeps its mutually linked page corpus readable in one place"
 )]
-fn seed_sample_workspace(
+pub(crate) fn seed_sample_workspace(
     root: &Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    storage::ensure_layout(root)?;
     let mut ws = Workspace::new();
 
     let inbox = ws.create_page(None);
@@ -138,7 +123,7 @@ Things worth coming back to.
         (
             projects,
             "\
-Active work, one page each.
+Active work, one note each.
 
 - [[Launch checklist]]
 ",
@@ -196,7 +181,24 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
     for (id, body) in bodies {
         storage::write_page_body(root, id, body)?;
     }
-    if scenario == Some("image") {
+    if scenario == Some("adjacent_code_fences") {
+        storage::write_page_body(
+            root,
+            launch,
+            "## Two separate examples\n\nEach Python example keeps its own code block.\n\n```python\nmessage = \"First example\"\nprint(message)\n```\n\n```python\nmessage = \"Second example\"\nprint(message.upper())\n```\n\nContinue writing below either block with Ctrl+Enter.\n",
+        )?;
+    }
+    if scenario == Some("scrolled") {
+        let mut body = storage::read_page_body(root, launch)?;
+        for index in 1..=20 {
+            let _ = write!(
+                body,
+                "\nFollow-up item {index}: keep the document readable while scrolling.\n\n"
+            );
+        }
+        storage::write_page_body(root, launch, &body)?;
+    }
+    if matches!(scenario, Some("image" | "image_edit")) {
         // Reuse a checked-in PNG fixture to exercise the real decoder and
         // workspace-relative loader without network access.
         let fixture = include_bytes!("../../settings/shots/settings.png");
@@ -205,104 +207,23 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
     Ok(())
 }
 
-/// Run the five-pass layout cycle until the responsive structure settles,
-/// returning the final taffy tree + root child node so a scenario can
-/// dispatch events against — and the frame draw from — the same live tree.
-fn settle_layout(
-    app: &mut NotesApp,
-    theme: &Theme,
-    text_renderer: &mut TextRenderer,
-    w: u32,
-    h: u32,
-) -> Result<(TaffyTree<()>, NodeId), Box<dyn std::error::Error>> {
-    let mut kept: Option<(TaffyTree<()>, NodeId)> = None;
-    for _ in 0..5 {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = app.build_layout(&mut taffy, theme, &mut node_map);
-        let root_node = taffy.new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_u32(w)),
-                    height: Dimension::length(num::f32_of_u32(h)),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )?;
-        {
-            let measure_map = node_map.clone();
-            let tr = &mut *text_renderer;
-            taffy.compute_layout_with_measure(
-                root_node,
-                taffy::Size {
-                    width: AvailableSpace::Definite(num::f32_of_u32(w)),
-                    height: AvailableSpace::Definite(num::f32_of_u32(h)),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )?;
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-        let settled = !app.take_structure_dirty();
-        kept = Some((taffy, child));
-        if settled {
-            break;
-        }
-    }
-    let Some(result) = kept else {
-        return Err("layout cycle never ran".into());
-    };
-    Ok(result)
-}
-
-/// Render the notes app at `viewport` into a PNG at `out`, optionally in a
-/// specific interaction `scenario` so states that only exist mid-gesture
-/// can be reviewed offscreen:
-///
-/// - `Some("drawer")` — open the narrow-mode page drawer.
-/// - `Some("first_note")` — an empty workspace, with the clear
-///   first-note action a new person sees before any sample content exists.
-/// - `Some("drag")` — begin dragging a sidebar row (floating ghost +
-///   live reflow gap).
-/// - `Some("block_drag")` — drag a document block by its six-dot handle,
-///   showing the discoverable in-editor reorder affordance.
-/// - `Some("menu")` — open a page row's right-click context menu.
-/// - `Some("slash")` — open the editor's `/` block menu.
-/// - `Some("slash_applied")` — pick a `/` command by click; the trigger is
-///   stripped and the block converts.
-/// - `Some("heading")` — type a `# ` shortcut to promote a paragraph to an H1.
-/// - `Some("quote")` — show the semantic blockquote treatment.
-/// - `Some("title_edit")` — open the prominent title's inline rename.
-/// - `Some("recipes")` — select the Recipes page (shows a numbered list).
-/// - `Some("formula")` — select the formula notebook with TeX and Typst previews.
-/// - `Some("table")` — show editable GFM table source with its live native preview.
-/// - `Some("image")` — show workspace-relative Markdown image preview behavior.
-/// - `Some("transclusion")` — show a live, UUID-backed embedded page card.
-/// - `Some("shortcuts")` — open the shared, focus-trapping shortcuts dialog.
-/// - `Some("tag_palette")` — show Cmd-K narrowed to the stable Release tag.
+/// Render one canonical component capture. Unknown scenarios fail instead of
+/// falling back to a second, app-owned renderer.
 ///
 /// # Errors
-///
-/// Returns an error if the hermetic workspace can't be created/seeded, the
-/// app fails to spawn, or the layout cycle never runs.
+/// Returns an error for unsupported scenarios or when fixture setup/rendering fails.
 pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
     scenario: Option<&str>,
     theme: Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Hermetic workspace root — unique per process so parallel shots
-    // don't collide, cleaned up on exit.
-    let root: PathBuf = std::env::temp_dir().join(format!("notes-shots-{}", uuid::Uuid::new_v4()));
-    storage::ensure_layout(&root)?;
-    if scenario != Some("first_note") {
-        seed_sample_workspace(&root, scenario)?;
+    if !crate::capture::supports(scenario) {
+        return Err(format!(
+            "unsupported Notes capture scenario: {}",
+            scenario.unwrap_or("overview")
+        )
+        .into());
     }
 
     let mut app = NotesApp::spawn(root.clone())?;

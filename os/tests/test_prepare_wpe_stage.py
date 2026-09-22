@@ -76,7 +76,7 @@ class WpeStageTests(unittest.TestCase):
             repo=Path('/private/source tree'), assets=Path('/private/source tree/assets'),
             base='code.podesta.ai/qos/fedora-bootc@sha256:' + '1' * 64,
             rpms='code.podesta.ai/qos/rpms@sha256:' + '2' * 64,
-            kernel='code.podesta.ai/qos/qos-kernel@sha256:' + '3' * 64,
+            kernel='code.podesta.ai/qos/tilo-kernel@sha256:' + '3' * 64,
             wpe='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '4' * 64)
 
     def test_only_dependency_target_can_be_cached(self):

@@ -47,8 +47,8 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 
 # (package id, what the manifest calls it, what it must never read as)
 APPS = [
-    ("dev.tilo.file-explorer", "Files", ("app", "file-explorer")),
-    ("dev.tilo.word-processor", "Word Processor", ("app", "word-processor")),
+    ("so.tilo.file-explorer", "Files", ("app", "file-explorer")),
+    ("so.tilo.word-processor", "Word Processor", ("app", "word-processor")),
 ]
 
 SCRUB = ("DISPLAY", "WAYLAND_DISPLAY", "VK_DRIVER_FILES", "VK_ICD_FILENAMES",

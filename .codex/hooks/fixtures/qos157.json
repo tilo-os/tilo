@@ -1,0 +1,18 @@
+{
+  "provenance": "Actual functions.exec code and author identity from local execution transcript; PostToolUse envelope reconstructed, not captured.",
+  "observed_at": "2026-09-20T16:53:56.100Z",
+  "tool_name": "exec",
+  "session_id": "01a0bfbb-8102-7371-97ff-b025f1181eca",
+  "cwd": "C:/Users/xaver/.codex/worktrees/9245/qos",
+  "tool_input": {
+    "code": "text(await tools.exec_command({cmd:\"git push origin HEAD:refs/heads/codex/dev-package-identity; git status --short\",\"workdir\":\"C:/Users/xaver/qos-registry-submission\",\"max_output_tokens\":1500}));\n"
+  },
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"exit_code\": 0, \"output\": \"push completed\", \"wall_time_seconds\": 1}"
+      }
+    ]
+  }
+}

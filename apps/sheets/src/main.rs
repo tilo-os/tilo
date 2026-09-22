@@ -62,7 +62,7 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
-const APP_ID: &str = "dev.tilo.sheets";
+const APP_ID: &str = "so.tilo.sheets";
 const SCENARIOS: &[&str] = &[
     "file",
     "format",

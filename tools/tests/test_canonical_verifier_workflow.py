@@ -56,7 +56,7 @@ class VerifierWorkflowTests(unittest.TestCase):
         cargo = root / 'bin/cargo'
         cargo.write_text('#!/bin/sh\nset -eu\nprintf "%s\\n" "$@" > cargo-arguments.txt\n'
                          'test "$FIXTURE_CARGO_FAIL" = 0 || exit 42\n'
-                         'mkdir -p target/release\ncp /bin/true target/release/tilo-pkg\n'
+                         'mkdir -p target/release\ncp /bin/true target/release/tilo-app-package\n'
                          'cp /bin/true target/release/tilo-runtime-bundle\n')
         cargo.chmod(0o755)
         env = dict(os.environ, PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'],
@@ -71,7 +71,7 @@ class VerifierWorkflowTests(unittest.TestCase):
             root = Path(directory)
             result, head = self.run_fixture(root)
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual(['build', '--release', '--locked', '-p', 'pkg-cli', '-p', 'runtime-bundle'],
+            self.assertEqual(['build', '--release', '--locked', '-p', 'tilo-app-package-cli', '-p', 'runtime-bundle'],
                              (root / 'cargo-arguments.txt').read_text().splitlines())
             arch = platform.machine()
             descriptor = json.loads((root / f'target/verifier-bundle/{arch}.tar.descriptor.json').read_text())

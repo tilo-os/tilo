@@ -25,7 +25,7 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
-const APP_ID: &str = "dev.tilo.pdf-viewer";
+const APP_ID: &str = "so.tilo.pdf-viewer";
 
 #[allow(
     clippy::unnecessary_wraps,
