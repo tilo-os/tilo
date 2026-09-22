@@ -1,6 +1,6 @@
 //! Native-host adapter. The persistence/decision path is independent of the
 //! OS event loop; Windows and macOS use this same admission boundary.
-use super::App;
+use super::{App, ResourceInvocation};
 use crate::close_admission::{Choice, Command, OPERATION};
 use crate::widget::Widget;
 
