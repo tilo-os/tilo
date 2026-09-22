@@ -926,7 +926,7 @@ impl WindowGroup {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if !self.maximized && self.hover_resize => {
+            } if !self.maximized && self.hover_resize && !self.new_tab_hit(self.last_cursor) => {
                 // Anchor on the actual press point, not the group's right
                 // edge — the hit zone is `RESIZE_HANDLE_PX` wide, so the
                 // edge would jump the window on grab.
