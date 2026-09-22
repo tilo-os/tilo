@@ -3530,8 +3530,8 @@ fn drag_file_row_to_shell_target(
 }
 
 fn tree_shape(tree: &serde_json::Value) -> (usize, usize, Vec<String>) {
-    let mut groups = 0;
-    let mut tabs = 0;
+    let mut groups: usize = 0;
+    let mut tabs: usize = 0;
     let mut titles = Vec::new();
     walk_json(tree, &mut |value| {
         if let Some(window_groups) = value.get("window_groups").and_then(|v| v.as_array()) {
