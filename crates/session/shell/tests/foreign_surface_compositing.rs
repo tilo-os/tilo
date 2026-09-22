@@ -155,7 +155,7 @@ fn settle(fb: &mut FrameBuilder) {
 /// the store: handing a placeholder to its window is a 180 ms cross-fade,
 /// so the frame right after a commit is mostly still the card — sampling
 /// there measures the dissolve, not the client's pixels.
-fn quiesce(fb: &mut FrameBuilder, surface_id: SurfaceId) {
+fn quiesce(fb: &mut FrameBuilder, surface_id: u64) {
     let deadline = std::time::Instant::now()
         .checked_add(std::time::Duration::from_millis(260))
         .unwrap_or_else(std::time::Instant::now);
