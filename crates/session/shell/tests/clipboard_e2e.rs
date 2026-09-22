@@ -3472,10 +3472,11 @@ fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
         x1 > x0 + 20.0,
         "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]"
     );
-    // The mostly off-screen Files group can sit underneath shell chrome on
-    // the left. Start just before its visible right edge: outside the resize
-    // seam, but with enough unobscured row to cross the drag threshold leftward.
-    ((x1 - 8.0).max(x0 + 1.0), y + h / 2.0)
+    // The inter-group resize handle owns eight pixels on either side of the
+    // seam and dispatches before the file view. Stay two pixels beyond that
+    // hit band, with enough unobscured row to cross the drag threshold
+    // leftward.
+    ((x1 - 10.0).max(x0 + 1.0), y + h / 2.0)
 }
 
 /// Press on the file row and carry it over to the client in small steps —
