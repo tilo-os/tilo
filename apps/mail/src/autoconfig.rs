@@ -406,7 +406,7 @@ fn discover_with_urls(
 #[cfg(feature = "live")]
 async fn discover_candidates(email: &str, urls: Vec<String>) -> Option<Autoconfig> {
     let (_, domain) = email.split_once('@')?;
-    let client = reqwest::Client::builder()
+    let client = tilo_net::http::client()
         .timeout(std::time::Duration::from_secs(8))
         .user_agent("Tilo Mail")
         .build()

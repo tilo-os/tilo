@@ -61,12 +61,6 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 extern crate runtime_dylib;
 
 pub fn main() {
-    // Install the rustls crypto provider before any HTTPS fetch. The tile worker
-    // and the geocoding/routing client also call this, but doing it here at
-    // startup keeps the provider set for the whole process regardless of which
-    // request runs first. See `net::ensure_crypto_provider` for why it's needed.
-    maps::net::ensure_crypto_provider();
-
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.maps", maps::app_root)
             .shot_root(shot_root)

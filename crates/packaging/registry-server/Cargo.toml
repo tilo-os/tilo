@@ -48,7 +48,8 @@ zeroize.workspace = true
 # Moderation fetches run in the deployed container. Use its maintained CA
 # bundle so newly issued public certificates do not depend on the root set
 # compiled into an older pinned application image.
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls-native-roots"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
 
 [dev-dependencies]
 tempfile.workspace = true

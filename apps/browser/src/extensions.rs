@@ -81,7 +81,7 @@ pub fn install_from_url(url: &str) -> Result<ExtensionInfo, ExtensionError> {
             "extension packages require an HTTPS URL without embedded credentials".into(),
         ));
     }
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()

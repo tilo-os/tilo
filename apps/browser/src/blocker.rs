@@ -321,7 +321,7 @@ pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
 
     let fetch = || -> Result<String, Box<dyn std::error::Error>> {
         use std::io::Read as _;
-        let client = reqwest::blocking::Client::builder()
+        let client = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(15))
             .build()?;
         let response = client.get(url).send()?.error_for_status()?;

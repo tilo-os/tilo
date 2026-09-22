@@ -149,7 +149,7 @@ fn url_encode(s: &str) -> String {
 /// Perform the request and collect the response. Blocking — the caller
 /// runs it on a worker thread so the UI stays responsive.
 pub fn send_blocking(out: &Outgoing) -> Result<ResponseData, String> {
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .user_agent("tilo-api-tester/0.1")
         .build()
         .map_err(|e| e.to_string())?;

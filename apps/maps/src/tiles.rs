@@ -784,10 +784,7 @@ fn lonlat_to_tile(lat: f64, lon: f64, z: u8) -> (u32, u32) {
 /// Background worker: services fetch + download jobs entirely off the UI
 /// thread. Disk cache first, then network; decode happens here too.
 fn worker(rx: &Receiver<Job>, tx: &Sender<Done>, cache_dir: &std::path::Path, base_url: &str) {
-    // Make sure the rustls provider is installed before the first handshake —
-    // otherwise every tile fetch fails silently (see `net::ensure_crypto_provider`).
-    crate::net::ensure_crypto_provider();
-    let client = match reqwest::blocking::Client::builder()
+    let client = match tilo_net::http::blocking_client()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(15))
         .build()

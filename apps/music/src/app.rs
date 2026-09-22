@@ -5147,7 +5147,7 @@ fn image_fetcher() -> ui::Fetcher {
             return None;
         }
         let client = CLIENT.get_or_init(|| {
-            reqwest::blocking::Client::builder()
+            tilo_net::http::blocking_client()
                 .timeout(std::time::Duration::from_secs(12))
                 .user_agent("Mozilla/5.0 (Tilo Music)")
                 .build()

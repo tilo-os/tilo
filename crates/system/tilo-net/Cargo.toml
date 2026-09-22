@@ -10,6 +10,12 @@ description = "Tilo's network client defaults: one TLS crypto provider and one t
 rustls.workspace = true
 # Resolves to `crates/system/tilo-native-certs` through the workspace patch.
 rustls-native-certs.workspace = true
+reqwest = { workspace = true, optional = true }
+
+[features]
+# HTTP client builders on the same provider and trust source.
+http = ["dep:reqwest"]
+blocking = ["http", "reqwest/blocking"]
 
 [lints]
 workspace = true

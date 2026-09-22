@@ -41,9 +41,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
-# Explicitly install the workspace-standard ring provider at startup.
-rustls.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
 
 [dev-dependencies]
 # The end-to-end test packs, publishes, and installs a .tapp.

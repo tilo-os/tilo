@@ -27,9 +27,8 @@ tracing.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
-# Explicit rustls ring provider so we can install_default() at startup.
-rustls.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 png.workspace = true
 # RFC-3339 timestamps for the transit depart/arrive time picker.
 chrono = { workspace = true, default-features = true }

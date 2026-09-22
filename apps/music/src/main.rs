@@ -320,7 +320,7 @@ fn verify_stream_http(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::fmt::Write as _;
 
     println!("\n== independent HTTP verification (Range GET first 64 KiB) ==");
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()?;
     let resp = client
