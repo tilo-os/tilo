@@ -3472,9 +3472,8 @@ fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
         x1 > x0 + 20.0,
         "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]"
     );
-    // The sidebar reserve ends at x=266 in this fixture and the inter-group
-    // handle starts at x=274. Aim one pixel inside that eight-pixel strip;
-    // it is the only part of this mostly off-screen row owned by Files.
+    // Stay left of both resize zones, with enough room to move back toward
+    // the sidebar while remaining in the visible part of Files.
     ((x1 - 11.0).max(x0 + 1.0), y + h / 2.0)
 }
 
@@ -3499,11 +3498,11 @@ fn drag_file_row_onto_client(
     // the output scale factor. Move far enough to clear the 6 logical-pixel
     // threshold even on a 2x output, then interpolate from that latched point.
     // The row is visible only in the narrow strip between the sidebar and the
-    // adjacent client. The unobscured band is only eight logical pixels wide:
-    // move 6.5px right from its first interior pixel. That clears the strict
-    // 6px threshold while remaining left of the resize handle, after which
-    // the compositor can hand the live drag rightward.
-    let latched = (row.0 + 6.5, row.1);
+    // adjacent client. The 800px-high fixture leaves enough row between the
+    // sidebar reserve and the group's resize zones to cross the strict 6px
+    // threshold entirely inside Files. Once latched, the compositor can hand
+    // the live drag rightward.
+    let latched = (row.0 - 14.0, row.1);
     compositor.pointer_move(latched.0, latched.1);
     target.pump();
     std::thread::sleep(Duration::from_millis(30));
@@ -3577,7 +3576,11 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     let photo = home.join("photo.png");
     std::fs::write(&photo, TINY_PNG).expect("write the fixture image");
 
-    let compositor = Compositor::start_with(Some(&home), (2560, 900));
+    // At 900px high the viewport-driven sidebar reserve and the two resize
+    // zones leave Files exactly six visible pixels, while drag starts only
+    // after travelling strictly more than six. The supported 800px layout
+    // leaves a real source band and still keeps both windows on screen.
+    let compositor = Compositor::start_with(Some(&home), (2560, 800));
 
     compositor.place_next_window("org.tilo.test.dnd-target");
     let mut target = TestClient::new(compositor.connect(), "org.tilo.test.dnd-target");
