@@ -24,14 +24,14 @@ dirs.workspace = true
 # --- Encryption-at-rest for the secret vault --------------------------
 # Credentials are long-lived bearer secrets, so the vault is sealed on disk
 # with XChaCha20-Poly1305 (a 192-bit-nonce AEAD) under a 256-bit key — the
-# exact pattern the authenticator (totp) vault already uses. `getrandom`
-# draws the key + per-write nonce from the OS CSPRNG; `zeroize` wipes the
-# decrypted plaintext + derived key bytes from the heap. All three are
+# exact pattern the authenticator (totp) vault already uses. `rand_core`'s
+# OsRng draws the key + per-write nonce from the OS CSPRNG; `zeroize` wipes
+# the decrypted plaintext + derived key bytes from the heap. All three are
 # already resolved in the shared workspace lockfile, so this adds no
 # registry fetch. default-features are off so chacha's optional RNG surface
-# is not pulled — randomness comes from `getrandom` directly.
+# is not pulled — randomness comes from OsRng directly.
 chacha20poly1305.workspace = true
-getrandom.workspace = true
+rand_core = { workspace = true, features = ["getrandom"] }
 zeroize.workspace = true
 uuid.workspace = true
 url.workspace = true

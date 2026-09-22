@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use rand_core::{OsRng, RngCore as _};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -306,7 +307,7 @@ fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
                 return None;
             }
             let mut key = Zeroizing::new([0u8; KEY_LEN]);
-            getrandom::getrandom(key.as_mut_slice()).ok()?;
+            OsRng.try_fill_bytes(key.as_mut_slice()).ok()?;
             (key, false)
         }
         Err(error) => {
@@ -439,7 +440,7 @@ fn local_file_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
                 return None;
             }
             let mut key = Zeroizing::new([0u8; KEY_LEN]);
-            if getrandom::getrandom(key.as_mut_slice()).is_err() {
+            if OsRng.try_fill_bytes(key.as_mut_slice()).is_err() {
                 return None;
             }
             if let Err(e) = std::fs::create_dir_all(dir) {
@@ -473,7 +474,7 @@ fn seal(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Option<Vec<u8>> {
     use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    getrandom::getrandom(&mut nonce_bytes).ok()?;
+    OsRng.try_fill_bytes(&mut nonce_bytes).ok()?;
     let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
     let ciphertext = cipher
         .encrypt(XNonce::from_slice(&nonce_bytes), plaintext)
