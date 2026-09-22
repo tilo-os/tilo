@@ -11,12 +11,16 @@ depends() {
 }
 
 install() {
-    inst_multiple tilo-rollback cryptsetup systemd-cryptsetup systemd-ask-password systemd-escape \
-        grep tpm2_createprimary tpm2_flushcontext tpm2_getpolicydigest \
+    inst_multiple awk bash cat chmod cryptsetup dd find grep install ln lsblk \
+        readlink rm seq sleep systemd-ask-password systemd-cryptsetup systemd-escape \
+        tilo-rollback tr udevadm \
+        tpm2_createprimary tpm2_flushcontext tpm2_getpolicydigest \
         tpm2_load tpm2_loadexternal tpm2_nvread tpm2_nvreadpublic \
         tpm2_policyauthorize tpm2_policyauthvalue tpm2_policynv \
         tpm2_policypcr tpm2_policyor tpm2_readpublic tpm2_startauthsession \
         tpm2_unseal tpm2_verifysignature
+    # shellcheck disable=SC2154 # dracut defines moddir before loading modules
+    inst_hook cmdline 90 "$moddir/parse-tilo-root.sh"
     inst_simple /usr/bin/tilo-rollback /usr/bin/tilo-rollback
     inst_simple /usr/libexec/tilo-rollback-initrd-unlock
     inst_simple /usr/libexec/tilo-root-discover
