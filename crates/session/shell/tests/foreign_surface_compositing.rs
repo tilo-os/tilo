@@ -163,21 +163,30 @@ fn settle(fb: &mut FrameBuilder) {
 /// there measures the dissolve, not the client's pixels.
 fn quiesce(fb: &mut FrameBuilder, surface_id: u64) {
     let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_millis(260))
+        .checked_add(std::time::Duration::from_secs(3))
         .unwrap_or_else(std::time::Instant::now);
-    // Latch the committed client as presented, then paint past the host's
-    // 180ms handover. Global animation demand is intentionally not the exit
-    // condition: another shell group may still be opening and is unrelated
-    // to whether this surface's dissolve has completed.
-    while std::time::Instant::now() < deadline {
+    // First wait for this exact client to latch as presented. A configure or
+    // strip-layout change can delay that edge; measuring the dissolve from
+    // publication would then spend the entire allowance on the opening card.
+    while !store().is_presented(surface_id) && std::time::Instant::now() < deadline {
         let _ = fb.any_tile_opening();
         let _ = frame(fb);
         std::thread::sleep(std::time::Duration::from_millis(8));
     }
     assert!(
-        !store().is_opening(surface_id),
+        store().is_presented(surface_id),
         "the committed foreign surface never became presented"
     );
+    // Now paint past the host's 180ms handover. Global animation demand is
+    // intentionally not the exit condition: another shell group may still be
+    // opening and is unrelated to this surface's dissolve.
+    let handover_end = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_millis(220))
+        .unwrap_or_else(std::time::Instant::now);
+    while std::time::Instant::now() < handover_end {
+        let _ = frame(fb);
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
 }
 
 /// A solid opaque RGBA image, as a client filling its surface would commit.
