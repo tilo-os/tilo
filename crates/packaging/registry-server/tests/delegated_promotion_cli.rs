@@ -11,8 +11,6 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::process::{Command, Output};
 
 use ed25519_dalek::SigningKey;
-use pkg::pack::{SigningIdentity, pack};
-use pkg::{Manifest, MemoryBlobStore};
 use registry_server::{
     PendingSubmission, PromotionJournal, PublisherAllowlist, PublisherRow, ServerIdentity,
     StagedArtifact, StagedPromotion, Storage,
@@ -21,6 +19,8 @@ use registry_types::{
     EntryAction, RegistryEntry, RegistryTarget, RegistryVersion, SignedRegistrySnapshot,
     sign_change_request,
 };
+use tilo_app_package::pack::{SigningIdentity, pack};
+use tilo_app_package::{Manifest, MemoryBlobStore};
 
 fn run(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
@@ -197,29 +197,35 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     assert!(idempotent_during_recovery.status.success());
     storage.delete_promotion_transaction().unwrap();
 
-    let (bytes, package_id) = signed_qpkg(&publisher);
+    let (bytes, package_id) = signed_tapp(&publisher);
     let digest = blake3::hash(&bytes).to_hex().to_string();
     let entry = RegistryEntry {
-        package_id: "dev.tilo.editor".into(),
+        package_id: "so.tilo.editor".into(),
         name: "Editor".into(),
         description: "Editor".into(),
+        tagline: "Edit video on Tilo OS".into(),
+        images: registry_types::LocalizedImages::english_icon(
+            "https://apps.tilo.so/images/test-icon.svg",
+            "Test icon",
+        ),
+        supported_languages: vec!["en".into()],
         categories: vec!["Productivity".into()],
-        icon_url: None,
         source_url: None,
         homepage: None,
         publisher_pubkey_hex: publisher_hex.clone(),
         versions: vec![RegistryVersion {
             version: "1.0.0".into(),
-            qpkg_url: "https://packages.test/editor.qpkg".into(),
-            qpkg_root_hash_hex: hex::encode(package_id.as_bytes()),
-            qpkg_size_bytes: bytes.len() as u64,
+            tapp_url: "https://apps.tilo.so/artifacts/editor-x86_64.tapp".into(),
+            tapp_root_hash_hex: hex::encode(package_id.as_bytes()),
+            tapp_size_bytes: bytes.len() as u64,
             released_at_unix: 1,
-            qpkg_blake3_hex: Some(digest.clone()),
-            target: Some(RegistryTarget {
+            tapp_blake3_hex: digest.clone(),
+            target: RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
                 architecture: "x86_64".into(),
                 isa: "x86_64-v3".into(),
                 runtime: None,
-            }),
+            },
         }],
         updated_at_unix: 1,
         signature_hex: String::new(),
@@ -238,8 +244,14 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
             collected_at_unix: 1,
             submissions: vec![pending],
             artifacts: vec![StagedArtifact {
-                submission_id: "dev.tilo.editor".into(),
+                submission_id: "so.tilo.editor".into(),
                 version: "1.0.0".into(),
+                target: Some(RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                }),
                 blake3_hex: digest,
             }],
         })
@@ -359,7 +371,7 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
 }
 
-fn signed_qpkg(identity: &SigningIdentity) -> (Vec<u8>, pkg::PackageId) {
+fn signed_tapp(identity: &SigningIdentity) -> (Vec<u8>, tilo_app_package::PackageId) {
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
@@ -367,7 +379,7 @@ fn signed_qpkg(identity: &SigningIdentity) -> (Vec<u8>, pkg::PackageId) {
     let manifest = Manifest::from_toml_str(&format!(
         r#"
 [package]
-id = "dev.tilo.editor"
+id = "so.tilo.editor"
 version = "1.0.0"
 kind = "app"
 
@@ -395,5 +407,5 @@ type = "gui"
     .unwrap();
     let mut store = MemoryBlobStore::new();
     let id = pack(&payload, &manifest, identity, &mut store).unwrap();
-    (app_registry::qpkg::write_bytes(id, &store).unwrap(), id)
+    (app_registry::tapp::write_bytes(id, &store).unwrap(), id)
 }

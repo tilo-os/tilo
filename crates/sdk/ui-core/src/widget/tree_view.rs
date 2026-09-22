@@ -28,7 +28,7 @@ use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
 };
-use crate::widget::{Element, TaffyTreeExt, Widget};
+use crate::widget::{Element, EventCtx, TaffyTreeExt, Widget};
 
 pub type NodeId = u64;
 
@@ -2365,18 +2365,15 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         clippy::too_many_lines,
         reason = "keeps delegate, reorder, disclosure, selection, scroll, and keyboard precedence explicit"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        let scale_factor = ctx.scale_factor;
+        let modifiers = ctx.modifiers;
+        let state = &mut *ctx.state;
+        let path = ctx.path;
+        let handled = &mut *ctx.handled;
+        let focus_target = &mut *ctx.focus_target;
+        let node_id = ctx.node_id;
+        let taffy = ctx.taffy;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Some(Point::new(
                 position.x / scale_factor,
@@ -3356,18 +3353,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event(
-            &mut self,
-            event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            handled: &mut bool,
-            _focus_target: &mut Option<taffy::NodeId>,
-            _node_id: taffy::NodeId,
-            _taffy: &TaffyTree<()>,
-        ) {
+        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.cursor = Some(Point::new(position.x, position.y));
             }
@@ -3383,7 +3369,7 @@ mod tests {
                 )
             {
                 self.presses.set(self.presses.get().saturating_add(1));
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 

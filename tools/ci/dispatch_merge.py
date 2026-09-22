@@ -19,7 +19,7 @@ TERMINAL = {"rejected", "merged_verified", "dry_run_ready"}
 LEASE_BUSY = 0
 UNCERTAIN = 3
 WORKER = Path(__file__).resolve().with_name("merge_pr.py")
-WORKER_SPEC = importlib.util.spec_from_file_location("qos_merge_pr", WORKER)
+WORKER_SPEC = importlib.util.spec_from_file_location("tilo_merge_pr", WORKER)
 if WORKER_SPEC is None or WORKER_SPEC.loader is None:
     raise ImportError(f"cannot load trusted merge worker: {WORKER}")
 merge_pr = importlib.util.module_from_spec(WORKER_SPEC)
@@ -118,7 +118,7 @@ def run_worker(root: Path, journal: Path, number: int, *, reconcile=False):
 
 
 def fetch_candidate(root: Path, number: int, listed_head: str):
-    ref = f"refs/qos-integration/candidates/{number}"
+    ref = f"refs/tilo-integration/candidates/{number}"
     try:
         cached = merge_pr.git(root, "rev-parse", "--verify", ref).decode().strip()
         if cached == listed_head:

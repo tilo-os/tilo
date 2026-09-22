@@ -574,6 +574,67 @@ pub trait AudiencePresentationProvider {
     fn on_audience_presentation_closed(&mut self) {}
 }
 
+/// Optional OS-fullscreen capability for roots and forwarding containers.
+pub trait FullscreenProvider {
+    /// `None` means no opinion; otherwise this is a level-triggered intent.
+    fn fullscreen_intent(&self) -> Option<bool> {
+        None
+    }
+
+    /// Select the output and mirrored-vs-distinct presentation mode.
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        crate::fullscreen::FullscreenRequest::mirror(crate::fullscreen::FullscreenTarget::Largest)
+    }
+
+    /// Report an actual OS fullscreen transition, including compositor exits.
+    fn on_fullscreen_changed(&mut self, _active: bool) {}
+}
+
+/// Optional full-document/canvas capture capability.
+pub trait CompleteContentProvider {
+    /// Semantic canvas size available without resizing the live widget.
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
+
+    /// Paint the complete semantic content without mutating live view state.
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut vello::Scene,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool;
+}
+
+/// Host services associated with one retained widget event dispatch.
+pub struct EventCtx<'a> {
+    pub scale_factor: f64,
+    pub modifiers: &'a winit::event::Modifiers,
+    pub state: &'a mut AutoCommit,
+    pub path: &'a ObjId,
+    pub handled: &'a mut bool,
+    pub focus_target: &'a mut Option<NodeId>,
+    pub node_id: NodeId,
+    pub taffy: &'a TaffyTree<()>,
+}
+
+impl EventCtx<'_> {
+    /// Reborrow this event for a retained child with its own document path and node.
+    pub fn reborrow<'b>(&'b mut self, path: &'b ObjId, node_id: NodeId) -> EventCtx<'b> {
+        EventCtx {
+            scale_factor: self.scale_factor,
+            modifiers: self.modifiers,
+            state: &mut *self.state,
+            path,
+            handled: &mut *self.handled,
+            focus_target: &mut *self.focus_target,
+            node_id,
+            taffy: self.taffy,
+        }
+    }
+}
+
 pub trait Widget {
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
@@ -689,6 +750,26 @@ pub trait Widget {
         None
     }
 
+    /// Expose OS fullscreen behavior only for widgets that own or forward it.
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::fullscreen_provider`].
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        None
+    }
+
+    /// Expose full-content capture only for widgets that can reproduce it.
+    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::complete_content_provider`].
+    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
+        None
+    }
+
     /// Receive host-selected platform conventions. The default propagates to
     /// retained children, keeping target-OS branches out of app code.
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
@@ -778,39 +859,13 @@ pub trait Widget {
         presence: &PresenceCtx,
     );
 
-    /// Semantic canvas size this widget can render for a complete-content
-    /// capture without resizing or scrolling its live presentation. `None`
-    /// means the ordinary window surface is authoritative. Apps opt in only
-    /// when they can reproduce the complete page/document/canvas from their
-    /// own model; the shell never guesses by stitching visible pixels.
-    fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
-        None
-    }
-
-    /// Paint the complete semantic content into `bounds`, in the same desktop
-    /// coordinate space as [`Widget::get_rect`]. Called only after
-    /// [`Widget::complete_content_size`] returned a usable size. Implementors
-    /// must leave live layout, scroll position, focus and pointer state intact.
-    fn draw_complete_content(
-        &mut self,
-        _scene: &mut Scene,
-        _bounds: vello::kurbo::Rect,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) -> bool {
-        false
-    }
-    // This is the widget system's event-dispatch contract, implemented by
-    // ~90 widgets; every parameter is independently meaningful (the raw
-    // event, scaling, modifiers, CRDT handle+path, two out-params, and the
-    // node's own identity/layout). Bundling it into a context struct would
-    // be a real signature change rippling through every implementor for no
-    // behavioural difference, not a mechanical lint fix.
+    /// Compatibility dispatcher for retained containers and host code.
+    ///
+    /// New widgets implement [`Widget::handle_event_ctx`]. Existing positional
+    /// implementations remain valid while call sites migrate independently.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the shared Widget event contract exposes independently meaningful input, document, focus and layout parameters"
+        reason = "temporary compatibility adapter; implementations use EventCtx"
     )]
     fn handle_event(
         &mut self,
@@ -823,7 +878,24 @@ pub trait Widget {
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
-    );
+    ) {
+        self.handle_event_ctx(
+            event,
+            &mut EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
+        );
+    }
+
+    /// Handle one input event with the runtime services for this retained node.
+    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         vec![]
     }
@@ -1262,27 +1334,6 @@ pub trait Widget {
     fn take_focus_reset(&mut self) -> bool {
         false
     }
-
-    // --- Fullscreen / presentation contract ---
-    /// `None` (default) is "no opinion". **Level-triggered, not
-    /// edge-triggered**: the App only calls `set_fullscreen` when this
-    /// differs from the live window state. Only the root widget is
-    /// consulted.
-    fn fullscreen_intent(&self) -> Option<bool> {
-        None
-    }
-
-    /// Used when [`Self::fullscreen_intent`] resolves `Some(true)` — which
-    /// output to target and whether the fullscreen surface mirrors the
-    /// window or shows a distinct view. Default: largest output, mirroring.
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        crate::fullscreen::FullscreenRequest::mirror(crate::fullscreen::FullscreenTarget::Largest)
-    }
-
-    /// Edge-triggered: fires when the *actual* OS-fullscreen state changed,
-    /// so a compositor-initiated exit (global keybind, lost grant) can be
-    /// reacted to even though the app never asked. Root widget only.
-    fn on_fullscreen_changed(&mut self, _active: bool) {}
 
     /// Which **record** (see [`crate::record`]) this widget's document
     /// should be, so opening a second file checks out a different document
@@ -1976,6 +2027,80 @@ impl<T: Widget + ?Sized> AudiencePresentationWidgetExt for T {
     }
 }
 
+/// Ergonomic host API for optional fullscreen support.
+pub trait FullscreenWidgetExt {
+    fn fullscreen_intent(&self) -> Option<bool>;
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest;
+    fn on_fullscreen_changed(&mut self, active: bool);
+}
+
+impl<T: Widget + ?Sized> FullscreenWidgetExt for T {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        self.fullscreen_provider()
+            .and_then(FullscreenProvider::fullscreen_intent)
+    }
+
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        self.fullscreen_provider().map_or_else(
+            || {
+                crate::fullscreen::FullscreenRequest::mirror(
+                    crate::fullscreen::FullscreenTarget::Largest,
+                )
+            },
+            FullscreenProvider::fullscreen_params,
+        )
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        if let Some(provider) = self.fullscreen_provider_mut() {
+            provider.on_fullscreen_changed(active);
+        }
+    }
+}
+
+/// Ergonomic host API for optional complete-content capture.
+pub trait CompleteContentWidgetExt {
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut vello::Scene,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool;
+}
+
+impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
+    fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
+        self.complete_content_provider()
+            .and_then(CompleteContentProvider::complete_content_size)
+    }
+
+    fn draw_complete_content(
+        &mut self,
+        scene: &mut vello::Scene,
+        bounds: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool {
+        self.complete_content_provider_mut()
+            .is_some_and(|provider| {
+                provider.draw_complete_content(
+                    scene,
+                    bounds,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                )
+            })
+    }
+}
+
 /// Drain collaboration capabilities throughout a retained widget tree.
 pub(crate) fn take_collab_requests(
     widget: &mut dyn Widget,
@@ -2229,8 +2354,8 @@ pub use resize_handle::{
 };
 mod group_row;
 pub use group_row::{
-    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, WheelJumpAccum,
-    wheel_jump_detents,
+    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, TabDropTarget,
+    WheelJumpAccum, wheel_jump_detents,
 };
 mod strip_view;
 pub use strip_view::{STRIP_COOLDOWN_MS, StripView};

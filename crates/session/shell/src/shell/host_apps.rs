@@ -1,6 +1,6 @@
 //! Starting applications Tilo did not package.
 //!
-//! Counterpart to [`crate::shell::launcher`], which starts `.qpkg`
+//! Counterpart to [`crate::shell::launcher`], which starts `.tapp`
 //! packages; both exec `tilo-launcher` and report through the same
 //! [`launcher::LaunchEvent`] queue.
 //!
@@ -125,7 +125,7 @@ pub(crate) fn set_x11_session(session: Option<X11Session>) {
 
 /// The bridge is deliberately asynchronous: callers need to distinguish the
 /// short startup race from a terminal outage.  `Unavailable` is also the
-/// default for native qOS sessions, where Wayland host apps must not be gated
+/// default for native Tilo sessions, where Wayland host apps must not be gated
 /// on an optional compatibility service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum X11Availability {

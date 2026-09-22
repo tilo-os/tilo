@@ -5233,7 +5233,7 @@ mod tests {
         let mut target = CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             visible_rect: Rect::new(0.0, 90.0, 84.0, 590.0),
             virtual_rect: Rect::new(-916.0, 90.0, 84.0, 590.0),
             complete_rect: Some(Rect::new(-916.0, 90.0, 394.0, 1_278.0)),
@@ -5267,7 +5267,7 @@ mod tests {
         let target = CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             visible_rect: Rect::new(0.0, 90.0, 84.0, 590.0),
             virtual_rect: Rect::new(-916.0, 90.0, 84.0, 590.0),
             complete_rect: Some(Rect::new(-916.0, 90.0, 394.0, 1_278.0)),
@@ -5927,7 +5927,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             visible_rect: Rect::new(240.0, 120.0, 1_280.0, 820.0),
             virtual_rect: Rect::new(-400.0, 120.0, 1_280.0, 820.0),
             complete_rect: None,
@@ -6032,7 +6032,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             visible_rect: app,
             virtual_rect: app,
             complete_rect: None,
@@ -6053,7 +6053,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "canvas".into(),
             title: "Canvas".into(),
-            app_id: "dev.tilo.canvas".into(),
+            app_id: "so.tilo.canvas".into(),
             visible_rect: Rect::new(0.0, 80.0, 1_600.0, 900.0),
             virtual_rect: Rect::new(-720.0, 80.0, 2_240.0, 1_480.0),
             complete_rect: None,

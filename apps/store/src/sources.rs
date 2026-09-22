@@ -5,7 +5,7 @@
 //! `name` as a Flathub app wins.** Duplicates on the Flathub side
 //! are dropped. Case-insensitive matching, whitespace-trimmed.
 
-use registry_types::RegistryVersion;
+use registry_types::{RegistryImageKind, RegistryVersion};
 
 use crate::flathub_client::{AppStreamRecord, PopularEntry};
 use crate::installed::InstalledEntry;
@@ -46,13 +46,36 @@ pub fn tilo_to_store_item(
             pinned: e.pinned,
             user_managed: e.user_managed,
         });
+    let locale = preferred_locale();
+    let localized_images = entry.images.resolve(&locale);
     StoreItem {
         id: entry.package_id.clone(),
-        name: entry.name.clone(),
-        description: entry.description.clone(),
+        name: entry
+            .name
+            .resolve(&locale)
+            .unwrap_or(&entry.package_id)
+            .to_string(),
+        description: entry
+            .description
+            .resolve(&locale)
+            .unwrap_or_default()
+            .to_string(),
+        tagline: entry
+            .tagline
+            .resolve(&locale)
+            .unwrap_or_default()
+            .to_string(),
+        supported_languages: entry.supported_languages.clone(),
         categories: entry.categories.clone(),
-        icon_url: entry.icon_url.clone(),
-        screenshot_urls: Vec::new(),
+        icon_url: localized_images
+            .iter()
+            .find(|image| image.kind == RegistryImageKind::Icon)
+            .map(|image| image.url.clone()),
+        screenshot_urls: localized_images
+            .iter()
+            .filter(|image| image.kind == RegistryImageKind::Screenshot)
+            .map(|image| image.url.clone())
+            .collect(),
         homepage_url: entry.homepage.clone(),
         source_url: entry.source_url.clone(),
         install_ref_path: None,
@@ -71,6 +94,17 @@ pub fn tilo_to_store_item(
     }
 }
 
+fn preferred_locale() -> String {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok())
+        .and_then(|value| {
+            let tag = value.split('.').next()?.replace('_', "-");
+            registry_types::valid_language_tag(&tag).then_some(tag)
+        })
+        .unwrap_or_else(|| "en".into())
+}
+
 /// Turn an installed Tilo package into a local-only Store row.
 ///
 /// A verified catalogue entry normally supplies the richer description and
@@ -87,6 +121,8 @@ pub fn installed_tilo_to_store_item(entry: &InstalledEntry) -> StoreItem {
         // or copy one from an unrelated catalogue row.
         name: entry.id.clone(),
         description: "Installed on this device. Catalogue details are unavailable.".into(),
+        tagline: String::new(),
+        supported_languages: Vec::new(),
         categories: Vec::new(),
         icon_url: None,
         screenshot_urls: Vec::new(),
@@ -125,9 +161,9 @@ fn tilo_version_to_store(v: &RegistryVersion) -> StoreItemVersion {
     StoreItemVersion {
         version: v.version.clone(),
         released_at_unix: v.released_at_unix,
-        download_url: Some(v.qpkg_url.clone()),
-        root_hash_hex: Some(v.qpkg_root_hash_hex.clone()),
-        size_bytes: v.qpkg_size_bytes,
+        download_url: Some(v.tapp_url.clone()),
+        root_hash_hex: Some(v.tapp_root_hash_hex.clone()),
+        size_bytes: v.tapp_size_bytes,
     }
 }
 
@@ -154,6 +190,8 @@ pub fn flathub_placeholder_to_item(
         id: p.app_id.clone(),
         name: p.name.clone().unwrap_or_else(|| p.app_id.clone()),
         description: String::new(),
+        tagline: String::new(),
+        supported_languages: Vec::new(),
         categories: Vec::new(),
         icon_url: None,
         screenshot_urls: Vec::new(),
@@ -183,6 +221,8 @@ pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
         id: app_id.to_string(),
         name: app_id.to_string(),
         description: "Installed Flatpak. Catalogue details are unavailable.".into(),
+        tagline: String::new(),
+        supported_languages: Vec::new(),
         categories: Vec::new(),
         icon_url: None,
         screenshot_urls: Vec::new(),
@@ -246,6 +286,8 @@ pub fn flathub_record_to_item(
         } else {
             plain_text(&r.description)
         },
+        tagline: r.summary.clone(),
+        supported_languages: Vec::new(),
         categories,
         icon_url: r.icon.clone(),
         screenshot_urls: r
@@ -331,24 +373,27 @@ mod tests {
         let mut e = RegistryEntry {
             package_id: id.into(),
             name: name.into(),
-            description: format!("Description of {name}"),
+            description: format!("Description of {name}").into(),
+            tagline: format!("{name} for Tilo OS").into(),
+            images: registry_types::LocalizedImages::default(),
+            supported_languages: vec!["en".into()],
             categories: vec!["Productivity".into()],
-            icon_url: None,
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: hex::encode(publisher),
             versions: vec![RegistryVersion {
                 version: version.into(),
-                qpkg_url: format!("https://apps.tilo.dev/{id}/{version}.qpkg"),
-                qpkg_root_hash_hex: "cd".repeat(32),
-                qpkg_size_bytes: 100,
+                tapp_url: format!("https://apps.tilo.so/{id}/{version}.tapp"),
+                tapp_root_hash_hex: "cd".repeat(32),
+                tapp_size_bytes: 100,
                 released_at_unix: 200,
-                qpkg_blake3_hex: Some("ef".repeat(32)),
-                target: Some(registry_types::RegistryTarget {
+                tapp_blake3_hex: "ef".repeat(32),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
-                }),
+                },
             }],
             updated_at_unix: 300,
             signature_hex: String::new(),
@@ -369,9 +414,9 @@ mod tests {
 
     #[test]
     fn tilo_entry_deserializes_installed_state() {
-        let entry = tilo_entry("dev.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
+        let entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
         let installed = vec![InstalledEntry {
-            id: "dev.tilo.notes".into(),
+            id: "so.tilo.notes".into(),
             version: "0.1.0".into(),
             publisher_key_hex: entry.publisher_pubkey_hex.clone(),
             installed_at: 0,
@@ -389,9 +434,9 @@ mod tests {
 
     #[test]
     fn tilo_entry_with_newer_registry_version_flags_update() {
-        let entry = tilo_entry("dev.tilo.notes", "Notes", "0.2.0", [1u8; 32]);
+        let entry = tilo_entry("so.tilo.notes", "Notes", "0.2.0", [1u8; 32]);
         let installed = vec![InstalledEntry {
-            id: "dev.tilo.notes".into(),
+            id: "so.tilo.notes".into(),
             version: "0.1.0".into(),
             publisher_key_hex: entry.publisher_pubkey_hex.clone(),
             installed_at: 0,
@@ -404,7 +449,7 @@ mod tests {
 
     #[test]
     fn immutable_system_entry_is_installed_but_not_mutable() {
-        let entry = tilo_entry("dev.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
+        let entry = tilo_entry("so.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
         let installed = vec![InstalledEntry {
             id: entry.package_id.clone(),
             version: "1.0.0".into(),
@@ -423,14 +468,14 @@ mod tests {
     #[test]
     fn locally_installed_tilo_item_stays_actionable_without_catalogue_metadata() {
         let item = installed_tilo_to_store_item(&InstalledEntry {
-            id: "dev.tilo.offline".into(),
+            id: "so.tilo.offline".into(),
             version: "1.2.3".into(),
             publisher_key_hex: "ab".repeat(32),
             installed_at: 0,
             pinned: true,
             user_managed: true,
         });
-        assert_eq!(item.name, "dev.tilo.offline");
+        assert_eq!(item.name, "so.tilo.offline");
         assert!(item.installed.is_installed());
         assert!(item.installed.is_pinned());
         assert!(!item.installed.update_available());
@@ -457,7 +502,7 @@ mod tests {
 
     #[test]
     fn merge_dedups_by_name_tilo_wins() {
-        let tilo_entry = tilo_entry("dev.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
+        let tilo_entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
         let tilo = tilo_to_store_item(&verified(tilo_entry), "Tilo main", &[]);
         // Flathub carries a same-name item; it must be dropped.
         let fh = PopularEntry {
@@ -473,7 +518,7 @@ mod tests {
     #[test]
     fn merge_preserves_distinct_flathub_items() {
         let q = tilo_to_store_item(
-            &verified(tilo_entry("dev.tilo.notes", "Notes", "0.1.0", [1u8; 32])),
+            &verified(tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32])),
             "Tilo main",
             &[],
         );

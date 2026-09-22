@@ -1,5 +1,5 @@
 [package]
-id       = "dev.tilo.windows"
+id       = "so.tilo.windows"
 name     = "Windows Apps"
 category = "System"
 version  = "0.1.0"

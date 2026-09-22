@@ -6,7 +6,20 @@
 // controls can only ever report a permission error — which is how the toggle came
 // to write a preference file that nothing read.
 //
-// The grant is deliberately narrow on three axes at once:
+// The signed image staging service is also callable by the per-user ush broker.
+// That broker may not have a logind seat even though it runs as the wheel user,
+// so it gets one exact unit: staging a verified update. It cannot roll back,
+// change the schedule, select a boot entry, or reboot the machine.
+polkit.addRule(function (action, subject) {
+    if ((action.id == "org.freedesktop.systemd1.manage-units" ||
+         action.id == "org.freedesktop.systemd1.manage-unit-files") &&
+        action.lookup("unit") == "tilo-deployment-update.service" &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
+
+// The remaining grant is deliberately narrow on three axes at once:
 //
 //   * BY UNIT. Not "manage units", but these three unit names. Anything else on
 //     the system bus falls through to the default policy unchanged.
@@ -22,7 +35,6 @@
 polkit.addRule(function (action, subject) {
     var units = {
         "tilo-deployment-rollback.service": true,
-        "tilo-deployment-update.service": true,
         "bootc-fetch-apply-updates.timer": true,
         "tilo-update-policy@schedule-system.service": true,
         "tilo-update-policy@schedule-daily.service": true,

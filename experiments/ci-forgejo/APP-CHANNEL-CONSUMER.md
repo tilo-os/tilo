@@ -43,7 +43,7 @@ OS release or macOS enablement is part of this change.
 A `tilo.app-publication/v1` receipt binds one architecture and source SHA to:
 
 - Collection format, complete archive SHA256 and size.
-- Every qpkg file's SHA256, app/version, signed-root package ID, publisher and
+- Every tapp file's SHA256, app/version, signed-root package ID, publisher and
   signed architecture ISA declaration. The BLAKE3 package ID covers the complete
   signed root, including its Ed25519 signature and manifest/payload hashes.
 - Runtime version, BLAKE3 root, publisher and verified Ed25519 signature.
@@ -53,7 +53,7 @@ A `tilo.app-publication/v1` receipt binds one architecture and source SHA to:
 `create-receipt` first pins the archive and verifier file hashes, streams the tar
 against the supplied local collection tree, rejects links/special paths, checks
 full SHA256SUMS coverage and package inventory, then invokes the verifier's
-`verify_qpkg`/`verify_runtime`. The verifier is **trusted host code that executes**;
+`verify_tapp`/`verify_runtime`. The verifier is **trusted host code that executes**;
 its expected hash must come from reviewed configuration, never the downloaded
 receipt/archive. The reader does not add crypto dependencies to normal CI.
 
@@ -84,7 +84,7 @@ without artifact bytes.** Its `resolved_commit` is supplied by the trusted calle
 not independently bound to the bytes inside this standalone reader. The workflow
 resolver must obtain both commit and manifest digest from the same authenticated
 Git snapshot. Source attribution comes from the trusted build/publication receipt
-and collection index; the historical qpkg signature is not a Git-source attestation.
+and collection index; the historical tapp signature is not a Git-source attestation.
 Publisher allowlisting here is not a complete revocation policy or installation
 authorization; the production package trust boundary remains required.
 
@@ -110,7 +110,7 @@ no global package is installed, and no publication is performed by this tool.
 ## Staged canonical build receipts
 
 `release-apps.yml` invokes `tools/apps/create_app_receipt.py` after packaging, including
-manual `publish=false` runs. It calls `tilo-pkg verify` with explicit trusted keys
+manual `publish=false` runs. It calls `tilo-app-package verify` with explicit trusted keys
 and `tilo-runtime-bundle verify` with required publisher, signature and architecture.
 The Python adapter uses the standard library; production receipt generation does
 not depend on the experimental Python crypto implementation. Signer public keys
@@ -232,7 +232,7 @@ The manual-only `canonical-verifier-bundle.yml` workflow now prepares those tool
 on native x86-64 and ARM64 workers. Platform maintenance dispatches it at a reviewed
 verifier source revision, optionally supplying a qualified immutable builder index.
 The workflow resolves one index for both lanes, checks the checkout SHA and native
-architecture, restores shared Cargo downloads, and builds only `pkg-cli` and
+architecture, restores shared Cargo downloads, and builds only `tilo-app-package-cli` and
 `runtime-bundle` with the committed lockfile. The optional compiler cache affects
 speed, not correctness. No app fleet or OS image is built.
 
@@ -261,7 +261,7 @@ To package already-built native tools manually:
 
 ```sh
 python3 tools/canonical_verifier_bundle.py produce \
-  --pkg-binary /trusted-tools/tilo-pkg \
+  --pkg-binary /trusted-tools/tilo-app-package \
   --runtime-binary /trusted-tools/tilo-runtime-bundle \
   --builder-image code.sandbox.example/qos/tilo-builder@sha256:BUILDER_DIGEST \
   --source-sha VERIFIED_TOOL_SOURCE --architecture x86_64 --output verifier.tar.gz
@@ -277,7 +277,7 @@ or builder compatibility changes require a new platform bundle, not app changes.
 
 Both qualification and final publication consumers fetch with the dedicated
 `TILO_VERIFIER_BUNDLE_READ_TOKEN` Actions secret: existing service identity
-`qos-packaging-controller`, token 153, scoped only to `read:package`. Its encrypted
+`tilo-packaging-controller`, token 153, scoped only to `read:package`. Its encrypted
 source is the controller registry SOPS secret; provisioning matches the decrypted
 credential against the live token ID/name/scope metadata in memory. No registry
 write credential or fallback is exposed to these steps. Historical Actions artifact

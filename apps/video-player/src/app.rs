@@ -30,7 +30,10 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::video_player::{PlayerSetting, PlayerSettingEvent};
-use ui::widget::{ActionEmitter, Button, ButtonFace, FloatingSurfaceProvider, VideoPlayer, Widget};
+use ui::widget::{
+    ActionEmitter, Button, ButtonFace, FloatingSurfaceProvider, FullscreenProvider, VideoPlayer,
+    Widget,
+};
 
 use crate::actions::PlayerOperation;
 use crate::collab::{CollabPlayback, Role};
@@ -1084,7 +1087,7 @@ impl PlayerApp {
             title: self.title.clone(),
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppElement {
-                app_id: "dev.tilo.video-player".into(),
+                app_id: "so.tilo.video-player".into(),
                 element_id: "video_surface".into(),
                 region,
             },
@@ -2916,7 +2919,28 @@ impl FloatingSurfaceProvider for PlayerApp {
     }
 }
 
+impl FullscreenProvider for PlayerApp {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        FullscreenProvider::fullscreen_intent(&self.player)
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        FullscreenProvider::fullscreen_params(&self.player)
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        FullscreenProvider::on_fullscreen_changed(&mut self.player, active);
+    }
+}
+
 impl Widget for PlayerApp {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
     fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
         Some(self)
     }
@@ -3817,18 +3841,6 @@ impl Widget for PlayerApp {
         // the host's incoming transport.
         self.collab.is_some()
     }
-
-    fn fullscreen_intent(&self) -> Option<bool> {
-        self.player.fullscreen_intent()
-    }
-
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        self.player.fullscreen_params()
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        self.player.on_fullscreen_changed(active);
-    }
 }
 
 #[cfg(test)]
@@ -4279,7 +4291,7 @@ mod tests {
         );
         assert_eq!(request.aspect_ratio, Some(16.0 / 9.0));
         assert!(
-            matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "dev.tilo.video-player" && element_id == "video_surface")
+            matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "so.tilo.video-player" && element_id == "video_surface")
         );
     }
 

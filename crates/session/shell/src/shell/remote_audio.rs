@@ -1039,7 +1039,7 @@ mod tests {
 
     fn binding(session: &str) -> PhysicalGamepadBinding {
         PhysicalGamepadBinding {
-            app_id: "dev.tilo.music".into(),
+            app_id: "so.tilo.music".into(),
             workspace_id: "work".into(),
             session_id: session.into(),
         }

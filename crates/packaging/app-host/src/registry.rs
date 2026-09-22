@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use pkg::id::PackageId;
+use tilo_app_package::id::PackageId;
 
 /// Whether the caller has committed to keeping this package around.
 ///

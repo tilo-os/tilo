@@ -3,7 +3,7 @@
 [Producer run 9525](https://code.sandbox.example/qos/qos/actions/runs/9525) (API 23012),
 x86 job 84455/task 75605 attempt 1, succeeded at source
 `a987e76bac313e27f11c6f67d4c10779b2c3909f`. Its committed workflow builds only
-`pkg-cli` and `runtime-bundle`, checks both CLIs load with `--help`, and compares
+`tilo-app-package-cli` and `runtime-bundle`, checks both CLIs load with `--help`, and compares
 two produced archives/descriptors. Builder job 84453 resolved the immutable image
 recorded in `builder-observation.json`; the bundle descriptor matches it exactly.
 

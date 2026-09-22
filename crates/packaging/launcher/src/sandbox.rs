@@ -898,7 +898,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn an_unlisted_package_pays_for_neither_protection() {
-        let argv = argv_with_hardening_policy("dev.tilo.browser\n");
+        let argv = argv_with_hardening_policy("so.tilo.browser\n");
         assert!(
             !argv.iter().any(|a| a == "LD_PRELOAD"),
             "an ordinary app must not carry the hardened allocator: {argv:?}"
@@ -1863,11 +1863,11 @@ mod tests {
     #[test]
     fn read_capability_binds_the_path_read_only_and_never_writable() {
         let caps = vec![fs_grant(
-            "dev.tilo.books",
+            "so.tilo.books",
             "/var/workspace/books",
             Verb::Read,
         )];
-        let argv = argv_with_caps("dev.tilo.books", &caps, 1_000);
+        let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind-try"
                 && w[1] == "/var/workspace/books"
@@ -1893,11 +1893,11 @@ mod tests {
     #[test]
     fn write_capability_binds_the_path_read_write() {
         let caps = vec![fs_grant(
-            "dev.tilo.books",
+            "so.tilo.books",
             "/var/workspace/books",
             Verb::Write,
         )];
-        let argv = argv_with_caps("dev.tilo.books", &caps, 1_000);
+        let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
         assert!(
             argv.windows(3).any(|w| w[0] == "--bind-try"
                 && w[1] == "/var/workspace/books"
@@ -1918,18 +1918,18 @@ mod tests {
 
     #[test]
     fn camera_bind_appears_only_with_a_camera_capability() {
-        let without = argv_with_caps("dev.tilo.meet", &[], 1_000);
+        let without = argv_with_caps("so.tilo.meet", &[], 1_000);
         assert!(
             !without.iter().any(|a| a.starts_with("/dev/video")),
             "no camera capability must mean no camera device in the namespace: {without:?}"
         );
 
         let caps = vec![CapOverride::grant(
-            Subject::app("dev.tilo.meet"),
+            Subject::app("so.tilo.meet"),
             Scope::Device("camera".to_string()),
             Verb::Read,
         )];
-        let with = argv_with_caps("dev.tilo.meet", &caps, 1_000);
+        let with = argv_with_caps("so.tilo.meet", &caps, 1_000);
         assert!(
             with.windows(3).any(|w| w[0] == "--dev-bind-try"
                 && w[1] == "/dev/video0"
@@ -1941,19 +1941,19 @@ mod tests {
     #[test]
     fn a_capability_for_another_app_never_reaches_this_apps_argv() {
         let caps = vec![
-            fs_grant("dev.tilo.other", "/var/workspace/secrets", Verb::Write),
+            fs_grant("so.tilo.other", "/var/workspace/secrets", Verb::Write),
             CapOverride::grant(
-                Subject::app("dev.tilo.other"),
+                Subject::app("so.tilo.other"),
                 Scope::Device("camera".to_string()),
                 Verb::Read,
             ),
             CapOverride::grant(
-                Subject::app("dev.tilo.other"),
+                Subject::app("so.tilo.other"),
                 Scope::NetHost("*".to_string()),
                 Verb::Write,
             ),
         ];
-        let argv = argv_with_caps("dev.tilo.books", &caps, 1_000);
+        let argv = argv_with_caps("so.tilo.books", &caps, 1_000);
         assert!(
             !argv.iter().any(|a| a == "/var/workspace/secrets"),
             "another app's filesystem grant must not appear here: {argv:?}"
@@ -1968,7 +1968,7 @@ mod tests {
         );
         // Proof the fixture is capable of granting: the same list, read
         // as the app it names, does produce those binds.
-        let theirs = argv_with_caps("dev.tilo.other", &caps, 1_000);
+        let theirs = argv_with_caps("so.tilo.other", &caps, 1_000);
         assert!(theirs.iter().any(|a| a == "/var/workspace/secrets"));
         assert!(theirs.iter().any(|a| a == "--share-net"));
     }
@@ -1977,10 +1977,10 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn an_expired_capability_produces_no_bind() {
         let caps = vec![
-            fs_grant("dev.tilo.books", "/var/workspace/books", Verb::Write)
+            fs_grant("so.tilo.books", "/var/workspace/books", Verb::Write)
                 .expiring(Expiry::AtUnix(500)),
         ];
-        let expired = argv_with_caps("dev.tilo.books", &caps, 1_000);
+        let expired = argv_with_caps("so.tilo.books", &caps, 1_000);
         assert!(
             !expired.iter().any(|a| a == "/var/workspace/books"),
             "a capability that expired at 500 must bind nothing at now=1000: {expired:?}"
@@ -1992,7 +1992,7 @@ mod tests {
         );
         // Same capability before its deadline does bind — so the
         // emptiness above is the expiry, not a broken fixture.
-        let live = argv_with_caps("dev.tilo.books", &caps, 499);
+        let live = argv_with_caps("so.tilo.books", &caps, 499);
         assert!(
             live.windows(3).any(|w| w[0] == "--bind-try"
                 && w[1] == "/var/workspace/books"
@@ -2005,18 +2005,18 @@ mod tests {
     fn network_capability_is_what_shares_the_namespace() {
         // The manifest says net.mode = "off": without a capability the sandbox
         // keeps the empty network namespace, and no packet can leave.
-        let isolated = argv_with_caps("dev.tilo.mail", &[], 1_000);
+        let isolated = argv_with_caps("so.tilo.mail", &[], 1_000);
         assert!(
             !isolated.iter().any(|a| a == "--share-net"),
             "no network capability must leave the netns unshared: {isolated:?}"
         );
 
         let caps = vec![CapOverride::grant(
-            Subject::app("dev.tilo.mail"),
+            Subject::app("so.tilo.mail"),
             Scope::NetHost("*".to_string()),
             Verb::Write,
         )];
-        let granted = argv_with_caps("dev.tilo.mail", &caps, 1_000);
+        let granted = argv_with_caps("so.tilo.mail", &caps, 1_000);
         assert!(
             granted.iter().any(|a| a == "--share-net"),
             "a grant for `*` is unrestricted access and shares the namespace: {granted:?}"
@@ -2030,11 +2030,11 @@ mod tests {
     #[test]
     fn a_grant_naming_a_host_no_longer_shares_the_whole_network() {
         let caps = vec![CapOverride::grant(
-            Subject::app("dev.tilo.mail"),
+            Subject::app("so.tilo.mail"),
             Scope::NetHost("github.com".to_string()),
             Verb::Write,
         )];
-        let argv = argv_with_caps("dev.tilo.mail", &caps, 1_000);
+        let argv = argv_with_caps("so.tilo.mail", &caps, 1_000);
 
         assert!(
             !argv.iter().any(|a| a == "--share-net"),
@@ -2044,8 +2044,7 @@ mod tests {
 
         // And the grant does reach a mechanism now: the gate decision comes from
         // the same manifest + capability pair that built the argv above.
-        let plan =
-            CapabilityPlan::for_app_with("dev.tilo.mail", &caps, Some(1_000), |_| Vec::new());
+        let plan = CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1_000), |_| Vec::new());
         let decision = egress_decision(&mk_manifest("off"), &plan);
         let policy = decision.policy().unwrap_or_else(|| {
             panic!("a named host must resolve to a filtered egress policy, got {decision:?}")

@@ -16,7 +16,7 @@
 //! │  └───────────────────────────────────────────────────────┘    │
 //! │  ... more cards, spanning to the window bottom ...            │
 //! │                                    ╭─────────────────────────╮ │
-//! │                                    │ Installing dev.tilo.notes…│ │  ← transient bubble
+//! │                                    │ Installing so.tilo.notes…│ │  ← transient bubble
 //! └────────────────────────────────────╰─────────────────────────╯─┘
 //! ```
 //!
@@ -1145,8 +1145,8 @@ impl StoreApp {
     pub fn show_safety_for_shot(&mut self) {
         self.safety_open = true;
         self.reports.push(ReportRecord {
-            id: "report:dev.tilo.notes".into(),
-            app_id: "dev.tilo.notes".into(),
+            id: "report:so.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             status: "Draft · not submitted".into(),
         });
         self.structure_dirty = true;
@@ -1154,7 +1154,7 @@ impl StoreApp {
 
     pub fn show_moderation_case_for_shot(&mut self, status: &str) {
         self.show_safety_for_shot();
-        self.report_notes.insert("dev.tilo.notes".into(), "The app contacted a third-party host while its offline mode was enabled. The exported trace contains the exact destination and time.".into());
+        self.report_notes.insert("so.tilo.notes".into(), "The app contacted a third-party host while its offline mode was enabled. The exported trace contains the exact destination and time.".into());
         if let Some(report) = self.reports.first_mut() {
             report.id = "case-8d10fce04f126f0c2f293c16".into();
             report.status = status.into();
@@ -4906,6 +4906,8 @@ mod tests {
             id: format!("id.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("{name} description"),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec![cat.into()],
             icon_url: None,
             screenshot_urls: Vec::new(),
@@ -5448,7 +5450,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.remote_name_state.set("studio-tools".into());
         app.remote_url_state
-            .set("https://packages.example.invalid/repo".into());
+            .set("https://apps.tilo.so/artifacts/repo".into());
         app.sync(&mut doc, &automerge::ROOT);
         assert!(doc.keys(&automerge::ROOT).all(|key| {
             !key.starts_with("store.remote_name") && !key.starts_with("store.remote_url")
