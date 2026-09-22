@@ -5,7 +5,7 @@ use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.disk-usage", disk_usage::app_root)
+        &LaunchSpec::new("so.tilo.disk-usage", disk_usage::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "analysis",
@@ -30,7 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "LaunchSpec requires every shot factory to return Result"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
     Ok(disk_usage::shot_root_scenario(
         args.scenario.as_deref().unwrap_or("analysis"),

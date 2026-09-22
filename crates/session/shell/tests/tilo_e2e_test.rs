@@ -616,6 +616,58 @@ fn overview_button_click_toggles_overview_overlay() {
     );
 }
 
+/// The painted tray remains inset, but the physical top-right screen corner
+/// is part of its interaction target so a fast edge throw opens Quick Settings.
+#[test]
+fn top_right_corner_click_opens_quick_settings() {
+    use automerge::AutoCommit;
+    use taffy::NodeId;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+
+    let (mut bar, chrome, taffy, node, _) = topbar_with_overview_btn_hit();
+    let mut state = AutoCommit::new();
+    let root = automerge::ROOT.clone();
+    let mut focus: Option<NodeId> = None;
+    let modifiers = winit::event::Modifiers::default();
+    let mut handled = false;
+    bar.handle_event(
+        &WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: PhysicalPosition::new(1599.0, 1.0),
+        },
+        1.0,
+        &modifiers,
+        &mut state,
+        &root,
+        &mut handled,
+        &mut focus,
+        node,
+        &taffy,
+    );
+    bar.handle_event(
+        &WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        1.0,
+        &modifiers,
+        &mut state,
+        &root,
+        &mut handled,
+        &mut focus,
+        node,
+        &taffy,
+    );
+
+    assert!(
+        handled,
+        "the top-right corner must be an active tray target"
+    );
+    assert!(chrome.borrow().overlays.quick_settings);
+}
+
 /// Builds a `TopBarChrome` over a fresh bootstrap tree, lays it out at a
 /// fixed 1600x900 viewport and draws once so `overview_btn_rect` is
 /// populated, returning the pieces a caller needs to dispatch a synthetic

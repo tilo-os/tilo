@@ -1,7 +1,10 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "LaunchSpec requires every shot factory to return Result"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let scenario = match args.scenario.as_deref() {
         Some("active") => print_centre::DemoScenario::Active,
@@ -26,7 +29,7 @@ extern crate runtime_dylib;
 
 fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.print-centre", print_centre::app_root)
+        &LaunchSpec::new("so.tilo.print-centre", print_centre::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "active",

@@ -13,7 +13,7 @@ the app's own first frame. Not the download, and not the verify: the
 thing a person actually waits through.
 
   t0                Enter is sent to the selected palette row
-  → staged          the `.qpkg` has been fetched and written to the
+  → staged          the `.tapp` has been fetched and written to the
                     staging dir  (resolve + fetch)
   → installed       the install root now lists the package, so
                     `tilo-install` has verified the ed25519 publisher
@@ -28,7 +28,7 @@ and by eye an app that legitimately starts on a blank page is
 indistinguishable from one that has not painted at all.
 
 The boundaries in between are read off the filesystem the real code
-writes to — the staged `.qpkg` appearing, the install root's
+writes to — the staged `.tapp` appearing, the install root's
 `registry.toml` naming the package — so nothing here needs the
 compositor to be instrumented and nothing measures a code path the
 film does not take.
@@ -37,7 +37,7 @@ Why it is a clean session every run
 -----------------------------------
 Each run gets an empty `TILO_APPS_DATA_DIR` (so the app is genuinely
 absent, not absent-by-assertion) and an empty `TILO_STORE_CACHE_DIR`
-(so the `.qpkg` is genuinely fetched rather than found already staged).
+(so the `.tapp` is genuinely fetched rather than found already staged).
 The runtime bundle every packaged app pins is *not* reset: it is
 machine state installed once, like a base image, and it is present on
 the machine that gets filmed.
@@ -45,7 +45,7 @@ the machine that gets filmed.
 What the network is
 -------------------
 Loopback. `serve-test-registry` binds `127.0.0.1` and serves a really
-packed, really signed `.qpkg`, which is what happens on the day
+packed, really signed `.tapp`, which is what happens on the day
 (`docs/demo-script.md` — a local registry is served on set). A run against
 a registry across the internet is a different measurement and this
 script does not pretend otherwise. Every run prints the conditions it
@@ -58,7 +58,7 @@ Usage
     scripts/headless-examples/install-open-timing.py --runs 5
 
     cargo build -p shell -p install -p launcher -p word-processor
-    cargo build -p app-catalogue --bins --examples
+    cargo build -p app-cli --bins --examples
 
 Exits non-zero if any run fails to install and paint.
 """
@@ -82,7 +82,7 @@ import urllib.request
 from reaper import die_with_parent, track
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-PACKAGE_ID = "dev.tilo.word-processor"
+PACKAGE_ID = "so.tilo.word-processor"
 DISPLAY_NAME = "Word Processor"
 # What the operator types. The row has to be found by typing, the way a
 # person finds it.
@@ -147,7 +147,7 @@ class Session:
         self.sock = str(short_root / "c.sock")
         self.apps_dir = self.dir / "apps"
         self.store_cache = self.dir / "store-cache"
-        self.staging = self.store_cache / "staged-qpkg"
+        self.staging = self.store_cache / "staged-tapp"
         for d in (self.apps_dir, self.store_cache):
             d.mkdir(parents=True, exist_ok=True)
         runtime = short_root / "run"
@@ -173,7 +173,7 @@ class Session:
             # what an install fetches.
             "TILO_RUNTIME_BUNDLE_DIR": str(runtime_bundles),
             "TILO_STORE_CONFIG_DIR": str(store_config),
-            # Empty: so the `.qpkg` is fetched, not found.
+            # Empty: so the `.tapp` is fetched, not found.
             "TILO_STORE_CACHE_DIR": str(self.store_cache),
             "TILO_HEADLESS_SIZE": "1280x800",
             "RUST_LOG": "info",
@@ -255,7 +255,7 @@ class Session:
 # ---------------------------------------------------------------------
 
 class Registry:
-    """`serve-test-registry` on loopback, serving one real signed `.qpkg`.
+    """`serve-test-registry` on loopback, serving one real signed `.tapp`.
 
     Started once and shared by every run: packing a large payload takes
     the better part of a minute and is set-up, not part of what a user
@@ -398,7 +398,7 @@ def measure_run(s: Session, timeout: float, shot: pathlib.Path | None) -> dict:
     t0 = time.monotonic()
     s.key("Enter")
 
-    t_staged = None       # the .qpkg is on disk, fully written
+    t_staged = None       # the .tapp is on disk, fully written
     t_installed = None    # the install root names the package
     t_frame = None
     frame = None
@@ -411,9 +411,9 @@ def measure_run(s: Session, timeout: float, shot: pathlib.Path | None) -> dict:
     while time.time() < deadline:
         now = time.monotonic()
 
-        # --- resolve + fetch: the staged .qpkg ------------------------
+        # --- resolve + fetch: the staged .tapp ------------------------
         if t_staged is None:
-            hits = list(s.staging.glob("*.qpkg")) if s.staging.exists() else []
+            hits = list(s.staging.glob("*.tapp")) if s.staging.exists() else []
             if hits:
                 size = settled_size(hits[0])
                 if size is not None and size > 0:
@@ -478,7 +478,7 @@ def measure_run(s: Session, timeout: float, shot: pathlib.Path | None) -> dict:
         "verify_unpack_s": t_installed - t_staged,
         "launch_paint_s": t_frame - t_installed,
         "total_s": t_frame - t0,
-        "qpkg_bytes": staged_bytes,
+        "tapp_bytes": staged_bytes,
         "frame_seq": frame.get("frame_seq"),
     }
 
@@ -490,7 +490,7 @@ def measure_run(s: Session, timeout: float, shot: pathlib.Path | None) -> dict:
 def breakdown(tools: dict, store_config: pathlib.Path, base_url: str,
               scratch: pathlib.Path) -> dict:
     """Split the fetch into resolve and transfer, by running the same
-    two things `tilo-catalogue install` runs internally.
+    two things `app install` runs internally.
 
     `install()` resolves against a live `GET /entries` every time — it
     does not reuse the palette's cache — so timing the same call is
@@ -501,7 +501,7 @@ def breakdown(tools: dict, store_config: pathlib.Path, base_url: str,
     (scratch / "empty-apps").mkdir(parents=True, exist_ok=True)
 
     t = time.monotonic()
-    out = subprocess.run([tools["TILO_CATALOGUE_BIN"], "list", "--json"],
+    out = subprocess.run([tools["TILO_APP_BIN"], "list", "--json"],
                          env=env, capture_output=True, text=True, check=True)
     resolve_s = time.monotonic() - t
     listing = json.loads(out.stdout)
@@ -510,7 +510,7 @@ def breakdown(tools: dict, store_config: pathlib.Path, base_url: str,
         raise Failure(f"{PACKAGE_ID} not offered: {listing}")
 
     url = app["download_url"]
-    dest = scratch / "probe.qpkg"
+    dest = scratch / "probe.tapp"
     t = time.monotonic()
     with urllib.request.urlopen(url) as r:
         data = r.read()
@@ -602,7 +602,7 @@ def main() -> int:
         REPO / "target" / "tilo-apps-live" / "payloads" / PACKAGE_ID / "bin"
         / "word-processor")
     tools = {}
-    for var, name in (("TILO_CATALOGUE_BIN", "tilo-catalogue"),
+    for var, name in (("TILO_APP_BIN", "app"),
                       ("TILO_INSTALL_BIN", "tilo-install"),
                       ("TILO_LAUNCHER_BIN", "tilo-launcher")):
         found = tool(name)
@@ -616,13 +616,13 @@ def main() -> int:
         missing.append(f"serve-test-registry ({example})")
     if not payload.exists():
         missing.append(f"word-processor payload ({payload})")
-    for var in ("TILO_CATALOGUE_BIN", "TILO_INSTALL_BIN", "TILO_LAUNCHER_BIN"):
+    for var in ("TILO_APP_BIN", "TILO_INSTALL_BIN", "TILO_LAUNCHER_BIN"):
         if var not in tools:
             missing.append(var)
     if missing:
         print("FAIL: not built:\n  " + "\n  ".join(missing), file=sys.stderr)
         print("\n  cargo build -p shell -p install -p launcher -p word-processor"
-              "\n  cargo build -p app-catalogue --bins --examples", file=sys.stderr)
+              "\n  cargo build -p app-cli --bins --examples", file=sys.stderr)
         return 2
 
     runtime_bundles = pathlib.Path.home() / ".local/share/tilo-runtime"
@@ -660,7 +660,7 @@ def main() -> int:
             print(f"FAIL: breakdown: {e}", file=sys.stderr)
             return 1
         print(f"  resolve  (GET /entries, verify entry sigs) {b['resolve_s']:.2f}s")
-        print(f"  transfer (GET the .qpkg, {b['bytes'] / 1e6:.0f} MB)        "
+        print(f"  transfer (GET the .tapp, {b['bytes'] / 1e6:.0f} MB)        "
               f"{b['transfer_s']:.2f}s  "
               f"({b['bytes'] / 1e6 / max(b['transfer_s'], 1e-6):.0f} MB/s)")
         print(f"  tilo-install (ed25519 + BLAKE3 + unpack)    {b['install_s']:.2f}s")
@@ -684,7 +684,7 @@ def main() -> int:
                       f"fetch {r['fetch_s']:5.2f}  "
                       f"verify+unpack {r['verify_unpack_s']:5.2f}  "
                       f"launch+paint {r['launch_paint_s']:5.2f}   "
-                      f"(qpkg {r['qpkg_bytes'] / 1e6:.0f} MB, "
+                      f"(tapp {r['tapp_bytes'] / 1e6:.0f} MB, "
                       f"frame_seq {r['frame_seq']})")
             except Failure as e:
                 print(f"run {i} FAILED: {e}", file=sys.stderr)
@@ -699,7 +699,7 @@ def main() -> int:
 
     print()
     print(f"{len(rows)} clean sessions, loopback registry, "
-          f"{rows[0]['qpkg_bytes'] / 1e6:.0f} MB package")
+          f"{rows[0]['tapp_bytes'] / 1e6:.0f} MB package")
     print(f"  palette row → first frame   {spread([r['total_s'] for r in rows])}")
     print(f"    resolve + fetch           {spread([r['fetch_s'] for r in rows])}")
     print(f"    verify + unpack           {spread([r['verify_unpack_s'] for r in rows])}")

@@ -1,4 +1,4 @@
-//! Round-trip test: install a .qpkg via the library surface,
+//! Round-trip test: install a .tapp via the library surface,
 //! then resolve it and check the payload landed on disk.
 
 #![allow(
@@ -12,17 +12,17 @@
 )]
 
 use crate::common;
-use app_host::install::{InstallExpectation, install_qpkg, install_verified_qpkg};
+use app_host::install::{InstallExpectation, install_tapp, install_verified_tapp};
 use app_host::registry::Pinning;
 use app_host::store::Store;
 
 #[test]
-fn install_qpkg_then_resolve_recovers_entry() {
+fn install_tapp_then_resolve_recovers_entry() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
 
-    let (qpkg_bytes, expected_id) = common::build_qpkg(4);
-    let installed_id = install_qpkg(&store, &qpkg_bytes, Pinning::Tried).unwrap();
+    let (tapp_bytes, expected_id) = common::build_tapp(4);
+    let installed_id = install_tapp(&store, &tapp_bytes, Pinning::Tried).unwrap();
     assert_eq!(installed_id, expected_id);
 
     let entry = store.resolve(installed_id).expect("resolve");
@@ -34,15 +34,15 @@ fn install_qpkg_then_resolve_recovers_entry() {
     assert!(entry.payload_root.join("share/splash.png").exists());
     // Manifest text is stored verbatim.
     assert!(!entry.manifest_text.is_empty());
-    assert!(entry.manifest_text.contains("dev.tilo.editor"));
+    assert!(entry.manifest_text.contains("so.tilo.editor"));
 }
 
 #[test]
 fn list_includes_installed_package() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
-    let (bytes, id) = common::build_qpkg(1);
-    install_qpkg(&store, &bytes, Pinning::Pinned).unwrap();
+    let (bytes, id) = common::build_tapp(1);
+    install_tapp(&store, &bytes, Pinning::Pinned).unwrap();
 
     let listed: Vec<_> = store.list();
     assert_eq!(listed.len(), 1);
@@ -51,7 +51,7 @@ fn list_includes_installed_package() {
 }
 
 fn expectation(bytes: &[u8], id: app_host::PackageId) -> InstallExpectation {
-    let meta = app_registry::qpkg::load(bytes).unwrap();
+    let meta = app_registry::tapp::load(bytes).unwrap();
     InstallExpectation {
         package_root: id,
         publisher: meta.manifest.publisher.identity_bytes().unwrap(),
@@ -65,10 +65,10 @@ fn expectation(bytes: &[u8], id: app_host::PackageId) -> InstallExpectation {
 fn verified_install_binds_every_registry_identity_before_writing() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
-    let (bytes, id) = common::build_qpkg(1);
+    let (bytes, id) = common::build_tapp(1);
     let mut expected = expectation(&bytes, id);
-    expected.app_id = "dev.tilo.impostor".into();
-    assert!(install_verified_qpkg(&store, &bytes, Pinning::Tried, &expected).is_err());
+    expected.app_id = "so.tilo.impostor".into();
+    assert!(install_verified_tapp(&store, &bytes, Pinning::Tried, &expected).is_err());
     assert!(
         store.list().is_empty(),
         "a rejected identity must not touch the registry"
@@ -76,11 +76,11 @@ fn verified_install_binds_every_registry_identity_before_writing() {
 
     let mut expected = expectation(&bytes, id);
     expected.publisher[0] ^= 0x80;
-    assert!(install_verified_qpkg(&store, &bytes, Pinning::Tried, &expected).is_err());
+    assert!(install_verified_tapp(&store, &bytes, Pinning::Tried, &expected).is_err());
     assert!(store.list().is_empty());
 
     let mut expected = expectation(&bytes, id);
     expected.size_bytes += 1;
-    assert!(install_verified_qpkg(&store, &bytes, Pinning::Tried, &expected).is_err());
+    assert!(install_verified_tapp(&store, &bytes, Pinning::Tried, &expected).is_err());
     assert!(store.list().is_empty());
 }

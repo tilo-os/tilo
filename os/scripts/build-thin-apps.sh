@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resolve qpkg applications and the shared Rust/UI runtime in one Cargo
+# Resolve tapp applications and the shared Rust/UI runtime in one Cargo
 # graph. One graph is a correctness requirement: Rust dylib symbols include
 # crate hashes, and independently resolving apps can otherwise produce thin
 # binaries that expect different builds of libruntime_dylib.so.
@@ -44,8 +44,8 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     fi
 done
 
-[ "${#packages[@]}" -gt 0 ] || { echo "no qpkg applications selected" >&2; exit 1; }
-[ "${#binaries[@]}" -gt 0 ] || { echo "no qpkg binaries selected" >&2; exit 1; }
+[ "${#packages[@]}" -gt 0 ] || { echo "no tapp applications selected" >&2; exit 1; }
+[ "${#binaries[@]}" -gt 0 ] || { echo "no tapp binaries selected" >&2; exit 1; }
 for requested in $BUILD_PACKAGES; do
     [[ " ${packages[*]} " == *" -p $requested "* ]] || {
         echo "requested app is outside the runtime graph: $requested" >&2; exit 1;
@@ -92,5 +92,5 @@ for index in "${!binaries[@]}"; do
     rm -f "$TARGET_DIR/$PROFILE/.${crate}.loader-check.err"
 done
 
-printf 'built %s thin qpkg apps with %s\n' \
+printf 'built %s thin tapp apps with %s\n' \
     "${#binaries[@]}" "$TARGET_DIR/$PROFILE/libruntime_dylib.so"

@@ -72,8 +72,8 @@ def archive_matches_tree(archive, tree):
             require(name not in names and len(names) < 4096, 'duplicate or excessive archive entries')
             names.add(name)
             require(member.isdir() or (member.isfile() and not member.issparse()), 'archive links/special files rejected')
-            require(name in {'qpkg', 'runtime', 'index.json', 'SHA256SUMS'}
-                    or name.startswith(('qpkg/', 'runtime/')), 'unexpected collection member')
+            require(name in {'tapp', 'runtime', 'index.json', 'SHA256SUMS'}
+                    or name.startswith(('tapp/', 'runtime/')), 'unexpected collection member')
             path = tree / name
             require(not path.is_symlink() and all(not p.is_symlink() for p in path.parents if p != tree.parent), 'symlink in local collection')
             if member.isdir():
@@ -84,7 +84,7 @@ def archive_matches_tree(archive, tree):
                     require(hashlib.file_digest(content, 'sha256').hexdigest() == sha(path), 'archive/tree digest mismatch')
                 files.add(name)
     expected = {'index.json', 'SHA256SUMS'}
-    for directory in ('qpkg', 'runtime'):
+    for directory in ('tapp', 'runtime'):
         for path in (tree / directory).rglob('*'):
             require(not path.is_symlink() and (path.is_file() or path.is_dir()), 'nonregular local collection')
             if path.is_file():
@@ -123,22 +123,22 @@ def create_receipt(archive, tree, archive_sha256, source_sha, architecture, poli
     packages, names, compatibility_issues = [], set(), []
     for app in index['apps']:
         filename = app['file']
-        require(re.fullmatch('[A-Za-z0-9][A-Za-z0-9._+-]*-' + architecture + r'\.qpkg', filename), 'qpkg architecture filename mismatch')
+        require(re.fullmatch('[A-Za-z0-9][A-Za-z0-9._+-]*-' + architecture + r'\.tapp', filename), 'tapp architecture filename mismatch')
         require(filename not in names and app['runtime'] == 'tilo-runtime/' + runtime['version'], 'duplicate package or runtime mismatch')
         names.add(filename)
-        path = tree / 'qpkg' / filename
+        path = tree / 'tapp' / filename
         require(sha(path) == app['sha256'], 'index package digest mismatch')
-        verified = verifier.verify_qpkg(path, app)
+        verified = verifier.verify_tapp(path, app)
         require(verified['publisher'] in apps_trusted, 'untrusted app publisher')
-        with tarfile.open(path, 'r:') as qpkg:
-            manifest = tomllib.loads(qpkg.extractfile('manifest.toml').read().decode())
+        with tarfile.open(path, 'r:') as tapp:
+            manifest = tomllib.loads(tapp.extractfile('manifest.toml').read().decode())
         isa = manifest['package']['isa']
         if (set(isa) != {architecture} or isa.get(architecture) not in ISA_LABELS[architecture]
                 or isa.get(architecture) not in policy['allowed_package_isa'][architecture]):
             compatibility_issues.append({'file': filename, 'signed_isa': isa, 'reason': 'signed package ISA architecture unsupported'})
         packages.append({'file': filename, 'app_id': app['id'], 'version': app['version'], 'sha256': app['sha256'],
                          'package_id': verified['package_id'], 'publisher': verified['publisher'], 'isa': isa.get(architecture)})
-    require(names and names == {p.name for p in (tree / 'qpkg').iterdir()}, 'package inventory mismatch')
+    require(names and names == {p.name for p in (tree / 'tapp').iterdir()}, 'package inventory mismatch')
     result = {'schema': RECEIPT_SCHEMA, 'architecture': architecture, 'source_sha': source_sha,
             'collection': {'format': 'tilo-apps-tar-gzip/v1', 'sha256': archive_sha256, 'bytes': archive.stat().st_size},
             'runtime': runtime, 'packages': packages,
@@ -185,12 +185,12 @@ def validate_receipt(receipt, architecture, policy, require_published=True):
                 'canonical verification identity mismatch')
     names, app_ids = set(), set()
     for app in receipt['packages']:
-        require(app['file'] not in names and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._+-]*-' + architecture + r'\.qpkg', app['file']), 'package architecture/inventory mismatch')
+        require(app['file'] not in names and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._+-]*-' + architecture + r'\.tapp', app['file']), 'package architecture/inventory mismatch')
         names.add(app['file'])
         require(app['app_id'] not in app_ids and re.fullmatch('[A-Za-z0-9._-]+', app['app_id']), 'invalid/duplicate app identity')
         app_ids.add(app['app_id'])
         digest(app['sha256'])
-        require(app['package_id'].startswith('qpkg:'), 'invalid signed package identity')
+        require(app['package_id'].startswith('tapp:'), 'invalid signed package identity')
         digest(app['package_id'][5:])
         require(digest(app['publisher']) in apps_trusted and app['isa'] in ISA_LABELS[architecture]
                 and app['isa'] in policy['allowed_package_isa'][architecture], 'package trust/ISA mismatch')
@@ -204,7 +204,7 @@ def validate_receipt(receipt, architecture, policy, require_published=True):
         parsed = urlsplit(publication['url'])
         require(parsed.scheme == 'https' and parsed.netloc == 'code.sandbox.example' and not parsed.query and not parsed.fragment,
                 'unsupported publication URL origin')
-        pattern = r'/api/packages/(qos|tilo)/generic/tilo-app-collections/[^/]+/tilo-apps-' + architecture + r'\.tar\.gz'
+        pattern = r'/api/packages/qos/generic/tilo-app-collections/[^/]+/tilo-apps-' + architecture + r'\.tar\.gz'
         require(re.fullmatch(pattern, parsed.path) and (source in parsed.path or collection['sha256'] in parsed.path),
                 'publication URL must pin full source or content identity')
 
@@ -248,7 +248,7 @@ def main():
     create.add_argument('--upload-receipt', type=Path)
     create.add_argument('--upload-receipt-sha256')
     create.add_argument('--audit-only', action='store_true', help='produce non-consumable compatibility audit, never a publication receipt')
-    create.add_argument('--pkg-binary', type=Path, help='use canonical CLI adapter with this hash-pinned tilo-pkg binary')
+    create.add_argument('--pkg-binary', type=Path, help='use canonical CLI adapter with this hash-pinned tilo-app-package binary')
     create.add_argument('--runtime-binary', type=Path)
     for name in ('select', 'inspect-candidate'):
         command = commands.add_parser(name)

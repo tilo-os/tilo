@@ -1120,7 +1120,7 @@ impl ClocksApp {
         }
         self.next_notification_attempt = std::time::Instant::now() + Duration::from_secs(5);
         if self.native_notifications.is_none() {
-            match ui::host_notifications::HostNotifications::new("dev.tilo.clocks")
+            match ui::host_notifications::HostNotifications::new("so.tilo.clocks")
                 .and_then(|host| host.with_protocol_activation("tilo-clocks:"))
             {
                 Ok(host) => self.native_notifications = Some(host),
@@ -1169,7 +1169,7 @@ impl ClocksApp {
     fn reconcile_native_timers(&mut self, now: chrono::DateTime<Utc>) -> Result<(), String> {
         if self.native_notifications.is_none() {
             self.native_notifications = Some(
-                ui::host_notifications::HostNotifications::new("dev.tilo.clocks")
+                ui::host_notifications::HostNotifications::new("so.tilo.clocks")
                     .and_then(|host| host.with_protocol_activation("tilo-clocks:"))
                     .map_err(|error| error.to_string())?,
             );

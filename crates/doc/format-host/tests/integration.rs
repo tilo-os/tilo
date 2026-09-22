@@ -127,7 +127,7 @@ fn single_provider_round_trip() {
             r#"
 [[provider]]
 mime     = "text/markdown"
-package  = "dev.tilo.qdoc-md"
+package  = "so.tilo.qdoc-md"
 wasm     = "{}"
 version  = "1.0.0"
 priority = "builtin"
@@ -146,7 +146,7 @@ priority = "builtin"
             .map(|i| providers.get(i).unwrap().to_string().unwrap())
             .collect();
         assert!(
-            names.contains(&"dev.tilo.qdoc-md".to_string()),
+            names.contains(&"so.tilo.qdoc-md".to_string()),
             "got {names:?}"
         );
 
@@ -162,7 +162,7 @@ priority = "builtin"
         assert!(detected.get_confidence().unwrap().get_tier() >= 1);
         assert_eq!(
             detected.get_provider_id().unwrap().to_str().unwrap(),
-            "dev.tilo.qdoc-md"
+            "so.tilo.qdoc-md"
         );
 
         // import → export round trip. Exported markdown is idempotent (qdoc
@@ -173,7 +173,7 @@ priority = "builtin"
         {
             let mut p = imp.get();
             p.set_bytes(src);
-            p.set_provider_id("dev.tilo.qdoc-md");
+            p.set_provider_id("so.tilo.qdoc-md");
         }
         let response = imp.send().promise.await.unwrap();
         let canonical_a: Vec<u8> = response.get().unwrap().get_canonical().unwrap().to_vec();
@@ -186,7 +186,7 @@ priority = "builtin"
         {
             let mut p = exp.get();
             p.set_canonical(&canonical_a);
-            p.set_provider_id("dev.tilo.qdoc-md");
+            p.set_provider_id("so.tilo.qdoc-md");
         }
         let response = exp.send().promise.await.unwrap();
         let out_a: Vec<u8> = response.get().unwrap().get_bytes().unwrap().to_vec();
@@ -201,7 +201,7 @@ priority = "builtin"
         {
             let mut p = imp2.get();
             p.set_bytes(&out_a);
-            p.set_provider_id("dev.tilo.qdoc-md");
+            p.set_provider_id("so.tilo.qdoc-md");
         }
         let response = imp2.send().promise.await.unwrap();
         let canonical_b: Vec<u8> = response.get().unwrap().get_canonical().unwrap().to_vec();
@@ -209,7 +209,7 @@ priority = "builtin"
         {
             let mut p = exp2.get();
             p.set_canonical(&canonical_b);
-            p.set_provider_id("dev.tilo.qdoc-md");
+            p.set_provider_id("so.tilo.qdoc-md");
         }
         let response = exp2.send().promise.await.unwrap();
         let out_b: Vec<u8> = response.get().unwrap().get_bytes().unwrap().to_vec();
@@ -238,7 +238,7 @@ fn unknown_mime_returns_clear_error() {
         {
             let mut p = imp.get();
             p.set_bytes(b"x");
-            p.set_provider_id("dev.tilo.no-such");
+            p.set_provider_id("so.tilo.no-such");
         }
         let res = imp.send().promise.await;
         let Err(err) = res else {
@@ -280,7 +280,7 @@ fn registry_hot_reload() {
             r#"
 [[provider]]
 mime     = "text/markdown"
-package  = "dev.tilo.qdoc-md"
+package  = "so.tilo.qdoc-md"
 wasm     = "{}"
 version  = "1.0.0"
 priority = "builtin"
@@ -297,7 +297,7 @@ priority = "builtin"
             let providers = response.get().unwrap().get_providers().unwrap();
             if !providers.is_empty() {
                 let name = providers.get(0).unwrap().to_string().unwrap();
-                assert_eq!(name, "dev.tilo.qdoc-md");
+                assert_eq!(name, "so.tilo.qdoc-md");
                 return;
             }
         }

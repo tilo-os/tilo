@@ -111,7 +111,7 @@ The verbs follow from the split:
 
 ### 2. Adding, not installing
 
-"Install" is a word from an era when software *modified your computer*. A qpkg
+"Install" is a word from an era when software *modified your computer*. A tapp
 cannot. There is no shared prefix, no global mutable state, no ambient
 filesystem, and — the load-bearing rule —
 
@@ -513,10 +513,10 @@ and federated services.
 
 The parts of this that are built, so the gap is visible rather than implied:
 
-- `.qpkg` packages: signed root over `manifest_hash ‖ payload_root ‖ publisher
+- `.tapp` packages: signed root over `manifest_hash ‖ payload_root ‖ publisher
   key`, BLAKE3-addressed, Ed25519 publisher identities, scoped attestors,
   revocation enforced at add *and* every launch
-  (`crates/packaging/pkg`, `install`).
+  (`crates/packaging/tilo-app-package`, `install`).
 - The sandbox: bwrap plus seccomp plus Landlock, no filesystem paths in the
   manifest, one writable directory per `(room, package)`, capabilities granted
   at runtime (`crates/packaging/launcher`).

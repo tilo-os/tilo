@@ -687,7 +687,7 @@ mod tests {
     fn long_message_wraps_and_grows_to_its_painted_height() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let message = "qOS found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
+        let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
         let banner = Banner::warning("Your existing identity needs recovery").with_message(message);
         let width = 700.0;
         let height = banner.content_height(&theme, &mut text, width);

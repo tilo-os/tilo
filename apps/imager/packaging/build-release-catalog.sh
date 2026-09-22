@@ -3,8 +3,8 @@
 # catalog embedded by all native Imager builds.
 set -euo pipefail
 : "${GITHUB_REF_NAME:?missing release tag}"
-release_repository="${TILO_RELEASE_REPOSITORY:-qos/releases}"
-release_server="${GITHUB_SERVER_URL:-https://code.sandbox.example}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/releases}"
+release_server="${TILO_RELEASE_SERVER:-https://github.com}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 [[ "$release_server" =~ ^https://[^/]+$ ]] \
