@@ -26,6 +26,7 @@ libc.workspace = true
 seccompiler.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+strsim.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

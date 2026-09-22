@@ -27,6 +27,7 @@ launcher = { path = "../launcher" }
 # the same boundary as the installer rather than duplicating a number.
 tilo-app-package = { path = "../tilo-app-package" }
 clap.workspace = true
+clap_complete.workspace = true
 dirs.workspace = true
 hex.workspace = true
 blake3.workspace = true

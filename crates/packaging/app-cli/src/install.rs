@@ -14,7 +14,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::CatalogueApp;
 
@@ -202,6 +202,13 @@ const READ_CHUNK_BYTES: usize = 64 * 1024;
 pub struct DownloadProgress {
     pub received: u64,
     pub total: Option<u64>,
+    pub phase: InstallPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallPhase {
+    Downloading,
+    Installing { elapsed: Duration },
 }
 
 /// HTTP-download `url` to `dest`, reporting as the bytes arrive. Blocking.
@@ -258,7 +265,11 @@ fn download_reporting_limited(
             "server declared {size} bytes, above the {max_bytes}-byte limit"
         ));
     }
-    on_progress(DownloadProgress { received: 0, total });
+    on_progress(DownloadProgress {
+        received: 0,
+        total,
+        phase: InstallPhase::Downloading,
+    });
 
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
@@ -285,7 +296,11 @@ fn download_reporting_limited(
         received = received.saturating_add(n as u64);
         if received.saturating_sub(reported) >= PROGRESS_STEP_BYTES {
             reported = received;
-            on_progress(DownloadProgress { received, total });
+            on_progress(DownloadProgress {
+                received,
+                total,
+                phase: InstallPhase::Downloading,
+            });
         }
     }
     writer
@@ -296,7 +311,11 @@ fn download_reporting_limited(
     if received == 0 {
         return Err("the server returned an empty file".to_string());
     }
-    on_progress(DownloadProgress { received, total });
+    on_progress(DownloadProgress {
+        received,
+        total,
+        phase: InstallPhase::Downloading,
+    });
     Ok(received)
 }
 
@@ -335,6 +354,33 @@ pub fn install_app_reporting(
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
     install_or_update_app_reporting(app, on_progress, false)
+}
+
+fn run_installer_with_progress(
+    command: Command,
+    downloaded: u64,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<bounded_command::Output, bounded_command::Error> {
+    let mut running =
+        bounded_command::spawn_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
+    let started = Instant::now();
+    let mut last_heartbeat = Instant::now();
+    loop {
+        if let Some(result) = running.try_wait() {
+            return result;
+        }
+        if last_heartbeat.elapsed() >= Duration::from_secs(1) {
+            on_progress(DownloadProgress {
+                received: downloaded,
+                total: Some(downloaded),
+                phase: InstallPhase::Installing {
+                    elapsed: started.elapsed(),
+                },
+            });
+            last_heartbeat = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn install_or_update_app_reporting(
@@ -406,8 +452,14 @@ fn install_or_update_app_reporting(
             &app.tapp_root_hash_hex,
         ));
     }
-    let output =
-        bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600));
+    on_progress(DownloadProgress {
+        received: downloaded,
+        total: Some(downloaded),
+        phase: InstallPhase::Installing {
+            elapsed: Duration::ZERO,
+        },
+    });
+    let output = run_installer_with_progress(command, downloaded, on_progress);
     let _ = std::fs::remove_file(&dest);
 
     match output {
@@ -546,7 +598,7 @@ mod tests {
             Err(InstallError::Integrity { detail }) if detail.contains("size mismatch")
         ));
 
-        let mut oversized = app.clone();
+        let mut oversized = app;
         oversized.tapp_size_bytes = tilo_app_package::MAX_APP_TAPP_BYTES + 1;
         assert!(matches!(
             validate_offer_metadata(&oversized),
