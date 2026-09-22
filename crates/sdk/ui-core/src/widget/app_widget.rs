@@ -62,6 +62,15 @@ impl std::fmt::Debug for AppCommand {
 /// `TileContent::App`. `AppWidget: Widget` means the shell always falls
 /// through to the widget contract for layout, draw, and events.
 pub trait AppWidget: Widget {
+    /// Whether this app owns a host-managed document record.
+    ///
+    /// In-process apps default to one scratch record per tab. A widget that
+    /// merely presents an external surface can opt out so a missing scratch
+    /// record never replaces that surface with a storage-error card.
+    fn uses_host_record(&self) -> bool {
+        true
+    }
+
     /// Capture app-owned local presentation alongside the ordinary View.
     /// # Errors
     /// Rejects an invalid application contribution before either contribution is saved.
