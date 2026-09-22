@@ -266,8 +266,13 @@ impl OpenTarget {
 pub struct QuickSettingsState {
     /// 0.0..=1.0.
     pub brightness: f32,
+    /// False after the device probe confirms there is no controllable
+    /// backlight. The slider remains visible but honestly disabled.
+    pub brightness_available: bool,
     /// 0.0..=1.0.
     pub volume: f32,
+    /// False after the audio service cannot provide a sink reading.
+    pub volume_available: bool,
     pub wifi: bool,
     pub bluetooth: bool,
     /// `true` only when `BlueZ` reported a physical adapter. Keeping this
@@ -289,6 +294,10 @@ pub struct QuickSettingsState {
     /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
     pub wifi_networks: Vec<WifiNetwork>,
+    /// True only while `NetworkManager` discovery is outstanding.
+    pub wifi_scanning: bool,
+    /// Last discovery failure, kept separate from an honest empty result.
+    pub wifi_scan_error: Option<String>,
     /// SSID currently being joined off-thread. Kept separate from the
     /// password prompt so open networks can show progress without presenting
     /// an irrelevant secret field.
@@ -344,7 +353,9 @@ impl Default for QuickSettingsState {
         crate::shell::test_support::ambient_start("Quick Settings production defaults");
         Self {
             brightness: 0.6,
+            brightness_available: true,
             volume: 0.4,
+            volume_available: true,
             wifi: true,
             bluetooth: false,
             bluetooth_available: false,
@@ -362,6 +373,8 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            wifi_scanning: false,
+            wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
@@ -374,7 +387,9 @@ impl QuickSettingsState {
     pub(crate) fn fixture() -> Self {
         Self {
             brightness: 0.6,
+            brightness_available: true,
             volume: 0.4,
+            volume_available: true,
             wifi: true,
             bluetooth: false,
             bluetooth_available: false,
@@ -398,6 +413,8 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
+            wifi_scanning: false,
+            wifi_scan_error: None,
             wifi_joining: None,
             bt_devices: Vec::new(),
             wifi_password: None,
