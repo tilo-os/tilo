@@ -7,7 +7,8 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-use std::cell::{Cell, RefCell};
+#[cfg(test)]
+use std::cell::Cell;
 
 #[path = "profiling/native_input_isolation.rs"]
 mod native_input_isolation;
@@ -19,14 +20,12 @@ mod action_directory_snapshot;
 mod close_admission;
 mod document_history;
 pub use document_history::DocumentHistorySnapshot;
-
-/// Toolkit-owned continuation schema used when an app has no narrower
-/// domain-specific projection. The CRDT document travels on its stable record
-/// route; this payload restores the complementary local presentation state.
-pub const GENERIC_VIEW_CONTINUATION_SCHEMA: u16 = u16::MAX;
-/// Framework-owned continuation envelope. Every new checkpoint uses this
-/// schema, so app semantics augment rather than replace presentation state.
-pub const STRUCTURAL_CONTINUATION_SCHEMA: u16 = u16::MAX - 1;
+include!("app/floating.rs");
+mod runtime;
+use runtime::{
+    AccessibilityRuntime, ActionRuntime, CollaborationRuntime, ContinuationRuntime, HistoryRuntime,
+    InputRuntime, LayoutRuntime, PersistenceRuntime, PresenceRuntime, WindowRuntime,
+};
 
 /// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
 /// providers own their retained indexes; this retains just the provider slot
@@ -97,206 +96,6 @@ impl ApplicationLaunchPayload {
     }
 }
 
-/// Host-owned generic continuation. Deliberately excludes widget `ephemeral`
-/// strings and `RecordId::for_file` values: both may contain local paths or
-/// app secrets. File navigation is restored by the shell's typed
-/// `FileRecordId` launch intent; this fallback carries presentation only.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct PortableContinuationView {
-    scroll: Vec<f64>,
-    focus_ordinal: Option<usize>,
-    viewport: crate::view::ViewRect,
-    view_mode: Option<String>,
-}
-
-impl PortableContinuationView {
-    fn capture(view: crate::view::View) -> Self {
-        let scroll = view
-            .scroll
-            .into_iter()
-            .filter(|value| value.is_finite())
-            .take(32)
-            .collect();
-        let view_mode = view.view_mode.filter(|mode| {
-            !mode.is_empty()
-                && mode.len() <= 64
-                && mode
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        });
-        Self {
-            scroll,
-            focus_ordinal: view.focus.map(|focus| focus.ordinal),
-            viewport: view.viewport,
-            view_mode,
-        }
-    }
-
-    fn into_view(self) -> crate::view::View {
-        crate::view::View {
-            scroll: self.scroll,
-            focus: self.focus_ordinal.map(|ordinal| crate::view::FocusView {
-                ordinal,
-                ephemeral: String::new(),
-            }),
-            // Stable file records are routed by the shell and never encoded
-            // as the toolkit's path-bearing `RecordId::for_file`.
-            open_resource: None,
-            viewport: self.viewport,
-            view_mode: self.view_mode,
-        }
-    }
-
-    fn valid(&self) -> bool {
-        self.scroll.len() <= 32
-            && self.scroll.iter().all(|value| value.is_finite())
-            && [
-                self.viewport.x,
-                self.viewport.y,
-                self.viewport.width,
-                self.viewport.height,
-            ]
-            .into_iter()
-            .all(f64::is_finite)
-            && self.view_mode.as_ref().is_none_or(|mode| {
-                !mode.is_empty()
-                    && mode.len() <= 64
-                    && mode
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-            })
-    }
-}
-
-const CONTINUATION_FACET_PRESENTATION: u8 = 1 << 0;
-const CONTINUATION_FACET_SEMANTIC: u8 = 1 << 1;
-const CONTINUATION_KNOWN_FACETS: u8 = CONTINUATION_FACET_PRESENTATION | CONTINUATION_FACET_SEMANTIC;
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct StructuralContinuationEnvelope {
-    facets: u8,
-    presentation: PortableContinuationView,
-    semantic: Option<StructuralSemanticProjection>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct StructuralSemanticProjection {
-    schema_version: u16,
-    #[serde(with = "serde_bytes")]
-    bytes: Vec<u8>,
-}
-
-/// Facets present in a validated structural continuation envelope.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StructuralContinuationFacets(u8);
-
-impl StructuralContinuationFacets {
-    pub fn presentation(self) -> bool {
-        self.0 & CONTINUATION_FACET_PRESENTATION != 0
-    }
-
-    pub fn semantic(self) -> bool {
-        self.0 & CONTINUATION_FACET_SEMANTIC != 0
-    }
-}
-
-fn valid_structural_envelope(envelope: &StructuralContinuationEnvelope) -> bool {
-    envelope.facets & !CONTINUATION_KNOWN_FACETS == 0
-        && envelope.facets & CONTINUATION_FACET_PRESENTATION != 0
-        && (envelope.facets & CONTINUATION_FACET_SEMANTIC != 0) == envelope.semantic.is_some()
-        && envelope.presentation.valid()
-}
-
-/// Inspect the framework facets without exposing their private wire shape.
-pub fn structural_continuation_facets(bytes: &[u8]) -> Option<StructuralContinuationFacets> {
-    let envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(bytes).ok()?;
-    valid_structural_envelope(&envelope).then_some(StructuralContinuationFacets(envelope.facets))
-}
-
-/// Compose the toolkit-owned checkpoint used by [`App`]. Public shell/runtime
-/// hosts may use this to produce the identical envelope in conformance tests.
-pub fn compose_structural_continuation_metadata(
-    view: crate::view::View,
-    semantic: Option<crate::collaboration::ContinuationMetadata>,
-) -> Option<crate::collaboration::ContinuationMetadata> {
-    // Invalid widget projections must never suppress the toolkit checkpoint.
-    // Shell policy performs app-specific validation; these common bounds
-    // prevent malformed implementations from poisoning publication.
-    let semantic = semantic
-        .filter(|metadata| {
-            metadata.schema_version != STRUCTURAL_CONTINUATION_SCHEMA
-                && metadata.schema_version != GENERIC_VIEW_CONTINUATION_SCHEMA
-                && !metadata.bytes.is_empty()
-                && metadata.bytes.len() <= 32 * 1024
-        })
-        .map(|metadata| StructuralSemanticProjection {
-            schema_version: metadata.schema_version,
-            bytes: metadata.bytes,
-        });
-    let facets = CONTINUATION_FACET_PRESENTATION
-        | if semantic.is_some() {
-            CONTINUATION_FACET_SEMANTIC
-        } else {
-            0
-        };
-    let mut envelope = StructuralContinuationEnvelope {
-        facets,
-        presentation: PortableContinuationView::capture(view),
-        semantic,
-    };
-    let mut bytes = postcard::to_stdvec(&envelope).ok()?;
-    if bytes.len() > 32 * 1024 && envelope.semantic.is_some() {
-        envelope.semantic = None;
-        envelope.facets &= !CONTINUATION_FACET_SEMANTIC;
-        bytes = postcard::to_stdvec(&envelope).ok()?;
-    }
-    (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(
-        crate::collaboration::ContinuationMetadata {
-            schema_version: STRUCTURAL_CONTINUATION_SCHEMA,
-            bytes,
-        },
-    )
-}
-
-/// Validate and canonicalize a framework envelope at the shell boundary.
-/// An unrecognized app projection is removed rather than retained as opaque
-/// bytes; its generic presentation checkpoint remains usable on every device.
-pub fn sanitize_structural_continuation_metadata(
-    bytes: &[u8],
-    semantic_is_safe: impl FnOnce(u16, &[u8]) -> bool,
-) -> Option<Vec<u8>> {
-    if bytes.is_empty() || bytes.len() > 32 * 1024 {
-        return None;
-    }
-    let mut envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(bytes).ok()?;
-    if !valid_structural_envelope(&envelope) {
-        return None;
-    }
-    if envelope.semantic.as_ref().is_some_and(|semantic| {
-        semantic.schema_version == STRUCTURAL_CONTINUATION_SCHEMA
-            || semantic.schema_version == GENERIC_VIEW_CONTINUATION_SCHEMA
-            || semantic.bytes.is_empty()
-            || semantic.bytes.len() > 32 * 1024
-            || !semantic_is_safe(semantic.schema_version, &semantic.bytes)
-    }) {
-        envelope.semantic = None;
-        envelope.facets &= !CONTINUATION_FACET_SEMANTIC;
-    }
-    postcard::to_stdvec(&envelope)
-        .ok()
-        .filter(|canonical| !canonical.is_empty() && canonical.len() <= 32 * 1024)
-}
-
-/// Validate the toolkit-owned generic wire shape at the shell boundary.
-/// App-provided opaque bytes must not be accepted merely because they use the
-/// generic schema number.
-pub fn validate_generic_continuation_metadata(bytes: &[u8]) -> bool {
-    let Ok(view) = postcard::from_bytes::<PortableContinuationView>(bytes) else {
-        return false;
-    };
-    view.valid()
-}
-
 /// Synthetic input for `EventLoopProxy`: each variant becomes the real
 /// `WindowEvent`(s) and routes through the same handler, so injected and
 /// real-hardware events take the identical code path.
@@ -345,7 +144,10 @@ use crate::render_thread::{FrameOutcome, RenderRequest, RenderThreadHandle, spaw
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::Widget;
+use crate::widget::{
+    AudiencePresentationWidgetExt as _, FloatingSurfaceWidgetExt as _, FullscreenWidgetExt as _,
+    Widget,
+};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use taffy::{AvailableSpace, NodeId, TaffyTree};
@@ -780,6 +582,7 @@ pub struct App {
     history_focus: Option<crate::widget::layout::CompositionFocus>,
     text_renderer: TextRenderer,
     palette_source: PaletteSource,
+    watch_system_settings: bool,
     layout: LayoutRuntime,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
@@ -805,28 +608,11 @@ pub struct App {
     /// Studio. Throttled so the render loop does not stat the file per frame.
     theme_store_stamp: Option<std::time::SystemTime>,
     last_theme_store_check: Instant,
-    modifiers: winit::event::Modifiers,
+    input: InputRuntime,
 
-    interaction: crate::interaction::InteractionEnvironment,
-    platform: crate::platform::PlatformConventions,
+    history: HistoryRuntime,
 
-    nav_gestures: crate::gesture::NavGestureRecognizer,
-
-    // Stable state for Undo/Redo tracking
-    last_stable_focus_idx: Option<usize>,
-    last_stable_metadata: Option<String>,
-
-    // Collaboration
-    collab_manager: CollaborationManager,
-    /// The unqualified `(app, room)` channel carries the room's record
-    /// index.  Once a widget checks out a record, `collab_manager` switches
-    /// to that record's route while this manager remains subscribed solely
-    /// to grants/discovery.
-    room_collab_manager: Option<CollaborationManager>,
-    /// Every committed action is attributed to it and Ctrl+Z only reverts
-    /// actions carrying it, so undo walks past collaborators' work rather
-    /// than through it.
-    local_author: crate::permissions::UserId,
+    collaboration: CollaborationRuntime,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
 
@@ -854,11 +640,9 @@ pub struct App {
     /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
     frame_tick: Option<FrameTick>,
 
-    /// Only calls into winit when it changes, keeping the hot pointer path
-    /// cheap.
-    current_cursor: CursorIcon,
+    accessibility: AccessibilityRuntime,
 
-    tooltip_host: crate::widget::TooltipHost,
+    window: WindowRuntime,
 
     /// `None` makes every narration call site a no-op, so a reader-off
     /// build is byte-for-byte unaffected.
@@ -894,10 +678,7 @@ pub struct App {
     autosave_generation: u64,
     document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
     pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
-    /// When present the live document is one record's, named by the root
-    /// widget via [`crate::widget::Widget::record_intent`].
-    records: Option<crate::record::RecordSet>,
-    room_index: Option<crate::state::DocumentReplica>,
+    persistence: PersistenceRuntime,
 
     actions: ActionRuntime,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
@@ -905,16 +686,9 @@ pub struct App {
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_viewport_width: f64,
     history_focus_pending: bool,
-    /// Last app-owned continuation projection sent to the local shell.
-    last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
+    continuation: ContinuationRuntime,
     last_published_playback: Option<Vec<media::handoff::PlaybackReport>>,
     last_playback_publish: Option<Instant>,
-    pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
-    /// Generic view restoration waits until the first layout has built the
-    /// focus order. App-specific projections still apply before first sync.
-    pending_continuation_view: Option<crate::view::View>,
-    semantic_tree: crate::a11y_tree::SemanticTree,
-
     profiler: Option<crate::profiling::FrameProfiler>,
     native_input_probe: Option<Box<dyn Fn() -> serde_json::Value>>,
 
@@ -983,6 +757,7 @@ struct AppConstructionInputs {
     configured_theme: ConstructionValue<Theme>,
     text_renderer: ConstructionValue<TextRenderer>,
     palette_source: PaletteSource,
+    watch_system_settings: bool,
     debug_mode: fn() -> bool,
     theme_store_stamp: fn() -> Option<std::time::SystemTime>,
     local_author: ConstructionValue<crate::permissions::UserId>,
@@ -1000,6 +775,34 @@ struct AppConstructionInputs {
 }
 
 impl AppConstructionInputs {
+    fn native_component(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+    ) -> Self {
+        Self::component_with_services(
+            inputs,
+            binding,
+            Self::production(CollaborationManager::for_record(&binding.checkout.id)),
+        )
+    }
+
+    fn component_with_services(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        mut services: Self,
+    ) -> Self {
+        // Keep the explicit presentation and canonical author. Only the native
+        // runner supplies process services; the application factory stays pure.
+        services.configured_theme = ConstructionValue::Ready(inputs.theme);
+        services.text_renderer = ConstructionValue::Ready(inputs.text_renderer);
+        services.palette_source = PaletteSource::Host;
+        services.local_author = ConstructionValue::Ready(binding.author.clone());
+        let mut presence = services.presence_ctx.resolve();
+        presence.add_own_identity(&binding.author.0);
+        services.presence_ctx = ConstructionValue::Ready(presence);
+        services
+    }
+
     fn component(
         inputs: crate::application::ComponentRunnerInputs,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -1011,6 +814,7 @@ impl AppConstructionInputs {
             configured_theme: ConstructionValue::Ready(inputs.theme),
             text_renderer: ConstructionValue::Ready(inputs.text_renderer),
             palette_source: PaletteSource::Host,
+            watch_system_settings: false,
             local_author: ConstructionValue::Ready(binding.author.clone()),
             presence_ctx: ConstructionValue::Ready(presence),
             surface_id: ConstructionValue::Ready(format!(
@@ -1040,6 +844,7 @@ impl AppConstructionInputs {
                 renderer: TextRenderer::new,
                 field: crate::widget::SearchField::new,
             },
+            watch_system_settings: true,
             debug_mode: || cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             theme_store_stamp: || {
                 settings_store::settings_path()
@@ -1079,6 +884,7 @@ impl AppConstructionInputs {
                 renderer: crate::font_catalog::fixture_renderer,
                 field: || crate::widget::SearchField::with_language("en_US"),
             },
+            watch_system_settings: true,
             debug_mode: || false,
             theme_store_stamp: || None,
             local_author: ConstructionValue::Lazy(|| {
@@ -1125,10 +931,34 @@ impl App {
     /// # Errors
     /// Returns the original component recovery owners when mounting is refused.
     pub fn from_component(
-        mut component: crate::application::AppComponent,
+        component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
     ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, AppConstructionInputs::component)
+    }
+
+    /// Mount a standalone native component with the process's existing system
+    /// services, including record-scoped collaboration and accessibility.
+    /// Presentation, identity, storage and authority still belong to the host.
+    /// # Errors
+    /// Preserves the component's recovery owners on mount or route mismatch.
+    pub fn from_component_with_native_services(
+        component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_using(component, inputs, AppConstructionInputs::native_component)
+    }
+
+    fn from_component_using(
+        mut component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+        construction: fn(
+            crate::application::ComponentRunnerInputs,
+            &crate::bound_dispatch::CallbackBinding,
+        ) -> AppConstructionInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
         let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
         let handle = scope.handle();
         if let Err(error) = component.mount(move |_| handle.wake()) {
             return Err(component.setup_error(error));
@@ -1159,9 +989,28 @@ impl App {
         Ok(app)
     }
 
+    pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
+        let theme = Theme::configured().with_a11y(
+            &crate::a11y::A11ySettings {
+                high_contrast: Self::high_contrast_env_enabled(),
+                reduce_motion: Self::reduce_motion_env_enabled(),
+                ..Default::default()
+            },
+            Self::text_scale_env().unwrap_or(1.0),
+            Self::ui_scale_env().unwrap_or(1.0),
+        );
+        let mut text_renderer = TextRenderer::new();
+        text_renderer.set_text_scale(theme.text_scale);
+        crate::application::ComponentRunnerInputs {
+            theme,
+            text_renderer,
+        }
+    }
+
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.actions.bound_record_sync = None;
         self.component_close_reports
             .extend(self.root_widget.close_components());
         self.component_close_reports
@@ -1171,7 +1020,7 @@ impl App {
     }
     fn close_native_content(&mut self) {
         self.close_components();
-        self.root_widget.unmount_native_views();
+        crate::widget::unmount_native_views(self.root_widget.as_mut());
     }
 
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
@@ -1536,11 +1385,12 @@ impl App {
             history_focus: None,
             text_renderer: inputs.text_renderer.resolve(),
             palette_source: inputs.palette_source,
+            watch_system_settings: inputs.watch_system_settings,
             layout: LayoutRuntime::new(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             component_close_reports: vec![],
             close_admission: crate::close_admission::Admission::default(),
-            nav_gestures: crate::gesture::NavGestureRecognizer::new(),
+            input: InputRuntime::new(),
             needs_sync: true,
             theme: configured_theme.clone(),
             debug_mode: (inputs.debug_mode)(),
@@ -1551,14 +1401,11 @@ impl App {
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
             last_theme_store_check: Instant::now(),
-            modifiers: winit::event::Modifiers::default(),
-            interaction: crate::interaction::InteractionEnvironment::default(),
-            platform: crate::platform::PlatformConventions::default(),
-            last_stable_focus_idx: None,
-            last_stable_metadata: None,
-            collab_manager: inputs.collab_manager,
-            room_collab_manager: None,
-            local_author: inputs.local_author.resolve(),
+            history: HistoryRuntime::new(),
+            collaboration: CollaborationRuntime::new(
+                inputs.collab_manager,
+                inputs.local_author.resolve(),
+            ),
             presence_ctx: inputs.presence_ctx.resolve(),
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
@@ -1588,20 +1435,16 @@ impl App {
             autosave_generation: 0,
             document_routes: crate::history_mode::routes::OwnerDocumentRoutes::default(),
             legacy_persistence: crate::launch::LegacyPersistencePolicy::Host,
-            records: None,
-            room_index: None,
+            persistence: PersistenceRuntime::new(),
             actions: ActionRuntime::new(),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
             history_layout: None,
             history_viewport_width: 1000.0,
             history_focus_pending: false,
-            last_published_continuation: None,
+            continuation: ContinuationRuntime::new((inputs.pending_continuation_restore)()),
             last_published_playback: None,
             last_playback_publish: None,
-            pending_continuation_restore: (inputs.pending_continuation_restore)(),
-            pending_continuation_view: None,
-            semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: (inputs.profiler)(),
             native_input_probe: None,
             window_title: None,
@@ -1615,18 +1458,18 @@ impl App {
             floating_host_messages: Vec::new(),
         };
 
-        app.a11y.high_contrast = (inputs.high_contrast)();
-        app.a11y.reduce_motion = match app.palette_source {
-            PaletteSource::Host => app.base_theme.reduce_motion,
+        app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
+        app.accessibility.a11y.reduce_motion = match app.palette_source {
+            PaletteSource::Host => app.accessibility.base_theme.reduce_motion,
             PaletteSource::Owned { .. } => (inputs.reduce_motion)(),
         };
-        app.a11y.screen_reader = app.screen_reader.is_some();
-        app.text_scale = match app.palette_source {
+        app.accessibility.a11y.screen_reader = app.accessibility.screen_reader.is_some();
+        app.accessibility.text_scale = match app.palette_source {
             PaletteSource::Host => app.text_renderer.text_scale(),
             PaletteSource::Owned { .. } => (inputs.text_scale)(),
         };
-        app.ui_scale = match app.palette_source {
-            PaletteSource::Host => app.base_theme.ui_scale,
+        app.accessibility.ui_scale = match app.palette_source {
+            PaletteSource::Host => app.accessibility.base_theme.ui_scale,
             PaletteSource::Owned { .. } => (inputs.ui_scale)(),
         };
         app.rebuild_theme();
@@ -1653,24 +1496,28 @@ impl App {
     fn rebuild_theme(&mut self) {
         self.theme = match self.palette_source {
             PaletteSource::Host => {
-                self.text_renderer.set_text_scale(self.text_scale);
-                self.text_scale = self.text_renderer.text_scale();
-                let base = if self.a11y.high_contrast {
+                self.text_renderer
+                    .set_text_scale(self.accessibility.text_scale);
+                self.accessibility.text_scale = self.text_renderer.text_scale();
+                let base = if self.accessibility.a11y.high_contrast {
                     Theme::high_contrast()
                 } else {
-                    self.base_theme.clone()
+                    self.accessibility.base_theme.clone()
                 };
                 let theme = base
-                    .with_component_scales(self.text_scale, self.ui_scale)
-                    .with_reduce_motion(self.a11y.reduce_motion);
-                self.ui_scale = theme.ui_scale;
+                    .with_component_scales(
+                        self.accessibility.text_scale,
+                        self.accessibility.ui_scale,
+                    )
+                    .with_reduce_motion(self.accessibility.a11y.reduce_motion);
+                self.accessibility.ui_scale = theme.ui_scale;
                 theme
             }
-            PaletteSource::Owned { .. } => {
-                self.base_theme
-                    .clone()
-                    .with_a11y(&self.a11y, self.text_scale, self.ui_scale)
-            }
+            PaletteSource::Owned { .. } => self.accessibility.base_theme.clone().with_a11y(
+                &self.accessibility.a11y,
+                self.accessibility.text_scale,
+                self.accessibility.ui_scale,
+            ),
         };
         // Deliver motion policy before the event loop consults
         // `needs_animation_frame`. This lets custom roots settle their own
@@ -1679,6 +1526,7 @@ impl App {
         self.root_widget
             .set_motion_reduced(self.theme.reduce_motion);
     }
+}
 
     #[allow(
         clippy::too_many_lines,
@@ -3629,11 +3477,12 @@ impl App {
         self.last_published_continuation = metadata;
     }
 
+impl App {
     /// Publish private source descriptors over the authenticated local app
     /// broker. Public cross-device state is derived by the shell and remains
     /// path/URL-free; this report never enters the room document.
     fn publish_playback_handoff(&mut self) {
-        if !self.collab_manager.is_connected() {
+        if !self.collaboration.manager.is_connected() {
             return;
         }
         let now = Instant::now();
@@ -3652,7 +3501,8 @@ impl App {
         let Ok(reports_json) = serde_json::to_vec(&reports) else {
             return;
         };
-        self.collab_manager
+        self.collaboration
+            .manager
             .send(crate::collaboration::CollabRequest::ReportPlayback {
                 app_id,
                 reports_json,
@@ -3660,6 +3510,7 @@ impl App {
         self.last_published_playback = Some(reports);
         self.last_playback_publish = Some(now);
     }
+}
 
     fn apply_pending_continuation_restore(&mut self) {
         if let Some(metadata) = self.pending_continuation_restore.take() {
@@ -5370,6 +5221,7 @@ impl App {
         }
     }
 
+impl App {
     /// Reconciles both directions, idempotently: app-driven (push
     /// `fullscreen_intent` to the window on change) and compositor-driven
     /// (read the actual state back and notify the root on a transition, e.g.
@@ -5378,7 +5230,8 @@ impl App {
         let mut changed = false;
 
         let want = self.root_widget.fullscreen_intent();
-        if let Some(new_state) = fullscreen_request_decision(self.fullscreen_requested, want) {
+        if let Some(new_state) = fullscreen_request_decision(self.window.fullscreen_requested, want)
+        {
             if new_state {
                 // An empty monitor list falls back to `Borderless(None)`,
                 // still a full-output surface.
@@ -5403,7 +5256,7 @@ impl App {
             } else {
                 window.set_fullscreen(None);
             }
-            self.fullscreen_requested = new_state;
+            self.window.fullscreen_requested = new_state;
             changed = true;
         }
 
@@ -5416,10 +5269,10 @@ impl App {
     /// Split from [`Self::reconcile_fullscreen`] so the Appâ†’root notification
     /// wiring is unit-testable without a live winit window.
     fn note_actual_fullscreen(&mut self, actual: bool) -> bool {
-        if actual == self.fullscreen_active {
+        if actual == self.window.fullscreen_active {
             return false;
         }
-        self.fullscreen_active = actual;
+        self.window.fullscreen_active = actual;
         self.root_widget.on_fullscreen_changed(actual);
         self.needs_sync = true;
         self.layout.layout_dirty = true;
@@ -5436,24 +5289,24 @@ impl App {
             return false;
         };
         let mut changed = false;
-        if intent.base_theme.name != self.base_theme.name {
-            self.base_theme = intent.base_theme;
+        if intent.base_theme.name != self.accessibility.base_theme.name {
+            self.accessibility.base_theme = intent.base_theme;
             changed = true;
         }
-        if intent.high_contrast != self.a11y.high_contrast {
-            self.a11y.high_contrast = intent.high_contrast;
+        if intent.high_contrast != self.accessibility.a11y.high_contrast {
+            self.accessibility.a11y.high_contrast = intent.high_contrast;
             changed = true;
         }
-        if intent.reduce_motion != self.a11y.reduce_motion {
-            self.a11y.reduce_motion = intent.reduce_motion;
+        if intent.reduce_motion != self.accessibility.a11y.reduce_motion {
+            self.accessibility.a11y.reduce_motion = intent.reduce_motion;
             changed = true;
         }
-        if (intent.text_scale - self.text_scale).abs() > f32::EPSILON {
-            self.text_scale = intent.text_scale;
+        if (intent.text_scale - self.accessibility.text_scale).abs() > f32::EPSILON {
+            self.accessibility.text_scale = intent.text_scale;
             changed = true;
         }
-        if (intent.ui_scale - self.ui_scale).abs() > f32::EPSILON {
-            self.ui_scale = intent.ui_scale;
+        if (intent.ui_scale - self.accessibility.ui_scale).abs() > f32::EPSILON {
+            self.accessibility.ui_scale = intent.ui_scale;
             changed = true;
         }
         if changed {
@@ -5481,8 +5334,8 @@ impl App {
         stamp: impl FnOnce() -> Option<std::time::SystemTime>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
-        // Prepared components retain the caller's presentation and local services.
-        if matches!(self.palette_source, PaletteSource::Host) {
+        // Only an explicitly native service host watches process settings.
+        if !self.watch_system_settings {
             return false;
         }
         if now.saturating_duration_since(self.last_theme_store_check) < Duration::from_millis(750) {
@@ -5502,17 +5355,17 @@ impl App {
     }
 
     fn apply_configured_theme(&mut self) {
-        self.base_theme = Theme::configured();
+        self.accessibility.base_theme = Theme::configured();
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
         let configured_reader = Self::persisted_accessibility_bool("screen_reader")
             || Self::screen_reader_env_enabled();
         self.set_screen_reader_enabled(configured_reader);
-        if let Some(reader) = self.screen_reader.as_mut() {
+        if let Some(reader) = self.accessibility.screen_reader.as_mut() {
             Self::configure_screen_reader(reader);
         }
-        self.a11y.screen_reader = self.screen_reader.is_some();
+        self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
 
     /// The smallest-area matching rect wins, so a nested child beats its
@@ -5543,7 +5396,7 @@ impl App {
     /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
     /// beats its enclosing toolbar.
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
-        if !self.interaction.supports_hover() {
+        if !self.input.interaction.supports_hover() {
             return None;
         }
         let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
@@ -5561,6 +5414,7 @@ impl App {
         }
         best.map(|(_, rect, label)| (rect, label))
     }
+}
 
     /// Called once per event-loop wakeup, so it must be cheap and
     /// non-blocking.
@@ -6379,6 +6233,7 @@ impl App {
         &self.local_author
     }
 
+impl App {
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
         self.invalidate_widget_resource_cache();
@@ -7547,7 +7402,7 @@ impl App {
         self.layout.node_map.clear();
         self.build_history_presentation();
         self.update_focusable_order();
-        if let Some(view) = self.pending_continuation_view.take() {
+        if let Some(view) = self.continuation.pending_view.take() {
             <Self as crate::view::FreezeThaw>::restore_view(self, &view);
         }
         if self.autofocus_first
@@ -7556,10 +7411,10 @@ impl App {
         {
             self.set_focused_node(Some(first));
         }
-        self.last_stable_focus_idx = self
+        self.history.stable_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.last_stable_metadata = self.focused_node.and_then(|id| {
+        self.history.stable_metadata = self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| widget.get_state())
                 .ok()
                 .flatten()
@@ -7736,20 +7591,20 @@ impl App {
     /// Takes effect when the window is created, so set before [`App::run`].
     #[must_use]
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
-        self.window_title = Some(title.into());
+        self.window.title = Some(title.into());
         self
     }
 
     /// Set the stable Wayland application id announced by this window.
     #[must_use]
     pub fn with_window_app_id(mut self, app_id: impl Into<String>) -> Self {
-        self.window_app_id = Some(app_id.into());
+        self.window.app_id = Some(app_id.into());
         self
     }
 
     /// `None` clears the override and restores automatic resolution.
     pub fn set_window_title(&mut self, title: Option<String>) {
-        self.window_title = title;
+        self.window.title = title;
     }
 
     /// Precedence: explicit override â†’ `TILO_APP_NAME` â†’ package id â†’ binary

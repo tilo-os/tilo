@@ -36,9 +36,9 @@ use ui::webview::test_engine::TestEngine;
 use ui::webview::{MediaElementInfo, SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
-    AppKind, AppWidget, Button, Column, Container, Continuable, EmptyState, IconDescriptor,
-    ProgressBar, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, TextInputKind, WebView,
-    Widget,
+    AppKind, AppWidget, Button, Column, Container, Continuable, EmptyState,
+    FloatingSurfaceProvider, IconDescriptor, ProgressBar, Row, ScrollAxis, Scrollable, Spacer,
+    Text, TextInput, TextInputKind, WebView, Widget,
 };
 
 use crate::actions::{
@@ -1258,7 +1258,7 @@ impl BrowserWidget {
             title: element.label.clone(),
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppElement {
-                app_id: "dev.tilo.browser".into(),
+                app_id: "so.tilo.browser".into(),
                 element_id: element.element_id.clone(),
                 region,
             },
@@ -1384,7 +1384,7 @@ impl BrowserWidget {
             title,
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppRegion {
-                app_id: "dev.tilo.browser".into(),
+                app_id: "so.tilo.browser".into(),
                 region,
             },
             preferred_size: Self::preferred_pip_size(aspect),
@@ -3138,12 +3138,70 @@ impl Continuable for BrowserWidget {
     }
 }
 
+impl FloatingSurfaceProvider for BrowserWidget {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.pending_pip.take()
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
+        self.pending_capture_studio.take()
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        self.pending_pip_region_update
+            .take()
+            .map(|region| vec![(PIP_ID.into(), region)])
+            .unwrap_or_default()
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.active_pip.then(|| PIP_ID.into()).into_iter().collect()
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &ui::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        match message {
+            ui::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. }
+                if id == PIP_ID =>
+            {
+                self.active_pip = true;
+            }
+            ui::floating_surface::FloatingSurfaceHostMessage::Closed { id }
+            | ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
+                if id == PIP_ID =>
+            {
+                self.active_pip = false;
+                self.active_pip_element = None;
+                self.pip_page_fallback = false;
+                self.active_pip_refresh_probe = None;
+                self.next_pip_refresh_at = None;
+                self.pending_pip_region_update = None;
+                self.published_pip_region = None;
+                self.structure_dirty = true;
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Widget for BrowserWidget {
     fn continuable(&self) -> Option<&dyn Continuable> {
         Some(self)
     }
 
     fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
+        Some(self)
+    }
+
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
+
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
         Some(self)
     }
 
@@ -4158,54 +4216,6 @@ impl Widget for BrowserWidget {
         self.motion_reduced = reduced;
         if let Some(composed) = &mut self.composed {
             composed.set_motion_reduced(reduced);
-        }
-    }
-
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.pending_pip.take()
-    }
-
-    fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
-        self.pending_capture_studio.take()
-    }
-
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        self.pending_pip_region_update
-            .take()
-            .map(|region| vec![(PIP_ID.into(), region)])
-            .unwrap_or_default()
-    }
-
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.active_pip.then(|| PIP_ID.into()).into_iter().collect()
-    }
-
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &ui::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        match message {
-            ui::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. }
-                if id == PIP_ID =>
-            {
-                self.active_pip = true;
-            }
-            ui::floating_surface::FloatingSurfaceHostMessage::Closed { id }
-            | ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
-                if id == PIP_ID =>
-            {
-                self.active_pip = false;
-                self.active_pip_element = None;
-                self.pip_page_fallback = false;
-                self.active_pip_refresh_probe = None;
-                self.next_pip_refresh_at = None;
-                self.pending_pip_region_update = None;
-                self.published_pip_region = None;
-                self.structure_dirty = true;
-            }
-            _ => {}
         }
     }
 
@@ -5510,11 +5520,11 @@ mod tests {
         let mut w = BrowserWidget::with_engine(engine.clone(), true);
         let (mut state, root) = synced(&mut w);
 
-        engine.send(WebViewCommand::Navigate("https://tilo.example".into()));
+        engine.send(WebViewCommand::Navigate("https://example.test".into()));
         w.sync(&mut state, &root);
 
-        assert_eq!(w.address.with(Clone::clone), "https://tilo.example");
-        assert_eq!(w.app_title(), "https://tilo.example — test page");
+        assert_eq!(w.address.with(Clone::clone), "https://example.test");
+        assert_eq!(w.app_title(), "https://example.test — test page");
     }
 
     #[test]
@@ -5591,7 +5601,7 @@ mod tests {
                 .contract
                 .result
                 .validate(&ui::tilo_actions::ActionOutput {
-                    value: Some(serde_json::Value::String("https://tilo.example".into())),
+                    value: Some(serde_json::Value::String("https://example.test".into())),
                     resources: Vec::new(),
                 })
                 .is_ok()
@@ -5624,7 +5634,7 @@ mod tests {
             OperationKind::Document
         );
         let mut args = serde_json::Map::new();
-        args.insert("url".into(), serde_json::json!("tilo.example"));
+        args.insert("url".into(), serde_json::json!("example.test"));
         let encoded = navigate.build_json(&args).unwrap();
         let invocation = ui::tilo_actions::InvocationId::new();
         assert_eq!(
@@ -5641,7 +5651,7 @@ mod tests {
         );
         assert_eq!(
             engine.current_uri().as_deref(),
-            Some("https://tilo.example")
+            Some("https://example.test")
         );
         w.sync(&mut doc, &root);
         assert!(matches!(

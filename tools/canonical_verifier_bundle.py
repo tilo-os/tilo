@@ -13,7 +13,7 @@ import urllib.request
 
 import app_channel_manifest as channel
 
-NAMES = ('tilo-pkg', 'tilo-runtime-bundle')
+NAMES = ('tilo-app-package', 'tilo-runtime-bundle')
 KEYS = ('tilo_pkg_sha256', 'tilo_runtime_bundle_sha256')
 MAX_BYTES = 128 * 1024**2
 

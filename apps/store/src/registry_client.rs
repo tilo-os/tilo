@@ -1,4 +1,4 @@
-//! HTTP client for a Tilo registry — [`app_catalogue::client`], re-exported.
+//! HTTP client for a Tilo registry — [`app_cli::client`], re-exported.
 //!
 //! The store used to carry its own copy of this: the same two
 //! endpoints, the same signature check, the same trust classification,
@@ -16,7 +16,7 @@
 //! Everything the store used from this module keeps its path, so
 //! `store::registry_client::fetch_entries` still resolves.
 
-pub use app_catalogue::client::{
+pub use app_cli::client::{
     RegistryError, TrustLevel, VerifiedEntry, classify_snapshot, fetch_entries, fetch_handshake,
     fetch_snapshot,
 };

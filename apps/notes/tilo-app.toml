@@ -2,7 +2,7 @@
 
 
 [package]
-id       = "dev.tilo.notes"
+id       = "so.tilo.notes"
 name     = "Notes"
 category = "Office"
 version = "0.1.0"

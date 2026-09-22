@@ -5,7 +5,7 @@
 //! an `applications` directory. It is deliberately a *separate* concept
 //! from a Tilo package:
 //!
-//! - a Tilo package is a signed `.qpkg` with a manifest, launched into a
+//! - a Tilo package is a signed `.tapp` with a manifest, launched into a
 //!   bubblewrap sandbox with one writable directory and a room id;
 //! - a desktop entry is a text file naming a command line, and running
 //!   it runs that command line on the host.

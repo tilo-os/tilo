@@ -318,7 +318,10 @@ impl SearchPage {
 impl SearchResult {
     /// Build a row whose invocation takes no arguments — most rows: opening
     /// a note, launching an app, toggling an overlay.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a search row carries provider identity, display metadata, score and invocation together"
+    )]
     pub fn nullary(
         kind: ResourceKind,
         provider_id: impl Into<String>,
@@ -350,7 +353,10 @@ impl SearchResult {
     /// [`SearchResult::nullary`] for a row that can refuse — a launch can
     /// still fail (missing package, declined sandbox, no display), and the
     /// return value is how a control-socket caller learns that.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a fallible search row carries provider identity, display metadata, score and invocation together"
+    )]
     pub fn nullary_fallible(
         kind: ResourceKind,
         provider_id: impl Into<String>,
@@ -1873,7 +1879,7 @@ mod tests {
             results: vec![mk_result(
                 ResourceKind::Application,
                 "applications",
-                "dev.tilo.calculator",
+                "so.tilo.calculator",
                 "Open Calculator",
                 100,
             )],
@@ -1898,7 +1904,7 @@ mod tests {
             out.iter().filter(|r| r.kind == ResourceKind::File).count(),
             out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
         );
-        assert_eq!(out[0].id, "dev.tilo.calculator");
+        assert_eq!(out[0].id, "so.tilo.calculator");
     }
 
     /// A word that exactly names an app must not lose to a word buried in
@@ -1939,7 +1945,7 @@ mod tests {
                 results: vec![mk_result(
                     ResourceKind::Application,
                     "applications",
-                    "dev.tilo.app",
+                    "so.tilo.app",
                     needle,
                     100,
                 )],
@@ -1988,7 +1994,7 @@ mod tests {
             results: vec![mk_result(
                 ResourceKind::Application,
                 "applications",
-                "dev.tilo.wp",
+                "so.tilo.wp",
                 "Word Processor",
                 20,
             )],
@@ -2111,7 +2117,7 @@ mod tests {
             results: vec![mk_result(
                 ResourceKind::Application,
                 "applications",
-                "dev.tilo.notes",
+                "so.tilo.notes",
                 "Open Notes",
                 100,
             )],
@@ -2144,8 +2150,8 @@ mod tests {
     fn typing_an_installed_apps_name_offers_the_app_first() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");
-        install_fake_app(tmp.path(), "dev.tilo.calculator", "Calculator");
-        install_fake_app(tmp.path(), "dev.tilo.notes", "Notes");
+        install_fake_app(tmp.path(), "so.tilo.calculator", "Calculator");
+        install_fake_app(tmp.path(), "so.tilo.notes", "Notes");
         // SAFETY: `serial_test::serial` keeps the other tests that
         // repoint this variable from running concurrently.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
@@ -2204,7 +2210,7 @@ mod tests {
                 out.iter().filter(|r| r.kind == ResourceKind::File).count(),
                 out.iter().take(3).map(|r| &r.title).collect::<Vec<_>>()
             );
-            assert_eq!(first.id, "dev.tilo.calculator");
+            assert_eq!(first.id, "so.tilo.calculator");
         }
         unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
         crate::shell::launcher::invalidate_app_cache();
@@ -2217,7 +2223,7 @@ mod tests {
     fn a_capped_palette_still_leads_with_the_app() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let tmp = tempfile::tempdir().expect("temp app registry");
-        install_fake_app(tmp.path(), "dev.tilo.hex-editor", "Hex Editor");
+        install_fake_app(tmp.path(), "so.tilo.hex-editor", "Hex Editor");
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         crate::shell::launcher::invalidate_app_cache();
 

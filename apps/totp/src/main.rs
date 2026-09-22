@@ -31,7 +31,7 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
-const APP_ID: &str = "dev.tilo.totp";
+const APP_ID: &str = "so.tilo.totp";
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 const SCREENS: &[&str] = &[
     "add",

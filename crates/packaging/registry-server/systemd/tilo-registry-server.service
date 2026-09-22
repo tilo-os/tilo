@@ -1,5 +1,5 @@
 [Unit]
-Description=Tilo app registry — self-hostable HTTP server for .qpkg metadata
+Description=Tilo app registry — self-hostable HTTP server for .tapp metadata
 Documentation=file:///usr/share/doc/tilo-registry/registry.md
 After=network-online.target
 Wants=network-online.target

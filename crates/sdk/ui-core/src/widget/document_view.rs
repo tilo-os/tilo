@@ -17,7 +17,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-use super::{Element, TaffyTreeExt, Text, Widget};
+use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt, Text, Widget};
 
 type Projection<K> = Box<dyn FnMut(&AutoCommit, &ObjId) -> K>;
 type Builder<K> = Box<dyn FnMut(&K) -> Element>;
@@ -134,10 +134,34 @@ where
     }
 }
 
+impl<K> FullscreenProvider for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn fullscreen_intent(&self) -> Option<bool> {
+        self.child.fullscreen_intent()
+    }
+
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        self.child.fullscreen_params()
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        self.child.on_fullscreen_changed(active);
+    }
+}
+
 impl<K> Widget for ModelView<K>
 where
     K: PartialEq + 'static,
 {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.reconcile(state, path);
         self.child.sync(state, path);
@@ -276,18 +300,6 @@ where
 
     fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
         self.child.on_external_event(payload, state, root);
-    }
-
-    fn fullscreen_intent(&self) -> Option<bool> {
-        self.child.fullscreen_intent()
-    }
-
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        self.child.fullscreen_params()
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        self.child.on_fullscreen_changed(active);
     }
 
     fn record_intent(&self) -> Option<crate::record::RecordCheckout> {

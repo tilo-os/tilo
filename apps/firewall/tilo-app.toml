@@ -7,7 +7,7 @@
 
 
 [package]
-id       = "dev.tilo.firewall"
+id       = "so.tilo.firewall"
 name     = "Firewall"
 category = "System"
 version  = "0.1.0"

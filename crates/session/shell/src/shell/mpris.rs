@@ -977,7 +977,7 @@ mod tests {
     fn observation(locator: &str) -> PlayerObservation {
         PlayerObservation {
             bus_name: "org.mpris.MediaPlayer2.browser".into(),
-            package_id: "dev.tilo.browser".into(),
+            package_id: "so.tilo.browser".into(),
             identity: Some("Browser".into()),
             status: "Playing".into(),
             metadata: HashMap::from([
@@ -991,7 +991,7 @@ mod tests {
 
     fn browser() -> InstalledMediaApp {
         InstalledMediaApp {
-            package_id: "dev.tilo.browser".into(),
+            package_id: "so.tilo.browser".into(),
             uri_schemes: vec!["http".into(), "https".into()],
             extensions: vec!["mp4".into()],
         }
@@ -1020,7 +1020,7 @@ mod tests {
         let second = report_from_observation(&observed, &[browser()]).unwrap();
 
         assert_eq!(first, second, "session identity must be stable");
-        assert_eq!(first.session.app_id, "dev.tilo.browser");
+        assert_eq!(first.session.app_id, "so.tilo.browser");
         assert_eq!(first.session.position_ms, 4_000);
         assert_eq!(first.session.duration_ms, Some(9_000));
         assert!(first.session.has_video);

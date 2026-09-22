@@ -433,17 +433,14 @@ mod tests {
     #[test]
     fn dropdown_change_persists_personal_choice() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("personal_default");
-        let candidates = vec![
-            candidate("dev.tilo.a", "pdf"),
-            candidate("dev.tilo.b", "pdf"),
-        ];
+        let candidates = vec![candidate("so.tilo.a", "pdf"), candidate("so.tilo.b", "pdf")];
         let mut pane = PersonalAppsPane::with_state(candidates, PersonalDefaults::default());
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         doc.put(
             &automerge::ROOT,
             "default_apps.ext.pdf",
-            "dev.tilo.b — dev.tilo.b",
+            "so.tilo.b — so.tilo.b",
         )
         .unwrap();
         pane.sync(&mut doc, &automerge::ROOT);
@@ -452,14 +449,14 @@ mod tests {
                 .handlers
                 .get(&ResourceKind::extension("pdf").unwrap())
                 .map(String::as_str),
-            Some("dev.tilo.b")
+            Some("so.tilo.b")
         );
     }
 
     #[test]
     fn mime_and_scheme_claims_are_exposed_as_personal_defaults() {
         let candidate = AppCandidate {
-            package_id: "dev.tilo.browser".into(),
+            package_id: "so.tilo.browser".into(),
             display_name: "Browser".into(),
             resources: [
                 ResourceKind::mime("text/html").unwrap(),
@@ -473,12 +470,12 @@ mod tests {
         assert_eq!(
             PersonalAppsPane::read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html")
                 .as_deref(),
-            Some("Browser — dev.tilo.browser")
+            Some("Browser — so.tilo.browser")
         );
         assert_eq!(
             PersonalAppsPane::read_str(&doc, &automerge::ROOT, "default_apps.scheme.https")
                 .as_deref(),
-            Some("Browser — dev.tilo.browser")
+            Some("Browser — so.tilo.browser")
         );
     }
 }

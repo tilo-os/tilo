@@ -11,7 +11,7 @@ so `click_named` cannot reach them. Clicking the "Everywhere" chip by
 coordinate and re-querying returns what you expected all along:
 
     APPLICATIONS  1
-      Open Files          System · dev.tilo.file-explorer
+      Open Files          System · so.tilo.file-explorer
     FILES        40
       ...
 
