@@ -307,8 +307,13 @@ DEFS="$OUTDIR/.repart.d"
 LOG="$OUTDIR/.install.log"
 ESP_VERIFY="$OUTDIR/.esp-verify"
 ESP_STAGED=0
+ESP_TMPFS_MOUNTED=0
 
 cleanup() {
+  if [ "$ESP_TMPFS_MOUNTED" = 1 ]; then
+    sudo -n umount "$ESP_AT" 2>/dev/null || true
+    ESP_TMPFS_MOUNTED=0
+  fi
   sudo -n umount -R "$MNT" 2>/dev/null || true
   [ -n "${LOOP:-}" ] && sudo -n losetup -d "$LOOP" 2>/dev/null || true
   [ -z "${SOURCE_POLICY:-}" ] || rm -f "$SOURCE_POLICY"
@@ -463,6 +468,15 @@ else
   fi
   command -v mcopy >/dev/null \
     || die "this kernel cannot mount vfat and mcopy is unavailable; install mtools"
+  # bootc requires /boot (or /boot/efi) to be a mount point and rejects an
+  # empty directory in the target root. A bounded tmpfs supplies that mount on
+  # kernels which cannot mount vfat; its contents are copied and verified into
+  # the real ESP below, then the tmpfs is explicitly unmounted.
+  sudo -n mount -t tmpfs \
+    -o "size=${esp_mib}M,mode=0755,nosuid,nodev,noexec" \
+    tilo-esp-stage "$ESP_AT" \
+    || die "could not mount the bounded ESP staging tmpfs at $ESP_AT"
+  ESP_TMPFS_MOUNTED=1
   ESP_STAGED=1
   msg "2/4 mounted ${LOOP}p2 -> $MNT; staging ESP files at $ESP_AT for mtools"
 fi
@@ -616,7 +630,10 @@ if [ "$ESP_STAGED" = 1 ]; then
   sudo -n find "$ESP_AT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
   [ -z "$(sudo -n find "$ESP_AT" -mindepth 1 -print -quit)" ] \
     || die "could not remove the verified duplicate ESP payload from the root filesystem"
-  msg "verified ESP payload and removed its root-filesystem staging copy"
+  sudo -n umount "$ESP_AT" \
+    || die "verified ESP copy, but could not unmount its staging tmpfs"
+  ESP_TMPFS_MOUNTED=0
+  msg "verified ESP payload and removed its temporary staging mount"
 fi
 
 cleanup
