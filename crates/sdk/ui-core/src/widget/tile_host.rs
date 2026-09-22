@@ -590,6 +590,10 @@ impl TileHost {
     /// Idempotent on the same record — rebinding would hand the tab a
     /// fresh empty document, and the tree re-binds every tile on rebuild.
     pub fn bind_record(&mut self, store: RecordStore, tab: RecordCheckout) {
+        if matches!(&self.content, TileContent::App(app) if !app.uses_host_record()) {
+            self.clear_record_binding();
+            return;
+        }
         self.bind_record_intent(store, tab, false);
         self.install_declared_history();
     }
@@ -597,8 +601,22 @@ impl TileHost {
     /// Admit a newly created scratch resource owned by this caller. Creation
     /// applies only to this exact checkout, never to later record intents.
     pub fn bind_or_create_record(&mut self, store: RecordStore, tab: RecordCheckout) {
+        if matches!(&self.content, TileContent::App(app) if !app.uses_host_record()) {
+            self.clear_record_binding();
+            return;
+        }
         self.bind_record_intent(store, tab, true);
         self.install_declared_history();
+    }
+
+    fn clear_record_binding(&mut self) {
+        self.settle_outgoing_record();
+        self.binding = None;
+        self.pending_binding = None;
+        self.record_error = None;
+        self.record_creation_refused = false;
+        self.announced = None;
+        self.renew_history_lifetime();
     }
 
     /// Keep a failed fresh creation unavailable without attaching an existing

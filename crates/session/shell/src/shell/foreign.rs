@@ -1720,6 +1720,10 @@ impl Widget for ForeignSurfaceWidget {
 }
 
 impl AppWidget for ForeignSurfaceWidget {
+    fn uses_host_record(&self) -> bool {
+        false
+    }
+
     fn app_kind(&self) -> AppKind {
         // No `AppKind` describes "arbitrary external client"; `Settings` is the catch-all `to_ui_kind` already uses for unknown kinds.
         AppKind::Settings
