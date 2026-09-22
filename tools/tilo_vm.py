@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import datetime as dt
 import hashlib
 import json
@@ -21,6 +22,7 @@ from typing import Any, Iterable
 
 SCHEMA = "tilo.vm-run/v1"
 SENSITIVE_ARGUMENT = re.compile(r"password|passphrase|secret|token|credential", re.I)
+DEFAULT_TARGET_GIB = 64
 
 
 def utc_now() -> str:
@@ -61,6 +63,98 @@ def file_receipt(path: Path, *, with_hash: bool = False) -> dict[str, Any]:
     if with_hash:
         result["sha256"] = sha256(resolved)
     return result
+
+
+def path_location(path: Path) -> str:
+    value = str(path)
+    if re.match(r"^\\\\wsl(?:\.localhost)?\\", value, re.I):
+        return "wsl-unc"
+    if value.startswith("\\\\"):
+        return "network-unc"
+    return "local"
+
+
+def windows_allocation(path: Path) -> int:
+    high = ctypes.c_ulong()
+    low = ctypes.windll.kernel32.GetCompressedFileSizeW(str(path), ctypes.byref(high))
+    if low == 0xFFFFFFFF and ctypes.get_last_error():
+        raise ctypes.WinError(ctypes.get_last_error())
+    return (high.value << 32) | low
+
+
+def allocated_bytes(path: Path) -> int:
+    if os.name == "nt":
+        return windows_allocation(path)
+    stat = path.stat()
+    return int(getattr(stat, "st_blocks", 0) * 512)
+
+
+def windows_filesystem(path: Path) -> str:
+    if os.name != "nt":
+        return "test-local"
+    volume = ctypes.create_unicode_buffer(261)
+    if not ctypes.windll.kernel32.GetVolumePathNameW(str(path), volume, len(volume)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    filesystem = ctypes.create_unicode_buffer(261)
+    if not ctypes.windll.kernel32.GetVolumeInformationW(
+        volume.value, None, 0, None, None, None, filesystem, len(filesystem)
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return filesystem.value
+
+
+def create_sparse_target(path: Path, size_gib: int, owned_root: Path) -> dict[str, Any]:
+    root = owned_root.resolve()
+    target = path.resolve()
+    if path_location(target) != "local":
+        raise ValueError("automatic disposable targets require a local path; pass --target to preserve an explicit WSL or network path")
+    try:
+        target.relative_to(root)
+    except ValueError as error:
+        raise ValueError(f"automatic disposable target escapes its owned directory: {target}") from error
+    if target.exists() or target.is_symlink():
+        raise FileExistsError(f"refusing to replace disposable target: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    filesystem = windows_filesystem(target.parent)
+    if os.name == "nt" and filesystem.upper() != "NTFS":
+        raise ValueError(f"automatic disposable targets require NTFS, found {filesystem}: {target.parent}")
+    logical = size_gib * 1024**3
+    try:
+        with target.open("xb+") as stream:
+            if os.name == "nt":
+                import msvcrt
+
+                handle = msvcrt.get_osfhandle(stream.fileno())
+                returned = ctypes.c_ulong()
+                if not ctypes.windll.kernel32.DeviceIoControl(
+                    ctypes.c_void_p(handle), 0x900C4,
+                    None, 0, None, 0, ctypes.byref(returned), None,
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if not ctypes.windll.kernel32.SetFilePointerEx(
+                    ctypes.c_void_p(handle), ctypes.c_longlong(logical), None, 0
+                ):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if not ctypes.windll.kernel32.SetEndOfFile(ctypes.c_void_p(handle)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            else:
+                stream.truncate(logical)
+            stream.flush()
+            os.fsync(stream.fileno())
+        allocation = allocated_bytes(target)
+        if allocation >= logical:
+            raise RuntimeError(f"disposable target is dense ({allocation} allocated of {logical} bytes): {target}")
+        return {
+            "path": str(target),
+            "location": "local-ntfs" if os.name == "nt" else "local-test",
+            "filesystem": filesystem,
+            "logical_bytes": logical,
+            "allocated_bytes": allocation,
+            "sparse": True,
+        }
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
 
 
 def read_tail(path: Path, maximum_bytes: int) -> bytes:
@@ -248,7 +342,12 @@ def normalized_inputs(args: argparse.Namespace, launcher_args: list[tuple[str, s
     for label in ("disk", "target", "kernel", "initrd", "source_overlay"):
         path = getattr(args, label, None)
         if path:
+            if label == "target" and args.disposable_target and not path.exists():
+                continue
             result[label] = file_receipt(path)
+            if label == "target":
+                result[label]["location"] = path_location(path)
+                result[label]["allocated_bytes"] = allocated_bytes(path)
     return result
 
 
@@ -265,6 +364,11 @@ def materialize_arguments(args: argparse.Namespace) -> list[tuple[str, str | Non
     for name, path in mapped:
         if path and name.lower() not in existing:
             values.append((name, str(path.resolve())))
+    if args.disposable_target:
+        if "createinstalltarget" not in existing:
+            values.append(("CreateInstallTarget", None))
+        if "installtargetgib" not in existing:
+            values.append(("InstallTargetGiB", str(args.target_size_gib)))
     return values
 
 
@@ -272,8 +376,20 @@ def preflight_or_start(args: argparse.Namespace, *, start: bool) -> int:
     launcher = args.launcher.resolve()
     if not launcher.is_file() or launcher.suffix.lower() != ".ps1":
         raise RuntimeError(f"PowerShell launcher is missing: {launcher}")
-    launcher_args = materialize_arguments(args)
+    if args.disposable_target and args.target:
+        raise ValueError("--disposable-target and --target are mutually exclusive")
+    if not 34 <= args.target_size_gib <= 4096:
+        raise ValueError("--target-size-gib must be between 34 and 4096")
     run_id, run_dir = new_run_dir(args.runs_dir.resolve(), args.run_id)
+    target_storage = None
+    if args.disposable_target:
+        target_root = args.runs_dir.resolve().parent / "targets"
+        args.target = target_root / f"{run_id}.raw"
+        if start:
+            target_storage = create_sparse_target(args.target, args.target_size_gib, target_root)
+            write_new(run_dir / "target.json", json_dump(target_storage))
+            append_event(run_dir, "target-created", **target_storage)
+    launcher_args = materialize_arguments(args)
     qmp_port, serial_port = available_port(), available_port()
     while serial_port == qmp_port:
         serial_port = available_port()
@@ -291,6 +407,12 @@ def preflight_or_start(args: argparse.Namespace, *, start: bool) -> int:
             "qmp": args.qmp_parameter,
             "serial": args.serial_parameter,
         },
+        "target_storage": target_storage or ({
+            "path": str(args.target.resolve()),
+            "location": "planned-local-ntfs" if os.name == "nt" else "planned-local-test",
+            "logical_bytes": args.target_size_gib * 1024**3,
+            "sparse": True,
+        } if args.disposable_target else None),
     }
     append_event(run_dir, "run-created", kind=common["kind"])
     check = launcher_command(
@@ -399,6 +521,9 @@ def common_start_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--run-id", help="optional stable label; must be unused")
     parser.add_argument("--disk", type=Path)
     parser.add_argument("--target", type=Path)
+    parser.add_argument("--disposable-target", action="store_true",
+                        help="create a fresh sparse target under the local target store")
+    parser.add_argument("--target-size-gib", type=int, default=DEFAULT_TARGET_GIB)
     parser.add_argument("--kernel", type=Path)
     parser.add_argument("--initrd", type=Path)
     parser.add_argument("--source-overlay", type=Path)
