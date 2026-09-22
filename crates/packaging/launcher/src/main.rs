@@ -449,7 +449,7 @@ fn admit_share_and_open(
         Ok(path) => match received_file_capability(&path) {
             Ok((capability_path, guard)) => {
                 let result = exec_installed(
-                    "dev.tilo.file-explorer",
+                    "so.tilo.file-explorer",
                     ExecArgs {
                         no_services: false,
                         wayland_socket,
@@ -596,7 +596,7 @@ fn received_file_capability(
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
         .map_err(|_| "could not secure the temporary capability directory".to_string())?;
     let capability = collab_types::CapOverride::new(
-        collab_types::Subject::app("dev.tilo.file-explorer"),
+        collab_types::Subject::app("so.tilo.file-explorer"),
         collab_types::Scope::FsPath(path.display().to_string()),
         collab_types::Effect::Grant,
         collab_types::Verb::Read,
@@ -794,7 +794,7 @@ fn run_installed(
         return ExitCode::from(2);
     }
 
-    // Installed qpkg command shims are a production launch surface. Their
+    // Installed tapp command shims are a production launch surface. Their
     // inherited environment is app/user input, not trusted launcher policy,
     // so it must never be able to turn off either confinement or runtime
     // verification. Tests and developer harnesses that intentionally need a
@@ -880,7 +880,10 @@ fn init_tracing() {
 }
 
 // Expose RunError so the binary can use #[derive] paths cleanly.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "the link-only helper keeps RunError reachable for derive-generated binary paths"
+)]
 fn _link_run_error(_: &RunError) {}
 
 #[cfg(test)]

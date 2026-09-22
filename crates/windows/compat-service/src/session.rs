@@ -25,7 +25,7 @@ use crate::{
     RuntimeRegistry, SandboxExecutor, ServiceError, VmDelegate,
 };
 
-const MANAGER_APP_ID: &str = "dev.tilo.windows";
+const MANAGER_APP_ID: &str = "so.tilo.windows";
 const MAX_HANDOFF_BYTES: usize = 4 * 1024;
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_CLIENT_WORKERS: usize = 8;
@@ -163,7 +163,7 @@ where
             .explain(
                 query,
                 VmFallback::Disabled,
-                "dev.tilo.windows.preview",
+                "so.tilo.windows.preview",
                 &[],
                 now_unix(),
             )
@@ -822,7 +822,7 @@ where
         }
         ProtocolRequest::Install { source_name, .. } => {
             let capabilities = authority
-                .capabilities_for(&handoff.workspace_id, "dev.tilo.windows.import")
+                .capabilities_for(&handoff.workspace_id, "so.tilo.windows.import")
                 .map_err(SessionError::Authority)?;
             let source = File::from(descriptor.ok_or(SessionError::DescriptorMissing)?);
             match managed.install(source, &source_name, &handoff.workspace_id, &capabilities)? {
@@ -848,7 +848,7 @@ where
                 .filter(|pending| now_unix().is_some_and(|now| now <= pending.expires_at_unix))
                 .ok_or(SessionError::VmInstallConfirmationExpired)?;
             let capabilities = authority
-                .capabilities_for(&handoff.workspace_id, "dev.tilo.windows.import")
+                .capabilities_for(&handoff.workspace_id, "so.tilo.windows.import")
                 .map_err(SessionError::Authority)?;
             let receipt = managed.install_in_capsule(
                 source,
@@ -904,7 +904,7 @@ where
         ProtocolRequest::RetryInstall { capsule_id, .. } => {
             require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
             let capabilities = authority
-                .capabilities_for(&handoff.workspace_id, "dev.tilo.windows.import")
+                .capabilities_for(&handoff.workspace_id, "so.tilo.windows.import")
                 .map_err(SessionError::Authority)?;
             let receipt =
                 managed.retry_install(&capsule_id, &handoff.workspace_id, &capabilities)?;
@@ -946,7 +946,7 @@ where
         ProtocolRequest::VendorUninstall { capsule_id, .. } => {
             require_authorized_capsule(managed, allowed_entry_ids, &capsule_id)?;
             let capabilities = authority
-                .capabilities_for(&handoff.workspace_id, "dev.tilo.windows.import")
+                .capabilities_for(&handoff.workspace_id, "so.tilo.windows.import")
                 .map_err(SessionError::Authority)?;
             let receipt =
                 managed.vendor_uninstall(&capsule_id, &handoff.workspace_id, &capabilities)?;

@@ -108,7 +108,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.disks", live_root)
+        &LaunchSpec::new("so.tilo.disks", live_root)
             .shot_handler(shot_handler)
             .allowed_flags(&["--live", "--narrow"])
             .allowed_options(&["--drive", "--part", "--tab", "--pending", "--status"]),

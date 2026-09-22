@@ -35,7 +35,7 @@ fn run_calendar(directory: &Path, source: Option<&Path>, name: &str) -> serde_js
         std::fs::create_dir_all(&path).unwrap();
         command.env(key, path);
     }
-    command.env("TILO_PACKAGE_ID", "dev.tilo.calendar.cli-test");
+    command.env("TILO_PACKAGE_ID", "so.tilo.calendar.cli-test");
     command.env(
         "TILO_CALENDAR_DATA",
         directory.join("absent-legacy.automerge"),

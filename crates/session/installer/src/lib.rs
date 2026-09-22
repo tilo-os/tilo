@@ -54,6 +54,7 @@ pub mod installer_app;
 pub mod installer_network;
 pub mod keyboard_view;
 pub mod layouts;
+pub mod locales;
 pub mod media_profile;
 pub mod power_readiness;
 pub mod seg_choice;

@@ -532,7 +532,7 @@ pub fn external_driver_recipe() -> &'static str {
     concat!(
         "Connect to the collaboration broker socket and send:\n",
         "\n",
-        "1. CollabRequest::Hello { app_id: \"dev.tilo.video-editor\",\n",
+        "1. CollabRequest::Hello { app_id: \"so.tilo.video-editor\",\n",
         "                          cluster_id: <the room uuid>,\n",
         "                          record: <the open project, or None>,\n",
         "                          handle: Some(\"<the name to show>\") }\n",
@@ -613,7 +613,7 @@ mod tests {
             assert!(recipe.contains(tag), "the recipe never mentions {tag:?}");
         }
         assert!(
-            recipe.contains("dev.tilo.video-editor"),
+            recipe.contains("so.tilo.video-editor"),
             "the recipe has to name the app id a driver announces as",
         );
         assert!(

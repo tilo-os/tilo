@@ -142,7 +142,7 @@ class FinalArtifactAcceptance:
                     # Both paths are in this private temporary filesystem. Give
                     # final.verify its expected pathname without another 2GiB copy.
                     os.link(archive, tree / archive.name)
-                    replay = final.verify(tree, tools / 'tilo-pkg', tools / 'tilo-runtime-bundle', self.policy_path,
+                    replay = final.verify(tree, tools / 'tilo-app-package', tools / 'tilo-runtime-bundle', self.policy_path,
                                           self.policy_sha, intent['desired']['source_sha'], architecture)
                     for key in ('schema', 'architecture', 'source_sha', 'collection', 'runtime', 'packages', 'publication'):
                         channel.require(replay[key] == original[key], 'canonical replay differs from qualified receipt: ' + key)

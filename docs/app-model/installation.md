@@ -1,7 +1,21 @@
 # Installation: `tilo-install` and the on-disk layout
 
-`tilo-install` is the one-command user-facing install surface. It verifies
-signatures, unpacks payloads, drops PATH shims, and launches. All state
+`app` is the user-facing package manager; `store` is an exact alias. `tilo app`
+and `tilo store` fan out to the same command, so these are equivalent:
+
+```sh
+app u browser
+store update browser
+tilo app update browser
+```
+
+`tilo update` updates apps and, when the provider exists, the Tilo system image.
+On another Linux distribution it skips unavailable system management rather than
+making the app commands unusable. Explicit `tilo system ...` commands report that
+the provider is unavailable.
+
+The lower-level `tilo-install` verifies signatures, unpacks payloads, drops PATH
+shims, and launches. All state
 lives under `$XDG_DATA_HOME` and `$XDG_CONFIG_HOME`; no root, no system-
 wide side effects (except the packages themselves, which never need root).
 
@@ -14,7 +28,7 @@ Install, launch, list, or remove Tilo packages.
 Usage: tilo-install <COMMAND>
 
 Commands:
-  install  Install a .qpkg into the local store. Verifies signature first
+  install  Install a .tapp into the local store. Verifies signature first
   update   Fetch a newer version and keep the app's per-room state
   list     List installed packages
   remove   Remove an installed package by id
@@ -27,20 +41,20 @@ Commands:
   runtime  Manage installed Tilo runtime bundles
 ```
 
-`add` is an alias for `install`, so `tilo-install add ./app.qpkg` is accepted
+`add` is an alias for `install`, so `tilo-install add ./app.tapp` is accepted
 as an alternative spelling.
 
-For catalogue apps, use `tilo-catalogue install <package-id>` (or its `add`
+For catalogue apps, use `app install <package-id>` (or its `add`
 alias). It resolves the configured repositories and pins both the expected
 publisher and package-root hash when handing the download to `tilo-install`.
 Repository management is available without hand-editing TOML:
 
 ```sh
-tilo-catalogue repo list
-tilo-catalogue repo add team https://apps.example.test --owner-key <64-hex-key>
-tilo-catalogue repo disable team
-tilo-catalogue repo enable team
-tilo-catalogue repo remove team
+app repo list
+app repo add team https://apps.tilo.so --owner-key <64-hex-key>
+app repo disable team
+app repo enable team
+app repo remove team
 ```
 
 Changes are atomically written to the same `registries.toml` used by the
@@ -51,8 +65,8 @@ Store. Repositories retain list order as their resolution priority.
 Catalogue repositories default to `channel = "stable"`, including existing
 configuration files without that field. Stable selection excludes SemVer
 prereleases; numeric CalVer and older opaque versions keep their prior behavior.
-Use `tilo-catalogue repo channel NAME development` to opt into prereleases, or
-`tilo-catalogue repo channel NAME stable` to return to stable selection. This
+Use `app repo channel NAME development` to opt into prereleases, or
+`app repo channel NAME stable` to return to stable selection. This
 changes future offers; it does not silently downgrade an installed development
 build. Stable promotion requires publishing the corresponding stable version.
 
@@ -72,10 +86,10 @@ previous artifact version. The app workflow sets this flag for main pushes and
 explicitly publishing manual main runs. Tags keep stable versions; nonpublishing
 qualification keeps its existing manifest versions. Artifacts still upload to
 Forgejo packages; the authoritative main-branch publisher submits newly built
-qpkgs through its direct signed-registry path, without a second
+tapps through its direct signed-registry path, without a second
 catalogue-submission job.
 
-These settings govern the signed snapshot catalogue and `tilo-catalogue install`.
+These settings govern the signed snapshot catalogue and `app install`.
 The legacy `tilo-install update` registry resolver uses a separate configuration
 and protocol; it does not inherit this catalogue channel setting.
 
@@ -132,7 +146,7 @@ An OS image ships a second store, in the same shape, at
 ```
 
 It is written during the image build by `os/scripts/pack-apps.sh`, which
-runs the ordinary `tilo-pkg pack` + `tilo-install install` against a
+runs the ordinary `tilo-app-package pack` + `tilo-install install` against a
 `TILO_APPS_DATA_DIR` pointed there — so every preinstalled package went
 through the same packing, signing and install path a user's own package
 goes through, and is described by the same `RegistryEntry` fields. It
@@ -162,11 +176,11 @@ are two directories, and no manifest field selects either. See
 
 ```toml
 [[entry]]
-id                = "dev.tilo.hello"
+id                = "so.tilo.hello"
 version           = "0.1.0"
 package_id_hex    = "b8bde92e…"
-payload_root      = "/…/tilo-apps/payloads/dev.tilo.hello"
-manifest_path     = "/…/tilo-apps/payloads/dev.tilo.hello/manifest.toml"
+payload_root      = "/…/tilo-apps/payloads/so.tilo.hello"
+manifest_path     = "/…/tilo-apps/payloads/so.tilo.hello/manifest.toml"
 publisher_key_hex = "c4c627b5…"
 pinned            = false
 installed_at      = 1783176312
@@ -182,7 +196,7 @@ overwrite the same directory. If you need side-by-side versions (multiple
 ## `install`
 
 ```
-tilo-install install <qpkg>
+tilo-install install <tapp>
     [--pinned]                      # retained across size-pressure GC
     [--force]                       # overwrite same-id install
     [--require-package-root <hex>]  # bind to a signed registry version
@@ -193,7 +207,7 @@ tilo-install install <qpkg>
 
 Sequence:
 
-1. Read the `.qpkg` tar into an in-memory blob store.
+1. Read the `.tapp` tar into an in-memory blob store.
 2. Verify the signed root and every hash. If registry constraints were
    supplied, require both the advertised package root and publisher key;
    this prevents a valid package from another release or publisher being
@@ -204,7 +218,7 @@ Sequence:
 4. Remove any old `payloads/<id>/` directory.
 5. Unpack payload into `payloads/<id>/`. Write `manifest.toml` next to
    it explicitly (so the launcher can find it without re-reading the
-   `.qpkg`).
+   `.tapp`).
 6. If the manifest has `[cli].commands`, drop a shim + sidecar in
    `bin/` per command.
 7. Append a `RegistryEntry` to `registry.toml`.
@@ -212,12 +226,12 @@ Sequence:
 Example run against the hello demo:
 
 ```
-$ tilo-install install /tmp/tilo-hello-demo/tilo-hello.qpkg
+$ tilo-install install /tmp/tilo-hello-demo/tilo-hello.tapp
 tilo-install: WARN — package self-signed by ed25519:c4c627b57… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
-installed: dev.tilo.hello 0.1.0
-  payload  : /tmp/tilo-install-demo-data/tilo-apps/payloads/dev.tilo.hello
+installed: so.tilo.hello 0.1.0
+  payload  : /tmp/tilo-install-demo-data/tilo-apps/payloads/so.tilo.hello
   pinned   : false
-run with:  tilo-install run dev.tilo.hello
+run with:  tilo-install run so.tilo.hello
 ```
 
 ## `list`
@@ -225,19 +239,19 @@ run with:  tilo-install run dev.tilo.hello
 ```
 $ tilo-install list
 id                                version   pinned  attested-by         installed
-dev.tilo.hello                     0.1.0     no      -                   0s ago
+so.tilo.hello                     0.1.0     no      -                   0s ago
 ```
 
 ## `inspect`
 
 ```
-$ tilo-install inspect dev.tilo.hello
-id            : dev.tilo.hello
+$ tilo-install inspect so.tilo.hello
+id            : so.tilo.hello
 version       : 0.1.0
-package-id    : qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
+package-id    : tapp:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3
 publisher     : ed25519:c4c627b57a518bc318c2854662b44f741345f6d55a45eb059d3b384048789e39
-payload-root  : /tmp/tilo-install-demo-data/tilo-apps/payloads/dev.tilo.hello
-manifest      : /tmp/tilo-install-demo-data/tilo-apps/payloads/dev.tilo.hello/manifest.toml
+payload-root  : /tmp/tilo-install-demo-data/tilo-apps/payloads/so.tilo.hello
+manifest      : /tmp/tilo-install-demo-data/tilo-apps/payloads/so.tilo.hello/manifest.toml
 pinned        : false
 attested-by   : (self-signed)
 installed     : 0 seconds ago
@@ -263,8 +277,8 @@ Because `run` uses `exec()`, this process's exit code is the launcher's.
 ## `remove`
 
 ```
-$ tilo-install remove dev.tilo.hello
-removed: dev.tilo.hello
+$ tilo-install remove so.tilo.hello
+removed: so.tilo.hello
 ```
 
 Deletes the payload dir, un-writes any registered PATH shims, and drops
@@ -284,7 +298,7 @@ $ tilo-install path
 /tmp/tilo-install-demo-data/tilo-apps/bin
 
 # Prepend the above to your shell's PATH so CLI commands
-# installed via `tilo-install install <pkg.qpkg>` are picked up.
+# installed via `tilo-install install <pkg.tapp>` are picked up.
 #
 # bash / zsh (~/.bashrc, ~/.zshrc):
 export PATH="/tmp/tilo-install-demo-data/tilo-apps/bin:$PATH"
@@ -338,7 +352,7 @@ Discovery order the launcher uses:
 ## Updates
 
 There is no in-place upgrade command yet. Update = `install --force
-<new.qpkg>`:
+<new.tapp>`:
 
 - Registry entry retains the same `id`.
 - Old payload dir is deleted, new one written.
@@ -353,7 +367,7 @@ overwrite; a mistaken `install` without `--force` on a same-id package
 refuses:
 
 ```
-tilo-install: package dev.tilo.hello already installed (use --force to overwrite)
+tilo-install: package so.tilo.hello already installed (use --force to overwrite)
 ```
 
 ## Trust management

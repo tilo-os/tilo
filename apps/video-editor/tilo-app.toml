@@ -11,7 +11,7 @@
 
 
 [package]
-id       = "dev.tilo.video-editor"
+id       = "so.tilo.video-editor"
 name     = "Video Editor"
 category = "Multimedia"
 version  = "0.1.0"

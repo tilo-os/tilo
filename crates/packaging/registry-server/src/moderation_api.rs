@@ -588,7 +588,10 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
-    use registry_types::{RegistryEntry, sign_entry, sign_moderation_mutation};
+    use registry_types::{
+        RegistryEntry, RegistryTarget, RegistryVersion, TILO_OS_PLATFORM, sign_entry,
+        sign_moderation_mutation,
+    };
 
     fn setup() -> (
         tempfile::TempDir,
@@ -602,15 +605,33 @@ mod tests {
         let publisher = SigningKey::generate(&mut OsRng);
         let reviewer = SigningKey::generate(&mut OsRng);
         let mut entry = RegistryEntry {
-            package_id: "dev.tilo.notes".into(),
+            package_id: "so.tilo.notes".into(),
             name: "Notes".into(),
-            description: String::new(),
+            description: "Native notes app".into(),
+            tagline: "Write together".into(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
+            supported_languages: vec!["en".into()],
             categories: vec![],
-            icon_url: None,
             source_url: None,
             homepage: None,
             publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
-            versions: vec![],
+            versions: vec![RegistryVersion {
+                version: "1.0.0".into(),
+                tapp_url: "https://apps.tilo.so/artifacts/notes/notes.tapp".into(),
+                tapp_root_hash_hex: "ab".repeat(32),
+                tapp_size_bytes: 1,
+                released_at_unix: 1,
+                tapp_blake3_hex: "cd".repeat(32),
+                target: RegistryTarget {
+                    platform: TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                },
+            }],
             updated_at_unix: 1,
             signature_hex: String::new(),
         };
@@ -639,7 +660,7 @@ mod tests {
             200,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 category: "security".into(),
                 summary: "Unexpected network connection".into(),
                 evidence_digest_hex: "aa".repeat(32),
@@ -699,7 +720,7 @@ mod tests {
             200,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 category: "quality".into(),
                 summary: "A different signed report".into(),
                 evidence_digest_hex: "bb".repeat(32),
@@ -811,7 +832,7 @@ mod tests {
         // the API can append its public event.
         service
             .moderation
-            .restore_quarantined("dev.tilo.notes", "owner", "fixed", 113, &allowlist)
+            .restore_quarantined("so.tilo.notes", "owner", "fixed", 113, &allowlist)
             .unwrap();
         let restore = sign_moderation_mutation(
             "restore-after-crash".into(),

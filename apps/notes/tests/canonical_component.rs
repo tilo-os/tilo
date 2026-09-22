@@ -211,7 +211,7 @@ fn canonical_binding_hydrates_and_clears_marks_and_reconciles_empty_selection_re
     let wrong = NotesDoc::page_blocks_list(&doc, f.root).unwrap();
     assert!(
         app.main_panel_mut()
-            .bind_canonical_page(&doc, f.child, "wrong", wrong)
+            .bind_canonical_page(&doc, f.child, "wrong", &wrong)
             .is_err()
     );
     assert_eq!(app.main_panel_mut().page_id(), Some(f.child));

@@ -1726,19 +1726,19 @@ impl InviteRedemptionAuthority {
 }
 
 // Hosted applications can use the certificate-pinned remote broker on every
-// host. Local authority storage is a qOS shell service with Unix ownership and
+// host. Local authority storage is a Tilo shell service with Unix ownership and
 // permission requirements; never substitute permissive files on other hosts.
 #[cfg(not(unix))]
 fn local_authority_unavailable() -> IdentityFlowError {
     IdentityFlowError::Io(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "local identity authority requires the qOS Unix broker; use a remote broker on this host",
+        "local identity authority requires the Tilo Unix broker; use a remote broker on this host",
     ))
 }
 
 #[cfg(not(unix))]
 impl InviteRedemptionAuthority {
-    /// Open the local qOS authority.
+    /// Open the local Tilo authority.
     ///
     /// # Errors
     /// Returns `Unsupported` on hosts without the Unix authority storage backend.
