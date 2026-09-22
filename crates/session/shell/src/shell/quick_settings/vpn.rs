@@ -391,20 +391,8 @@ impl QuickSettingsVpnPane {
         row: &VpnRowPaint<'_>,
     ) {
         let colors = &theme.tokens.colors;
-        // A discovery row is not a selected tab. Keep the surface neutral and
-        // reserve live-state emphasis for the trailing switch and status copy.
-        let fill = if row.hovered {
-            colors.neutral[3].with_alpha_factor(0.72)
-        } else {
-            colors.neutral[2].with_alpha_factor(0.42)
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            fill,
-            None,
-            &RoundedRect::from_rect(row.rect, 12.0),
-        );
+        // A discovery row is a shared control surface, not a selected tab.
+        paint_control(scene, transform, theme, row.rect, row.hovered, false);
         if self.keyboard_focus == Some(Self::PROFILE_FOCUS_START.saturating_add(row.index)) {
             Button::paint(
                 scene,

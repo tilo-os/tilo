@@ -46,10 +46,10 @@ const CHIP_DX: f64 = 14.0;
 const CHIP_DY: f64 = 16.0;
 /// Cursor arrow, in units of its own height.
 const CURSOR_H: f64 = 20.0;
-const PREVIEW_MAX_W: f64 = 280.0;
-const PREVIEW_MAX_H: f64 = 190.0;
-const PREVIEW_MIN_W: f64 = 180.0;
-const PREVIEW_MIN_H: f64 = 112.0;
+const PREVIEW_MAX_W: f64 = 280.0; // Payload preview bound, not inter-control spacing.
+const PREVIEW_MAX_H: f64 = 190.0; // Payload preview bound, not inter-control spacing.
+const PREVIEW_MIN_W: f64 = 180.0; // Payload preview bound, not inter-control spacing.
+const PREVIEW_MIN_H: f64 = 112.0; // Payload preview bound, not inter-control spacing.
 const PREVIEW_ALPHA: f32 = 0.42;
 const HANDLE_ALPHA: f32 = 0.5;
 
