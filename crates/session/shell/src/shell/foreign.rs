@@ -1373,6 +1373,10 @@ impl ForeignSurfaceWidget {
         self.surface_id
     }
 
+    pub(crate) fn cache_debug(&self) -> (u64, bool) {
+        (self.cached_seq, self.cached.is_some())
+    }
+
     /// Place a compositor-owned floating surface without putting it through
     /// the workspace's Taffy tree. The same placement store still drives the
     /// xdg configure handshake, so the client renders at this exact size.
@@ -1521,6 +1525,10 @@ pub fn paint_output_presentation_surface(
 }
 
 impl Widget for ForeignSurfaceWidget {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(

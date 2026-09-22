@@ -449,6 +449,11 @@ const OPENING_SPINNER_PX_F32: f32 = 36.0;
 const OPENING_SPINNER_GAP: f64 = 24.0;
 
 impl TileHost {
+    /// Presentation-latch state for end-to-end compositor diagnostics.
+    pub fn presentation_debug(&self) -> (bool, bool) {
+        (self.was_presented.get(), self.opening_shown)
+    }
+
     pub fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
         match &mut self.content {
             TileContent::App(root) => root.take_host_intent(),

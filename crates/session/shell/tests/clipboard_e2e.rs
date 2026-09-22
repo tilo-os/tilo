@@ -3499,10 +3499,11 @@ fn drag_file_row_onto_client(
     // the output scale factor. Move far enough to clear the 6 logical-pixel
     // threshold even on a 2x output, then interpolate from that latched point.
     // The row is visible only in the narrow strip between the sidebar and the
-    // adjacent client. Start just left of the resize seam and move eight pixels
-    // left: this clears the file view's 6px threshold without entering either
-    // competing surface, then the compositor can hand the live drag rightward.
-    let latched = (row.0 - 8.0, row.1);
+    // adjacent client. Start just left of the resize seam and move fourteen
+    // physical pixels left: at the test output's 2x scale this clears the file
+    // view's 6-logical-pixel threshold without entering either competing
+    // surface, then the compositor can hand the live drag rightward.
+    let latched = (row.0 - 14.0, row.1);
     compositor.pointer_move(latched.0, latched.1);
     target.pump();
     std::thread::sleep(Duration::from_millis(30));
