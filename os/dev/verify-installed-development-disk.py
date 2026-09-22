@@ -183,6 +183,34 @@ def media_partitions(document, loop):
     return [row['node'] for row in rows]
 
 
+@contextmanager
+def readable_partition_nodes(loop, timeout=2.0):
+    """Use settled devtmpfs nodes when udev owns them, else create private nodes."""
+    match = re.fullmatch(r'/dev/(loop[0-9]+)', loop)
+    if match is None:
+        raise ValueError('unexpected loop identity')
+    names = [f'{match.group(1)}p{number}' for number in (1, 2)]
+    nodes = [Path('/dev') / name for name in names]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and not all(node.exists() for node in nodes):
+        time.sleep(0.05)
+    if all(node.exists() for node in nodes):
+        for name, node in zip(names, nodes):
+            raw = (Path('/sys/class/block') / name / 'dev').read_text().strip()
+            if not re.fullmatch(r'[0-9]+:[0-9]+', raw):
+                raise ValueError('loop partition has invalid kernel identity')
+            expected = os.makedev(*map(int, raw.split(':', 1)))
+            info = node.lstat()
+            if (not stat.S_ISBLK(info.st_mode) or info.st_uid != 0
+                    or stat.S_IMODE(info.st_mode) & 0o007 or info.st_rdev != expected
+                    or info.st_nlink != 1):
+                raise ValueError('udev loop partition node differs from kernel identity')
+        yield nodes
+        return
+    with loop_partition_nodes(loop) as created:
+        yield created
+
+
 def config_lines(raw):
     result = {}
     for line in raw.decode('utf-8', 'strict').splitlines():
@@ -196,14 +224,16 @@ def config_lines(raw):
     return result
 
 
-def selected_uki(esp, digest, *, target_materialized=False):
+def selected_uki(esp, digest, *, target_materialized=False, entry_key='efi'):
+    if entry_key not in ('efi', 'uki'):
+        raise ValueError('unsupported UKI boot-entry directive')
     entries = hardware.trusted_path(esp, Path('loader/entries'), regular=False)
     names = list(entries.iterdir())
     if len(names) != 1 or not names[0].name.endswith('.conf'):
         raise ValueError('fresh disk must have exactly one boot entry')
     entry = config_lines(read(esp, names[0].relative_to(esp)))
     wanted = f'/EFI/Linux/bootc/bootc_composefs-{digest}.efi'
-    if entry.get('efi') != wanted or set(entry) - {'title', 'version', 'sort-key', 'efi'}:
+    if entry.get(entry_key) != wanted or set(entry) - {'title', 'version', 'sort-key', entry_key}:
         raise ValueError('selected entry differs or overrides signed UKI')
     loader = config_lines(read(esp, 'loader/loader.conf'))
     default = loader.get('default', names[0].name)
@@ -301,15 +331,15 @@ def preflight_disk(path):
                 if not re.fullmatch('/dev/loop[0-9]+', loop):
                     raise ValueError('unexpected allocated loop identity')
                 cleanup.callback(command, ['/usr/sbin/losetup', '--detach', loop])
-                cleanup.enter_context(loop_partition_nodes(loop))
+                part_nodes = cleanup.enter_context(readable_partition_nodes(loop))
                 if command(['/usr/sbin/blockdev', '--getro', loop]).strip() != b'1':
                     raise ValueError('loop is not read-only')
                 layout = json.loads(command(['/usr/sbin/sfdisk', '--json', loop]))
-                parts = media_partitions(layout, loop)
+                media_partitions(layout, loop)
                 esp, root = scratch / 'esp', scratch / 'root'
                 for device, destination, kind, options in zip(
-                        parts, (esp, root), ('vfat', 'btrfs'),
-                        ('ro,nodev,nosuid,noexec', 'ro,nodev,nosuid,noexec,nologreplay')):
+                        part_nodes, (esp, root), ('vfat', 'btrfs'),
+                        ('ro,nodev,nosuid,noexec', 'ro,nodev,nosuid,noexec,rescue=nologreplay')):
                     destination.mkdir()
                     command(['/usr/bin/mount', '-t', kind, '-o', options, device, str(destination)])
                     cleanup.callback(command, ['/usr/bin/umount', str(destination)])
@@ -321,11 +351,11 @@ def preflight_disk(path):
                     raise ValueError('fresh disk must have exactly one boot entry')
                 entry = config_lines(read(esp, names[0].relative_to(esp)))
                 match = re.fullmatch(r'/EFI/Linux/bootc/bootc_composefs-([0-9a-f]{128})\.efi',
-                                     entry.get('efi', ''))
+                                     entry.get('uki', ''))
                 if not match:
                     raise ValueError('boot entry does not select a sealed composefs UKI')
                 digest = match.group(1)
-                uki = selected_uki(esp, digest)
+                uki = selected_uki(esp, digest, entry_key='uki')
                 data = read(esp, uki, prediction.boot.UKI_LIMIT)
                 sections = prediction.boot.uki_sections(data, 'aarch64')
                 if not (root / 'composefs').is_dir() or not (root / 'state/deploy').is_dir():
@@ -340,9 +370,10 @@ def preflight_disk(path):
                     'disk': str(path), 'size_bytes': before.st_size,
                     'partition_table': 'gpt', 'sector_size': 512,
                     'partitions': [
-                        {'name': 'EFI-SYSTEM', 'type': 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b',
-                         'filesystem': 'vfat', 'read_only_mount_verified': True},
-                        {'name': 'root', 'type': '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab',
+                        {'name': 'esp', 'type': 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b',
+                         'size_bytes': 2 * 1024**3, 'filesystem': 'vfat',
+                         'read_only_mount_verified': True},
+                        {'name': 'Tilo root', 'type': '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab',
                          'filesystem': 'btrfs', 'read_only_mount_verified': True}],
                     'uki': {'path': uki, 'architecture': 'aarch64',
                             'sha256': hashlib.sha256(data).hexdigest(),
@@ -511,13 +542,13 @@ def verify(args):
             if not re.fullmatch('/dev/loop[0-9]+', loop):
                 raise ValueError('unexpected allocated loop identity')
             cleanup.callback(command, ['/usr/sbin/losetup', '--detach', loop])
-            cleanup.enter_context(loop_partition_nodes(loop))
+            part_nodes = cleanup.enter_context(readable_partition_nodes(loop))
             if command(['/usr/sbin/blockdev', '--getro', loop]).strip() != b'1':
                 raise ValueError('loop is not read-only')
-            parts = partitions(json.loads(command(['/usr/sbin/sfdisk', '--json', loop])), loop)
+            partitions(json.loads(command(['/usr/sbin/sfdisk', '--json', loop])), loop)
             esp, root, view = [scratch / name for name in ('esp', 'root', 'view')]
-            for device, destination, kind, options in zip(parts, (esp, root), ('vfat', 'btrfs'),
-                    ('ro,nodev,nosuid,noexec', 'ro,nodev,nosuid,noexec,nologreplay')):
+            for device, destination, kind, options in zip(part_nodes, (esp, root), ('vfat', 'btrfs'),
+                    ('ro,nodev,nosuid,noexec', 'ro,nodev,nosuid,noexec,rescue=nologreplay')):
                 destination.mkdir()
                 command(['/usr/bin/mount', '-t', kind, '-o', options, device, str(destination)])
                 cleanup.callback(command, ['/usr/bin/umount', str(destination)])

@@ -71,7 +71,7 @@ class Layout(unittest.TestCase):
                     if argv[2] == 'vfat':
                         (destination / 'loader/entries').mkdir(parents=True)
                         (destination / 'loader/entries/tilo.conf').write_text(
-                            f'title Tilo\nefi /EFI/Linux/bootc/bootc_composefs-{digest}.efi\n')
+                            f'title Tilo\nuki /EFI/Linux/bootc/bootc_composefs-{digest}.efi\n')
                         (destination / 'loader/loader.conf').write_text('timeout 1\n')
                         target = destination / f'EFI/Linux/bootc/bootc_composefs-{digest}.efi'
                         target.parent.mkdir(parents=True)
@@ -94,7 +94,8 @@ class Layout(unittest.TestCase):
                     patch.object(disk, 'require_private_namespace'), \
                     patch.object(disk, '_directory', side_effect=lambda path:
                         os.open(path, os.O_RDONLY | os.O_DIRECTORY)), \
-                    patch.object(disk, 'loop_partition_nodes', return_value=nullcontext()), \
+                    patch.object(disk, 'readable_partition_nodes', return_value=nullcontext(
+                        [Path('/private/loop7p1'), Path('/private/loop7p2')])), \
                     patch.object(disk, 'command', side_effect=command), \
                     patch.object(disk.hardware, 'trusted_path', side_effect=lambda root, relative, **_kw:
                         root / relative):
