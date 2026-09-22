@@ -31,7 +31,7 @@ const NARROW_VIEWPORT: (u32, u32) = (680, 860);
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-fn prepare_shot(narrow: bool) -> Box<dyn Widget> {
+fn prepare_shot(narrow: bool, scenario: Option<&str>) -> Box<dyn Widget> {
     // An explicit repository is the only way screenshots may inspect the
     // surrounding checkout; otherwise use the deterministic sample fixture.
     if std::env::var_os("GIT_CLIENT_REPO").is_none() {
@@ -40,15 +40,15 @@ fn prepare_shot(narrow: bool) -> Box<dyn Widget> {
     if narrow {
         unsafe { std::env::set_var("GIT_CLIENT_FLAP_OPEN", "1") };
     }
-    git_client::app_root()
+    git_client::app_root_shot(scenario)
 }
 
 #[allow(
     clippy::unnecessary_wraps,
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
-fn shot_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(prepare_shot(false))
+fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    Ok(prepare_shot(false, args.scenario.as_deref()))
 }
 
 fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
@@ -60,7 +60,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
         return Ok(false);
     };
     render(
-        prepare_shot(true),
+        args,
+        prepare_shot(true, args.scenario.as_deref()),
         NARROW_VIEWPORT,
         std::path::Path::new(out),
     );
@@ -68,12 +69,10 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
     Ok(args.shots.is_none())
 }
 
-fn render(root: Box<dyn Widget>, viewport: (u32, u32), out: &std::path::Path) {
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => ui::Theme::light(),
-        Some("high-contrast") => ui::Theme::high_contrast(),
-        _ => ui::Theme::dark(),
-    };
+fn render(args: &LaunchArgs, root: Box<dyn Widget>, viewport: (u32, u32), out: &std::path::Path) {
+    // The same palette / text-scale / motion policy as `--shots`, so the
+    // narrow capture honours `TILO_SHOTS_THEME` and `TILO_SHOTS_TEXT_SCALE`.
+    let theme = ui::launch::shot_theme(args);
     ui::headless::FrameHarness::new_with_theme(ui::State::new(), root, viewport, theme)
         .render_png(out);
     println!("git_client: wrote shot to {}", out.display());
@@ -111,6 +110,7 @@ pub fn main() {
         &LaunchSpec::new("so.tilo.git-client", git_client::app_root)
             .shot_root(shot_root)
             .shot_viewport(|_| WIDE_VIEWPORT)
+            .scenarios(git_client::SCENARIOS)
             .allowed_live_options(&["--stage-commit", "--shots-narrow"])
             .command_handler(command)
             .configure_app(|app| {

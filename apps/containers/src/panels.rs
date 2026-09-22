@@ -28,6 +28,13 @@ use crate::podman::{Action, ImageAction};
 /// Sizes used across the panels — kept here so the layout reads coherently.
 const PAD: f64 = 16.0;
 const ICON_BTN: f64 = 32.0;
+/// Inset of a container row's text from its column edge (clears the status
+/// accent bar); the column heading shares it.
+const ROW_TEXT_INSET: f64 = 8.0;
+/// Header search launcher placeholders: the full hint, and the short form used
+/// when the field cannot hold the full one beside its ⌘K key cap.
+pub(crate) const LAUNCHER_PLACEHOLDER: &str = "Search containers…";
+const LAUNCHER_PLACEHOLDER_SHORT: &str = "Search";
 
 /// Grouped inputs to a single container row's paint (position, the
 /// container itself, the shared column x-positions, and whether the
@@ -77,19 +84,13 @@ impl ContainersApp {
         // narrowed to an icon strip while collapsed.
         let expanded = !compact && self.rail_expanded();
         draw::fill_round(scene, rail, 0.0, c.surfaces.raised);
-        draw::divider(
-            scene,
-            rail.x1 - 0.5,
-            rail.x1 - 0.5,
-            rail.y1,
-            c.border_standard,
-        );
-        // re-draw the right border as a vertical line.
+        // The rail's right edge: a hairline derived against the raised rail
+        // (a declared `border_standard` vanished on the dark preset).
         let border = Rect::new(rail.x1 - 1.0, rail.y0, rail.x1, rail.y1);
         scene.fill(
             Fill::NonZero,
-            Affine::IDENTITY,
-            c.border_standard,
+            draw::base(),
+            draw::edge(c.surfaces.raised),
             None,
             &border,
         );
@@ -126,14 +127,23 @@ impl ContainersApp {
             if self.hovered(tgl) {
                 draw::fill_round(scene, tgl, f64::from(theme.tokens.radii.sm), c.lift(0.72));
             }
-            // "«" collapse glyph
+            // "«" collapse glyph, centred on its measured box.
+            let (gw, gh) = draw::measure(
+                tr,
+                "«",
+                theme.tokens.typography.scale.base,
+                TextWeight::Bold,
+            );
             draw::text(
                 scene,
                 tr,
                 "«",
                 theme.tokens.typography.scale.base,
                 c.text_dim,
-                Point::new(tgl.center().x - 5.0, tgl.center().y - 9.0),
+                Point::new(
+                    tgl.center().x - f64::from(gw) / 2.0,
+                    tgl.center().y - f64::from(gh) / 2.0,
+                ),
                 TextWeight::Bold,
             );
             self.push_hit(tgl, Hit::ToggleSidebar);
@@ -143,13 +153,22 @@ impl ContainersApp {
             if self.hovered(ctgl) {
                 draw::fill_round(scene, ctgl, f64::from(theme.tokens.radii.sm), c.lift(0.72));
             }
+            let (gw, gh) = draw::measure(
+                tr,
+                "»",
+                theme.tokens.typography.scale.base,
+                TextWeight::Bold,
+            );
             draw::text(
                 scene,
                 tr,
                 "»",
                 theme.tokens.typography.scale.base,
                 c.text_dim,
-                Point::new(ctgl.center().x - 5.0, ctgl.center().y - 9.0),
+                Point::new(
+                    ctgl.center().x - f64::from(gw) / 2.0,
+                    ctgl.center().y - f64::from(gh) / 2.0,
+                ),
                 TextWeight::Bold,
             );
             self.push_hit(ctgl, Hit::ToggleSidebar);
@@ -206,41 +225,58 @@ impl ContainersApp {
                 1.6,
             );
             if expanded {
+                let weight = if active {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Medium
+                };
+                let label_y = draw::centered_top(
+                    tr,
+                    section.label(),
+                    theme.tokens.typography.scale.base,
+                    weight,
+                    item.y0,
+                    item.height(),
+                );
                 draw::text(
                     scene,
                     tr,
                     section.label(),
                     theme.tokens.typography.scale.base,
                     if active { c.text_primary } else { c.text_dim },
-                    Point::new(item.x0 + 38.0, item.center().y - 8.0),
-                    if active {
-                        TextWeight::Semibold
-                    } else {
-                        TextWeight::Medium
-                    },
+                    Point::new(item.x0 + 38.0, label_y),
+                    weight,
                 );
-                // count chip on the right
+                // count chip on the right, its label centred on the chip
                 let count_str = count.to_string();
-                let (cw, _) = tr.measure(&count_str, theme.tokens.typography.scale.xs, None);
+                let (cw, ch) = draw::measure(
+                    tr,
+                    &count_str,
+                    theme.tokens.typography.scale.xs,
+                    TextWeight::Medium,
+                );
+                let chip_h = (f64::from(ch) + 4.0).max(16.0);
                 let chip = Rect::new(
                     item.x1 - 14.0 - f64::from(cw),
-                    item.center().y - 8.0,
+                    item.center().y - chip_h / 2.0,
                     item.x1 - 6.0,
-                    item.center().y + 8.0,
+                    item.center().y + chip_h / 2.0,
                 );
-                draw::fill_round(scene, chip, 8.0, c.lift(0.72));
+                draw::fill_round(scene, chip, chip_h / 2.0, c.lift(0.72));
                 draw::text(
                     scene,
                     tr,
                     &count_str,
                     theme.tokens.typography.scale.xs,
                     c.text_dim,
-                    Point::new(chip.x0 + 4.0, chip.center().y - 5.0),
+                    Point::new(chip.x0 + 4.0, chip.center().y - f64::from(ch) / 2.0),
                     TextWeight::Medium,
                 );
             }
             self.push_hit(item, Hit::Section(section));
-            y += 46.0;
+            // Rail items are related rows: an `s2` gap between the 40 px
+            // items (HIG §7b), not an off-grid 6 px.
+            y += 40.0 + f64::from(theme.tokens.spacing.s2);
         }
     }
 
@@ -265,12 +301,12 @@ impl ContainersApp {
         let dot = vello::kurbo::Circle::new(Point::new(rail.x0 + PAD + 4.0, foot_y + 4.0), 4.0);
         scene.fill(Fill::NonZero, Affine::IDENTITY, dot_color, None, &dot);
         if expanded {
-            draw::divider(
+            draw::separator(
                 scene,
                 rail.x0 + PAD,
                 rail.x1 - PAD,
                 foot_y - 12.0,
-                c.border_standard,
+                c.surfaces.raised,
             );
             draw::text(
                 scene,
@@ -358,7 +394,15 @@ impl ContainersApp {
         // Primary action button (right-aligned).
         let mut right = header.x1 - PAD;
         if let Some((label, hit)) = action_label {
-            let bw = if compact { 96.0 } else { 150.0 };
+            let shown = if compact { "New" } else { label };
+            let (lw, lh) = draw::measure(
+                tr,
+                shown,
+                theme.tokens.typography.scale.base,
+                TextWeight::Semibold,
+            );
+            // icon slot (12 + 16 + 6) + label + trailing padding
+            let bw = 34.0 + f64::from(lw) + 16.0;
             let btn = Rect::new(
                 right - bw,
                 if compact {
@@ -395,16 +439,20 @@ impl ContainersApp {
             draw::text(
                 scene,
                 tr,
-                if compact { "New" } else { label },
+                shown,
                 theme.tokens.typography.scale.base,
                 Color::WHITE,
-                Point::new(btn.x0 + 34.0, btn.center().y - 8.0),
+                Point::new(btn.x0 + 34.0, btn.center().y - f64::from(lh) / 2.0),
                 TextWeight::Semibold,
             );
             self.push_hit(btn, hit);
             right = btn.x0 - 12.0;
         }
 
+        // The title centres on its measured line box (not `centre − 14`,
+        // which only centred a 1× x2l line) when it shares the header with
+        // the search launcher and action; the compact header stacks it above.
+        let (_, title_h) = draw::measure(tr, title, title_size, TextWeight::Bold);
         draw::text_clip(
             scene,
             tr,
@@ -419,7 +467,7 @@ impl ContainersApp {
                 if compact {
                     header.y0 + 16.0
                 } else {
-                    header.center().y - 14.0
+                    header.center().y - f64::from(title_h) / 2.0
                 },
             ),
             (right - title_x - if compact { 8.0 } else { 220.0 }).max(40.0),
@@ -444,6 +492,7 @@ impl ContainersApp {
                 header.center().y + 19.0,
             )
         };
+        self.fit_launcher_placeholder(tr, theme, search.width());
         self.draw_search_launcher(scene, tr, theme, search);
 
         // bottom divider
@@ -455,6 +504,41 @@ impl ContainersApp {
             c.border_standard,
         );
         header.y1
+    }
+
+    /// Pick the launcher placeholder that fits beside the ⌘K key cap.
+    ///
+    /// App-side fallback for `ui::SearchField`, which pads its text region by
+    /// a fixed clear-button gutter and only measures the key cap while
+    /// painting, so at 768 px "Search containers…" ran under "⌘K". Until the
+    /// field reserves the cap itself (F2, composition Task 18), the app
+    /// measures the placeholder against the room the field leaves and falls
+    /// back to the short form.
+    ///
+    /// The geometry mirrors the widget's private constants and must track
+    /// them: a 34 px leading icon gutter (`ICON_GUTTER`), the cap label at
+    /// 11 px (`KBD_LABEL_SIZE`) with 7 px of padding either side
+    /// (`KBD_PAD_X`) and a 10 px trailing inset (`KBD_INSET`); the inner
+    /// `TextInput` paints the placeholder at its own 16 px (`FONT_SIZE`). Both
+    /// sizes are renderer-relative, so they are measured with the legacy API
+    /// exactly as the widget measures them, not as theme tokens.
+    pub(crate) fn fit_launcher_placeholder(
+        &mut self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        width: f64,
+    ) {
+        let cap_label = ui::Shortcut::command("K").label(ui::PlatformConventions::default());
+        let (cap_w, _) = tr.measure(&cap_label, 11.0, None);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let reserved = 34.0 + f64::from(cap_w) + 2.0 * 7.0 + 10.0 + gap;
+        let (full_w, _) = tr.measure(LAUNCHER_PLACEHOLDER, 16.0, None);
+        let placeholder = if f64::from(full_w) <= width - reserved {
+            LAUNCHER_PLACEHOLDER
+        } else {
+            LAUNCHER_PLACEHOLDER_SHORT
+        };
+        self.search_field.set_placeholder(placeholder);
     }
 
     /// Lay out and paint the header search launcher (a `ui::SearchField` in
@@ -604,13 +688,25 @@ impl ContainersApp {
             let Some(&x) = cols.get(i) else {
                 continue;
             };
+            // The first column's rows paint their name `ROW_TEXT_INSET` in
+            // from the column edge (after the status bar); the heading sits
+            // on the same x so it labels what is under it.
+            let x = if i == 0 { x + ROW_TEXT_INSET } else { x };
+            let y = draw::centered_top(
+                tr,
+                lbl,
+                theme.tokens.typography.scale.xs,
+                TextWeight::Semibold,
+                colhead.y0,
+                colhead.height(),
+            );
             draw::text(
                 scene,
                 tr,
                 lbl,
                 theme.tokens.typography.scale.xs,
                 c.text_dim,
-                Point::new(x, colhead.center().y - 5.0),
+                Point::new(x, y),
                 TextWeight::Semibold,
             );
         }
@@ -626,7 +722,10 @@ impl ContainersApp {
 
     /// The scrollable container rows, plus the empty-state fallbacks and the
     /// list scrollbar.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Container rows share render context, row bounds and column positions, container data, and selection/detail state."
+    )]
     fn draw_container_rows(
         &mut self,
         scene: &mut Scene,
@@ -692,7 +791,10 @@ impl ContainersApp {
 
     /// The selected container's detail pane, if any (or the "no longer
     /// exists" fallback when the selection went stale).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Detail painting needs render context, list/content bounds, the body origin, pane mode, and selected-container state."
+    )]
     fn draw_container_detail_pane(
         &mut self,
         scene: &mut Scene,
@@ -776,7 +878,16 @@ impl ContainersApp {
 
         let name_y = row.center().y - 16.0;
         let sub_y = row.center().y + 4.0;
-        if self.uses_compact_layout(theme) {
+        // A narrow list (detail open beside it) shows the status as a pill
+        // next to the name only when that pill ends before the lifecycle
+        // buttons start; otherwise the status stacks under the name exactly
+        // as it does on a compact surface. One measured decision drives both
+        // the text and the pill so nothing paints over the actions.
+        let actions_x0 = row.x1 - PAD - Self::row_actions_width(container);
+        let stacked = self.uses_compact_layout(theme)
+            || (info.compact
+                && !Self::status_pill_fits(tr, theme, info.cols[1], actions_x0, container));
+        if stacked {
             // In the one-column list, status belongs beneath the name. This
             // gives a large-text row a stable reading order and reserves the
             // trailing edge exclusively for lifecycle buttons.
@@ -787,7 +898,7 @@ impl ContainersApp {
                 } else {
                     36.0
                 };
-            let text_width = (row.width() - 138.0).max(64.0);
+            let text_width = (actions_x0 - 12.0 - (info.cols[0] + ROW_TEXT_INSET)).max(64.0);
             draw::text_clip(
                 scene,
                 tr,
@@ -797,7 +908,7 @@ impl ContainersApp {
                     color: c.text_primary,
                     weight: TextWeight::Semibold,
                 },
-                Point::new(info.cols[0] + 8.0, compact_name_y),
+                Point::new(info.cols[0] + ROW_TEXT_INSET, compact_name_y),
                 text_width,
             );
             draw::text_clip(
@@ -809,7 +920,7 @@ impl ContainersApp {
                     color: draw::status_color(theme, container.status),
                     weight: TextWeight::Medium,
                 },
-                Point::new(info.cols[0] + 8.0, compact_sub_y),
+                Point::new(info.cols[0] + ROW_TEXT_INSET, compact_sub_y),
                 text_width,
             );
         } else {
@@ -823,7 +934,7 @@ impl ContainersApp {
                     color: c.text_primary,
                     weight: TextWeight::Semibold,
                 },
-                Point::new(info.cols[0] + 8.0, name_y),
+                Point::new(info.cols[0] + ROW_TEXT_INSET, name_y),
                 (info.cols[1] - info.cols[0] - 16.0).max(40.0),
             );
             draw::text(
@@ -832,7 +943,7 @@ impl ContainersApp {
                 container.short_id(),
                 theme.tokens.typography.scale.xs,
                 c.text_dim,
-                Point::new(info.cols[0] + 8.0, sub_y),
+                Point::new(info.cols[0] + ROW_TEXT_INSET, sub_y),
                 TextWeight::Regular,
             );
 
@@ -912,16 +1023,41 @@ impl ContainersApp {
                 Point::new(cols[2], sub_y + 2.0),
                 (cols[3] - cols[2] - 12.0).max(30.0),
             );
-            // CPU / MEM mini-stats
+            // CPU / MEM mini-stats, bounded by where the action cluster starts.
+            let actions_x0 = row.x1 - PAD - Self::row_actions_width(container);
             Self::draw_row_stats(
                 scene,
                 tr,
                 theme,
                 container,
                 Point::new(cols[3], row.y0 + 12.0),
-                cols[4] - cols[3] - 96.0,
+                actions_x0 - 12.0 - cols[3],
             );
         }
+    }
+
+    /// Width the lifecycle button cluster paints for `container` (see
+    /// [`Self::draw_row_actions`]): `n` buttons with 4px gaps.
+    fn row_actions_width(container: &Container) -> f64 {
+        let n = if container.status.is_running() {
+            3.0
+        } else {
+            2.0
+        };
+        n * ICON_BTN + (n - 1.0) * 4.0
+    }
+
+    /// Whether the status pill placed at `pill_x` ends before the action
+    /// cluster begins at `actions_x0`, with a gap either side.
+    fn status_pill_fits(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pill_x: f64,
+        actions_x0: f64,
+        container: &Container,
+    ) -> bool {
+        let pill_w = draw::status_pill_width(tr, theme, container.status.label());
+        pill_x + pill_w + 12.0 <= actions_x0
     }
 
     fn draw_row_stats(
@@ -933,7 +1069,12 @@ impl ContainersApp {
         width: f64,
     ) {
         let c = &theme.tokens.colors;
-        let w = width.clamp(80.0, 160.0);
+        // No room for a readable gauge: draw nothing rather than paint over
+        // the action buttons to the right.
+        if width < 60.0 {
+            return;
+        }
+        let w = width.min(160.0);
         if !container.status.is_running() {
             draw::text(
                 scene,
@@ -1008,7 +1149,7 @@ impl ContainersApp {
                 (Icon::Trash, Action::Remove, c.semantic.danger),
             ]
         };
-        let mut x = row.x1 - 12.0;
+        let mut x = row.x1 - PAD;
         for (icon, action, color) in actions.into_iter().rev() {
             x -= ICON_BTN;
             let btn = Rect::new(
@@ -1072,8 +1213,8 @@ impl ContainersApp {
         let border = Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1);
         scene.fill(
             Fill::NonZero,
-            Affine::IDENTITY,
-            c.border_standard,
+            draw::base(),
+            draw::edge(c.surfaces.raised),
             None,
             &border,
         );
@@ -1084,7 +1225,7 @@ impl ContainersApp {
         // Action toolbar.
         let toolbar = Rect::new(panel.x0, strip.y1, panel.x1, strip.y1 + 48.0);
         self.draw_detail_toolbar(scene, tr, theme, toolbar, container);
-        draw::divider(scene, toolbar.x0, toolbar.x1, toolbar.y1, c.border_standard);
+        draw::separator(scene, toolbar.x0, toolbar.x1, toolbar.y1, c.surfaces.raised);
 
         // Tab body.
         let body = Rect::new(panel.x0, toolbar.y1, panel.x1, panel.y1);
@@ -1217,7 +1358,7 @@ impl ContainersApp {
             } else {
                 theme.tokens.typography.scale.sm
             };
-            let (lw, _) = tr.measure_weighted(label, label_size, None, TextWeight::Semibold);
+            let (lw, lh) = draw::measure(tr, label, label_size, TextWeight::Semibold);
             draw::text(
                 scene,
                 tr,
@@ -1226,7 +1367,7 @@ impl ContainersApp {
                 fg,
                 Point::new(
                     trect.center().x - f64::from(lw) / 2.0,
-                    trect.center().y - 7.0,
+                    trect.center().y - f64::from(lh) / 2.0,
                 ),
                 if active {
                     TextWeight::Semibold
@@ -1248,7 +1389,7 @@ impl ContainersApp {
             }
             self.push_hit(trect, Hit::DetailTab(*tab));
         }
-        draw::divider(scene, strip.x0, strip.x1, strip.y1, c.border_standard);
+        draw::separator(scene, strip.x0, strip.x1, strip.y1, c.surfaces.raised);
         strip
     }
 
@@ -1288,10 +1429,10 @@ impl ContainersApp {
                 // is identical to the row actions.
                 40.0
             } else {
-                let (lw, _) = tr.measure_weighted(
+                let (lw, _) = draw::measure(
+                    tr,
                     label,
                     theme.tokens.typography.scale.sm,
-                    None,
                     TextWeight::Semibold,
                 );
                 f64::from(lw) + 38.0
@@ -1333,13 +1474,21 @@ impl ContainersApp {
                 1.5,
             );
             if !compact {
+                let label_y = draw::centered_top(
+                    tr,
+                    label,
+                    theme.tokens.typography.scale.sm,
+                    TextWeight::Semibold,
+                    btn.y0,
+                    btn.height(),
+                );
                 draw::text(
                     scene,
                     tr,
                     label,
                     theme.tokens.typography.scale.sm,
                     c.text_primary,
-                    Point::new(btn.x0 + 28.0, btn.center().y - 7.0),
+                    Point::new(btn.x0 + 28.0, label_y),
                     TextWeight::Semibold,
                 );
             }
@@ -1363,9 +1512,11 @@ impl ContainersApp {
         container: &Container,
     ) {
         let c = &theme.tokens.colors;
-        let term_bg = c.neutral[0];
+        // The log console sits one surface step below the raised detail pane
+        // (base inside raised) and closes with its derived edge.
+        let term_bg = c.surfaces.base;
         let inner = Rect::new(body.x0 + 8.0, body.y0 + 8.0, body.x1 - 8.0, body.y1 - 8.0);
-        draw::fill_round(scene, inner, f64::from(theme.tokens.radii.md), term_bg);
+        draw::card(scene, inner, f64::from(theme.tokens.radii.md), term_bg);
         if container.logs.is_empty() {
             Self::draw_empty(scene, tr, theme, inner, "No log output yet.");
             return;
@@ -1473,18 +1624,11 @@ impl ContainersApp {
         spec: &GaugeCard,
     ) {
         let c = &theme.tokens.colors;
-        draw::fill_round(
+        draw::card(
             scene,
             card,
             f64::from(theme.tokens.radii.md),
             c.surfaces.base,
-        );
-        draw::stroke_round(
-            scene,
-            card,
-            f64::from(theme.tokens.radii.md),
-            1.0,
-            c.border_standard,
         );
         draw::text(
             scene,
@@ -1537,18 +1681,11 @@ impl ContainersApp {
             body.x0 + PAD + card_w,
             y + rows.len() as f64 * 30.0 + 12.0,
         );
-        draw::fill_round(
+        draw::card(
             scene,
             card,
             f64::from(theme.tokens.radii.md),
             c.surfaces.base,
-        );
-        draw::stroke_round(
-            scene,
-            card,
-            f64::from(theme.tokens.radii.md),
-            1.0,
-            c.border_standard,
         );
         let mut ry = card.y0 + 8.0;
         for (i, (k, v)) in rows.iter().enumerate() {
@@ -1561,10 +1698,10 @@ impl ContainersApp {
                 Point::new(card.x0 + 14.0, ry + 6.0),
                 TextWeight::Regular,
             );
-            let (vw, _) = tr.measure_weighted(
+            let (vw, _) = draw::measure(
+                tr,
                 v,
                 theme.tokens.typography.scale.sm,
-                None,
                 TextWeight::Semibold,
             );
             draw::text(
@@ -1577,12 +1714,12 @@ impl ContainersApp {
                 TextWeight::Semibold,
             );
             if i + 1 < rows.len() {
-                draw::divider(
+                draw::separator(
                     scene,
                     card.x0 + 14.0,
                     card.x1 - 14.0,
                     ry + 28.0,
-                    draw::with_alpha(c.border_standard, 120),
+                    c.surfaces.base,
                 );
             }
             ry += 30.0;
@@ -1704,7 +1841,12 @@ impl ContainersApp {
     ) {
         let c = &theme.tokens.colors;
         let inner = Rect::new(body.x0 + 8.0, body.y0 + 8.0, body.x1 - 8.0, body.y1 - 8.0);
-        draw::fill_round(scene, inner, f64::from(theme.tokens.radii.md), c.neutral[0]);
+        draw::card(
+            scene,
+            inner,
+            f64::from(theme.tokens.radii.md),
+            c.surfaces.base,
+        );
         let mono = theme.tokens.typography.scale.sm;
         let mut y = inner.y0 + 14.0;
         let prompt_lines = [
@@ -1849,7 +1991,7 @@ impl ContainersApp {
     ) -> Rect {
         let c = &theme.tokens.colors;
         let banner = Rect::new(list.x0 + PAD, list.y0 + 8.0, list.x1 - PAD, list.y0 + 44.0);
-        draw::fill_round(
+        draw::card(
             scene,
             banner,
             f64::from(theme.tokens.radii.md),
@@ -1957,13 +2099,7 @@ impl ContainersApp {
         // Action cluster on the far right (pull again / tag / inspect / remove).
         let acts_right = self.draw_image_actions(scene, theme, &image.reference(), row);
         Self::draw_image_row_meta(scene, tr, theme, row, inner, acts_right, image);
-        draw::divider(
-            scene,
-            inner.x0,
-            inner.x1,
-            row.y1,
-            draw::with_alpha(c.border_standard, 90),
-        );
+        draw::separator(scene, inner.x0, inner.x1, row.y1, c.surfaces.base);
     }
 
     /// The right-hand metadata cluster on an image row: size, created,
@@ -1980,10 +2116,10 @@ impl ContainersApp {
         let c = &theme.tokens.colors;
         let meta_right = acts_right - 12.0;
         let size = ui::format::bytes(image.size_bytes);
-        let (sw, _) = tr.measure_weighted(
+        let (sw, _) = draw::measure(
+            tr,
             &size,
             theme.tokens.typography.scale.base,
-            None,
             TextWeight::Semibold,
         );
         draw::text(
@@ -2141,7 +2277,7 @@ impl ContainersApp {
     ) -> Rect {
         let c = &theme.tokens.colors;
         let banner = Rect::new(list.x0 + PAD, list.y0 + 8.0, list.x1 - PAD, list.y0 + 44.0);
-        draw::fill_round(
+        draw::card(
             scene,
             banner,
             f64::from(theme.tokens.radii.md),
@@ -2274,13 +2410,7 @@ impl ContainersApp {
             );
         }
         self.draw_volume_row_remove_button(scene, theme, row, inner, v);
-        draw::divider(
-            scene,
-            inner.x0,
-            inner.x1,
-            row.y1,
-            draw::with_alpha(c.border_standard, 90),
-        );
+        draw::separator(scene, inner.x0, inner.x1, row.y1, c.surfaces.base);
     }
 
     /// The remove button on the far right of a volume row.
@@ -2407,23 +2537,21 @@ impl ContainersApp {
     ) {
         let c = &theme.tokens.colors;
         let hov = self.hovered(card);
-        draw::fill_round(
+        draw::card(
             scene,
             card,
             f64::from(theme.tokens.radii.lg),
             c.surfaces.raised,
         );
-        draw::stroke_round(
-            scene,
-            card,
-            f64::from(theme.tokens.radii.lg),
-            1.0,
-            if hov {
-                c.border_focus
-            } else {
-                c.border_standard
-            },
-        );
+        if hov {
+            draw::stroke_round(
+                scene,
+                card,
+                f64::from(theme.tokens.radii.lg),
+                1.0,
+                c.border_focus,
+            );
+        }
         draw::icon(
             scene,
             Icon::Terminal,
@@ -2543,18 +2671,19 @@ impl ContainersApp {
         let mw = 520.0_f64.min(full.width() - 48.0);
         let mh = 540.0_f64.min(full.height() - 32.0);
         let modal = Rect::from_center_size(full.center(), (mw, mh));
+        // A floating panel: the shell's Panel ground and its derived border.
         draw::fill_round(
             scene,
             modal,
             f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
+            ui::chrome::panel_ground(theme),
         );
         draw::stroke_round(
             scene,
-            modal,
-            f64::from(theme.tokens.radii.lg),
+            modal.inset(-0.5),
+            f64::from(theme.tokens.radii.lg) - 0.5,
             1.0,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
         );
 
         draw::text(
@@ -2618,23 +2747,28 @@ impl ContainersApp {
                 TextWeight::Medium,
             );
             let input = Rect::new(modal.x0 + 24.0, y + 14.0, modal.x1 - 24.0, y + 42.0);
-            draw::fill_round(
-                scene,
-                input,
-                f64::from(theme.tokens.radii.md),
-                c.surfaces.base,
-            );
-            draw::stroke_round(
-                scene,
-                input,
-                f64::from(theme.tokens.radii.md),
-                if focused { 2.0 } else { 1.0 },
-                if focused {
-                    c.border_focus
-                } else {
-                    c.border_standard
-                },
-            );
+            if focused {
+                draw::fill_round(
+                    scene,
+                    input,
+                    f64::from(theme.tokens.radii.md),
+                    c.surfaces.base,
+                );
+                draw::stroke_round(
+                    scene,
+                    input,
+                    f64::from(theme.tokens.radii.md),
+                    2.0,
+                    c.border_focus,
+                );
+            } else {
+                draw::card(
+                    scene,
+                    input,
+                    f64::from(theme.tokens.radii.md),
+                    c.surfaces.base,
+                );
+            }
             let is_image = *field == CreateField::Image;
             let text_right = if is_image {
                 input.x1 - 38.0
@@ -2753,13 +2887,18 @@ impl ContainersApp {
         };
         let panel = Rect::new(input.x0, input.y1 + 4.0, input.x1, input.y1 + 4.0 + panel_h);
         // An opaque popover surface so the suggestions sit above the fields.
-        draw::fill_round(scene, panel, f64::from(theme.tokens.radii.md), c.neutral[2]);
-        draw::stroke_round(
+        draw::fill_round(
             scene,
             panel,
             f64::from(theme.tokens.radii.md),
+            ui::chrome::panel_ground(theme),
+        );
+        draw::stroke_round(
+            scene,
+            panel.inset(-0.5),
+            f64::from(theme.tokens.radii.md) - 0.5,
             1.0,
-            c.border_focus,
+            ui::chrome::panel_border(theme),
         );
 
         if filtered.is_empty() {
@@ -2838,18 +2977,19 @@ impl ContainersApp {
         let mw = 560.0_f64.min(full.width() - 48.0);
         let mh = 360.0_f64.min(full.height() - 48.0);
         let modal = Rect::from_center_size(full.center(), (mw, mh));
+        // A floating panel: the shell's Panel ground and its derived border.
         draw::fill_round(
             scene,
             modal,
             f64::from(theme.tokens.radii.lg),
-            c.surfaces.raised,
+            ui::chrome::panel_ground(theme),
         );
         draw::stroke_round(
             scene,
-            modal,
-            f64::from(theme.tokens.radii.lg),
+            modal.inset(-0.5),
+            f64::from(theme.tokens.radii.lg) - 0.5,
             1.0,
-            c.border_standard,
+            ui::chrome::panel_border(theme),
         );
 
         Self::draw_pull_overlay_header(scene, tr, theme, modal, pull);
@@ -2920,7 +3060,12 @@ impl ContainersApp {
             modal.x1 - 16.0,
             modal.y1 - 60.0,
         );
-        draw::fill_round(scene, body, f64::from(theme.tokens.radii.md), c.neutral[0]);
+        draw::card(
+            scene,
+            body,
+            f64::from(theme.tokens.radii.md),
+            c.surfaces.base,
+        );
         let mono = theme.tokens.typography.scale.xs;
         let line_h = f64::from(mono * 1.5);
         let visible = ((body.height() - 16.0) / line_h).floor() as usize;
@@ -2989,8 +3134,16 @@ impl ContainersApp {
 
     fn draw_empty(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, area: Rect, msg: &str) {
         let c = &theme.tokens.colors;
-        let (w, _) = tr.measure(msg, theme.tokens.typography.scale.base, None);
-        let p = Point::new(area.center().x - f64::from(w) / 2.0, area.center().y - 8.0);
+        let (w, h) = draw::measure(
+            tr,
+            msg,
+            theme.tokens.typography.scale.base,
+            TextWeight::Regular,
+        );
+        let p = Point::new(
+            area.center().x - f64::from(w) / 2.0,
+            area.center().y - f64::from(h) / 2.0,
+        );
         draw::text(
             scene,
             tr,
@@ -3018,7 +3171,7 @@ impl ContainersApp {
         let scale = &theme.tokens.typography.scale;
         let cx = area.center().x;
         let cy = area.center().y;
-        let (tw, _) = tr.measure_weighted(title, scale.lg, None, TextWeight::Semibold);
+        let (tw, _) = draw::measure(tr, title, scale.lg, TextWeight::Semibold);
         draw::text(
             scene,
             tr,
@@ -3028,7 +3181,7 @@ impl ContainersApp {
             Point::new(cx - f64::from(tw) / 2.0, cy - 22.0),
             TextWeight::Semibold,
         );
-        let (sw, _) = tr.measure(subtitle, scale.sm, None);
+        let (sw, _) = draw::measure(tr, subtitle, scale.sm, TextWeight::Regular);
         draw::text(
             scene,
             tr,
@@ -3538,5 +3691,104 @@ fn log_line_color(theme: &Theme, line: &str) -> Color {
         c.text_primary
     } else {
         c.text_dim
+    }
+}
+
+#[cfg(test)]
+mod row_layout_tests {
+    use super::*;
+    use crate::model::sample_engine;
+
+    fn running_container() -> Container {
+        sample_engine()
+            .containers
+            .into_iter()
+            .find(|c| c.status.is_running())
+            .expect("the sample engine has a running container")
+    }
+
+    /// The status pill sits beside the name only while it ends before the
+    /// lifecycle buttons start; a 240px list beside an open detail pane does
+    /// not have that room and stacks the status under the name instead.
+    #[test]
+    fn narrow_list_stacks_status_when_the_pill_would_reach_the_actions() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let container = running_container();
+        assert_eq!(
+            ContainersApp::row_actions_width(&container),
+            3.0 * ICON_BTN + 2.0 * 4.0,
+            "a running container shows stop / restart / remove"
+        );
+        // 240px list (detail open): the pill column starts at 42% of the row.
+        let narrow = Rect::new(0.0, 0.0, 240.0, 64.0);
+        let cols = ContainersApp::container_columns(narrow, true);
+        let actions_x0 = narrow.x1 - PAD - ContainersApp::row_actions_width(&container);
+        assert!(
+            !ContainersApp::status_pill_fits(&mut tr, &theme, cols[1], actions_x0, &container),
+            "a Running pill at x={} cannot end before the actions at x={actions_x0}",
+            cols[1]
+        );
+        // The same row layout at a laptop-wide list fits comfortably.
+        let wide = Rect::new(0.0, 0.0, 740.0, 64.0);
+        let cols = ContainersApp::container_columns(wide, true);
+        let actions_x0 = wide.x1 - PAD - ContainersApp::row_actions_width(&container);
+        assert!(ContainersApp::status_pill_fits(
+            &mut tr, &theme, cols[1], actions_x0, &container
+        ));
+    }
+
+    /// The `NAME` heading and the row name it labels are painted on one x.
+    /// Both are read back from real draw passes (glyph-run origins), not from
+    /// the constants that produce them.
+    #[test]
+    fn name_heading_and_row_name_share_one_x() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        draw::set_base(Affine::IDENTITY);
+        let list = Rect::new(200.0, 60.0, 1000.0, 660.0);
+        let cols = ContainersApp::container_columns(list, false);
+
+        let mut header = Scene::new();
+        ContainersApp::draw_container_list_header(&mut header, &mut tr, &theme, list, false, &cols);
+        let heading_x = header
+            .encoding()
+            .resources
+            .glyph_runs
+            .first()
+            .map(|run| f64::from(run.transform.translation[0]))
+            .expect("the list header paints its NAME heading");
+
+        // The row paints its name on `cols[0] + ROW_TEXT_INSET` in both the
+        // stacked and the wide layout, so the app's viewport does not matter.
+        let mut app = ContainersApp::new(false);
+        let view = ViewState::default();
+        let container = running_container();
+        let row = Rect::new(
+            list.x0,
+            list.y0 + 28.0,
+            list.x1,
+            list.y0 + 28.0 + crate::app::ROW_HEIGHT,
+        );
+        let info = ContainerRow {
+            row,
+            container: &container,
+            cols: &cols,
+            compact: false,
+        };
+        let mut scene = Scene::new();
+        app.draw_container_row(&mut scene, &mut tr, &theme, info, &view);
+        let name_x = scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .first()
+            .map(|run| f64::from(run.transform.translation[0]))
+            .expect("the row paints its name first");
+
+        assert!(
+            (heading_x - name_x).abs() < 0.01,
+            "heading at x={heading_x} but the row name at x={name_x}"
+        );
     }
 }

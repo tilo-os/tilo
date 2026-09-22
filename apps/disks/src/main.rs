@@ -81,8 +81,15 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         pending: args.value("--pending").map(str::to_owned),
         status: args.value("--status").map(str::to_owned),
     };
-    render_shot_to_png(DisksApp::new(), viewport, narrow, &preset, out)
-        .map_err(|error| LaunchError::Operation(error.to_string()))
+    render_shot_to_png(
+        DisksApp::new(),
+        viewport,
+        ui::launch::shot_theme(args),
+        narrow,
+        &preset,
+        out,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 fn live_root() -> Box<dyn Widget> {
@@ -129,21 +136,16 @@ struct Preset {
 fn render_shot_to_png(
     mut widget: DisksApp,
     viewport: (u32, u32),
+    theme: Theme,
     narrow: bool,
     preset: &Preset,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -186,22 +188,20 @@ fn render_shot_to_png(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(&widget, &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             ui::taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    ui::taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);

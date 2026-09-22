@@ -49,6 +49,9 @@
 
 pub mod app;
 pub mod charts;
+pub mod framework_history;
+#[cfg(test)]
+mod framework_history_tests;
 pub mod layout;
 pub mod model;
 pub mod prefs;
