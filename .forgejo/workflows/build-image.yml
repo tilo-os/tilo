@@ -73,7 +73,15 @@ jobs:
             publish=true
           fi
           if [[ $publish == true ]]; then
-            matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
+            if [[ $GITHUB_REF == refs/tags/v* ]]; then
+              matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
+            else
+              # A protected manual main publication uses the same native,
+              # large-disk fleet as the proven integration build. Its VM gate
+              # already falls back to TCG inside Kata when KVM is unavailable.
+              # Tags retain the dedicated release fleet above.
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-disk-100g-arm64"}]}'
+            fi
           else
             # BuildKit layers and OCI export coexist; ordinary 50 GiB runners
             # can fill during export. Use the larger disk lane for this build.
@@ -131,6 +139,24 @@ jobs:
 
       - name: Require the selected native OS architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
+
+      - name: Require a compositor-capable native publication host
+        if: needs.plan.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          sudo -n true
+          command -v apt-get >/dev/null || command -v dnf >/dev/null
+          rendernode="$(compgen -G '/dev/dri/renderD*' | head -n 1 || true)"
+          test -n "$rendernode" && test -c "$rendernode" \
+            && test -r "$rendernode" && test -w "$rendernode" || {
+              echo '::error::OS publication requires a readable/writable DRI render node for the installed compositor gate'
+              exit 1
+            }
+          if test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; then
+            echo '::notice::OS publication will use KVM acceleration'
+          else
+            echo '::notice::OS publication will use the bounded QEMU TCG fallback'
+          fi
 
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
