@@ -113,7 +113,7 @@ pub fn report_build_mode() {
                  never ship"
             );
         }
-        let ignored = ignored_override_vars(DEV_ENV_OVERRIDES, std::env::var_os);
+        let ignored = ignored_override_vars(DEV_ENV_OVERRIDES, |name| std::env::var_os(name));
         if let Some(message) = ignored_override_message(&ignored) {
             eprintln!("tilo compositor: warning: {message}");
         }
