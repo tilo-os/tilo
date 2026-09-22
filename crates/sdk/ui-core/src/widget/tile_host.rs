@@ -7,9 +7,9 @@ use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
 use crate::widget::{
-    AudiencePresentationProvider, AudiencePresentationWidgetExt, Continuable,
-    FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt,
-    Widget,
+    AudiencePresentationProvider, AudiencePresentationWidgetExt, CompleteContentWidgetExt as _,
+    Continuable, FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider,
+    FullscreenWidgetExt, Widget,
 };
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;

@@ -42,7 +42,7 @@ use thiserror::Error;
 
 use registry_types::{
     ChannelAuthorization, EntryAction, EntryChangeRequest, ModerationEvent, RegistryEntry,
-    SignedRegistrySnapshot,
+    RegistryTarget, SignedRegistrySnapshot,
 };
 
 use crate::allowlist::PublisherAllowlist;
@@ -1040,6 +1040,11 @@ pub struct PendingSubmission {
 pub struct StagedArtifact {
     pub submission_id: String,
     pub version: String,
+    /// Signed execution target for this exact artifact. Older single-target
+    /// staged manifests omit it; promotion accepts those only when the
+    /// version string identifies exactly one artifact in the signed entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<RegistryTarget>,
     pub blake3_hex: String,
 }
 
@@ -1177,7 +1182,10 @@ mod tests {
             name: "Test".into(),
             description: "Native test app".into(),
             tagline: "Test on Tilo OS".into(),
-            images: registry_types::LocalizedImages::default(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
             supported_languages: vec!["en".into()],
             categories: vec![],
             source_url: None,
@@ -1385,5 +1393,16 @@ mod tests {
         s.save_identity(&ident).unwrap();
         let back = s.load_identity().unwrap();
         assert_eq!(back, ident);
+    }
+
+    #[test]
+    fn targetless_single_architecture_staging_remains_readable() {
+        let artifact: StagedArtifact = serde_json::from_value(serde_json::json!({
+            "submission_id": "so.tilo.editor",
+            "version": "1.0.0",
+            "blake3_hex": "ab".repeat(32),
+        }))
+        .unwrap();
+        assert_eq!(artifact.target, None);
     }
 }

@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 use std::ops::Range;
-use ui::LatestRequest;
-use ui::tilo_actions;
-use ui::widget::data_table::{
-    ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
+use ui::prelude::{
+    Button, ColumnDef, ColumnWidth, DataTable, LatestRequest, TableModel, TableModelChange,
+    TableRowState, Widget, tilo_actions,
 };
-use ui::widget::{Button, Widget};
 
 const ROW_COUNT: usize = 100_000_000;
 
@@ -148,6 +146,10 @@ impl TableModel for Rows {
 }
 
 /// A hundred-million-row table with bounded data and retained-widget windows.
+///
+/// # Panics
+///
+/// Panics if a generated row binding no longer matches the exported action.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"

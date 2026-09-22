@@ -54,14 +54,23 @@ fn tilo_install_bin() -> PathBuf {
         .ancestors()
         .nth(3)
         .expect("workspace root is three levels above this crate");
+    let target = root.join("target");
+    let native_triple = match std::env::consts::ARCH {
+        "x86_64" => Some("x86_64-unknown-linux-gnu"),
+        "aarch64" => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    };
     for profile in ["debug", "release"] {
-        let candidate = root.join("target").join(profile).join("tilo-install");
-        if candidate.exists() {
-            return candidate;
+        for candidate in std::iter::once(target.join(profile).join("tilo-install")).chain(
+            native_triple.map(|triple| target.join(triple).join(profile).join("tilo-install")),
+        ) {
+            if candidate.exists() {
+                return candidate;
+            }
         }
     }
     panic!(
-        "tilo-install is not built under {}/target/{{debug,release}}. \
+        "tilo-install is not built under {}/target/[<native-triple>/]{{debug,release}}. \
          This test installs a real package with the real installer; \
          build it first with `cargo build -p install`.",
         root.display()
@@ -70,6 +79,10 @@ fn tilo_install_bin() -> PathBuf {
 
 /// Author a signed .tapp for `package_id`, declaring a GUI entrypoint so the desktop would treat it as launchable.
 fn author_tapp(package_id: &str, identity: &SigningIdentity) -> Vec<u8> {
+    author_tapp_version(package_id, "1.4.0", identity)
+}
+
+fn author_tapp_version(package_id: &str, version: &str, identity: &SigningIdentity) -> Vec<u8> {
     let pubhex = hex::encode(identity.public_key_bytes());
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
@@ -79,7 +92,7 @@ fn author_tapp(package_id: &str, identity: &SigningIdentity) -> Vec<u8> {
         r#"
 [package]
 id = "{package_id}"
-version = "1.4.0"
+version = "{version}"
 kind = "app"
 name = "Sheets"
 category = "Office"
@@ -132,6 +145,15 @@ fn test_publisher() -> SigningIdentity {
 
 /// A signed registry entry pointing at `tapp_url`.
 fn signed_entry(package_id: &str, tapp_url: &str, tapp: &[u8]) -> RegistryEntry {
+    signed_entry_version(package_id, "1.4.0", tapp_url, tapp)
+}
+
+fn signed_entry_version(
+    package_id: &str,
+    version: &str,
+    tapp_url: &str,
+    tapp: &[u8],
+) -> RegistryEntry {
     let key = SigningKey::from_bytes(&[11u8; 32]);
     let root = app_registry::tapp::load(tapp)
         .expect("fixture tapp must parse")
@@ -141,14 +163,17 @@ fn signed_entry(package_id: &str, tapp_url: &str, tapp: &[u8]) -> RegistryEntry 
         name: "Sheets".into(),
         description: "A spreadsheet".into(),
         tagline: "Native Tilo OS app".into(),
-        images: registry_types::LocalizedImages::default(),
+        images: registry_types::LocalizedImages::english_icon(
+            "https://apps.tilo.so/images/test-icon.svg",
+            "Test icon",
+        ),
         supported_languages: vec!["en".into()],
         categories: vec!["Office".into()],
         source_url: None,
         homepage: None,
         publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
         versions: vec![RegistryVersion {
-            version: "1.4.0".into(),
+            version: version.into(),
             tapp_url: tapp_url.to_string(),
             tapp_root_hash_hex: root.to_hex(),
             tapp_size_bytes: tapp.len() as u64,
@@ -169,6 +194,14 @@ fn signed_entry(package_id: &str, tapp_url: &str, tapp: &[u8]) -> RegistryEntry 
 }
 
 fn signed_snapshot_json(entry: RegistryEntry, owner: &SigningKey) -> String {
+    serde_json::to_string(&signed_snapshot(entry, owner, None)).unwrap()
+}
+
+fn signed_snapshot(
+    entry: RegistryEntry,
+    owner: &SigningKey,
+    previous: Option<&SignedRegistrySnapshot>,
+) -> SignedRegistrySnapshot {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -176,10 +209,17 @@ fn signed_snapshot_json(entry: RegistryEntry, owner: &SigningKey) -> String {
     let publisher = entry.publisher_pubkey_hex.clone();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::SNAPSHOT_PROTOCOL,
-        sequence: 1,
+        sequence: previous.map_or(1, |snapshot| {
+            snapshot
+                .sequence
+                .checked_add(1)
+                .expect("test snapshot sequence must not overflow")
+        }),
         issued_at_unix: now,
         expires_at_unix: now.saturating_add(3600),
-        previous_snapshot_hash_hex: String::new(),
+        previous_snapshot_hash_hex: previous
+            .map(|snapshot| registry_types::snapshot_hash(snapshot).unwrap())
+            .unwrap_or_default(),
         moderation_head_hex: String::new(),
         publishers: vec![PublisherAuthorization {
             pubkey_hex: publisher,
@@ -190,7 +230,7 @@ fn signed_snapshot_json(entry: RegistryEntry, owner: &SigningKey) -> String {
         channel_authorization: None,
     };
     sign_snapshot(&mut snapshot, owner).unwrap();
-    serde_json::to_string(&snapshot).unwrap()
+    snapshot
 }
 
 /// A minimal HTTP server: GET /entries returns the catalogue JSON, GET /<name>.tapp returns the package bytes.
@@ -396,6 +436,81 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
         !after.apps.iter().any(|a| a.package_id == PACKAGE_ID),
         "an installed app must not still be offered: {:?}",
         after.apps
+    );
+}
+
+#[test]
+fn an_installed_app_updates_from_a_newer_signed_registry_offer() {
+    const UPDATE_ID: &str = "so.tilo.app-update-e2e";
+    let publisher = test_publisher();
+    let owner = SigningKey::from_bytes(&[12; 32]);
+    let config_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let apps_dir = tempfile::tempdir().unwrap();
+    let installer = tilo_install_bin();
+    let _env = Env::set(&[
+        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
+        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
+        ("TILO_APPS_DATA_DIR", apps_dir.path()),
+        ("TILO_INSTALL_BIN", &installer),
+    ]);
+
+    let publish = |version: &str, previous: Option<&SignedRegistrySnapshot>| {
+        let tapp = author_tapp_version(UPDATE_ID, version, &publisher);
+        let artifact = Registry::start(String::new(), tapp.clone());
+        let url = format!("http://127.0.0.1:{}/app.tapp", artifact.port);
+        let entry = signed_entry_version(UPDATE_ID, version, &url, &tapp);
+        let snapshot = signed_snapshot(entry, &owner, previous);
+        let registry_server = Registry::start(serde_json::to_string(&snapshot).unwrap(), tapp);
+        (artifact, registry_server, snapshot)
+    };
+    let configure = |registry: &Registry| {
+        std::fs::write(
+            config_dir.path().join("registries.toml"),
+            toml::to_string_pretty(&RegistriesFile {
+                registries: vec![RegistryConfig {
+                    name: "local".into(),
+                    base_url: registry.base_url(),
+                    owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+                    enabled: true,
+                    channel: tilo_app_package::version::ReleaseChannel::Stable,
+                }],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    };
+
+    let (_v1_artifact, v1_registry, v1_snapshot) = publish("1.4.0", None);
+    configure(&v1_registry);
+    app_cli::install::install(UPDATE_ID)
+        .unwrap_or_else(|error| panic!("initial install must succeed: {}", error.user_message()));
+    assert_eq!(
+        app_cli::installed_version(UPDATE_ID).unwrap().as_deref(),
+        Some("1.4.0")
+    );
+
+    let (_v2_artifact, v2_registry, _v2_snapshot) = publish("1.5.0", Some(&v1_snapshot));
+    configure(&v2_registry);
+    let listing = app_cli::all_offers();
+    assert!(
+        listing.unreachable.is_empty(),
+        "the update registry must be reachable: {:?}",
+        listing.unreachable
+    );
+    let update = listing
+        .apps
+        .iter()
+        .find(|app| app.package_id == UPDATE_ID)
+        .expect("the newer signed version must be offered");
+    assert_eq!(update.version, "1.5.0");
+    app_cli::install::update_app_reporting(update, &mut |_| {})
+        .unwrap_or_else(|error| panic!("signed update must succeed: {}", error.user_message()));
+
+    assert_eq!(
+        app_cli::installed_version(UPDATE_ID).unwrap().as_deref(),
+        Some("1.5.0"),
+        "the launcher's registry reader must observe the updated manifest"
     );
 }
 

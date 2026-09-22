@@ -99,6 +99,13 @@ HTTPS generic-package base (currently
 the runner's internal endpoint, but receipts and persisted collection-channel
 URLs always derive from this public base.
 
+The signed registry entry is product-complete: `dist/apps/registry-metadata.toml`
+defines each downloadable app's English name fallback, description, and card
+tagline. `tools/apps/registry_metadata.py` detects shipped UI languages and
+creates an owned icon for every app; checked-in screenshots are included when
+available. The release uploads that immutable artwork under `apps.tilo.so`
+before it submits the entry, so clients never receive a blank image set.
+
 Manual app packaging defaults to both native architectures; PRs only plan
 which apps are affected. During bootstrap, `architectures=x86_64` (or `aarch64`) may publish one architecture
 without waiting for an unavailable native runner; tagged releases always
