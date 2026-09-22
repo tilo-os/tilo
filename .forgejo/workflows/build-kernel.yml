@@ -270,6 +270,7 @@ jobs:
         with:
           name: kernel-acceptance-${{ matrix.arch }}
           path: |
+            kernel-repo/tilo-kernel-core-*.rpm
             kernel-acceptance/serial.log
             kernel-acceptance/inputs.json
             kernel-acceptance/rpm.sha256
