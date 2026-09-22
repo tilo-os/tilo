@@ -4554,33 +4554,6 @@ impl ShellOverlayHost {
         None
     }
 
-    /// Test-visible state at the foreign-widget/host handover seam.
-    pub fn foreign_surface_debug(&mut self, surface_id: u64) -> Option<(u64, bool, bool, bool)> {
-        let wanted = format!("foreign-surface-{surface_id}");
-        for &row_ptr in self.group_row_ptrs.values() {
-            // SAFETY: identical to `foreign_surface_rect` above.
-            let row: &mut GroupRow = unsafe { &mut *row_ptr };
-            for group in &mut row.groups {
-                let Some(host) = group.active_host_mut() else {
-                    continue;
-                };
-                let (was_presented, opening_shown) = host.presentation_debug();
-                let ui::widget::TileContent::App(app) = host.content_mut() else {
-                    continue;
-                };
-                if app.test_id() != Some(wanted.as_str()) {
-                    continue;
-                }
-                let foreign = app
-                    .as_any_mut()?
-                    .downcast_mut::<crate::shell::foreign::ForeignSurfaceWidget>()?;
-                let (cached_seq, has_cached) = foreign.cache_debug();
-                return Some((cached_seq, has_cached, was_presented, opening_shown));
-            }
-        }
-        None
-    }
-
     /// Replace one matching peer-window card with a live, session-local
     /// decoder. Returns false when the remote app has no corresponding tab;
     /// the caller may retry when the replicated window description arrives.

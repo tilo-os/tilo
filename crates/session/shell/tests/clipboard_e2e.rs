@@ -3472,11 +3472,10 @@ fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
         x1 > x0 + 20.0,
         "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]"
     );
-    // The inter-group resize handle owns eight pixels on either side of the
-    // seam and dispatches before the file view. Stay two pixels beyond that
-    // hit band, with enough unobscured row to cross the drag threshold
-    // leftward.
-    ((x1 - 10.0).max(x0 + 1.0), y + h / 2.0)
+    // The sidebar reserve ends at x=266 in this fixture and the inter-group
+    // handle starts at x=274. Aim one pixel inside that eight-pixel strip;
+    // it is the only part of this mostly off-screen row owned by Files.
+    ((x1 - 11.0).max(x0 + 1.0), y + h / 2.0)
 }
 
 /// Press on the file row and carry it over to the client in small steps —
@@ -3500,11 +3499,11 @@ fn drag_file_row_onto_client(
     // the output scale factor. Move far enough to clear the 6 logical-pixel
     // threshold even on a 2x output, then interpolate from that latched point.
     // The row is visible only in the narrow strip between the sidebar and the
-    // adjacent client. Start just left of the resize seam and move fourteen
-    // physical pixels left: at the test output's 2x scale this clears the file
-    // view's 6-logical-pixel threshold without entering either competing
-    // surface, then the compositor can hand the live drag rightward.
-    let latched = (row.0 - 14.0, row.1);
+    // adjacent client. The unobscured band is only eight logical pixels wide:
+    // move 6.5px right from its first interior pixel. That clears the strict
+    // 6px threshold while remaining left of the resize handle, after which
+    // the compositor can hand the live drag rightward.
+    let latched = (row.0 + 6.5, row.1);
     compositor.pointer_move(latched.0, latched.1);
     target.pump();
     std::thread::sleep(Duration::from_millis(30));
