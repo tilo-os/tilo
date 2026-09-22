@@ -71,4 +71,23 @@ fn collect_first_party_noop_and_bounds_are_enforced_without_a_signing_key() {
                 .contains("--max-items must be between 1 and 100")
         );
     }
+    for invalid in ["0", "9"] {
+        let rejected = run(
+            temp.path(),
+            &[
+                "--publisher-pubkey",
+                &publisher_hex,
+                "--parallelism",
+                invalid,
+            ],
+        );
+        assert!(
+            !rejected.status.success(),
+            "parallelism={invalid} must fail"
+        );
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr)
+                .contains("--parallelism must be between 1 and 8")
+        );
+    }
 }

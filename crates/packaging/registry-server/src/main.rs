@@ -22,7 +22,9 @@
     )
 )]
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -36,9 +38,20 @@ use registry_server::{
 };
 use registry_types::EntryAction;
 use registry_types::{
-    CHANNEL_AUTHORIZATION_PROTOCOL, ChannelAuthorization, PublisherAuthorization,
+    CHANNEL_AUTHORIZATION_PROTOCOL, ChannelAuthorization, PublisherAuthorization, RegistryTarget,
     SNAPSHOT_PROTOCOL, SignedRegistrySnapshot, verify_change_request,
 };
+
+const DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM: usize = 4;
+const MAX_FIRST_PARTY_COLLECTION_PARALLELISM: usize = 8;
+
+#[derive(Debug)]
+struct CollectedArtifact {
+    submission_id: String,
+    version: String,
+    target: RegistryTarget,
+    bytes: Vec<u8>,
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -144,6 +157,9 @@ enum Cmd {
         publisher_pubkey: String,
         #[arg(long, default_value_t = 50)]
         max_items: usize,
+        /// Maximum number of submissions fetched and inspected concurrently.
+        #[arg(long, default_value_t = DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM)]
+        parallelism: usize,
         #[arg(long, hide = true)]
         allow_insecure_local: bool,
     },
@@ -311,8 +327,15 @@ async fn main() -> anyhow::Result<()> {
         Cmd::CollectFirstParty {
             publisher_pubkey,
             max_items,
+            parallelism,
             allow_insecure_local,
-        } => cmd_collect_first_party(&storage, &publisher_pubkey, max_items, allow_insecure_local),
+        } => cmd_collect_first_party(
+            &storage,
+            &publisher_pubkey,
+            max_items,
+            parallelism,
+            allow_insecure_local,
+        ),
         Cmd::PublishStagedFirstParty {
             channel_key_file,
             reviewer,
@@ -434,11 +457,20 @@ fn cmd_collect_first_party(
     storage: &Storage,
     publisher_pubkey: &str,
     max_items: usize,
+    parallelism: usize,
     allow_insecure_local: bool,
 ) -> anyhow::Result<()> {
     if !(1..=100).contains(&max_items) {
         anyhow::bail!("--max-items must be between 1 and 100");
     }
+    if !(1..=MAX_FIRST_PARTY_COLLECTION_PARALLELISM).contains(&parallelism) {
+        anyhow::bail!(
+            "--parallelism must be between 1 and {MAX_FIRST_PARTY_COLLECTION_PARALLELISM}"
+        );
+    }
+    let Some(parallelism) = NonZeroUsize::new(parallelism) else {
+        anyhow::bail!("--parallelism must be non-zero");
+    };
     let publisher = parse_public_key(publisher_pubkey, "publisher")?;
     let publisher_hex = hex::encode(publisher);
     let allowlist = storage.load_allowlist()?;
@@ -470,32 +502,21 @@ fn cmd_collect_first_party(
     {
         anyhow::bail!("the selected publisher is not authorized to add new packages");
     }
+    // Invalidate any earlier batch before starting fallible network work. A
+    // failed recollection must never leave an older, apparently publishable
+    // manifest behind for the networkless signer.
+    let _deleted = storage.delete_staged_promotion()?;
     let policy = InspectionPolicy {
         allow_insecure_local,
         ..InspectionPolicy::default()
     };
-    let mut artifacts = Vec::new();
-    for pending in &submissions {
-        verify_change_request(&pending.change, &[publisher])
-            .map_err(|error| anyhow::anyhow!("verify {}: {error}", pending.submission_id))?;
-        if pending.change.action == EntryAction::Delete {
-            continue;
-        }
-        let fetched = fetch_entry_bytes(&pending.change.entry, policy)?;
-        for (version, (inspection, bytes)) in pending.change.entry.versions.iter().zip(fetched) {
-            let digest = blake3::hash(&bytes).to_hex().to_string();
-            storage.save_staged_artifact(&digest, &bytes)?;
-            artifacts.push(StagedArtifact {
-                submission_id: pending.submission_id.clone(),
-                version: inspection.version,
-                target: Some(version.target.clone()),
-                blake3_hex: digest,
-            });
-        }
-    }
-    artifacts.sort_by(|left, right| {
-        staged_artifact_sort_key(left).cmp(&staged_artifact_sort_key(right))
-    });
+    // Fetch and inspect independent submissions concurrently. Nothing is
+    // persisted until every worker succeeds, so a failed verification or
+    // download cannot leave a partially collected promotion behind.
+    let collected = bounded_parallel_map(&submissions, parallelism, |pending| {
+        collect_submission_artifacts(pending, publisher, policy)
+    })?;
+    let artifacts = persist_collected_artifacts(storage, collected)?;
     let staged = StagedPromotion {
         publisher_pubkey_hex: publisher_hex,
         collected_at_unix: now_unix(),
@@ -508,6 +529,105 @@ fn cmd_collect_first_party(
         serde_json::json!({"status": "staged", "collected": staged.submissions.len()})
     );
     Ok(())
+}
+
+fn collect_submission_artifacts(
+    pending: &registry_server::PendingSubmission,
+    publisher: [u8; 32],
+    policy: InspectionPolicy,
+) -> anyhow::Result<Vec<CollectedArtifact>> {
+    verify_change_request(&pending.change, &[publisher])
+        .map_err(|error| anyhow::anyhow!("verify {}: {error}", pending.submission_id))?;
+    if pending.change.action == EntryAction::Delete {
+        return Ok(Vec::new());
+    }
+    let fetched = fetch_entry_bytes(&pending.change.entry, policy)?;
+    if fetched.len() != pending.change.entry.versions.len() {
+        anyhow::bail!(
+            "inspection returned {} artifacts for {} signed versions in {}",
+            fetched.len(),
+            pending.change.entry.versions.len(),
+            pending.submission_id
+        );
+    }
+    Ok(pending
+        .change
+        .entry
+        .versions
+        .iter()
+        .zip(fetched)
+        .map(|(version, (inspection, bytes))| CollectedArtifact {
+            submission_id: pending.submission_id.clone(),
+            version: inspection.version,
+            target: version.target.clone(),
+            bytes,
+        })
+        .collect())
+}
+
+fn persist_collected_artifacts(
+    storage: &Storage,
+    collected: Vec<Vec<CollectedArtifact>>,
+) -> anyhow::Result<Vec<StagedArtifact>> {
+    let mut distinct_bytes = BTreeMap::<String, Vec<u8>>::new();
+    let mut artifacts = Vec::new();
+    for artifact in collected.into_iter().flatten() {
+        let digest = blake3::hash(&artifact.bytes).to_hex().to_string();
+        if let Some(existing) = distinct_bytes.get(&digest) {
+            if existing != &artifact.bytes {
+                anyhow::bail!("collected artifacts share a digest but contain different bytes");
+            }
+        } else {
+            distinct_bytes.insert(digest.clone(), artifact.bytes);
+        }
+        artifacts.push(StagedArtifact {
+            submission_id: artifact.submission_id,
+            version: artifact.version,
+            target: Some(artifact.target),
+            blake3_hex: digest,
+        });
+    }
+    artifacts.sort_by(|left, right| {
+        staged_artifact_sort_key(left).cmp(&staged_artifact_sort_key(right))
+    });
+    // Storage mutation is deliberately single-threaded and content-addressed:
+    // every distinct digest is written exactly once after all network work has
+    // succeeded.
+    for (digest, bytes) in distinct_bytes {
+        storage.save_staged_artifact(&digest, &bytes)?;
+    }
+    Ok(artifacts)
+}
+
+fn bounded_parallel_map<T, R, E, F>(
+    items: &[T],
+    parallelism: NonZeroUsize,
+    operation: F,
+) -> Result<Vec<R>, E>
+where
+    T: Sync,
+    R: Send,
+    E: Send,
+    F: Fn(&T) -> Result<R, E> + Sync,
+{
+    let mut output = Vec::with_capacity(items.len());
+    for batch in items.chunks(parallelism.get()) {
+        let results = std::thread::scope(|scope| {
+            let workers = batch
+                .iter()
+                .map(|item| scope.spawn(|| operation(item)))
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(std::thread::ScopedJoinHandle::join)
+                .collect::<Vec<_>>()
+        });
+        for result in results {
+            let result = result.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            output.push(result?);
+        }
+    }
+    Ok(output)
 }
 
 fn cmd_sign_delegated_snapshot(
@@ -1391,6 +1511,137 @@ fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion, sign_entry};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn bounded_parallel_map_preserves_order_and_respects_the_bound() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let parallelism = NonZeroUsize::new(DEFAULT_FIRST_PARTY_COLLECTION_PARALLELISM).unwrap();
+        let barrier = Arc::new(Barrier::new(parallelism.get()));
+        let inputs = (0..8).collect::<Vec<_>>();
+        let output = bounded_parallel_map(&inputs, parallelism, |value| -> Result<_, ()> {
+            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(current, Ordering::SeqCst);
+            barrier.wait();
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(value * 2)
+        })
+        .unwrap();
+
+        assert_eq!(
+            output,
+            inputs.iter().map(|value| value * 2).collect::<Vec<_>>()
+        );
+        assert_eq!(peak.load(Ordering::SeqCst), parallelism.get());
+    }
+
+    #[test]
+    fn bounded_parallel_map_stops_before_the_next_batch_after_an_error() {
+        let calls = AtomicUsize::new(0);
+        let error = bounded_parallel_map(
+            &[0, 1, 2, 3, 4, 5],
+            NonZeroUsize::new(4).unwrap(),
+            |value| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                if *value == 1 {
+                    Err("rejected")
+                } else {
+                    Ok(*value)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "rejected");
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn collected_artifacts_are_sorted_and_duplicate_bytes_are_safe() {
+        let storage_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(storage_dir.path()).unwrap();
+        let target = |architecture: &str| RegistryTarget {
+            platform: registry_types::TILO_OS_PLATFORM.into(),
+            architecture: architecture.into(),
+            isa: architecture.into(),
+            runtime: None,
+        };
+        let shared_bytes = b"same verified tapp".to_vec();
+        let digest = blake3::hash(&shared_bytes).to_hex().to_string();
+        let artifacts = persist_collected_artifacts(
+            &storage,
+            vec![
+                vec![CollectedArtifact {
+                    submission_id: "so.tilo.zeta".into(),
+                    version: "1.0.0".into(),
+                    target: target("x86_64"),
+                    bytes: shared_bytes.clone(),
+                }],
+                vec![CollectedArtifact {
+                    submission_id: "so.tilo.alpha".into(),
+                    version: "1.0.0".into(),
+                    target: target("aarch64"),
+                    bytes: shared_bytes.clone(),
+                }],
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            artifacts
+                .iter()
+                .map(|artifact| artifact.submission_id.as_str())
+                .collect::<Vec<_>>(),
+            ["so.tilo.alpha", "so.tilo.zeta"]
+        );
+        assert!(
+            artifacts
+                .iter()
+                .all(|artifact| artifact.blake3_hex == digest)
+        );
+        assert_eq!(storage.load_staged_artifact(&digest).unwrap(), shared_bytes);
+    }
+
+    #[test]
+    fn failed_collection_invalidates_an_older_staged_batch() {
+        let storage_dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(storage_dir.path()).unwrap();
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
+        storage
+            .save_allowlist(&PublisherAllowlist {
+                publishers: vec![PublisherRow {
+                    pubkey_hex: publisher_hex.clone(),
+                    can_add_new: true,
+                    note: "first party".into(),
+                }],
+            })
+            .unwrap();
+        storage
+            .save_staged_promotion(&StagedPromotion {
+                publisher_pubkey_hex: publisher_hex.clone(),
+                collected_at_unix: 1,
+                submissions: Vec::new(),
+                artifacts: Vec::new(),
+            })
+            .unwrap();
+
+        let mut entry = publisher_entry(&publisher);
+        entry.versions[0].tapp_url = "file:///untrusted/package.tapp".into();
+        sign_entry(&mut entry, &publisher);
+        storage
+            .save_pending(&registry_server::PendingSubmission {
+                submission_id: entry.package_id.clone(),
+                submitted_at_unix: 2,
+                change: registry_types::sign_change_request(EntryAction::Add, entry, &publisher),
+            })
+            .unwrap();
+
+        assert!(cmd_collect_first_party(&storage, &publisher_hex, 50, 4, false).is_err());
+        assert!(storage.load_staged_promotion().unwrap().is_none());
+    }
 
     #[test]
     fn staged_artifacts_are_selected_by_version_and_target() {
