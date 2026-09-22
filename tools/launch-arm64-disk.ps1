@@ -4,13 +4,16 @@ Boots a Tilo ARM64 raw disk with native Windows QEMU and WHPX.
 
 .DESCRIPTION
 Uses the MSYS2 CLANGARM64 QEMU package and a persistent writable UEFI variable
-store. The source disk uses QEMU's transient snapshot mode so the guest can
-write during boot without modifying the installer artifact. By default, the
-disk is discovered at $HOME/tilo-vm/media/disk.raw in the selected WSL
-distribution. Set TILO_ARM64_DISK or pass -DiskPath to use a different
-artifact. Supplying -InstallTargetDisk attaches a separate writable disk with
-the stable `tilo-install-target` serial. Run with -CheckOnly to validate the
-host without booting.
+store. The source disk uses QEMU's transient snapshot mode by default so the
+guest can write during boot without modifying the installer artifact. Pass
+-WritableSourceDisk only for a disposable installed target that must retain
+guest changes across reboots. Writable source mode rejects an installer target
+and verifies that no QEMU process or other local file handle already uses the
+disk. By default, the disk is discovered at $HOME/tilo-vm/media/disk.raw in
+the selected WSL distribution. Set TILO_ARM64_DISK or pass -DiskPath to use a
+different artifact. Supplying -InstallTargetDisk attaches a separate writable
+disk with the stable `tilo-install-target` serial. Run with -CheckOnly to
+validate the host without booting.
 
 .EXAMPLE
 .\tools\launch-arm64-disk.ps1 -CheckOnly
@@ -20,6 +23,9 @@ host without booting.
 
 .EXAMPLE
 .\tools\launch-arm64-disk.ps1 -InstallTargetDisk C:\VMs\tilo-target.raw -CreateInstallTarget
+
+.EXAMPLE
+.\tools\launch-arm64-disk.ps1 -DiskPath C:\VMs\tilo-installed-target.raw -WritableSourceDisk
 #>
 [CmdletBinding()]
 param(
@@ -35,6 +41,7 @@ param(
     [int]$QmpPort = 4444,
     [switch]$ResetVars,
     [switch]$CheckOnly,
+    [switch]$WritableSourceDisk,
     [string]$InstallTargetDisk,
     [ValidateRange(34, 4096)]
     [int]$InstallTargetGiB = 64,
@@ -48,9 +55,29 @@ Set-StrictMode -Version Latest
 function Test-QemuUsesPath([string]$Path) {
     $normalized = [System.IO.Path]::GetFullPath($Path)
     $escaped = [regex]::Escape($normalized)
+    # Match a complete drive-file value, rather than a path prefix. This keeps
+    # a disk such as `target.raw.bak` from blocking `target.raw` and ensures
+    # the writable-mode guard names the process using this exact source disk.
+    $drivePattern = '(?i)(?:^|[,\s])file="?' + $escaped + '"?(?=,|[\s"]|$)'
+    $plainPattern = '(?i)(?:^|[\s"])' + $escaped + '(?=[\s"]|$)'
     $processes = @(Get-CimInstance Win32_Process -Filter "Name='qemu-system-aarch64.exe'" |
-        Where-Object { $_.CommandLine -match $escaped })
+        Where-Object { $_.CommandLine -match $drivePattern -or $_.CommandLine -match $plainPattern })
     return $processes
+}
+
+function Assert-FileIsExclusivelyWritable([string]$Path) {
+    $probe = $null
+    try {
+        # QEMU's source drive is a plain file on this host. Opening it with no
+        # sharing detects a conflicting process even when it is not QEMU.
+        $probe = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+    } catch {
+        throw "Writable source disk cannot be opened exclusively: $Path. Stop the process using it before launch."
+    } finally {
+        if ($null -ne $probe) {
+            $probe.Dispose()
+        }
+    }
 }
 
 if (-not $DiskPath) {
@@ -82,6 +109,9 @@ foreach ($requiredFile in @($qemuExe, $firmwareCode, $firmwareVarsTemplate)) {
 
 $DiskPath = [System.IO.Path]::GetFullPath($DiskPath)
 $targetIsRequested = -not [string]::IsNullOrWhiteSpace($InstallTargetDisk)
+if ($WritableSourceDisk -and $targetIsRequested) {
+    throw '-WritableSourceDisk cannot be combined with -InstallTargetDisk. Use the installer target in the default snapshot-safe mode, then boot that disposable target alone with -WritableSourceDisk.'
+}
 if ($ResetInstallTarget -and -not $targetIsRequested) {
     throw '-ResetInstallTarget requires -InstallTargetDisk.'
 }
@@ -178,6 +208,17 @@ if ($diskExists) {
         $diskStream.Dispose()
     }
 }
+if ($WritableSourceDisk) {
+    if (-not $diskExists) {
+        throw "Writable source disk is missing: $DiskPath"
+    }
+    $diskUsers = @(Test-QemuUsesPath $DiskPath)
+    if ($diskUsers.Count -ne 0) {
+        throw "Writable source disk is already in use by QEMU PID(s): $($diskUsers.ProcessId -join ', ')."
+    }
+    Assert-FileIsExclusivelyWritable $DiskPath
+}
+$sourceMode = if ($WritableSourceDisk) { 'writable persistent' } else { 'transient snapshot' }
 if ($CheckOnly) {
     $diskStatus = if ($diskHasGpt) {
         "present with GPT ($((Get-Item -LiteralPath $DiskPath).Length) bytes)"
@@ -192,7 +233,7 @@ if ($CheckOnly) {
     Write-Host "Firmware:    $firmwareCode"
     Write-Host "Vars source: $firmwareVarsTemplate"
     Write-Host "Vars copy:   $firmwareVars [ready]"
-    Write-Host "Disk:        $DiskPath [$diskStatus; transient snapshot]"
+    Write-Host "Disk:        $DiskPath [$diskStatus; $sourceMode]"
     if ($targetIsRequested) {
         if ($targetNeedsCreation) {
             Write-Host "Target:      $InstallTargetDisk (will create fresh ${InstallTargetGiB}GiB sparse raw disk, serial=tilo-install-target)"
@@ -231,6 +272,11 @@ if ($targetIsRequested -and $targetNeedsCreation) {
 }
 
 $diskBefore = Get-Item -LiteralPath $DiskPath
+$sourceDrive = if ($WritableSourceDisk) {
+    "if=none,id=osdisk,format=raw,file=$DiskPath,cache=writeback,aio=threads"
+} else {
+    "if=none,id=osdisk,format=raw,file=$DiskPath,snapshot=on,cache=writeback,aio=threads"
+}
 
 $qemuArgs = @(
     '-name', 'tilo-arm64-local'
@@ -241,7 +287,7 @@ $qemuArgs = @(
     '-m', "$MemoryMiB"
     '-drive', "if=pflash,format=raw,readonly=on,file=$firmwareCode"
     '-drive', "if=pflash,format=raw,file=$firmwareVars"
-    '-drive', "if=none,id=osdisk,format=raw,file=$DiskPath,snapshot=on,cache=writeback,aio=threads"
+    '-drive', $sourceDrive
     '-device', 'virtio-blk-pci,drive=osdisk,bootindex=1'
     '-device', 'virtio-gpu-pci'
     '-display', 'gtk,show-cursor=on'
@@ -265,7 +311,7 @@ if ($targetIsRequested) {
 }
 
 Write-Host "Starting $qemuVersion with WHPX"
-Write-Host "Disk:       $DiskPath (transient snapshot)"
+Write-Host "Disk:       $DiskPath ($sourceMode)"
 if ($targetIsRequested) {
     Write-Host "Target:     $InstallTargetDisk (serial=tilo-install-target)"
 }
@@ -276,7 +322,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "QEMU exited with status $LASTEXITCODE. See $serialLog"
 }
 
-$diskAfter = Get-Item -LiteralPath $DiskPath
-if ($diskAfter.Length -ne $diskBefore.Length -or $diskAfter.LastWriteTimeUtc -ne $diskBefore.LastWriteTimeUtc) {
-    throw 'Source disk metadata changed despite transient snapshot mode.'
+if (-not $WritableSourceDisk) {
+    $diskAfter = Get-Item -LiteralPath $DiskPath
+    if ($diskAfter.Length -ne $diskBefore.Length -or $diskAfter.LastWriteTimeUtc -ne $diskBefore.LastWriteTimeUtc) {
+        throw 'Source disk metadata changed despite transient snapshot mode.'
+    }
 }
