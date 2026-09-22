@@ -345,9 +345,17 @@ impl FanoutState {
             .unwrap_or_default()
     }
 
-    /// Mint the next typed connection id.
+    /// Mint the next typed connection id, reserving zero for the broker root
+    /// and `u64::MAX` for the current-connection sentinel. The counter itself
+    /// remains the number of accepted connections, including before the first.
     pub(crate) fn next_peer_id(&self) -> u64 {
-        self.peer_id_counter.fetch_add(1, Ordering::Relaxed)
+        let previous = self
+            .peer_id_counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                count.checked_add(1).filter(|next| *next < u64::MAX)
+            })
+            .expect("application peer id space exhausted");
+        previous + 1
     }
 
     /// How many typed connections this broker has ever accepted. Read as a
@@ -595,7 +603,7 @@ impl AppActionBroker {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "confirmation binds the exact actor, action, resource and invocation inputs"
+        reason = "confirmation forwarding binds peer, resource, action, argument, actor and confirmation evidence to one invocation"
     )]
     /// Prepare a one-use confirmation token for the exact invocation inputs.
     ///
@@ -617,7 +625,7 @@ impl AppActionBroker {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "confirmed launch revalidates the exact actor, action, resource and token inputs"
+        reason = "confirmed invocation forwarding binds the token to its peer, resource, action, argument and actor"
     )]
     /// Start a published action using a previously prepared confirmation token.
     ///
@@ -1371,6 +1379,28 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allocated_application_peers_skip_reserved_ids_and_preserve_connection_counts() {
+        let table = FanoutState::new();
+        assert_eq!(table.connections_seen(), 0);
+        assert_eq!(table.next_peer_id(), 1);
+        assert_eq!(table.connections_seen(), 1);
+        assert_eq!(table.next_peer_id(), 2);
+        assert_eq!(table.connections_seen(), 2);
+    }
+
+    #[test]
+    fn exhausted_application_peer_ids_do_not_wrap_or_issue_the_current_connection_sentinel() {
+        let table = FanoutState::new();
+        table.peer_id_counter.store(u64::MAX - 2, Ordering::Relaxed);
+        assert_eq!(table.next_peer_id(), u64::MAX - 1);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| table.next_peer_id()))
+                .is_err()
+        );
+        assert_eq!(table.connections_seen(), u64::MAX - 1);
+    }
 
     /// A digest-shaped peer id, as presence frames carry it.
     const PEER: &str = "peer@5537458103208628978";

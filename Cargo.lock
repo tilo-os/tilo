@@ -13479,6 +13479,7 @@ dependencies = [
  "reis",
  "runtime-collab",
  "runtime-identity",
+ "runtime-portal",
  "rustls",
  "seccompiler",
  "serde",

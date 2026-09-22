@@ -7507,6 +7507,109 @@ impl WorkspaceTree {
         false
     }
 
+    /// Split `tab_id` out of its group into a brand-new single-tab group
+    /// at `insert_at` in the same strip — the tree-first form of the
+    /// in-strip drag-out and of the tab menu's "Split Right" / "Move to
+    /// New Group". Cache and Automerge document move together (the
+    /// document through [`Self::doc_move_tab_across_strips`] with the strip
+    /// as both source and destination, which is the same-strip case
+    /// [`Self::move_tab_across_strips`] refuses), so a revision from another
+    /// device cannot resurrect the tab in its old group.
+    ///
+    /// Returns the new group's id. `None`, with nothing changed, when the
+    /// tab is not in `strip_id`, when its group has no other tab (splitting
+    /// a group's only tab would dissolve and re-create it one slot over),
+    /// or when the document refuses the move. The source group's active
+    /// tab follows the tab bar's own rule (the neighbour that slid into the
+    /// slot, else the last).
+    pub fn split_tab_into_new_group(
+        &mut self,
+        strip_id: StripId,
+        tab_id: TabId,
+        insert_at: usize,
+    ) -> Option<GroupId> {
+        let (ws_idx, strip_idx, group_idx, tab_idx) =
+            self.workspaces
+                .iter()
+                .enumerate()
+                .find_map(|(ws_idx, ws)| {
+                    let (strip_idx, strip) = ws
+                        .strips
+                        .iter()
+                        .enumerate()
+                        .find(|(_, strip)| strip.id == strip_id)?;
+                    strip
+                        .window_groups
+                        .iter()
+                        .enumerate()
+                        .find_map(|(group_idx, group)| {
+                            group
+                                .tabs
+                                .iter()
+                                .position(|tab| tab.id == tab_id)
+                                .map(|tab_idx| (ws_idx, strip_idx, group_idx, tab_idx))
+                        })
+                })?;
+        let before_workspaces = self.workspaces.clone();
+        let before_doc = self.doc.clone();
+        let (src_group_id, moved) = {
+            let group = self
+                .workspaces
+                .get_mut(ws_idx)?
+                .strips
+                .get_mut(strip_idx)?
+                .window_groups
+                .get_mut(group_idx)?;
+            if group.tabs.len() < 2 {
+                return None;
+            }
+            let moved = group.tabs.remove(tab_idx);
+            if group.active_tab == tab_id {
+                group.active_tab = group
+                    .tabs
+                    .get(tab_idx)
+                    .or_else(|| group.tabs.last())
+                    .map_or(0, |tab| tab.id);
+            }
+            (group.id, moved)
+        };
+        let new_group = WindowGroup {
+            id: next_id(),
+            active_tab: moved.id,
+            tabs: vec![moved],
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        let new_id = new_group.id;
+        let groups = &mut self
+            .workspaces
+            .get_mut(ws_idx)?
+            .strips
+            .get_mut(strip_idx)?
+            .window_groups;
+        let destination = insert_at.min(groups.len());
+        groups.insert(destination, new_group.clone());
+        if !self.doc_move_tab_across_strips(
+            strip_id,
+            strip_id,
+            src_group_id,
+            false,
+            &new_group,
+            destination,
+        ) {
+            tracing::warn!(
+                tab_id,
+                strip_id = strip_id.raw(),
+                "in-strip split could not be mirrored into the room document"
+            );
+            self.workspaces = before_workspaces;
+            self.doc = before_doc;
+            return None;
+        }
+        self.flush_to_disk();
+        Some(new_id)
+    }
+
     /// Replace one strip's group/tab arrangement with the identity-only shape
     /// reported by its live `GroupRow`. App tiles remain sourced from this
     /// tree, so widget code cannot overwrite persisted content while reporting

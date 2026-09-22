@@ -35,6 +35,94 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
+fn consume_record_requests(
+    chrome: &Chrome,
+    index: &std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
+) {
+    #[allow(deprecated, reason = "drain the stable active-room compatibility API")]
+    let legacy = chrome.borrow_mut().take_record_requests();
+    if !legacy.is_empty() {
+        let room = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.active_workspace().map(|workspace| workspace.room)
+        };
+        if let Some(room) = room {
+            let mut index = index.borrow_mut();
+            for (id, kind) in legacy {
+                if let Some(record) = ui::record::RecordId::parse(&id) {
+                    index.reference(room, &record, &ui::record::RecordKind::new(kind));
+                }
+            }
+        }
+    }
+    let requested = chrome.borrow_mut().take_tracked_record_requests();
+    if requested.is_empty() {
+        return;
+    }
+    let mut index = index.borrow_mut();
+    let mut completed = Vec::new();
+    for request in requested {
+        let authorized = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.workspaces
+                .iter()
+                .find(|workspace| {
+                    workspace.id == request.workspace_id && workspace.room == request.room
+                })
+                .is_some_and(|workspace| {
+                    // The queued actor records who made the request, but its
+                    // role is only an admission-time snapshot. Rehydrate that
+                    // same person against the target workspace so revocation
+                    // before the frame is observed.
+                    let actor = request.actor.principals.iter().find_map(|principal| {
+                        if let collab_types::Principal::Person(user) = principal {
+                            Some(workspace.actor_for_person(user))
+                        } else {
+                            None
+                        }
+                    });
+                    actor.is_some_and(|actor| {
+                        crate::shell::search::providers::actions::shell_action_authorized_for(
+                            workspace,
+                            &actor,
+                            "record.bring",
+                        )
+                    })
+                })
+        };
+        if !authorized {
+            completed.push((
+                request.request_id,
+                Err("record.bring authority was revoked for its target workspace".into()),
+            ));
+            continue;
+        }
+        let Some(record) = ui::record::RecordId::parse(&request.record_id) else {
+            completed.push((request.request_id, Err("record id became invalid".into())));
+            continue;
+        };
+        index.reference(
+            request.room,
+            &record,
+            &ui::record::RecordKind::new(request.kind),
+        );
+        completed.push((
+            request.request_id,
+            index
+                .holds(request.room, &record)
+                .then_some(())
+                .ok_or_else(|| "the room record index refused the reference".into()),
+        ));
+    }
+    drop(index);
+    let mut state = chrome.borrow_mut();
+    for (request_id, result) in completed {
+        state.complete_record_request(request_id, result);
+    }
+}
+
 struct FloatingTransferProxy {
     key: String,
     rect: Rect,
@@ -147,7 +235,7 @@ enum QuickSettingsDamage {
 // wrapping them would only obscure the truth table at this private boundary.
 #[allow(
     clippy::fn_params_excessive_bools,
-    reason = "the four booleans are independent handoff lifecycle signals"
+    reason = "suspension, native presentation, pending source clear and mapped pixels are independent handoff signals in this truth table"
 )]
 fn floating_transfer_proxy_needed(
     suspended: bool,
@@ -948,25 +1036,7 @@ impl FrameBuilder {
 
         // Anything an exported action asked to bring here, first — so a
         // reference made this frame publishes in the same pass.
-        let requested = self.chrome.borrow_mut().take_record_requests();
-        if !requested.is_empty() {
-            // Bound in a block: `tree()` hands back a guard borrowed from
-            // the chrome `Ref`, so both have to outlive the read.
-            let here = {
-                let chrome = self.chrome.borrow();
-                let tree = chrome.tree();
-                tree.active_workspace().map(|w| w.room)
-            };
-            if let Some(here) = here {
-                let mut index = index.borrow_mut();
-                for (id, kind) in requested {
-                    let Some(record) = ui::record::RecordId::parse(&id) else {
-                        continue;
-                    };
-                    index.reference(here, &record, &ui::record::RecordKind::new(kind));
-                }
-            }
-        }
+        consume_record_requests(&self.chrome, &index);
 
         let arrived = {
             let chrome = self.chrome.borrow();
@@ -2514,6 +2584,145 @@ mod tests {
     use automerge::transaction::Transactable;
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
+
+    #[test]
+    fn record_bring_keeps_its_authorized_room_across_workspace_switch() {
+        use crate::shell::search::action_api::{ActionArgs, ArgValue};
+        use crate::shell::search::providers::ActionsProvider;
+        use crate::shell::search::{
+            InvocationDisposition, ResourceKind, SearchContext, SearchProvider,
+        };
+        use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+        use ui::record::{RecordId, RecordKind};
+
+        let source_id = WorkspaceId::new();
+        let destination_id = WorkspaceId::new();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces = vec![
+            Workspace::new(source_id, "Source"),
+            Workspace::new(destination_id, "Destination"),
+        ];
+        tree.active = source_id;
+        let chrome = ChromeState::new(tree);
+        let (source_room, destination_room) = {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let source_room = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == source_id)
+                .expect("source workspace")
+                .room;
+            let destination_room = tree
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == destination_id)
+                .expect("destination workspace")
+                .room;
+            let source_user = state.local_user_for_room(&source_room);
+            tree.workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == source_id)
+                .expect("source workspace")
+                .set_owner(source_user);
+            tree.workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == destination_id)
+                .expect("destination workspace")
+                .set_owner("somebody-else");
+            (source_room, destination_room)
+        };
+        let mut document = AutoCommit::new();
+        let result = {
+            let state = chrome.borrow();
+            ActionsProvider::new()
+                .query(SearchContext {
+                    needle: "bring record",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &document,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|result| result.id == "record.bring")
+                .expect("record action is discoverable in the authorized source")
+        };
+        let record = RecordId::minted();
+        let args = ActionArgs::bind(
+            &result.params,
+            [
+                ("id".into(), ArgValue::Text(record.to_string())),
+                ("kind".into(), ArgValue::Text("field-guide".into())),
+            ],
+        )
+        .expect("typed record arguments");
+        let ticket = match result
+            .on_begin_invoke
+            .as_ref()
+            .expect("record action is asynchronous")(
+            &mut document,
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .expect("source admits the record request")
+        {
+            InvocationDisposition::Pending(ticket) => ticket,
+            InvocationDisposition::Accepted(_) => panic!("record request completed before frame"),
+        };
+        chrome.borrow().tree_mut().active = destination_id;
+        let index = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::shell::room_records::RoomRecords::in_memory(),
+        ));
+        consume_record_requests(&chrome, &index);
+        assert!(ticket().expect("ticket poll").is_some());
+        assert!(index.borrow().holds(source_room, &record));
+        assert!(!index.borrow().holds(destination_room, &record));
+
+        let denied_record = RecordId::minted();
+        chrome.borrow().tree_mut().active = source_id;
+        let denied_args = ActionArgs::bind(
+            &result.params,
+            [
+                ("id".into(), ArgValue::Text(denied_record.to_string())),
+                (
+                    "kind".into(),
+                    ArgValue::Text(RecordKind::new("note").to_string()),
+                ),
+            ],
+        )
+        .expect("typed denied arguments");
+        let denied = match result
+            .on_begin_invoke
+            .as_ref()
+            .expect("record action is asynchronous")(
+            &mut document,
+            &automerge::ROOT,
+            &chrome,
+            &denied_args,
+        )
+        .expect("request admitted before revocation")
+        {
+            InvocationDisposition::Pending(ticket) => ticket,
+            InvocationDisposition::Accepted(_) => panic!("record request completed before frame"),
+        };
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let source = tree
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == source_id)
+                .expect("source workspace");
+            source.owner = None;
+            source.capabilities.clear();
+            tree.active = destination_id;
+        }
+        consume_record_requests(&chrome, &index);
+        assert!(denied().is_err(), "revoked target authority fails closed");
+        assert!(!index.borrow().holds(source_room, &denied_record));
+        assert!(!index.borrow().holds(destination_room, &denied_record));
+    }
 
     #[test]
     fn moving_frame_builder_preserves_live_layout_widget_addresses() {

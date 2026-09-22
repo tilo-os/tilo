@@ -191,6 +191,22 @@ pub(crate) fn resolve_connector_config_keys<'a>(
         .collect()
 }
 
+fn connector_is_scanout_eligible(
+    state: connector::State,
+    interface: connector::Interface,
+    has_usable_mode: bool,
+) -> bool {
+    // `Virtual` is a real scanout sink for virtual GPUs (including the
+    // Parallels display used by qOS). `Writeback` captures a CRTC rather than
+    // displaying one, and `Unknown` supplies no typed evidence that it can be
+    // used for scanout.
+    let is_scanout_sink = !matches!(
+        interface,
+        connector::Interface::Unknown | connector::Interface::Writeback
+    );
+    state == connector::State::Connected && has_usable_mode && is_scanout_sink
+}
+
 impl CardHandle {
     /// Open `card_path` through the session and become DRM master.
     ///
@@ -301,20 +317,12 @@ impl CardHandle {
                     continue;
                 }
             };
-            if info.state() != connector::State::Connected {
-                continue;
-            }
-            // Writeback connectors are capture sinks rather than physical or
-            // virtual displays.  Do not infer that from the human-readable
-            // connector name: QEMU/virtio/Bochs expose perfectly usable KMS
-            // displays as `Virtual-N`, and rejecting that label makes Tilo
-            // immediately exit in a VM even while the connector is connected
-            // and advertises modes.
-            if info.interface() == connector::Interface::Writeback {
-                continue;
-            }
             let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-            let Some(mode) = pick_configured_mode(info.modes(), None) else {
+            let mode = pick_configured_mode(info.modes(), None);
+            if !connector_is_scanout_eligible(info.state(), info.interface(), mode.is_some()) {
+                continue;
+            }
+            let Some(mode) = mode else {
                 continue;
             };
             out.push(ConnectorSnapshot {
@@ -620,7 +628,7 @@ impl HwCursor {
     pub fn move_to(&self, x: i32, y: i32) {
         #[allow(
             deprecated,
-            reason = "the DRM crate exposes hardware cursor movement only through this deprecated ioctl wrapper"
+            reason = "The legacy KMS cursor ioctl moves this cursor plane at input rate independently of framebuffer page flips."
         )]
         if let Err(e) = self.card.move_cursor(self.crtc, (x, y)) {
             tracing::trace!("DRM scanout: move_cursor failed: {e}");
@@ -974,30 +982,27 @@ impl DrmScanout {
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
         let cursor_size =
             super::input_config::AccessibilityInputSettings::load().effective_cursor_size();
-        let (cursor_buffer, hw_cursor_active) = match Self::setup_hw_cursor(
-            &card,
-            crtc,
-            cursor_size,
-        ) {
-            Ok(buf) => {
-                // Centre it so a fresh boot shows the pointer before input arrives.
-                let center_x = i32::try_from(width / 2).unwrap_or(i32::MAX);
-                let center_y = i32::try_from(height / 2).unwrap_or(i32::MAX);
-                #[allow(
-                    deprecated,
-                    reason = "the DRM crate exposes hardware cursor movement only through this deprecated ioctl wrapper"
-                )]
-                let _ = card.move_cursor(crtc, (center_x, center_y));
-                tracing::info!("DRM scanout: hardware cursor plane active");
-                (Some(buf), true)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "DRM scanout: hardware cursor unavailable ({e}); using software cursor"
-                );
-                (None, false)
-            }
-        };
+        let (cursor_buffer, hw_cursor_active) =
+            match Self::setup_hw_cursor(&card, crtc, cursor_size) {
+                Ok(buf) => {
+                    // Centre it so a fresh boot shows the pointer before input arrives.
+                    let center_x = i32::try_from(width / 2).unwrap_or(i32::MAX);
+                    let center_y = i32::try_from(height / 2).unwrap_or(i32::MAX);
+                    #[allow(
+                        deprecated,
+                        reason = "Legacy KMS centers the new cursor before input arrives."
+                    )]
+                    let _ = card.move_cursor(crtc, (center_x, center_y));
+                    tracing::info!("DRM scanout: hardware cursor plane active");
+                    (Some(buf), true)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "DRM scanout: hardware cursor unavailable ({e}); using software cursor"
+                    );
+                    (None, false)
+                }
+            };
 
         Ok(Self {
             card,
@@ -1042,7 +1047,7 @@ impl DrmScanout {
         // Hotspot (0,0): the arrow's tip is the buffer's top-left pixel, so plane position == pointer position; virtual GPUs (virtio-gpu/QXL) use it to place the host pointer.
         #[allow(
             deprecated,
-            reason = "the DRM crate exposes cursor-plane binding only through this deprecated ioctl wrapper"
+            reason = "This legacy KMS scanout binds its ARGB cursor buffer with an explicit top-left hotspot through set_cursor2."
         )]
         card.set_cursor2(crtc, Some(&cbuf), (0, 0))
             .map_err(|e| format!("set_cursor2: {e}"))?;
@@ -1121,7 +1126,7 @@ impl DrmScanout {
         {
             #[allow(
                 deprecated,
-                reason = "the DRM crate exposes cursor-plane rebinding only through this deprecated ioctl wrapper"
+                reason = "Session resume restores the legacy KMS cursor plane and hotspot after its binding was lost with DRM master."
             )]
             if let Err(e) = self.card.set_cursor2(self.crtc, Some(buf), (0, 0)) {
                 tracing::warn!(
@@ -1876,6 +1881,51 @@ fn paint_completed<E>(result: Result<(), E>) -> Result<bool, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connected_virtual_connector_with_usable_mode_is_scanout_eligible() {
+        assert!(connector_is_scanout_eligible(
+            connector::State::Connected,
+            connector::Interface::Virtual,
+            true
+        ));
+    }
+
+    #[test]
+    fn disconnected_connector_is_not_scanout_eligible() {
+        assert!(!connector_is_scanout_eligible(
+            connector::State::Disconnected,
+            connector::Interface::HDMIA,
+            true
+        ));
+    }
+
+    #[test]
+    fn connector_without_usable_mode_is_not_scanout_eligible() {
+        assert!(!connector_is_scanout_eligible(
+            connector::State::Connected,
+            connector::Interface::HDMIA,
+            false
+        ));
+    }
+
+    #[test]
+    fn writeback_connector_is_not_scanout_eligible() {
+        assert!(!connector_is_scanout_eligible(
+            connector::State::Connected,
+            connector::Interface::Writeback,
+            true
+        ));
+    }
+
+    #[test]
+    fn unknown_connector_is_not_scanout_eligible() {
+        assert!(!connector_is_scanout_eligible(
+            connector::State::Connected,
+            connector::Interface::Unknown,
+            true
+        ));
+    }
 
     #[test]
     fn card_and_udev_share_the_same_dev_t_identity() {

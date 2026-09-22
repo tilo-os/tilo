@@ -858,6 +858,7 @@ fn device_projection(
             let confirm = entry.confirm;
             Some(SearchResult {
                 kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: DEVICE_PROVIDER_ID.into(),
                 id: entry.id,
                 title: entry.title,
@@ -1024,6 +1025,7 @@ fn call_projection(
             let confirm = entry.confirm;
             Some(SearchResult {
                 kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: CALL_PROVIDER_ID.into(),
                 id: entry.id,
                 title: entry.title,

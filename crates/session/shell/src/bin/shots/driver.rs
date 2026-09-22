@@ -21,6 +21,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::NamedKey;
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
+#[cfg(target_os = "linux")]
 use shell::compositor::capture::CaptureExecutor;
 use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
@@ -51,6 +52,9 @@ pub struct ShellDriver {
     /// Opt-in because screenshot/recording intents perform filesystem/GPU
     /// work; scenarios enable it only when they are explicitly verifying the
     /// production capture handoff.
+    /// Linux-only: the capture pipeline it drives is `compositor::capture`,
+    /// which does not exist on a macOS review build of `shots`.
+    #[cfg(target_os = "linux")]
     capture_executor: Option<CaptureExecutor>,
     lock_visual: Option<LockVisualState>,
 }
@@ -87,6 +91,7 @@ impl ShellDriver {
             modifiers: Modifiers::default(),
             focus: None,
             last_cursor: Point::ORIGIN,
+            #[cfg(target_os = "linux")]
             capture_executor: None,
             lock_visual: None,
         }
@@ -446,11 +451,12 @@ impl ShellDriver {
             );
         }
         let mut scene = self.fb.paint();
+        #[cfg(target_os = "linux")]
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
-        } else {
-            self.fb.draw_capture_overlays(&mut scene);
+            return scene;
         }
+        self.fb.draw_capture_overlays(&mut scene);
         scene
     }
 
@@ -459,7 +465,12 @@ impl ShellDriver {
     }
 
     pub fn set_capture_execution_enabled(&mut self, enabled: bool) {
-        self.capture_executor = enabled.then(CaptureExecutor::default);
+        #[cfg(target_os = "linux")]
+        {
+            self.capture_executor = enabled.then(CaptureExecutor::default);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = enabled;
     }
 
     pub fn set_capture_recording_active(&mut self, active: bool) {
@@ -1200,6 +1211,12 @@ impl ShellDriver {
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
+            "ws-settings-agents" => self.scene_ws_settings_agents(),
+            "collaborators" => self.scene_collaborators(),
+            "launchpad" => self.scene_launchpad(),
+            "peer-sync" => self.scene_peer_sync(),
+            "projection" => self.scene_projection(),
+            "portal-permission" => self.scene_portal_permission(),
             "room-activity" => self.scene_room_activity(),
             "room-activity-named" => self.scene_room_activity_named(),
             "room-activity-all" => self.scene_room_activity_all(),
@@ -1528,6 +1545,106 @@ impl ShellDriver {
             st.ws_settings_tab = WsTab::Apps;
         });
         self.fb.host_mut().force_ws_settings_settled();
+    }
+
+    fn scene_ws_settings_agents(&mut self) {
+        self.seed_workspace_permissions();
+        self.with_chrome(|st| {
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::Agents;
+        });
+        self.fb.host_mut().force_ws_settings_settled();
+    }
+
+    /// The People roster (`collaborators_overlay.rs`): two members present,
+    /// one invited, and — the local user owning the room — the Invite / Join
+    /// band and the Workspace activity footer row.
+    fn scene_collaborators(&mut self) {
+        self.seed_shared_room();
+        self.with_chrome(|st| {
+            {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.active_workspace_mut()
+                    && !ws.collaborators.iter().any(|person| person.id == "cy")
+                {
+                    ws.collaborators
+                        .push(shell::shell::state::Collaborator::new("cy", "Cy").as_invited());
+                }
+            }
+            // The Invite / Join band is offered only while peer sync is on,
+            // as it is on a booted desktop.
+            st.peer_sync_enabled = true;
+            st.overlays.collaborators = true;
+            st.bump();
+        });
+    }
+
+    /// The empty-workspace launchpad (`collaboration_launchpad.rs`): every
+    /// window group of the active workspace is closed, which is the state
+    /// that mounts the six cards (`shell::build_workspace_root`).
+    fn scene_launchpad(&mut self) {
+        self.with_chrome(|st| {
+            {
+                let mut tree = st.tree_mut();
+                if let Some(ws) = tree.active_workspace_mut() {
+                    for strip in &mut ws.strips {
+                        strip.window_groups.clear();
+                    }
+                }
+            }
+            st.bump();
+        });
+        self.relayout();
+    }
+
+    /// The invite card (`peer_sync_overlay.rs`), reached the way a person
+    /// reaches it — the roster's Invite button through the production event
+    /// path — so the host wires the invite context exactly as it would live.
+    fn scene_peer_sync(&mut self) {
+        self.scene_collaborators();
+        let _ = self.paint_settled();
+        let (invite, _) = self.host().collaborators_action_rects_for_tests();
+        // A missing Invite button (peer sync off, or the local user may not
+        // invite) fails the scene instead of quietly capturing the roster
+        // under the name `peer-sync`.
+        assert!(
+            invite.area() > 0.0,
+            "peer-sync scene: the roster offers no Invite button to open the invite card from"
+        );
+        self.click_at(invite.center());
+        self.step_frames(2);
+    }
+
+    /// The wireless-display picker (`projection_overlay.rs`, Win+P), settled
+    /// past its 220 ms slide-in by stepping the frames a live session would.
+    fn scene_projection(&mut self) {
+        self.with_chrome(|st| {
+            st.overlays.projection = true;
+            st.bump();
+        });
+        self.step_frames(20);
+    }
+
+    /// A portal permission sheet: a sandboxed app asks for the camera and the
+    /// request travels the production prompt queue into the compositor's
+    /// prompt (`PermissionPrompt`, hosted by `overlay_host`).
+    fn scene_portal_permission(&mut self) {
+        use shell::portal::{FilePickerQueue, PortalCaller, PromptQueueHandle, PromptResolver};
+        use shell::shell::state::{Capability, Expiry, WorkspaceId};
+        let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+        self.host_mut()
+            .set_portal_queues(prompts.clone(), FilePickerQueue::new());
+        // The reply receiver is dropped: a screenshot has nobody to hand the
+        // answer to, and the sheet does not care until it is answered.
+        let _rx = prompts.enqueue(
+            PortalCaller::new(WorkspaceId(1), "dev.qos.camera"),
+            Capability::Camera {
+                scope: Expiry::EndOfSession,
+            },
+        );
+        self.host_mut().drain_portal_prompts();
+        self.host_mut().pump_permission_prompt();
+        self.step_frames(2);
     }
 
     /// Drives the room through the production mirrors, not a seeded
@@ -2235,6 +2352,12 @@ impl ShellDriver {
         "ws-settings-members",
         "ws-settings-permissions",
         "ws-settings-apps",
+        "ws-settings-agents",
+        "collaborators",
+        "launchpad",
+        "peer-sync",
+        "projection",
+        "portal-permission",
         "notifications",
         "notifications-one",
         "notifications-dnd",

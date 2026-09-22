@@ -73,8 +73,10 @@ const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 72.0;
 /// explanatory scroller so a short display never lets the pinned form clip
 /// the created-identity banner above it.
 const BACKUP_FORM_HEIGHT: f32 = 264.0;
-/// Eyebrow row, gap, padded 8 px progress track, and gap below the sticky header.
-const PROGRESS_HEADER_HEIGHT: f32 = 58.0;
+/// `s3` top pad, eyebrow row, gap, padded 8 px progress track, and gap below
+/// the sticky header. The pad keeps the eyebrow off the panel's top edge
+/// (HIG §7: nothing touches the container it sits in).
+const PROGRESS_HEADER_HEIGHT: f32 = 70.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
 const PROGRESS_VERSION: u32 = 1;
 const PROGRESS_MAX_BYTES: u64 = 4096;
@@ -404,7 +406,7 @@ impl Invalidation {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent onboarding ceremony states are clearer as named flags than as one coupled state enum"
+    reason = "recovery mode, backup verification/acknowledgement, modal entry points and presentation preferences are separate state flags"
 )]
 pub struct OnboardingView {
     flow: Onboarding,
@@ -938,13 +940,17 @@ impl OnboardingView {
         };
         let progress = Column::new()
             .with_no_padding()
+            // The header clears the panel's top edge by `s3`, and the
+            // progress track stays `s3` inside both panel edges (HIG §9.5: a
+            // rule inside a Panel never runs full-bleed into the corner
+            // radius). The labels add their own `s3` so they sit on the
+            // body's `s6` gutter.
+            .with_extra_top_padding(spacing.s3)
+            .with_horizontal_padding(spacing.s3, spacing.s3)
             .with_intrinsic_height()
             .with_gap(spacing.s3)
             .push(Box::new(
                 Row::new()
-                    // Keep both labels away from the rounded card edge. The
-                    // progress rule spans the content width below; its text
-                    // should not visually collide with the panel outline.
                     .with_padding(spacing.s3, 0.0)
                     .push(Box::new(
                         Text::new("Tilo identity setup")
@@ -1302,10 +1308,16 @@ impl OnboardingView {
         };
         let progress = Column::new()
             .with_no_padding()
+            // Same header rhythm as the identity pages: `s3` off the panel's
+            // top edge, the track `s3` inside both edges, labels on the `s6`
+            // gutter.
+            .with_extra_top_padding(theme.tokens.spacing.s3)
+            .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s3)
             .push(Box::new(
                 Row::new()
+                    .with_padding(theme.tokens.spacing.s3, 0.0)
                     .push(Box::new(
                         Text::new("Tilo  •  DESKTOP TOUR")
                             .with_role(ui::tokens::typography::TextRole::Label)
@@ -1502,7 +1514,7 @@ impl OnboardingView {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "the restore ceremony is kept together so copy, validation, and actions stay visibly ordered"
+        reason = "the connect page keeps recovery warnings, nearby-device status/actions and encrypted-backup inputs in one composition"
     )]
     fn connect(&self, theme: &Theme) -> Box<dyn Widget> {
         let compact = self.rect.height() <= 540.0;
@@ -1651,7 +1663,7 @@ impl OnboardingView {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "the backup ceremony is kept together so recovery guidance and its actions cannot diverge"
+        reason = "the backup page keeps identity-creation errors and current or restored backup-verification feedback in one composition"
     )]
     fn backup(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
@@ -2022,32 +2034,29 @@ impl OnboardingView {
         let Some(composed) = self.composed.as_mut() else {
             return;
         };
-        let colors = &theme.tokens.colors;
         let panel = composed.get_rect();
         if panel.area() > 0.0 {
-            if !theme.name.eq_ignore_ascii_case("high contrast") {
-                ui::surface::soft_shadow(
-                    scene,
-                    transform,
-                    panel,
-                    colors.neutral[0],
-                    42.0,
-                    18.0,
-                    0.42,
-                );
-            }
-            let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.xl));
+            // Panel role (HIG §9.1–§9.3): the onboarding card floats over the
+            // backdrop, so it casts the same Panel shadow every other Panel
+            // casts, from the elevation token; on the high-contrast palette
+            // that black shadow lands on a black ground and contributes
+            // nothing — the edge does the separating (§9.3) — so the former
+            // by-name high-contrast guard is not needed. Ground is
+            // `panel_ground`, edge the derived Panel border.
+            let radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
+            ui::chrome::shell::panel_shadow(scene, transform, panel, radius, theme, 1.0);
+            let shape = RoundedRect::from_rect(panel, radius);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.surfaces.raised,
+                ui::chrome::shell::panel_ground(theme),
                 None,
                 &shape,
             );
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                ui::chrome::shell::panel_border(theme),
                 None,
                 &shape,
             );
@@ -2817,7 +2826,7 @@ impl Widget for OnboardingView {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "the Widget event contract supplies this shared routing context to every implementation"
+        reason = "onboarding forwards the Widget event, CRDT, focus and layout context to its picker and composed child controls"
     )]
     fn handle_event(
         &mut self,
@@ -4258,7 +4267,7 @@ mod tests {
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "one table-driven test verifies every onboarding page at every supported laptop size"
+        reason = "the fixture crosses identity pages and error states with laptop sizes, text scaling and high contrast to check action alignment"
     )]
     fn host_identity_actions_stay_visible_and_aligned_at_supported_laptop_sizes() {
         let scenarios: &[(&[&str], &[&str], bool)] = &[
