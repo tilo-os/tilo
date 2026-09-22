@@ -10,6 +10,29 @@
 # file so the hash doesn't linger.
 set -euo pipefail
 
+valid_sha512_crypt() {
+  local candidate="$1" rounds
+
+  # crypt(5) SHA-512 hashes have an optional rounds field, a 1-16 byte
+  # crypt-base64 salt, and an exact 86 byte crypt-base64 digest. Keep this
+  # parser strict: this value is passed directly to useradd(8)'s -p option.
+  if [[ "$candidate" =~ ^\$6\$[./0-9A-Za-z]{1,16}\$[./0-9A-Za-z]{86}$ ]]; then
+    return 0
+  fi
+  if [[ "$candidate" =~ ^\$6\$rounds=([1-9][0-9]{3,8})\$[./0-9A-Za-z]{1,16}\$[./0-9A-Za-z]{86}$ ]]; then
+    rounds="${BASH_REMATCH[1]}"
+    (( 10#$rounds >= 1000 && 10#$rounds <= 999999999 ))
+    return
+  fi
+  return 1
+}
+
+# Unit tests source this file to exercise the exact production parser without
+# running account-management side effects.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
+
 CONF=/etc/tilo/install-user.conf
 FULL_NAME_CONF=/etc/tilo/install-user-full-name
 [ -e "$CONF" ] || [ -L "$CONF" ] || exit 0
@@ -52,12 +75,11 @@ case "$user" in
   *) valid_user=0 ;;
 esac
 [ "${#user}" -le 32 ] || valid_user=0
-case "$hash" in
-  '$6$'*) valid_hash=1 ;;
-  *) valid_hash=0 ;;
-esac
-case "$hash" in *[!a-zA-Z0-9./'$']*) valid_hash=0 ;; esac
-[ "${#hash}" -le 512 ] || valid_hash=0
+if valid_sha512_crypt "$hash"; then
+  valid_hash=1
+else
+  valid_hash=0
+fi
 
 if [ "$valid_user" -ne 1 ] || [ "$valid_hash" -ne 1 ]; then
   echo "tilo-firstboot-user: malformed $CONF (expected name:hash)" >&2
