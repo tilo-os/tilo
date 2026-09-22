@@ -1086,7 +1086,7 @@ impl App {
         }
         let actor = crate::collaboration::local_user_id().0;
         if self
-            .invoke_resource_action(&address, argument, &actor, false, false, None, None, None)
+            .invoke_resource_action(ResourceInvocation::new(&address, &actor).argument(argument))
             .is_ok()
         {
             self.needs_sync = true;
@@ -1274,7 +1274,8 @@ impl App {
         arg: Option<&str>,
     ) -> Result<bool, String> {
         let actor = self.collaboration.local_author.0.clone();
-        match self.invoke_bound_target(target, arg, &actor, false, false, None, None, None) {
+        let invocation = ResourceInvocation::new(&target.address.address, &actor).argument(arg);
+        match self.invoke_bound_target(target, &invocation) {
             Ok(_) => Ok(true),
             Err(tilo_actions::DoorError::ConfirmationRequired) => {
                 self.open_action_palette();

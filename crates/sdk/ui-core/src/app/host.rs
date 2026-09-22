@@ -5225,14 +5225,7 @@ mod action_palette_tests {
             );
             assert!(
                 app.invoke_resource_action(
-                    &address,
-                    None,
-                    "same-local-name",
-                    false,
-                    true,
-                    None,
-                    None,
-                    None
+                    ResourceInvocation::new(&address, "same-local-name").broker_admitted(true)
                 )
                 .is_err(),
                 "broker admission and matching actor names do not grant host UI locality"
@@ -6583,16 +6576,8 @@ mod semantic_tree_app_tests {
             "the snapshot is retained before fallback"
         );
 
-        let result = app.invoke_resource_action(
-            &address,
-            None,
-            &app.collaboration.local_author.0.clone(),
-            false,
-            false,
-            None,
-            None,
-            None,
-        );
+        let actor = app.collaboration.local_author.0.clone();
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
 
         assert!(
             result.is_ok(),
@@ -6609,30 +6594,14 @@ mod semantic_tree_app_tests {
             Vec::new(),
         ));
 
-        let denied = app.invoke_resource_action(
-            &tilo_actions::ActionAddress::new("test.lazy", "bump"),
-            None,
-            &app.collaboration.local_author.0.clone(),
-            false,
-            false,
-            None,
-            None,
-            None,
-        );
+        let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
+        let actor = app.collaboration.local_author.0.clone();
+        let denied = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(matches!(denied, Err(tilo_actions::DoorError::Unknown(_))));
         assert_eq!(counter(&app), 0, "the denied fallback must not run");
 
         app.set_permission_ctx(PermissionContext::permissive());
-        let allowed = app.invoke_resource_action(
-            &tilo_actions::ActionAddress::new("test.lazy", "bump"),
-            None,
-            &app.collaboration.local_author.0.clone(),
-            false,
-            false,
-            None,
-            None,
-            None,
-        );
+        let allowed = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(
             allowed.is_ok(),
             "restoring write permission should admit it"
@@ -6658,16 +6627,9 @@ mod semantic_tree_app_tests {
             Some("test.lazy.child")
         );
 
-        let result = app.invoke_resource_action(
-            &tilo_actions::ActionAddress::new("test.lazy.child", "bump"),
-            None,
-            &app.collaboration.local_author.0.clone(),
-            false,
-            false,
-            None,
-            None,
-            None,
-        );
+        let address = tilo_actions::ActionAddress::new("test.lazy.child", "bump");
+        let actor = app.collaboration.local_author.0.clone();
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(
             result.is_ok(),
             "the recursive lazy action should resolve: {result:?}"
@@ -6720,16 +6682,13 @@ mod semantic_tree_app_tests {
             .with_purpose("Make the opening concrete")
             .with_group("task:opening", "Rewrite the opening", "task");
 
-        let result = app.invoke_resource_action(
-            &tilo_actions::ActionAddress::new("test.counter", "bump"),
-            None,
-            "agent:Scribe",
-            true,
-            true,
-            None,
-            Some(tilo_actions::InvocationId::new()),
-            Some(&ambient),
-        );
+        let address = tilo_actions::ActionAddress::new("test.counter", "bump");
+        let request = ResourceInvocation::new(&address, "agent:Scribe")
+            .confirmed(true)
+            .broker_admitted(true)
+            .invocation(Some(tilo_actions::InvocationId::new()))
+            .ambient_context(Some(&ambient));
+        let result = app.invoke_resource_action(request);
 
         assert!(result.is_ok(), "the directed action failed: {result:?}");
         assert_eq!(counter(&app), 1, "the directed action was applied");
@@ -6776,16 +6735,9 @@ mod semantic_tree_app_tests {
         let before = app.state.doc.get_heads();
         app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
         let pending = app.state.doc.pending_ops();
-        let result = app.invoke_resource_action(
-            &tilo_actions::ActionAddress::new("test.invalid", "decode"),
-            None,
-            &app.collaboration.local_author.0.clone(),
-            false,
-            false,
-            None,
-            None,
-            None,
-        );
+        let address = tilo_actions::ActionAddress::new("test.invalid", "decode");
+        let actor = app.collaboration.local_author.0.clone();
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(
             matches!(result, Err(tilo_actions::DoorError::UnregisteredType(ref id))
             if id == "test.unregistered"),
@@ -6807,16 +6759,8 @@ mod semantic_tree_app_tests {
             ("inspect", "agent:Scribe".to_string()),
             ("missing", app.collaboration.local_author.0.clone()),
         ] {
-            let result = app.invoke_resource_action(
-                &tilo_actions::ActionAddress::new("test.counter", action),
-                None,
-                &actor,
-                false,
-                false,
-                None,
-                None,
-                None,
-            );
+            let address = tilo_actions::ActionAddress::new("test.counter", action);
+            let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
             assert!(result.is_err(), "unadmitted action must fail: {action}");
             assert_eq!(app.state.doc.pending_ops(), pending, "{action}");
             assert_eq!(app.state.doc.base_heads(), before, "{action}");
@@ -6849,29 +6793,16 @@ mod semantic_tree_app_tests {
         let mut app = app();
         let address = tilo_actions::ActionAddress::new("test.counter", "host-bump");
 
-        let local = app.invoke_resource_action(
-            &address,
-            None,
-            &app.collaboration.local_author.0.clone(),
-            false,
-            false,
-            None,
-            None,
-            None,
-        );
+        let actor = app.collaboration.local_author.0.clone();
+        let local = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(local.is_err(), "an unbrokered client must fail closed");
         assert_eq!(counter(&app), 0);
 
-        let admitted = app.invoke_resource_action(
-            &address,
-            None,
-            "agent:Scribe",
-            true,
-            true,
-            None,
-            Some(tilo_actions::InvocationId::new()),
-            None,
-        );
+        let request = ResourceInvocation::new(&address, "agent:Scribe")
+            .confirmed(true)
+            .broker_admitted(true)
+            .invocation(Some(tilo_actions::InvocationId::new()));
+        let admitted = app.invoke_resource_action(request);
         assert!(admitted.is_ok(), "the authoritative broker admitted it");
         assert_eq!(counter(&app), 1);
         assert_eq!(
@@ -6888,14 +6819,13 @@ mod semantic_tree_app_tests {
         let invocation = tilo_actions::InvocationId::new();
         let error = app
             .invoke_resource_action(
-                &tilo_actions::ActionAddress::new("test.counter", "inspect"),
-                None,
-                "agent:Scribe",
-                true,
-                true,
-                None,
-                Some(invocation),
-                None,
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new("test.counter", "inspect"),
+                    "agent:Scribe",
+                )
+                .confirmed(true)
+                .broker_admitted(true)
+                .invocation(Some(invocation)),
             )
             .expect_err("a remote presentation action must be refused");
 
@@ -7105,16 +7035,9 @@ mod semantic_tree_app_tests {
     fn local_effect_completion_does_not_mutate_the_app_document() {
         let mut app = app();
         let before = app.state.doc.get_heads();
-        let result = app.invoke_resource_action(
-            &tilo_actions::ActionAddress::new("test.counter", "ping"),
-            None,
-            &app.collaboration.local_author.0.clone(),
-            false,
-            false,
-            None,
-            None,
-            None,
-        );
+        let address = tilo_actions::ActionAddress::new("test.counter", "ping");
+        let actor = app.collaboration.local_author.0.clone();
+        let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(matches!(
             result,
             Ok(crate::widget::ResourceOperationStart::Completed(_))
@@ -8776,14 +8699,11 @@ mod bound_component_tests {
         let actor = app.collaboration.local_author.0.clone();
         assert!(matches!(
             app.invoke_resource_action(
-                &tilo_actions::ActionAddress::new("bound:probe", "follow-up"),
-                None,
-                &actor,
-                false,
-                false,
-                None,
-                Some(tilo_actions::InvocationId::new()),
-                None,
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new("bound:probe", "follow-up"),
+                    &actor,
+                )
+                .invocation(Some(tilo_actions::InvocationId::new())),
             )
             .unwrap(),
             crate::widget::ResourceOperationStart::Accepted
@@ -9090,7 +9010,7 @@ mod bound_component_tests {
         let actor = fixture.app.collaboration.local_author.0.clone();
         let error = fixture
             .app
-            .invoke_resource_action(&address, None, &actor, true, false, None, None, None)
+            .invoke_resource_action(ResourceInvocation::new(&address, &actor).confirmed(true))
             .unwrap_err();
         assert_eq!(
             crate::bound_dispatch::door_error_code(&error),
@@ -9135,14 +9055,14 @@ mod bound_component_tests {
         fixture
             .app
             .invoke_resource_action(
-                &tilo_actions::ActionAddress::new(&second, "follow-up"),
-                None,
-                &actor,
-                true,
-                true,
-                Some(&serde_json::json!({"confirm": true})),
-                Some(tilo_actions::InvocationId::new()),
-                None,
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new(&second, "follow-up"),
+                    &actor,
+                )
+                .confirmed(true)
+                .broker_admitted(true)
+                .evidence(Some(&serde_json::json!({"confirm": true})))
+                .invocation(Some(tilo_actions::InvocationId::new())),
             )
             .unwrap();
         assert!(
@@ -9263,18 +9183,13 @@ mod bound_component_tests {
         );
         assert_eq!(fixture.app.state.doc.get_heads(), outer);
         fixture.app.close_components();
+        let actor = fixture.app.collaboration.local_author.0.clone();
         assert!(
             fixture
                 .app
                 .invoke_bound_target(
                     &target,
-                    None,
-                    &fixture.app.collaboration.local_author.0.clone(),
-                    true,
-                    false,
-                    None,
-                    None,
-                    None
+                    &ResourceInvocation::new(&target.address.address, &actor).confirmed(true)
                 )
                 .is_err()
         );
@@ -9349,14 +9264,12 @@ mod bound_component_tests {
             fixture
                 .app
                 .invoke_resource_action(
-                    &tilo_actions::ActionAddress::new(&alias, "follow-up"),
-                    None,
-                    &actor,
-                    true,
-                    true,
-                    None,
-                    None,
-                    None,
+                    ResourceInvocation::new(
+                        &tilo_actions::ActionAddress::new(&alias, "follow-up"),
+                        &actor,
+                    )
+                    .confirmed(true)
+                    .broker_admitted(true),
                 )
                 .is_err()
         );
@@ -9438,13 +9351,9 @@ mod bound_component_tests {
                 .app
                 .invoke_bound_target(
                     &target,
-                    None,
-                    "fixture-user",
-                    true,
-                    false,
-                    None,
-                    Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(91))),
-                    None,
+                    &ResourceInvocation::new(&target.address.address, "fixture-user")
+                        .confirmed(true)
+                        .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(91)))),
                 )
                 .unwrap();
             if mode == 0 {
@@ -9512,13 +9421,9 @@ mod bound_component_tests {
                 .app
                 .invoke_bound_target(
                     &target,
-                    None,
-                    "fixture-user",
-                    true,
-                    false,
-                    None,
-                    Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(92))),
-                    None,
+                    &ResourceInvocation::new(&target.address.address, "fixture-user")
+                        .confirmed(true)
+                        .invocation(Some(tilo_actions::InvocationId(uuid::Uuid::from_u128(92)))),
                 )
                 .unwrap_err();
             assert_eq!(
@@ -9584,7 +9489,11 @@ mod bound_component_tests {
             let target = fixture.target(1, "follow-up");
             fixture
                 .app
-                .invoke_bound_target(&target, None, "fixture-user", true, false, None, None, None)
+                .invoke_bound_target(
+                    &target,
+                    &ResourceInvocation::new(&target.address.address, "fixture-user")
+                        .confirmed(true),
+                )
                 .unwrap();
             assert_eq!(
                 b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo,
@@ -9637,13 +9546,7 @@ mod bound_component_tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = fixture.app.invoke_bound_target(
                 &target,
-                None,
-                "fixture-user",
-                true,
-                false,
-                None,
-                None,
-                None,
+                &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
             );
         }));
         assert!(result.is_err());
@@ -9986,13 +9889,9 @@ mod bound_component_tests {
             .app
             .invoke_bound_target_with_broker(
                 &target,
-                None,
-                &actor,
-                true,
-                false,
-                Some(&evidence),
-                None,
-                None,
+                &ResourceInvocation::new(&target.address.address, &actor)
+                    .confirmed(true)
+                    .evidence(Some(&evidence)),
                 Some(&mut |request| requests.push(request)),
             )
             .unwrap();
@@ -10182,7 +10081,10 @@ mod bound_component_tests {
         );
         fixture
             .app
-            .invoke_bound_target(target, None, "fixture-user", true, false, None, None, None)
+            .invoke_bound_target(
+                target,
+                &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
+            )
             .unwrap();
         fixture.app.open_action_palette();
         let palette = fixture.app.actions.action_palette.as_mut().unwrap();
@@ -10298,13 +10200,7 @@ mod bound_component_tests {
             .app
             .invoke_bound_target_with_broker(
                 target,
-                None,
-                "fixture-user",
-                true,
-                false,
-                None,
-                None,
-                None,
+                &ResourceInvocation::new(&target.address.address, "fixture-user").confirmed(true),
                 Some(&mut |_| sent = true),
             )
             .unwrap_err();
@@ -10336,13 +10232,11 @@ mod bound_component_tests {
             .app
             .invoke_bound_target(
                 &fixture.target(1, "view"),
-                None,
-                "fixture-user",
-                true,
-                false,
-                None,
-                None,
-                None,
+                &ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new("bound:probe", "view"),
+                    "fixture-user",
+                )
+                .confirmed(true),
             )
             .unwrap();
     }
@@ -10630,13 +10524,7 @@ mod prepared_runner_tests {
         };
         app.invoke_bound_target(
             &target,
-            None,
-            "probe-author",
-            false,
-            false,
-            None,
-            None,
-            None,
+            &ResourceInvocation::new(&target.address.address, "probe-author"),
         )
         .unwrap();
         assert_eq!(body(&binding.records, &binding.checkout), "edited");
