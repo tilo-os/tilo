@@ -39,15 +39,177 @@ delete existing boot entries.
 
 ## Required live checks
 
-Before selecting an install target, record pass/fail for these five items in
-the live session:
+The retained 7.2.5 kernel and inspected diagnostic runtime provide the expected
+Lenovo device tree, Qualcomm display/input drivers, NetworkManager Wi-Fi
+plugin, regulatory data, and WCN7850 firmware/board entry for PCI ID
+`17cb:1107` with Lenovo subsystem `17aa:e0e9`. The finalized native medium must
+be inspected to confirm it retained those inputs. Even then they are static
+prerequisites, not evidence that the devices work together. Complete this
+short runbook on the laptop before selecting an install target. It writes
+diagnostics only to `/run`, which is the live system's volatile memory.
 
-- display/GPU renders the desktop and installer UI;
-- built-in keyboard types and the touchpad moves/clicks;
-- the internal NVMe is visible, including the Windows EFI, Windows C:, and
-  recovery partitions;
+### 1. Reach a root terminal
+
+First confirm that the graphical installer appears and the built-in keyboard
+can type. Press **Ctrl+Alt+F2**, choose **5**, and open the root shell. If the
+built-in keyboard is unusable, connect a USB keyboard and repeat; this is an
+acceptable bring-up fallback but must be recorded as an internal-keyboard
+failure. Start a volatile transcript:
+
+```bash
+mkdir -p /run/tilo-live-audit
+exec > >(tee -a /run/tilo-live-audit/console.txt) 2>&1
+date -Is
+uname -a
+tr '\0' '\n' </proc/device-tree/compatible
+cat /proc/device-tree/model
+cat /usr/lib/tilo/hardware-profile.json
+sha256sum "/usr/lib/modules/$(uname -r)/dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb"
+find /usr/lib/firmware/qcom/x1e80100/LENOVO/83ED -maxdepth 1 -type f \
+  -printf '%f %s bytes\n' | sort
+```
+
+The compatible/model output must identify the Lenovo Yoga Slim 7x rather than
+a generic VM. The hardware profile must name `lenovo-83ed`, bind the running
+kernel's DTB, and list all six reviewed Qualcomm firmware files. A usable tty
+and root shell prove the recovery path even if the graphical session later
+fails. Do not mount, format, repair, or install from this shell.
+
+### 2. Display and GPU
+
+Run:
+
+```bash
+for card in /sys/class/drm/card[0-9]*; do
+  [ -e "$card" ] || continue
+  printf '%s driver=%s\n' "${card##*/}" \
+    "$(basename "$(readlink -f "$card/device/driver")")"
+done
+for output in /sys/class/drm/card[0-9]*-*; do
+  [ -r "$output/status" ] || continue
+  printf '%s status=%s\n' "${output##*/}" "$(cat "$output/status")"
+done
+journalctl -b -k --no-pager | grep -Ei \
+  'drm|msm|dpu|adreno|gpu|display|simpledrm|qcom.*firmware|firmware.*qcom'
+```
+
+Pass requires the internal panel to be connected, the graphical desktop and
+installer to render without corruption, and pointer/keyboard interaction to
+remain responsive. An `msm` DRM binding is the expected accelerated path.
+`simpledrm` is useful as a firmware-framebuffer fallback for the tty, but by
+itself does not pass the graphical-desktop/GPU check. If the desktop is blank,
+use the tty to retain `/run/tilo-live-audit/console.txt` and the kernel journal;
+do not install. An external USB-C display can aid diagnosis but does not replace
+proof of the internal panel.
+
+### 3. Keyboard and touchpad
+
+Inventory kernel input devices without reading keystrokes into a file:
+
+```bash
+cat /proc/bus/input/devices
+for event in /sys/class/input/event*; do
+  [ -r "$event/device/name" ] || continue
+  printf '%s name=%s driver=%s\n' "${event##*/}" \
+    "$(cat "$event/device/name")" \
+    "$(basename "$(readlink -f "$event/device/driver")")"
+done
+journalctl -b -k --no-pager | grep -Ei \
+  'QTEC0001|QTEC0002|IDEA4001|i2c.hid|hid.multitouch|keyboard|touchpad|touchscreen'
+```
+
+Return with **Ctrl+Alt+F1** (or choose recovery option **7**). Pass the keyboard
+by opening global search with **Super+Space**, typing `terminal`, opening it,
+and typing a mixed-case line with numbers and punctuation. Pass the touchpad by
+moving the pointer, single-clicking, right-clicking, scrolling, and dragging a
+window. A USB mouse permits continued bring-up if the touchpad fails, but record
+that failure; keyboard-only routes are **Super+Space** for applications and
+**Super+Enter** for Terminal.
+
+### 4. Wi-Fi and network fallback
+
+In Terminal, or in the F2 root shell if the desktop network UI is unavailable:
+
+```bash
+nmcli -f DEVICE,TYPE,STATE,CONNECTION device status
+wifi="$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2 == "wifi" {print $1; exit}')"
+test -n "$wifi" && nmcli radio wifi on
+test -n "$wifi" && nmcli device wifi rescan ifname "$wifi"
+test -n "$wifi" && nmcli -f IN-USE,SSID,SIGNAL,SECURITY device wifi list ifname "$wifi"
+```
+
+Join a test network without putting its password in the transcript or shell
+history:
+
+```bash
+read -r -p 'SSID: ' SSID
+nmcli --ask device wifi connect "$SSID" ifname "$wifi"
+nmcli -f GENERAL.STATE,IP4.ADDRESS,IP4.GATEWAY device show "$wifi"
+nmcli general connectivity check
+getent ahosts chatgpt.com
+```
+
+Pass requires an address, DNS resolution, and transferred web content, not
+merely an adapter listed as `connected`. If no Wi-Fi interface appears, retain
+these diagnostics before rebooting:
+
+```bash
+for device in /sys/bus/pci/devices/*; do
+  [ "$(cat "$device/vendor" 2>/dev/null)" = 0x17cb ] || continue
+  printf '%s vendor=%s device=%s subsystem=%s:%s driver=%s\n' \
+    "${device##*/}" "$(cat "$device/vendor")" "$(cat "$device/device")" \
+    "$(cat "$device/subsystem_vendor")" "$(cat "$device/subsystem_device")" \
+    "$(basename "$(readlink -f "$device/driver")")"
+done
+journalctl -b -k --no-pager | grep -Ei 'ath12k|wcn7850|mhi|17cb|firmware'
+```
+
+For the first iteration, USB-C Ethernet or Android USB tethering is an
+acceptable route to a browser: connect it, rerun `nmcli device status`, and
+confirm connectivity and DNS. This fallback allows live debugging but does not
+turn a failed internal Wi-Fi check into a pass.
+
+### 5. Desktop, browser and ChatGPT
+
+From the desktop, press **Super+Enter** and confirm Terminal opens and accepts
+commands with normal interactive latency. Then press **Super+Space**, type
+`browser`, open **Browser**, and browse first to `https://example.com` to prove
+ordinary HTTPS rendering. Browse to `https://chatgpt.com`, confirm the page
+renders and accepts text in its prompt field. Authentication is not required
+for hardware acceptance; an existing session may be used if present.
+
+Pass requires visible page content and working keyboard and pointer input.
+Starting a process or resolving DNS alone is insufficient. If the Tilo browser
+fails, retain its user journal from the root tty:
+
+```bash
+journalctl -b --no-pager | grep -Ei 'browser|webkit|cef|shell|greetd|wayland|drm'
+```
+
+An independently packaged ARM64 browser may be used only as a diagnostic
+fallback. It can prove the graphics/network route but does not pass the shipped
+Tilo Browser check.
+
+### 6. Storage identity (read-only)
+
+Finally, from the root tty run only read-only inventory commands:
+
+```bash
+lsblk -e7 -o NAME,PATH,MODEL,SERIAL,TRAN,SIZE,TYPE,FSTYPE,PARTLABEL,PARTUUID,MOUNTPOINTS
+findmnt -rn -o SOURCE,TARGET,FSTYPE
+```
+
+Before selecting an install target, record pass/fail for these five gates:
+
+- internal display uses the accelerated DRM path and renders the desktop and
+  installer UI;
+- built-in keyboard types and the touchpad moves/clicks (record any USB input
+  fallback separately);
+- the internal Samsung NVMe is visible, including the Windows EFI, Windows C:,
+  and recovery partitions;
 - the installer USB remains visible and readable;
-- Wi-Fi associates and transfers a small test file.
+- internal Wi-Fi associates and transfers data, or a documented temporary
+  wired/tether route reaches the browser while the Wi-Fi failure is retained.
 
 Audio, Bluetooth, battery reporting, and suspend/resume are useful follow-up
 checks but are not installation gates for this first bring-up. Record failures
