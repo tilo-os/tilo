@@ -727,6 +727,7 @@ jobs:
           }
           registry_metadata="$RUNNER_TEMP/tilo-registry-metadata"
           registry_media="$RUNNER_TEMP/tilo-registry-media"
+          registry_media_urls="$RUNNER_TEMP/tilo-registry-media-public-urls.tsv"
           registry_apps=$(for index in release/*/index.json; do jq -r '.apps[].name' "$index"; done | sort -u | xargs)
           [[ -n $registry_apps ]] || { printf 'no apps selected for registry metadata\n' >&2; exit 1; }
           python3 -I tools/ci/python.py tools/apps/registry_metadata.py build \
@@ -735,12 +736,46 @@ jobs:
             --output "$registry_metadata" --media-output "$registry_media"
           registry_media_uploads="$RUNNER_TEMP/tilo-registry-media-uploads.tsv"
           : > "$registry_media_uploads"
+          : > "$registry_media_urls"
           while IFS= read -r media; do
             printf '%s\t%s\n' "$registry_media/$media" \
               "$package_api/tilo-app-metadata/$VERSION/$media" >> "$registry_media_uploads"
+            printf '%s\t%s\n' "$media" \
+              "$registry_url/artifacts/$owner/generic/tilo-app-metadata/$VERSION/$media" >> "$registry_media_urls"
           done < <(find "$registry_media" -maxdepth 1 -type f -printf '%f\n' | sort)
           TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
             tools/upload_immutable_packages.sh "$registry_media_uploads"
+
+          # Registry metadata is a public API contract.  Do not sign image
+          # URLs into an entry until the public artifact endpoint can serve
+          # every generated icon or screenshot with its real image type.
+          # This guards against the package upload and public proxy drifting
+          # apart and avoids publishing Store cards that render as blanks.
+          while IFS=$'\t' read -r media media_url; do
+            case "$media" in
+              *.svg) expected_type='image/svg+xml' ;;
+              *.png) expected_type='image/png' ;;
+              *.jpg|*.jpeg) expected_type='image/jpeg' ;;
+              *.webp) expected_type='image/webp' ;;
+              *) printf 'unsupported registry media type: %s\n' "$media" >&2; exit 1 ;;
+            esac
+            headers="$RUNNER_TEMP/tilo-registry-media-headers"
+            status='000'
+            content_type=''
+            for attempt in 1 2 3 4 5; do
+              : > "$headers"
+              status=$(curl --silent --show-error --location --head --dump-header "$headers" \
+                --output /dev/null --write-out '%{http_code}' "$media_url") || status='000'
+              content_type=$(tr -d '\r' < "$headers" | awk 'tolower($1) == "content-type:" { print tolower($2) }' | tail -n 1)
+              [[ $status == 200 && $content_type == "$expected_type" ]] && break
+              (( attempt < 5 )) && sleep "$attempt"
+            done
+            [[ $status == 200 && $content_type == "$expected_type" ]] || {
+              printf 'public registry media is unavailable or has the wrong type (%s: HTTP %s, %s; expected %s)\n' \
+                "$media_url" "$status" "${content_type:-no Content-Type}" "$expected_type" >&2
+              exit 1
+            }
+          done < "$registry_media_urls"
 
           # Submit every newly built immutable tapp to the signed registry.
           # The request is signed by the same identity as the package; retries

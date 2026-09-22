@@ -2602,16 +2602,16 @@ fn power_menu_lock_enters_tilo_session_and_cuts_off_client_input() {
     client.clear_keyboard_trace();
 
     // Open Quick Settings through its configured default (Super+Q), then
-    // Keyboard-navigate its visible action row to Power and open it. Focus
-    // starts with no hidden selection, followed by Edit, Settings, Privacy,
-    // History and Power;
+    // Reverse-Tab from no hidden selection to the final root action, Power,
+    // and open it. This remains stable as high-frequency controls are added
+    // before the utility row;
     // the next Enter activates the default Lock row in the modal.
     compositor.modifiers(false, false, false, true);
     compositor.key("q");
     compositor.modifiers(false, false, false, false);
-    for _ in 0..5 {
-        compositor.key("Tab");
-    }
+    compositor.modifiers(false, true, false, false);
+    compositor.key("Tab");
+    compositor.modifiers(false, false, false, false);
     compositor.key("Enter");
     compositor.key("Enter");
 
