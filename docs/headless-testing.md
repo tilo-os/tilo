@@ -421,13 +421,13 @@ registries offer, pressing Enter, and getting a tab.
 
 ```bash
 cargo build -p shell -p sheets -p install -p launcher
-cargo build -p app-catalogue --bins --examples
+cargo build -p app-cli --bins --examples
 
 scripts/demo/install-on-open.py --out target/install-on-open
 scripts/demo/install-on-open.py --backend winit --stage-only   # drive it yourself
 ```
 
-It packs the real Sheets binary into a signed `.qpkg`, serves it from a
+It packs the real Sheets binary into a signed `.tapp`, serves it from a
 loopback registry, points a headless compositor at an empty install
 root, and then checks four things off the compositor's own state: that
 the app is offered and absent, that its palette row is worded

@@ -364,7 +364,7 @@ mod tests {
         );
         assert_eq!(
             identity
-                .sign_collaboration_op("workspace", "dev.tilo.notes", "record", b"op")
+                .sign_collaboration_op("workspace", "so.tilo.notes", "record", b"op")
                 .expect("op"),
             [13; 64]
         );
@@ -395,7 +395,7 @@ mod tests {
                 unsigned_op,
             } => {
                 assert_eq!(workspace_id, "workspace");
-                assert_eq!(app_id, "dev.tilo.notes");
+                assert_eq!(app_id, "so.tilo.notes");
                 assert_eq!(record_id, "record");
                 assert_eq!(unsigned_op, b"op");
             }

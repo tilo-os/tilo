@@ -19,7 +19,7 @@ use crate::{
     surface,
     text_render::{TextRenderer, TextWeight},
     theme::Theme,
-    widget::{TaffyTreeExt, Widget},
+    widget::{Button, ButtonFace, Chip, ChipLead, ChipStyle, TaffyTreeExt, Widget},
 };
 use automerge::{AutoCommit, ObjId};
 use std::{
@@ -335,6 +335,13 @@ enum DragSelection {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RegionChrome {
+    metadata: Rect,
+    remove: Rect,
+    outside: bool,
+}
+
 impl DragSelection {
     fn set_current(&mut self, point: Point) {
         match self {
@@ -357,6 +364,7 @@ pub struct CaptureStudio {
     mode: CaptureMode,
     source: SourceMode,
     regions: Vec<Rect>,
+    region_remove_rects: Vec<Rect>,
     drag: Option<DragSelection>,
     cursor: Point,
     include_pointer: bool,
@@ -428,6 +436,7 @@ impl Default for CaptureStudio {
             mode: CaptureMode::Screenshot,
             source: SourceMode::Region,
             regions: Vec::new(),
+            region_remove_rects: Vec::new(),
             drag: None,
             cursor: Point::ZERO,
             include_pointer: false,
@@ -502,6 +511,7 @@ impl CaptureStudio {
         self.open = true;
         self.opened_at = Some(Instant::now());
         self.regions.clear();
+        self.region_remove_rects.clear();
         self.drag = None;
         if self.recording_active {
             self.mode = CaptureMode::Recording;
@@ -623,6 +633,7 @@ impl CaptureStudio {
     pub fn set_source_mode(&mut self, source: SourceMode) {
         self.source = source;
         self.regions.clear();
+        self.region_remove_rects.clear();
         self.selected_target = if source == SourceMode::Window {
             self.candidates.first().map(|target| target.id.clone())
         } else {
@@ -1074,12 +1085,10 @@ impl CaptureStudio {
         }
     }
     fn selection_bounds(&self) -> Rect {
-        Rect::new(
-            self.rect.x0 + 8.0,
-            self.rect.y0 + 90.0,
-            self.rect.x1 - 8.0,
-            self.bottom_bar().y0 - 12.0,
-        )
+        // Picker chrome floats over the clean compositor scene and disappears
+        // before capture execution. It must not make the physical output's
+        // top and bottom bands impossible to select.
+        self.rect
     }
 
     fn selection_handle_points(region: Rect) -> [(SelectionHandle, Point); 8] {
@@ -1259,13 +1268,95 @@ impl CaptureStudio {
         *region = Self::moved_selection_rect(*region, Point::ZERO, Point::ZERO + delta, bounds);
         true
     }
-    fn region_remove_rect(region: Rect) -> Rect {
-        Rect::new(
-            region.x1 - 34.0,
-            region.y0 + 8.0,
-            region.x1 - 10.0,
-            region.y0 + 32.0,
-        )
+    fn region_chrome_layout(
+        region: Rect,
+        metadata_width: f64,
+        bounds: Rect,
+        occupied: &[Rect],
+    ) -> RegionChrome {
+        const HEIGHT: f64 = 24.0;
+        const GAP: f64 = 6.0;
+        const REMOVE_WIDTH: f64 = 24.0;
+        let total_width = metadata_width + GAP + REMOVE_WIDTH;
+        let clamp_x = |x: f64| x.clamp(bounds.x0, (bounds.x1 - total_width).max(bounds.x0));
+        let clamp_y = |y: f64| y.clamp(bounds.y0, (bounds.y1 - HEIGHT).max(bounds.y0));
+        let candidates = [
+            Rect::new(
+                clamp_x(region.x0),
+                region.y0 - GAP - HEIGHT,
+                clamp_x(region.x0) + total_width,
+                region.y0 - GAP,
+            ),
+            Rect::new(
+                clamp_x(region.x0),
+                region.y1 + GAP,
+                clamp_x(region.x0) + total_width,
+                region.y1 + GAP + HEIGHT,
+            ),
+            Rect::new(
+                region.x1 + GAP,
+                clamp_y(region.y0),
+                region.x1 + GAP + total_width,
+                clamp_y(region.y0) + HEIGHT,
+            ),
+            Rect::new(
+                region.x0 - GAP - total_width,
+                clamp_y(region.y0),
+                region.x0 - GAP,
+                clamp_y(region.y0) + HEIGHT,
+            ),
+        ];
+        let group = candidates.into_iter().find(|candidate| {
+            bounds.contains(candidate.origin())
+                && bounds.contains(Point::new(candidate.x1, candidate.y1))
+                && occupied
+                    .iter()
+                    .all(|other| candidate.intersect(*other).area() <= 0.0)
+        });
+        let (group, outside) = group.map_or_else(
+            || {
+                let x0 = clamp_x(region.x0 + 8.0);
+                let y0 = clamp_y(region.y0 + 8.0);
+                (Rect::new(x0, y0, x0 + total_width, y0 + HEIGHT), false)
+            },
+            |group| (group, true),
+        );
+        RegionChrome {
+            metadata: Rect::new(group.x0, group.y0, group.x0 + metadata_width, group.y1),
+            remove: Rect::new(group.x1 - REMOVE_WIDTH, group.y0, group.x1, group.y1),
+            outside,
+        }
+    }
+
+    fn region_chrome(
+        &self,
+        region: Rect,
+        index: usize,
+        regions: &[Rect],
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) -> (Option<String>, Option<String>, String, RegionChrome) {
+        let multiple = regions.len() > 1;
+        let dimensions = format!(
+            "{} × {}",
+            region.width().round() as i64,
+            region.height().round() as i64
+        );
+        let live = (self.mode == CaptureMode::Pip).then(|| "LIVE".to_string());
+        let ordinal = multiple.then(|| (index + 1).to_string());
+        let labels = [
+            live.as_deref(),
+            ordinal.as_deref(),
+            Some(dimensions.as_str()),
+        ];
+        let visible = labels.into_iter().flatten().collect::<Vec<_>>();
+        let width = visible
+            .iter()
+            .map(|label| Chip::natural_width_at(label, 24.0, ChipLead::None, theme, text_renderer))
+            .sum::<f64>()
+            + visible.len().saturating_sub(1) as f64 * 4.0;
+        let chrome = Self::region_chrome_layout(region, width, self.selection_bounds(), regions);
+        (live, ordinal, dimensions, chrome)
     }
     fn selected_candidate(&self) -> Option<&CaptureTarget> {
         let id = self.selected_target.as_ref()?;
@@ -1332,23 +1423,21 @@ impl CaptureStudio {
         // every pointer move; making this pill resize for every digit during a
         // drag adds visual chatter rather than useful feedback.
         let regions = &self.regions;
-        let finish = match self.mode {
-            CaptureMode::Screenshot => "Enter to save",
-            CaptureMode::Recording => "Enter to record",
-            CaptureMode::Pip => "Enter to float",
-        };
         if self.source == SourceMode::Region
             && let Some(region) = regions.last()
         {
             return format!(
-                "{} × {} · {finish}",
+                "{} × {} selected",
                 region.width().round() as i64,
                 region.height().round() as i64,
             );
         }
         if self.source == SourceMode::Multi && !regions.is_empty() {
             let noun = if regions.len() == 1 { "area" } else { "areas" };
-            return format!("{} {noun} · drag to add · {finish}", regions.len());
+            return format!(
+                "{} {noun} selected. Shift-drag to add another.",
+                regions.len()
+            );
         }
         match (self.mode, self.source) {
             (CaptureMode::Screenshot, SourceMode::Region) => "Drag to select",
@@ -2131,6 +2220,10 @@ impl CaptureStudio {
     }
 
     fn click(&mut self, p: Point) {
+        self.click_with_additive(p, false);
+    }
+
+    fn click_with_additive(&mut self, p: Point, additive: bool) {
         if self.replay_active {
             let (_, save, stop) = self.replay_indicator_rects();
             if self.replay_saved_actions_visible() {
@@ -2315,13 +2408,14 @@ impl CaptureStudio {
                 }
                 return;
             }
-            if self.source == SourceMode::Multi
+            if matches!(self.source, SourceMode::Region | SourceMode::Multi)
                 && let Some(index) = self
-                    .regions
+                    .region_remove_rects
                     .iter()
-                    .position(|region| Self::region_remove_rect(*region).contains(p))
+                    .position(|remove| remove.contains(p))
             {
                 self.regions.remove(index);
+                self.region_remove_rects.clear();
                 return;
             }
             if matches!(self.source, SourceMode::Region | SourceMode::Multi)
@@ -2329,7 +2423,7 @@ impl CaptureStudio {
             {
                 return;
             }
-            if self.source != SourceMode::Multi {
+            if self.source != SourceMode::Multi || !additive {
                 self.regions.clear()
             }
             self.drag = Some(DragSelection::Create {
@@ -2392,6 +2486,7 @@ impl CaptureStudio {
     fn toggle_button(
         scene: &mut Scene,
         t: Affine,
+        tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
         on: bool,
@@ -2789,9 +2884,8 @@ impl CaptureStudio {
         active: bool,
         hovered: bool,
     ) {
-        let c = &theme.tokens.colors;
-        let color = if active || hovered {
-            c.text_primary
+        let face = if active {
+            ButtonFace::new(rect, label).primary()
         } else {
             c.text_dim
         };
@@ -3963,7 +4057,6 @@ impl CaptureStudio {
         }
 
         let label_x = preview.x1 + 9.0;
-        let compact = self.status_rect().width() < 1000.0;
         let action_limit = if receipt.copied { dismiss.x0 } else { pin.x0 };
         let label = if compact {
             format!(
@@ -4535,7 +4628,8 @@ impl Widget for CaptureStudio {
             }
         }
         if self.source != SourceMode::Window {
-            for (i, r) in regions.into_iter().enumerate() {
+            self.region_remove_rects.clear();
+            for (i, r) in regions.iter().copied().enumerate() {
                 s.fill(
                     Fill::NonZero,
                     t,
@@ -4646,19 +4740,39 @@ impl Widget for CaptureStudio {
                         None,
                         &RoundedRect::from_rect(remove, 12.0),
                     );
-                    icons::draw_icon(
+                    let rect = Rect::new(
+                        metadata_x,
+                        chrome.metadata.y0,
+                        metadata_x + width,
+                        chrome.metadata.y1,
+                    );
+                    Chip::draw_at(
                         s,
                         t,
-                        remove.inset(-6.0),
-                        Icon::X,
-                        if hovered {
-                            c.semantic.danger
-                        } else {
-                            c.text_dim
-                        },
-                        1.4,
+                        rect,
+                        label,
+                        ChipLead::None,
+                        ChipStyle::tinted(selection_color),
+                        theme,
+                        tr,
                     );
+                    metadata_x = rect.x1 + 4.0;
                 }
+                let hovered = chrome.remove.contains(self.cursor);
+                let face = if hovered {
+                    ButtonFace::new(chrome.remove, "")
+                        .danger()
+                        .icon(Icon::X)
+                        .accessible_name("Remove selection")
+                } else {
+                    ButtonFace::new(chrome.remove, "")
+                        .icon(Icon::X)
+                        .accessible_name("Remove selection")
+                }
+                .radius(12.0)
+                .hovered(hovered);
+                Button::paint(s, t, tr, theme, &face);
+                self.region_remove_rects.push(chrome.remove);
             }
         }
         let top = self.top_bar();
@@ -4945,6 +5059,7 @@ impl Widget for CaptureStudio {
             Self::toggle_button(
                 s,
                 bottom_t,
+                tr,
                 theme,
                 pointer,
                 self.include_pointer,
@@ -4956,6 +5071,7 @@ impl Widget for CaptureStudio {
             Self::toggle_button(
                 s,
                 bottom_t,
+                tr,
                 theme,
                 self.system_audio_rect(),
                 self.audio.includes_system(),
@@ -4967,6 +5083,7 @@ impl Widget for CaptureStudio {
             Self::toggle_button(
                 s,
                 bottom_t,
+                tr,
                 theme,
                 self.microphone_rect(),
                 self.audio.includes_microphone(),
@@ -5007,43 +5124,6 @@ impl Widget for CaptureStudio {
                 CaptureMode::Pip => i == 1,
             };
             let danger_action = self.mode == CaptureMode::Recording && i == 2;
-            let foreground = if danger_action && active {
-                c.ink_on(
-                    c.semantic.danger,
-                    c.text_primary,
-                    crate::tokens::colors::ON_FILL_MIN_CONTRAST,
-                )
-            } else if active {
-                c.text_primary
-            } else {
-                c.text_dim
-            };
-            s.fill(
-                Fill::NonZero,
-                bottom_t,
-                if active && emphasized {
-                    match self.mode {
-                        CaptureMode::Screenshot => c.accent[5],
-                        CaptureMode::Recording => c.semantic.danger,
-                        CaptureMode::Pip => c.semantic.info,
-                    }
-                } else if hovered {
-                    c.lift(0.72)
-                } else {
-                    c.lift(0.35)
-                },
-                None,
-                &RoundedRect::from_rect(r, 10.0),
-            );
-            if hovered && emphasized {
-                s.stroke(
-                    &Stroke::new(1.0),
-                    bottom_t,
-                    c.text_primary.with_alpha_factor(0.30),
-                    None,
-                    &RoundedRect::from_rect(r.inflate(-0.5, -0.5), 9.5),
-                );
-            }
             let labeled = emphasized || (self.mode == CaptureMode::Recording && i == 1);
             let icon_rect = if labeled {
                 // Icon and label sit on the button's centre line together.
@@ -5081,6 +5161,13 @@ impl Widget for CaptureStudio {
                     TextWeight::Semibold,
                 );
             }
+            .icon(icon)
+            .radius(10.0)
+            .text_size(theme.tokens.typography.scale.xs)
+            .weight(TextWeight::Semibold)
+            .hovered(hovered)
+            .disabled(!active);
+            Button::paint(s, bottom_t, tr, theme, &face);
         }
         s.pop_layer()
     }
@@ -5234,7 +5321,7 @@ impl Widget for CaptureStudio {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.click(self.cursor),
+            } => self.click_with_additive(self.cursor, modifiers.state().shift_key()),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -5463,6 +5550,9 @@ impl Widget for CaptureStudio {
         if matches!(self.source, SourceMode::Region | SourceMode::Multi) {
             for (index, region) in self.regions.iter().enumerate() {
                 o.push((format!("capture.selection.{index}.move"), *region));
+                if let Some(remove) = self.region_remove_rects.get(index) {
+                    o.push((format!("capture.selection.{index}.remove"), *remove));
+                }
                 for (handle, point) in Self::selection_handle_points(*region) {
                     let name = match handle {
                         SelectionHandle::NorthWest => "nw",
@@ -5546,10 +5636,10 @@ mod tests {
         assert_eq!(s.default_picker_context(), "Drag to select");
 
         s.regions.push(Rect::new(20., 100., 640., 470.));
-        assert_eq!(s.default_picker_context(), "620 × 370 · Enter to save");
+        assert_eq!(s.default_picker_context(), "620 × 370 selected");
 
         s.set_mode(CaptureMode::Recording);
-        assert_eq!(s.default_picker_context(), "620 × 370 · Enter to record");
+        assert_eq!(s.default_picker_context(), "620 × 370 selected");
 
         s.set_mode(CaptureMode::Pip);
         s.set_source_mode(SourceMode::Multi);
@@ -5559,7 +5649,7 @@ mod tests {
         ]);
         assert_eq!(
             s.default_picker_context(),
-            "2 areas · drag to add · Enter to float"
+            "2 areas selected. Shift-drag to add another."
         );
     }
 
@@ -5569,7 +5659,7 @@ mod tests {
         let mut target = CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             visible_rect: Rect::new(0.0, 90.0, 84.0, 590.0),
             virtual_rect: Rect::new(-916.0, 90.0, 84.0, 590.0),
             complete_rect: Some(Rect::new(-916.0, 90.0, 394.0, 1_278.0)),
@@ -5603,7 +5693,7 @@ mod tests {
         let target = CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             visible_rect: Rect::new(0.0, 90.0, 84.0, 590.0),
             virtual_rect: Rect::new(-916.0, 90.0, 84.0, 590.0),
             complete_rect: Some(Rect::new(-916.0, 90.0, 394.0, 1_278.0)),
@@ -5650,6 +5740,61 @@ mod tests {
         assert_eq!(i.destination, CaptureDestination::FloatingWindow);
         assert_eq!(i.source, SourceMode::Multi);
         assert_eq!(i.mode, CaptureMode::Pip);
+    }
+
+    #[test]
+    fn multi_new_drag_replaces_unless_shift_extends_selection() {
+        let mut s = CaptureStudio::default();
+        s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        s.open();
+        s.set_source_mode(SourceMode::Multi);
+        s.regions.push(Rect::new(80.0, 100.0, 260.0, 240.0));
+
+        s.click_with_additive(Point::new(420.0, 180.0), false);
+        s.drag
+            .as_mut()
+            .unwrap()
+            .set_current(Point::new(620.0, 360.0));
+        s.finish_region_drag();
+        assert_eq!(s.regions, vec![Rect::new(420.0, 180.0, 620.0, 360.0)]);
+
+        s.click_with_additive(Point::new(90.0, 390.0), true);
+        s.drag
+            .as_mut()
+            .unwrap()
+            .set_current(Point::new(290.0, 560.0));
+        s.finish_region_drag();
+        assert_eq!(s.regions.len(), 2, "Shift extends the existing selection");
+        assert_eq!(s.regions[0], Rect::new(420.0, 180.0, 620.0, 360.0));
+        assert_eq!(s.regions[1], Rect::new(90.0, 390.0, 290.0, 560.0));
+    }
+
+    #[test]
+    fn region_selection_reaches_output_edges_and_chrome_prefers_outside() {
+        let mut s = CaptureStudio::default();
+        s.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        s.open();
+        s.click(Point::new(200.0, 300.0));
+        s.drag.as_mut().unwrap().set_current(Point::new(500.0, 0.0));
+        assert_eq!(s.active_regions()[0].y0, 0.0);
+        s.drag
+            .as_mut()
+            .unwrap()
+            .set_current(Point::new(500.0, 600.0));
+        assert_eq!(s.active_regions()[0].y1, 600.0);
+
+        let middle = Rect::new(180.0, 180.0, 500.0, 380.0);
+        let outside = CaptureStudio::region_chrome_layout(middle, 90.0, s.rect, &[middle]);
+        assert!(outside.outside);
+        assert_eq!(outside.metadata.y1, middle.y0 - 6.0);
+
+        let full = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let inside = CaptureStudio::region_chrome_layout(full, 90.0, s.rect, &[full]);
+        assert!(
+            !inside.outside,
+            "a full-output selection has no outside lane"
+        );
+        assert!(full.contains(inside.metadata.center()));
     }
 
     #[test]
@@ -5725,7 +5870,10 @@ mod tests {
             "PiP does not inherit screenshot cursor trails"
         );
 
-        s.click(CaptureStudio::region_remove_rect(s.regions[0]).center());
+        let first = s.regions[0];
+        let remove = CaptureStudio::region_chrome_layout(first, 96.0, s.rect, &s.regions).remove;
+        s.region_remove_rects = vec![remove, Rect::ZERO];
+        s.click(remove.center());
         assert_eq!(s.regions, vec![Rect::new(500., 180., 900., 520.)]);
     }
     #[test]
@@ -6205,7 +6353,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             visible_rect: Rect::new(240.0, 120.0, 1_280.0, 820.0),
             virtual_rect: Rect::new(-400.0, 120.0, 1_280.0, 820.0),
             complete_rect: None,
@@ -6310,7 +6458,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             visible_rect: app,
             virtual_rect: app,
             complete_rect: None,
@@ -6331,7 +6479,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "canvas".into(),
             title: "Canvas".into(),
-            app_id: "dev.tilo.canvas".into(),
+            app_id: "so.tilo.canvas".into(),
             visible_rect: Rect::new(0.0, 80.0, 1_600.0, 900.0),
             virtual_rect: Rect::new(-720.0, 80.0, 2_240.0, 1_480.0),
             complete_rect: None,

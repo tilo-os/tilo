@@ -38,34 +38,34 @@ class CanonicalVerifier:
         require(completed.returncode == 0, f'canonical verification failed ({binary.name}, exit {completed.returncode}): {completed.stderr.strip()}')
         return completed.stdout
 
-    def verify_qpkg(self, path, app):
+    def verify_tapp(self, path, app):
         before = file_sha(path)
-        # Canonical read_qpkg loads named members into its blob store. Reject
+        # Canonical read_tapp loads named members into its blob store. Reject
         # duplicates/special members before reading metadata independently so the
         # adapter and canonical verifier can never select different tar entries.
         with tarfile.open(path, 'r:') as archive:
             members = archive.getmembers()
             names = [member.name for member in members]
-            require(len(names) <= 4096 and len(names) == len(set(names)), 'duplicate/excessive qpkg members')
+            require(len(names) <= 4096 and len(names) == len(set(names)), 'duplicate/excessive tapp members')
             for member in members:
                 name = member.name
-                require(member.isfile() and not member.issparse() and not PurePosixPath(name).is_absolute(), 'nonregular qpkg member')
-                require(name in {'qpkg.toml', 'signed-root', 'manifest.toml', 'collection.qcl'}
-                        or re.fullmatch('blobs/[0-9a-f]{64}', name), 'unexpected qpkg member')
+                require(member.isfile() and not member.issparse() and not PurePosixPath(name).is_absolute(), 'nonregular tapp member')
+                require(name in {'tapp.toml', 'signed-root', 'manifest.toml', 'collection.qcl'}
+                        or re.fullmatch('blobs/[0-9a-f]{64}', name), 'unexpected tapp member')
             manifest = tomllib.loads(archive.extractfile('manifest.toml').read().decode())
         flags = [argument for key in self.keys for argument in ('--trusted-key', key)]
         output = self.run(self.pkg, 'verify', *flags, path)
-        verified = re.fullmatch(r'ok: (qpkg:[0-9a-f]{64}) verifies and publisher is trusted\s*', output)
+        verified = re.fullmatch(r'ok: (tapp:[0-9a-f]{64}) verifies and publisher is trusted\s*', output)
         require(verified is not None, 'unexpected canonical package verification report')
         inspected = self.run(self.pkg, 'inspect', path).split('\n--- manifest.toml ---\n', 1)[0]
-        package_ids = re.findall(r'^package-id: (qpkg:[0-9a-f]{64})$', inspected, re.MULTILINE)
+        package_ids = re.findall(r'^package-id: (tapp:[0-9a-f]{64})$', inspected, re.MULTILINE)
         publishers = re.findall(r'^publisher-identity: ed25519:([0-9a-f]{64})$', inspected, re.MULTILINE)
         require(package_ids == [verified.group(1)] and len(publishers) == 1 and publishers[0] in self.keys,
                 'canonical package identity report mismatch')
         require(re.findall(r'^signed: (.+)$', inspected, re.MULTILINE) == ['yes'], 'canonical package is unsigned')
         require(manifest['package']['id'] == app['id'] and manifest['package']['version'] == app['version']
                 and manifest['package']['runtime'] == app['runtime'], 'signed manifest does not match collection index')
-        require(file_sha(path) == before, 'qpkg changed during canonical verification')
+        require(file_sha(path) == before, 'tapp changed during canonical verification')
         return {'package_id': verified.group(1), 'publisher': publishers[0]}
 
     def verify_runtime(self, directory, architecture):

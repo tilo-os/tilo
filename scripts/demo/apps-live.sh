@@ -5,7 +5,7 @@
 #   TILO_DEMO_PROFILE=debug scripts/demo/apps-live.sh
 #
 # `scripts/demo/run.py` uses this tree for both the preinstalled app and the
-# `.qpkg` fetched from `serve-test-registry`.
+# `.tapp` fetched from `serve-test-registry`.
 #
 # The size of one binary determines the fetch cost of "search, Enter,
 # and it opens". The default profile is optimised: a `debug` word processor
@@ -28,7 +28,7 @@ PROFILE="${TILO_DEMO_PROFILE:-demo}"
 BIN="$REPO/target/$PROFILE"
 OUT="${TILO_APPS_LIVE_DIR:-$REPO/target/tilo-apps-live}"
 IDENTITY="${TILO_DEMO_IDENTITY:-$OUT/publisher-identity.json}"
-PKG_ID="dev.tilo.word-processor"
+PKG_ID="so.tilo.word-processor"
 STAGE="$OUT/.stage"
 
 case "$PROFILE" in
@@ -40,9 +40,9 @@ esac
 say() { printf '\033[1m[demo-apps-live]\033[0m %s\n' "$*"; }
 die() { echo "FATAL: $*" >&2; exit 1; }
 
-say "building word-processor, tilo-pkg, tilo-install (profile: $PROFILE)"
-(cd "$REPO" && cargo build $PROFILE_FLAG -p word-processor -p pkg-cli -p install)
-for b in word-processor tilo-pkg tilo-install; do
+say "building word-processor, tilo-app-package, tilo-install (profile: $PROFILE)"
+(cd "$REPO" && cargo build $PROFILE_FLAG -p word-processor -p tilo-app-package-cli -p install)
+for b in word-processor tilo-app-package tilo-install; do
     [ -x "$BIN/$b" ] || die "$BIN/$b missing after build"
 done
 
@@ -55,7 +55,7 @@ newer="$(find "$REPO/apps/word-processor/src" "$REPO/crates/sdk/ui-core/src" -na
 mkdir -p "$OUT"
 if [ ! -f "$IDENTITY" ]; then
     say "minting publisher identity at $IDENTITY"
-    "$BIN/tilo-pkg" keygen --out "$IDENTITY" >/dev/null
+    "$BIN/tilo-app-package" keygen --out "$IDENTITY" >/dev/null
 fi
 
 # Copy the binary so a later `cargo build` cannot change an existing payload.
@@ -65,21 +65,21 @@ mkdir -p "$STAGE/word-processor/bin"
 cp "$BIN/word-processor" "$STAGE/word-processor/bin/word-processor"
 
 say "packing $PKG_ID"
-"$BIN/tilo-pkg" pack \
+"$BIN/tilo-app-package" pack \
     --manifest "$REPO/apps/word-processor/tilo-app.toml" \
     --payload "$STAGE/word-processor" \
     --identity "$IDENTITY" \
-    --output "$STAGE/word-processor.qpkg"
+    --output "$STAGE/word-processor.tapp"
 
 # Install fresh rather than editing in place. `tilo-install verify` checks
 # every payload file against the `package_id_hex` recorded in `registry.toml`.
 say "installing into $OUT"
 rm -rf "$OUT/payloads" "$OUT/registry.toml"
-TILO_APPS_DATA_DIR="$OUT" "$BIN/tilo-install" install "$STAGE/word-processor.qpkg" --force
+TILO_APPS_DATA_DIR="$OUT" "$BIN/tilo-install" install "$STAGE/word-processor.tapp" --force
 TILO_APPS_DATA_DIR="$OUT" "$BIN/tilo-install" verify "$PKG_ID" \
     || die "the freshly installed package does not verify"
 
 rm -rf "$STAGE"
 payload="$OUT/payloads/$PKG_ID/bin/word-processor"
-qpkg_note=""
-say "payload: $payload ($(numfmt --to=iec-i --suffix=B "$(stat -c%s "$payload")"))$qpkg_note"
+tapp_note=""
+say "payload: $payload ($(numfmt --to=iec-i --suffix=B "$(stat -c%s "$payload")"))$tapp_note"

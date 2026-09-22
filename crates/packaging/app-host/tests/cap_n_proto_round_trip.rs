@@ -48,7 +48,7 @@ impl Harness {
             match tokio::net::UnixStream::connect(&self.socket).await {
                 Ok(mut stream) => {
                     use tokio::io::AsyncWriteExt;
-                    let handoff = br#"{"protocol":1,"app_id":"dev.tilo.store"}"#;
+                    let handoff = br#"{"protocol":1,"app_id":"so.tilo.store"}"#;
                     stream.write_all(b"QAH1").await?;
                     stream
                         .write_all(&u32::try_from(handoff.len())?.to_be_bytes())
@@ -93,9 +93,9 @@ fn install_list_pin_resolve_over_capnp() {
         let h = Harness::new().unwrap();
         let client = h.connect().await.unwrap();
 
-        // Build a real qpkg the server can accept.
-        let (bytes, expected_id) = common::build_qpkg(2);
-        let expected_publisher = app_registry::qpkg::load(&bytes)
+        // Build a real tapp the server can accept.
+        let (bytes, expected_id) = common::build_tapp(2);
+        let expected_publisher = app_registry::tapp::load(&bytes)
             .unwrap()
             .manifest
             .publisher
@@ -106,11 +106,11 @@ fn install_list_pin_resolve_over_capnp() {
         let mut req = client.install_request();
         {
             let mut p = req.get();
-            p.set_qpkg_bytes(&bytes);
+            p.set_tapp_bytes(&bytes);
             p.set_pinning(WirePinning::Tried);
             p.set_expected_root(expected_id.as_bytes());
             p.set_expected_publisher(&expected_publisher);
-            p.set_expected_app_id("dev.tilo.editor");
+            p.set_expected_app_id("so.tilo.editor");
             p.set_expected_version("1.4.2");
             p.set_expected_size_bytes(bytes.len() as u64);
         }
@@ -142,7 +142,7 @@ fn install_list_pin_resolve_over_capnp() {
         let payload_root = entry.get_payload_root().unwrap().to_string().unwrap();
         assert!(!payload_root.is_empty());
         let manifest_text = entry.get_manifest_text().unwrap().to_string().unwrap();
-        assert!(manifest_text.contains("dev.tilo.editor"));
+        assert!(manifest_text.contains("so.tilo.editor"));
 
         // diskUsage
         let du = client.disk_usage_request().send().promise.await.unwrap();

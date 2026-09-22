@@ -335,7 +335,7 @@ mod tests {
                 "{hostile:?} produced {slug:?}, which names a directory \
                  instead of creating one"
             );
-            let dir = host_app_dir(data, &slug, "dev.tilo.notes");
+            let dir = host_app_dir(data, &slug, "so.tilo.notes");
             assert!(
                 dir.starts_with("/data/tilo-rooms/"),
                 "{hostile:?} escaped to {}",
@@ -379,8 +379,8 @@ mod tests {
     #[test]
     fn two_rooms_are_two_directories() {
         let data = Path::new("/data");
-        let a = host_app_dir(data, &room_slug(Some("room-a")), "dev.tilo.notes");
-        let b = host_app_dir(data, &room_slug(Some("room-b")), "dev.tilo.notes");
+        let a = host_app_dir(data, &room_slug(Some("room-a")), "so.tilo.notes");
+        let b = host_app_dir(data, &room_slug(Some("room-b")), "so.tilo.notes");
         assert_ne!(a, b);
         assert!(!a.starts_with(&b) && !b.starts_with(&a));
     }
@@ -417,11 +417,11 @@ mod tests {
         let mut argv = Vec::new();
         push_app_dir(
             &mut argv,
-            Path::new("/data/tilo-rooms/personal/dev.tilo.notes"),
+            Path::new("/data/tilo-rooms/personal/so.tilo.notes"),
         );
         assert!(
             argv.windows(3).any(|w| w[0] == "--bind"
-                && w[1] == "/data/tilo-rooms/personal/dev.tilo.notes"
+                && w[1] == "/data/tilo-rooms/personal/so.tilo.notes"
                 && w[2] == SANDBOX_APP_DIR),
             "app dir must be bound read-write at the fixed path: {argv:?}"
         );
@@ -435,31 +435,31 @@ mod tests {
     #[test]
     fn preparing_the_directory_creates_the_xdg_tree() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "dev.tilo.notes").unwrap();
+        let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
         assert!(dir.join(".local/share").is_dir());
         assert!(dir.join(".config").is_dir());
         assert!(dir.join(".cache").is_dir());
-        assert_eq!(dir, tmp.path().join("tilo-rooms/room-a/dev.tilo.notes"));
+        assert_eq!(dir, tmp.path().join("tilo-rooms/room-a/so.tilo.notes"));
     }
 
     /// The migration adopts into the personal room and nowhere else.
     #[test]
     fn legacy_state_is_adopted_into_the_personal_room_only() {
         let tmp = tempfile::tempdir().unwrap();
-        let legacy = tmp.path().join("dev.tilo.notes");
+        let legacy = tmp.path().join("so.tilo.notes");
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("state.bin"), b"old library").unwrap();
 
-        let workspace = prepare_host_app_dir(tmp.path(), Some("room-a"), "dev.tilo.notes").unwrap();
+        let workspace = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
         assert!(
             !workspace
-                .join(".local/share/dev.tilo.notes/state.bin")
+                .join(".local/share/so.tilo.notes/state.bin")
                 .exists(),
             "a workspace room must start empty"
         );
 
-        let personal = prepare_host_app_dir(tmp.path(), None, "dev.tilo.notes").unwrap();
-        let adopted = personal.join(".local/share/dev.tilo.notes/state.bin");
+        let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
+        let adopted = personal.join(".local/share/so.tilo.notes/state.bin");
         assert_eq!(
             std::fs::read(&adopted).unwrap(),
             b"old library",
@@ -476,15 +476,15 @@ mod tests {
     #[test]
     fn adoption_happens_exactly_once() {
         let tmp = tempfile::tempdir().unwrap();
-        let legacy = tmp.path().join("dev.tilo.notes");
+        let legacy = tmp.path().join("so.tilo.notes");
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("state.bin"), b"old").unwrap();
 
-        let personal = prepare_host_app_dir(tmp.path(), None, "dev.tilo.notes").unwrap();
-        let adopted = personal.join(".local/share/dev.tilo.notes/state.bin");
+        let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
+        let adopted = personal.join(".local/share/so.tilo.notes/state.bin");
         std::fs::write(&adopted, b"edited in the room").unwrap();
 
-        prepare_host_app_dir(tmp.path(), None, "dev.tilo.notes").unwrap();
+        prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
         assert_eq!(
             std::fs::read(&adopted).unwrap(),
             b"edited in the room",
@@ -499,12 +499,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let outside = tmp.path().join("outside-secret");
         std::fs::write(&outside, b"not the app's").unwrap();
-        let legacy = tmp.path().join("dev.tilo.notes");
+        let legacy = tmp.path().join("so.tilo.notes");
         std::fs::create_dir_all(&legacy).unwrap();
         std::os::unix::fs::symlink(&outside, legacy.join("link")).unwrap();
 
-        let personal = prepare_host_app_dir(tmp.path(), None, "dev.tilo.notes").unwrap();
-        let copied = personal.join(".local/share/dev.tilo.notes/link");
+        let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
+        let copied = personal.join(".local/share/so.tilo.notes/link");
         assert!(
             copied.symlink_metadata().unwrap().file_type().is_symlink(),
             "a symlink must be copied as a symlink, not resolved"

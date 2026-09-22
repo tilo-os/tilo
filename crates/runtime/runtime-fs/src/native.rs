@@ -1001,7 +1001,7 @@ mod tests {
         });
         let owner = FsOwner {
             workspace: "test-room".into(),
-            app_id: "dev.tilo.file-explorer".into(),
+            app_id: "so.tilo.file-explorer".into(),
         };
         let root = authority
             .admit_directory(

@@ -198,11 +198,21 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
     match scenario {
         // The first frame anyone ever sees: both fields empty.
         AuthScenario::Form | AuthScenario::Personal | AuthScenario::PersonalNoFingerprint => None,
-        // The whole point of the hint state is the *missing* password.
+        // Hint/error states deliberately show the missing passcode. Busy
+        // states do too, for a more important reason: the live submit path
+        // moves the passcode into a zeroizing worker value before entering
+        // either busy phase, while fingerprint submission scrubs any typed
+        // passcode outright. Keep visual evidence honest; it must never imply
+        // that a secret remains in the disabled field after submission.
         AuthScenario::Hint
         | AuthScenario::Error
         | AuthScenario::PersonalHint
-        | AuthScenario::PersonalError => Some(("quinten", "")),
+        | AuthScenario::PersonalError
+        | AuthScenario::Authenticating
+        | AuthScenario::Fingerprint
+        | AuthScenario::Starting
+        | AuthScenario::PersonalAuthenticating
+        | AuthScenario::PersonalStarting => Some(("quinten", "")),
         // Long enough to overrun the field, so the snapshot proves how it
         // degrades rather than leaving it to chance.
         AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
@@ -370,6 +380,23 @@ mod tests {
             assert_eq!(
                 parse_scenario_arg(&args(&["tilo-greeter", "--scenario", name])),
                 Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn busy_shots_do_not_retain_representative_passcodes() {
+        for scenario in [
+            AuthScenario::Authenticating,
+            AuthScenario::Fingerprint,
+            AuthScenario::Starting,
+            AuthScenario::PersonalAuthenticating,
+            AuthScenario::PersonalStarting,
+        ] {
+            assert_eq!(
+                shot_credentials(scenario).map(|(_, passcode)| passcode),
+                Some(""),
+                "{scenario:?} must mirror the live path after secret handoff"
             );
         }
     }

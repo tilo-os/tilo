@@ -211,7 +211,6 @@ jobs:
                 --header "Authorization: Bearer $jwt" \
                 "$COLLECTION_URL" -o "$work/apps.tar.gz"
               ;;
-            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*|\
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
               # Repository variables may be advanced by an in-cluster release
               # runner, but large-disk runners do not resolve the service DNS.
@@ -231,9 +230,9 @@ jobs:
             | sha256sum --check --strict
           found=0
           while IFS= read -r member; do
-            if [[ $member == qpkg/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS ]]; then
+            if [[ $member == tapp/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS ]]; then
               continue
-            elif [[ $member =~ ^qpkg/[A-Za-z0-9][A-Za-z0-9._+-]*\.qpkg$ ]]; then
+            elif [[ $member =~ ^tapp/[A-Za-z0-9][A-Za-z0-9._+-]*\.tapp$ ]]; then
               found=1
             elif [[ $member =~ ^runtime(/[A-Za-z0-9][A-Za-z0-9._+-]*)+/?$ ]]; then
               continue
@@ -245,16 +244,16 @@ jobs:
           [[ $found == 1 ]]
           tar --extract --gzip --file "$work/apps.tar.gz" --directory "$work" \
             --no-same-owner --no-same-permissions
-          if find "$work/qpkg" "$work/runtime" -type l -o \( ! -type f ! -type d \) | grep -q .; then
+          if find "$work/tapp" "$work/runtime" -type l -o \( ! -type f ! -type d \) | grep -q .; then
             printf 'app collection contains links or special files\n' >&2
             exit 1
           fi
           (cd "$work" && sha256sum --check --strict SHA256SUMS)
           find os/app-artifacts -mindepth 1 ! -name .gitignore -delete
           find os/app-runtime -mindepth 1 ! -name .gitignore -delete
-          cp "$work"/qpkg/*.qpkg os/app-artifacts/
+          cp "$work"/tapp/*.tapp os/app-artifacts/
           cp -a "$work"/runtime/. os/app-runtime/
-          test -n "$(find os/app-artifacts -name '*.qpkg' -print -quit)"
+          test -n "$(find os/app-artifacts -name '*.tapp' -print -quit)"
           test -s os/app-runtime/runtime-bundle-publisher.hex
           test -n "$(find os/app-runtime/tilo-runtime -name bundle.toml -print -quit)"
           echo 'TILO_PREBUILT_APPS=1' >> "$GITHUB_ENV"
@@ -305,7 +304,6 @@ jobs:
                 --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
                 --output "$work/desktop.tar.gz"
               ;;
-            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*|\
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
               payload_public=${PAYLOAD_URL/http:\/\/forgejo.forgejo.svc.cluster.local:3000/https:\/\/code.podesta.ai}
               curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
@@ -384,7 +382,8 @@ jobs:
             --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(
-                  .buildDefinition.buildType == "https://tilo.dev/buildtypes/frozen-rpm-index/v1"
+                  ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
+                    or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
                   and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
                   and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
                   and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
@@ -461,7 +460,7 @@ jobs:
             aarch64) ref="$KERNEL_RPMS_AARCH64_REF"; expected_arch=arm64 ;;
             *) printf 'unsupported kernel architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
           esac
-          [[ "$ref" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]] || {
+          [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]] || {
             printf 'no digest-pinned native Tilo kernel for %s\n' "$(uname -m)" >&2
             exit 1
           }
@@ -474,11 +473,12 @@ jobs:
             --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(
-                  .buildDefinition.buildType == "https://tilo.dev/buildtypes/kernel-rpm/v1"
+                  ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/kernel-rpm/v1")
+                    or (.buildDefinition.buildType | endswith("/buildtypes/kernel-rpm/v1")))
                   and .buildDefinition.externalParameters.architecture == $architecture
                   and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
                   and any(.buildDefinition.resolvedDependencies[]?;
-                    .uri | test("^git\\+ssh://code\\.podesta\\.ai/tilo/tilo@[0-9a-f]{40}$"))
+                    .uri | test("^git\\+ssh://code\\.podesta\\.ai/qos/qos@[0-9a-f]{40}$"))
                   and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
                   and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms)
                 )
@@ -1032,7 +1032,7 @@ jobs:
           . os/dev/configure-cosign-kms.sh
           ./os/dev/release-freshness.sh freshness.json
           cosign attest --yes \
-            --predicate freshness.json --type https://tilo.dev/security/release-freshness/v1 \
+            --predicate freshness.json --type https://tilo.sh/security/release-freshness/v1 \
             --key "$COSIGN_KEY_REF" \
             "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
 
@@ -1047,7 +1047,7 @@ jobs:
           cosign verify-attestation --key keys/cosign.pub \
             --type slsaprovenance1 "$image" >/dev/null
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
-            --type https://tilo.dev/security/release-freshness/v1 "$image")"
+            --type https://tilo.sh/security/release-freshness/v1 "$image")"
           now="$(date -u +%s)"
           printf '%s' "$freshness" | jq -e \
             --arg digest '${{ steps.release.outputs.digest }}' \
@@ -1056,7 +1056,7 @@ jobs:
             --argjson now "$now" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(
-                  .schema == "https://tilo.dev/security/release-freshness/v1"
+                  .schema == "https://tilo.sh/security/release-freshness/v1"
                   and .repository == "code.podesta.ai/qos/tilo"
                   and .digest == $digest
                   and .sourceRevision == $source
@@ -1183,7 +1183,7 @@ jobs:
                 [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
                 | any(.buildDefinition.externalParameters.generation == $generation
                       and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
-                      and any(.buildDefinition.resolvedDependencies[]?; .uri == ("git+ssh://code.podesta.ai/qos/tilo@" + $source)))
+                      and any(.buildDefinition.resolvedDependencies[]?; .uri == ("git+ssh://code.podesta.ai/qos/qos@" + $source)))
               ' >/dev/null || {
                 echo "::error::$arch child provenance does not bind its digest, source, and generation"
                 exit 1
@@ -1235,7 +1235,7 @@ jobs:
             --key "$COSIGN_KEY_REF" "$index_image"
           FRESHNESS_TTL_SECONDS=86400 ./os/dev/release-freshness.sh index-freshness.json
           cosign attest --yes --predicate index-freshness.json \
-            --type https://tilo.dev/security/release-freshness/v1 \
+            --type https://tilo.sh/security/release-freshness/v1 \
             --key "$COSIGN_KEY_REF" "$index_image"
 
           cosign verify --key keys/cosign.pub "$index_image" >/dev/null
@@ -1248,7 +1248,7 @@ jobs:
                     and .buildDefinition.externalParameters.kernelInputs == $kernels)
             ' >/dev/null
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
-            --type https://tilo.dev/security/release-freshness/v1 "$index_image")"
+            --type https://tilo.sh/security/release-freshness/v1 "$index_image")"
           now="$(date -u +%s)"
           printf '%s' "$freshness" | jq -e --arg digest "$index_digest" \
             --arg source "$GITHUB_SHA" --argjson generation "$generation" --argjson now "$now" '
