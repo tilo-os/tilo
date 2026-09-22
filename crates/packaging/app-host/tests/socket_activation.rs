@@ -75,7 +75,7 @@ fn consumes_systemd_listener_without_rebinding_it() {
     );
     let mut stream = std::os::unix::net::UnixStream::connect(&socket)
         .expect("connect through inherited listener");
-    let handoff = br#"{"protocol":1,"app_id":"dev.tilo.store"}"#;
+    let handoff = br#"{"protocol":1,"app_id":"so.tilo.store"}"#;
     stream.write_all(b"QAH1").expect("write magic");
     stream
         .write_all(

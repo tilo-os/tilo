@@ -140,7 +140,7 @@ fn main() {
     report_portal(
         "open-uri",
         with_timeout(std::time::Duration::from_millis(750), || {
-            portal_xdg::OpenUri::open("https://tilo.dev/hello")
+            portal_xdg::OpenUri::open("https://tilo.so/hello")
         }),
     );
     report_portal(

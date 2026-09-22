@@ -40,7 +40,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.themes", themes::app_root)
+        &LaunchSpec::new("so.tilo.themes", themes::app_root)
             .shot_root(shot_root)
             .configure_app(|app| themes::actions::register(app.action_registry_mut())),
     );

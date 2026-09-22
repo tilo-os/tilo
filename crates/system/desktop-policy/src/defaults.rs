@@ -406,13 +406,13 @@ mod tests {
     fn exact_precedence_and_escape_hatches() {
         let pdf = r("pdf");
         let apps = [
-            app("dev.tilo.a", "A", "pdf"),
-            app("dev.tilo.b", "B", "pdf"),
-            app("dev.tilo.c", "C", "pdf"),
+            app("so.tilo.a", "A", "pdf"),
+            app("so.tilo.b", "B", "pdf"),
+            app("so.tilo.c", "C", "pdf"),
         ];
         let resolver = DefaultAppResolver::new(&apps);
         let personal = PersonalDefaults {
-            handlers: [(pdf.clone(), "dev.tilo.a".into())].into(),
+            handlers: [(pdf.clone(), "so.tilo.a".into())].into(),
         };
         let mut ws = WorkspaceDefaults::default();
 
@@ -421,18 +421,16 @@ mod tests {
                 .resolve(&pdf, "ada", &personal, Some(&ws))
                 .unwrap()
                 .package_id,
-            "dev.tilo.a"
+            "so.tilo.a"
         );
-        ws.policy.insert(
-            pdf.clone(),
-            WorkspaceDefaultPolicy::App("dev.tilo.b".into()),
-        );
+        ws.policy
+            .insert(pdf.clone(), WorkspaceDefaultPolicy::App("so.tilo.b".into()));
         assert_eq!(
             resolver
                 .resolve(&pdf, "ada", &personal, Some(&ws))
                 .unwrap()
                 .package_id,
-            "dev.tilo.b"
+            "so.tilo.b"
         );
         ws.user_choices
             .entry("ada".into())
@@ -443,18 +441,18 @@ mod tests {
                 .resolve(&pdf, "ada", &personal, Some(&ws))
                 .unwrap()
                 .package_id,
-            "dev.tilo.a"
+            "so.tilo.a"
         );
         ws.user_choices
             .get_mut("ada")
             .unwrap()
-            .insert(pdf.clone(), UserWorkspaceChoice::App("dev.tilo.c".into()));
+            .insert(pdf.clone(), UserWorkspaceChoice::App("so.tilo.c".into()));
         assert_eq!(
             resolver
                 .resolve(&pdf, "ada", &personal, Some(&ws))
                 .unwrap()
                 .package_id,
-            "dev.tilo.c"
+            "so.tilo.c"
         );
         ws.policy
             .insert(pdf.clone(), WorkspaceDefaultPolicy::FollowPersonal);
@@ -467,20 +465,20 @@ mod tests {
                 .resolve(&pdf, "ada", &personal, Some(&ws))
                 .unwrap()
                 .package_id,
-            "dev.tilo.a"
+            "so.tilo.a"
         );
     }
 
     #[test]
     fn invalid_or_uninstalled_selection_falls_through_safely() {
         let pdf = r("pdf");
-        let apps = [app("dev.tilo.viewer", "Viewer", "pdf")];
+        let apps = [app("so.tilo.viewer", "Viewer", "pdf")];
         let resolver = DefaultAppResolver::new(&apps);
         let personal = PersonalDefaults {
-            handlers: [(pdf.clone(), "dev.tilo.removed".into())].into(),
+            handlers: [(pdf.clone(), "so.tilo.removed".into())].into(),
         };
         let selected = resolver.resolve(&pdf, "ada", &personal, None).unwrap();
-        assert_eq!(selected.package_id, "dev.tilo.viewer");
+        assert_eq!(selected.package_id, "so.tilo.viewer");
         assert_eq!(selected.source, SelectionSource::DeterministicFallback);
     }
 
@@ -488,22 +486,22 @@ mod tests {
     fn explicit_personal_escape_never_falls_back_to_workspace_policy() {
         let pdf = r("pdf");
         let apps = [
-            app("dev.tilo.a", "A", "pdf"),
-            app("dev.tilo.workspace", "Workspace", "pdf"),
+            app("so.tilo.a", "A", "pdf"),
+            app("so.tilo.workspace", "Workspace", "pdf"),
         ];
         let resolver = DefaultAppResolver::new(&apps);
         let personal = PersonalDefaults::default();
         let mut ws = WorkspaceDefaults::default();
         ws.policy.insert(
             pdf.clone(),
-            WorkspaceDefaultPolicy::App("dev.tilo.workspace".into()),
+            WorkspaceDefaultPolicy::App("so.tilo.workspace".into()),
         );
         ws.user_choices
             .entry("ada".into())
             .or_default()
             .insert(pdf.clone(), UserWorkspaceChoice::PersonalDefault);
         let selected = resolver.resolve(&pdf, "ada", &personal, Some(&ws)).unwrap();
-        assert_eq!(selected.package_id, "dev.tilo.a");
+        assert_eq!(selected.package_id, "so.tilo.a");
         assert_eq!(selected.source, SelectionSource::DeterministicFallback);
     }
 
@@ -512,7 +510,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("nested/default-apps.json");
         let defaults = PersonalDefaults {
-            handlers: [(r("pdf"), "dev.tilo.viewer".into())].into(),
+            handlers: [(r("pdf"), "so.tilo.viewer".into())].into(),
         };
         defaults.save_at(&path).unwrap();
         assert_eq!(PersonalDefaults::load_at(&path), defaults);

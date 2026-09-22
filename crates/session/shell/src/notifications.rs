@@ -1166,7 +1166,7 @@ impl NotificationService {
     ) -> zbus::fdo::Result<u32> {
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = self.resolve_caller(sender.as_ref()).await;
-        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("dev.tilo.contacts") {
+        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("so.tilo.contacts") {
             return Err(zbus::fdo::Error::AccessDenied(
                 "only the verified Contacts provider may replace priority contacts".into(),
             ));
@@ -1350,7 +1350,7 @@ mod tests {
     fn continuity_draft(sharing: NotificationSharing) -> ContinuityNotificationDraft {
         ContinuityNotificationDraft {
             dbus_id: 7,
-            app_id: "dev.tilo.mail".into(),
+            app_id: "so.tilo.mail".into(),
             app_name: "Mail".into(),
             title: "Private subject".into(),
             body: "Private body".into(),
@@ -1453,7 +1453,7 @@ mod tests {
                 epoch: [1; 16],
                 token: [token; 16],
             },
-            app_id: "dev.tilo.mail".into(),
+            app_id: "so.tilo.mail".into(),
             app_name: "Mail".into(),
             title: title.into(),
             body: "Message".into(),

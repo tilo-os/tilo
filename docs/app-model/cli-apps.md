@@ -26,7 +26,7 @@ $ tilo-install path
 /tmp/tilo-install-demo-data/tilo-apps/bin
 
 # Prepend the above to your shell's PATH so CLI commands
-# installed via `tilo-install install <pkg.qpkg>` are picked up.
+# installed via `tilo-install install <pkg.tapp>` are picked up.
 #
 # bash / zsh (~/.bashrc, ~/.zshrc):
 export PATH="/tmp/tilo-install-demo-data/tilo-apps/bin:$PATH"
@@ -48,13 +48,13 @@ PATH commands automatically. `tilo-install remove` un-writes the shims.
    ~/.local/share/tilo-apps/bin/notes   ← copy of tilo-cli-shim (~880 KB)
         │  read sidecar notes.tilo-shim (TOML: package_id, command, launcher)
         ▼
-   /usr/libexec/tilo-launcher run-installed --package dev.tilo.notes-cli
+   /usr/libexec/tilo-launcher run-installed --package so.tilo.notes-cli
                                             --command notes
                                             -- "hello world"
         │  fork + bwrap + Landlock (see sandbox.md)
         │  setenv TILO_CLI_COMMAND=notes
         ▼
-   /var/tilo-apps/dev.tilo.notes-cli/bin/notes "hello world"
+   /var/tilo-apps/so.tilo.notes-cli/bin/notes "hello world"
         │
         ▼
    cli::run_main(|| { … })
@@ -68,7 +68,7 @@ picks the launcher and the package id at exec time.
 
 ```toml
 # ~/.local/share/tilo-apps/bin/notes.tilo-shim
-package_id = "dev.tilo.notes-cli"
+package_id = "so.tilo.notes-cli"
 command    = "notes"
 launcher   = "/tmp/tilo-tools/target-docs/release/tilo-launcher"  # dev override
 ```
@@ -138,7 +138,7 @@ manifest:
 
 ```toml
 [package]
-id      = "dev.tilo.notes-cli"
+id      = "so.tilo.notes-cli"
 version = "0.1.0"
 kind    = "app"
 
@@ -169,20 +169,20 @@ variables at it before the binary runs.
 Install and run:
 
 ```
-$ tilo-pkg pack \
+$ tilo-app-package pack \
     --manifest examples/packaging/notes-cli/manifest.toml \
     --payload  demo/payload \
-    --output   demo/notes-cli.qpkg
-packed qpkg:36c777e279b33bd1c7ca6ee8a5a7033e0e500abfc5e2262c2b2b0476a9f33eca (4 blobs)
+    --output   demo/notes-cli.tapp
+packed tapp:36c777e279b33bd1c7ca6ee8a5a7033e0e500abfc5e2262c2b2b0476a9f33eca (4 blobs)
 
-$ tilo-install install demo/notes-cli.qpkg
+$ tilo-install install demo/notes-cli.tapp
 tilo-install: WARN — package self-signed by ed25519:… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
   shims    : wrote 1 shim(s) into /tmp/tilo-install-demo-data/tilo-apps/bin
   PATH     : prepend /tmp/tilo-install-demo-data/tilo-apps/bin to your shell's PATH to pick them up (see `tilo-install path`).
-installed: dev.tilo.notes-cli 0.1.0
-  payload  : /tmp/tilo-install-demo-data/tilo-apps/payloads/dev.tilo.notes-cli
+installed: so.tilo.notes-cli 0.1.0
+  payload  : /tmp/tilo-install-demo-data/tilo-apps/payloads/so.tilo.notes-cli
   pinned   : false
-run with:  tilo-install run dev.tilo.notes-cli
+run with:  tilo-install run so.tilo.notes-cli
 
 $ ls -la /tmp/tilo-install-demo-data/tilo-apps/bin/
 -rwxr-xr-x. 1 ada ada 886728  4. Jul 16:45 notes
@@ -192,7 +192,7 @@ $ export PATH="/tmp/tilo-install-demo-data/tilo-apps/bin:$PATH"
 
 $ notes "hello from the shim"
 tilo-sandbox-exec: landlock: partially enforced (kernel ABI dropped some rights) (12 ro, 3 rw, net_restricted=true)
-wrote note → [file:///run/tilo/app/.local/share/dev.tilo.notes-cli/notes/inbox.md]
+wrote note → [file:///run/tilo/app/.local/share/so.tilo.notes-cli/notes/inbox.md]
 ```
 
 That path is not a coincidence and nothing in the manifest picked it.
@@ -203,7 +203,7 @@ and no bind to get wrong; the launcher makes the app's directory and then
 starts the binary.
 
 On the host the same file is at
-`<data home>/tilo-rooms/<room>/dev.tilo.notes-cli/.local/share/dev.tilo.notes-cli/notes/inbox.md`.
+`<data home>/tilo-rooms/<room>/so.tilo.notes-cli/.local/share/so.tilo.notes-cli/notes/inbox.md`.
 A CLI run from a shell has no workspace, so its room is `personal`.
 
 ## Reading arguments

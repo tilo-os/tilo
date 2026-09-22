@@ -54,7 +54,7 @@ except ImportError:  # pragma: no cover - environment guard
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELL = REPO / "target" / "debug" / "shell"
-FILES = "dev.tilo.file-explorer"
+FILES = "so.tilo.file-explorer"
 
 # `LIST_ROW_H` in apps/file-explorer/src/views/file_view.rs. Only used to
 # recognise the list *as* a list in the screenshot — never to aim.

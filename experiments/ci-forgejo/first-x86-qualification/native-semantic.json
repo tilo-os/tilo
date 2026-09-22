@@ -10,7 +10,7 @@
     "tilo_runtime_bundle_sha256": "a5acd17e85ad7715d530b6ef10a8fefa1a7f875421dea8dcaffebcfbeaf77838"
   },
   "package_positive": {
-    "package_id": "qpkg:3b141be481948e7eee1f31b246263f120b0eefb4132e660da9b0d1def3eec57a",
+    "package_id": "tapp:3b141be481948e7eee1f31b246263f120b0eefb4132e660da9b0d1def3eec57a",
     "publisher": "acc554853db028859285152bdcbf18f292e6ba728ef12e69bc9115ff6a3d0108"
   },
   "runtime_positive": {

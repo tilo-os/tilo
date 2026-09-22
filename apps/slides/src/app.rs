@@ -36,8 +36,8 @@ use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
-    ColorPicker, DEFAULT_BREAKPOINT, FlapState, NumberInput, PageSidebar, PageSidebarEvent,
-    SplitLayout, TextInput, Widget,
+    AudiencePresentationProvider, ColorPicker, DEFAULT_BREAKPOINT, FlapState, FullscreenProvider,
+    NumberInput, PageSidebar, PageSidebarEvent, SplitLayout, TextInput, Widget,
 };
 
 use crate::actions;
@@ -3309,8 +3309,8 @@ impl SlidesApp {
     /// *borderless OS fullscreen* surface — i.e. present mode.
     ///
     /// This drives the shared [`ui::fullscreen`] mechanism: `ui::App` polls the
-    /// root's [`Widget::fullscreen_intent`] each frame and, via
-    /// [`Widget::fullscreen_params`] (here: the largest output, a distinct
+    /// root's [`FullscreenProvider::fullscreen_intent`] each frame and, via
+    /// [`FullscreenProvider::fullscreen_params`] (here: the largest output, a distinct
     /// presentation view), enumerates the live monitors and `set_fullscreen`s
     /// onto the chosen one — the same path the video player uses for immersive
     /// fullscreen. On the Tilo compositor (which spans one combined scene) that
@@ -5655,7 +5655,115 @@ impl SlidesApp {
     }
 }
 
+impl FullscreenProvider for SlidesApp {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        Some(self.wants_fullscreen() && !self.presentation.has_external_audience())
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        ui::fullscreen::FullscreenRequest::distinct(self.presentation_target)
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        // Installing a real audience surface intentionally unfullscreens the
+        // presenter; only an ordinary compositor exit ends the talk.
+        if !active && self.mode == Mode::Present && !self.presentation.has_external_audience() {
+            self.exit_present();
+        }
+    }
+}
+
+impl AudiencePresentationProvider for SlidesApp {
+    fn audience_presentation_request(&self) -> Option<ui::fullscreen::AudiencePresentationRequest> {
+        (self.mode == Mode::Present)
+            .then(|| ui::fullscreen::AudiencePresentationRequest::new(self.presentation_target))
+    }
+
+    fn on_audience_presentation_changed(&mut self, active: bool) {
+        self.presentation.set_external_audience(active);
+    }
+
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> bool {
+        if self.mode != Mode::Present {
+            return false;
+        }
+        let frame = PresentationFrame::new(
+            rect,
+            &self.deck,
+            self.cur_slide,
+            self.deck_rev,
+            &self.images,
+        );
+        self.presentation
+            .draw_audience(scene, transform, text_renderer, theme, &frame);
+        true
+    }
+
+    fn handle_audience_presentation_event(
+        &mut self,
+        event: &WindowEvent,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if self.mode != Mode::Present {
+            return false;
+        }
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        ..
+                    },
+                ..
+            } => {
+                let mut handled = false;
+                self.on_key_present(logical_key, &mut handled);
+                handled
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.next_slide(1);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn on_audience_presentation_closed(&mut self) {
+        self.exit_present();
+    }
+}
+
 impl Widget for SlidesApp {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
+        Some(self)
+    }
+
+    fn audience_presentation_provider_mut(
+        &mut self,
+    ) -> Option<&mut dyn AudiencePresentationProvider> {
+        Some(self)
+    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SLIDES_OPERATION_TYPE]
     }
@@ -6032,113 +6140,6 @@ impl Widget for SlidesApp {
             self.inspector_flap
                 .snap(self.inspector_flap.is_open(inspector));
         }
-    }
-
-    /// Present mode wants the surface promoted to true OS fullscreen so the
-    /// slideshow fills the whole output (over the shell's strips + top bar).
-    /// The host ([`ui::App`]) polls this each frame and drives
-    /// `window.set_fullscreen`, which on the Tilo compositor becomes an
-    /// `xdg_toplevel.set_fullscreen` request. Level-triggered: a steady
-    /// `Some(true)` for the whole talk is correct and idempotent.
-    fn fullscreen_intent(&self) -> Option<bool> {
-        Some(self.wants_fullscreen() && !self.presentation.has_external_audience())
-    }
-
-    /// Present is a *distinct* view (the slideshow, not the editor) that wants
-    /// the **largest** output — the projector / big screen — via the shared
-    /// [`ui::fullscreen`] mechanism. The App enumerates the live monitors and
-    /// promotes the surface onto the biggest one; on a single-output host it is
-    /// simply that one screen. Same mechanism the video player uses for
-    /// immersive fullscreen — only the target output + the distinct-view flag
-    /// differ.
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        ui::fullscreen::FullscreenRequest::distinct(self.presentation_target)
-    }
-
-    /// React to the *actual* fullscreen state reported by the host. A
-    /// compositor-initiated exit (a global un-fullscreen keybind, or the grant
-    /// being revoked) drops us out of present mode so the editor chrome comes
-    /// back — without this the app would keep painting the borderless slideshow
-    /// in a now-windowed surface. App-initiated exits (Esc → `exit_present`)
-    /// already left present mode, so this is a no-op for them.
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        // When a second output appears, the host deliberately removes
-        // fullscreen from this *presenter* window after it has installed the
-        // clean audience surface. That transition is not a revoked talk.
-        if !active && self.mode == Mode::Present && !self.presentation.has_external_audience() {
-            self.exit_present();
-        }
-    }
-
-    fn audience_presentation_request(&self) -> Option<ui::fullscreen::AudiencePresentationRequest> {
-        (self.mode == Mode::Present)
-            .then(|| ui::fullscreen::AudiencePresentationRequest::new(self.presentation_target))
-    }
-
-    fn on_audience_presentation_changed(&mut self, active: bool) {
-        self.presentation.set_external_audience(active);
-    }
-
-    fn draw_audience_presentation(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) -> bool {
-        if self.mode != Mode::Present {
-            return false;
-        }
-        let frame = PresentationFrame::new(
-            rect,
-            &self.deck,
-            self.cur_slide,
-            self.deck_rev,
-            &self.images,
-        );
-        self.presentation
-            .draw_audience(scene, transform, text_renderer, theme, &frame);
-        true
-    }
-
-    fn handle_audience_presentation_event(
-        &mut self,
-        event: &WindowEvent,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> bool {
-        if self.mode != Mode::Present {
-            return false;
-        }
-        match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state: ElementState::Pressed,
-                        logical_key,
-                        ..
-                    },
-                ..
-            } => {
-                let mut handled = false;
-                self.on_key_present(logical_key, &mut handled);
-                handled
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.next_slide(1);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn on_audience_presentation_closed(&mut self) {
-        self.exit_present();
     }
 
     fn draw_with_presence(
@@ -8314,13 +8315,13 @@ mod tests {
         // `Widget` is in scope via `use super::*`.
         let mut app = SlidesApp::new();
         // Editor: no fullscreen request.
-        assert_eq!(Widget::fullscreen_intent(&app), Some(false));
+        assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(false));
         // Present: request true fullscreen.
         app.enter_present();
-        assert_eq!(Widget::fullscreen_intent(&app), Some(true));
+        assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(true));
         // Back to editor via Esc: request windowed again.
         app.exit_present();
-        assert_eq!(Widget::fullscreen_intent(&app), Some(false));
+        assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(false));
     }
 
     #[test]
@@ -8330,7 +8331,7 @@ mod tests {
         // Present routes through the ONE shared fullscreen mechanism the video
         // player also uses: a distinct presentation view on the largest monitor
         // (the projector / big screen), which the App enumerates + selects.
-        let params = Widget::fullscreen_params(&app);
+        let params = FullscreenProvider::fullscreen_params(&app);
         assert_eq!(
             params.target,
             FullscreenTarget::Largest,
@@ -8342,7 +8343,7 @@ mod tests {
             "Present shows the slideshow, not the editor"
         );
         assert_eq!(
-            Widget::fullscreen_intent(&app),
+            FullscreenProvider::fullscreen_intent(&app),
             Some(true),
             "and it drives the shared reconcile"
         );
@@ -8354,25 +8355,25 @@ mod tests {
 
         let mut app = presenting_app();
         assert_eq!(
-            Widget::audience_presentation_request(&app),
+            AudiencePresentationProvider::audience_presentation_request(&app),
             Some(AudiencePresentationRequest::new(FullscreenTarget::Largest))
         );
-        Widget::on_audience_presentation_changed(&mut app, true);
+        AudiencePresentationProvider::on_audience_presentation_changed(&mut app, true);
         assert!(app.presentation.has_external_audience());
         assert_eq!(
-            Widget::fullscreen_intent(&app),
+            FullscreenProvider::fullscreen_intent(&app),
             Some(false),
             "the original local window must not become the audience surface"
         );
-        Widget::on_fullscreen_changed(&mut app, false);
+        FullscreenProvider::on_fullscreen_changed(&mut app, false);
         assert_eq!(
             app.mode,
             Mode::Present,
             "the host's intentional presenter unfullscreen must not end the talk"
         );
-        Widget::on_audience_presentation_changed(&mut app, false);
+        AudiencePresentationProvider::on_audience_presentation_changed(&mut app, false);
         assert_eq!(
-            Widget::fullscreen_intent(&app),
+            FullscreenProvider::fullscreen_intent(&app),
             Some(true),
             "loss of the external output returns to the established one-output slideshow"
         );
@@ -8411,7 +8412,7 @@ mod tests {
         // A compositor-driven fullscreen exit (e.g. a global un-fullscreen
         // keybind) must drop us out of present mode so the editor chrome
         // returns rather than painting a windowed borderless slideshow.
-        Widget::on_fullscreen_changed(&mut app, false);
+        FullscreenProvider::on_fullscreen_changed(&mut app, false);
         assert_eq!(
             app.mode,
             Mode::Edit,
@@ -8419,9 +8420,9 @@ mod tests {
         );
         // Idempotent + safe when not presenting: a redundant notification is a
         // no-op, and gaining fullscreen never forces present mode on.
-        Widget::on_fullscreen_changed(&mut app, false);
+        FullscreenProvider::on_fullscreen_changed(&mut app, false);
         assert_eq!(app.mode, Mode::Edit);
-        Widget::on_fullscreen_changed(&mut app, true);
+        FullscreenProvider::on_fullscreen_changed(&mut app, true);
         assert_eq!(
             app.mode,
             Mode::Edit,
