@@ -1372,11 +1372,11 @@ mod tests {
         doc.commit();
 
         assert!(
-            (for_app_id("dev.tilo.photos")
+            (for_app_id("so.tilo.photos")
                 .expect("Photos contract")
                 .product)(&View::default(), &doc)
             .is_none(),
-            "holding a Photos replica must not silently rerender content; only the explicit export action may produce qos.content"
+            "holding a Photos replica must not silently rerender content; only the explicit export action may produce tilo.content"
         );
     }
 

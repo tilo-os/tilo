@@ -12,7 +12,7 @@ use ui::history_mode::{
 };
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.photos",
+    app_id: "so.tilo.photos",
     scopes: &[HistoryScopeDefinition {
         key: "photos",
         title: "Photograph and photo library",

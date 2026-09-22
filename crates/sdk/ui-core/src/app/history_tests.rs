@@ -1143,7 +1143,7 @@ fn native_tile_effect_isolation(semantic: bool) {
         .push(Box::new(tiles.remove(0)));
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
     layout(&mut app);
-    let actor = app.local_author.0.clone();
+    let actor = app.collaboration.local_author.0.clone();
     app.invoke_resource_action(
         &tilo_actions::ActionAddress::new("first", "export"),
         None,
@@ -1220,7 +1220,7 @@ fn native_admitted_legacy_effect_cannot_poll_replacement_or_closed_owner() {
         let pointer = std::ptr::from_mut(tile.as_mut());
         let mut app = App::new_with_controlled_inputs(State::new(), tile);
         layout(&mut app);
-        let actor = app.local_author.0.clone();
+        let actor = app.collaboration.local_author.0.clone();
         app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("retained", "export"),
             None,
@@ -1316,12 +1316,12 @@ fn native_tile_history_unmounts_live_native_view_and_remounts_on_return() {
         crate::platform::PlatformConventions::new(crate::platform::Platform::MacOs),
         1.0,
     );
-    app.root_widget.mount_native_views(&host);
+    crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
     assert_eq!(mounts.get(), 1);
     let target = named(&mut app, "History");
     app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
-    app.root_widget.mount_native_views(&host);
+    crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
     assert_eq!(unmounts.get(), 1);
     assert!(
         !app.build_a11y_tree_update(1.0)
@@ -1332,7 +1332,7 @@ fn native_tile_history_unmounts_live_native_view_and_remounts_on_return() {
     let target = named(&mut app, "History");
     app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
-    app.root_widget.mount_native_views(&host);
+    crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
     assert_eq!(mounts.get(), 2);
 }
 
@@ -1772,9 +1772,9 @@ fn native_history_tab_shift_tab_release_and_ime_keep_pending_live_editor_isolate
             .unwrap()
             .owns_node(node, &app.layout.taffy)
     }));
-    app.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
+    app.input.modifiers = winit::keyboard::ModifiersState::SHIFT.into();
     native_key(&mut app, "Tab");
-    app.modifiers = winit::event::Modifiers::default();
+    app.input.modifiers = winit::event::Modifiers::default();
     native_key(&mut app, "Tab");
     assert_eq!(
         app.focused_node, tabbed,

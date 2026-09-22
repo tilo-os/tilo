@@ -1,0 +1,77 @@
+{
+  "name": "Workspace settings lens rhythm",
+  "goal": "Open workspace settings and prove the General tab keeps full-size controls and one left edge at every matrix variant: the name field is a whole pointer target, and after a wheel over the body (a no-op at 1x, where the tab fits; at 200% text it brings the summary card into view) the At a glance card is a whole target sharing the body's left edge (HIG 7b). The 1x name-to-summary gap and the field's s4 inset are asserted from the production geometry in workspace_settings_overlay.rs, because ux-bench can only measure a pair that is co-visible and the two never are at 200% on an 800 px body.",
+  "viewport": [
+    1280,
+    800
+  ],
+  "budget": {
+    "clicks": 1,
+    "keys": 0
+  },
+  "steps": [
+    {
+      "op": "input",
+      "action": {
+        "click_named": "semantic:topbar:workspace-settings"
+      }
+    },
+    {
+      "op": "checkpoint",
+      "name": "lens",
+      "checks": [
+        {
+          "kind": "visible",
+          "target": "semantic:Workspace settings"
+        },
+        {
+          "kind": "visible",
+          "target": "semantic:Workspace name"
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:Workspace name",
+          "min": [
+            32,
+            32
+          ]
+        }
+      ]
+    },
+    {
+      "op": "wheel",
+      "target": "semantic:Workspace settings content",
+      "delta": [
+        0,
+        -1000
+      ],
+      "unit": "physical_pixels",
+      "phase": "ended"
+    },
+    {
+      "op": "checkpoint",
+      "name": "summary",
+      "checks": [
+        {
+          "kind": "visible",
+          "target": "semantic:At a glance"
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:At a glance",
+          "min": [
+            32,
+            32
+          ]
+        },
+        {
+          "kind": "aligned",
+          "first": "semantic:Workspace settings content",
+          "second": "semantic:At a glance",
+          "axis": "x",
+          "tolerance": 1
+        }
+      ]
+    }
+  ]
+}

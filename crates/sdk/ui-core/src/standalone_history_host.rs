@@ -153,7 +153,7 @@ impl StandaloneHistoryHost {
     }
 
     /// Presence is a host capability, not an OS check. Hosts without the
-    /// existing ActionPalette must leave this disabled (not a dead button).
+    /// existing `ActionPalette` must leave this disabled (not a dead button).
     #[expect(
         clippy::expect_used,
         reason = "fixed nullary Search action exists in the local host resource"
@@ -441,7 +441,7 @@ impl StandaloneHistoryHost {
             layout_root: layout.toolbar_group.unwrap_or(layout.toolbar),
             rect: layout
                 .toolbar_group
-                .and_then(|_| self.search.as_ref())
+                .and(self.search.as_ref())
                 .map_or(self.toolbar.get_rect(), |search| {
                     self.toolbar.get_rect().union(search.get_rect())
                 }),
@@ -474,6 +474,23 @@ impl StandaloneHistoryHost {
             session.validate(context)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn validated_local_resources(
+        &self,
+        context: &HistoryReadContext<'_>,
+        layout: HostHistoryLayout,
+    ) -> Result<Vec<Resource>, HistoryHostError> {
+        self.validate_presentation(context, layout)?;
+        let mut resources = vec![open_resource()];
+        if self.has_search() {
+            resources.push(search_resource());
+        }
+        if let Some(session) = self.session_id {
+            resources.push(session_resource(session));
+            crate::widget::collect_widget_resources(&self.pane, context.document, &mut resources);
+        }
+        Ok(resources)
     }
 
     pub(crate) fn toolbar_mut(&mut self) -> &mut Button {

@@ -485,13 +485,19 @@ impl SelectedAction<'_> {
 mod tests {
     use super::*;
     use crate::shell::search::providers::{ActionsProvider, NotesProvider};
-    use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
+    use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle};
     use parking_lot::RwLock;
     use std::rc::Rc;
     use std::sync::Arc;
 
     fn chrome_rc() -> Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
+        let mut tree = WorkspaceTree::default();
+        let id = WorkspaceId::new();
+        let mut workspace = Workspace::test_default(id, "Action API test");
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+        tree.workspaces.push(workspace);
+        tree.active = id;
+        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
         ChromeState::new_with_handle(handle)
     }
 

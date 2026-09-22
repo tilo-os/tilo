@@ -43,7 +43,7 @@ pub(super) fn snapshot(widget: &FileExplorerWidget) -> serde_json::Value {
         .collect();
     let (offset_x, offset_y) = widget.scroll_offset.get();
     serde_json::json!({
-        "app": "dev.tilo.file-explorer",
+        "app": "so.tilo.file-explorer",
         "view_id": "file_view",
         "directory": widget.current_path.to_string_lossy(),
         "entry_count": widget.entries.len(),

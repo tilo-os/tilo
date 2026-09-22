@@ -5,7 +5,7 @@ use ui::history_mode::{HistoryDefinition, HistoryPresentation, HistoryScopeDefin
 pub const LIMITATION: &str = "Logs journal records, queries, selection, follow state, and exports are external or local state and are not recorded as document versions. Restore is unavailable.";
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.logs",
+    app_id: "so.tilo.logs",
     scopes: &[HistoryScopeDefinition {
         key: "journal-observations",
         title: "Journal observations (not recorded)",

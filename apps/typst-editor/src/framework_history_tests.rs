@@ -34,14 +34,14 @@ fn test_root() -> Box<dyn ui::widget::Widget> {
 )]
 fn production_library_persisted_restore_and_fresh_reopen() {
     if let Ok(stage) = std::env::var("QOS_SLICE5_TYPST_STAGE") {
-        let (mut state, mut saver) = ui::persist::try_open("dev.tilo.typst-editor").unwrap();
+        let (mut state, mut saver) = ui::persist::try_open("so.tilo.typst-editor").unwrap();
         if stage == "write" {
             let (mut doc, selected, _) = fixture();
             state.doc.merge(&mut doc).unwrap();
             state.doc.get_heads();
             saver.request(&mut state.doc);
             saver.try_flush().unwrap();
-            (state, saver) = ui::persist::try_open("dev.tilo.typst-editor").unwrap();
+            (state, saver) = ui::persist::try_open("so.tilo.typst-editor").unwrap();
             let before = state.doc.base_heads();
             let mut root = crate::app_root();
             root.sync(&mut state.doc, &ROOT);

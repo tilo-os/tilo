@@ -1,3 +1,8 @@
+#![allow(
+    clippy::collapsible_if,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Canonical on-disk home for a Tilo app's Automerge document: one file per
 //! package at `$XDG_DATA_HOME/<package-id>/state.automerge`, atomic writes,
 //! a debounced background writer. The path derives only from

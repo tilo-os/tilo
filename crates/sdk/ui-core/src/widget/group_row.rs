@@ -1931,32 +1931,74 @@ impl Widget for GroupRow {
         // A bare wheel NEVER moves the strip — that only happens via
         // `scroll_group_into_view_animated`, not this event path.
 
-        self.dispatch_to_handles(
+        // A clipped group's trailing `+` can overlap the invisible resize
+        // seam at the viewport edge. The exact painted control owns both the
+        // cursor update and the press; otherwise the seam keeps its usual
+        // first refusal. Forwarding the move matters because button events
+        // carry no coordinates and the child bar hit-tests its cursor cache.
+        let new_tab_owned = matches!(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            root,
-            handled,
-            focus_target,
-            taffy,
-        );
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    ..
+                }
+        ) && self
+            .groups
+            .iter()
+            .any(|group| group.new_tab_hit(self.last_cursor));
+        let cursor = self.last_cursor;
+        let direct_new_tab = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && self
+            .groups
+            .iter_mut()
+            .find(|group| group.new_tab_hit(cursor))
+            .is_some_and(|group| group.request_new_tab_if_hit(cursor));
+        if direct_new_tab {
+            *handled = true;
+        }
+        if new_tab_owned && !direct_new_tab {
+            self.dispatch_to_groups(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                taffy,
+            );
+        }
+        if !*handled {
+            self.dispatch_to_handles(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                taffy,
+            );
+        }
         self.apply_pending_handle_resizes();
-        self.dispatch_to_groups(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            root,
-            handled,
-            focus_target,
-            taffy,
-        );
-        // The motion which crosses TabBar's drag threshold starts the drag
-        // inside child dispatch. Refresh once more so even a press → one move
-        // → release gesture has a previewed target to commit.
-        if matches!(event, WindowEvent::CursorMoved { .. }) {
-            self.refresh_tab_drop_preview();
+        if !new_tab_owned {
+            self.dispatch_to_groups(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                taffy,
+            );
         }
         self.prune_closed_groups();
         self.resolve_tab_detaches(handled);
@@ -2124,8 +2166,8 @@ impl Widget for GroupRow {
         let own = std::mem::take(&mut self.structure_dirty);
         #[allow(
             clippy::unnecessary_fold,
-            reason = "Every group must clear its structure-dirty flag even when an earlier group already reported a change."
-        )] // see comment above: must not short-circuit
+            reason = "all child dirty flags must be drained without short-circuiting"
+        )]
         let children = self
             .groups
             .iter_mut()
@@ -2537,9 +2579,37 @@ impl GroupRow {
         focus_target: &mut Option<NodeId>,
         taffy: &TaffyTree<()>,
     ) {
-        for (i, g) in self.groups.iter_mut().enumerate() {
+        // Mouse buttons carry no position, so dispatch the group that owns the
+        // remembered cursor (or an active capture) before siblings. Keep every
+        // sibling in the fallback order: synthetic and keyboard-adjacent test
+        // paths can legitimately lack a preceding cursor move.
+        let preferred = matches!(event, WindowEvent::MouseInput { .. }).then(|| {
+            self.groups
+                .iter()
+                .position(|group| group.new_tab_hit(self.last_cursor))
+                .or_else(|| {
+                    self.groups
+                        .iter()
+                        .position(|group| group.wants_pointer_capture())
+                })
+                .or_else(|| {
+                    self.groups
+                        .iter()
+                        .position(|group| group.get_rect().contains(self.last_cursor))
+                })
+        });
+        let preferred = preferred.flatten();
+        let mut order = Vec::with_capacity(self.groups.len());
+        if let Some(i) = preferred {
+            order.push(i);
+        }
+        order.extend((0..self.groups.len()).filter(|i| Some(*i) != preferred));
+        for i in order {
+            let Some(g) = self.groups.get_mut(i) else {
+                continue;
+            };
             let Some(&node_id) = self.node_ids.get(i) else {
-                break;
+                continue;
             };
             g.handle_event(
                 event,

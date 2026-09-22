@@ -4956,10 +4956,10 @@ fn template_menu_pointer_selection_and_dismissal_use_the_overlay() {
     let (mut state, mut wp) = bound();
     pipeline_draw(&mut wp, &mut state, 1200, 700);
     wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
-    let report = Point::new(
-        wp.toolbar.first().unwrap().1.x0 + 10.0,
-        wp.rect.y0 + wp.toolbar_height(wp.rect.width()) + 6.0 + 28.0 * 2.0 + 10.0,
-    );
+    let report = wp
+        .template_picker
+        .item_center(crate::Template::Report)
+        .expect("Report has a live menu row");
     left_click(&mut wp, &mut state, report);
     assert!(!wp.template_picker.is_open());
     assert_eq!(

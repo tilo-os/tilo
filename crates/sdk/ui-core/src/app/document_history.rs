@@ -285,7 +285,9 @@ impl App {
         }
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
-        let result = self.with_history_host(|host, context| host.process_pane_intents(context));
+        let result = self.with_history_host(
+            super::super::standalone_history_host::StandaloneHistoryHost::process_pane_intents,
+        );
         if let Err(error) = result {
             tracing::debug!(?error, "history input refused");
         }
@@ -300,8 +302,7 @@ impl App {
         let open = self.document_history.is_open();
         let dirty = self.with_history_host(|host, context| {
             host.presentation_roots(context)
-                .map(|roots| roots.into_iter().any(Widget::needs_redraw))
-                .unwrap_or(true)
+                .map_or(true, |roots| roots.into_iter().any(Widget::needs_redraw))
         });
         self.history_changed(revision, open);
         dirty
@@ -542,7 +543,7 @@ impl App {
                             focus,
                             node,
                             &self.layout.taffy,
-                        )
+                        );
                     },
                 )
             };
@@ -754,9 +755,9 @@ impl App {
                         .find(|node| self.is_history_node(*node))
                 });
             self.set_focused_node(target);
-        } else if let Some(focus) =
-            self.with_history_host(|host, context| host.take_restore_focus(context))
-        {
+        } else if let Some(focus) = self.with_history_host(
+            super::super::standalone_history_host::StandaloneHistoryHost::take_restore_focus,
+        ) {
             // SAFETY: restoration runs only after building/admitting this tree.
             self.focused_node = unsafe {
                 focus.restore(
@@ -795,7 +796,9 @@ impl App {
 
     pub fn select_document_history(&mut self, entries: &[HistoryEntryId]) -> Result<(), String> {
         let resources = self
-            .with_history_host(|host, context| host.local_resources(context))
+            .with_history_host(
+                super::super::standalone_history_host::StandaloneHistoryHost::local_resources,
+            )
             .map_err(|error| format!("History is unavailable: {error:?}"))?;
         let resource = resources
             .iter()
@@ -822,8 +825,9 @@ impl App {
     }
 
     pub fn close_document_history(&mut self) {
-        let Ok(resources) = self.with_history_host(|host, context| host.local_resources(context))
-        else {
+        let Ok(resources) = self.with_history_host(
+            super::super::standalone_history_host::StandaloneHistoryHost::local_resources,
+        ) else {
             return;
         };
         if let Some(resource) = resources

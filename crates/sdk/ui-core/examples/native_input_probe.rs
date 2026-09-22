@@ -1,3 +1,8 @@
+#![allow(
+    clippy::doc_markdown,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Native input-delivery fixture, not a displayed-FPS qualification workload.
 //! The ordinary button callback supplies independent evidence that scheduled
 //! clicks reached a real control. Run with QOS_NATIVE_SCENARIO and QOS_PROFILE_OUT.

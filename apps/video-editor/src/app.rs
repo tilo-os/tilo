@@ -6829,15 +6829,21 @@ impl Widget for VideoEditorApp {
             else {
                 return Some(CursorIcon::Default);
             };
-            let over_btn = match l.modal.hit(point) {
-                Some(ModalHit::Close | ModalHit::Action(0)) => true,
-                Some(ModalHit::Action(_)) => self.export_is_offered(),
-                _ => {
-                    let body = l.modal.body;
-                    let shown = |rc: &Rect| rc.intersect(body).contains(point);
-                    l.resolution.iter().any(|(_, rc)| shown(rc))
-                        || l.container.iter().any(|(_, rc)| shown(rc))
-                        || l.fps.iter().any(|(_, rc)| shown(rc))
+            let over_btn = if l.confirm.contains(point) {
+                self.export_is_offered()
+            } else if l.cancel.contains(point) {
+                true
+            } else {
+                match l.modal.hit(point) {
+                    Some(ModalHit::Close) => true,
+                    Some(ModalHit::Action(_)) => false,
+                    _ => {
+                        let body = l.modal.body;
+                        let shown = |rc: &Rect| rc.intersect(body).contains(point);
+                        l.resolution.iter().any(|(_, rc)| shown(rc))
+                            || l.container.iter().any(|(_, rc)| shown(rc))
+                            || l.fps.iter().any(|(_, rc)| shown(rc))
+                    }
                 }
             };
             return Some(if over_btn {

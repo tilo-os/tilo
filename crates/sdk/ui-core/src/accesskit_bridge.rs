@@ -649,8 +649,8 @@ pub fn build_tree_update_with_resources<S: BuildHasher>(
 }
 
 /// Adapt the redacted semantic tree to native-provider requirements.
-/// AccessKit Windows 0.35 offers IValueProvider only when a node has a value.
-/// A fixed empty placeholder enables SetValue on password fields without
+/// AccessKit Windows 0.35 offers `IValueProvider` only when a node has a value.
+/// A fixed empty placeholder enables `SetValue` on password fields without
 /// disclosing their text, length, selection, or whether they contain anything.
 /// The shared semantic tree continues to carry no password value at all.
 pub(crate) fn native_tree_update(update: TreeUpdate) -> TreeUpdate {

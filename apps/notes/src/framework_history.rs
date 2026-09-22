@@ -94,7 +94,7 @@ impl TreeRowMetrics {
 }
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.notes",
+    app_id: "so.tilo.notes",
     scopes: &[HistoryScopeDefinition {
         key: "notebook",
         title: "Notebook",

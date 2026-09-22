@@ -338,18 +338,23 @@ impl ChipStyle {
 
 impl Chip {
     /// Text size a chip of `height` px paints its label at. The widget's
-    /// own [`HEIGHT`] maps to `typography.scale.sm`, and anything taller or
-    /// shorter scales with it, so a caller that wants a bigger pill gets
-    /// proportionally bigger type instead of a lonely small label floating
-    /// in a tall capsule.
+    /// own [`HEIGHT`] maps to `typography.scale.sm`, whether the caller passes
+    /// authored geometry or geometry already grown by the responsive layout.
+    /// Anything intentionally taller or shorter scales with it, while the
+    /// already-scaled type token is still applied exactly once.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "clamped to 0.75..=1.6 just above, so the f32 cast can't \
                   truncate anything that matters for a UI scale factor"
     )]
     pub fn label_size_for_height(height: f64, theme: &Theme) -> f32 {
-        let scaled_height = HEIGHT * f64::from(theme.text_scale);
-        theme.tokens.typography.scale.sm * (height / scaled_height).clamp(0.75, 1.6) as f32
+        let resolved_height = HEIGHT * theme.responsive_scale();
+        let relative_height = if height >= resolved_height {
+            height / resolved_height
+        } else {
+            height / HEIGHT
+        };
+        theme.tokens.typography.scale.sm * relative_height.clamp(0.75, 1.6) as f32
     }
 
     /// Intrinsic width of an immediate-mode chip — what [`Chip::draw_at`]

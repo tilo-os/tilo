@@ -88,15 +88,16 @@ impl RegionPane {
         self.settings
     }
 
-    /// The width the pane lays out for: its last allocated rect, else the
-    /// host's hint. `None` before either exists (compose for a wide pane).
+    /// The width the host makes available to the pane. Prefer the host hint:
+    /// an intrinsic child rect may shrink to the stacked chooser width and
+    /// must not then force the next composition to stay stacked.
     fn layout_width(&self) -> Option<f32> {
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a logical-pixel width comfortably representable by f32"
         )]
         let allocated = (self.rect.width() > 0.0).then_some(self.rect.width() as f32);
-        allocated.or(self.width_hint)
+        self.width_hint.or(allocated)
     }
 
     /// Whether the Formats card composes its choosers beneath their labels.

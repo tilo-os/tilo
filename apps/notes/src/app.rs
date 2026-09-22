@@ -2517,7 +2517,15 @@ impl NotesApp {
         self.markdown_transfer = Some((
             MarkdownTransfer::Export {
                 markdown: markdown.into_bytes(),
-                asset_root: self.workspace_asset_root.clone(),
+                asset_root: self
+                    .legacy_fixture_storage
+                    .as_ref()
+                    .map(|legacy| legacy.root.clone()),
+                canonical_assets: if self.legacy_fixture_storage.is_none() {
+                    crate::notebook::asset_snapshot(doc)?
+                } else {
+                    HashMap::new()
+                },
             },
             channel,
         ));
@@ -2555,15 +2563,16 @@ impl NotesApp {
     }
 
     fn finish_image_insert(&mut self, doc: &mut AutoCommit, page: PageId, path: &std::path::Path) {
-        let Some(root) = self.workspace_asset_root.as_deref() else {
-            self.transfer_toasts.push(
-                "Image attachments require workspace file storage",
-                ui::widget::toast::ToastKind::Error,
-            );
-            return;
+        let imported = if let Some(legacy) = self.legacy_fixture_storage.as_ref() {
+            import_image_asset(&legacy.root, path).map(|destination| (destination, None))
+        } else {
+            read_image_asset(path).map(|(bytes, _)| {
+                let digest = blake3::hash(&bytes).to_hex().to_string();
+                (format!("asset:{digest}"), Some(bytes))
+            })
         };
-        let destination = match import_image_asset(root, path) {
-            Ok(destination) => destination,
+        let (destination, canonical_bytes) = match imported {
+            Ok(imported) => imported,
             Err(error) => {
                 self.transfer_toasts.push(
                     format!("Image import failed: {error}"),
@@ -2742,8 +2751,11 @@ impl NotesApp {
                 "The current note could not be read; its unsaved draft is still open".into(),
             );
         }
-        let body = if let Some(root) = self.workspace_asset_root.as_deref() {
-            adopt_portable_markdown_assets(root, path, &body)
+        let (body, assets) = if let Some(legacy) = self.legacy_fixture_storage.as_ref() {
+            (
+                adopt_portable_markdown_assets(&legacy.root, path, body),
+                Vec::new(),
+            )
         } else {
             adopt_canonical_markdown_assets(path, body)
         };
@@ -5301,10 +5313,10 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn settle_markdown_io(app: &mut NotesApp, state: &mut ui::State) {
+    fn settle_markdown_io(app: &mut NotesApp, doc: &mut AutoCommit) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            app.drain_markdown_transfer(&mut state.doc);
+            app.drain_markdown_transfer(doc);
             if !app.markdown_job.is_pending() && app.markdown_transfer.is_none() {
                 return;
             }
@@ -5714,20 +5726,20 @@ mod tests {
             .unwrap();
         let page = app.workspace.selected().unwrap();
         let imported = NotesDoc::page_block_snapshots(&doc, page);
-        assert!(imported.iter().any(|(_, text)| text.contains("../assets/")));
+        assert!(imported.iter().any(|(_, text)| text.contains("asset:")));
         app.finish_image_insert(&mut doc, page, &image);
         let images = NotesDoc::page_block_snapshots(&doc, page);
         assert_eq!(
             images
                 .iter()
-                .filter(|(_, text)| text.contains("../assets/"))
+                .filter(|(_, text)| text.contains("asset:"))
                 .count(),
             2
         );
         let destination = source.path().join("Exported.md");
         app.test_markdown_pick = Some(ui::portal::PortalOutcome::Opened(destination.clone()));
         app.request_markdown_export(&doc, page).unwrap();
-        app.drain_markdown_transfer(&mut doc);
+        settle_markdown_io(&mut app, &mut doc);
         let exported = std::fs::read_to_string(&destination).unwrap();
         assert!(!exported.contains("../assets/"));
         let references: Vec<_> = exported
@@ -6219,7 +6231,7 @@ mod tests {
             },
             ui::portal::inject_for_test(ui::portal::PortalOutcome::Opened(destination.clone())),
         ));
-        settle_markdown_io(&mut app, &mut state);
+        settle_markdown_io(&mut app, &mut state.doc);
         assert_eq!(
             std::fs::read_to_string(destination).unwrap(),
             "# Portable\n\nBody\n"
@@ -6389,7 +6401,7 @@ mod tests {
             MarkdownTransfer::Import,
             ui::portal::inject_for_test(ui::portal::PortalOutcome::Opened(source)),
         ));
-        settle_markdown_io(&mut app, &mut state);
+        settle_markdown_io(&mut app, &mut state.doc);
         app.sync(&mut state.doc, &state.root);
         admit_pending_import(&mut app, &mut state);
         assert!(app.transfer_toasts.iter().any(|toast| {
@@ -6489,7 +6501,7 @@ mod tests {
             ui::portal::PortalOutcome::Opened(source.clone()),
         );
         app.sync(&mut state.doc, &state.root);
-        settle_markdown_io(&mut app, &mut state);
+        settle_markdown_io(&mut app, &mut state.doc);
         app.sync(&mut state.doc, &state.root);
         assert!(
             app.poll_resource_operation(invocation, false, &state.doc, &state.root)
@@ -6563,7 +6575,7 @@ mod tests {
                 ui::portal::PortalOutcome::Opened(destination.clone()),
             );
             app.sync(&mut state.doc, &state.root);
-            settle_markdown_io(&mut app, &mut state);
+            settle_markdown_io(&mut app, &mut state.doc);
             app.sync(&mut state.doc, &state.root);
             let update = take_markdown_receipt(&mut app, &state, invocation);
             if succeeds {
@@ -6595,7 +6607,7 @@ mod tests {
             ui::portal::PortalOutcome::Opened(source.clone()),
         );
         app.sync(&mut state.doc, &state.root);
-        settle_markdown_io(&mut app, &mut state);
+        settle_markdown_io(&mut app, &mut state.doc);
         app.sync(&mut state.doc, &state.root);
         let intent = app.take_control_invocation().unwrap();
         // The separate FrameHarness revocation regression proves this host
@@ -6637,7 +6649,7 @@ mod tests {
                 app.markdown_transfer = Some((MarkdownTransfer::Import, receiver));
             }
             app.sync(&mut state.doc, &state.root);
-            settle_markdown_io(&mut app, &mut state);
+            settle_markdown_io(&mut app, &mut state.doc);
             app.sync(&mut state.doc, &state.root);
             let update = take_markdown_receipt(&mut app, &state, invocation);
             assert_eq!(

@@ -17,7 +17,7 @@ The runner uses a fresh isolated profile. It first checks that a certified,
 read-only delegated agent cannot invoke either the producer or consumer, and
 that Writer rejects a nonexistent content hash. It then invokes the Document
 rotation and the refreshed edited-content Effect, requires one canonical live
-`qos.content` result with a different hash, verifies the stored PNG's BLAKE3,
+`tilo.content` result with a different hash, verifies the stored PNG's BLAKE3,
 and compares every decoded RGBA pixel using the independent clockwise mapping
 in `pixels.rs`. It passes that actual returned hash to Writer and reconstructs
 the signed document stream for precisely the published Writer route, requiring

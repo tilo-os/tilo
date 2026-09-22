@@ -2483,14 +2483,39 @@ mod tests {
         chrome.borrow_mut().peer_sync_enabled = true;
         let results = action_results(&provider, &chrome);
 
-        invoke_action(&results, "peer.invite", &chrome);
-        invoke_action(&results, "peer.connect", &chrome);
+        let mut document = AutoCommit::new();
+        for id in ["peer.invite", "peer.connect"] {
+            let result = results
+                .iter()
+                .find(|result| result.id == id)
+                .unwrap_or_else(|| panic!("action provider did not return {id}"));
+            let disposition = result
+                .on_begin_invoke
+                .as_ref()
+                .expect("peer actions have lifecycle admission")(
+                &mut document,
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .expect("peer action is admitted");
+            assert!(matches!(
+                disposition,
+                crate::shell::search::InvocationDisposition::Pending(_)
+            ));
+        }
 
         assert_eq!(
             chrome.borrow_mut().take_peer_sync_requests(),
             vec![
-                crate::shell::overlay_host::PeerSyncAction::IssueInvite,
-                crate::shell::overlay_host::PeerSyncAction::PromptConnect,
+                crate::shell::overlay_host::PeerSyncAction::Tracked {
+                    request_id: 1,
+                    action: Box::new(crate::shell::overlay_host::PeerSyncAction::PromptInvite),
+                },
+                crate::shell::overlay_host::PeerSyncAction::Tracked {
+                    request_id: 2,
+                    action: Box::new(crate::shell::overlay_host::PeerSyncAction::PromptConnect),
+                },
             ]
         );
     }

@@ -2307,16 +2307,38 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let store = frame_builder.chrome().records().clone();
+        let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
+        if !store.open_record(&checkout) {
+            store
+                .create_record(&checkout)
+                .expect("capture fixture creates its Notes record");
+        }
         frame_builder
             .host_mut()
             .group_at_for_tests(strip_id, 0)
-            .and_then(|group| group.active_host_mut())
-            .expect("target Notes host")
-            .replace_content(ui::widget::TileContent::App(Box::new(
-                crate::shell::notes_app::NotesApp::with_seed(long_note),
-            )));
+            .expect("target Notes group")
+            .bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
+        store
+            .with(&checkout.id, |doc| {
+                let mut body =
+                    crate::shell::crdt_text::CrdtTextBody::new(crate::shell::notes_app::BODY_KEY);
+                body.sync(doc, &automerge::ROOT);
+                let end = body.clamp(usize::MAX);
+                body.splice(doc, &automerge::ROOT, 0..end, &long_note);
+            })
+            .expect("capture fixture writes the canonical Notes record");
+        let mut shell_document = automerge::AutoCommit::new();
+        frame_builder.pump_apps(&mut shell_document, &automerge::ROOT);
         frame_builder.relayout();
         let _ = frame_builder.paint();
+        assert!(
+            frame_builder
+                .host_mut()
+                .group_at_for_tests(strip_id, 0)
+                .is_some_and(|group| group.complete_capture_rect().is_some()),
+            "long Notes document did not publish complete capture geometry"
+        );
         assert!(
             frame_builder
                 .host_mut()

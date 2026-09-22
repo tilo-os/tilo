@@ -583,10 +583,9 @@ pub struct BlockEditor {
     /// Current accessibility text scale, retained for prefix and gutter
     /// geometry that is resolved after the taffy pass.
     text_scale: f64,
-    /// Drag-handle geometry from `theme.tokens`, captured in `build_layout`
-    /// for the hit-test and paint paths that have no theme of their own.
+    /// Drag-handle geometry captured from the active theme.
     handle: HandleMetrics,
-    /// Reflow prose blocks to the available width instead of giving each
+    /// Reflow text blocks to the available width instead of giving each
     /// block a horizontally scrolling single line.
     wrap_lines: bool,
     /// Use a tighter prose rhythm between adjacent paragraphs while retaining
@@ -1883,7 +1882,7 @@ impl BlockEditor {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
             None,
             &vello::kurbo::RoundedRect::from_rect(controls, 8.0 * self.text_scale),
         );
@@ -2476,18 +2475,20 @@ impl BlockEditor {
     /// single-line paragraphs would share one handle.
     fn block_drag_handle_rect(&self, index: usize) -> Option<Rect> {
         let block = self.blocks.get(index)?;
-        let line = block.line.get_rect();
-        let leading_edge = line.x0 - prefix_gutter_for(&block.kind) * self.text_scale;
-        let center_y = line.center().y;
+        let line = self.block_paint_rect(index)?;
+        let leading_edge = line.x0;
+        let source = block.line.get_rect();
+        let center_y = first_row_center(
+            if source.height() > 0.0 { source } else { line },
+            block.kind.font_size(),
+            self.text_scale,
+        );
         let HandleMetrics {
             width,
             height,
             gap,
             min_target,
         } = self.handle;
-        // Grow to the pointer target where the block is that tall, and never
-        // past the block's own line: consecutive code lines butt together,
-        // so a handle overhanging its line would be found for the wrong one.
         let half_height = ((height * self.text_scale) / 2.0)
             .max(min_target.min(line.height()) / 2.0)
             .min(line.height() / 2.0);
@@ -2795,23 +2796,25 @@ impl BlockEditor {
                 continue;
             };
             let active = self.block_drag.is_some_and(|drag| drag.source == index);
-            let highlighted =
-                active || self.focused == Some(index) || handle.contains(self.last_mouse_pos);
-            let color = if highlighted {
-                tokens.colors.text_primary.with_alpha_factor(0.72)
-            } else {
-                tokens.colors.text_dim.with_alpha_factor(0.58)
-            };
-            // A 2×3 grip of 2.5 px dots, pitched 6 × 5 px at 1× and scaled
-            // with the text beside it. The column pitch is capped so the
-            // cluster stays inside the fixed-width handle column at any
-            // scale; the row pitch is free because the handle's height
-            // scales with the text.
+            let contains_caret = self.is_focused && self.focused == Some(index);
+            if !active && !contains_caret && hovered != Some(index) {
+                continue;
+            }
+            let color = tokens.colors.text_primary.with_alpha_factor(0.72);
             let center = handle.center();
             let scale = self.text_scale;
             let dot_r = 1.25 * scale;
             let col_pitch = (3.0 * scale).min(handle.width() / 2.0 - dot_r);
             let row_pitch = 5.0 * scale;
+            if active || handle.contains(self.last_mouse_pos) {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    tokens.colors.accent[5].with_alpha_factor(if active { 0.22 } else { 0.12 }),
+                    None,
+                    &vello::kurbo::RoundedRect::from_rect(handle, 4.0),
+                );
+            }
             for col in [-col_pitch, col_pitch] {
                 for row in [-row_pitch, 0.0, row_pitch] {
                     let dot = Rect::new(
@@ -5709,7 +5712,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(scale),
                 ctx.transform,
-                ctx.theme.tokens.colors.border_standard,
+                crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.raised),
                 None,
                 &shape,
             );
@@ -5782,7 +5785,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &stroke,
             ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
+            crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &vello::kurbo::Line::new((x, table_rect.y0), (x, table_rect.y1)),
         );
@@ -5797,7 +5800,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &stroke,
             ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
+            crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &vello::kurbo::Line::new((table_rect.x0, y), (table_rect.x1, y)),
         );
@@ -5858,7 +5861,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
+            crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &shape,
         );
@@ -5867,7 +5870,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     ctx.scene.stroke(
         &vello::kurbo::Stroke::new(scale),
         ctx.transform,
-        ctx.theme.tokens.colors.border_standard,
+        crate::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
         None,
         &shape,
     );
@@ -6095,7 +6098,7 @@ fn draw_transclusion_card(
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        tokens.colors.border_standard,
+        crate::surface::edge_on(tokens.colors.surfaces.raised),
         None,
         &card,
     );
@@ -6256,10 +6259,7 @@ fn draw_checklist_prefix(
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(1.5 * scale),
             ctx.transform,
-            crate::surface::edge_on_with(
-                ctx.theme.tokens.colors.surfaces.base,
-                crate::chrome::PANEL_BORDER_ALPHA,
-            ),
+            ctx.theme.tokens.colors.text_dim,
             None,
             &shape,
         );
@@ -6516,6 +6516,18 @@ impl Widget for BlockEditor {
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
         self.handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
+        self.refresh_image_attachments();
+        self.refresh_image_dimensions();
+        self.table_editors.retain(|id, _| {
+            self.blocks.iter().any(|block| {
+                block.id == *id && matches!(block.kind, BlockKind::Table { visual: true })
+            })
+        });
+        self.table_mode_controls.retain(|id, _| {
+            self.blocks
+                .iter()
+                .any(|block| block.id == *id && matches!(block.kind, BlockKind::Table { .. }))
+        });
         self.child_nodes.clear();
         // Lines within one authored fence stay together; distinct adjacent
         // fences need space outside both painted backgrounds.
@@ -6882,8 +6894,7 @@ impl Widget for BlockEditor {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let tokens = &theme.tokens;
-
+        self.refresh_image_dimensions();
         let single_block = self.blocks.len() == 1;
         for block in &mut self.blocks {
             let hint = if single_block && matches!(block.kind, BlockKind::Paragraph) {
@@ -7185,7 +7196,7 @@ impl Widget for BlockEditor {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 ghost_transform,
-                theme.tokens.colors.border_standard,
+                crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
                 None,
                 &card,
             );
@@ -7303,7 +7314,33 @@ impl Widget for BlockEditor {
         for (i, b) in self.blocks.iter().enumerate() {
             self.draw_block_presence(i, b, &mut ctx);
         }
-        // Link routing must use the same freshly shaped advances as paint.
+        for (index, block) in self.blocks.iter().enumerate() {
+            if let Some(image) = self.image_attachments.get_mut(&block.id) {
+                let hovered = self
+                    .image_preview_rects
+                    .get(index)
+                    .and_then(|rect| *rect)
+                    .is_some_and(|rect| rect.contains(self.last_mouse_pos));
+                if image.editing
+                    || hovered
+                    || image.button().is_focused()
+                    || (self.is_focused && self.focused == Some(index))
+                {
+                    image
+                        .button_mut()
+                        .draw(scene, transform, text_renderer, theme, presence);
+                }
+            }
+        }
+        // The opaque drag preview can cover its destination. Keep the drop
+        // marker above both the preview and its code/header chrome.
+        if let Some(drag) = self.block_drag.filter(|drag| drag.active) {
+            self.draw_block_drop_indicator(scene, transform, theme.tokens.colors.accent[5], drag);
+        }
+        self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
+        // Link hit geometry depends on the shaped positions produced by this
+        // frame's block draw. Refreshing it before that draw made first-frame
+        // style, scale, and BiDi changes unclickable.
         self.refresh_live_link_hits(theme);
     }
 

@@ -1,3 +1,9 @@
+#![allow(
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! F6 (window chrome / identity flow) alignment review: the identity
 //! ceremony screens.
 //!

@@ -1,3 +1,10 @@
+#![allow(
+    clippy::manual_clamp,
+    clippy::manual_midpoint,
+    clippy::needless_pass_by_value,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Maps — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! An OpenStreetMap-style maps app with search (Nominatim), turn-by-turn

@@ -136,11 +136,17 @@ fn settle(fb: &mut FrameBuilder) {
     // the live tree and lays them out, so it must run even when nothing
     // is animating yet.
     let _ = frame(fb);
-    let deadline = std::time::Instant::now()
+    let started = std::time::Instant::now();
+    let minimum = started
+        .checked_add(std::time::Duration::from_millis(500))
+        .unwrap_or(started);
+    let deadline = started
         .checked_add(std::time::Duration::from_secs(3))
-        .unwrap_or_else(std::time::Instant::now);
+        .unwrap_or(started);
     let settled = |fb: &mut FrameBuilder| !fb.needs_animation_frame() || fb.any_tile_opening();
-    while !settled(fb) && std::time::Instant::now() < deadline {
+    while (std::time::Instant::now() < minimum || !settled(fb))
+        && std::time::Instant::now() < deadline
+    {
         std::thread::sleep(std::time::Duration::from_millis(8));
         let _ = frame(fb);
     }
@@ -155,18 +161,32 @@ fn settle(fb: &mut FrameBuilder) {
 /// the store: handing a placeholder to its window is a 180 ms cross-fade,
 /// so the frame right after a commit is mostly still the card — sampling
 /// there measures the dissolve, not the client's pixels.
-fn quiesce(fb: &mut FrameBuilder) {
+fn quiesce(fb: &mut FrameBuilder, surface_id: u64) {
     let deadline = std::time::Instant::now()
         .checked_add(std::time::Duration::from_secs(3))
         .unwrap_or_else(std::time::Instant::now);
-    while fb.needs_animation_frame() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(8));
+    // First wait for this exact client to latch as presented. A configure or
+    // strip-layout change can delay that edge; measuring the dissolve from
+    // publication would then spend the entire allowance on the opening card.
+    while !store().is_presented(surface_id) && std::time::Instant::now() < deadline {
+        let _ = fb.any_tile_opening();
         let _ = frame(fb);
+        std::thread::sleep(std::time::Duration::from_millis(8));
     }
     assert!(
-        !fb.needs_animation_frame(),
-        "the tree never went quiet; an animation is stuck in flight"
+        store().is_presented(surface_id),
+        "the committed foreign surface never became presented"
     );
+    // Now paint past the host's 180ms handover. Global animation demand is
+    // intentionally not the exit condition: another shell group may still be
+    // opening and is unrelated to this surface's dissolve.
+    let handover_end = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_millis(220))
+        .unwrap_or_else(std::time::Instant::now);
+    while std::time::Instant::now() < handover_end {
+        let _ = frame(fb);
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
 }
 
 /// A solid opaque RGBA image, as a client filling its surface would commit.
@@ -293,14 +313,44 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
     );
 
     // The dissolve is 180 ms, so the very next frame is still mostly card.
-    quiesce(&mut fb);
+    quiesce(&mut fb, surface_id);
     let scene = frame(&mut fb);
     let after = shot("foreign-with-client-frame", &mut renderer, &scene);
+    // The focused foreign group can still finish its strip pan while its
+    // opening card is up. Sample the rect painted by this frame, not the
+    // pre-commit position captured above.
+    let rect = tile_rect(&mut fb, surface_id);
+    let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
     let px = OffscreenRenderer::sample(&after, W, cx, cy);
+    // The compositor may paint transient collaboration/chrome ink at the
+    // exact centre. Prove that the client owns the tile as an area, rather
+    // than treating one overlaid pixel as the whole compositing contract.
+    let after_pixels = &after;
+    let samples: Vec<_> = [0.25, 0.5, 0.75]
+        .into_iter()
+        .flat_map(|fx| {
+            [0.25, 0.5, 0.75].into_iter().map(move |fy| {
+                OffscreenRenderer::sample(
+                    after_pixels,
+                    W,
+                    as_u32(rect.x0 + rect.width() * fx),
+                    as_u32(rect.y0 + rect.height() * fy),
+                )
+            })
+        })
+        .collect();
+    let client_pixels = samples
+        .iter()
+        .filter(|sample| {
+            sample.0.abs_diff(0xE0) <= 4
+                && sample.1.abs_diff(0x18) <= 4
+                && sample.2.abs_diff(0xA0) <= 4
+        })
+        .count();
     assert!(
-        px.0.abs_diff(0xE0) <= 4 && px.1.abs_diff(0x18) <= 4 && px.2.abs_diff(0xA0) <= 4,
-        "the client's pixels must be composited at the tab centre; \
-         got rgba{px:?} at ({cx}, {cy}) inside {rect:?}"
+        client_pixels >= 5,
+        "the client's pixels must fill the tab; only {client_pixels}/9 interior samples matched \
+         (centre rgba{px:?} at ({cx}, {cy}), samples {samples:?}, rect {rect:?})"
     );
 
     // A point well outside the tile keeps the shell's own chrome.
@@ -378,7 +428,7 @@ fn unmap_stops_painting_and_destroy_releases_the_frame() {
     assert!(store().snapshot(surface_id).is_some());
 
     // Sample after the 180 ms dissolve, or the fixture is still mostly card.
-    quiesce(&mut fb);
+    quiesce(&mut fb, surface_id);
     let mut renderer = OffscreenRenderer::new(W, H);
     let scene = frame(&mut fb);
     let mapped = shot("foreign-lifecycle-mapped", &mut renderer, &scene);
@@ -462,7 +512,7 @@ fn painting_does_not_reimport_the_clients_buffer() {
 
     // That dissolve is a legitimate 180 ms animation, so "the client is idle"
     // is only answerable once it has finished.
-    quiesce(&mut fb);
+    quiesce(&mut fb, surface_id);
 
     // Paint repeatedly with no further commits, as the loop does while the
     // client sits idle.
@@ -544,7 +594,7 @@ fn a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop() {
     // placeholder painting a spinner, which correctly keeps the compositor
     // repainting for reasons unrelated to the background tab.
     store().publish_rgba(front, &solid(bw, bh, (0x40, 0x40, 0x40)), bw, bh);
-    quiesce(&mut fb);
+    quiesce(&mut fb, front);
 
     let rgba = solid(bw, bh, (0x11, 0x9E, 0xE0));
     store().publish_rgba(back, &rgba, bw, bh);

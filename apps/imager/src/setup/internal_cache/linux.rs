@@ -384,6 +384,9 @@ mod native {
                 let parent = &ancestry.last().unwrap().file;
                 ancestry.push(directory(parent, part, index + 1 == parts.len(), false)?);
             }
+            Self::acquire_below(ancestry, selected)
+        }
+        fn acquire_below(mut ancestry: Vec<Held>, selected: &SelectedManifest) -> Result<Self> {
             for leaf in [
                 b"qos-internal-install".as_slice(),
                 selected.manifest_sha256().as_bytes(),
@@ -1209,7 +1212,14 @@ mod native {
     }
     #[cfg(test)]
     pub(super) fn fixture_acquire(path: &Path, selected: &SelectedManifest) -> Result<CacheRoot> {
-        CacheRoot::acquire_at(path, selected)
+        // CI runs inside an overlay-root container while the workspace itself
+        // is a qualified host filesystem. Start the native fixture's held
+        // ancestry at that explicitly provisioned directory so the tests
+        // still exercise every security invariant below the cache boundary.
+        // Production acquisition continues to authenticate from `/`.
+        raw_components(path.as_os_str().as_bytes())?;
+        let root = File::open(path).map_err(io)?;
+        CacheRoot::acquire_below(vec![Held::new(root, b"", true, false)?], selected)
     }
 }
 #[cfg(test)]

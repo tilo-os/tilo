@@ -153,11 +153,9 @@ impl ImportApp {
     }
 
     fn try_for_shot(scenario: &str) -> Result<Self, String> {
-        let temporary_parent = dirs::data_local_dir()
-            .filter(|path| path.is_dir())
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-            .unwrap_or_else(std::env::temp_dir);
-        let temp = tempfile::tempdir_in(temporary_parent).map_err(|error| error.to_string())?;
+        // Screenshot fixtures are disposable and must not inherit the login
+        // user's protected home classification (CI commonly runs as root).
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
         let base = temp
             .path()
             .canonicalize()
@@ -1911,8 +1909,11 @@ mod tests {
     use super::*;
 
     fn fixture() -> (tempfile::TempDir, ImportApp, PathBuf, PathBuf) {
-        let home = std::env::var_os("HOME").unwrap();
-        let temp = tempfile::tempdir_in(home).unwrap();
+        // CI commonly runs as root, whose home is deliberately rejected by
+        // `system_folder_reason`. Keep this generic import fixture in the
+        // platform temp directory so it exercises copy behaviour rather than
+        // the protected-system-path guard.
+        let temp = tempfile::tempdir().unwrap();
         let base = temp.path().canonicalize().unwrap();
         let source = base.join("source");
         let destination_parent = base.join("destination-parent");
@@ -2316,7 +2317,10 @@ mod tests {
         let root = app.store.as_ref().unwrap().root().to_owned();
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
         app.start_operation(0).unwrap();
-        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Native durability includes directory fsyncs; allow slower virtual
+        // disks to reach the terminal checkpoint without weakening the state
+        // assertion that follows.
+        entered.recv_timeout(Duration::from_secs(15)).unwrap();
         let started = Instant::now();
         app.poll_background();
         assert!(started.elapsed() < Duration::from_millis(200));
@@ -2338,7 +2342,10 @@ mod tests {
         let root = app.store.as_ref().unwrap().root().to_owned();
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
         app.start_operation(0).unwrap();
-        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Native durability includes directory fsyncs; allow slower virtual
+        // disks to reach the terminal checkpoint without weakening the state
+        // assertion that follows.
+        entered.recv_timeout(Duration::from_secs(15)).unwrap();
         fs::rename(root.join("ownership.lock"), root.join("old-lock")).unwrap();
         release.send(()).unwrap();
         wait_terminal(&mut app);

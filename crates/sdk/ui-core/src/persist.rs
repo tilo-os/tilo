@@ -13,7 +13,7 @@
 //! an app writes
 //!
 //! ```ignore
-//! let (state, autosave) = tilo_ui::persist::open("dev.tilo.my-app");
+//! let (state, autosave) = tilo_ui::persist::open("so.tilo.my-app");
 //! tilo_ui::App::from_factory(state, my_app::app_root)
 //!     .with_autosave(autosave)
 //!     .run();
