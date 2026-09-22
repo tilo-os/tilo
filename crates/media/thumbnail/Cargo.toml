@@ -31,7 +31,7 @@ roxmltree = "0.20"
 # Content addressing (same hash the rest of Tilo uses end-to-end).
 blake3.workspace = true
 # In-memory LRU in front of the on-disk cache.
-moka = { version = "0.12.15", features = ["sync"] }
+moka.workspace = true
 hex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
