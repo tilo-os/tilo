@@ -123,7 +123,7 @@ jobs:
           - arch: x86_64
             platform: linux/amd64
             runner: runner-disk-100g
-            kernel_build_jobs: 2
+            kernel_build_jobs: 4
           - arch: aarch64
             platform: linux/arm64
             runner: runner-disk-100g-arm64
