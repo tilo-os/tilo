@@ -1,6 +1,6 @@
 [Unit]
 Description=Tilo security self-check (logs active hardening to the journal)
-Documentation=https://github.com/tilo/tilo
+Documentation=https://github.com/qos/qos
 # After the bits it inspects are up (SELinux, mounts, fs.service).
 After=local-fs.target fs.service
 Wants=fs.service

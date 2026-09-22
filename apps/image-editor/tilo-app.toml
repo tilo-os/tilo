@@ -1,5 +1,5 @@
 [package]
-id = "dev.tilo.image-editor"
+id = "so.tilo.image-editor"
 name = "Image Editor"
 category = "Multimedia"
 version = "0.1.0"

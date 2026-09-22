@@ -107,7 +107,7 @@ pub fn main() {
         std::process::exit(1);
     }
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.git-client", git_client::app_root)
+        &LaunchSpec::new("so.tilo.git-client", git_client::app_root)
             .shot_root(shot_root)
             .shot_viewport(|_| WIDE_VIEWPORT)
             .scenarios(git_client::SCENARIOS)

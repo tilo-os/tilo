@@ -196,7 +196,7 @@ pub struct StoreItemVersion {
     pub version: String,
     /// Unix seconds. `0` means the source didn't publish a release date.
     pub released_at_unix: u64,
-    /// Download URL — a `.qpkg` for Tilo entries, `None` for Flatpak
+    /// Download URL — a `.tapp` for Tilo entries, `None` for Flatpak
     /// (Flatpak installs go through the `flatpak` CLI, not a URL).
     pub download_url: Option<String>,
     /// BLAKE3 hex root hash of the download. Only meaningful for Tilo
@@ -210,13 +210,19 @@ pub struct StoreItemVersion {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreItem {
     /// Stable identifier. For Tilo this is the reverse-DNS package id
-    /// (`dev.tilo.notes`). For Flathub it's the app-id
+    /// (`so.tilo.notes`). For Flathub it's the app-id
     /// (`org.gnome.Calculator`).
     pub id: String,
     /// Human-readable name shown in the card title.
     pub name: String,
     /// One-line description under the name.
     pub description: String,
+    /// Short localized publisher tagline.
+    #[serde(default)]
+    pub tagline: String,
+    /// Canonical language tags supported by the app itself.
+    #[serde(default)]
+    pub supported_languages: Vec<String>,
     /// Free-form categories used for the derived category chip row.
     pub categories: Vec<String>,
     /// Icon URL, if the source publishes one. Artwork is fetched lazily
@@ -441,9 +447,11 @@ mod tests {
 
     fn tilo_item(name: &str, installed: InstalledState, latest: &str) -> StoreItem {
         StoreItem {
-            id: format!("dev.tilo.{}", name.to_ascii_lowercase()),
+            id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: format!("Some {name} app"),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec!["Productivity".into()],
             icon_url: None,
             screenshot_urls: Vec::new(),
@@ -457,7 +465,7 @@ mod tests {
             versions: vec![StoreItemVersion {
                 version: latest.into(),
                 released_at_unix: 0,
-                download_url: Some("https://x/y.qpkg".into()),
+                download_url: Some("https://x/y.tapp".into()),
                 root_hash_hex: Some("de".repeat(32)),
                 size_bytes: 100,
             }],
@@ -471,6 +479,8 @@ mod tests {
             id: format!("org.example.{name}"),
             name: name.into(),
             description: format!("{name} on Flathub"),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec!["Games".into()],
             icon_url: None,
             screenshot_urls: Vec::new(),

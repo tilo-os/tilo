@@ -404,7 +404,7 @@ impl LinkPopover {
             text_renderer,
             &self.filter,
             &self.filter_selection,
-            "Find a page…",
+            "Find a note…",
             Rect::new(
                 filter_rect.x0 + 6.0,
                 filter_rect.y0,
@@ -566,7 +566,7 @@ impl Widget for LinkPopover {
         if !self.visible_flag {
             return Some(
                 AccessNode::new(Role::Menu)
-                    .with_name("Link pages")
+                    .with_name("Link notes")
                     .with_state(AccessState {
                         expanded: Some(false),
                         hidden: true,
@@ -593,7 +593,7 @@ impl Widget for LinkPopover {
             .collect();
         Some(
             AccessNode::new(Role::Menu)
-                .with_name("Link pages")
+                .with_name("Link notes")
                 .with_optional_value((!self.filter.is_empty()).then(|| self.filter.clone()))
                 .with_state(AccessState {
                     expanded: Some(true),
@@ -782,7 +782,7 @@ mod tests {
         assert_eq!(p.visible_len(), 1);
         assert_eq!(p.highlighted().unwrap().title, "東京");
         let access = Widget::accessibility(&p).unwrap();
-        assert_eq!(access.name.as_deref(), Some("Link pages"));
+        assert_eq!(access.name.as_deref(), Some("Link notes"));
         assert_eq!(access.value.as_deref(), Some("東京"));
         assert_eq!(access.children.len(), 1);
     }

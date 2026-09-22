@@ -4,7 +4,7 @@ use automerge::{ObjType, ROOT, ReadDoc, Value, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{Action, ActionError, ActionRegistry, Doc, ExecutionLocus};
 
-pub(crate) const EDIT: &str = "dev.tilo.scratchpad.edit";
+pub(crate) const EDIT: &str = "so.tilo.scratchpad.edit";
 
 /// Edit the note through a diff, preserving unchanged collaborative text.
 #[derive(Debug, Serialize, Deserialize)]

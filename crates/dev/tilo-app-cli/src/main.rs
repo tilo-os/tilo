@@ -455,7 +455,7 @@ struct PackageArgs {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Persistent tilo-pkg signing identity, relative to the app root unless absolute.
+    /// Persistent tilo-app-package signing identity, relative to the app root unless absolute.
     #[arg(long)]
     identity: Option<PathBuf>,
 
@@ -485,7 +485,7 @@ struct NewArgs {
     /// Cargo package name, for example `reading-list`.
     name: Option<String>,
 
-    /// Reverse-DNS application id. Defaults to `dev.tilo.<name>`.
+    /// Reverse-DNS application id. Defaults to `so.tilo.<name>`.
     #[arg(long)]
     id: Option<String>,
 
@@ -1331,7 +1331,10 @@ fn validate_responsive_pngs(mode_root: &Path) -> Result<()> {
             mode_root.display(),
             paths.len()
         );
-        validate_responsive_png(&paths[0], expected)?;
+        let [path] = paths.as_slice() else {
+            anyhow::bail!("responsive PNG count changed after validation")
+        };
+        validate_responsive_png(path, expected)?;
     }
     Ok(())
 }
@@ -1348,17 +1351,26 @@ fn validate_responsive_png(path: &Path, expected: (u32, u32)) -> Result<()> {
         expected
     );
     let pixels = image.to_rgba8();
-    let total = u64::from(expected.0) * u64::from(expected.1);
+    let total = u64::from(expected.0)
+        .checked_mul(u64::from(expected.1))
+        .context("responsive viewport area overflowed")?;
+    anyhow::ensure!(total > 0, "responsive viewport must not be empty");
     let mut colours = std::collections::HashMap::<[u8; 4], u64>::new();
     for pixel in pixels.pixels() {
-        *colours.entry(pixel.0).or_default() += 1;
+        let count = colours.entry(pixel.0).or_default();
+        *count = count.saturating_add(1);
     }
     let dominant = colours.values().copied().max().unwrap_or(total);
+    let dominant_hundredths = dominant
+        .saturating_mul(10_000)
+        .checked_div(total)
+        .unwrap_or(10_000);
     anyhow::ensure!(
         dominant.saturating_mul(10_000) <= total.saturating_mul(9_990),
-        "{} is effectively blank ({:.2}% one colour)",
+        "{} is effectively blank ({}.{:02}% one colour)",
         path.display(),
-        dominant as f64 * 100.0 / total as f64
+        dominant_hundredths.div_euclid(100),
+        dominant_hundredths.rem_euclid(100),
     );
     Ok(())
 }
@@ -2053,7 +2065,7 @@ mod tests {
             "package",
             "apps/demo/src",
             "--output",
-            "dist/demo-dev.qpkg",
+            "dist/demo-dev.tapp",
             "--identity",
             "publisher.json",
             "--profile",
@@ -2070,7 +2082,7 @@ mod tests {
             panic!("expected package command");
         };
         assert_eq!(package.path, Some(PathBuf::from("apps/demo/src")));
-        assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.qpkg")));
+        assert_eq!(package.output, Some(PathBuf::from("dist/demo-dev.tapp")));
         assert_eq!(package.identity, Some(PathBuf::from("publisher.json")));
         assert_eq!(package.profile, "distribution");
         assert_eq!(package.target.as_deref(), Some("x86_64-unknown-linux-gnu"));

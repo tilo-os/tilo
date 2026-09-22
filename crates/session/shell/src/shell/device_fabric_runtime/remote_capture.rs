@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn owner_changes_only_across_app_or_workspace_focus() {
         let previous = PhysicalGamepadBinding {
-            app_id: "dev.tilo.Camera".into(),
+            app_id: "so.tilo.Camera".into(),
             workspace_id: "room-a".into(),
             session_id: "tab-a".into(),
         };
@@ -172,18 +172,18 @@ mod tests {
             ..previous.clone()
         };
         let other_app = PhysicalGamepadBinding {
-            app_id: "dev.tilo.Calls".into(),
+            app_id: "so.tilo.Calls".into(),
             ..previous.clone()
         };
 
         assert_eq!(stale_owner(Some(&previous), Some(&same_owner)), None);
         assert_eq!(
             stale_owner(Some(&previous), Some(&other_app)),
-            Some(("dev.tilo.Camera".into(), "room-a".into()))
+            Some(("so.tilo.Camera".into(), "room-a".into()))
         );
         assert_eq!(
             stale_owner(Some(&previous), None),
-            Some(("dev.tilo.Camera".into(), "room-a".into()))
+            Some(("so.tilo.Camera".into(), "room-a".into()))
         );
         assert_eq!(stale_owner(None, Some(&previous)), None);
     }
@@ -198,7 +198,7 @@ mod tests {
         let mut locked = runtime.lock().unwrap();
         locked
             .request(
-                VerifiedAppRegistration::new_verified("dev.tilo.Camera", "room-a").unwrap(),
+                VerifiedAppRegistration::new_verified("so.tilo.Camera", "room-a").unwrap(),
                 DeviceId::new("phone").unwrap(),
                 DeviceId::new("laptop").unwrap(),
                 "Camera".into(),
