@@ -5,7 +5,14 @@ import sys
 import json
 import tempfile
 import unittest
-from tools.apps.dev_app_versions import development_version, source_identity, version_plan, stage_manifest, collection_plan
+from tools.apps.dev_app_versions import (
+    collection_plan,
+    development_version,
+    release_version,
+    source_identity,
+    stage_manifest,
+    version_plan,
+)
 
 class DevelopmentVersionTests(unittest.TestCase):
     def test_identity_is_stable_for_retry_and_sequence_is_numeric(self):
@@ -16,6 +23,18 @@ class DevelopmentVersionTests(unittest.TestCase):
                 development_version(declared, 10, sha)
         with self.assertRaises(ValueError):
             development_version('0.1.0', 0, sha)
+
+    def test_continuous_release_is_stable_and_monotonic(self):
+        old = release_version('0.1.0', 41, 'a' * 40)
+        new = release_version('0.1.0', 42, 'b' * 40)
+        self.assertEqual(old, '0.1.41+g' + 'a' * 40)
+        self.assertEqual(new, '0.1.42+g' + 'b' * 40)
+        self.assertNotIn('-', new, 'main releases must remain visible on the stable channel')
+        self.assertEqual(
+            version_plan({'catalog': [{'version': '0.1.0'}]}, 42, 'b' * 40, stable=True)
+            ['catalog'][0]['version'],
+            new,
+        )
 
     def test_real_history_rejects_side_branch_and_shallow_checkout(self):
         with tempfile.TemporaryDirectory() as tmp:

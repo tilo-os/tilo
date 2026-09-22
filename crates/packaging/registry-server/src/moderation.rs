@@ -782,6 +782,31 @@ fn validate_version_history(
                 });
             }
         }
+        for version in &proposed.versions {
+            if current
+                .versions
+                .iter()
+                .any(|old| same_version_identity(old, version))
+            {
+                continue;
+            }
+            let latest = current
+                .versions
+                .iter()
+                .filter(|old| same_version_target(old, version))
+                .max_by(|left, right| {
+                    tilo_app_package::version::compare(&left.version, &right.version)
+                });
+            if let Some(latest) = latest
+                && !tilo_app_package::version::compare(&version.version, &latest.version).is_gt()
+            {
+                return Err(ModerationError::VersionNotNewer {
+                    package_id: proposed.package_id.clone(),
+                    version: version.version.clone(),
+                    current: latest.version.clone(),
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -790,8 +815,15 @@ fn same_version_identity(
     left: &registry_types::RegistryVersion,
     right: &registry_types::RegistryVersion,
 ) -> bool {
-    left.version == right.version
-        && left.target.platform == right.target.platform
+    tilo_app_package::version::compare(&left.version, &right.version).is_eq()
+        && same_version_target(left, right)
+}
+
+fn same_version_target(
+    left: &registry_types::RegistryVersion,
+    right: &registry_types::RegistryVersion,
+) -> bool {
+    left.target.platform == right.target.platform
         && left.target.architecture == right.target.architecture
 }
 
@@ -935,6 +967,14 @@ pub enum ModerationError {
     VersionHistoryRemoved { package_id: String, version: String },
     #[error("entry {package_id} reuses version identity {version} for different bytes")]
     VersionIdentityReused { package_id: String, version: String },
+    #[error(
+        "entry {package_id} version {version} is not newer than current {current} for its target"
+    )]
+    VersionNotNewer {
+        package_id: String,
+        version: String,
+        current: String,
+    },
     #[error("entry {package_id} version {version} lacks a supported architecture artifact binding")]
     UnsupportedPackageTarget { package_id: String, version: String },
     #[error("public entry {0} conflicts with the quarantined revision")]
@@ -1019,6 +1059,38 @@ mod tests {
                 note: String::new(),
             }],
         }
+    }
+
+    #[test]
+    fn version_history_is_monotonic_per_target() {
+        let key = SigningKey::generate(&mut OsRng);
+        let mut current = entry(&key, 42);
+        current.versions[0].version = "0.1.42+gnew".into();
+
+        let mut stale = current.clone();
+        let mut stale_x86 = stale.versions[0].clone();
+        stale_x86.version = "0.1.41+gold".into();
+        stale.versions.push(stale_x86);
+        assert!(matches!(
+            validate_version_history(&stale, Some(&current)),
+            Err(ModerationError::VersionNotNewer { version, current, .. })
+                if version == "0.1.41+gold" && current == "0.1.42+gnew"
+        ));
+
+        let mut reused = current.clone();
+        reused.versions[0].version = "0.1.42+gdifferent".into();
+        assert!(matches!(
+            validate_version_history(&reused, Some(&current)),
+            Err(ModerationError::VersionIdentityReused { .. })
+        ));
+
+        let mut new_target = current.clone();
+        let mut arm = new_target.versions[0].clone();
+        arm.version = "0.1.1+garm".into();
+        arm.target.architecture = "aarch64".into();
+        arm.target.isa = "aarch64-v8.2".into();
+        new_target.versions.push(arm);
+        assert!(validate_version_history(&new_target, Some(&current)).is_ok());
     }
 
     #[test]
