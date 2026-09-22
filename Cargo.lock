@@ -1685,7 +1685,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tracing",
- "tracing-subscriber",
  "url",
  "uuid",
  "vello",

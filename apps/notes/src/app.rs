@@ -26,7 +26,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::collaboration::PresencePayload;
-use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
@@ -438,11 +437,15 @@ pub struct NotesApp {
     content_node: Option<NodeId>,
     /// Present only for the legacy standalone/fixture adapter until its host cutover.
     legacy_fixture_storage: Option<LegacyFixtureStorage>,
+    /// Workspace-scoped image attachments; independent of notebook persistence.
+    /// Canonical notebooks keep their document/history in the bound RecordStore.
+    workspace_asset_root: Option<PathBuf>,
     /// Preserve a loaded draft when its first durable bind cannot read disk.
     /// Do not save or navigate away until that read can be retried safely.
     legacy_read_blocked: Option<PageId>,
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
+    pub(crate) workspace_lock: Option<std::fs::File>,
     /// A host-portal file choice in flight. File access never escapes the
     /// workspace sandbox without an explicit portal grant.
     markdown_transfer: Option<(MarkdownTransfer, ui::portal::PortalChannel)>,
@@ -578,6 +581,8 @@ struct LegacyFixtureStorage {
     root: PathBuf,
     saver: Saver,
     page_saver: PageSaver,
+    // Declared last: both saver Drop implementations join before unlocking.
+    _lock: std::fs::File,
 }
 
 impl NotesApp {
@@ -612,6 +617,10 @@ impl NotesApp {
     }
 
     fn spawn_inner(root: PathBuf, seed_starter: bool) -> Result<Self, String> {
+        let lock = storage::lock_workspace(&root)?;
+        if root.join(".notes-canonical-v1").exists() {
+            return Err("this notebook has moved to canonical storage; open it with the current Notes launcher".into());
+        }
         storage::ensure_layout(&root).map_err(|e| e.to_string())?;
         let mut workspace = storage::load_workspace(&root)?.unwrap_or_default();
         if seed_starter && workspace.pages().is_empty() {
@@ -663,6 +672,7 @@ impl NotesApp {
                 root,
                 saver,
                 page_saver,
+                _lock: lock,
             }),
         ))
     }
@@ -698,6 +708,17 @@ impl NotesApp {
         Ok(app)
     }
 
+    /// Configure local attachments without creating a legacy document writer.
+    pub(crate) fn configure_workspace_assets(
+        &mut self,
+        root: &std::path::Path,
+    ) -> Result<(), String> {
+        storage::ensure_layout(root).map_err(|error| error.to_string())?;
+        self.main.set_image_store(Some(workspace_image_store(root)));
+        self.workspace_asset_root = Some(root.to_path_buf());
+        Ok(())
+    }
+
     fn project_workspace(doc: &AutoCommit, selected: Option<PageId>) -> Result<Workspace, String> {
         let mut workspace = crate::notebook::project(doc, selected)?;
         if workspace.selected().is_none() {
@@ -719,6 +740,9 @@ impl NotesApp {
         legacy_fixture_storage: Option<LegacyFixtureStorage>,
     ) -> Self {
         let canonical = legacy_fixture_storage.is_none();
+        let workspace_asset_root = legacy_fixture_storage
+            .as_ref()
+            .map(|legacy| legacy.root.clone());
         let search_provider = crate::search_provider::NoteSearchProvider::new(&workspace);
         let initial_route = workspace.selected();
 
@@ -743,8 +767,10 @@ impl NotesApp {
             main_node: None,
             content_node: None,
             legacy_fixture_storage,
+            workspace_asset_root,
             legacy_read_blocked: None,
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
+            workspace_lock: None,
             markdown_transfer: None,
             markdown_job: ui::LatestRequest::new(),
             markdown_invocation: None,
@@ -1230,10 +1256,11 @@ impl NotesApp {
             self.topbar_rect.x1,
             self.topbar_rect.y1,
         );
+        // Bar role: one chrome hairline under the app bar (HIG §9.5).
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
             &hairline,
         );
@@ -1242,12 +1269,24 @@ impl NotesApp {
         // the button hit rect. Highlight the button while the drawer is
         // open so the toggle state reads.
         if self.drawer.is_open() {
+            // The open toggle is a chosen control: a selection lift (HIG §9.3)
+            // off the bar's raised ground, with its derived hairline — not an
+            // accent wash, and not `raised` painted on `raised`.
+            let radius = f64::from(tokens.radii.md);
+            let lifted = crate::sidebar::selection_fill_on_raised(theme);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.accent_primary.with_alpha_factor(0.18),
+                lifted,
                 None,
-                &self.menu_btn_rect,
+                &vello::kurbo::RoundedRect::from_rect(self.menu_btn_rect, radius),
+            );
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                ui::surface::edge_on(lifted),
+                None,
+                &ui::surface::edge_outline(self.menu_btn_rect, radius),
             );
         }
         let cx = self.menu_btn_rect.center().x;
@@ -2478,14 +2517,7 @@ impl NotesApp {
         self.markdown_transfer = Some((
             MarkdownTransfer::Export {
                 markdown: markdown.into_bytes(),
-                asset_root: self
-                    .legacy_fixture_storage
-                    .as_ref()
-                    .map(|legacy| legacy.root.clone()),
-                canonical_assets: self
-                    .canonical_assets
-                    .read()
-                    .map_or_else(|_| HashMap::new(), |assets| assets.clone()),
+                asset_root: self.workspace_asset_root.clone(),
             },
             channel,
         ));
@@ -2523,16 +2555,15 @@ impl NotesApp {
     }
 
     fn finish_image_insert(&mut self, doc: &mut AutoCommit, page: PageId, path: &std::path::Path) {
-        let imported = if let Some(legacy) = self.legacy_fixture_storage.as_ref() {
-            import_image_asset(&legacy.root, path).map(|destination| (destination, None))
-        } else {
-            read_image_asset(path).map(|(bytes, _)| {
-                let digest = blake3::hash(&bytes).to_hex().to_string();
-                (format!("asset:{digest}"), Some(bytes))
-            })
+        let Some(root) = self.workspace_asset_root.as_deref() else {
+            self.transfer_toasts.push(
+                "Image attachments require workspace file storage",
+                ui::widget::toast::ToastKind::Error,
+            );
+            return;
         };
-        let (destination, canonical_bytes) = match imported {
-            Ok(imported) => imported,
+        let destination = match import_image_asset(root, path) {
+            Ok(destination) => destination,
             Err(error) => {
                 self.transfer_toasts.push(
                     format!("Image import failed: {error}"),
@@ -2711,11 +2742,8 @@ impl NotesApp {
                 "The current note could not be read; its unsaved draft is still open".into(),
             );
         }
-        let (body, assets) = if let Some(legacy) = self.legacy_fixture_storage.as_ref() {
-            (
-                adopt_portable_markdown_assets(&legacy.root, path, body),
-                Vec::new(),
-            )
+        let body = if let Some(root) = self.workspace_asset_root.as_deref() {
+            adopt_portable_markdown_assets(root, path, &body)
         } else {
             adopt_canonical_markdown_assets(path, body)
         };
@@ -3378,6 +3406,13 @@ impl NotesApp {
         self.sidebar.new_page_btn_center_for_test()
     }
 
+    /// Test hook: the sidebar's laid-out rect (docked column or overlay
+    /// drawer), so a test can prove the drawer is clamped to the window.
+    #[doc(hidden)]
+    pub fn sidebar_rect_for_test(&self) -> Rect {
+        self.sidebar.rect_for_test()
+    }
+
     /// Test hook: whether a live page-tree drag is in flight.
     #[doc(hidden)]
     pub fn sidebar_drag_active_for_test(&self) -> bool {
@@ -4035,17 +4070,28 @@ impl Widget for NotesApp {
         self.text_scale = f64::from(theme.text_scale);
         self.drawer
             .set_breakpoint(NARROW_BREAKPOINT * self.text_scale);
-        self.drawer
-            .set_docked_width(SIDEBAR_WIDTH * self.text_scale);
-        self.drawer
-            .set_overlay_width(DRAWER_WIDTH * self.text_scale);
+        // The scaled drawer must still leave a scrim band of the page visible
+        // (and its own trailing controls on screen): at 2× in a phone-width
+        // window the unclamped 528px drawer ran past the window's right edge.
+        let docked_w = SIDEBAR_WIDTH * self.text_scale;
+        let reveal = f64::from(theme.tokens.spacing.s12);
+        let drawer_w = if self.rect.width() > 0.0 {
+            (DRAWER_WIDTH * self.text_scale).min((self.rect.width() - reveal).max(reveal))
+        } else {
+            DRAWER_WIDTH * self.text_scale
+        };
+        self.drawer.set_docked_width(docked_w);
+        self.drawer.set_overlay_width(drawer_w);
         // Commit the mode the tree is built with so draw/event routing
         // stays in lock-step with the live taffy structure.
         self.built_narrow = self.want_narrow;
         let narrow = self.built_narrow;
 
         let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
-        let _ = taffy.set_style(sidebar_node, Self::sidebar_style(narrow, self.text_scale));
+        let _ = taffy.set_style(
+            sidebar_node,
+            Self::sidebar_style(narrow, drawer_w, docked_w, self.text_scale),
+        );
         self.sidebar_node = Some(sidebar_node);
 
         // Keep the final content row above the transient save status in every
@@ -4536,7 +4582,7 @@ impl NotesApp {
     /// edge of the content row, full height, taken out of flow so the
     /// editor keeps the whole width underneath it. Wide: a fixed-width
     /// column so the split is deterministic (no flexbox squeezing).
-    fn sidebar_style(narrow: bool, text_scale: f64) -> Style {
+    fn sidebar_style(narrow: bool, drawer_w: f64, docked_w: f64, text_scale: f64) -> Style {
         if narrow {
             Style {
                 position: taffy::Position::Absolute,
@@ -4555,7 +4601,7 @@ impl NotesApp {
                     height: Dimension::percent(1.0),
                 },
                 max_size: Size {
-                    width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH * text_scale)),
+                    width: Dimension::length(num::f32_of_f64(drawer_w)),
                     height: Dimension::auto(),
                 },
                 flex_shrink: 0.0,
@@ -4564,7 +4610,7 @@ impl NotesApp {
         } else {
             Style {
                 size: Size {
-                    width: Dimension::length(num::f32_of_f64(SIDEBAR_WIDTH * text_scale)),
+                    width: Dimension::length(num::f32_of_f64(docked_w)),
                     height: Dimension::percent(1.0),
                 },
                 min_size: Size {
@@ -5648,6 +5694,56 @@ mod tests {
         assert!(store.get("../../etc/passwd").is_none());
         store.block_until_idle(Duration::from_secs(2));
         assert!(store.get("../../etc/passwd").is_none());
+    }
+
+    #[test]
+    fn canonical_notebook_keeps_image_insert_and_portable_markdown_assets() {
+        let workspace = TempDir::new().unwrap();
+        let source = TempDir::new().unwrap();
+        let image = source.path().join("photo.png");
+        std::fs::write(&image, include_bytes!("../../settings/shots/settings.png")).unwrap();
+        let markdown = source.path().join("Imported.md");
+        let body = "![Portable](photo.png)\n";
+        std::fs::write(&markdown, body).unwrap();
+        let mut doc = AutoCommit::new();
+        crate::notebook::initialize_empty(&mut doc).unwrap();
+        let author = ui::permissions::UserId("canonical-assets-test".into());
+        let mut app = NotesApp::from_document(&doc, &author).unwrap();
+        app.configure_workspace_assets(workspace.path()).unwrap();
+        app.finish_markdown_import(&mut doc, &markdown, body.into())
+            .unwrap();
+        let page = app.workspace.selected().unwrap();
+        let imported = NotesDoc::page_block_snapshots(&doc, page);
+        assert!(imported.iter().any(|(_, text)| text.contains("../assets/")));
+        app.finish_image_insert(&mut doc, page, &image);
+        let images = NotesDoc::page_block_snapshots(&doc, page);
+        assert_eq!(
+            images
+                .iter()
+                .filter(|(_, text)| text.contains("../assets/"))
+                .count(),
+            2
+        );
+        let destination = source.path().join("Exported.md");
+        app.test_markdown_pick = Some(ui::portal::PortalOutcome::Opened(destination.clone()));
+        app.request_markdown_export(&doc, page).unwrap();
+        app.drain_markdown_transfer(&mut doc);
+        let exported = std::fs::read_to_string(&destination).unwrap();
+        assert!(!exported.contains("../assets/"));
+        let references: Vec<_> = exported
+            .lines()
+            .filter_map(standalone_image_parts)
+            .collect();
+        assert_eq!(references.len(), 2);
+        for (_, _, reference) in references {
+            assert_eq!(
+                std::fs::read(source.path().join(reference)).unwrap(),
+                std::fs::read(&image).unwrap()
+            );
+        }
+        assert!(app.legacy_fixture_storage.is_none());
+        assert!(!storage::workspace_file_path(workspace.path()).exists());
+        crate::notebook::validate(&doc).unwrap();
     }
 
     #[test]

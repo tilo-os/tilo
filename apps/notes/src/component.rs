@@ -45,5 +45,9 @@ fn create_component(
     }
     let mut registry = tilo_actions::ActionRegistry::new();
     crate::actions::register(&mut registry);
-    Ok(AppComponent::new(context, Box::new(root), registry))
+    let mut component = AppComponent::new(context, Box::new(root), registry);
+    component
+        .register_document_history(&crate::framework_history::HISTORY)
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    Ok(component)
 }

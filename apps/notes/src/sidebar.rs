@@ -32,14 +32,17 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::Widget;
+use ui::chrome::GLOW_ALPHA;
 use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
 use ui::presence::{PresenceCtx, PresenceKey};
+use ui::surface::{edge_on, edge_outline};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::TextInput;
+use ui::tokens::colors::Colors;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::drag::{DragController, ListMetrics};
+use ui::widget::{Chip, ChipLead, ChipStyle, TextInput};
 
 use crate::model::{PageId, Workspace};
 use crate::num;
@@ -84,6 +87,14 @@ const ROW_TEXT_SIZE: f32 = 14.0;
 /// Long enough to cross a row without disruption, short enough to browse a
 /// deep destination without dropping and restarting the gesture.
 const DRAG_EXPAND_DWELL: std::time::Duration = std::time::Duration::from_millis(450);
+
+/// Height of one line of `size`-pt text at `text_scale` — the value the
+/// renderer measures for a single line — so labels centre on their line box
+/// without measuring each row's own title (a fixed probe, once per row
+/// height). The crate's one copy of the line formula.
+fn line_h(size: f32, text_scale: f64) -> f64 {
+    ui::text_metrics::line_height_px(size, num::f32_of_f64(text_scale))
+}
 
 /// Outbound commands from the sidebar to the parent `NotesApp`. The
 /// parent owns the workspace model and storage — the sidebar can only
@@ -253,6 +264,26 @@ struct ClickRecord {
     pos: Point,
 }
 
+/// The tier a chosen control lifts to off a `surfaces.raised` ground — the
+/// sidebar, the narrow top bar, the History page tree: whichever of the
+/// theme's semantic tiers moves furthest from `raised`, so the selection is a
+/// contrast step on every preset (HIG §9.3) instead of raised-on-raised with
+/// only an outline. `chrome::selection_tier` lifts base → raised and would
+/// land on the ground itself here.
+pub(crate) fn selection_fill_on_raised(theme: &Theme) -> vello::peniko::Color {
+    use ui::a11y::relative_luminance;
+    let c = &theme.tokens.colors;
+    let g = relative_luminance(c.surfaces.raised);
+    [c.surfaces.base, c.lift(1.0)]
+        .into_iter()
+        .max_by(|a, b| {
+            (relative_luminance(*a) - g)
+                .abs()
+                .total_cmp(&(relative_luminance(*b) - g).abs())
+        })
+        .unwrap_or(c.surfaces.base)
+}
+
 impl NoteTreeView {
     fn scaled(&self, value: f64) -> f64 {
         value * self.text_scale
@@ -262,14 +293,17 @@ impl NoteTreeView {
         ROW_HEIGHT * self.text_scale
     }
 
-    fn row_action_rects(&self, row_rect: Rect) -> (Rect, Rect) {
-        let size = self.scaled(ROW_ACTION_SIZE);
-        let gap = self.scaled(ROW_ACTION_GAP);
-        let right = row_rect.x1 - self.scaled(ROW_PILL_MARGIN + 2.0);
-        let top = row_rect.y0 + (row_rect.height() - size) / 2.0;
-        let more = Rect::new(right - size, top, right, top + size);
-        let child = Rect::new(more.x0 - gap - size, top, more.x0 - gap, top + size);
-        (child, more)
+    /// The selected row's pill: inset `margin` from the pane's sides and
+    /// half an `s1` from the row's top and bottom, so two neighbouring rows'
+    /// pills sit one `s1` apart (HIG §7: nothing touches).
+    fn selection_pill(row: Rect, margin: f64, tokens: &ui::tokens::Tokens) -> Rect {
+        let half_gap = f64::from(tokens.spacing.s1) / 2.0;
+        Rect::new(
+            row.x0 + margin,
+            row.y0 + half_gap,
+            row.x1 - margin,
+            row.y1 - half_gap,
+        )
     }
 
     fn scroll_by(&mut self, delta: f64) -> bool {
@@ -976,7 +1010,7 @@ impl Widget for NoteTreeView {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.border_standard,
+            edge_on(tokens.colors.surfaces.raised),
             None,
             &divider,
         );
@@ -1199,7 +1233,8 @@ impl Widget for NoteTreeView {
         }
         Some(
             AccessNode::new(Role::Tree)
-                .with_name(ui::i18n!("notes-title"))
+                .with_semantic_key("notes.page-tree")
+                .with_name("Pages")
                 .with_state(AccessState::new().focusable(true).focused(self.is_focused))
                 .with_children(children),
         )
@@ -1363,8 +1398,11 @@ impl NoteTreeView {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let header_text_y = self.rect.y0
-            + (self.header_height() - f64::from(ROW_TEXT_SIZE) * self.text_scale) / 2.0;
+        // Centre the label on the line the renderer measures for it, not on
+        // the font size: a line is `size × 1.25` tall, so centring on the bare
+        // size sat the label 1.75px low at 1× and further at larger scales.
+        let label_h = line_h(ROW_TEXT_SIZE, self.text_scale);
+        let header_text_y = self.rect.y0 + (self.header_height() - label_h) / 2.0;
         text_renderer.draw_text(
             scene,
             &ui::i18n!("notes-title"),
@@ -1379,23 +1417,24 @@ impl NoteTreeView {
                 .max(0.0),
             )),
         );
-        // Button chip — brighter when hovered so it reads as clickable.
-        let btn_bg = if self.new_page_btn_hover {
-            theme.accent_primary.with_alpha_factor(0.28)
+        // The new-page control is the shared icon chip — a glyph lead with no
+        // label, painted into exactly the rect `apply_layout` hit-tests — so
+        // it carries the toolkit's states and theming instead of a local
+        // square with a typeset "+". Hover takes the accent tint.
+        let style = if self.new_page_btn_hover {
+            ChipStyle::tinted(theme.accent_primary)
         } else {
-            tokens.colors.lift(0.72)
+            ChipStyle::quiet()
         };
-        let btn = vello::kurbo::RoundedRect::from_rect(
-            self.new_page_btn_rect,
-            f64::from(tokens.radii.sm),
-        );
-        scene.fill(vello::peniko::Fill::NonZero, transform, btn_bg, None, &btn);
-        // Vector bounds keep the icon centred independently of font metrics.
-        Icon::Plus.draw(
+        Chip::draw_at(
             scene,
             transform,
-            self.new_page_btn_rect.inset(-self.scaled(5.0)),
-            tokens.colors.text_primary,
+            self.new_page_btn_rect,
+            "",
+            ChipLead::Glyph(Icon::Plus),
+            style,
+            theme,
+            text_renderer,
         );
     }
 
@@ -1456,7 +1495,7 @@ impl NoteTreeView {
         }
     }
 
-    /// One row's selection pill, presence mist, nesting guides, expand
+    /// One row's nesting guides, selection pill, presence mist, expand
     /// glyph and label.
     #[allow(
         clippy::too_many_arguments,
@@ -1477,32 +1516,61 @@ impl NoteTreeView {
         row_rect: Rect,
     ) {
         let tokens = &theme.tokens;
-        let hovered = !self.drag.is_pending()
-            && !self.menu.is_open()
-            && self.rename.is_none()
-            && self
-                .last_cursor
-                .is_some_and(|point| row_rect.contains(point));
-        if self.selected == Some(row.id) || hovered {
-            // An inset rounded pill rather than an edge-to-edge bar, so
-            // the selection reads as a chip with breathing room.
-            let pill = RoundedRect::new(
-                row_rect.x0 + self.scaled(ROW_PILL_MARGIN),
-                row_rect.y0 + self.scaled(1.0),
-                row_rect.x1 - self.scaled(ROW_PILL_MARGIN),
-                row_rect.y1 - self.scaled(1.0),
-                f64::from(tokens.radii.md),
+        // Nesting guides: a faint vertical rail at each ancestor depth
+        // so the tree structure reads at a glance — this is what makes
+        // an indented child obviously nested under its parent. Painted
+        // before the selection pill, which is opaque, so a rail never runs
+        // through the chosen row's lifted surface.
+        for level in 0..row.depth {
+            let gx = row_rect.x0
+                + self.scaled(ROW_INSET_X)
+                + (level as f64) * self.scaled(INDENT_PX)
+                + self.scaled(GLYPH_WIDTH) / 2.0;
+            let guide = Rect::new(
+                gx - self.scaled(0.5),
+                row_rect.y0,
+                gx + self.scaled(0.5),
+                row_rect.y1,
             );
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                if self.selected == Some(row.id) {
-                    theme.accent_primary.with_alpha_factor(0.22)
-                } else {
-                    tokens.colors.lift(0.72)
-                },
+                edge_on(tokens.colors.surfaces.raised),
                 None,
-                &pill,
+                &guide,
+            );
+        }
+        if self.selected == Some(row.id) {
+            // Selection is a lift (HIG §9.3): the toolkit's selection tier —
+            // fill, derived hairline and inner glow — on a pill inset from
+            // the row edges, so a selected row and its neighbour's pill keep
+            // an `s1` gap rather than touching.
+            let pill_rect = Self::selection_pill(row_rect, self.scaled(ROW_PILL_MARGIN), tokens);
+            let radius = f64::from(tokens.radii.md);
+            // The sidebar already sits on `surfaces.raised`, so the lift goes
+            // the other way — onto the tier that moves furthest from it —
+            // rather than onto itself.
+            let lifted = selection_fill_on_raised(theme);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                lifted,
+                None,
+                &RoundedRect::from_rect(pill_rect, radius),
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                edge_on(lifted),
+                None,
+                &edge_outline(pill_rect, radius),
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                Colors::hairline_on(lifted, GLOW_ALPHA),
+                None,
+                &edge_outline(pill_rect.inset(-1.0), (radius - 1.0).max(0.0)),
             );
         }
         // Indicative mist: glow this row in a peer's color when that
@@ -1523,31 +1591,9 @@ impl NoteTreeView {
         let glyph_x =
             row_rect.x0 + self.scaled(ROW_INSET_X) + (row.depth as f64) * self.scaled(INDENT_PX);
         let label_x = glyph_x + self.scaled(GLYPH_WIDTH);
+        // Centre on the measured line box, not the font size (see `draw_header`).
         let text_y =
-            row_rect.y0 + (self.row_height() - f64::from(ROW_TEXT_SIZE) * self.text_scale) / 2.0;
-
-        // Nesting guides: a faint vertical rail at each ancestor depth
-        // so the tree structure reads at a glance — this is what makes
-        // an indented child obviously nested under its parent.
-        for level in 0..row.depth {
-            let gx = row_rect.x0
-                + self.scaled(ROW_INSET_X)
-                + (level as f64) * self.scaled(INDENT_PX)
-                + self.scaled(GLYPH_WIDTH) / 2.0;
-            let guide = Rect::new(
-                gx - self.scaled(0.5),
-                row_rect.y0,
-                gx + self.scaled(0.5),
-                row_rect.y1,
-            );
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                tokens.colors.border_standard,
-                None,
-                &guide,
-            );
-        }
+            row_rect.y0 + (self.row_height() - line_h(ROW_TEXT_SIZE, self.text_scale)) / 2.0;
 
         if row.has_children {
             let icon = if self.expanded.contains(&row.id) {
@@ -1720,7 +1766,7 @@ impl NoteTreeView {
             );
             let label_x = ghost.x0 + self.scaled(ROW_INSET_X) + self.scaled(GLYPH_WIDTH);
             let text_y =
-                ghost.y0 + (self.row_height() - f64::from(ROW_TEXT_SIZE) * self.text_scale) / 2.0;
+                ghost.y0 + (self.row_height() - line_h(ROW_TEXT_SIZE, self.text_scale)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
@@ -2425,6 +2471,13 @@ impl NoteTreeView {
         self.row_rects.get(idx).map(vello::kurbo::Rect::center)
     }
 
+    /// Test hook: the sidebar's laid-out rect, so a test can prove the
+    /// overlay drawer stays inside a narrow window at larger text scales.
+    #[doc(hidden)]
+    pub fn rect_for_test(&self) -> Rect {
+        self.rect
+    }
+
     /// Test hook: the x of the disclosure-triangle hit centre for row `idx`,
     /// so tests click the real glyph instead of a hard-coded pixel that the
     /// row inset would shift out from under.
@@ -2500,6 +2553,50 @@ impl NoteTreeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rule 1 of the 1× polish bar for the page tree: two neighbouring rows'
+    /// selection pills keep an `s1` between them and the pill sits inside its
+    /// row band, from the same helper the painter uses.
+    #[test]
+    fn neighbouring_selection_pills_keep_an_s1_gap() {
+        let theme = Theme::dark();
+        let tokens = &theme.tokens;
+        let row = |i: f64| Rect::new(0.0, i * ROW_HEIGHT, 240.0, (i + 1.0) * ROW_HEIGHT);
+        let a = NoteTreeView::selection_pill(row(0.0), ROW_PILL_MARGIN, tokens);
+        let b = NoteTreeView::selection_pill(row(1.0), ROW_PILL_MARGIN, tokens);
+        assert!((b.y0 - a.y1 - f64::from(tokens.spacing.s1)).abs() < 1e-9);
+        assert!((a.x0 - ROW_PILL_MARGIN).abs() < 1e-9);
+        assert!((240.0 - a.x1 - ROW_PILL_MARGIN).abs() < 1e-9);
+        assert!(
+            a.y0 > 0.0 && a.y1 < ROW_HEIGHT,
+            "the pill stays inside its row band"
+        );
+    }
+
+    /// The selected page's fill is a contrast step off the raised sidebar on
+    /// every preset, with an edge that registers on that fill (HIG §9.3/§9.5).
+    #[test]
+    fn selection_fill_moves_off_the_raised_sidebar_on_every_preset() {
+        use ui::surface::{edge_delta, edge_on};
+        use ui::tokens::colors::HAIRLINE_MIN_DELTA;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let raised = theme.tokens.colors.surfaces.raised;
+            let lifted = selection_fill_on_raised(&theme);
+            assert!(edge_delta(lifted, raised) > 0.0, "{}", theme.name);
+            if theme.name != "High Contrast" {
+                assert!(
+                    edge_delta(lifted, raised) >= HAIRLINE_MIN_DELTA,
+                    "{}",
+                    theme.name
+                );
+            }
+            assert!(
+                edge_delta(edge_on(lifted), lifted) >= HAIRLINE_MIN_DELTA,
+                "{}",
+                theme.name
+            );
+        }
+    }
 
     #[test]
     fn sync_from_workspace_flattens_to_visible_rows() {
