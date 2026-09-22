@@ -2307,33 +2307,17 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let store = frame_builder.chrome().records().clone();
-        let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
-        if !store.open_record(&checkout) {
-            store
-                .create_record(&checkout)
-                .expect("capture fixture creates its Notes record");
-        }
         frame_builder
             .host_mut()
             .group_at_for_tests(strip_id, 0)
-            .expect("target Notes group")
-            .bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
-        store
-            .with(&checkout.id, |doc| {
-                let mut body =
-                    crate::shell::crdt_text::CrdtTextBody::new(crate::shell::notes_app::BODY_KEY);
-                body.sync(doc, &automerge::ROOT);
-                let end = body.clamp(usize::MAX);
-                body.splice(doc, &automerge::ROOT, 0..end, &long_note);
-            })
-            .expect("capture fixture writes the canonical Notes record");
-        let mut shell_document = automerge::AutoCommit::new();
-        frame_builder.pump_apps(&mut shell_document, &automerge::ROOT);
-        frame_builder.relayout();
-        // Complete semantic geometry is measured by the app's draw pass. Sync
-        // first because active-group reconciliation may move the strip, then
-        // expose the target once before moving it wholly offscreen below.
+            .and_then(|group| group.active_host_mut())
+            .expect("target Notes host")
+            .replace_content(ui::widget::TileContent::App(Box::new(
+                crate::shell::notes_app::NotesApp::with_seed(long_note),
+            )));
+        // This test exercises compositor capture, not record custody. Keep its
+        // Notes fixture hermetic and expose it for one draw so the app can
+        // measure the complete semantic canvas before it moves offscreen.
         let _ = frame_builder
             .host_mut()
             .group_row_mut_for_tests(strip_id)
