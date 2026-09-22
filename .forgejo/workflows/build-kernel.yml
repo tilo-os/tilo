@@ -20,6 +20,7 @@ on:
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
+      - "os/dev/open-kernel-snapshot-pr.py"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
   pull_request:
@@ -35,6 +36,7 @@ on:
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
+      - "os/dev/open-kernel-snapshot-pr.py"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
       - "tools/ci/workflow_applicability.py"
@@ -403,6 +405,7 @@ jobs:
         os/base-snapshot.env
         os/rpms-snapshot.env
         os/dev/assert-native-arch.sh
+        os/dev/open-kernel-snapshot-pr.py
         .forgejo/workflows/build-kernel.yml
     steps:
       - name: Checkout main for atomic pin promotion
@@ -414,7 +417,9 @@ jobs:
         uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: refs
-      - name: Advance both kernel pins atomically
+      - name: Propose both kernel pins atomically through protected main
+        env:
+          FORGEJO_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           x86="$(find refs -type f -name x86_64.env -print -quit)"
@@ -446,9 +451,20 @@ jobs:
           git add os/kernel-snapshot.env
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'build(os): refresh native kernel snapshots'
-          git pull --rebase origin main
+          git fetch --no-tags origin main
+          git rebase origin/main
           if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"; then
-            printf 'kernel inputs changed during promotion; refusing stale push\n' >&2
+            printf 'kernel inputs changed during promotion; refusing stale PR\n' >&2
             exit 1
           fi
-          git push origin HEAD:main
+          snapshot_digest="$(sha256sum os/kernel-snapshot.env | awk '{print $1}')"
+          [[ "$snapshot_digest" =~ ^[0-9a-f]{64}$ ]]
+          branch="automation/kernel-snapshot-${snapshot_digest:0:16}"
+          remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
+          git push --force-with-lease="refs/heads/$branch:$remote_tip" \
+            origin "HEAD:refs/heads/$branch"
+          python3 os/dev/open-kernel-snapshot-pr.py \
+            --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
+            --branch "$branch" --snapshot-digest "$snapshot_digest" \
+            --x86-ref "$KERNEL_RPMS_X86_64_REF" \
+            --arm-ref "$KERNEL_RPMS_AARCH64_REF"
