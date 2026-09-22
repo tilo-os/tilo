@@ -1336,6 +1336,8 @@ struct BridgeState {
     healthy: Arc<AtomicBool>,
     command_bytes: ByteBudget,
     event_bytes: ByteBudget,
+    owner_wake: crate::wake::WakeHandle,
+    wake_pending: Arc<AtomicBool>,
 }
 
 /// Lock-free aggregate reservation for heap payload retained by one queue.
@@ -1399,11 +1401,26 @@ impl BridgeState {
             healthy: Arc::new(AtomicBool::new(true)),
             command_bytes: ByteBudget::new(),
             event_bytes: ByteBudget::new(),
+            owner_wake: crate::wake::WakeHandle::new(),
+            wake_pending: Arc::new(AtomicBool::new(false)),
         }
     }
 
     fn is_healthy(&self) -> bool {
         self.healthy.load(Ordering::Acquire)
+    }
+
+    fn notify_events(&self) {
+        if !self.wake_pending.swap(true, Ordering::AcqRel) {
+            self.owner_wake.notify_events();
+        }
+    }
+
+    fn begin_poll(&self) {
+        // Reset BEFORE draining: a publication racing the drain either lands
+        // in this batch or schedules another wake. Clearing after draining
+        // could swallow a notification for an event we did not consume.
+        self.wake_pending.store(false, Ordering::Release);
     }
 
     fn fail_closed(&self, direction: &'static str) {
@@ -1475,6 +1492,7 @@ impl InboundBridge {
             })
             .is_ok()
         {
+            self.state.notify_events();
             true
         } else {
             self.state.fail_closed("inbound event queue");
@@ -1495,7 +1513,11 @@ impl InboundBridge {
             event,
             _reservation: reservation,
         }) {
-            Ok(()) | Err(tokio_mpsc::error::TrySendError::Full(_)) => true,
+            Ok(()) => {
+                self.state.notify_events();
+                true
+            }
+            Err(tokio_mpsc::error::TrySendError::Full(_)) => true,
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
                 self.state.fail_closed("inbound presence queue");
                 false
@@ -2243,7 +2265,7 @@ impl CollaborationManager {
     /// A manager scoped to **one record** — one document, one change graph,
     /// one channel — so two people editing different files in one room
     /// don't get handed each other's state. A process with several records
-    /// open holds several managers; `ui::App` swaps its manager on checkout
+    /// open holds several managers; `tilo_ui::App` swaps its manager on checkout
     /// change.
     pub fn for_record(record: &crate::record::RecordId) -> Self {
         Self::new_scoped(Some(record.as_str().to_string()))
@@ -2295,6 +2317,12 @@ impl CollaborationManager {
             }
             Err(_) => Self::disabled(),
         }
+    }
+
+    /// Real socket-backed SDK transport for App lifecycle integration tests.
+    #[cfg(all(test, unix))]
+    pub(crate) fn connected_for_lifecycle_test() -> Self {
+        tests::connected_manager()
     }
 
     /// Test-only: build a manager talking to an SDK broker on the given
@@ -2612,6 +2640,7 @@ impl CollaborationManager {
         match &mut self.backend {
             Backend::Disabled => Vec::new(),
             Backend::Sdk(ch) => {
+                ch.state.begin_poll();
                 let mut events = Vec::new();
                 while let Ok(evt) = ch.inbound_rx.try_recv() {
                     events.push(evt.event);
@@ -4576,6 +4605,7 @@ mod tests {
     use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
     #[cfg(unix)]
     use tokio::net::UnixStream as TokioUnixStream;
+    #[cfg(unix)]
     use tokio::task::LocalSet as TokioLocalSet;
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -5635,6 +5665,19 @@ mod tests {
         (client_fd, captures, handle)
     }
 
+    #[cfg(unix)]
+    pub(super) fn connected_manager() -> CollaborationManager {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, _thread) = stand_up_fake_broker(broker);
+        CollaborationManager::from_sdk_fd_for_test(fd, "lifecycle-test", Uuid::new_v4())
+    }
+
     fn drain_events(mgr: &mut CollaborationManager, deadline: Duration) -> Vec<CollabEvent> {
         let start = Instant::now();
         let mut events = Vec::new();
@@ -5704,6 +5747,64 @@ mod tests {
         assert!(
             rx.try_recv().is_ok() && rx.try_recv().is_err(),
             "the bounded queue retains only its admitted durable command"
+        );
+    }
+
+    #[test]
+    fn inbound_events_wake_the_owner_once_per_queued_burst() {
+        let mut scope = crate::wake::WakeScope::new();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let count = wakes.clone();
+        scope
+            .bind(move |_| {
+                count.fetch_add(1, Ordering::SeqCst);
+            })
+            .unwrap();
+        let _entry = scope.enter();
+        let (tx, mut rx) = tokio_mpsc::channel(4);
+        let inbound = InboundBridge {
+            tx,
+            state: BridgeState::new(),
+        };
+        assert!(inbound.send_durable(CollabEvent::ActionCatalogue {
+            surfaces: Vec::new()
+        }));
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            1,
+            "admitted work must wake the owner instead of waiting for its 60Hz poll"
+        );
+        assert!(inbound.send_presence(CollabEvent::RemoteCursorMoved {
+            user_id: "peer".into(),
+            x: 1.0,
+            y: 2.0,
+        }));
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            1,
+            "a queued burst needs only one wake"
+        );
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok());
+        inbound.state.begin_poll();
+        assert!(inbound.send_durable(CollabEvent::ActionCatalogue {
+            surfaces: Vec::new()
+        }));
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            2,
+            "an arrival after poll starts must schedule another wake, even during draining"
+        );
+        assert!(rx.try_recv().is_ok());
+        scope.close();
+        inbound.state.begin_poll();
+        assert!(inbound.send_durable(CollabEvent::ActionCatalogue {
+            surfaces: Vec::new()
+        }));
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            2,
+            "a closed owner cannot be woken"
         );
     }
 
@@ -5962,6 +6063,76 @@ mod tests {
         );
         let seen = captures.lock().unwrap().signed_ops.clone();
         assert_eq!(seen, vec![expected_bytes]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_route_raw_documents_use_typed_signed_sdk_transport() {
+        use automerge::transaction::Transactable;
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        let workspace = Uuid::new_v4();
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "shell", workspace);
+        let route = RouteSpec::record("actual-owner", workspace, "tab:qualified");
+        let mut document = automerge::AutoCommit::new();
+        document.put(automerge::ROOT, "body", "before").unwrap();
+        document.commit();
+        let heads = document.base_heads();
+        let snapshot = document.save();
+        document.put(automerge::ROOT, "body", "after").unwrap();
+        document.commit();
+        let delta = document.save_after(&heads);
+        manager.send_to_route(
+            route.clone(),
+            CollabRequest::document_snapshot(snapshot.clone()),
+        );
+        manager.send_to_route(
+            route.clone(),
+            CollabRequest::document_incremental(delta.clone()),
+        );
+        assert!(
+            wait_until(
+                || captures.lock().unwrap().signed_ops.len() == 2,
+                Duration::from_secs(2)
+            ),
+            "both raw requests reach SDK signed RPC"
+        );
+        let captured = captures.lock().unwrap();
+        assert!(captured.joined.iter().any(|(channel, _)| channel
+            == &channel_key::format("actual-owner", &workspace.to_string(), "tab:qualified")));
+        for (index, bytes) in captured.signed_ops.iter().enumerate() {
+            let envelope: SignedOp = postcard::from_bytes(bytes).unwrap();
+            collab_types::validate_document_payload_route(
+                "actual-owner",
+                &workspace.to_string(),
+                "tab:qualified",
+                &envelope,
+            )
+            .unwrap();
+            assert!(
+                envelope.encryption.is_none(),
+                "harness route is explicitly unencrypted"
+            );
+            let expected = if index == 0 {
+                collab_types::DocumentMutation::Snapshot(snapshot.clone())
+            } else {
+                collab_types::DocumentMutation::Incremental(delta.clone())
+            };
+            assert_eq!(
+                collab_types::DocumentMutation::decode(&envelope.payload).unwrap(),
+                expected
+            );
+            assert_ne!(
+                envelope.signature,
+                collab_types::Signature::from_bytes([0; 64])
+            );
+        }
     }
 
     /// Every presence variant reaches the SDK method that keeps its key —

@@ -2275,6 +2275,12 @@ fn creates_complete_starter() {
     let outcome = create_app(request(destination.clone())).expect("create app");
     assert_eq!(outcome.app_id, "so.tilo.reading.list");
     assert!(destination.join("Cargo.toml").is_file());
+    let cargo = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
+    let cargo: toml::Value = toml::from_str(&cargo).unwrap();
+    let shader_path = cargo["patch"]["crates-io"]["vello_shaders"]["path"]
+        .as_str()
+        .unwrap();
+    assert!(destination.join(shader_path).join("Cargo.toml").is_file());
     assert!(destination.join("src/main.rs").is_file());
     assert!(destination.join("tests/app.rs").is_file());
     assert!(destination.join("tests/headless-actions.json").is_file());
@@ -2285,8 +2291,8 @@ fn creates_complete_starter() {
     let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
     assert!(library.contains("LocalState::new"));
     assert!(library.contains("Text::from_state"));
-    assert!(library.contains("ui::column!["));
-    assert!(library.contains("labeled_field(\"starter-name-label\", input)"));
+    assert!(library.contains("FormPage::new("));
+    assert!(library.contains("Field::new(\"starter-name-label\", input)"));
     assert!(!library.contains("with_accessible_name(\"starter-name-label\")"));
     assert!(!library.contains("Column::new()"));
     assert!(library.contains("with_id(\"name-input\")"));
@@ -2295,7 +2301,7 @@ fn creates_complete_starter() {
     assert!(library.contains("NumberInput::from_state(&refresh_minutes)"));
     assert!(library.contains("Slider::from_state(&volume)"));
     assert!(library.contains("Dropdown::from_state("));
-    assert!(library.contains("labeled_check(\"starter-updates-label\", updates_widget)"));
+    assert!(library.contains("labeled_check("));
     assert!(!library.contains("on_change(name.text_sink())"));
     assert!(!library.contains("with_initial_value(&name.get())"));
     assert!(library.contains("pub mod locales;"));

@@ -2574,6 +2574,31 @@ impl BrowserWidget {
         let editing = self.url_input_focused();
         for event in self.engine.drain_events() {
             match event {
+                // Part 2 expands the engine contract before part 10 adds the
+                // native Chromium UI that consumes these events. Keep the
+                // existing browser buildable without claiming partial support.
+                WebViewEvent::CredentialResult(_)
+                | WebViewEvent::SiteStatus(_)
+                | WebViewEvent::SiteResult { .. }
+                | WebViewEvent::TabClosed
+                | WebViewEvent::TabDetached
+                | WebViewEvent::TabCloseBlocked
+                | WebViewEvent::ContextMenu { .. }
+                | WebViewEvent::ContextMenuClosed { .. }
+                | WebViewEvent::FindResult { .. }
+                | WebViewEvent::ZoomChanged(_)
+                | WebViewEvent::NavigationHistory { .. }
+                | WebViewEvent::PermissionRequested { .. }
+                | WebViewEvent::PermissionClosed { .. }
+                | WebViewEvent::NativeDownloadRequested { .. }
+                | WebViewEvent::DownloadUpdated { .. }
+                | WebViewEvent::DownloadRuntime { .. }
+                | WebViewEvent::FaviconChanged { .. }
+                | WebViewEvent::AudioMutedChanged(_)
+                | WebViewEvent::MediaPlayingChanged { .. }
+                | WebViewEvent::FullscreenChanged(_)
+                | WebViewEvent::RendererTerminated
+                | WebViewEvent::LoadFinishedAt { .. } => {}
                 WebViewEvent::UriChanged(uri) => {
                     // Deterministic visual-audit states own their displayed
                     // address.  The headless engine is pre-navigated to the

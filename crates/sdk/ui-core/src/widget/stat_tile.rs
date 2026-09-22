@@ -19,12 +19,13 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::peniko::Color;
 use winit::event::WindowEvent;
 
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -86,7 +87,10 @@ fn tile_height(has_delta: bool, theme: &Theme) -> f64 {
 
 /// Shared paint of a stat tile filling `rect`. Used by both the retained
 /// [`StatTile`] widget and the immediate-mode [`StatTile::paint`] entry point.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Shared stat-tile painting combines render context and bounds with caption, value/color, optional icon, and trend delta."
+)]
 fn paint_stat_tile(
     scene: &mut Scene,
     transform: Affine,
@@ -102,29 +106,29 @@ fn paint_stat_tile(
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
-    scene.fill(
-        Fill::NonZero,
+    // Card surface with its derived rest edge (HIG §9.5), crisp inside the
+    // tile so it registers on a raised ground in dark and light alike.
+    crate::surface::card(
+        scene,
         transform,
+        rect,
+        f64::from(theme.tokens.radii.lg),
         theme.tokens.colors.surfaces.raised,
-        None,
-        &card,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.border_standard,
-        None,
-        &card,
     );
 
-    let caption_size = theme.tokens.typography.scale.sm;
-    let value_size = theme.tokens.typography.scale.x2l;
-    let delta_size = theme.tokens.typography.scale.sm;
+    // Row positions follow the theme sizes that `tile_height` reserves;
+    // glyphs are drawn at the renderer-relative size so the accessibility
+    // scale is applied exactly once.
+    let caption_step = f64::from(theme.tokens.typography.scale.sm);
+    let value_step = f64::from(theme.tokens.typography.scale.x2l);
+    let caption_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let value_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.x2l);
+    let delta_size = caption_size;
 
     let x = rect.x0 + PAD;
     let mut y = rect.y0 + PAD;
 
+    let (_, caption_h) = text_renderer.measure(caption, caption_size, None);
     text_renderer.draw_text(
         scene,
         caption,
@@ -135,14 +139,16 @@ fn paint_stat_tile(
     );
 
     if let Some(icon) = icon {
+        // Centre the glyph on the caption's measured line so the two read as
+        // one row.
         let ir = Rect::from_center_size(
-            Point::new(rect.x1 - PAD - ICON_D / 2.0, rect.y0 + PAD + ICON_D / 2.0),
+            Point::new(rect.x1 - PAD - ICON_D / 2.0, y + f64::from(caption_h) / 2.0),
             (ICON_D, ICON_D),
         );
         icon.draw_with_stroke(scene, transform, ir, theme.text_dim, 1.6);
     }
 
-    y += f64::from(caption_size) + 6.0;
+    y += caption_step + 6.0;
 
     text_renderer.draw_text(
         scene,
@@ -152,15 +158,21 @@ fn paint_stat_tile(
         transform.pre_translate(Vec2::new(x, y)),
         None,
     );
-    y += f64::from(value_size) + 6.0;
+    y += value_step + 6.0;
 
     if let Some((delta_text, trend)) = delta {
         let col = trend.color(theme);
         let mut dx = x;
         if let Some(arrow) = trend.arrow() {
-            let ar = Rect::new(dx, y, dx + f64::from(delta_size), y + f64::from(delta_size));
+            // Centre the arrow on the delta text's measured line, like the
+            // icon on the caption line.
+            let (_, delta_h) = text_renderer.measure(delta_text, delta_size, None);
+            let ar = Rect::from_center_size(
+                Point::new(dx + caption_step / 2.0, y + f64::from(delta_h) / 2.0),
+                (caption_step, caption_step),
+            );
             arrow.draw_with_stroke(scene, transform, ar, col, 1.8);
-            dx += f64::from(delta_size) + 2.0;
+            dx += caption_step + 2.0;
         }
         text_renderer.draw_text(
             scene,
@@ -222,7 +234,10 @@ impl StatTile {
     }
 
     /// For apps that render straight to a `Scene`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Immediate stat-tile painting forwards render context, bounds, caption/value/color, icon, and trend to the shared painter."
+    )]
     pub fn paint(
         scene: &mut Scene,
         transform: Affine,

@@ -13,7 +13,7 @@
 /// decimal place.
 ///
 /// ```
-/// use ui::format::bytes;
+/// use tilo_ui::format::bytes;
 /// assert_eq!(bytes(0), "0 B");
 /// assert_eq!(bytes(512), "512 B");
 /// assert_eq!(bytes(1023), "1023 B");
@@ -31,7 +31,7 @@ pub fn bytes(n: u64) -> String {
 /// quantity. Most callers want [`bytes`].
 ///
 /// ```
-/// use ui::format::bytes_si;
+/// use tilo_ui::format::bytes_si;
 /// assert_eq!(bytes_si(999), "999 B");
 /// assert_eq!(bytes_si(1000), "1.0 kB");
 /// assert_eq!(bytes_si(1_500_000), "1.5 MB");
@@ -72,7 +72,7 @@ fn scale(n: u64, base: f64, units: &[&str]) -> String {
 /// and a `/s` suffix (`512 B/s`, `6.4 MiB/s`). Negative inputs clamp to zero.
 ///
 /// ```
-/// use ui::format::rate;
+/// use tilo_ui::format::rate;
 /// assert_eq!(rate(0.0), "0 B/s");
 /// assert_eq!(rate(512.0), "512 B/s");
 /// assert_eq!(rate(6_710_886.0), "6.4 MiB/s");
@@ -98,7 +98,7 @@ pub fn rate(bytes_per_sec: f64) -> String {
 /// `h:mm:ss` at or above one hour.
 ///
 /// ```
-/// use ui::format::timecode;
+/// use tilo_ui::format::timecode;
 /// assert_eq!(timecode(0), "0:00");
 /// assert_eq!(timecode(9), "0:09");
 /// assert_eq!(timecode(75), "1:15");
@@ -135,7 +135,7 @@ const YEAR: i64 = 365 * DAY;
 /// `just now`.
 ///
 /// ```
-/// use ui::format::relative;
+/// use tilo_ui::format::relative;
 /// assert_eq!(relative(0), "just now");
 /// assert_eq!(relative(180), "3 min ago");
 /// assert_eq!(relative(90_000), "yesterday");
@@ -178,7 +178,7 @@ pub fn relative(secs_ago: i64) -> String {
 /// never `1000.0K`). Values below 1000 print in full.
 ///
 /// ```
-/// use ui::format::compact_count;
+/// use tilo_ui::format::compact_count;
 /// assert_eq!(compact_count(0), "0");
 /// assert_eq!(compact_count(999), "999");
 /// assert_eq!(compact_count(12_300), "12.3K");

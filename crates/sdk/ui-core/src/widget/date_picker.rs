@@ -21,11 +21,13 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::text::centered_text_top;
 
 /// Six rows covers every possible month layout — a 31-day month starting
 /// on Sunday is the worst case, needing 6 rows to fit the spill-in/out
@@ -319,6 +321,8 @@ impl Widget for DatePicker {
                 width: Dimension::length(px(width)),
                 height: Dimension::length(px(height)),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -345,21 +349,36 @@ impl Widget for DatePicker {
     ) {
         let tokens = &theme.tokens;
 
+        let radius = f64::from(tokens.radii.md);
+        let fill = tokens.colors.surfaces.raised;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            fill,
             None,
-            &self.rect,
+            &RoundedRect::from_rect(self.rect, radius),
         );
 
+        // A Control at rest carries an edge derived from its own surface
+        // (HIG §9.5) — without it the calendar was a raised rectangle that
+        // vanished on a raised card. Focus adds `border_focus` on the same
+        // half-pixel-inset outline, so the ring sits exactly over the rest
+        // edge and a focused picker is the rest picker plus one stroke.
+        let outline = crate::surface::edge_outline(self.rect, radius);
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(fill),
+            None,
+            &outline,
+        );
         if self.is_focused {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
                 tokens.colors.border_focus,
                 None,
-                &RoundedRect::from_rect(self.rect, f64::from(tokens.radii.md)),
+                &outline,
             );
         }
 
@@ -534,15 +553,17 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let text_color = tokens.colors.text_primary;
 
         let (y, m) = self.month_view;
         let month_name = month_name_en(m);
         let header_label = format!("{month_name} {y}");
-        let (label_w, _) = text_renderer.measure(&header_label, text_size, None);
+        // Every line in the picker is centred on its *measured* height; the
+        // font size alone sat the 12 px labels 1.5 px low in each band.
+        let (label_w, label_h) = text_renderer.measure(&header_label, text_size, None);
         let label_x = self.rect.center().x - f64::from(label_w) / 2.0;
-        let label_y = self.rect.y0 + (HEADER_HEIGHT - f64::from(text_size)) / 2.0;
+        let label_y = centered_text_top(self.rect.y0, HEADER_HEIGHT, f64::from(label_h));
         text_renderer.draw_text(
             scene,
             &header_label,
@@ -553,8 +574,8 @@ impl DatePicker {
         );
 
         // Drawn as text glyphs so we don't need a vector path.
-        let (lw, _) = text_renderer.measure("\u{2039}", text_size, None);
-        let (rw, _) = text_renderer.measure("\u{203A}", text_size, None);
+        let (lw, lh) = text_renderer.measure("\u{2039}", text_size, None);
+        let (rw, rh) = text_renderer.measure("\u{203A}", text_size, None);
         text_renderer.draw_text(
             scene,
             "\u{2039}",
@@ -562,7 +583,7 @@ impl DatePicker {
             text_color,
             transform.pre_translate(Vec2::new(
                 self.prev_button_rect.center().x - f64::from(lw) / 2.0,
-                self.prev_button_rect.y0 + (HEADER_HEIGHT - f64::from(text_size)) / 2.0,
+                centered_text_top(self.prev_button_rect.y0, HEADER_HEIGHT, f64::from(lh)),
             )),
             None,
         );
@@ -573,7 +594,7 @@ impl DatePicker {
             text_color,
             transform.pre_translate(Vec2::new(
                 self.next_button_rect.center().x - f64::from(rw) / 2.0,
-                self.next_button_rect.y0 + (HEADER_HEIGHT - f64::from(text_size)) / 2.0,
+                centered_text_top(self.next_button_rect.y0, HEADER_HEIGHT, f64::from(rh)),
             )),
             None,
         );
@@ -589,14 +610,14 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let dim_color = tokens.colors.text_dim;
 
         let cell_w = self.rect.width() / grid_f64(GRID_COLS);
-        let weekday_y =
-            self.rect.y0 + HEADER_HEIGHT + (WEEKDAY_HEIGHT - f64::from(text_size)) / 2.0;
+        let weekday_band_y0 = self.rect.y0 + HEADER_HEIGHT;
         for (col, label) in WEEKDAY_LABELS.iter().enumerate() {
-            let (lw, _) = text_renderer.measure(label, text_size, None);
+            let (lw, lh) = text_renderer.measure(label, text_size, None);
+            let weekday_y = centered_text_top(weekday_band_y0, WEEKDAY_HEIGHT, f64::from(lh));
             let cx = self.rect.x0 + grid_f64(col) * cell_w + cell_w / 2.0;
             text_renderer.draw_text(
                 scene,
@@ -619,7 +640,7 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let text_color = tokens.colors.text_primary;
         let dim_color = tokens.colors.text_dim;
 
@@ -679,9 +700,9 @@ impl DatePicker {
             } else {
                 dim_color
             };
-            let (tw, _) = text_renderer.measure(&day_str, text_size, None);
+            let (tw, th) = text_renderer.measure(&day_str, text_size, None);
             let tx = cell_rect.center().x - f64::from(tw) / 2.0;
-            let ty = cell_rect.y0 + (cell_rect.height() - f64::from(text_size)) / 2.0;
+            let ty = centered_text_top(cell_rect.y0, cell_rect.height(), f64::from(th));
             text_renderer.draw_text(
                 scene,
                 &day_str,
@@ -723,6 +744,55 @@ mod tests {
 
     fn modifiers() -> winit::event::Modifiers {
         winit::event::Modifiers::default()
+    }
+
+    /// Header label, chevrons, weekday row and day numbers all centre their
+    /// measured line in their band; the font size alone sat each 1.5 px low.
+    #[test]
+    fn picker_text_centres_its_measured_line_in_every_band() {
+        let selected = NaiveDate::from_ymd_opt(2026, 5, 22).expect("valid date");
+        let mut picker = DatePicker::new(selected);
+        let rect = Rect::new(0.0, 0.0, 224.0, 240.0);
+        picker.apply_layout_external(rect);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        picker.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let size = theme.tokens.typography.scale.sm;
+        // Draw order: header label, ‹, ›, seven weekday labels, then day cells.
+        let header_band = (rect.y0, HEADER_HEIGHT);
+        let weekday_band = (rect.y0 + HEADER_HEIGHT, WEEKDAY_HEIGHT);
+        let first_cell = picker
+            .day_rects
+            .first()
+            .map(|(_, r)| *r)
+            .expect("day cells");
+        let expectations: Vec<(&str, (f64, f64))> = std::iter::once(("May 2026", header_band))
+            .chain([("\u{2039}", header_band), ("\u{203A}", header_band)])
+            .chain(WEEKDAY_LABELS.iter().map(|label| (*label, weekday_band)))
+            .chain(std::iter::once((
+                "27",
+                (first_cell.y0, first_cell.height()),
+            )))
+            .collect();
+        for (index, (text, (band_y0, band_h))) in expectations.into_iter().enumerate() {
+            crate::widget::text::assert_glyph_run_centred_in_band(
+                &scene,
+                index,
+                text,
+                size,
+                band_y0,
+                band_h,
+                &mut tr,
+                theme.text_primary,
+            );
+        }
     }
 
     fn fake_device_id() -> DeviceId {

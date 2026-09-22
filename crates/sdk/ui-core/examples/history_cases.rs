@@ -2,7 +2,11 @@
 //!
 //! ```bash
 //! cargo run -p ui --example ui-shots -- history_cases target/shots-history
+//! QOS_SHOTS_THEME=light cargo run -p ui --example ui-shots -- history_cases target/shots-history
 //! ```
+//!
+//! `QOS_SHOTS_THEME` picks the palette (`dark` by default, `light`, or any
+//! other [`Theme::named`] preset); the PNGs land in `<dir>/<theme>/`.
 //!
 //! Every case here builds an **automerge document**, edits it through `qdoc` (or
 //! through plain automerge, for the room-shaped documents that carry no editor
@@ -236,17 +240,30 @@ fn short(hex: &str) -> String {
 struct Shot {
     dir: PathBuf,
     n: usize,
+    theme: Theme,
+}
+
+/// The palette the run paints with: `QOS_SHOTS_THEME`, or the dark default.
+fn shot_theme() -> (String, Theme) {
+    let name = std::env::var("QOS_SHOTS_THEME").unwrap_or_else(|_| "dark".to_string());
+    match Theme::named(&name) {
+        Some(theme) => (name, theme),
+        None => {
+            eprintln!("history_cases: unknown QOS_SHOTS_THEME {name:?}, using dark");
+            ("dark".to_string(), Theme::dark())
+        }
+    }
 }
 
 impl Shot {
     fn paint<W: Widget>(&mut self, name: &str, w: u32, h: u32, widget: &mut W) {
-        let theme = Theme::dark();
+        let theme = &self.theme;
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         // The pane is placed by hand, the way both hosts place it: the compositor
         // reserves a sheet out of its chrome, the editor a band under its canvas.
-        widget.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        widget.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
         self.n = self.n.saturating_add(1);
         let path = self.dir.join(format!("{:02}-{name}.png", self.n));
         std::fs::create_dir_all(&self.dir).ok();
@@ -305,15 +322,19 @@ fn px_u32(v: f64) -> u32 {
 }
 
 pub fn run(args: &[String]) {
-    let dir = args
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "target/shots-history".to_string());
+    let (theme_name, theme) = shot_theme();
+    let dir = PathBuf::from(
+        args.first()
+            .cloned()
+            .unwrap_or_else(|| "target/shots-history".to_string()),
+    )
+    .join(&theme_name);
     let mut shot = Shot {
-        dir: PathBuf::from(&dir),
+        dir: dir.clone(),
         n: 0,
+        theme,
     };
-    println!("history cases -> {dir}");
+    println!("history cases ({theme_name}) -> {}", dir.display());
 
     // ---------------------------------------------------------------
     // The main surface, over a real three-session document.

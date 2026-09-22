@@ -1,4 +1,4 @@
-//! `ActionPalette` — the one Ctrl+K surface for a `ui::App`.
+//! `ActionPalette` — the one Ctrl+K surface for a `tilo_ui::App`.
 //!
 //! The **resource + action model** ([`tilo_actions`]) is the foundation: the
 //! focused app instance publishes a tree of open [`Resource`]s, each
@@ -404,6 +404,7 @@ impl ActionPalette {
             arguments,
         )
     }
+
     pub fn open(&mut self) {
         self.open = true;
         self.arg = None;

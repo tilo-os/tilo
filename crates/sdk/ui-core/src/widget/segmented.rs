@@ -27,11 +27,13 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::{ON_FILL_MIN_CONTRAST, over};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::text::centered_text_top;
 
 /// Drives the active-segment colour. `Neutral` is the de-emphasised
 /// middle ("inherit").
@@ -195,20 +197,14 @@ impl Widget for TriStateControl {
             return;
         }
         let radius = f64::from(theme.tokens.radii.sm);
-        let track = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(
-            Fill::NonZero,
+        // Track with its derived rest edge (HIG §9.5), stroked half a pixel
+        // inside so the hairline never bleeds onto the ground.
+        crate::surface::card(
+            scene,
             transform,
+            self.rect,
+            radius,
             theme.tokens.colors.surfaces.raised,
-            None,
-            &track,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &track,
         );
 
         let Some(&active) = self.seg_rects.get(self.selected) else {
@@ -235,7 +231,7 @@ impl Widget for TriStateControl {
         // token would report a contrast the screen never holds.
         let active_ground = over(theme.tokens.colors.surfaces.raised, fill, alpha);
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         for (i, (label, seg_rect)) in self.labels.iter().zip(self.seg_rects.iter()).enumerate() {
             let on = i == self.selected;
             let col = if on && tone != SegmentTone::Neutral {
@@ -252,9 +248,11 @@ impl Widget for TriStateControl {
             } else {
                 theme.text_dim
             };
-            let (tw, _) = text_renderer.measure(label, text_size, None);
+            let (tw, th) = text_renderer.measure(label, text_size, None);
             let cx = seg_rect.center().x - f64::from(tw) / 2.0;
-            let cy = self.rect.y0 + (self.rect.height() - f64::from(text_size)) / 2.0;
+            // The measured line, not the font size, is what gets centred —
+            // see `widget::text::centered_text_top`.
+            let cy = centered_text_top(self.rect.y0, self.rect.height(), f64::from(th));
             text_renderer.draw_text(
                 scene,
                 label,
@@ -561,20 +559,13 @@ impl Widget for ColorSwatchPicker {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let panel = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
+        // Panel with its derived rest edge (HIG §9.5), crisp 1 px inset.
+        crate::surface::card(
+            scene,
             transform,
+            self.rect,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &panel,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &panel,
         );
 
         for (i, (&rgb, sr)) in self
@@ -584,7 +575,8 @@ impl Widget for ColorSwatchPicker {
             .enumerate()
         {
             let shape = RoundedRect::from_rect(*sr, 6.0);
-            scene.fill(Fill::NonZero, transform, packed_color(rgb), None, &shape);
+            let swatch = packed_color(rgb);
+            scene.fill(Fill::NonZero, transform, swatch, None, &shape);
             if self.selected == Some(i) || (self.focused && self.focus_index == i) {
                 scene.stroke(
                     &Stroke::new(2.5),
@@ -594,7 +586,15 @@ impl Widget for ColorSwatchPicker {
                     &shape,
                 );
             } else if self.hovered == Some(i) {
-                scene.stroke(&Stroke::new(2.0), transform, Color::WHITE, None, &shape);
+                // Hover ring derived against the swatch it rings (HIG §9.5):
+                // a literal white ring disappeared on the pale swatches.
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    crate::tokens::colors::Colors::hairline_on(swatch, crate::chrome::GLOW_ALPHA),
+                    None,
+                    &shape,
+                );
             }
         }
     }
@@ -815,6 +815,49 @@ mod tests {
 
     fn synth_device() -> winit::event::DeviceId {
         unsafe { std::mem::zeroed() }
+    }
+
+    /// Segment labels are centred on their measured line inside the 28 px
+    /// strip; centring on the 12 px font size alone dropped them 1.5 px.
+    #[test]
+    fn tri_state_labels_centre_their_measured_line() {
+        let labels = ["Yes", "Maybe", "No"];
+        let mut control = TriStateControl::new(
+            labels,
+            [
+                SegmentTone::Positive,
+                SegmentTone::Neutral,
+                SegmentTone::Negative,
+            ],
+        );
+        lay_out(&mut control);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        control.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let rect = control.rect;
+        assert!(rect.height() > 0.0);
+        assert_eq!(scene.encoding().resources.glyph_runs.len(), labels.len());
+
+        let size = theme.tokens.typography.scale.sm;
+        for (index, label) in labels.into_iter().enumerate() {
+            crate::widget::text::assert_glyph_run_centred_in_band(
+                &scene,
+                index,
+                label,
+                size,
+                rect.y0,
+                rect.height(),
+                &mut tr,
+                theme.text_primary,
+            );
+        }
     }
     fn cursor_at(p: Point) -> WindowEvent {
         WindowEvent::CursorMoved {

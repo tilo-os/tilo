@@ -20,8 +20,10 @@ pub struct Shadow {
 }
 
 impl Shadow {
-    /// The same shadow with its alpha scaled by `factor`.
-    fn with_alpha_scaled(self, factor: f32) -> Self {
+    /// The same shadow with its alpha scaled by `factor` — the one way an
+    /// animating surface fades its elevation with itself.
+    #[must_use]
+    pub fn with_alpha_scaled(self, factor: f32) -> Self {
         Self {
             offset_y: self.offset_y,
             blur: self.blur,

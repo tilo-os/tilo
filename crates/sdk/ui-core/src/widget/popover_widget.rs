@@ -16,10 +16,8 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -397,35 +395,22 @@ impl<C: Widget + 'static> Widget for PopoverWidget<C> {
         let body = self.rect;
         let shape = RoundedRect::from_rect(body, radius);
 
-        // Drop shadow: 4 concentric outset rings at low alpha, same
-        // pattern as `TabBar::draw_pill_inner`.
-        let shadow_y_offset = 6.0_f64;
-        let shadow_rings: [(f64, f32); 4] = [(2.0, 0.20), (5.0, 0.12), (9.0, 0.06), (14.0, 0.02)];
-        for (spread, alpha) in shadow_rings {
-            let shadow_rect = Rect::new(
-                body.x0 - spread,
-                body.y0 - spread + shadow_y_offset,
-                body.x1 + spread,
-                body.y1 + spread + shadow_y_offset,
-            );
-            let shadow_shape = RoundedRect::from_rect(shadow_rect, radius + spread);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                Color::BLACK.with_alpha_factor(alpha),
-                None,
-                &shadow_shape,
-            );
-        }
+        // Drop shadow from the elevation token (HIG §9.3: a popover is a
+        // Panel, `e4`), following the body's own radius — not four literal
+        // black rings that weigh the same on a light ground.
+        crate::surface::shadow(scene, transform, body, radius, &theme.tokens.elevation.e4);
 
         let fill = theme.tokens.colors.surfaces.overlay;
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+        // Panel role (HIG §9.1): a derived edge as a crisp 1 px inset
+        // stroke; the declared `border_standard` disappeared against the
+        // overlay tier on the dark preset.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(body, radius),
         );
 
         // Arrow: filled in the same overlay colour so it reads as a

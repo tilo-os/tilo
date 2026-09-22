@@ -1,0 +1,4 @@
+# Declared border / ramp tokens on chrome surfaces (HIG §9.5).
+# Format: <path relative to repository root> <pattern> <count>
+# This is a ratchet, not approval: counts may only move down.
+crates/sdk/ui-core/src/widget/divider.rs declared_border 1

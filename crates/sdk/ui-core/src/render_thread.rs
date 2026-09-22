@@ -7,8 +7,8 @@
 //!
 //! Three channels: `render_tx`/`rx` (capacity 1 — blocks main until the
 //! worker drains the previous frame) moves an encoded `Scene` + dims +
-//! base colour; `scene_pool_tx`/`scene_pool` (worker → main, capacity 2,
-//! pre-seeded) recycles each `Scene`'s buffer instead of reallocating;
+//! base colour; `pool_tx`/`buffers` (worker → main, capacity 2,
+//! pre-seeded) recycles each `Scene` and damage vector as one atomic pair;
 //! `outcome_tx`/`frame_complete` (capacity 8) reports per-frame outcomes so
 //! main can re-request a redraw on Outdated/Suboptimal/Occluded/Timeout.
 //!
@@ -20,7 +20,14 @@
 //! dropped — required or wgpu panics on a surface outliving its window.
 
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::thread::JoinHandle;
+
+#[path = "render_timing.rs"]
+pub(crate) mod timing;
 
 use crate::damage::{Region, coalesce_regions};
 use crate::gpu::RenderContext;
@@ -83,6 +90,8 @@ const _: fn() = || {
 )]
 pub enum RenderRequest {
     Frame {
+        /// Originating CPU profile sample; auxiliary/unprofiled frames have none.
+        cpu_frame_id: Option<u64>,
         // Inline deliberately. `Scene` is a collection of Vec/Arc handles:
         // moving it through the bounded channel does not copy their backing
         // data, while boxing it allocated and freed one heap object per frame.
@@ -101,14 +110,18 @@ pub enum RenderRequest {
     Shutdown,
 }
 
+#[path = "render_retry.rs"]
+pub(crate) mod retry;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameOutcome {
     Presented,
     /// Surface was outdated or suboptimal; worker reconfigured it and
     /// skipped the frame. Main should redraw.
     Reconfigured,
-    /// Window is occluded or compositor refused the frame; main should
-    /// redraw (winit will throttle if still occluded).
+    /// Acquisition explicitly reported occlusion; retry with bounded backoff.
+    Occluded,
+    /// Acquisition timed out or encoding failed; retry at the normal cadence.
     Skipped,
     /// No retry will help; the worker stops after emitting this and main
     /// treats it as "close the window". Ordinary end of session, not a
@@ -120,10 +133,91 @@ pub enum FrameOutcome {
 
 pub struct RenderThreadHandle {
     pub render_tx: SyncSender<RenderRequest>,
-    pub scene_pool: Receiver<Scene>,
-    pub damage_pool: Receiver<Vec<Rect>>,
+    pub(crate) buffers: BufferPool<(Scene, Vec<Rect>)>,
     pub frame_complete: Receiver<FrameOutcome>,
+    pub(crate) retry: retry::RenderRetryState,
     join: Option<JoinHandle<()>>,
+}
+
+/// One atomic reservation preserves both buffers across an aborted redraw.
+pub(crate) struct BufferPool<T> {
+    receiver: Receiver<T>,
+    prepared: Option<T>,
+    waiting: Arc<AtomicBool>,
+}
+
+impl<T> BufferPool<T> {
+    fn new(receiver: Receiver<T>, waiting: Arc<AtomicBool>) -> Self {
+        Self {
+            receiver,
+            prepared: None,
+            waiting,
+        }
+    }
+
+    pub(crate) fn redraw_deferred(&self) -> bool {
+        self.waiting.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn prepare(&mut self) -> Result<bool, mpsc::TryRecvError> {
+        if self.prepared.is_some() {
+            return Ok(true);
+        }
+        // Arm before checking: a completion between this check and event-loop
+        // sleep must wake the window. At worst a race requests one extra redraw.
+        self.waiting.store(true, Ordering::SeqCst);
+        match self.receiver.try_recv() {
+            Ok(buffers) => {
+                self.prepared = Some(buffers);
+                self.waiting.store(false, Ordering::SeqCst);
+                Ok(true)
+            }
+            Err(mpsc::TryRecvError::Empty) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn recv(&mut self) -> Result<T, mpsc::RecvError> {
+        if let Some(buffers) = self.prepared.take() {
+            Ok(buffers)
+        } else {
+            self.receiver.recv()
+        }
+    }
+
+    pub(crate) fn try_recv(&mut self) -> Result<T, mpsc::TryRecvError> {
+        if self.prepare()? {
+            self.prepared.take().ok_or(mpsc::TryRecvError::Empty)
+        } else {
+            Err(mpsc::TryRecvError::Empty)
+        }
+    }
+}
+
+/// Do not consume a forced probe or dirty work until both pooled buffers exist.
+pub(crate) fn prepare_frame<T>(
+    retry: &mut retry::RenderRetryState,
+    buffers: &mut BufferPool<T>,
+    now: std::time::Instant,
+) -> Result<bool, mpsc::TryRecvError> {
+    if !retry.allows(now) || !buffers.prepare()? {
+        return Ok(false);
+    }
+    retry.admitted();
+    Ok(true)
+}
+
+fn notify_buffer_waiter(waiting: &AtomicBool, wake: &dyn Fn()) {
+    if waiting.swap(false, Ordering::SeqCst) {
+        wake();
+    }
+}
+
+fn notify_render_completion(waiting: &AtomicBool, wake: &dyn Fn(), outcome: FrameOutcome) {
+    let deferred = waiting.swap(false, Ordering::SeqCst);
+    if deferred || outcome != FrameOutcome::Presented {
+        wake();
+    }
 }
 
 struct DamageTarget {
@@ -162,27 +256,23 @@ impl RenderThreadHandle {
 ///
 /// Returns an error if the OS refuses to spawn the `ui-render` thread (e.g.
 /// the process is out of resources for new threads).
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the single GPU owner's resize/render/trace/recycle/shutdown sequence and resource drop order visible together"
+)]
 pub fn spawn_render_thread(
     render_cx: RenderContext,
     mut surface: RenderSurface<'static>,
     mut renderer: Renderer,
+    wake: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<RenderThreadHandle, String> {
     let (req_tx, rx) = mpsc::sync_channel::<RenderRequest>(1);
-    let (scene_pool_tx, scene_pool) = mpsc::sync_channel::<Scene>(2);
-    let (damage_pool_tx, damage_pool) = mpsc::sync_channel::<Vec<Rect>>(2);
+    let (pool_tx, pool_rx) = mpsc::sync_channel(2);
     let (outcome_tx, frame_complete) = mpsc::sync_channel::<FrameOutcome>(8);
-
-    // Seed the pool so main finds a Scene buffer ready on the first frame
-    // instead of allocating. The receiver can't have been dropped yet (the
-    // handle that would own it isn't constructed until below), so a send
-    // failure here is unreachable; if it somehow happened anyway, skipping
-    // the seed only costs one extra allocation on an early frame.
-    let _ = scene_pool_tx.send(Scene::new());
-    let _ = scene_pool_tx.send(Scene::new());
-    let _ = damage_pool_tx.send(Vec::with_capacity(8));
-    let _ = damage_pool_tx.send(Vec::with_capacity(8));
-
-    let pool_tx = scene_pool_tx.clone();
+    let waiting = Arc::new(AtomicBool::new(false));
+    let buffers = BufferPool::new(pool_rx, waiting.clone());
+    let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
+    let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
     let join = std::thread::Builder::new()
         .name("ui-render".into())
         .spawn(move || {
@@ -190,7 +280,13 @@ pub fn spawn_render_thread(
             // — a slow compositor/present path shows up as a large acquire or
             // present, invisible to offscreen benches. Off by default.
             let present_dbg = std::env::var("QUICK_UI_PRESENT").is_ok();
+            let present_origin = present_dbg.then(std::time::Instant::now);
             let mut frame_ix: u64 = 0;
+            let presentation = crate::presentation_feedback::Observer::from_env();
+            let native_timing = presentation.as_ref().filter(|_| timing::enabled());
+            if let Some(observer) = native_timing {
+                observer.log_native_config(&surface);
+            }
             let mut first_present_recorded = false;
             let geometric_capacity = damage_geometric_capacity_enabled();
             let mut damage_cache = DamageCache {
@@ -198,26 +294,53 @@ pub fn spawn_render_thread(
                 ..DamageCache::default()
             };
             let mut target_valid = false;
-            while let Ok(msg) = rx.recv() {
-                let (mut scene, width, height, base_color, mut damage_regions, full_redraw) =
-                    match msg {
-                        RenderRequest::Frame {
-                            scene,
-                            width,
-                            height,
-                            base_color,
-                            damage_regions,
-                            full_redraw,
-                        } => (
-                            scene,
-                            width,
-                            height,
-                            base_color,
-                            damage_regions,
-                            full_redraw,
-                        ),
-                        RenderRequest::Shutdown => break,
-                    };
+            let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
+            loop {
+                let (message, receive_bounds) =
+                    timing::around(native_timing.is_some(), || rx.recv());
+                let before_receive = receive_bounds.and_then(|bounds| bounds.before);
+                let received = receive_bounds.and_then(|bounds| bounds.after);
+                let Ok(msg) = message else { break };
+                let (
+                    mut scene,
+                    width,
+                    height,
+                    base_color,
+                    mut damage_regions,
+                    full_redraw,
+                    cpu_frame_id,
+                ) = match msg {
+                    RenderRequest::Frame {
+                        scene,
+                        width,
+                        height,
+                        base_color,
+                        damage_regions,
+                        full_redraw,
+                        cpu_frame_id,
+                    } => (
+                        scene,
+                        width,
+                        height,
+                        base_color,
+                        damage_regions,
+                        full_redraw,
+                        cpu_frame_id,
+                    ),
+                    RenderRequest::Shutdown => break,
+                };
+                let worker_timing =
+                    present_origin.map(|origin| (origin, std::time::Instant::now()));
+                if let Some(observer) = native_timing {
+                    timing::handoff::received(
+                        &mut handoff,
+                        frame_ix,
+                        cpu_frame_id,
+                        before_receive,
+                        received,
+                        |row| observer.log_native_handoff(row),
+                    );
+                }
 
                 // Resize on the worker so main never touches wgpu state after
                 // spawn — simpler than an explicit Resize variant, and keeps
@@ -229,7 +352,28 @@ pub fn spawn_render_thread(
                         // Re-attempting the same reconfigure on a destroyed
                         // surface fails identically forever.
                         tracing::info!(%err, "drawing surface is gone; stopping the render thread");
+                        log_render_outcome(
+                            frame_ix,
+                            cpu_frame_id,
+                            (width, height),
+                            FrameOutcome::SurfaceGone,
+                            worker_timing,
+                            None,
+                        );
+                        if let Some(observer) = native_timing {
+                            observer.log_native_worker(
+                                frame_ix,
+                                cpu_frame_id,
+                                (received, None, None),
+                                FrameOutcome::SurfaceGone,
+                            );
+                        }
                         let _ = outcome_tx.send(FrameOutcome::SurfaceGone);
+                        notify_render_completion(
+                            &waiting,
+                            wake.as_ref(),
+                            FrameOutcome::SurfaceGone,
+                        );
                         break;
                     }
                     target_valid = false;
@@ -238,8 +382,13 @@ pub fn spawn_render_thread(
                         ..DamageCache::default()
                     };
                     renderer.trim_pooled_buffers();
+                    if let Some(observer) = native_timing {
+                        observer.log_native_config(&surface);
+                    }
                 }
 
+                let render_start = present_dbg.then(std::time::Instant::now);
+                let render_host_start = native_timing.and_then(|_| timing::capture());
                 let outcome = render_one_frame(
                     &render_cx,
                     &surface,
@@ -253,7 +402,34 @@ pub fn spawn_render_thread(
                     &mut damage_cache,
                     present_dbg,
                     frame_ix,
+                    cpu_frame_id,
+                    presentation.as_ref(),
                 );
+                let render_host_end = native_timing.and_then(|_| timing::capture());
+                timing::handoff::set(
+                    &mut handoff,
+                    timing::handoff::Stage::RenderEnd,
+                    render_host_end,
+                );
+                let render_duration = render_start.map(|start| start.elapsed());
+                if let Some(observer) = native_timing {
+                    observer.log_native_worker(
+                        frame_ix,
+                        cpu_frame_id,
+                        (received, render_host_start, render_host_end),
+                        outcome,
+                    );
+                }
+                timing::handoff::record(&mut handoff, timing::handoff::Stage::AfterNativeWorkerLog);
+                log_render_outcome(
+                    frame_ix,
+                    cpu_frame_id,
+                    (width, height),
+                    outcome,
+                    worker_timing,
+                    render_duration,
+                );
+                timing::handoff::record(&mut handoff, timing::handoff::Stage::AfterOutcomeLog);
                 // A per-session frame counter; bounded by wall-clock session
                 // length at typical refresh rates, nowhere near `u64::MAX`.
                 frame_ix = frame_ix.saturating_add(1);
@@ -268,32 +444,126 @@ pub fn spawn_render_thread(
                 // backing vecs, so main avoids a reallocation on reuse.
                 scene.reset();
                 damage_regions.clear();
+                timing::handoff::record(&mut handoff, timing::handoff::Stage::AfterSceneRecycle);
                 // Non-blocking: at most one Scene is outstanding on main (the
                 // one being built), so the pool (capacity 2) never fills. If
                 // main has shut down and the receiver is gone, dropping is fine.
-                let _ = pool_tx.send(scene);
-                let _ = damage_pool_tx.send(damage_regions);
+                let _ = pool_tx.send((scene, damage_regions));
+                timing::handoff::record(&mut handoff, timing::handoff::Stage::AfterPoolSend);
                 let _ = outcome_tx.send(outcome);
+                timing::handoff::record(&mut handoff, timing::handoff::Stage::AfterOutcomeSend);
+                notify_render_completion(&waiting, wake.as_ref(), outcome);
+                timing::handoff::record(
+                    &mut handoff,
+                    timing::handoff::Stage::AfterCompletionNotify,
+                );
                 if outcome == FrameOutcome::SurfaceGone {
                     break;
                 }
             }
+            // Publish disconnection before waking a deferred redraw, including
+            // the early resize-failure path that cannot recycle its scene.
+            drop(pool_tx);
+            notify_buffer_waiter(&waiting, wake.as_ref());
             // Worker exits — `surface`, `renderer`, `render_cx` drop here in
             // that order, which is the order wgpu requires (surface first
             // releases the swapchain on the instance `render_cx` owns).
         })
         .map_err(|e| format!("could not spawn the ui-render thread: {e}"))?;
-    // pool_tx (the worker's clone) keeps the pool alive; main never sends
-    // into it, so the original can be dropped.
-    drop(scene_pool_tx);
-
     Ok(RenderThreadHandle {
         render_tx: req_tx,
-        scene_pool,
-        damage_pool,
+        buffers,
         frame_complete,
+        retry: retry::RenderRetryState::default(),
         join: Some(join),
     })
+}
+
+/// Opt-in worker timing for every consumed frame, including early exits that
+/// never reach the existing `present-frame` diagnostic. Times are relative to
+/// this worker's origin, not the main-thread profiler or another process.
+/// `total_us` excludes resize and is null when resize failed before rendering.
+/// These are CPU wall times, not GPU completion or display presentation times;
+/// worker bounds exclude channel waiting, scene recycling, and this log write.
+fn log_render_outcome(
+    frame_ix: u64,
+    cpu_frame_id: Option<u64>,
+    dimensions: (u32, u32),
+    outcome: FrameOutcome,
+    worker_timing: Option<(std::time::Instant, std::time::Instant)>,
+    render_duration: Option<std::time::Duration>,
+) {
+    let Some((origin, worker_start)) = worker_timing else {
+        return;
+    };
+    let worker_end = std::time::Instant::now();
+    let row = render_outcome_row(
+        frame_ix,
+        cpu_frame_id,
+        dimensions,
+        outcome,
+        worker_start.duration_since(origin).as_micros(),
+        worker_end.duration_since(origin).as_micros(),
+        render_duration.map(|duration| duration.as_micros()),
+    );
+    eprintln!("qos-render-frame {row}");
+}
+
+fn render_outcome_row(
+    frame_ix: u64,
+    cpu_frame_id: Option<u64>,
+    dimensions: (u32, u32),
+    outcome: FrameOutcome,
+    start_us: u128,
+    end_us: u128,
+    total_us: Option<u128>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "frame_ix": frame_ix,
+        "cpu_frame_id": cpu_frame_id,
+        "start_us": start_us,
+        "end_us": end_us,
+        "total_us": total_us,
+        "outcome": match outcome {
+            FrameOutcome::Presented => "Presented",
+            FrameOutcome::Reconfigured => "Reconfigured",
+            FrameOutcome::Skipped => "Skipped",
+            FrameOutcome::Occluded => "Occluded",
+            FrameOutcome::SurfaceGone => "SurfaceGone",
+        },
+        "width": dimensions.0,
+        "height": dimensions.1,
+    })
+}
+
+#[cfg(test)]
+mod correlation_tests {
+    #[test]
+    fn worker_outcomes_keep_cpu_identity_independent_of_worker_counter() {
+        for outcome in [
+            super::FrameOutcome::Presented,
+            super::FrameOutcome::Skipped,
+            super::FrameOutcome::Reconfigured,
+            super::FrameOutcome::SurfaceGone,
+        ] {
+            let row = super::render_outcome_row(19, Some(7), (800, 600), outcome, 10, 20, None);
+            assert_eq!(row["frame_ix"], 19);
+            assert_eq!(row["cpu_frame_id"], 7);
+        }
+        let row = super::render_outcome_row(
+            19,
+            None,
+            (800, 600),
+            super::FrameOutcome::Skipped,
+            10,
+            20,
+            None,
+        );
+        assert!(
+            row["cpu_frame_id"].is_null(),
+            "auxiliary frames have no CPU profile sample"
+        );
+    }
 }
 
 /// `Surface::configure` returns no `Result` — failures go to the device's
@@ -657,6 +927,8 @@ fn render_one_frame(
     damage_cache: &mut DamageCache,
     present_dbg: bool,
     frame_ix: u64,
+    cpu_frame_id: Option<u64>,
+    presentation: Option<&crate::presentation_feedback::Observer>,
 ) -> FrameOutcome {
     use std::time::Instant;
     let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
@@ -678,10 +950,21 @@ fn render_one_frame(
                 tracing::info!(%err, "drawing surface is gone; abandoning the frame");
                 return FrameOutcome::SurfaceGone;
             }
+            if let Some(observer) = presentation.filter(|_| timing::enabled()) {
+                observer.log_native_config(surface);
+            }
             return FrameOutcome::Reconfigured;
         }
-        vello::wgpu::CurrentSurfaceTexture::Occluded
-        | vello::wgpu::CurrentSurfaceTexture::Timeout => {
+        vello::wgpu::CurrentSurfaceTexture::Occluded => {
+            if present_dbg {
+                eprintln!("render-skip {frame_ix}: occluded");
+            }
+            return FrameOutcome::Occluded;
+        }
+        vello::wgpu::CurrentSurfaceTexture::Timeout => {
+            if present_dbg {
+                eprintln!("render-skip {frame_ix}: timeout");
+            }
             return FrameOutcome::Skipped;
         }
         vello::wgpu::CurrentSurfaceTexture::Lost
@@ -756,7 +1039,12 @@ fn render_one_frame(
     let submit_us = t_submit.map(|t| t.elapsed().as_secs_f64() * 1e6);
 
     let t_present = present_dbg.then(Instant::now);
-    surface_texture.present();
+    if let Some(observer) = presentation {
+        observer.arm(&surface.surface, frame_ix, cpu_frame_id);
+    }
+    let ((), present_bounds) = timing::around(presentation.is_some() && timing::enabled(), || {
+        surface_texture.present();
+    });
     if present_dbg {
         let present_us = t_present.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e6);
         let encoding = scene.encoding();
@@ -797,7 +1085,269 @@ fn render_one_frame(
             height,
         );
     }
+    if let (Some(observer), Some(bounds)) = (presentation, present_bounds) {
+        observer.log_native_present(frame_ix, cpu_frame_id, bounds);
+    }
     // `Poll` is the non-blocking variant — nudges the queue without stalling.
     let _ = device_handle.device.poll(vello::wgpu::PollType::Poll);
     FrameOutcome::Presented
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[test]
+    fn occluded_primary_keeps_visible_sibling_projection_fresh_through_real_admission() {
+        use crate::widget::Widget;
+        use automerge::transaction::Transactable;
+        // The primary is the sole owner of this retained root's update/sync;
+        // auxiliary painting observes its Text projection rather than syncing.
+        struct Root {
+            text: crate::widget::Text,
+            pending: Option<&'static str>,
+        }
+        impl Widget for Root {
+            fn update(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) -> bool {
+                if let Some(value) = self.pending.take() {
+                    doc.put(path, "label", value).unwrap();
+                    true
+                } else {
+                    false
+                }
+            }
+            fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+                self.text.sync(doc, path);
+            }
+            fn build_layout(
+                &mut self,
+                tree: &mut taffy::TaffyTree<()>,
+                theme: &crate::Theme,
+                map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+            ) -> taffy::NodeId {
+                self.text.build_layout(tree, theme, map)
+            }
+            fn apply_layout(
+                &mut self,
+                tree: &taffy::TaffyTree<()>,
+                node: taffy::NodeId,
+                offset: vello::kurbo::Point,
+            ) {
+                self.text.apply_layout(tree, node, offset);
+            }
+            fn draw(
+                &mut self,
+                scene: &mut Scene,
+                transform: vello::kurbo::Affine,
+                renderer: &mut crate::text_render::TextRenderer,
+                theme: &crate::Theme,
+                presence: &crate::presence::PresenceCtx,
+            ) {
+                self.text.draw(scene, transform, renderer, theme, presence);
+            }
+            fn handle_event(
+                &mut self,
+                event: &winit::event::WindowEvent,
+                scale: f64,
+                modifiers: &winit::event::Modifiers,
+                doc: &mut automerge::AutoCommit,
+                path: &automerge::ObjId,
+                handled: &mut bool,
+                focus: &mut Option<taffy::NodeId>,
+                node: taffy::NodeId,
+                tree: &taffy::TaffyTree<()>,
+            ) {
+                self.text.handle_event(
+                    event, scale, modifiers, doc, path, handled, focus, node, tree,
+                );
+            }
+            fn get_rect(&self) -> Rect {
+                self.text.get_rect()
+            }
+            fn name(&self) -> &'static str {
+                "shared-projection"
+            }
+            fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+                self.text.accessibility()
+            }
+        }
+        let mut root = Root {
+            text: crate::widget::Text::from_document_string("label"),
+            pending: Some("initial"),
+        };
+        let mut doc = automerge::AutoCommit::new();
+        root.update(&mut doc, &automerge::ROOT);
+        root.sync(&mut doc, &automerge::ROOT);
+        let now = std::time::Instant::now();
+        let mut retry = retry::RenderRetryState::default();
+        for _ in 0..8 {
+            retry.observe(FrameOutcome::Occluded, now);
+        }
+        let (tx, rx) = mpsc::sync_channel(2);
+        let mut buffers = BufferPool::new(rx, Arc::new(AtomicBool::new(false)));
+        for (index, value) in ["animation tick", "auxiliary input"]
+            .into_iter()
+            .enumerate()
+        {
+            let tick = now + retry::FRAME_INTERVAL * (index as u32 + 1);
+            retry.observe_for_shared_root(
+                FrameOutcome::Occluded,
+                tick - retry::FRAME_INTERVAL,
+                true,
+            );
+            tx.send((Scene::new(), Vec::<Rect>::new())).unwrap();
+            root.pending = Some(value);
+            let admitted_at = if index == 1 {
+                assert!(retry.known_occluded());
+                assert!(
+                    retry.request_probe(),
+                    "auxiliary input also probes the shared primary"
+                );
+                tick - retry::FRAME_INTERVAL
+            } else {
+                tick
+            };
+            if prepare_frame(&mut retry, &mut buffers, admitted_at).unwrap() {
+                assert!(root.update(&mut doc, &automerge::ROOT));
+                root.sync(&mut doc, &automerge::ROOT);
+                let _ = buffers.recv().unwrap();
+            }
+            assert_eq!(
+                root.accessibility().unwrap().name.as_deref(),
+                Some(value),
+                "visible sibling must observe each shared update, not a 250ms-old projection"
+            );
+        }
+        for _ in 0..8 {
+            retry.observe_for_shared_root(FrameOutcome::Occluded, now, true);
+        }
+        assert!(
+            retry.known_occluded(),
+            "a sibling must not erase primary occlusion history"
+        );
+        retry.observe_for_shared_root(FrameOutcome::Occluded, now, false);
+        assert_eq!(
+            retry.deadline(),
+            Some(now + std::time::Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn occlusion_admission_preserves_dirty_payload_and_probe_until_buffers_return() {
+        let now = std::time::Instant::now();
+        let mut retry = retry::RenderRetryState::default();
+        for _ in 0..8 {
+            retry.observe(FrameOutcome::Occluded, now);
+        }
+        let (tx, rx) = mpsc::sync_channel(2);
+        let waiting = Arc::new(AtomicBool::new(false));
+        let mut pool = BufferPool::new(rx, waiting.clone());
+        tx.send(("scene", vec![1, 2, 3])).unwrap();
+        assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
+        assert!(
+            !pool.redraw_deferred(),
+            "occlusion must not arm a false buffer wait"
+        );
+        retry.request_probe();
+        retry.observe(FrameOutcome::Occluded, now); // Older completion drained after input.
+        assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
+        assert_eq!(pool.recv().unwrap(), ("scene", vec![1, 2, 3]));
+        retry.observe(FrameOutcome::Occluded, now);
+        retry.request_probe();
+        assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
+        assert!(
+            retry.allows(now),
+            "buffer deferral must preserve explicit probe"
+        );
+        tx.send(("latest dirty scene", vec![4, 5])).unwrap();
+        notify_render_completion(&waiting, &|| {}, FrameOutcome::Occluded);
+        retry.observe(FrameOutcome::Occluded, now);
+        assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
+        assert_eq!(pool.recv().unwrap(), ("latest dirty scene", vec![4, 5]));
+        retry.observe(FrameOutcome::Occluded, now);
+        assert_eq!(retry.deadline(), Some(now + retry::FRAME_INTERVAL));
+    }
+
+    #[test]
+    fn failed_outcomes_wake_even_without_deferred_work() {
+        use std::cell::Cell;
+        let waiting = AtomicBool::new(false);
+        let wakes = Cell::new(0);
+        let wake = || wakes.set(wakes.get() + 1);
+        notify_render_completion(&waiting, &wake, FrameOutcome::Presented);
+        assert_eq!(wakes.get(), 0);
+        for outcome in [
+            FrameOutcome::Skipped,
+            FrameOutcome::Reconfigured,
+            FrameOutcome::Occluded,
+            FrameOutcome::SurfaceGone,
+        ] {
+            notify_render_completion(&waiting, &wake, outcome);
+        }
+        assert_eq!(wakes.get(), 4);
+        waiting.store(true, Ordering::SeqCst);
+        notify_render_completion(&waiting, &wake, FrameOutcome::Presented);
+        assert_eq!(wakes.get(), 5);
+        assert!(!waiting.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn completion_wakes_only_deferred_work_and_cannot_lose_ready_buffers() {
+        use std::cell::Cell;
+        let (tx, rx) = mpsc::sync_channel(2);
+        let waiting = Arc::new(AtomicBool::new(false));
+        let mut pool = BufferPool::new(rx, waiting.clone());
+        let wakes = Cell::new(0);
+        let wake = || wakes.set(wakes.get() + 1);
+        notify_buffer_waiter(&waiting, &wake);
+        assert_eq!(wakes.get(), 0, "static completions must stay idle");
+        assert!(!pool.prepare().unwrap());
+        assert!(
+            pool.redraw_deferred(),
+            "periodic redraw demand must defer while busy"
+        );
+        tx.send(7).unwrap();
+        notify_buffer_waiter(&waiting, &wake);
+        notify_buffer_waiter(&waiting, &wake);
+        assert_eq!(wakes.get(), 1, "one wake services a deferred redraw");
+        assert!(
+            !pool.redraw_deferred(),
+            "completion re-enables periodic redraws"
+        );
+        assert!(pool.prepare().unwrap());
+        assert_eq!(pool.recv().unwrap(), 7);
+        // Completion before admission needs no wake: admission finds the pair.
+        tx.send(8).unwrap();
+        notify_buffer_waiter(&waiting, &wake);
+        assert!(pool.prepare().unwrap());
+        assert_eq!(pool.recv().unwrap(), 8);
+        assert_eq!(wakes.get(), 1);
+        assert!(!pool.prepare().unwrap());
+        drop(tx);
+        notify_buffer_waiter(&waiting, &wake);
+        assert_eq!(wakes.get(), 2, "worker exit wakes a pending admission");
+        assert!(pool.prepare().is_err());
+    }
+
+    #[test]
+    fn admission_defers_without_consuming_partial_state_and_retains_reservation() {
+        let (tx, rx) = mpsc::sync_channel(2);
+        let waiting = Arc::new(AtomicBool::new(false));
+        let mut pool = BufferPool::new(rx, waiting.clone());
+        assert!(!pool.prepare().unwrap());
+        assert!(waiting.load(Ordering::SeqCst));
+        tx.send(41).unwrap();
+        assert!(pool.prepare().unwrap());
+        assert!(!waiting.load(Ordering::SeqCst));
+        // An aborted layout keeps the reservation for the next redraw.
+        assert!(pool.prepare().unwrap());
+        assert_eq!(pool.recv().unwrap(), 41);
+        assert!(!pool.prepare().unwrap());
+        drop(tx);
+        assert!(pool.prepare().is_err());
+    }
 }

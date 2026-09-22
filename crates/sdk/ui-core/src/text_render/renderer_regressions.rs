@@ -415,3 +415,440 @@ fn rich_visible_discretionary_hyphen_uses_its_bold_marker_weight() {
     renderer.draw_rich(&mut wide_scene, &wide, Affine::IDENTITY, Color::WHITE);
     assert_eq!(wide_scene.encoding().resources.glyphs.len(), 4);
 }
+
+#[test]
+fn clipped_rich_text_reduces_encoded_glyphs_and_preserves_exact_pixels() {
+    let mut renderer = renderer();
+    let text = "Italic e\u{301} Αλφα fallback. ".repeat(120);
+    let layout = RichTextLayout::shape_styled(
+        &mut renderer.font_system,
+        &[RichSpan::new(&text)],
+        &named_style("Noto Sans"),
+        Some(180.0),
+        TextAlign::Left,
+        vec![(0, 24)],
+        vec![(30, 50)],
+    );
+    let clip = Rect::new(10.25, 12.75, 198.5, 135.25);
+    let mut reference = Scene::new();
+    reference.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+    renderer.draw_rich(
+        &mut reference,
+        &layout,
+        Affine::translate((12.0, -65.5)),
+        Color::WHITE,
+    );
+    reference.pop_layer();
+    let mut candidate = Scene::new();
+    candidate.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+    renderer.draw_rich_in_clip(
+        &mut candidate,
+        &layout,
+        Affine::translate((12.0, -65.5)),
+        Color::WHITE,
+        clip,
+    );
+    candidate.pop_layer();
+    assert!(
+        candidate.encoding().resources.glyphs.len() * 4
+            < reference.encoding().resources.glyphs.len()
+    );
+    // Exact byte equality requires deterministic path preprocessing. The
+    // production GPU path can vary a few antialiasing bytes as atomic segment
+    // allocation changes summation order; the matrix test below measures that
+    // mode separately against the reference's own observed range.
+    let mut gpu =
+        crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(220, 160, true).unwrap();
+    let expected = gpu.render(&reference, Color::BLACK);
+    let actual = gpu.render(&candidate, Color::BLACK);
+    assert_eq!(
+        actual, expected,
+        "clipping optimization must preserve exact RGBA"
+    );
+}
+
+#[test]
+fn clipped_rich_text_preserves_transformed_styled_ink_and_invalid_clip_fallback() {
+    clipped_styled_pixel_matrix(true);
+}
+
+#[test]
+fn clipped_rich_text_gpu_pixels_stay_within_measured_reference_variation() {
+    clipped_styled_pixel_matrix(false);
+}
+
+fn clipped_styled_pixel_matrix(stable_preprocessing: bool) {
+    use crate::richtext::BaselineShift;
+    let mut renderer = renderer();
+    let mut gpu =
+        crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(220, 160, stable_preprocessing)
+            .unwrap();
+    let spans = vec![
+        RichSpan::new("“Italic e\u{301} العربية 日本語—")
+            .italic(true)
+            .background(Some([40, 70, 90])),
+        RichSpan::new("SUPER").baseline(BaselineShift::Super),
+        RichSpan::new("sub").baseline(BaselineShift::Sub).bold(true),
+        RichSpan::new(" discretionary\u{ad}hyphen punctuation.” ".repeat(35)),
+    ];
+    for style in [
+        named_style("Noto Sans").with_hanging_punctuation(HangingPunctuation::BOTH),
+        named_style("Adwaita Sans")
+            .with_font_variation(OpenTypeTag::WEIGHT, 675.4)
+            .with_optical_sizing(OpticalSizing::Value(32.0)),
+    ] {
+        let layout = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &spans,
+            &style,
+            Some(130.0),
+            TextAlign::Left,
+            vec![(0, 80)],
+            vec![(10, 40)],
+        );
+        for transform in [
+            Affine::translate((30.25, -40.75)),
+            Affine::translate((35.5, -80.125)) * Affine::rotate(0.17) * Affine::scale(0.87),
+            Affine::new([-0.9, 0.08, 0.14, 1.1, 185.0, -130.5]),
+        ] {
+            for clip in [
+                Rect::new(10.25, 12.75, 198.5, 135.25),
+                Rect::new(70.125, 45.875, 100.375, 90.125),
+            ] {
+                let mut reference = Scene::new();
+                reference.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+                renderer.draw_rich(&mut reference, &layout, transform, Color::WHITE);
+                reference.pop_layer();
+                let mut candidate = Scene::new();
+                candidate.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+                renderer.draw_rich_in_clip(&mut candidate, &layout, transform, Color::WHITE, clip);
+                candidate.pop_layer();
+                let expected = gpu.render(&reference, Color::BLACK);
+                if stable_preprocessing {
+                    for _ in 0..4 {
+                        assert_eq!(
+                            gpu.render(&reference, Color::BLACK),
+                            expected,
+                            "reference stability"
+                        );
+                        assert_eq!(
+                            gpu.render(&candidate, Color::BLACK),
+                            expected,
+                            "exact clipped pixels for {transform:?}, {clip:?}"
+                        );
+                    }
+                } else {
+                    // GPU atomic segment allocation changes floating-point area
+                    // summation order. Measure the reference's own per-byte
+                    // variation; do not allow a blanket antialiasing tolerance.
+                    let mut low = expected.clone();
+                    let mut high = expected;
+                    for _ in 0..64 {
+                        let pixels = gpu.render(&reference, Color::BLACK);
+                        for ((low, high), pixel) in low.iter_mut().zip(&mut high).zip(pixels) {
+                            *low = (*low).min(pixel);
+                            *high = (*high).max(pixel);
+                        }
+                    }
+                    let variable = low.iter().zip(&high).filter(|(a, b)| a != b).count();
+                    assert!(
+                        variable <= 16,
+                        "unexpected reference variation: {variable} bytes"
+                    );
+                    assert!(low.iter().zip(&high).all(|(a, b)| b - a <= 1));
+                    for _ in 0..4 {
+                        let pixels = gpu.render(&candidate, Color::BLACK);
+                        let different: Vec<_> = pixels
+                            .iter()
+                            .zip(low.iter().zip(&high))
+                            .enumerate()
+                            .filter(|(_, (p, (lo, hi)))| p < lo || p > hi)
+                            .map(|(i, (p, (lo, hi)))| (i, *p, *lo, *hi))
+                            .collect();
+                        assert!(
+                            different.is_empty(),
+                            "pixels outside measured reference range for {transform:?}, {clip:?}: {different:?}"
+                        );
+                    }
+                }
+            }
+        }
+        let mut reference = Scene::new();
+        renderer.draw_rich(&mut reference, &layout, Affine::IDENTITY, Color::WHITE);
+        let mut invalid = Scene::new();
+        renderer.draw_rich_in_clip(
+            &mut invalid,
+            &layout,
+            Affine::IDENTITY,
+            Color::WHITE,
+            Rect::new(f64::NAN, 0.0, 10.0, 10.0),
+        );
+        assert_eq!(
+            reference.encoding().resources.glyphs.len(),
+            invalid.encoding().resources.glyphs.len()
+        );
+    }
+    assert!(!renderer.ink_bounds.is_empty());
+    assert!(renderer.ink_bounds_entries <= SHAPE_CACHE_LIMIT);
+    assert_eq!(
+        renderer.ink_bounds_entries,
+        renderer
+            .ink_bounds
+            .values()
+            .map(HashMap::len)
+            .sum::<usize>()
+    );
+    renderer.bump_generation();
+    assert!(renderer.ink_bounds.is_empty());
+    assert_eq!(renderer.ink_bounds_entries, 0);
+}
+
+#[test]
+fn clipped_rich_text_preserves_exercised_discretionary_hyphen() {
+    let mut renderer = renderer();
+    let style = named_style("Noto Sans").with_weight(TextWeight::Bold);
+    let width = renderer.measure_style("ab-", None, &style).0 + 0.5;
+    let layout = RichTextLayout::shape_styled(
+        &mut renderer.font_system,
+        &[RichSpan::new("ab\u{ad}cd").bold(true)],
+        &style,
+        Some(width),
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    assert!(layout.buffer.layout_runs().any(|run| {
+        run.glyphs
+            .last()
+            .is_some_and(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"))
+    }));
+    let mut gpu = crate::offscreen::OffscreenRenderer::new(100, 100);
+    for clip in [
+        Rect::new(0.25, 1.75, 70.5, 30.125),
+        Rect::new(25.25, 5.5, 40.75, 28.5),
+    ] {
+        let mut reference = Scene::new();
+        reference.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+        renderer.draw_rich(&mut reference, &layout, Affine::IDENTITY, Color::WHITE);
+        reference.pop_layer();
+        let mut candidate = Scene::new();
+        candidate.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip);
+        renderer.draw_rich_in_clip(
+            &mut candidate,
+            &layout,
+            Affine::IDENTITY,
+            Color::WHITE,
+            clip,
+        );
+        candidate.pop_layer();
+        assert!(gpu.render(&reference, Color::BLACK) == gpu.render(&candidate, Color::BLACK));
+    }
+}
+
+#[test]
+fn clipped_rich_text_does_not_cull_color_or_invalid_font_outlines() {
+    let mut renderer = renderer();
+    for family in ["Noto Color Emoji", "Noto Sans"] {
+        let layout = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &[RichSpan::new(if family == "Noto Sans" {
+                "A"
+            } else {
+                "😀"
+            })],
+            &named_style(family),
+            None,
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let run = layout.buffer.layout_runs().next().unwrap();
+        let first = &run.glyphs[0];
+        let mut font = renderer
+            .vello_font(first.font_id, first.font_weight)
+            .unwrap();
+        if family == "Noto Color Emoji" {
+            assert!(
+                FontRef::from_index(font.data.as_ref(), font.index)
+                    .unwrap()
+                    .table_data(Tag::new(b"COLR"))
+                    .is_some()
+            );
+        } else {
+            font.index = u32::MAX;
+        }
+        assert!(
+            !renderer.glyph_batch_outside(
+                &font,
+                first.font_id,
+                run.glyphs,
+                first.font_size,
+                run.line_y,
+                &[],
+                Affine::translate((10_000.0, 10_000.0)),
+                Rect::new(0.0, 0.0, 10.0, 10.0)
+            ),
+            "uncertain or non-outline ink must keep drawing"
+        );
+    }
+}
+
+#[test]
+fn clipped_ink_cache_groups_glyphs_by_font_instance() {
+    let mut renderer = renderer();
+    let layout = RichTextLayout::shape_styled(
+        &mut renderer.font_system,
+        &[RichSpan::new("abcdefghijklmno")],
+        &named_style("Noto Sans"),
+        Some(400.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    renderer.draw_rich_in_clip(
+        &mut Scene::new(),
+        &layout,
+        Affine::IDENTITY,
+        Color::WHITE,
+        Rect::new(0.0, 1000.0, 400.0, 1100.0),
+    );
+    assert_eq!(
+        renderer.ink_bounds.len(),
+        1,
+        "one font-instance lookup per batch"
+    );
+}
+
+#[test]
+fn clipped_ink_cache_remains_bounded_across_font_instances_and_reuses_after_eviction() {
+    let mut renderer = renderer();
+    let layout = RichTextLayout::shape_styled(
+        &mut renderer.font_system,
+        &[RichSpan::new("a")],
+        &named_style("Noto Sans"),
+        Some(400.0),
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    let glyph = layout.buffer.layout_runs().next().unwrap().glyphs[0].clone();
+    let font = renderer
+        .vello_font(glyph.font_id, glyph.font_weight)
+        .unwrap();
+    let mut evicted = false;
+    for index in 0..SHAPE_CACHE_LIMIT + 8 {
+        let before = renderer.ink_bounds_entries;
+        let size = 10.0 + index as f32 / 128.0;
+        let outside = renderer.glyph_batch_outside(
+            &font,
+            glyph.font_id,
+            std::slice::from_ref(&glyph),
+            size,
+            0.0,
+            &[],
+            Affine::IDENTITY,
+            Rect::new(0.0, 1000.0, 400.0, 1100.0),
+        );
+        assert!(outside, "eviction must not change conservative clipping");
+        let count = renderer.ink_bounds_entries;
+        evicted |= count < before;
+        assert!(count <= SHAPE_CACHE_LIMIT);
+        assert!(renderer.ink_bounds.len() <= count);
+        assert!(renderer.glyph_batch_outside(
+            &font,
+            glyph.font_id,
+            std::slice::from_ref(&glyph),
+            size,
+            0.0,
+            &[],
+            Affine::IDENTITY,
+            Rect::new(0.0, 1000.0, 400.0, 1100.0),
+        ));
+        // A full cache may be cleared before the next batch; otherwise the
+        // repeated glyph must be a hit, including immediately after eviction.
+        if count < SHAPE_CACHE_LIMIT {
+            assert_eq!(renderer.ink_bounds_entries, count);
+        } else {
+            evicted |= renderer.ink_bounds_entries < count;
+        }
+    }
+    assert!(evicted, "the workload must exercise the capacity boundary");
+}
+
+#[test]
+fn uniform_rich_runs_borrow_glyphs_with_exact_reference_output() {
+    use crate::richtext::BaselineShift;
+    let mut renderer = renderer();
+    let mut gpu =
+        crate::offscreen::OffscreenRenderer::try_new_for_pixel_test(220, 160, true).unwrap();
+    let mut borrowed = 0;
+    let mut copied = 0;
+    for spans in [
+        vec![RichSpan::new("ordinary wrapped text ".repeat(8))],
+        vec![RichSpan::new("uniform bold").bold(true)],
+        vec![RichSpan::new("raised text").baseline(BaselineShift::Super)],
+        vec![RichSpan::new("normal "), RichSpan::new("bold").bold(true)],
+        vec![RichSpan::new("soft\u{ad}hyphen")],
+    ] {
+        let layout = RichTextLayout::shape_styled(
+            &mut renderer.font_system,
+            &spans,
+            &named_style("Noto Sans"),
+            Some(180.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        for clip in [None, Some(Rect::new(10.0, 10.0, 190.0, 100.0))] {
+            let transform = Affine::translate((12.25, -4.75));
+            let mut reference = Scene::new();
+            let mut candidate = Scene::new();
+            for run in layout.buffer.layout_runs() {
+                renderer.draw_rich_run_copied(
+                    &mut reference,
+                    &run,
+                    &layout,
+                    transform,
+                    Color::WHITE,
+                    clip,
+                );
+                if renderer.draw_uniform_rich_run(
+                    &mut candidate,
+                    &run,
+                    &layout,
+                    transform,
+                    Color::WHITE,
+                    clip,
+                ) {
+                    borrowed += 1;
+                } else {
+                    copied += 1;
+                    renderer.draw_rich_run_copied(
+                        &mut candidate,
+                        &run,
+                        &layout,
+                        transform,
+                        Color::WHITE,
+                        clip,
+                    );
+                }
+            }
+            let glyphs = |scene: &Scene| {
+                scene
+                    .encoding()
+                    .resources
+                    .glyphs
+                    .iter()
+                    .map(|g| (g.id, g.x.to_bits(), g.y.to_bits()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(glyphs(&candidate), glyphs(&reference));
+            assert_eq!(
+                gpu.render(&candidate, Color::BLACK),
+                gpu.render(&reference, Color::BLACK)
+            );
+        }
+    }
+    assert!(borrowed > 0);
+    assert!(copied > 0, "fixture must cover conservative fallback");
+}

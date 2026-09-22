@@ -15,6 +15,10 @@
 //! binds the value to a CRDT `F64`, while
 //! [`from_state`](NumberInput::from_state) supplies typed process-local
 //! two-way binding.
+//!
+//! Automatic dimensions use a text-scaled compact minimum and grow horizontally
+//! to fit the formatted value, field padding and steppers. [`NumberInput::with_size`]
+//! keeps an explicit logical allocation; long values then scroll in the field.
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -172,6 +176,8 @@ pub struct NumberInput {
     enabled: bool,
     width: f64,
     height: f64,
+    automatic_minimum: Option<Size<f32>>,
+    field_padding: f32,
     interaction: crate::interaction::InteractionEnvironment,
 }
 
@@ -210,6 +216,8 @@ impl NumberInput {
             enabled: true,
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
+            automatic_minimum: Some(Size::ZERO),
+            field_padding: 0.0,
             interaction: crate::interaction::InteractionEnvironment::default(),
         };
         s.value = s.value.clamp(s.min, s.max);
@@ -287,6 +295,7 @@ impl NumberInput {
     pub fn with_size(mut self, width: f64, height: f64) -> Self {
         self.width = width;
         self.height = height;
+        self.automatic_minimum = None;
         self
     }
 
@@ -358,16 +367,70 @@ impl NumberInput {
     /// Format `value` for display: `decimals`-precision number plus the
     /// unit suffix (space-separated when a suffix is present).
     fn format_value(&self) -> String {
+        self.format_display(self.value)
+    }
+
+    /// `value` formatted exactly as [`Self::format_value`] would show it.
+    fn format_display(&self, value: f64) -> String {
         let n = if self.decimals == 0 {
-            format!("{}", round_to_i64(self.value))
+            format!("{}", round_to_i64(value))
         } else {
-            format!("{:.*}", self.decimals, self.value)
+            format!("{:.*}", self.decimals, value)
         };
         if self.suffix.is_empty() {
             n
         } else {
             format!("{} {}", n, self.suffix)
         }
+    }
+
+    /// Control width that holds `display` in the field beside two
+    /// `height`-square steppers: `field_padding` either side of the text,
+    /// the two buttons and the gaps between, never below `minimum.width`.
+    fn required_width(
+        minimum: Size<f32>,
+        field_padding: f32,
+        display: &str,
+        text: &mut TextRenderer,
+    ) -> f32 {
+        let (value_width, _) = text.measure(display, super::text_input::FONT_SIZE, None);
+        minimum
+            .width
+            .max(value_width + field_padding * 2.0 + minimum.height * 2.0 + px_f32(GAP * 2.0))
+            .ceil()
+    }
+
+    /// The footprint `build_layout` starts from: the configured size, text-
+    /// scaled when the width is automatic, the height never below the
+    /// pointer target.
+    fn base_footprint(&self, theme: &Theme) -> Size<f32> {
+        let scale = if self.automatic_minimum.is_some() {
+            f64::from(theme.text_scale)
+        } else {
+            1.0
+        };
+        Size {
+            width: px_f32(self.width * scale),
+            height: px_f32((self.height * scale).max(f64::from(self.interaction.minimum_target()))),
+        }
+    }
+
+    /// Width this control needs so **every** value it can show fits — the
+    /// current value and the finite ends of its range, formatted with the
+    /// configured precision and suffix — beside its steppers. A host laying
+    /// its own rows (a font-size stepper in an inspector) reserves this
+    /// instead of guessing the field's type size; it is the same rule the
+    /// widget applies to itself in `adjust_layout_with_measure`, so a slot
+    /// sized from it never clips a value the widget would have held.
+    pub fn preferred_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
+        let minimum = self.base_footprint(theme);
+        let padding = px_f32(self.field.text_padding_x(theme));
+        let widest = [self.value, self.min, self.max]
+            .into_iter()
+            .filter(|value| value.is_finite())
+            .map(|value| Self::required_width(minimum, padding, &self.format_display(value), text))
+            .fold(minimum.width, f32::max);
+        f64::from(widest)
     }
 
     /// Overwrite the embedded field's text with the canonical value's
@@ -514,21 +577,49 @@ impl Widget for NumberInput {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let size = self.base_footprint(theme);
+        if self.automatic_minimum.is_some() {
+            self.automatic_minimum = Some(size);
+            self.field_padding = px_f32(self.field.text_padding_x(theme));
+        }
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(px_f32(self.width)),
-                height: Dimension::length(px_f32(
-                    self.height
-                        .max(f64::from(self.interaction.minimum_target())),
-                )),
+                width: Dimension::length(size.width),
+                height: Dimension::length(size.height),
             },
+            // A fixed target: in a row that overflows, the fluid field beside
+            // it gives, not the stepper (taffy would otherwise squeeze this
+            // leaf below its own size — see `Toggle::build_layout`).
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn adjust_layout_with_measure(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let Some(minimum) = self.automatic_minimum else {
+            return false;
+        };
+        let width = Self::required_width(minimum, self.field_padding, &self.format_value(), text);
+        let Ok(current) = tree.style(node) else {
+            return false;
+        };
+        let mut style = current.clone();
+        style.size.width = Dimension::length(width);
+        // Keep authored min/max constraints, including Manual's exact allocation.
+        if style == *current {
+            return false;
+        }
+        tree.set_style(node, style).is_ok()
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -573,16 +664,18 @@ impl Widget for NumberInput {
                 colors.surfaces.raised
             };
             scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
+            // Stepper edge derived from its rest surface, as a Neutral
+            // button (HIG §9.5), held across hover.
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                crate::surface::edge_on(colors.surfaces.raised),
                 None,
-                &shape,
+                &crate::surface::edge_outline(btn_rect, radius),
             );
 
-            let (gw, _) = text_renderer.measure(glyph, STEP_GLYPH_SIZE, None);
-            let line_height = f64::from(STEP_GLYPH_SIZE * 1.25);
+            let (gw, gh) = text_renderer.measure(glyph, STEP_GLYPH_SIZE, None);
+            let line_height = f64::from(gh);
             let gx = btn_rect.x0 + (btn_rect.width() - f64::from(gw)) / 2.0;
             let gy = btn_rect.y0 + (btn_rect.height() - line_height) / 2.0;
             let glyph_color = if disabled {
@@ -891,6 +984,137 @@ mod tests {
     use winit::event::{KeyEvent, Modifiers};
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
+    fn layout_with_theme(n: &mut NumberInput, theme: &Theme) {
+        let mut tree = TaffyTree::new();
+        let node = n.build_layout(&mut tree, theme, &mut std::collections::HashMap::new());
+        let mut nodes = std::collections::HashMap::new();
+        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(n));
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
+        unsafe {
+            bindings.rebuild(n, &tree, node, &nodes);
+            crate::widget::compute_widget_layout(
+                &mut tree,
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(292.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &nodes,
+                &bindings,
+                &mut text,
+            )
+            .unwrap();
+        }
+        n.apply_layout(&tree, node, Point::new(24.0, 12.0));
+    }
+
+    #[test]
+    fn automatic_defaults_fit_large_text_and_keep_explicit_sizes() {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(scale);
+            let mut number = NumberInput::new(15.0).with_suffix("min");
+            layout_with_theme(&mut number, &theme);
+            assert!(number.rect.width() >= DEFAULT_WIDTH * f64::from(scale));
+            assert_eq!(number.rect.height(), DEFAULT_HEIGHT * f64::from(scale));
+            assert!(number.rect.width() <= 292.0, "starter narrow control width");
+            let (value_width, value_height) = text.measure(number.field.value(), 16.0, None);
+            assert!(
+                f64::from(value_width) + 2.0 * number.field.text_padding_x(&theme)
+                    <= number.field_rect.width(),
+                "value width {value_width}, field {:?}",
+                number.field_rect
+            );
+            assert!(f64::from(value_height) <= number.field_rect.height());
+            number.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &crate::PresenceCtx::default(),
+            );
+            assert_eq!(number.field.get_rect(), number.field_rect);
+            number.field.set_text("25 min");
+            number.commit_local();
+            assert_eq!(number.value(), 25.0);
+            assert_eq!(number.field.value(), "25 min");
+            let mut explicit = NumberInput::new(15.0).with_size(170.0, 38.0);
+            layout_with_theme(&mut explicit, &theme);
+            assert_eq!(explicit.rect.size(), vello::kurbo::Size::new(170.0, 38.0));
+        }
+    }
+
+    #[test]
+    fn manual_allocation_overrides_automatic_number_footprint() {
+        let manual = crate::widget::Manual::new(|ctx| {
+            ctx.place(0, Rect::new(10.25, 20.75, 130.75, 61.0))?;
+            Ok(Size {
+                width: ctx.available().width,
+                height: 100.0,
+            })
+        })
+        .child(Box::new(NumberInput::new(15.0).with_suffix("min")));
+        let harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(manual),
+            (340, 300),
+            Theme::dark().with_text_scale(2.0),
+        );
+        assert_eq!(
+            harness.inspection().root.children[0].rect,
+            [10.25, 20.75, 120.5, 40.25]
+        );
+    }
+
+    #[test]
+    fn stepper_glyphs_use_scaled_line_box_for_centering() {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(scale);
+            let mut number = NumberInput::new(15.0);
+            layout_with_theme(&mut number, &theme);
+            let mut scene = Scene::new();
+            number.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &crate::PresenceCtx::default(),
+            );
+            for (index, (rect, glyph)) in [(number.minus_rect, "−"), (number.plus_rect, "+")]
+                .into_iter()
+                .enumerate()
+            {
+                let (width, height) = text.measure(glyph, STEP_GLYPH_SIZE, None);
+                assert!(f64::from(height) <= rect.height());
+                assert!(f64::from(width) <= rect.width());
+                let mut expected = Scene::new();
+                text.draw_text(
+                    &mut expected,
+                    glyph,
+                    STEP_GLYPH_SIZE,
+                    theme.text_primary,
+                    Affine::translate((
+                        rect.x0 + (rect.width() - f64::from(width)) / 2.0,
+                        rect.y0 + (rect.height() - f64::from(height)) / 2.0,
+                    )),
+                    None,
+                );
+                let actual_run = &scene.encoding().resources.glyph_runs[index];
+                let expected_run = &expected.encoding().resources.glyph_runs[0];
+                assert_eq!(
+                    actual_run.transform.translation,
+                    expected_run.transform.translation
+                );
+                assert_eq!(actual_run.font_size, expected_run.font_size);
+            }
+        }
+    }
+
     fn layout_at(n: &mut NumberInput, x0: f64, y0: f64) {
         // Mirror `apply_layout`'s arithmetic without a taffy pass.
         let x1 = x0 + n.width;
@@ -971,6 +1195,42 @@ mod tests {
         assert_eq!(n.format_value(), "1.15");
         let n = NumberInput::new(42.0);
         assert_eq!(n.format_value(), "42");
+    }
+
+    /// `preferred_width` reserves room for the widest value the control can
+    /// show — the ends of its range, formatted with precision and suffix —
+    /// beside its two steppers, never less than the configured width. A host
+    /// slot sized from it holds every value the widget itself would hold.
+    #[test]
+    fn preferred_width_fits_the_widest_value_in_range() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let input = NumberInput::new(1.0)
+            .with_range(0.0, 1000.0)
+            .with_precision(2)
+            .with_suffix("px");
+        let preferred = input.preferred_width(&theme, &mut text);
+
+        let (widest, _) = text.measure("1000.00 px", super::super::text_input::FONT_SIZE, None);
+        let padding = px_f32(input.field.text_padding_x(&theme));
+        let height = px_f32(DEFAULT_HEIGHT.max(f64::from(input.interaction.minimum_target())));
+        let required = f64::from(widest + padding * 2.0 + height * 2.0 + px_f32(GAP * 2.0));
+        assert!(
+            preferred + 1e-6 >= required,
+            "preferred {preferred} must hold the widest value ({required})"
+        );
+        assert!(
+            preferred >= DEFAULT_WIDTH,
+            "never below the configured width"
+        );
+        assert!(
+            preferred < required + 1.0,
+            "preferred {preferred} should be the widest value's need rounded up, not more (required {required})"
+        );
+
+        // A narrow range needs no more than the configured width.
+        let compact = NumberInput::new(3.0).with_range(0.0, 9.0);
+        assert_eq!(compact.preferred_width(&theme, &mut text), DEFAULT_WIDTH);
     }
 
     /// New clamps the initial value into range.

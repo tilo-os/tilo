@@ -11,9 +11,10 @@
 use std::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Rect, Stroke, Vec2};
 use vello::peniko::Color;
 
+use crate::text_metrics::centered_text_top;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 
@@ -115,14 +116,21 @@ impl StatusBubble {
 
 /// `control` is a leading+trailing glyph slot in px each (`0.0` for a
 /// plain label).
+///
+/// `text_size` is renderer-relative: the renderer applies the accessibility
+/// text scale, so pass a design size (`12.0`) or a theme token divided once
+/// through [`crate::text_metrics::renderer_type_size`] — never a raw
+/// `theme.tokens.typography.scale.*` value, which paints 4× at 200 %.
 pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64) -> (f64, f64) {
-    let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
+    let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let pad_x = 14.0;
     let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
-    // `TextRenderer` applies the user's text scale to metrics, so the pill
-    // geometry must use the same effective font size.  Otherwise at 200% the
-    // glyphs extend through the lower edge of a 30px bubble.
-    let h = pill_height(text_size, tr.text_scale());
+    // The 1× design height, lifted when the measured line box (which the
+    // renderer scales) needs more room than 30 px leaves: a 12 px label
+    // shapes a ~15 px line at 1× and stays 30; at 2× the 30 px line gets 42.
+    let h = (f64::from(text_size) + 16.0)
+        .max(30.0)
+        .max(f64::from(th) + 12.0);
     (w, h)
 }
 
@@ -132,7 +140,8 @@ pub fn pill_height(text_size: f32, text_scale: f32) -> f64 {
 }
 
 /// The caller sets opacity by wrapping this in a `scene.push_layer(...
-/// alpha ...)` using [`StatusBubble::alpha`].
+/// alpha ...)` using [`StatusBubble::alpha`]. `text_size` follows the
+/// [`pill_size`] contract: renderer-relative, scaled once by the renderer.
 pub fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
@@ -146,26 +155,21 @@ pub fn draw_pill(
 
     crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
 
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        vello::peniko::Fill::NonZero,
+    // Overlay fill under a rest edge derived from it (HIG §9.5): the
+    // declared `border_standard` this replaces is one fixed colour per theme
+    // and lands within rounding distance of the dark preset's overlay.
+    crate::surface::card(
+        scene,
         transform,
+        rect,
+        radius,
         theme.tokens.colors.surfaces.overlay,
-        None,
-        &shape,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &shape,
     );
 
-    let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
+    let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-    let scaled_text_size = f64::from(text_size) * f64::from(tr.text_scale());
-    let ty = rect.y0 + (rect.height() - scaled_text_size) / 2.0;
+    // Centre the measured line box, not the font size.
+    let ty = centered_text_top(rect.y0, rect.height(), f64::from(th));
     tr.draw_text_weighted(
         scene,
         text,
@@ -207,7 +211,7 @@ mod tests {
         tr.set_text_scale(2.0);
         let (_, enlarged_h) = pill_size("Compiled", &mut tr, 12.0, 0.0);
         assert_eq!(normal_h, 30.0);
-        assert_eq!(enlarged_h, 40.0);
+        assert_eq!(enlarged_h, 42.0);
     }
 
     #[test]

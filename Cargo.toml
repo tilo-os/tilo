@@ -14,6 +14,7 @@ exclude = [
     "vendor/libspa-sys",
     "vendor/winit",
     "vendor/wgpu-hal",
+    "vendor/libspa-sys",
     "vendor/openh264-sys2",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;

@@ -7207,10 +7207,11 @@ fn cargo_toml(spec: &AppSpec) -> String {
     } else {
         let repo = checkout_root_for_ui(&spec.ui_path);
         format!(
-            "\n[patch.crates-io]\nwinit = {{ path = {:?} }}\nvello_encoding = {{ path = {:?} }}\nvello = {{ path = {:?} }}\n",
+            "\n[patch.crates-io]\nwinit = {{ path = {:?} }}\nvello_encoding = {{ path = {:?} }}\nvello = {{ path = {:?} }}\nvello_shaders = {{ path = {:?} }}\n",
             repo.join("vendor/winit").to_string_lossy(),
             repo.join("vendor/vello_encoding").to_string_lossy(),
             repo.join("vendor/vello").to_string_lossy(),
+            repo.join("vendor/vello_shaders").to_string_lossy(),
         )
     };
     let extras = format!("{lints}{patches}");
@@ -7269,6 +7270,7 @@ fn app_lib(spec: &AppSpec) -> String {
 fn source_catalog() -> String {
     String::from(
         "starter-title = Your first Tilo app\n\
+starter-profile-title = Profile\n\
 starter-name-label = Your name\n\
 starter-name-placeholder = Type your name\n\
 starter-updates-label = Receive updates\n\
@@ -7356,6 +7358,14 @@ fn app_responds_to_semantic_input() {{
         {crate_name}::app_root(),
         (800, 500),
     );
+
+    let inspection = app.inspection();
+    fn contains_widget(node: &ui::headless::InspectionNode, name: &str) -> bool {{
+        node.widget == name || node.children.iter().any(|child| contains_widget(child, name))
+    }}
+    assert!(contains_widget(&inspection.root, "FormPage"));
+    assert!(contains_widget(&inspection.root, "Form"));
+    app.resize((340, 700)).expect("automatic starter resizes");
 
     app.perform_named("name-input", &Action::SetValue("Ada".into()))
         .expect("the generated input remains addressable");
