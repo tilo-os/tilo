@@ -215,10 +215,7 @@ fn connect_unix_socket_bounded(
     };
     if connected < 0 {
         let error = std::io::Error::last_os_error();
-        if !matches!(
-            error.raw_os_error(),
-            Some(libc::EINPROGRESS | libc::EALREADY | libc::EAGAIN)
-        ) {
+        if !unix_connect_is_pending(error.raw_os_error()) {
             return Err(error);
         }
         wait_for_unix_connect(fd.as_raw_fd(), timeout)?;
@@ -229,6 +226,14 @@ fn connect_unix_socket_bounded(
         return Err(std::io::Error::last_os_error());
     }
     Ok(std::os::unix::net::UnixStream::from(fd))
+}
+
+#[cfg(unix)]
+fn unix_connect_is_pending(error: Option<i32>) -> bool {
+    matches!(
+        error,
+        Some(libc::EINPROGRESS) | Some(libc::EALREADY) | Some(libc::EAGAIN)
+    )
 }
 
 #[cfg(unix)]
