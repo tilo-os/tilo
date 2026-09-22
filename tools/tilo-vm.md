@@ -4,6 +4,24 @@
 repeatable local debugging loop. It does not copy or rebuild disks. Every
 attempt gets a new control directory containing the exact input metadata,
 launcher output, assigned ports, append-only events, and captures.
+It can create a blank sparse installer target; assembled boot inputs remain
+caller-supplied artifacts.
+
+For installer iterations, let the CLI allocate the disposable target on native
+NTFS instead of writing a large raw disk through `\\wsl.localhost`:
+
+```powershell
+.\tools\tilo-vm.ps1 start --launcher .\tools\launch-arm64-disk.ps1 `
+  --disk C:\tilo-build\local\installer.raw --disposable-target
+```
+
+The target defaults to `C:\tilo-build\targets\<run-id>.raw` when the default
+runs directory is used. It is a new, sparse 64 GiB raw file; existing paths,
+paths outside that owned target directory, UNC paths, and non-NTFS volumes are
+refused. `run.json` records the logical size, allocated bytes, filesystem and
+storage location. `--target-size-gib` changes the logical size. An explicit
+`--target`, including a WSL UNC path, remains unchanged and is never created or
+replaced by the CLI.
 
 Run a cheap validation before starting QEMU:
 

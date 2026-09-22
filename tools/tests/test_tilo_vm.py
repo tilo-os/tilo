@@ -14,6 +14,23 @@ SPEC.loader.exec_module(tilo_vm)
 
 
 class TiloVmTests(unittest.TestCase):
+    def test_sparse_disposable_target_is_owned_and_create_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "targets"
+            target = root / "run.raw"
+            receipt = tilo_vm.create_sparse_target(target, 1, root)
+            self.assertEqual(target.stat().st_size, 1024**3)
+            self.assertTrue(receipt["sparse"])
+            self.assertLess(receipt["allocated_bytes"], receipt["logical_bytes"])
+            with self.assertRaises(FileExistsError):
+                tilo_vm.create_sparse_target(target, 1, root)
+            with self.assertRaisesRegex(ValueError, "escapes"):
+                tilo_vm.create_sparse_target(root.parent / "outside.raw", 1, root)
+
+    def test_wsl_target_is_classified_without_rewriting(self):
+        target = Path(r"\\wsl.localhost\FedoraLinux-42\home\builder\target.raw")
+        self.assertEqual(tilo_vm.path_location(target), "wsl-unc")
+
     def test_launcher_arguments_validate_and_redact(self):
         parsed = tilo_vm.parse_launcher_arguments(
             ["DebugBoot", "CpuCount=8", "Password=do-not-record"]
@@ -95,6 +112,28 @@ class TiloVmTests(unittest.TestCase):
             self.assertEqual(receipt["kind"], "preflight")
             self.assertEqual(receipt["inputs"]["disk"]["bytes"], len(b"EFI PART fixture"))
             self.assertEqual(disk.read_bytes(), b"EFI PART fixture")
+
+    def test_preflight_plans_default_local_target_without_allocating_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            launcher = base / "fake.ps1"
+            launcher.write_text("fake", encoding="utf-8")
+            runs = base / "runs"
+            args = tilo_vm.parser().parse_args([
+                "--runs-dir", str(runs), "preflight", "--launcher", str(launcher),
+                "--disposable-target", "--run-id", "local-target",
+            ])
+            completed = mock.Mock(returncode=0, stdout="{}\n", stderr="")
+            with mock.patch.object(tilo_vm, "run_launcher", return_value=completed):
+                self.assertEqual(tilo_vm.preflight_or_start(args, start=False), 0)
+            target = base / "targets" / "local-target.raw"
+            self.assertFalse(target.exists())
+            receipt = json.loads((runs / "local-target" / "run.json").read_text())
+            self.assertEqual(receipt["target_storage"]["path"], str(target.resolve()))
+            self.assertEqual(receipt["target_storage"]["logical_bytes"], 64 * 1024**3)
+            command = tilo_vm.materialize_arguments(args)
+            self.assertIn(("InstallTargetDisk", str(target.resolve())), command)
+            self.assertIn(("CreateInstallTarget", None), command)
 
     def test_status_uses_receipt_port(self):
         with tempfile.TemporaryDirectory() as temporary:
