@@ -49,7 +49,13 @@ def audit(root: Path = ROOT) -> list[str]:
     if 'accesskit_winit = "0.34.0"' not in cargo:
         errors.append("crates/sdk/ui-core/Cargo.toml: AccessKit winit adapter/version is not the reviewed AT-SPI provider")
 
-    app = (root / "crates/sdk/ui-core/src/app.rs").read_text(encoding="utf-8")
+    app_paths = [
+        root / "crates/sdk/ui-core/src/app.rs",
+        root / "crates/sdk/ui-core/src/app/host.rs",
+    ]
+    app = "\n".join(
+        path.read_text(encoding="utf-8") for path in app_paths if path.is_file()
+    )
     for needle, purpose in (
         ("accesskit_winit::Adapter::with_event_loop_proxy", "adapter registration before showing windows"),
         ("self.app.dispatch_a11y_action(req.target_node, &action)", "AT action routing"),

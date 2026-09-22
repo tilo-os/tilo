@@ -344,7 +344,10 @@ mod tests {
             name: "Editor".into(),
             description: "CRDT-native editor".into(),
             tagline: "Native Tilo OS app".into(),
-            images: registry_types::LocalizedImages::default(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
             supported_languages: vec!["en".into()],
             categories: vec!["Productivity".into()],
             source_url: None,

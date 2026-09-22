@@ -121,11 +121,21 @@ pub fn fetch_entry_bytes(
     entry
         .versions
         .iter()
-        .map(|version| fetch_and_inspect(entry, version, policy))
+        .map(|version| fetch_version_bytes(entry, version, policy))
         .collect()
 }
 
-fn fetch_and_inspect(
+/// Fetch and verify one signed version while retaining its exact bytes.
+///
+/// This single-version boundary lets callers durably consume each verified
+/// artifact before fetching the next version instead of retaining an entry's
+/// complete version history in memory.
+///
+/// # Errors
+///
+/// Returns the same URL, fetch, size, identity, and package verification
+/// failures as [`fetch_entry_bytes`].
+pub fn fetch_version_bytes(
     entry: &RegistryEntry,
     version: &RegistryVersion,
     policy: InspectionPolicy,
@@ -546,7 +556,10 @@ type = "gui"
             name: "Editor".into(),
             description: "Text editor".into(),
             tagline: "Edit together".into(),
-            images: registry_types::LocalizedImages::default(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
             supported_languages: vec!["en".into()],
             categories: vec!["Productivity".into()],
             source_url: None,

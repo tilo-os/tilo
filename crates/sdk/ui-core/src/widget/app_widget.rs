@@ -123,11 +123,11 @@ mod component_adapter {
     use crate::application::AppComponent;
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
-        AudiencePresentationWidgetExt, AutoCommit, CaptureMode, Continuable,
-        ControlBindingMetadata, DragPayload, FloatingSurfaceProvider, FloatingSurfaceWidgetExt,
-        FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet, Instant, NodeId, ObjId,
-        PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart, Scene, TaffyTree,
-        TaffyTreeExt, TextRenderer, Theme, WindowEvent,
+        AudiencePresentationWidgetExt, AutoCommit, CaptureMode, CompleteContentProvider,
+        CompleteContentWidgetExt, Continuable, ControlBindingMetadata, DragPayload,
+        FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt,
+        HashMap, HashSet, Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey,
+        ResourceOperationStart, Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
     pub(crate) struct BoundAppWidget {
@@ -381,12 +381,50 @@ mod component_adapter {
         }
     }
 
+    impl CompleteContentProvider for BoundAppWidget {
+        fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            root.complete_content_size()
+        }
+
+        fn draw_complete_content(
+            &mut self,
+            scene: &mut Scene,
+            bounds: vello::kurbo::Rect,
+            transform: Affine,
+            text_renderer: &mut TextRenderer,
+            theme: &Theme,
+            presence: &PresenceCtx,
+        ) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return false;
+            };
+            root.draw_complete_content(scene, bounds, transform, text_renderer, theme, presence)
+        }
+    }
+
     impl Widget for BoundAppWidget {
         fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
             Some(self)
         }
 
         fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+            Some(self)
+        }
+
+        fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
+            Some(self)
+        }
+
+        fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
             Some(self)
         }
 
@@ -629,32 +667,6 @@ mod component_adapter {
                 presence,
                 &permissions,
             );
-        }
-        fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.complete_content_size()
-        }
-        fn draw_complete_content(
-            &mut self,
-            scene: &mut Scene,
-            bounds: vello::kurbo::Rect,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return false;
-            };
-            root.draw_complete_content(scene, bounds, transform, text_renderer, theme, presence)
         }
         fn handle_event(
             &mut self,

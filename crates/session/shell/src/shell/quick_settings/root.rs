@@ -38,8 +38,6 @@ fn f32v(value: f64) -> f32 {
 pub enum RootAction {
     None,
     OpenSettings,
-    Privacy,
-    OpenNotifications,
     OpenPowerMenu,
     Enter(QsLevel),
     Changed(PendingRootActions),
@@ -62,6 +60,12 @@ pub struct PendingRootActions {
 pub enum SliderCommit {
     Brightness(f32),
     Volume(f32),
+}
+
+struct ControlPaint {
+    control: QuickSettingsControl,
+    rect: Rect,
+    on: bool,
 }
 
 /// Root interaction state.  Editing uses the shared Tilo reorder controller;
@@ -272,28 +276,51 @@ impl QuickSettingsRoot {
             return rects;
         }
 
-        let mut rects = vec![
-            ("quick_settings_edit".into(), self.edit_rect()),
-            ("quick_settings_settings".into(), self.action(0)),
-            ("quick_settings_privacy".into(), self.action(1)),
-            ("quick_settings_history".into(), self.action(2)),
-            ("quick_settings_power".into(), self.action(3)),
-        ];
+        let mut rects = Vec::new();
         for (index, name) in ["brightness", "volume"].into_iter().enumerate() {
             let (bar, _) = self.slider_geometry_for(self.panel, index);
             rects.push((format!("quick_settings_{name}"), bar.inflate(6.0, 10.0)));
         }
         let controls = self.visible_controls(state);
-        rects.extend(controls.iter().enumerate().map(|(index, control)| {
-            (
-                format!("quick_settings_{}", Self::semantic_control_name(*control)),
-                self.control_card(self.panel, index, controls.len()),
-            )
-        }));
+        for (index, control) in controls.iter().copied().enumerate() {
+            let card = self.control_card(self.panel, index, controls.len());
+            let name = Self::semantic_control_name(control);
+            let primary = if Self::has_details(control, state) {
+                Rect::new(
+                    card.x0,
+                    card.y0,
+                    self.control_details_rect(card).x0,
+                    card.y1,
+                )
+            } else {
+                card
+            };
+            rects.push((format!("quick_settings_{name}"), primary));
+            if Self::has_details(control, state) {
+                rects.push((
+                    format!("quick_settings_{name}_details"),
+                    self.control_details_rect(card),
+                ));
+            }
+        }
         rects.push((
             "quick_settings_power_profile".into(),
             self.power_geometry(self.panel, state),
         ));
+        rects.extend([
+            (
+                "quick_settings_edit".into(),
+                self.utility(self.panel, state, 0),
+            ),
+            (
+                "quick_settings_settings".into(),
+                self.utility(self.panel, state, 1),
+            ),
+            (
+                "quick_settings_power".into(),
+                self.utility(self.panel, state, 2),
+            ),
+        ]);
         rects
     }
 
@@ -922,10 +949,10 @@ impl QuickSettingsRoot {
             // duplicates Done with an unexplained checkmark.
             self.edit_controls(state).len().saturating_add(2)
         } else {
-            // Edit, labeled destinations, Brightness, Volume, controls, power.
+            // Brightness, Volume, controls, power profile, then three utilities.
             Self::CONTROL_FOCUS_START
                 .saturating_add(self.visible_controls(state).len())
-                .saturating_add(1)
+                .saturating_add(4)
         };
         if count == 0 {
             return false;
@@ -982,23 +1009,6 @@ impl QuickSettingsRoot {
             }
             return RootAction::None;
         }
-        if i == 0 {
-            self.edit_mode = true;
-            // The normal root's index 0 is the Edit action; after the
-            // structural transition there is no longer an Edit control.
-            // Clear it so the next Tab starts at the first editable row.
-            self.keyboard_focus = None;
-            return RootAction::LayoutChanged;
-        }
-        if let Some(action) = match i {
-            1 => Some(RootAction::OpenSettings),
-            2 => Some(RootAction::Privacy),
-            3 => Some(RootAction::OpenNotifications),
-            4 => Some(RootAction::OpenPowerMenu),
-            _ => None,
-        } {
-            return action;
-        }
         let controls = self.visible_controls(state);
         if i == Self::SLIDER_FOCUS_START || i == Self::SLIDER_FOCUS_START + 1 {
             return RootAction::None;
@@ -1014,6 +1024,17 @@ impl QuickSettingsRoot {
         let base = Self::power_focus_index(controls.len());
         if i == base {
             return Self::cycle_power(state);
+        }
+        if i == base.saturating_add(1) {
+            self.edit_mode = true;
+            self.keyboard_focus = None;
+            return RootAction::LayoutChanged;
+        }
+        if i == base.saturating_add(2) {
+            return RootAction::OpenSettings;
+        }
+        if i == base.saturating_add(3) {
+            return RootAction::OpenPowerMenu;
         }
         RootAction::None
     }
@@ -1066,6 +1087,14 @@ impl QuickSettingsRoot {
         state: &mut QuickSettingsState,
         direction: f32,
     ) -> Option<SliderCommit> {
+        let available = match self.keyboard_focus? {
+            Self::SLIDER_FOCUS_START => state.brightness_available,
+            i if i == Self::SLIDER_FOCUS_START + 1 => state.volume_available,
+            _ => return None,
+        };
+        if !available {
+            return None;
+        }
         let value = match self.keyboard_focus? {
             Self::SLIDER_FOCUS_START => &mut state.brightness,
             i if i == Self::SLIDER_FOCUS_START + 1 => &mut state.volume,
@@ -1097,23 +1126,8 @@ impl QuickSettingsRoot {
         state: &mut QuickSettingsState,
     ) -> RootAction {
         self.panel = panel;
-        if !self.edit_mode && self.edit_rect().contains(point) {
-            self.edit_mode = !self.edit_mode;
-            self.keyboard_focus = Some(0);
-            return RootAction::LayoutChanged;
-        }
         if self.edit_mode {
             return self.edit_click(point, state);
-        }
-        for i in 0..Self::ACTION_COUNT {
-            if self.action(i).contains(point) {
-                return match i {
-                    0 => RootAction::OpenSettings,
-                    1 => RootAction::Privacy,
-                    2 => RootAction::OpenNotifications,
-                    _ => RootAction::OpenPowerMenu,
-                };
-            }
         }
         for i in 0..2 {
             let (bar, _) = self.slider_geometry_for(panel, i);
@@ -1154,6 +1168,17 @@ impl QuickSettingsRoot {
         }
         if self.power_geometry(panel, state).contains(point) {
             return Self::cycle_power(state);
+        }
+        if self.utility(panel, state, 0).contains(point) {
+            self.edit_mode = true;
+            self.keyboard_focus = None;
+            return RootAction::LayoutChanged;
+        }
+        if self.utility(panel, state, 1).contains(point) {
+            return RootAction::OpenSettings;
+        }
+        if self.utility(panel, state, 2).contains(point) {
+            return RootAction::OpenPowerMenu;
         }
         RootAction::None
     }
@@ -1201,6 +1226,10 @@ impl QuickSettingsRoot {
                 }
                 self.save_config();
                 return RootAction::LayoutChanged;
+            }
+            if present {
+                self.edit_drag.begin(c, i, point.y - row.y0, point);
+                return RootAction::None;
             }
             return RootAction::None;
         }
@@ -1291,6 +1320,7 @@ impl QuickSettingsRoot {
         // the tiles' own `raised` faces vanish into it.
         self.header(scene, transform, text, theme, cursor);
         if self.edit_mode {
+            self.header(scene, transform, text, theme, cursor, state);
             self.draw_edit(scene, transform, text, theme, cursor, state);
         } else {
             self.draw_root(scene, transform, text, theme, cursor, state);
@@ -1303,6 +1333,7 @@ impl QuickSettingsRoot {
         text: &mut TextRenderer,
         theme: &Theme,
         cursor: Option<Point>,
+        state: &QuickSettingsState,
     ) {
         let colors = &theme.tokens.colors;
         // Panel title (HIG §9.6): `scale.base` semibold, centred on the
@@ -1480,9 +1511,10 @@ impl QuickSettingsRoot {
                         state.volume
                     }),
                 )
-                .hovered(cursor.is_some_and(|p| face.contains(p)))
+                .hovered(available && cursor.is_some_and(|p| face.contains(p)))
                 .focused(self.keyboard_focus == Some(Self::SLIDER_FOCUS_START.saturating_add(i)))
-                .dragging(self.slider_drag == Some(i)),
+                .dragging(self.slider_drag == Some(i))
+                .disabled(!available),
             );
         }
         let controls = self.visible_controls(state);
@@ -1886,17 +1918,6 @@ impl QuickSettingsRoot {
                 .focused(self.keyboard_focus == Some(edit_count))
                 .accessible_name("Reset Quick Settings defaults"),
         );
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::new(done, "Done")
-                .primary()
-                .hovered(cursor.is_some_and(|p| done.contains(p)))
-                .focused(self.keyboard_focus == Some(edit_count.saturating_add(1)))
-                .accessible_name("Finish editing Quick Settings"),
-        );
     }
     /// The grip, label and add/remove button of an edit row, shared by the
     /// resting rows and the drag ghost so the two cannot drift apart. Every
@@ -2095,6 +2116,26 @@ impl QuickSettingsRoot {
                 self.power_geometry(self.panel, state),
             ));
         }
+        if !self.edit_mode {
+            root.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Power profile")
+                    .with_value(state.power_profile.label())
+                    .with_description("Activate to use the next power profile")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+            for name in [
+                "Customize Quick Settings",
+                "Open Settings",
+                "Open power menu",
+            ] {
+                root.children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
+        }
         if self.edit_mode {
             root.children.push(bounded(
                 AccessNode::new(Role::Button)
@@ -2114,11 +2155,8 @@ impl QuickSettingsRoot {
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         match path {
             [] => Some(self.panel),
-            [0] if !self.edit_mode => Some(self.edit_rect()),
-            [i] if !self.edit_mode => {
-                let action = i.checked_sub(1)?;
-                (action < Self::ACTION_COUNT).then(|| self.action(action))
-            }
+            [0] if !self.edit_mode => Some(self.slider_geometry_for(self.panel, 0).0),
+            [1] if !self.edit_mode => Some(self.slider_geometry_for(self.panel, 1).0),
             _ => None,
         }
     }
@@ -2148,8 +2186,6 @@ mod tests {
         for required in [
             "quick_settings_edit",
             "quick_settings_settings",
-            "quick_settings_privacy",
-            "quick_settings_history",
             "quick_settings_power",
             "quick_settings_brightness",
             "quick_settings_volume",
@@ -2284,7 +2320,7 @@ mod tests {
         );
     }
     #[test]
-    fn opening_has_no_hidden_focus_and_first_tab_selects_edit() {
+    fn opening_has_no_hidden_focus_and_first_tab_selects_brightness() {
         let mut root = QuickSettingsRoot::default();
         let state = QuickSettingsState::default();
         root.keyboard_focus = Some(4);
@@ -2295,35 +2331,29 @@ mod tests {
         assert_eq!(root.keyboard_focus, Some(0));
         assert_eq!(
             root.activate_focused(PANEL, &mut QuickSettingsState::default()),
-            RootAction::LayoutChanged
+            RootAction::None
         );
-        assert!(root.edit_mode());
-        assert_eq!(root.keyboard_focus, None);
+        assert!(!root.edit_mode());
+        assert_eq!(root.keyboard_focus, Some(0));
     }
     #[test]
     fn normal_focus_order_matches_visible_actions_and_accessibility_paths() {
         let mut root = QuickSettingsRoot::default();
         let mut state = QuickSettingsState::default();
 
-        assert!(root.focus_accessibility_path(&[0], &state));
-        assert_eq!(root.keyboard_focus, Some(0));
-        assert_eq!(
-            root.activate_focused(PANEL, &mut state),
-            RootAction::LayoutChanged
-        );
-        assert!(root.edit_mode());
-
-        root.edit_mode = false;
+        let utility_start =
+            QuickSettingsRoot::power_focus_index(root.visible_controls(&state).len()) + 1;
         for (path, expected) in [
-            (1, RootAction::OpenSettings),
-            (2, RootAction::Privacy),
-            (3, RootAction::OpenNotifications),
-            (4, RootAction::OpenPowerMenu),
+            (utility_start, RootAction::LayoutChanged),
+            (utility_start + 1, RootAction::OpenSettings),
+            (utility_start + 2, RootAction::OpenPowerMenu),
         ] {
             assert!(root.focus_accessibility_path(&[path], &state));
-            assert!(root.accessibility_rect_for_path(&[path]).is_some());
             assert_eq!(root.keyboard_focus, Some(path));
             assert_eq!(root.activate_focused(PANEL, &mut state), expected);
+            if path == utility_start {
+                root.edit_mode = false;
+            }
         }
     }
     #[test]
@@ -2495,7 +2525,7 @@ mod tests {
     fn edit_help_copy_uses_font_safe_keyboard_names() {
         assert_eq!(
             QuickSettingsRoot::EDIT_HELP_COPY,
-            "Drag rows to reorder · Ctrl + Up/Down"
+            "Drag to reorder · Ctrl + Up/Down"
         );
         assert!(!QuickSettingsRoot::EDIT_HELP_COPY.contains('↑'));
         assert!(!QuickSettingsRoot::EDIT_HELP_COPY.contains('↓'));
@@ -2514,6 +2544,31 @@ mod tests {
         assert!(action.y0 > row.y0 && action.y1 < row.y1);
     }
     #[test]
+    fn edit_row_body_reorders_and_only_explicit_action_removes() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        state.radios.wifi_available = true;
+        state.bluetooth_available = true;
+        root.edit_mode = true;
+        root.panel = PANEL;
+
+        let row = root.card(PANEL, 1, true);
+        let bluetooth = QuickSettingsControl::Bluetooth;
+        assert!(root.config.controls.contains(&bluetooth));
+        assert_eq!(
+            root.edit_click(Point::new(row.center().x, row.center().y), &state),
+            RootAction::None
+        );
+        assert!(root.config.controls.contains(&bluetooth));
+        let _ = root.finish_drag(&state);
+
+        assert_eq!(
+            root.edit_click(root.edit_action_rect(row).center(), &state),
+            RootAction::LayoutChanged
+        );
+        assert!(!root.config.controls.contains(&bluetooth));
+    }
+    #[test]
     fn odd_control_count_uses_a_balanced_full_width_last_card() {
         let panel = Rect::new(0., 48., 400., 520.);
         let root = QuickSettingsRoot::default();
@@ -2527,11 +2582,12 @@ mod tests {
         reason = "the touch-target test sets only the panel geometry on an otherwise default root fixture"
     )]
     #[test]
-    fn labelled_top_utilities_keep_independent_touch_targets() {
+    fn bottom_utilities_keep_independent_touch_targets() {
         let mut root = QuickSettingsRoot::default();
+        let state = QuickSettingsState::default();
         root.panel = Rect::new(0., 48., 400., 520.);
-        let actions: Vec<_> = (0..QuickSettingsRoot::ACTION_COUNT)
-            .map(|index| root.action(index))
+        let actions: Vec<_> = (0..3)
+            .map(|index| root.utility(root.panel, &state, index))
             .collect();
         for action in &actions {
             assert!(action.width() >= 44. && action.height() >= 44.);
@@ -2566,8 +2622,8 @@ mod tests {
         root.fit_root_layout_to_height(&state, 416.0);
         let height = root.preferred_height(&state);
         assert!(
-            height <= 416.0,
-            "root should not retain the old 432px sheet"
+            height <= 320.0,
+            "control-first root should stay materially below the old 416px panel"
         );
         let panel = Rect::new(0.0, 48.0, 400.0, 48.0 + height);
         root.panel = panel;
@@ -2580,7 +2636,7 @@ mod tests {
         let panel = Rect::new(0., 48., 400., 520.);
         root.panel = panel;
         assert_eq!(
-            root.handle_click(root.action(3).center(), panel, &mut state),
+            root.handle_click(root.utility(panel, &state, 2).center(), panel, &mut state),
             RootAction::OpenPowerMenu
         );
     }

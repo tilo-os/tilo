@@ -82,6 +82,20 @@ pub struct RegistryImage {
 pub struct LocalizedImages(pub BTreeMap<String, Vec<RegistryImage>>);
 
 impl LocalizedImages {
+    /// A complete English artwork set for a simple product card or a test
+    /// fixture. Publishers may instead provide locale-aware artwork or no
+    /// artwork at all when their app is headless.
+    pub fn english_icon(url: impl Into<String>, alt: impl Into<String>) -> Self {
+        Self(BTreeMap::from([(
+            "en".into(),
+            vec![RegistryImage {
+                kind: RegistryImageKind::Icon,
+                url: url.into(),
+                alt: alt.into(),
+            }],
+        )]))
+    }
+
     pub fn resolve(&self, language: &str) -> &[RegistryImage] {
         self.0
             .get(language)
@@ -592,6 +606,19 @@ mod tests {
             entry.validate(),
             Err(EntryValidationError::InvalidLocalizedValue { field: "name" })
         ));
+
+        entry = sample_entry();
+        entry.images = LocalizedImages::english_icon(
+            "https://cdn.example.invalid/icon.svg",
+            "Third-party icon",
+        );
+        entry.source_url = Some("https://example.invalid/tilo".into());
+        entry.homepage = Some("https://another.example.invalid/product".into());
+        assert_eq!(entry.validate(), Ok(()));
+
+        entry = sample_entry();
+        entry.images = LocalizedImages::default();
+        assert_eq!(entry.validate(), Ok(()));
     }
 
     #[test]
