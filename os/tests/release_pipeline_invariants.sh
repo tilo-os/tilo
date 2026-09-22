@@ -110,6 +110,7 @@ if grep -Fq 'apt_firmware=qemu-efi-aarch64' "$kernel_workflow" \
    && grep -Fq 'zstd dosfstools mtools "$apt_qemu" "$apt_firmware"' "$kernel_workflow" \
    && grep -Fq 'zstd dosfstools mtools "$fedora_qemu" "$fedora_firmware"' "$kernel_workflow" \
    && grep -Fq '/usr/share/edk2/ovmf /usr/share/OVMF' "$repo/os/tests/secureboot_vm_probe.sh" \
+   && grep -Fq "expect_log 'TILO_SECURE_BOOT_ENROLL_PASS'" "$repo/os/tests/secureboot_vm_probe.sh" \
    && grep -Fq 'export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"' "$repo/os/kernel/tests/test-rpm.sh" \
    && grep -Fq 'command -v modinfo >/dev/null' "$repo/os/kernel/tests/test-rpm.sh" \
    && grep -Fq 'modinfo -F name' "$repo/os/kernel/tests/test-rpm.sh"; then
