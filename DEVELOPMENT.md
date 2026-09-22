@@ -1143,7 +1143,8 @@ Then log out and pick **"Tilo (my build)"**. Every iteration after that is
 file keeps pointing at the same path.
 
 `--features dev-session` adds the marker required by `/usr/libexec/tilo-session-dev`.
-Release builds omit this marker even with the feature enabled. The config file,
+Release builds omit this marker even with the feature enabled, unless they also
+enable `dev-overrides`. The config file,
 target binary and their parent directories must be owned by you or root and
 writable by nobody else. Failed checks abort startup without falling back to
 the installed compositor. `dist/session/tests/dev-session-refusals.sh` tests
@@ -1193,10 +1194,18 @@ $ printf 'not-the-password\n' | /usr/libexec/tilo-unlock-helper "$USER"; echo $?
 
 Release builds ignore `TILO_UNLOCK_HELPER`,
 `TILO_LOCK_TEST_PASSWORD`, `TILO_TEST_CONTROL`, `TILO_TEST_STATE_DUMP` and
-`TILO_LAUNCHER_BIN`. On a systemd desktop the session environment comes from
-`~/.config/environment.d/`, so an installed binary that honoured those would let
-anything able to write a file in your home decide what unlocks your screen. See
+`TILO_LAUNCHER_BIN`, and say so on stderr at startup when one is set. On a
+systemd desktop the session environment comes from `~/.config/environment.d/`,
+so an installed binary that honoured those would let anything able to write a
+file in your home decide what unlocks your screen. See
 `crates/session/shell/src/compositor/dev_env.rs`.
+
+Dev images need release-speed binaries that harnesses can still drive; build
+those with `cargo build --release -p shell --features dev-overrides`. Such a
+binary honours the variables above and announces itself as a dev-overrides
+build at startup. It must never ship: `tools/policy/check_dev_overrides_contract.py`
+fails if a production `os/Containerfile*` enables `dev-overrides` or
+`dev-session`.
 
 
 ## Headless testing
