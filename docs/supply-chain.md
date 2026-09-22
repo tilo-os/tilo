@@ -162,7 +162,10 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   on native x86-64 and ARM64 runners, checks the runner architecture, signs
   each digest through the non-exportable release key, and advances both pins
   in `os/kernel-snapshot.env` atomically only after both native jobs verify and
-  a source-input race check passes. OS CI selects the matching pin, verifies
+  source-input race checks pass. Promotion creates a deterministic,
+  snapshot-bound automation branch and pull request rather than bypassing
+  protected `main`; normal required checks and merge policy remain
+  authoritative. OS CI selects the matching pin, verifies
   its Cosign signature, OCI architecture, and SLSA source/base/RPM provenance
   before BuildKit can consume it,
   and binds both kernel digests into the signed multi-architecture release
