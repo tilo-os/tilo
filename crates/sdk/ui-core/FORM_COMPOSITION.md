@@ -40,7 +40,7 @@ let form = Form::new()
 
 An explicit Field placement wins the nearest FormSection/Form region choice, then the automatic pattern. An explicit spacing value is independent of density, including when inherited from Form. Removing the spacing override restores the appropriate density's theme gap. Forced `Beside` stays beside even in insufficient space; authors own this deliberate constraint and can inspect the required width. Standard children retain their explicit dimensions and may overflow when those dimensions exceed available space.
 
-`Widget::layout_info()` and concrete read-only `effective_layout()` methods expose resolved values and their Theme/Pattern/Form/FormSection/Field/Page origins. Field information also includes actual available width, required beside width and resolved placement. Values are available after build/settlement. The inspection UI and JSON integration are a later task.
+`Widget::layout_info()` and concrete read-only `effective_layout()` methods expose resolved values and their Theme/Pattern/Form/Section/Field/Page origins. Field information also includes actual available width, required beside width and resolved placement. Values are available after build/settlement through `FrameHarness::inspection()` / `inspection_json()` and the qos-dev inspection flow; see [Manual layout](MANUAL_LAYOUT.md#existing-preview-and-inspection).
 
 Manual hosts should use `compute_widget_layout`; App and FrameHarness already do. The renderer-aware adjustment hook measures owned children through normal references and callback bindings. It does not create another layout tree, replace retained children, or establish geometry during painting.
 
@@ -75,4 +75,4 @@ The equivalent primitive fixture has the same content, controls, order, themed p
 
 `account`/`automatic` supply none of those 16 composition settings: **zero caller layout pixel values and zero viewport branches**. The guided source adds **two selected decisions**, compact density and labels above. Both paths use shared Actions, so its internal button sizing/alignment is not counted as a primitive-only decision.
 
-This inventory records the source decisions in the fixture. Existing applications, including Store, are unchanged; adopting these forms is an explicit application change. General manual placement, mixed-mode fixtures, inspector UI and scaffolding remain separate work.
+This is a reproducible source-decision inventory, not measured developer time, human visual acceptance, or a productivity ratio. Application adoption is explicit: Store now uses content-sized cards and shared Actions, while form adoption remains a choice for each appropriate region. For shared child measurement, exact placement, mixed fixtures, existing inspector metadata, and the automatic starter scaffold, see [Manual layout](MANUAL_LAYOUT.md).

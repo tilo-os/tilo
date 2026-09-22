@@ -48,11 +48,27 @@ impl App {
                 &self.layout.taffy,
             ));
         }
+        let exported = self.bindings.exported_nodes(&self.layout.node_map);
+        if self.history.is_some() {
+            let root = FrameworkPresentation {
+                roots: self.history_presentation_roots(),
+                layout_root: self
+                    .layout
+                    .root_node
+                    .ok_or("History presentation requires layout")?,
+            };
+            return Ok(visit(
+                &root,
+                &exported.nodes,
+                exported.focus(self.focused_node),
+                &self.layout.taffy,
+            ));
+        }
         let Some(layout) = self.history_layout else {
             return Ok(visit(
                 self.root_widget.as_ref(),
-                &self.layout.node_map,
-                self.focused_node,
+                &exported.nodes,
+                exported.focus(self.focused_node),
                 &self.layout.taffy,
             ));
         };
@@ -89,8 +105,8 @@ impl App {
             .with_presentation(&context, self.root_widget.as_ref(), layout, rect, |root| {
                 visit(
                     root,
-                    &self.layout.node_map,
-                    self.focused_node,
+                    &exported.nodes,
+                    exported.focus(self.focused_node),
                     &self.layout.taffy,
                 )
             })
@@ -108,6 +124,10 @@ impl App {
             *handled = true;
             return true;
         }
+        if self.history_controls_event(event, scale) {
+            *handled |= self.dispatch_framework_history_event(event, scale);
+            return *handled;
+        }
         self.history_handle_event(event, scale, handled, focus);
         let history_handled = *handled
             || (matches!(
@@ -118,10 +138,19 @@ impl App {
                 .is_some_and(|node| self.is_history_node(node)));
         if !*handled
             && !history_handled
+            && self
+                .history
+                .as_ref()
+                .is_none_or(|history| history.live_interactive())
             && self.history_layout.is_none_or(|layout| layout.app_visible)
             && let Some(root) = self
                 .history_layout
                 .map(|layout| layout.app)
+                .or_else(|| {
+                    self.history
+                        .as_ref()
+                        .and_then(|history| history.live_layout_node())
+                })
                 .or(self.layout.root_node)
         {
             self.root_widget.handle_event(
@@ -351,6 +380,36 @@ impl App {
             return;
         }
 
+        let width = self.layout.last_layout_logical.map_or(900.0, |size| size.0);
+        self.refresh_framework_history(width);
+        let status = self.document_sync_status().map(str::to_owned);
+        crate::history_mode::embedded::refresh(
+            self.root_widget.as_mut(),
+            &self.state.doc,
+            width,
+            status.as_deref(),
+        );
+        if let Some(history) = &mut self.history {
+            self.history_layout = None;
+            let root = history.build_composition(
+                self.root_widget.as_mut(),
+                &mut self.layout.taffy,
+                &self.theme,
+                &mut self.layout.node_map,
+            );
+            self.layout.root_node = Some(root);
+            // SAFETY: App owns this settled composition and its retained live root.
+            unsafe {
+                self.bindings.rebuild_with_retained_root(
+                    history.as_ref(),
+                    Some(self.root_widget.as_ref()),
+                    &self.layout.taffy,
+                    root,
+                    &self.layout.node_map,
+                );
+            }
+            return;
+        }
         let app = self.root_widget.build_layout(
             &mut self.layout.taffy,
             &self.theme,
@@ -414,6 +473,15 @@ impl App {
     }
 
     pub(super) fn apply_history_presentation(&mut self, root: taffy::NodeId) {
+        if let Some(history) = &mut self.history {
+            history.apply_composition(
+                self.root_widget.as_mut(),
+                &self.layout.taffy,
+                root,
+                vello::kurbo::Point::ORIGIN,
+            );
+            return;
+        }
         if let Some(layout) = self.history_layout {
             let origin = self.document_history.apply_layout(
                 layout,
@@ -627,6 +695,13 @@ impl App {
     /// Enable shared standalone services presentation without wrapping the app
     /// root. Native windows enable this automatically; embedding remains opt-in.
     pub fn enable_document_history_chrome(&mut self) {
+        // A registered framework owner already supplies its own shared History
+        // surface and custody. The standalone adapter serves unregistered roots.
+        if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+        {
+            return;
+        }
         self.history_chrome_enabled = true;
         self.document_history.enable_search(self.input.platform);
         self.remember_history_content();
@@ -1110,5 +1185,59 @@ mod tests {
                 .as_deref(),
             Some("standalone-history")
         );
+    }
+}
+
+/// Immutable projection used only while traversing an owned framework composition.
+struct FrameworkPresentation<'a> {
+    roots: Vec<&'a dyn Widget>,
+    layout_root: taffy::NodeId,
+}
+impl Widget for FrameworkPresentation<'_> {
+    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
+    fn build_layout(
+        &mut self,
+        _: &mut taffy::TaffyTree<()>,
+        _: &crate::Theme,
+        _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        self.layout_root
+    }
+    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
+    }
+    fn draw(
+        &mut self,
+        _: &mut vello::Scene,
+        _: vello::kurbo::Affine,
+        _: &mut crate::text_render::TextRenderer,
+        _: &crate::Theme,
+        _: &crate::presence::PresenceCtx,
+    ) {
+    }
+    fn handle_event(
+        &mut self,
+        _: &winit::event::WindowEvent,
+        _: f64,
+        _: &winit::event::Modifiers,
+        _: &mut automerge::AutoCommit,
+        _: &automerge::ObjId,
+        _: &mut bool,
+        _: &mut Option<taffy::NodeId>,
+        _: taffy::NodeId,
+        _: &taffy::TaffyTree<()>,
+    ) {
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.roots.clone()
+    }
+    fn name(&self) -> &'static str {
+        "FrameworkHistoryPresentation"
+    }
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        self.roots
+            .iter()
+            .map(|root| root.get_rect())
+            .reduce(|left, right| left.union(right))
+            .unwrap_or_default()
     }
 }

@@ -1,0 +1,325 @@
+//! X1 regression: text is scaled exactly once.
+//!
+//! Theme typography already carries the accessibility text scale and the
+//! legacy size-based `TextRenderer` APIs multiply by the renderer's scale
+//! again, so a widget that hands them a theme size paints 4× glyphs at 200 %.
+//! `tilo_ui::text_metrics::renderer_type_size` divides once; this test pins the
+//! migrated widgets to that contract two ways:
+//!
+//! - through the shared `FrameHarness` (theme *and* renderer scaled, as the
+//!   live host does): the label ink of each widget grows by the expected
+//!   factor between 1× and 2× text scale — 2× for theme-sized labels, never
+//!   4×; and 1× for labels that are sized by their own geometry (an avatar's
+//!   initials fill a disc the app laid out, so they must not outgrow it);
+//! - for the immediate-mode painters, on the glyph runs they encode: every
+//!   run's font size at 2× is exactly the expected multiple of its 1× size.
+//!
+//! PNGs land in `target/ui-review/ui/x1_fixture/<X1_FIXTURE_TAG>/` so the
+//! same run doubles as visual evidence.
+
+use std::path::PathBuf;
+
+use tilo_ui::State;
+use tilo_ui::headless::{FrameHarness, InspectionNode};
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{
+    Avatar, Breadcrumb, Chip, ChipLead, ChipStyle, Column, Element, ShortcutRecorder,
+};
+use vello::Scene;
+use vello::kurbo::{Affine, Rect};
+use vello::peniko::Color;
+
+fn out_dir() -> PathBuf {
+    let tag = std::env::var("X1_FIXTURE_TAG").unwrap_or_else(|_| "current".into());
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/ui-review/ui/x1_fixture")
+        .join(tag);
+    std::fs::create_dir_all(&dir).expect("fixture output directory");
+    dir
+}
+
+struct Capture {
+    harness: FrameHarness,
+    image: image::RgbaImage,
+}
+
+/// Stand `root` up at `scale` with the theme and the renderer scaled together,
+/// exactly as `FrameHarness::new_with_theme` does for the live host.
+fn capture(name: &str, root: Element, viewport: (u32, u32), scale: f32) -> Capture {
+    let harness = FrameHarness::new_with_theme(
+        State::new(),
+        root,
+        viewport,
+        Theme::dark().with_text_scale(scale),
+    );
+    let path = out_dir().join(format!("{name}-{scale}x.png"));
+    harness.render_window_png(&path);
+    let image = image::open(&path)
+        .unwrap_or_else(|e| panic!("decode {}: {e}", path.display()))
+        .to_rgba8();
+    Capture { harness, image }
+}
+
+fn rect(node: &InspectionNode) -> Rect {
+    let [x, y, w, h] = node.rect;
+    Rect::new(x, y, x + w, y + h)
+}
+
+fn find<'a>(node: &'a InspectionNode, widget: &str) -> &'a InspectionNode {
+    fn walk<'a>(node: &'a InspectionNode, widget: &str) -> Option<&'a InspectionNode> {
+        if node.widget == widget {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| walk(child, widget))
+    }
+    walk(node, widget).unwrap_or_else(|| panic!("no {widget} in the inspection tree"))
+}
+
+fn luma(p: [u8; 4]) -> f64 {
+    0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2])
+}
+
+fn pixels(
+    image: &image::RgbaImage,
+    region: Rect,
+) -> impl Iterator<Item = (u32, u32, [u8; 4])> + '_ {
+    let x0 = region.x0.max(0.0).floor() as u32;
+    let y0 = region.y0.max(0.0).floor() as u32;
+    let x1 = (region.x1.ceil() as u32).min(image.width());
+    let y1 = (region.y1.ceil() as u32).min(image.height());
+    (y0..y1).flat_map(move |y| (x0..x1).map(move |x| (x, y, image.get_pixel(x, y).0)))
+}
+
+/// Luma above which a dark-theme pixel is label ink. `text_primary` (~230)
+/// and `text_dim` (~160) and the on-fill ink are all above it; the accent
+/// pills and discs the labels sit on stay below ~130, the ground below 30,
+/// so this floor keeps the capsule, disc and hairline out of the box even
+/// where a 2× label overhangs its fixed-height pill onto the ground.
+const INK_LUMA: f64 = 140.0;
+
+/// Bounding box of the label ink inside `region`.
+fn ink(image: &image::RgbaImage, region: Rect) -> Rect {
+    let floor = INK_LUMA;
+    let mut bbox: Option<Rect> = None;
+    for (x, y, p) in pixels(image, region) {
+        if luma(p) > floor {
+            let px = Rect::new(
+                f64::from(x),
+                f64::from(y),
+                f64::from(x + 1),
+                f64::from(y + 1),
+            );
+            bbox = Some(bbox.map_or(px, |b| b.union(px)));
+        }
+    }
+    bbox.unwrap_or_else(|| panic!("no ink in {region:?}"))
+}
+
+/// Ink grows by `expected` between 1× and 2×: ~2× for theme-sized text (the
+/// renderer scales once, so never ~4×), ~1× for geometry-sized text.
+///
+/// The band is wide because a luma floor under-counts the thin strokes of
+/// 12 px glyphs by a pixel or two more than it does 24 px ones; a
+/// double-scaled label reads ~4×, far outside either band.
+fn assert_ink_scaled(what: &str, base: Rect, large: Rect, expected: f64) {
+    let ratio = large.height() / base.height();
+    let (lo, hi) = (expected * 0.75, expected * 1.45);
+    assert!(
+        (lo..=hi).contains(&ratio),
+        "{what}: ink height {:.1} -> {:.1} (x{ratio:.2}) must grow by ~{expected}x between 1x and 2x text",
+        base.height(),
+        large.height()
+    );
+}
+
+fn column(children: Vec<Element>) -> Element {
+    let mut col = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(16.0);
+    for child in children {
+        col = col.push(child);
+    }
+    Box::new(col)
+}
+
+/// One migrated retained widget per row: the inspection name the harness
+/// reports for it, how to build it, and how its label must grow between 1×
+/// and 2× text.
+fn retained_widgets() -> Vec<(&'static str, fn() -> Element, f64)> {
+    vec![
+        (
+            "Breadcrumb",
+            || {
+                Box::new(Breadcrumb::new(vec![
+                    "Home".into(),
+                    "Documents".into(),
+                    "Reports".into(),
+                ]))
+            },
+            2.0,
+        ),
+        (
+            "ShortcutRecorder",
+            || Box::new(ShortcutRecorder::new("x1", "shortcut", "Ctrl+K", "Ctrl+K")),
+            2.0,
+        ),
+        // Initials are 0.4× the disc the app laid out: geometry, not type.
+        (
+            "Avatar",
+            || Box::new(Avatar::from_initials("AB", 40.0)),
+            1.0,
+        ),
+    ]
+}
+
+#[test]
+fn retained_widget_labels_follow_the_text_scale_once_through_the_harness() {
+    for (widget, build, expected) in retained_widgets() {
+        let mut label_ink = Vec::new();
+        for scale in [1.0_f32, 2.0] {
+            let cap = capture(widget, column(vec![build()]), (360, 200), scale);
+            let band = rect(find(&cap.harness.inspection().root, widget));
+            assert!(
+                band.width() > 0.0 && band.height() > 0.0,
+                "{widget}: empty layout rect {band:?}"
+            );
+            // A theme-sized label may overhang a fixed-height pill at 2×; the
+            // probe follows the ink, not the box.
+            let probe = band.inflate(4.0, 12.0);
+            label_ink.push(ink(&cap.image, probe));
+        }
+        assert_ink_scaled(widget, label_ink[0], label_ink[1], expected);
+    }
+}
+
+type Painter = dyn Fn(&mut Scene, &mut TextRenderer, &Theme);
+
+/// Font sizes of every glyph run `paint` encodes at `scale`, theme and
+/// renderer scaled together.
+fn glyph_sizes(scale: f32, paint: &Painter) -> Vec<f32> {
+    let theme = Theme::dark().with_text_scale(scale);
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(scale);
+    let mut scene = Scene::new();
+    paint(&mut scene, &mut tr, &theme);
+    let sizes: Vec<f32> = scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .iter()
+        .map(|run| run.font_size)
+        .collect();
+    assert!(
+        !sizes.is_empty(),
+        "the painter encoded no glyph runs at {scale}x"
+    );
+    sizes
+}
+
+fn assert_runs_scale(what: &str, paint: &Painter, expected: f32) {
+    let base = glyph_sizes(1.0, paint);
+    let large = glyph_sizes(2.0, paint);
+    assert_eq!(
+        base.len(),
+        large.len(),
+        "{what}: the same text must be encoded at both scales"
+    );
+    for (b, l) in base.iter().zip(&large) {
+        assert!(
+            (l - expected * b).abs() < 0.01,
+            "{what}: glyph run {b} px at 1x became {l} px at 2x; expected {}",
+            expected * b
+        );
+    }
+}
+
+#[test]
+fn immediate_mode_painters_encode_glyphs_at_the_text_scale_once() {
+    let painters: Vec<(&str, Box<Painter>, f32)> = vec![
+        (
+            // Theme-sized label in a pill the host lays out at the control
+            // step: the label follows the text scale once.
+            "Chip::draw_at",
+            Box::new(|scene, tr, theme| {
+                Chip::draw_at(
+                    scene,
+                    Affine::IDENTITY,
+                    Rect::new(0.0, 0.0, 160.0, 28.0),
+                    "Design review",
+                    ChipLead::None,
+                    ChipStyle::default(),
+                    theme,
+                    tr,
+                );
+            }),
+            2.0,
+        ),
+        (
+            // Renderer-relative contract: an app that wants the theme's
+            // control-label size divides it once, as documented on
+            // `pill_size`; the pill then paints it scaled once.
+            "status_bubble::draw_pill",
+            Box::new(|scene, tr, theme| {
+                let size =
+                    tilo_ui::text_metrics::renderer_type_size(tr, theme.tokens.typography.scale.sm);
+                let (w, h) = tilo_ui::status_bubble::pill_size("Syncing", tr, size, 0.0);
+                tilo_ui::status_bubble::draw_pill(
+                    scene,
+                    Affine::IDENTITY,
+                    tr,
+                    theme,
+                    Rect::new(0.0, 0.0, w, h),
+                    "Syncing",
+                    size,
+                );
+            }),
+            2.0,
+        ),
+        (
+            // Initials are sized from the disc, so they stay put when only
+            // the text scale changes — they used to grow out of it.
+            "Avatar::draw_at",
+            Box::new(|scene, tr, theme| {
+                Avatar::draw_at(
+                    scene,
+                    Affine::IDENTITY,
+                    Rect::new(0.0, 0.0, 40.0, 40.0),
+                    "AB",
+                    Color::from_rgb8(0x3b, 0x82, 0xf6),
+                    theme,
+                    tr,
+                );
+            }),
+            1.0,
+        ),
+    ];
+    for (what, paint, expected) in &painters {
+        assert_runs_scale(what, paint.as_ref(), *expected);
+    }
+}
+
+/// The helper itself: the size-only twin of `renderer_input_style`.
+#[test]
+fn renderer_type_size_is_the_size_only_twin_of_renderer_input_style() {
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(2.0);
+    let resolved = Theme::dark()
+        .with_text_scale(2.0)
+        .tokens
+        .typography
+        .scale
+        .base;
+    let via_style = tr
+        .renderer_input_style(&tilo_ui::text_render::TextStyle::new(resolved))
+        .size;
+    assert_eq!(
+        tilo_ui::text_metrics::renderer_type_size(&tr, resolved),
+        via_style
+    );
+    assert_eq!(
+        tilo_ui::text_metrics::renderer_type_size(&tr, resolved),
+        14.0
+    );
+}

@@ -2124,8 +2124,8 @@ impl Widget for GroupRow {
         let own = std::mem::take(&mut self.structure_dirty);
         #[allow(
             clippy::unnecessary_fold,
-            reason = "all child dirty flags must be drained without short-circuiting"
-        )]
+            reason = "Every group must clear its structure-dirty flag even when an earlier group already reported a change."
+        )] // see comment above: must not short-circuit
         let children = self
             .groups
             .iter_mut()
@@ -2403,10 +2403,19 @@ impl GroupRow {
         if self.groups.is_empty() {
             return;
         }
+        // At either end the capsule sits where the next inter-group gap
+        // would open — half a handle slot outside the outermost card — so
+        // an end insertion is marked at the same distance from its
+        // neighbour as a middle one.
+        let end_offset = HANDLE_SLOT_PX / 2.0;
         let gap_x = if ins == 0 {
-            self.groups.first().map_or(0.0, |g| g.get_rect().x0 - 5.0)
+            self.groups
+                .first()
+                .map_or(0.0, |g| g.get_rect().x0 - end_offset)
         } else if ins >= self.groups.len() {
-            self.groups.last().map_or(0.0, |g| g.get_rect().x1 + 5.0)
+            self.groups
+                .last()
+                .map_or(0.0, |g| g.get_rect().x1 + end_offset)
         } else {
             let left = self
                 .groups
@@ -2421,7 +2430,9 @@ impl GroupRow {
         if y1 <= y0 {
             return;
         }
-        let thickness = 4.0;
+        // Twice the idle handle rule, so the insertion mark reads as the
+        // gap "opening" rather than as another handle.
+        let thickness = 2.0 * super::resize_handle::HANDLE_VISIBLE_PX;
         let capsule = RoundedRect::from_rect(
             Rect::new(gap_x - thickness / 2.0, y0, gap_x + thickness / 2.0, y1),
             thickness / 2.0,

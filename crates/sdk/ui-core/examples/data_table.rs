@@ -100,7 +100,7 @@ fn build() -> (DataTable<Proc>, TaffyTree<()>, NodeId) {
     let mut table = DataTable::new(columns());
     table.set_rows(rows());
 
-    let theme = Theme::dark();
+    let theme = shot_theme();
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut tr = TextRenderer::new();
@@ -148,7 +148,7 @@ fn build() -> (DataTable<Proc>, TaffyTree<()>, NodeId) {
 
 fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: &Path) -> Option<Rect> {
     table.set_scroll_y(scroll_y);
-    let theme = Theme::dark();
+    let theme = shot_theme();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
 
@@ -226,4 +226,16 @@ pub fn run(_args: &[String]) {
         bottom.y1,
     );
     println!("OK: thumb tracks the offset");
+}
+
+/// `QOS_SHOTS_THEME` picks the palette (`dark` by default) and
+/// `QOS_SHOTS_TEXT_SCALE` the text scale — the switches every app's `--shots`
+/// honours through `tilo_ui::launch::shot_theme`, whose `LaunchArgs` an example
+/// cannot construct. An unknown theme name is an error, never a silent dark
+/// shot: a capture that cannot observe its subject must fail.
+fn shot_theme() -> Theme {
+    tilo_ui::launch::shot_theme_from_env().unwrap_or_else(|error| {
+        eprintln!("ui-shots: {error}");
+        std::process::exit(2)
+    })
 }

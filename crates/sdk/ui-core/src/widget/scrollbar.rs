@@ -23,6 +23,10 @@
 
 use crate::color_compat::ColorCompat;
 use vello::kurbo::{Point, Rect};
+use vello::peniko::Color;
+
+use crate::theme::Theme;
+use crate::widget::data_table::tier_on;
 
 /// Minimum thumb length (logical px) so a near-infinite content still
 /// leaves a grabbable target.
@@ -35,6 +39,33 @@ pub const PAGE_FRACTION: f64 = 0.9;
 /// axis before it is considered scrollable — otherwise the content
 /// "fits" and the bar should be hidden entirely.
 pub const FIT_EPS: f64 = 0.5;
+
+/// Alpha of an idle thumb, derived against the theme's base surface (HIG
+/// §9.5). A declared `border_standard` thumb is three shades off the dark
+/// base and vanishes; a derived wash registers on every palette, and on a
+/// near-black one it takes the tier gain (`data_table::tier_on`).
+pub const THUMB_IDLE_ALPHA: u8 = 72;
+
+/// Alpha of the track behind a pinned or expanded bar — the faintest
+/// derived tier, so the track reads as a groove and not a second thumb.
+pub const TRACK_ALPHA: u8 = 13;
+
+/// The thumb's fill: `text_dim` while hovered, dragged or focused, else a
+/// derived wash on the base surface. One answer for every scroll owner.
+#[must_use]
+pub fn thumb_color(theme: &Theme, active: bool) -> Color {
+    if active {
+        theme.tokens.colors.text_dim
+    } else {
+        tier_on(theme.tokens.colors.surfaces.base, THUMB_IDLE_ALPHA)
+    }
+}
+
+/// The track's fill behind an expanded bar, derived against the base surface.
+#[must_use]
+pub fn track_color(theme: &Theme) -> Color {
+    tier_on(theme.tokens.colors.surfaces.base, TRACK_ALPHA)
+}
 
 /// The scroll geometry along one axis, all lengths in logical px.
 ///

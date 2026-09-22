@@ -648,7 +648,7 @@ struct Parked {
 
 /// The records one app process has open, and which is live. Owns
 /// per-record persistence and parking — not collaboration: routing a
-/// record's deltas is the toolkit's business (`ui::App` re-announces its
+/// record's deltas is the toolkit's business (`tilo_ui::App` re-announces its
 /// channel on checkout), since a channel is a property of the connection.
 pub struct RecordSet {
     package_id: String,
@@ -1105,6 +1105,14 @@ impl RecordSet {
         &mut self,
         want: &RecordCheckout,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
+        self.try_open_record_with_recovery(want, true)
+    }
+
+    fn try_open_record_with_recovery(
+        &mut self,
+        want: &RecordCheckout,
+        recover_partial: bool,
+    ) -> Result<RecordOpenOutcome, RecordOpenError> {
         let directory = self.canonical_directory(want)?;
         if self.pending.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
@@ -1115,9 +1123,12 @@ impl RecordSet {
             return Ok(RecordOpenOutcome::AlreadyOpen);
         }
         let mut store = app_state::DocStore::open_canonical_at(&self.package_id, &directory)?;
-        let loaded = store
-            .load_canonical()?
-            .ok_or(RecordOpenError::MissingRecord)?;
+        let loaded = if recover_partial {
+            store.load_canonical()?
+        } else {
+            store.load_canonical_complete()?
+        }
+        .ok_or(RecordOpenError::MissingRecord)?;
         validate_identity(loaded.document(), want, &self.home)?;
         let mut doc = store.accept_canonical(loaded)?;
         let owner = std::sync::Arc::new(store);
@@ -1362,6 +1373,8 @@ pub enum RecordOpenError {
     MissingRecord,
     #[error("record is reserved or already initialized")]
     Busy,
+    #[error("the new record identity already exists or is reserved")]
+    AlreadyExists,
     #[error("record initialization failed: {0}")]
     Initialization(String),
 }
@@ -1506,6 +1519,37 @@ impl RecordStore {
         revision
     }
 
+    /// Schedule this already committed History result through its existing writer.
+    /// Do not sweep or close unrelated owners' unfinished edits.
+    pub(crate) fn schedule_committed_history(&self, id: &RecordId) {
+        let Ok(mut set) = self.0.try_borrow_mut() else {
+            return;
+        };
+        let Some(slot) = set.open.get_mut(id) else {
+            return;
+        };
+        if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut())
+            && doc.pending_ops() == 0
+        {
+            saver.request(doc);
+        }
+    }
+
+    /// Captured storage identity for History; never samples ambient launch scope.
+    pub(crate) fn history_namespace(
+        &self,
+        id: &RecordId,
+    ) -> Result<(Option<PathBuf>, String, String), RecordOpenError> {
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
+        let storage = set.canonical_root.clone().or_else(|| {
+            parked
+                .autosave
+                .as_ref()
+                .map(|save| save.document_path().to_path_buf())
+        });
+        Ok((storage, set.package_id.clone(), set.home.clone()))
+    }
     /// Explicit immutable identity only; legacy and memory stores have no canonical namespace.
     pub(crate) fn canonical_namespace(&self) -> Option<(PathBuf, String, String)> {
         let set = self.0.borrow();
@@ -1609,6 +1653,37 @@ impl RecordStore {
             .and_then(app_state::Autosave::last_error)
     }
 
+    /// Close/retry one actual owner without settling another record's edit.
+    pub(crate) fn try_flush_record(&self, id: &RecordId) -> Result<(), String> {
+        let mut set = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| "record store is busy".to_string())?;
+        let canonical = set.canonical_root.is_some();
+        let slot = set
+            .open
+            .get_mut(id)
+            .ok_or_else(|| format!("{id}: record is not open"))?;
+        let doc = slot
+            .doc
+            .as_mut()
+            .ok_or_else(|| format!("{id}: record is busy"))?;
+        let Some(saver) = &mut slot.autosave else {
+            return Ok(());
+        };
+        if canonical && saver.last_error().is_some() {
+            saver
+                .try_restart_canonical()
+                .map_err(|error| format!("{id}: {error}"))?;
+            slot.action_state.commit_for_save(doc);
+            saver.request_checkpoint(doc);
+        } else {
+            slot.action_state.commit_for_save(doc);
+            saver.request(doc);
+        }
+        saver.try_flush().map_err(|error| format!("{id}: {error}"))
+    }
+
     /// Request current changes once and await actual acknowledgements for every record.
     ///
     /// # Errors
@@ -1638,18 +1713,230 @@ impl RecordStore {
         self.0.borrow_mut().open_record(want, None)
     }
 
+    /// Create exactly the new resource named by its owning action. Reopening
+    /// existing tabs must use existing-only admission instead.
+    ///
+    /// # Errors
+    /// Refuses existing identities, unavailable persistence, and invalid scope.
+    pub fn create_record(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
+        let canonical = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| RecordOpenError::Busy)?
+            .canonical_root
+            .is_some();
+        if canonical {
+            return self
+                .reserve_record(want)
+                .and_then(|mut reservation| reservation.initialize(|_| Ok(())))
+                .map_err(|error| match error {
+                    RecordOpenError::Busy => RecordOpenError::AlreadyExists,
+                    other => other,
+                });
+        }
+        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+        if set.open.contains_key(&want.id) {
+            return Err(RecordOpenError::AlreadyExists);
+        }
+        if want.kind.as_str().is_empty() || (set.persistent && set.home.is_empty()) {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        let owner = if set.persistent {
+            let mut owner = app_state::DocStore::open_room_record(
+                &set.package_id,
+                &set.home,
+                &want.id.storage_key(),
+            )?;
+            // An empty/corrupt file is existing evidence too, never permission
+            // to replace it with a freshly initialized document.
+            if owner.load_complete()?.is_some()
+                || owner.document_path().try_exists().map_err(|source| {
+                    app_state::StoreError::Io {
+                        context: "checking new record identity".into(),
+                        source,
+                    }
+                })?
+                || app_state::DocStore::legacy_record_document_path(
+                    &set.package_id,
+                    &want.id.storage_key(),
+                )?
+                .try_exists()
+                .map_err(|source| app_state::StoreError::Io {
+                    context: "checking legacy record identity".into(),
+                    source,
+                })?
+            {
+                return Err(RecordOpenError::AlreadyExists);
+            }
+            Some(owner)
+        } else {
+            None
+        };
+        let mut owner = owner;
+        let mut doc = owner
+            .as_mut()
+            .map_or_else(AutoCommit::new, app_state::DocStore::new_document);
+        let scope = (!set.home.is_empty()).then_some(set.home.as_str());
+        if !init_scoped(&mut doc, &want.id, &want.kind, &set.home, scope) {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        for (target, relation) in &want.references {
+            add_reference(
+                &mut doc,
+                &RecordRef::new(target.id.clone(), relation.clone()),
+            );
+        }
+        doc.commit();
+        let mut autosave = owner
+            .map(|owner| crate::persist::Autosave::spawn(owner, crate::persist::DEFAULT_DEBOUNCE));
+        if let Some(error) = autosave
+            .as_ref()
+            .and_then(|saver| saver.durability_snapshot().error)
+        {
+            return Err(RecordOpenError::Initialization(error));
+        }
+        let history = crate::state::UndoLog::new(&mut doc);
+        if let Some(saver) = &mut autosave {
+            saver.request(&mut doc);
+        }
+        set.open.insert(
+            want.id.clone(),
+            Parked {
+                doc: Some(doc),
+                kind: want.kind.clone(),
+                autosave,
+                history,
+                action_state: crate::bound_dispatch::RecordActionState::default(),
+            },
+        );
+        Ok(())
+    }
+
     /// Resolve legacy tile intent without panicking on an overlapping record borrow.
     /// Canonical stores retain their Existing-only identity/storage errors;
     /// legacy stores retain the existing open/create behavior.
     pub(crate) fn open_record_checked(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
         let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
         if set.canonical_root.is_some() {
-            return set.try_open_record(want).map(|_| ());
+            return set.try_open_record_with_recovery(want, false).map(|_| ());
         }
         set.open_record(want, None);
         set.document_mut(&want.id)
             .map(|_| ())
             .ok_or(RecordOpenError::MissingRecord)
+    }
+
+    /// Existing-only admission for presentation owners. Loads a saved graph
+    /// without seeding missing content. Package-global records retain the
+    /// existing explicit one-room migration claim and their original history.
+    pub(crate) fn open_existing_record_checked(
+        &self,
+        want: &RecordCheckout,
+    ) -> Result<(), RecordOpenError> {
+        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+        if set.canonical_root.is_some() {
+            return set.try_open_record_with_recovery(want, false).map(|_| ());
+        }
+        if !set.open.contains_key(&want.id) {
+            if !set.persistent {
+                return Err(RecordOpenError::MissingRecord);
+            }
+            if set.home.is_empty() {
+                return Err(RecordOpenError::IdentityMismatch);
+            }
+            let mut owner = app_state::DocStore::open_room_record(
+                &set.package_id,
+                &set.home,
+                &want.id.storage_key(),
+            )?;
+            let (mut doc, adopted) = if let Some(doc) = owner.load_complete()? {
+                (doc, false)
+            } else {
+                if owner.document_path().try_exists().map_err(|source| {
+                    app_state::StoreError::Io {
+                        context: "checking existing record".into(),
+                        source,
+                    }
+                })? {
+                    return Err(app_state::StoreError::EmptyExistingDocument {
+                        path: owner.document_path().to_path_buf(),
+                    }
+                    .into());
+                }
+                let key = want.id.storage_key();
+                let path = app_state::DocStore::legacy_record_document_path(&set.package_id, &key)?;
+                if !path
+                    .try_exists()
+                    .map_err(|source| app_state::StoreError::Io {
+                        context: "checking legacy migration source".into(),
+                        source,
+                    })?
+                {
+                    return Err(RecordOpenError::MissingRecord);
+                }
+                let mut legacy = app_state::DocStore::open_record(&set.package_id, &key)?;
+                let mut doc = legacy.load_complete()?.ok_or_else(|| {
+                    app_state::StoreError::EmptyExistingDocument { path: path.clone() }
+                })?;
+                // Validate before claiming custody or adding only the missing
+                // room metadata. The old source and all its changes stay intact.
+                if identity(&doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
+                    || home(&doc).as_deref() != Some(set.home.as_str())
+                    || room_scope(&doc).is_some_and(|scope| scope != set.home)
+                    || !app_state::DocStore::claim_legacy_record_migration(
+                        &set.package_id,
+                        &set.home,
+                        &key,
+                    )?
+                    || !init_scoped(&mut doc, &want.id, &want.kind, &set.home, Some(&set.home))
+                {
+                    return Err(RecordOpenError::IdentityMismatch);
+                }
+                (doc, true)
+            };
+            validate_identity(&doc, want, &set.home)?;
+            if home(&doc).as_deref() != Some(set.home.as_str()) {
+                return Err(RecordOpenError::IdentityMismatch);
+            }
+            let mut autosave =
+                crate::persist::Autosave::spawn(owner, crate::persist::DEFAULT_DEBOUNCE);
+            if let Some(error) = autosave.durability_snapshot().error {
+                return Err(RecordOpenError::Initialization(error));
+            }
+            if !adopted {
+                autosave.seed(&mut doc);
+            }
+            let history = crate::state::UndoLog::new(&mut doc);
+            if adopted {
+                autosave.request(&mut doc);
+            }
+            set.open.insert(
+                want.id.clone(),
+                Parked {
+                    doc: Some(doc),
+                    kind: want.kind.clone(),
+                    autosave: Some(autosave),
+                    history,
+                    action_state: crate::bound_dispatch::RecordActionState::default(),
+                },
+            );
+        }
+        let slot = set
+            .open
+            .get(&want.id)
+            .ok_or(RecordOpenError::MissingRecord)?;
+        let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
+        // Legacy in-memory owners legitimately have no workspace. Match that
+        // captured namespace exactly; do not manufacture a canonical scope.
+        let expected_scope = (!set.home.is_empty()).then_some(set.home.as_str());
+        if identity(doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
+            || want.kind.as_str().is_empty()
+            || home(doc).as_deref() != Some(set.home.as_str())
+            || room_scope(doc).as_deref() != expected_scope
+        {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        Ok(())
     }
 
     /// Exact runtime owner identity; namespace equality is insufficient for reentry.
@@ -1697,7 +1984,12 @@ impl RecordStore {
         Ok(callback(doc, &mut parked.history, &mut parked.action_state))
     }
 
-    pub(crate) fn action_generation(&self, id: &RecordId) -> Result<Option<u64>, RecordOpenError> {
+    /// Generation of the record-owned action frame, for retained callers that
+    /// need to invalidate a previously resolved operation.
+    ///
+    /// # Errors
+    /// Returns `Busy` if the record set is borrowed, or `MissingRecord` if the record is not open.
+    pub fn action_generation(&self, id: &RecordId) -> Result<Option<u64>, RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
         Ok(parked.action_state.generation)
@@ -1792,6 +2084,46 @@ impl RecordStore {
         Some(f(doc, history))
     }
 
+    /// Execute one externally addressed document action through the record's
+    /// same owned frame as its mounted application. The frame preserves the
+    /// action generation, author, application instance, semantic context, and
+    /// one undo boundary.
+    ///
+    /// # Errors
+    /// Refuses a record that is absent, busy, or no longer owned by this store.
+    pub fn with_owned_action<R>(
+        &self,
+        id: &RecordId,
+        instance_id: crate::application::InstanceId,
+        app_id: &str,
+        author: crate::permissions::UserId,
+        context: tilo_actions::ActionContext,
+        callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
+    ) -> Result<R, RecordOpenError> {
+        let checkout = self
+            .open_records()
+            .into_iter()
+            .find(|checkout| checkout.id == *id)
+            .ok_or(RecordOpenError::MissingRecord)?;
+        crate::bound_dispatch::with_owned_record_action(
+            self,
+            &checkout,
+            instance_id,
+            app_id,
+            author,
+            context,
+            callback,
+        )
+        .map_err(|error| match error {
+            crate::bound_dispatch::BoundDispatchError::Record(error) => error,
+            crate::bound_dispatch::BoundDispatchError::MissingNode
+            | crate::bound_dispatch::BoundDispatchError::ClosedLifetime
+            | crate::bound_dispatch::BoundDispatchError::CrossRecordReentry => {
+                RecordOpenError::Busy
+            }
+        })
+    }
+
     /// Inspect committed history without turning a pending burst into a boundary.
     pub fn read_history<R>(
         &self,
@@ -1862,7 +2194,7 @@ impl std::fmt::Debug for RecordStore {
 }
 
 /// Run one record tick: if the widget tree names a record other than the
-/// live one, park it and check the named one out. `ui::App` calls this
+/// live one, park it and check the named one out. `tilo_ui::App` calls this
 /// once per frame, before `sync`, so a widget that opened a file last
 /// frame is editing that file's document by the time it next reads state.
 /// The return value is the caller's cue to re-announce its collaboration
@@ -2373,6 +2705,295 @@ mod tests {
 
     /// A record adopted from a live document (the "save as" case) is
     /// written out rather than mistaken for something already on disk.
+    #[test]
+    #[serial_test::serial(state_dir_env)]
+    fn history_existing_legacy_record_reopens_without_initializing_missing_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_DATA_HOME");
+        // SAFETY: all environment changes in this test use state_dir_env.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+        }
+        let checkout = RecordCheckout::new(RecordId::for_tab(401), RecordKind::new("tab"));
+        let package = "dev.qos.history-existing-legacy";
+        let room = "11111111-1111-4111-8111-111111111111";
+        let original_heads = {
+            let store = RecordStore::new(RecordSet::open(package).with_home(room));
+            store.open_record(&checkout);
+            let heads = store
+                .with(&checkout.id, |doc| {
+                    put_text(doc, "body", "preserved record");
+                    doc.get_heads()
+                })
+                .unwrap();
+            store.flush();
+            heads
+        };
+        let store = RecordStore::new(RecordSet::open(package).with_home(room));
+        assert!(
+            store.open_existing_record_checked(&checkout).is_ok(),
+            "existing-only presentation must load a saved legacy record"
+        );
+        store
+            .with(&checkout.id, |doc| {
+                assert_eq!(doc.get_heads(), original_heads);
+                assert_eq!(text(doc, "body").as_deref(), Some("preserved record"));
+            })
+            .unwrap();
+        let missing = RecordCheckout::new(RecordId::for_tab(402), RecordKind::new("tab"));
+        assert!(matches!(
+            store.open_existing_record_checked(&missing),
+            Err(RecordOpenError::MissingRecord)
+        ));
+        assert!(store.read(&missing.id, |_| ()).is_none());
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(state_dir_env)]
+    fn history_existing_package_record_migrates_once_without_losing_old_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_DATA_HOME");
+        // SAFETY: serialized on state_dir_env.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+        }
+        let package = "dev.qos.history-package-record";
+        let checkout = RecordCheckout::new(RecordId::for_tab(403), RecordKind::new("tab"));
+        let room = "11111111-1111-4111-8111-111111111111";
+        let old_heads = {
+            let mut owner =
+                app_state::DocStore::open_record(package, &checkout.id.storage_key()).unwrap();
+            let mut doc = owner.new_document();
+            init(&mut doc, &checkout.id, &checkout.kind, room);
+            put_text(&mut doc, "body", "old package content");
+            let heads = doc.get_heads();
+            owner.save(&mut doc).unwrap();
+            heads
+        };
+        let legacy_path =
+            app_state::DocStore::legacy_record_document_path(package, &checkout.id.storage_key())
+                .unwrap();
+        let original_bytes = std::fs::read(&legacy_path).unwrap();
+        {
+            let store = RecordStore::new(RecordSet::open(package).with_home(room));
+            assert!(
+                store.open_existing_record_checked(&checkout).is_ok(),
+                "an existing package record must remain readable"
+            );
+            store
+                .with(&checkout.id, |doc| {
+                    assert_eq!(text(doc, "body").as_deref(), Some("old package content"));
+                    for head in &old_heads {
+                        assert!(doc.get_change_by_hash(head).is_some());
+                    }
+                    assert_eq!(room_scope(doc).as_deref(), Some(room));
+                })
+                .unwrap();
+            store.flush();
+        }
+        assert_eq!(std::fs::read(&legacy_path).unwrap(), original_bytes);
+        assert!(
+            !app_state::DocStore::claim_legacy_record_migration(
+                package,
+                "22222222-2222-4222-8222-222222222222",
+                &checkout.id.storage_key(),
+            )
+            .unwrap(),
+            "the durable migration claim remains pinned to its original room"
+        );
+        let other = RecordStore::new(
+            RecordSet::open(package).with_home("22222222-2222-4222-8222-222222222222"),
+        );
+        assert!(
+            other.open_existing_record_checked(&checkout).is_err(),
+            "migration cannot admit another room"
+        );
+        let reopened = RecordStore::new(RecordSet::open(package).with_home(room));
+        assert!(reopened.open_existing_record_checked(&checkout).is_ok());
+        assert_eq!(
+            reopened
+                .read(&checkout.id, |doc| text(doc, "body"))
+                .flatten()
+                .as_deref(),
+            Some("old package content")
+        );
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn history_new_record_creation_refuses_reuse_and_preserves_the_live_graph() {
+        let store = RecordStore::in_memory();
+        let checkout = RecordCheckout::new(RecordId::for_tab(404), RecordKind::new("tab"));
+        store.create_record(&checkout).unwrap();
+        let before = store
+            .with(&checkout.id, |doc| {
+                put_text(doc, "body", "already authored");
+                doc.get_heads()
+            })
+            .unwrap();
+        assert!(matches!(
+            store.create_record(&checkout),
+            Err(RecordOpenError::AlreadyExists)
+        ));
+        assert_eq!(
+            store.with(&checkout.id, AutoCommit::get_heads).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(state_dir_env)]
+    fn history_existing_scoped_refuses_corruption_empty_and_mismatched_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_DATA_HOME");
+        // SAFETY: serialized on state_dir_env.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+        }
+        let package = "dev.qos.history-record-refusals";
+        let room = "11111111-1111-4111-8111-111111111111";
+        for (index, payload) in [
+            b"not automerge".to_vec(),
+            Vec::new(),
+            {
+                let mut doc = AutoCommit::new();
+                init_scoped(
+                    &mut doc,
+                    &RecordId::for_tab(999),
+                    &RecordKind::new("tab"),
+                    room,
+                    Some(room),
+                );
+                doc.save()
+            },
+            {
+                let mut doc = AutoCommit::new();
+                init_scoped(
+                    &mut doc,
+                    &RecordId::for_tab(413),
+                    &RecordKind::new("tab"),
+                    room,
+                    Some(room),
+                );
+                let mut bytes = doc.save();
+                put_text(&mut doc, "body", "truncated later content");
+                let increment = doc.save_incremental();
+                assert!(increment.len() > 8);
+                bytes.extend_from_slice(&increment[..increment.len() - 3]);
+                bytes
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let checkout = RecordCheckout::new(
+                RecordId::for_tab(410 + index as u64),
+                RecordKind::new("tab"),
+            );
+            let key = checkout.id.storage_key();
+            // A valid older package source must never hide a damaged scoped file.
+            {
+                let mut legacy = app_state::DocStore::open_record(package, &key).unwrap();
+                let mut doc = legacy.new_document();
+                init(&mut doc, &checkout.id, &checkout.kind, room);
+                put_text(&mut doc, "body", "must not become a fallback");
+                legacy.save(&mut doc).unwrap();
+            }
+            let path = {
+                let owner = app_state::DocStore::open_room_record(package, room, &key).unwrap();
+                owner.document_path().to_path_buf()
+            };
+            std::fs::write(&path, &payload).unwrap();
+            let store = RecordStore::new(RecordSet::open(package).with_home(room));
+            assert!(store.open_existing_record_checked(&checkout).is_err());
+            assert!(store.create_record(&checkout).is_err());
+            assert!(store.read(&checkout.id, |_| ()).is_none());
+            store.tick();
+            store.flush();
+            assert_eq!(std::fs::read(&path).unwrap(), payload);
+        }
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn history_explicit_canonical_creation_survives_reopen_and_refuses_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("state");
+        let checkout = RecordCheckout::new(RecordId::for_tab(420), RecordKind::new("tab"));
+        let heads = {
+            let mut owners = RecordOwners::new(root.clone());
+            let store = owners.open("dev.qos.test", "history-room").unwrap();
+            store.create_record(&checkout).unwrap();
+            let heads = store
+                .with(&checkout.id, |doc| {
+                    put_text(doc, "body", "new canonical content");
+                    doc.get_heads()
+                })
+                .unwrap();
+            store.try_flush().unwrap();
+            heads
+        };
+        let mut owners = RecordOwners::new(root);
+        let store = owners.open("dev.qos.test", "history-room").unwrap();
+        assert!(store.create_record(&checkout).is_err());
+        store.open_existing_record_checked(&checkout).unwrap();
+        assert_eq!(
+            store.with(&checkout.id, AutoCommit::get_heads).unwrap(),
+            heads
+        );
+        assert_eq!(
+            store
+                .read(&checkout.id, |doc| text(doc, "body"))
+                .flatten()
+                .as_deref(),
+            Some("new canonical content")
+        );
+    }
+
+    #[test]
+    fn history_new_record_creation_reports_busy_during_an_existing_record_loan() {
+        let store = RecordStore::in_memory();
+        let existing = RecordCheckout::new(RecordId::for_tab(421), RecordKind::new("tab"));
+        let new = RecordCheckout::new(RecordId::for_tab(422), RecordKind::new("tab"));
+        store.create_record(&existing).unwrap();
+        let result = store
+            .with(&existing.id, |_| store.create_record(&new))
+            .unwrap();
+        assert!(matches!(result, Err(RecordOpenError::Busy)));
+        assert!(store.read(&new.id, |_| ()).is_none());
+    }
+
+    #[test]
+    fn history_new_canonical_record_creation_reports_busy_during_read_loan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut owners = RecordOwners::new(tmp.path().join("state"));
+        let store = owners.open("dev.qos.test", "read-loan").unwrap();
+        let existing = RecordCheckout::new(RecordId::for_tab(423), RecordKind::new("tab"));
+        let new = RecordCheckout::new(RecordId::for_tab(424), RecordKind::new("tab"));
+        store.create_record(&existing).unwrap();
+        let result = store
+            .read(&existing.id, |_| store.create_record(&new))
+            .unwrap();
+        assert!(matches!(result, Err(RecordOpenError::Busy)));
+        assert!(store.read(&new.id, |_| ()).is_none());
+    }
+
     #[test]
     // Shares a serial key with every other test mutating the process-global
     // `XDG_DATA_HOME` (see `persist::tests`), so they don't race on it.

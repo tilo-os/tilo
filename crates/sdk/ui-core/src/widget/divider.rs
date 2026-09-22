@@ -6,7 +6,10 @@
 //! [`Divider::horizontal`] fills the parent's width, 1px tall, for stacked
 //! sections in a `Column`; [`Divider::vertical`] fills the parent's height,
 //! 1px wide, for side-by-side panes in a `Row`. Colour comes from
-//! `theme.border_standard`, overridable via [`Divider::with_color`].
+//! `theme.border_standard` — a rule on `surfaces.base` (HIG §9.5). A rule
+//! inside a raised or overlay surface names that surface with
+//! [`Divider::on`], which derives the colour so the line stays visible on
+//! the dark preset; [`Divider::with_color`] is the explicit override.
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -31,8 +34,12 @@ pub enum DividerAxis {
 pub struct Divider {
     axis: DividerAxis,
     thickness: f32,
-    /// Optional explicit colour. `None` ⇒ `theme.border_standard`.
+    /// Optional explicit colour. `None` ⇒ derived from [`Self::surface`]
+    /// when set, else `theme.border_standard`.
     color: Option<vello::peniko::Color>,
+    /// The surface the rule is painted on, when it is not `surfaces.base`;
+    /// the colour is then `surface::edge_on(surface)`.
+    surface: Option<vello::peniko::Color>,
     rect: Rect,
 }
 
@@ -42,6 +49,7 @@ impl Divider {
             axis: DividerAxis::Horizontal,
             thickness: 1.0,
             color: None,
+            surface: None,
             rect: Rect::ZERO,
         }
     }
@@ -51,6 +59,7 @@ impl Divider {
             axis: DividerAxis::Vertical,
             thickness: 1.0,
             color: None,
+            surface: None,
             rect: Rect::ZERO,
         }
     }
@@ -62,16 +71,36 @@ impl Divider {
         self
     }
 
-    /// Pass a theme token (e.g. a fainter `theme.tokens.colors.neutral[..]`)
-    /// so the choice still tracks the active theme.
+    /// Pass a theme token so the choice still tracks the active theme.
+    /// Prefer [`Self::on`] for a rule inside a raised or overlay surface.
     #[must_use]
     pub fn with_color(mut self, color: vello::peniko::Color) -> Self {
         self.color = Some(color);
         self
     }
 
+    /// A rule inside `surface` (a card, popover or panel fill): the colour
+    /// becomes [`crate::surface::edge_on`] measured against that surface,
+    /// so it registers on every theme where a declared `border_standard`
+    /// would sit within rounding distance of the fill (HIG §9.5).
+    #[must_use]
+    pub fn on(mut self, surface: vello::peniko::Color) -> Self {
+        self.surface = Some(surface);
+        self
+    }
+
     pub fn axis(&self) -> DividerAxis {
         self.axis
+    }
+
+    /// The colour `draw` paints: an explicit [`Self::with_color`] wins, then
+    /// a surface named with [`Self::on`] derives its edge, else the theme's
+    /// rule on `surfaces.base`.
+    pub fn rule_color(&self, theme: &Theme) -> vello::peniko::Color {
+        self.color.unwrap_or_else(|| {
+            self.surface
+                .map_or(theme.border_standard, crate::surface::edge_on)
+        })
     }
 }
 
@@ -122,7 +151,7 @@ impl Widget for Divider {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let color = self.color.unwrap_or(theme.border_standard);
+        let color = self.rule_color(theme);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -214,6 +243,65 @@ mod tests {
             "3px tall, got {}",
             r.height()
         );
+    }
+
+    /// The colour `draw` resolves (`rule_color` is what `draw` paints):
+    /// default is the theme's rule on `surfaces.base`; `.on(surface)`
+    /// derives an edge that registers against that surface on every preset;
+    /// an explicit `.with_color` wins over both.
+    #[test]
+    fn rule_color_follows_with_color_then_on_then_default() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let raised = theme.tokens.colors.surfaces.raised;
+            let name = &theme.name;
+
+            let default = Divider::horizontal().rule_color(&theme);
+            assert_eq!(default, theme.border_standard, "{name}: default rule");
+
+            let on_raised = Divider::horizontal().on(raised).rule_color(&theme);
+            assert_eq!(
+                on_raised,
+                crate::surface::edge_on(raised),
+                "{name}: `.on(raised)` derives the edge"
+            );
+            assert_ne!(
+                on_raised, theme.border_standard,
+                "{name}: `.on` changes the colour"
+            );
+            assert!(
+                crate::surface::edge_delta(on_raised, raised)
+                    >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "{name}: a divider on `raised` must register against it"
+            );
+
+            let explicit = theme.tokens.colors.accent[5];
+            assert_eq!(
+                Divider::horizontal()
+                    .on(raised)
+                    .with_color(explicit)
+                    .rule_color(&theme),
+                explicit,
+                "{name}: `.with_color` wins over `.on`"
+            );
+        }
+    }
+
+    #[test]
+    fn on_surface_still_emits_exactly_one_fill() {
+        let theme = Theme::dark();
+        let raised = theme.tokens.colors.surfaces.raised;
+        let (mut d, _r) = lay_out(Divider::horizontal().on(raised));
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        d.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert_eq!(fills, 1, "a divider on a surface is still one fill");
     }
 
     #[test]

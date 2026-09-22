@@ -27,24 +27,41 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{Button, TaffyTreeExt, Widget};
+use crate::tokens::{Metrics, Spacing};
+use crate::widget::{AuthoredExtent, Button, TaffyTreeExt, Widget};
 use crate::{LocalState, local_state::LocalBinding};
 
 type Element = Box<dyn Widget>;
 
-/// Default docked sidebar width (logical px).
+/// Default docked sidebar width (logical px). Predates
+/// `Metrics::sidebar_width` (280) and stays at 264 until the apps built on
+/// it are re-measured; a change here moves every `AppShell` app's sidebar.
 pub const DEFAULT_SHELL_SIDEBAR_WIDTH: f64 = 264.0;
 /// At or above this width (logical px) the sidebar docks; below it the shell
 /// switches to the narrow list-vs-content screens. Roughly
-/// `sidebar_width + a minimum content column`.
-pub const DEFAULT_SHELL_BREAKPOINT: f64 = 720.0;
+/// `sidebar_width + a minimum content column` — the OS-wide
+/// `Metrics::compact_breakpoint`.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+pub const DEFAULT_SHELL_BREAKPOINT: f64 = Metrics::BASE.compact_breakpoint as f64;
 
-/// `spacing.s3`.
-const PAD: f64 = 12.0;
+/// `spacing.s3` at 1×; the live value is read from the theme at build.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+const PAD: f64 = Spacing::BASE.s3 as f64;
+/// Search-field slot height at 1×, grown with the body line by
+/// `text_control_height` when the tree is built. Neither the 40 px
+/// `bar_height` nor the 28 px `bar_control_height`; `NavShell`'s chip is 36.
+/// Recorded, not yet unified (the F1 layout review proposes
+/// `min_pointer_target` + `s3` inset for both).
 const CTRL_H: f64 = 34.0;
-const SEARCH_BAND_H: f64 = PAD + CTRL_H + PAD;
+/// Icon-only Back button side at 1×; follows `ui_scale`, not the text.
 const BACK_BTN: f64 = 34.0;
-const BACK_BAND_H: f64 = PAD + BACK_BTN + PAD;
+const BACK_BAND_H: f64 = PAD * 2.0 + BACK_BTN;
 
 /// How the shell resolves at the current width — decided purely by whether the
 /// sidebar fits beside the content.
@@ -99,8 +116,21 @@ pub struct AppShell {
     back_accessible_name: String,
     narrow_screen_binding: Option<LocalBinding<NarrowScreen>>,
 
+    /// The app's inputs as authored at 1× (HIG §9.6, [`AuthoredExtent`]);
+    /// a `None` breakpoint is the token default
+    /// (`theme.tokens.metrics.compact_breakpoint`).
+    authored_sidebar_width: AuthoredExtent,
+    authored_breakpoint: Option<AuthoredExtent>,
+    /// Resolved against the theme in `build_layout`
+    /// ([`Theme::responsive_scale`]); the authored values until then.
     sidebar_width: f64,
     breakpoint: f64,
+    /// Chrome metrics resolved against the theme: the `s3` inset, the
+    /// search slot grown with the body line, the icon-only Back button
+    /// grown with `ui_scale`.
+    pad: f64,
+    ctrl_h: f64,
+    back_btn: f64,
 
     /// Which narrow screen is showing (narrow only). Preserved across a
     /// wide↔narrow resize so the user returns to where they were.
@@ -141,7 +171,7 @@ impl AppShell {
     /// Add a search field with [`AppShell::with_search`].
     pub fn new(nav: Element, content: Element) -> Self {
         let back_requested = Rc::new(Cell::new(false));
-        let back = Self::back_button("app-shell-back", "Back", &back_requested);
+        let back = Self::back_button("app-shell-back", "Back", &back_requested, BACK_BTN);
         Self {
             nav,
             content,
@@ -151,8 +181,13 @@ impl AppShell {
             test_id: None,
             back_accessible_name: String::from("Back"),
             narrow_screen_binding: None,
+            authored_sidebar_width: AuthoredExtent::text(DEFAULT_SHELL_SIDEBAR_WIDTH),
+            authored_breakpoint: None,
             sidebar_width: DEFAULT_SHELL_SIDEBAR_WIDTH,
             breakpoint: DEFAULT_SHELL_BREAKPOINT,
+            pad: PAD,
+            ctrl_h: CTRL_H,
+            back_btn: BACK_BTN,
             narrow_screen: NarrowScreen::Content,
             last_active: NarrowScreen::Content,
             width_hint: None,
@@ -170,12 +205,16 @@ impl AppShell {
         }
     }
 
-    fn back_button(id: &str, name: &str, requested: &Rc<Cell<bool>>) -> Button {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a button side in on-screen pixels, far inside f32's exact range"
+    )]
+    fn back_button(id: &str, name: &str, requested: &Rc<Cell<bool>>, side: f64) -> Button {
         let requested = Rc::clone(requested);
         Button::new(id, "", None)
             .with_icon(crate::icons::Icon::ArrowLeft)
             .with_accessible_name(name)
-            .with_size(34.0, 34.0)
+            .with_size(side as f32, side as f32)
             .ghost()
             .on_view(move || requested.set(true))
     }
@@ -185,7 +224,56 @@ impl AppShell {
             .test_id
             .as_deref()
             .map_or_else(|| String::from("app-shell-back"), |id| format!("{id}-back"));
-        self.back = Self::back_button(&id, &self.back_accessible_name, &self.back_requested);
+        self.back = Self::back_button(
+            &id,
+            &self.back_accessible_name,
+            &self.back_requested,
+            self.back_btn,
+        );
+    }
+
+    /// Resolve the authored inputs and chrome metrics against `theme`
+    /// (HIG §9.6): the text-sized sidebar and breakpoint grow by
+    /// [`Theme::responsive_scale`] (the token default is already
+    /// `ui_scale`d and grows with `text_growth`), the search slot with the
+    /// body line, the icon-only Back button with `ui_scale`. Identity on a
+    /// stock theme, so 1× is the authored geometry.
+    fn resolve_inputs(&mut self, theme: &Theme) {
+        self.sidebar_width = self.authored_sidebar_width.resolve(theme);
+        self.breakpoint = self.authored_breakpoint.map_or_else(
+            || f64::from(theme.tokens.metrics.compact_breakpoint) * f64::from(theme.text_growth()),
+            |extent| extent.resolve(theme),
+        );
+        self.pad = f64::from(theme.tokens.spacing.s3);
+        self.ctrl_h = crate::widget::text_control_height(CTRL_H, theme);
+        let back_btn = BACK_BTN * f64::from(theme.ui_scale);
+        if back_btn.to_bits() != self.back_btn.to_bits() {
+            self.back_btn = back_btn;
+            self.rebuild_back_button();
+        }
+    }
+
+    /// The breakpoint the shell currently resolves against — the authored
+    /// (or token) value scaled by the theme it was last built with.
+    pub fn breakpoint(&self) -> f64 {
+        self.breakpoint
+    }
+
+    /// The docked sidebar width currently laid out, resolved like
+    /// [`Self::breakpoint`].
+    pub fn sidebar_width(&self) -> f64 {
+        self.sidebar_width
+    }
+
+    /// Height of the band the search slot occupies at the top of the
+    /// sidebar / narrow list: inset, control, inset.
+    fn search_band_h(&self) -> f64 {
+        self.pad + self.ctrl_h + self.pad
+    }
+
+    /// Height of the band the narrow Back button occupies.
+    fn back_band_h(&self) -> f64 {
+        (self.pad + self.back_btn + self.pad).max(self.back_band_h)
     }
 
     /// Pinned at the top of the sidebar (or the narrow list screen); stays
@@ -227,14 +315,24 @@ impl AppShell {
         self
     }
 
+    /// Docked width of the (text-sized) navigation sidebar, in logical px
+    /// **authored at 1×**. The shell multiplies it by
+    /// [`Theme::responsive_scale`] when the tree is built, so the app never
+    /// restates the text-scale rule. Read it back with
+    /// [`Self::sidebar_width`].
     #[must_use]
     pub fn with_sidebar_width(mut self, px: f64) -> Self {
+        self.authored_sidebar_width = AuthoredExtent::text(px);
         self.sidebar_width = px;
         self
     }
 
+    /// The width at or above which the sidebar docks, authored at 1× and
+    /// scaled like [`Self::with_sidebar_width`]. Default:
+    /// `theme.tokens.metrics.compact_breakpoint`.
     #[must_use]
     pub fn with_breakpoint(mut self, px: f64) -> Self {
+        self.authored_breakpoint = Some(AuthoredExtent::text(px));
         self.breakpoint = px;
         self
     }
@@ -371,10 +469,10 @@ impl AppShell {
                     self.sidebar_panel_rect = Rect::ZERO;
                     self.content_area_rect = r;
                     self.back_rect = Rect::new(
-                        r.x0 + PAD,
+                        r.x0 + self.pad,
                         r.y0 + self.back_button_top,
-                        r.x0 + PAD + BACK_BTN,
-                        r.y0 + self.back_button_top + BACK_BTN,
+                        r.x0 + self.pad + self.back_btn,
+                        r.y0 + self.back_button_top + self.back_btn,
                     );
                 }
             },
@@ -392,26 +490,27 @@ impl AppShell {
     )]
     fn slot_style(&self, slot: Slot, base: &Style) -> Style {
         let sw = self.sidebar_width;
+        let pad = self.pad;
         let mut s = base.clone();
         s.position = taffy::Position::Absolute;
         match slot {
             Slot::Back => {
                 s.inset = taffy::Rect {
-                    left: length(PAD as f32),
+                    left: length(pad as f32),
                     right: auto(),
                     top: length(self.back_button_top as f32),
                     bottom: auto(),
                 };
                 s.size = taffy::Size {
-                    width: length(BACK_BTN as f32),
-                    height: length(BACK_BTN as f32),
+                    width: length(self.back_btn as f32),
+                    height: length(self.back_btn as f32),
                 };
             }
             Slot::Content => {
                 let (left, top) = if self.layout == ShellLayout::Wide {
                     (length(sw as f32), length(0.0_f32))
                 } else {
-                    (length(0.0_f32), length(self.back_band_h as f32))
+                    (length(0.0_f32), length(self.back_band_h() as f32))
                 };
                 s.inset = taffy::Rect {
                     left,
@@ -438,7 +537,7 @@ impl AppShell {
                 s.inset = taffy::Rect {
                     left: length(0.0_f32),
                     right,
-                    top: length(SEARCH_BAND_H as f32),
+                    top: length(self.search_band_h() as f32),
                     bottom: length(0.0_f32),
                 };
                 s.size = taffy::Size {
@@ -448,23 +547,23 @@ impl AppShell {
             }
             Slot::Search => {
                 s.inset = taffy::Rect {
-                    left: length(PAD as f32),
+                    left: length(pad as f32),
                     right: if self.layout == ShellLayout::Wide {
                         auto()
                     } else {
-                        length(PAD as f32)
+                        length(pad as f32)
                     },
-                    top: length(PAD as f32),
+                    top: length(pad as f32),
                     bottom: auto(),
                 };
                 let width = if self.layout == ShellLayout::Wide {
-                    length((sw - 2.0 * PAD) as f32)
+                    length((sw - 2.0 * pad) as f32)
                 } else {
                     auto()
                 };
                 s.size = taffy::Size {
                     width,
-                    height: length(CTRL_H as f32),
+                    height: length(self.ctrl_h as f32),
                 };
             }
         }
@@ -482,9 +581,11 @@ impl AppShell {
         presence: &PresenceCtx,
         permissions: Option<&crate::permissions::PermissionContext>,
     ) {
-        let sidebar_fill = theme.tokens.colors.neutral[0];
+        // The sidebar is the raised surface tier (HIG §9.2), never a ramp
+        // slot, and its divider derives from that surface (HIG §9.5).
+        let sidebar_fill = theme.tokens.colors.surfaces.raised;
         let content_fill = theme.tokens.colors.surfaces.base;
-        let divider = theme.tokens.colors.border_standard;
+        let divider = crate::surface::edge_on(sidebar_fill);
 
         let narrow_list =
             self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::List;
@@ -516,7 +617,7 @@ impl AppShell {
                 None,
                 &self.sidebar_panel_rect,
             );
-            let x = self.sidebar_panel_rect.x1;
+            let x = self.sidebar_panel_rect.x1 - 0.5;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -550,11 +651,11 @@ impl AppShell {
         }
 
         if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::Content {
-            let y = self.rect.y0 + self.back_band_h;
+            let y = self.rect.y0 + self.back_band_h() - 0.5;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                divider,
+                crate::surface::edge_on(content_fill),
                 None,
                 &Line::new(Point::new(self.rect.x0, y), Point::new(self.rect.x1, y)),
             );
@@ -573,7 +674,10 @@ impl AppShell {
 
 /// Free function (not a method) so it borrows none of `AppShell`'s fields —
 /// the caller keeps a live `&mut` on the child.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the free painter takes child, render, presence and permission inputs separately to avoid borrowing AppShell during a child borrow"
+)]
 fn paint_child(
     w: &mut dyn Widget,
     scene: &mut Scene,
@@ -615,6 +719,7 @@ impl Widget for AppShell {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.resolve_inputs(theme);
         self.layout = self.resolve_layout();
         self.built_layout = self.layout;
         self.back_band_h = (BACK_BAND_H * f64::from(theme.text_scale)).max(BACK_BAND_H);
@@ -993,12 +1098,16 @@ mod tests {
         reason = "test fixture dimensions are small literal px values"
     )]
     fn lay(s: &mut AppShell, w: f64, h: f64) {
-        let theme = Theme::dark();
+        lay_with(s, &Theme::dark(), w, h);
+    }
+
+    fn lay_with(s: &mut AppShell, theme: &Theme, w: f64, h: f64) {
         let mut taffy = TaffyTree::<()>::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = s.build_layout(&mut taffy, &theme, &mut map);
+        let node = s.build_layout(&mut taffy, theme, &mut map);
         let mm = map.clone();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         taffy
             .compute_layout_with_measure(
                 node,
@@ -1027,6 +1136,74 @@ mod tests {
     fn breakpoint_boundary_is_inclusive_wide() {
         assert_eq!(ShellLayout::from_width(720.0, 720.0), ShellLayout::Wide);
         assert_eq!(ShellLayout::from_width(719.0, 720.0), ShellLayout::Narrow);
+    }
+
+    /// HIG §9.6: the sidebar width and breakpoint are authored at 1× and
+    /// resolved against the theme (`× ui_scale × text_scale.max(1.0)`); the
+    /// default breakpoint is the `ui_scale`d `compact_breakpoint` token; the
+    /// search slot grows with the body line and the icon-only Back button
+    /// with `ui_scale` alone. 1× is exactly the authored geometry.
+    #[test]
+    fn shell_inputs_and_chrome_follow_the_responsive_scale() {
+        let authored = || {
+            AppShell::new(Box::new(Text::new("nav")), Box::new(Text::new("content")))
+                .with_search(Box::new(Text::new("search")))
+                .with_sidebar_width(264.0)
+                .with_breakpoint(720.0)
+        };
+        let mut one = authored();
+        lay(&mut one, 1000.0, 600.0);
+        assert_eq!((one.breakpoint(), one.sidebar_width()), (720.0, 264.0));
+        assert_eq!((one.pad, one.ctrl_h, one.back_btn), (12.0, 34.0, 34.0));
+        assert_eq!(one.search_band_h(), 58.0);
+        assert_eq!(search_rect(&one).height(), 34.0);
+
+        let two = Theme::dark().with_text_scale(2.0);
+        let mut large = authored();
+        lay_with(&mut large, &two, 1000.0, 600.0);
+        assert_eq!((large.breakpoint(), large.sidebar_width()), (1440.0, 528.0));
+        assert_eq!(
+            large.layout,
+            ShellLayout::Narrow,
+            "1000 px at 2× is a 500 px window at 1×"
+        );
+        let grown = crate::widget::text_control_height(CTRL_H, &two);
+        assert!(grown > CTRL_H && grown < 2.0 * CTRL_H);
+        assert_eq!(
+            large.ctrl_h, grown,
+            "the search slot grows with the body line"
+        );
+        assert_eq!(
+            large.back_btn, 34.0,
+            "the icon-only Back button is not text-sized"
+        );
+        assert!(
+            (search_rect(&large).height() - grown).abs() <= 0.5,
+            "the slot style carries the grown height (taffy rounds to whole pixels): {} vs {grown}",
+            search_rect(&large).height()
+        );
+
+        let mut defaults =
+            AppShell::new(Box::new(Text::new("nav")), Box::new(Text::new("content")));
+        lay_with(
+            &mut defaults,
+            &Theme::dark().with_ui_scale(1.5),
+            1400.0,
+            600.0,
+        );
+        assert!(
+            (defaults.breakpoint() - 1080.0).abs() < 1e-6,
+            "compact_breakpoint at ui 1.5"
+        );
+        assert!(
+            (defaults.sidebar_width() - 396.0).abs() < 1e-6,
+            "264 authored × ui 1.5"
+        );
+        assert!(
+            (defaults.back_btn - 51.0).abs() < 1e-6,
+            "the Back button follows ui_scale"
+        );
+        assert!((defaults.pad - 18.0).abs() < 1e-6, "s3 at ui 1.5");
     }
 
     /// Wide: the sidebar is ALWAYS docked — no collapse/expand toggle exists

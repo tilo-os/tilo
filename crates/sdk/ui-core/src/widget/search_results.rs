@@ -30,6 +30,7 @@ use crate::theme::Theme;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
 
 const PAD: f64 = 8.0; // card inner padding
 const ROW_INSET: f64 = 8.0; // rows inset from the card edge
@@ -40,7 +41,10 @@ const ROW_TEXT_X: f64 = 12.0; // text/icon inset within a row
 const ICON_D: f64 = 18.0;
 const ICON_COL: f64 = 30.0; // icon box + gap when a row has an icon
 const EMPTY_H: f64 = 92.0;
-const PREVIEW_H: f64 = 68.0;
+/// A lifted row (selection, hover) is inset this much top and bottom, so a
+/// selected row and its hovered neighbour keep one `s1` between them
+/// instead of fusing into one block (HIG §7 "nothing touches").
+const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 
 /// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64` matrix
 /// multiply-add with no overflow trap, so it cannot panic regardless of
@@ -67,6 +71,42 @@ struct LayoutPlan {
     rows: Vec<RowGeom>,
 }
 
+/// Row and header bands. The constants are the 1× defaults; `build_layout`
+/// resolves them from the theme's type so a 2× title still has its 1×
+/// padding instead of overrunning the next row. A free-floating overlay
+/// that never goes through layout keeps the defaults.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RowBands {
+    header: f64,
+    one_line: f64,
+    two_line: f64,
+}
+
+impl RowBands {
+    const DEFAULT: Self = Self {
+        header: HEADER_H,
+        one_line: ROW_H_ONE_LINE,
+        two_line: ROW_H_TWO_LINE,
+    };
+
+    /// Title (`base`) and subtitle (`sm`) lines plus one sibling step of
+    /// padding; the caption band holds its `xs` line plus its two `s1`
+    /// insets. Every value floors at the pinned 1× constant.
+    fn resolve(theme: &Theme) -> Self {
+        let tokens = &theme.tokens;
+        let title = type_line_height(tokens.typography.scale.base);
+        let subtitle = type_line_height(tokens.typography.scale.sm);
+        let caption = type_line_height(tokens.typography.scale.xs);
+        let pad = f64::from(tokens.spacing.s3);
+        let gap = f64::from(tokens.spacing.s1);
+        Self {
+            header: text_band(HEADER_H, caption, 2.0 * gap),
+            one_line: text_band(ROW_H_ONE_LINE, title, pad),
+            two_line: text_band(ROW_H_TWO_LINE, title + gap + subtitle, pad),
+        }
+    }
+}
+
 /// The results overlay. Populate it with [`set_groups`](Self::set_groups) each
 /// time the query changes, drive selection with the keyboard or pointer, and
 /// drain activations with [`take_activated`](Self::take_activated).
@@ -81,6 +121,7 @@ pub struct SearchResultsView {
     activated: Option<String>,
     empty_text: String,
     test_id: Option<String>,
+    bands: RowBands,
 }
 
 impl SearchResultsView {
@@ -95,6 +136,7 @@ impl SearchResultsView {
             activated: None,
             empty_text: "No results".to_string(),
             test_id: None,
+            bands: RowBands::DEFAULT,
         }
     }
 
@@ -250,9 +292,9 @@ impl SearchResultsView {
         }
         let mut h = PAD * 2.0;
         for g in &self.groups {
-            h += HEADER_H;
+            h += self.bands.header;
             for r in &g.results {
-                h += Self::row_height(r);
+                h += self.row_height(r);
             }
         }
         if self.has_previews() {
@@ -261,11 +303,11 @@ impl SearchResultsView {
         h
     }
 
-    fn row_height(r: &SearchResult) -> f64 {
+    fn row_height(&self, r: &SearchResult) -> f64 {
         if r.subtitle.is_some() {
-            ROW_H_TWO_LINE
+            self.bands.two_line
         } else {
-            ROW_H_ONE_LINE
+            self.bands.one_line
         }
     }
 
@@ -278,15 +320,16 @@ impl SearchResultsView {
         let x1 = self.rect.x1 - ROW_INSET;
         let mut y = self.rect.y0 + PAD;
         let mut flat = 0usize;
+        let header_h = self.bands.header;
         for (gi, g) in self.groups.iter().enumerate() {
             headers.push((
-                Rect::new(x0, y, x1, y + HEADER_H),
+                Rect::new(x0, y, x1, y + header_h),
                 g.kind.clone(),
                 g.results.len(),
             ));
-            y += HEADER_H;
+            y += header_h;
             for (ri, r) in g.results.iter().enumerate() {
-                let rh = Self::row_height(r);
+                let rh = self.row_height(r);
                 rows.push(RowGeom {
                     rect: Rect::new(x0, y, x1, y + rh),
                     flat,
@@ -326,12 +369,21 @@ impl SearchResultsView {
 
         // Selection = a filled row (per the command palette convention);
         // hover = a barely-there veneer, distinct from selection.
+        let lift = RoundedRect::from_rect(
+            row.rect.inflate(0.0, -ROW_LIFT_INSET),
+            f64::from(theme.tokens.radii.sm),
+        );
         if selected {
-            let hl = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
-            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &hl);
+            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &lift);
         } else if hovered {
-            let hl = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
-            scene.fill(Fill::NonZero, transform, colors.surface_white_5, None, &hl);
+            // One step off the panel it sits on, polarity chosen the way
+            // `hairline_on` chooses it — the white veneer this replaces was
+            // invisible over a light panel (HIG §9.5).
+            let hover = crate::tokens::colors::Colors::hairline_on(
+                crate::chrome::shell::panel_ground(theme),
+                crate::chrome::shell::HAIRLINE_ALPHA,
+            );
+            scene.fill(Fill::NonZero, transform, hover, None, &lift);
         }
 
         let mut text_x = row.rect.x0 + ROW_TEXT_X;
@@ -351,9 +403,9 @@ impl SearchResultsView {
             text_x += ICON_COL;
         }
 
-        let has_sub = result.subtitle.is_some();
-        let title_size = theme.tokens.typography.scale.base;
-        let sub_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let tokens = &theme.tokens;
+        let title_size = renderer_type_size(tr, tokens.typography.scale.base);
+        let sub_size = renderer_type_size(tr, tokens.typography.scale.sm);
         // Clamped to >= 0.0 above; a row's text width is a small on-screen
         // pixel span, well inside `f32`'s exact-integer range.
         #[allow(
@@ -362,11 +414,18 @@ impl SearchResultsView {
         )]
         let text_w = (row.rect.x1 - text_x - ROW_TEXT_X).max(0.0) as f32;
 
-        let title_y = if has_sub {
-            row.rect.y0 + 8.0
-        } else {
-            row.rect.y0 + (row.rect.height() - f64::from(title_size)) / 2.0
-        };
+        // Title and subtitle are measured with the width they are drawn at and
+        // centred as one block, so the icon (centred on the row) sits on the
+        // block's centre line whether or not a subtitle is present.
+        let (_, title_h) =
+            tr.measure_weighted(&result.title, title_size, Some(text_w), TextWeight::Medium);
+        let gap = f64::from(tokens.spacing.s1);
+        let sub_h = result
+            .subtitle
+            .as_deref()
+            .map(|sub| f64::from(tr.measure(sub, sub_size, Some(text_w)).1));
+        let block_h = f64::from(title_h) + sub_h.map_or(0.0, |h| gap + h);
+        let title_y = row.rect.y0 + ((row.rect.height() - block_h) / 2.0).max(0.0);
         tr.draw_text_weighted(
             scene,
             &result.title,
@@ -383,7 +442,7 @@ impl SearchResultsView {
 
         // Subtitle (dim; on a selected row it stays readable on the fill).
         if let Some(sub) = &result.subtitle {
-            let sy = row.rect.y1 - f64::from(sub_size) - 9.0;
+            let sy = title_y + f64::from(title_h) + gap;
             let sub_col = if selected {
                 selected_ink
             } else {
@@ -407,8 +466,7 @@ impl SearchResultsView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let _ = scene;
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let (tw, th) = tr.measure(&self.empty_text, size, None);
         let cx = self.rect.center().x - f64::from(tw) / 2.0;
         let cy = self.rect.center().y - f64::from(th) / 2.0;
@@ -498,9 +556,10 @@ impl Widget for SearchResultsView {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.bands = RowBands::resolve(theme);
         // A results overlay's desired height is a small on-screen pixel value
         // (a handful of rows), well inside `f32`'s exact-integer range.
         #[allow(
@@ -541,20 +600,25 @@ impl Widget for SearchResultsView {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let card = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.lg));
+        // Panel role (HIG §9.1): a results overlay floats over content, so it
+        // takes the panel ground and the panel edge — the declared
+        // `border_standard` this replaces vanished on the dark preset's
+        // raised surface.
+        let radius = f64::from(theme.tokens.radii.lg);
+        let card = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            crate::chrome::shell::panel_ground(theme),
             None,
             &card,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::shell::panel_border(theme),
             None,
-            &card,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         if self.flat.is_empty() {
@@ -564,16 +628,21 @@ impl Widget for SearchResultsView {
 
         let plan = self.plan();
         // Section headers: dim, uppercase, with a trailing count.
-        let header_size = (theme.tokens.typography.scale.xs).max(10.0);
+        let header_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+        let header_inset = f64::from(theme.tokens.spacing.s1);
         for (hrect, kind, count) in &plan.headers {
             let label = kind.to_uppercase();
-            let hy = hrect.y1 - f64::from(header_size) - 6.0;
+            // The caption sits on the band's bottom edge, one small step above
+            // its rows, by its measured line box rather than its font size.
+            let (_, label_h) =
+                text_renderer.measure_weighted(&label, header_size, None, TextWeight::Semibold);
+            let hy = hrect.y1 - f64::from(label_h) - header_inset;
             text_renderer.draw_text_weighted(
                 scene,
                 &label,
                 header_size,
                 theme.tokens.colors.text_dim,
-                compose(transform, Affine::translate((hrect.x0 + 4.0, hy))),
+                compose(transform, Affine::translate((hrect.x0 + header_inset, hy))),
                 None,
                 TextWeight::Semibold,
             );
@@ -586,7 +655,7 @@ impl Widget for SearchResultsView {
                 theme.tokens.colors.text_dim,
                 compose(
                     transform,
-                    Affine::translate((hrect.x1 - f64::from(cw) - 4.0, hy)),
+                    Affine::translate((hrect.x1 - f64::from(cw) - header_inset, hy)),
                 ),
                 None,
             );
@@ -708,6 +777,130 @@ impl Widget for SearchResultsView {
 mod tests {
     use super::*;
     use crate::search::SearchRegistry;
+
+    /// Relative luminance of the composited pixel at (`x`, `y`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside the test surface"
+    )]
+    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
+        crate::a11y::relative_luminance(vello::peniko::Color::from_rgb8(r, g, b))
+    }
+
+    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
+    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
+            .join(theme.name.to_lowercase());
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    }
+
+    /// The results panel keeps a **visible derived edge** at 1× on both
+    /// presets (HIG §9.1 Panel role, §9.5): before, it was a raised card under
+    /// `border_standard`, three shades from the dark preset's raised surface.
+    /// The hovered row's veneer was literal white at 5 %, invisible on light.
+    ///
+    /// Writes `$UX1X_F4_OUT/<theme>/search_results.png` plus the harness
+    /// inspection when that variable is set; asserts regardless.
+    #[test]
+    fn ux1x_panel_edge_and_hover_register_on_both_presets() {
+        use crate::offscreen::OffscreenRenderer;
+        const EDGE_MIN: f64 = 0.008;
+        // Ground of margin around the panel so its edge is against the app.
+        let margin = 16.0;
+        // Evidence first, for both presets, so a failing assertion on one
+        // preset still leaves the other's PNG and inspection on disk.
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut mounted = view_from("");
+            let last = mounted.len() - 1;
+            let (w, h) = (
+                margin * 2.0 + 360.0,
+                margin * 2.0 + mounted.desired_height(),
+            );
+            if let Some(png) = ux1x_out(&theme, "search_results.png") {
+                mounted.set_cursor(0);
+                mounted.hover = Some(last);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a small test viewport"
+                )]
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(mounted),
+                    (w as u32, h as u32),
+                    theme.clone(),
+                );
+                harness.render_window_png(&png);
+                if let Ok(json) = harness.inspection_json() {
+                    std::fs::write(png.with_extension("inspection.json"), json)
+                        .expect("write inspection");
+                }
+            }
+        }
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut v = view_from("");
+            v.set_cursor(0);
+            let panel = Rect::new(margin, margin, margin + 360.0, margin + v.desired_height());
+            v.set_rect(panel);
+            // Hover the last row so the veneer is under test too.
+            let last = v.len() - 1;
+            v.hover = Some(last);
+            let (w, h) = (panel.x1 + margin, panel.y1 + margin);
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            v.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+            // Panel edge against the panel ground just inside it, on the top
+            // padding row above the first header (nothing else paints there).
+            let y = panel.y0 + PAD / 2.0;
+            let edge = lum(panel.x0, y);
+            let ground = lum(panel.x0 + 3.0, y);
+            assert!(
+                (edge - ground).abs() >= EDGE_MIN,
+                "{}: panel edge {edge:.4} vs ground {ground:.4} did not register",
+                theme.name
+            );
+
+            // Hovered row against the bare panel ground beside its inset.
+            let row = v
+                .plan()
+                .rows
+                .into_iter()
+                .find(|r| r.flat == last)
+                .expect("the hovered row is laid out")
+                .rect;
+            let hover = lum(row.x1 - 3.0, row.center().y);
+            let beside = lum(panel.x1 - ROW_INSET / 2.0, row.center().y);
+            assert!(
+                (hover - beside).abs() >= EDGE_MIN,
+                "{}: hover veneer {hover:.4} vs ground {beside:.4} did not register",
+                theme.name
+            );
+        }
+    }
 
     fn view_from(query: &str) -> SearchResultsView {
         let mut reg = SearchRegistry::new();
