@@ -512,6 +512,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "clap",
+ "clap_complete",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
  "hex",
@@ -1292,7 +1293,7 @@ dependencies = [
  "bitflags 2.11.0",
  "cexpr",
  "clang-sys",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -2207,6 +2208,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be2ad0423bdbbb0e25bc89add796f3559706d4a95e1bc98e4d9662a957b6a19"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2351,7 +2361,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -3203,7 +3213,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -8761,7 +8771,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "478b0ff3f7d67b79da2b96f56f334431aef65e15ba4b29dd74a4236e29582bdc"
 dependencies = [
  "base64 0.21.7",
- "bindgen 0.69.5",
+ "bindgen 0.72.1",
  "bitflags 2.11.0",
  "btoi",
  "byteorder",
@@ -14900,6 +14910,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "clap_complete",
 ]
 
 [[package]]
@@ -16506,6 +16517,7 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
+ "strsim",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",

@@ -19,10 +19,14 @@
 //! [`Response::NeedsRestart`] and the user runs `restart` — pretending
 //! otherwise would mean a grant that appears made and has not.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use collab_types::caps::Verb;
 
@@ -125,6 +129,85 @@ pub enum Response {
     Status {
         status: Box<SessionStatus>,
     },
+}
+
+/// Socket-only framing for commands whose output may take a while. The public
+/// [`ask`] API still returns one complete [`Response`]; clients which opt in to
+/// [`ask_streaming`] additionally receive each output chunk as it arrives.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "frame", rename_all = "kebab-case")]
+enum WireFrame {
+    Output { stderr: bool, data: Vec<u8> },
+    Heartbeat,
+    Complete { response: Response },
+}
+
+const MAX_ARG_BYTES: usize = 4096;
+const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug)]
+struct HostCommand {
+    operation: &'static str,
+    program: &'static str,
+    args: Vec<String>,
+    binary: PathBuf,
+    mutating: bool,
+}
+
+fn host_command_for(base: &Path, req: &Request) -> Option<HostCommand> {
+    let (operation, program, args, mutating) = match req {
+        Request::AppUpdate { package } => {
+            let mut args = vec!["update".into()];
+            args.extend(package.iter().cloned());
+            ("app-update", "app", args, true)
+        }
+        Request::SystemUpdate => (
+            "system-update",
+            "tilo",
+            vec!["system".into(), "update".into(), "--yes".into()],
+            true,
+        ),
+        Request::AllUpdates => (
+            "all-updates",
+            "tilo",
+            vec!["update".into(), "--yes".into()],
+            true,
+        ),
+        Request::AppList { json } => {
+            let mut args = vec!["list".into()];
+            if *json {
+                args.push("--json".into());
+            }
+            ("app-list", "app", args, false)
+        }
+        Request::AppSearch { query } => (
+            "app-search",
+            "app",
+            vec!["search".into(), query.clone()],
+            false,
+        ),
+        Request::AppRepoList => (
+            "app-repo-list",
+            "app",
+            vec!["repo".into(), "list".into()],
+            false,
+        ),
+        Request::SystemStatus { json } => {
+            let mut args = vec!["system".into(), "status".into()];
+            if *json {
+                args.push("--json".into());
+            }
+            ("system-status", "tilo", args, false)
+        }
+        _ => return None,
+    };
+    Some(HostCommand {
+        operation,
+        program,
+        args,
+        binary: base.join("usr/bin").join(program),
+        mutating,
+    })
 }
 
 /// One line of `pkg diff`.
@@ -266,8 +349,6 @@ impl BrokerState {
     }
 
     fn host_command(&self, operation: &str, program: &str, args: &[String]) -> Response {
-        const MAX_ARG_BYTES: usize = 4096;
-        const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
         if args.iter().map(String::len).sum::<usize>() > MAX_ARG_BYTES {
             let reason = "management command arguments are too large".to_string();
             self.log(operation, Some(program), false, Some(&reason));
@@ -519,7 +600,9 @@ impl BrokerState {
 pub struct Broker {
     state: Arc<Mutex<BrokerState>>,
     socket: PathBuf,
-    _thread: std::thread::JoinHandle<()>,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    connections: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
 }
 
 impl Broker {
@@ -536,16 +619,50 @@ impl Broker {
         }
         let _ = std::fs::remove_file(&socket);
         let listener = UnixListener::bind(&socket)?;
+        listener.set_nonblocking(true)?;
         restrict_socket(&socket)?;
 
         let state = Arc::new(Mutex::new(state));
         let thread_state = Arc::clone(&state);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let connections = Arc::new(Mutex::new(Vec::new()));
+        let thread_connections = Arc::clone(&connections);
+        let host_mutation_gate = Arc::new(Mutex::new(()));
         let thread = std::thread::spawn(move || {
-            for conn in listener.incoming() {
-                match conn {
-                    Ok(stream) => serve_connection(stream, &thread_state),
-                    // The listener is closed when the session ends; that is the
-                    // normal way this loop stops.
+            while !thread_stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let connection_state = Arc::clone(&thread_state);
+                        let connection_stop = Arc::clone(&thread_stop);
+                        let connection_mutation_gate = Arc::clone(&host_mutation_gate);
+                        let handle = std::thread::spawn(move || {
+                            serve_connection(
+                                stream,
+                                &connection_state,
+                                &connection_stop,
+                                &connection_mutation_gate,
+                            );
+                        });
+                        if let Ok(mut handles) = thread_connections.lock() {
+                            let mut index = 0;
+                            while index < handles.len() {
+                                if handles
+                                    .get(index)
+                                    .is_some_and(std::thread::JoinHandle::is_finished)
+                                {
+                                    let finished = handles.swap_remove(index);
+                                    let _ = finished.join();
+                                } else {
+                                    index = index.saturating_add(1);
+                                }
+                            }
+                            handles.push(handle);
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
                     Err(_) => break,
                 }
             }
@@ -554,7 +671,9 @@ impl Broker {
         Ok(Self {
             state,
             socket,
-            _thread: thread,
+            stop,
+            thread: Some(thread),
+            connections,
         })
     }
 
@@ -587,6 +706,15 @@ impl Broker {
 
 impl Drop for Broker {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        if let Ok(mut connections) = self.connections.lock() {
+            for connection in connections.drain(..) {
+                let _ = connection.join();
+            }
+        }
         let _ = std::fs::remove_file(&self.socket);
     }
 }
@@ -598,24 +726,64 @@ fn restrict_socket(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
-fn serve_connection(stream: UnixStream, state: &Arc<Mutex<BrokerState>>) {
+fn serve_connection(
+    stream: UnixStream,
+    state: &Arc<Mutex<BrokerState>>,
+    stop: &Arc<AtomicBool>,
+    host_mutation_gate: &Arc<Mutex<()>>,
+) {
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
     let Ok(write_half) = stream.try_clone() else {
         return;
     };
-    let reader = BufReader::new(stream);
+    let mut reader = BufReader::new(stream);
     let mut writer = write_half;
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
+    loop {
+        let mut line = String::new();
+        let read = match reader.read_line(&mut line) {
+            Ok(read) => read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && !stop.load(Ordering::Acquire) =>
+            {
+                continue;
+            }
+            Err(_) => break,
+        };
+        if read == 0 {
+            break;
+        }
         if line.trim().is_empty() {
             continue;
         }
         let response = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => match state.lock() {
-                Ok(mut s) => s.handle(req),
-                Err(_) => Response::Denied {
-                    reason: "the broker is in a failed state".into(),
-                },
-            },
+            Ok(req) => {
+                let command = state
+                    .lock()
+                    .ok()
+                    .and_then(|s| host_command_for(&s.base, &req));
+                if let Some(command) = command {
+                    if serve_host_command(
+                        &command,
+                        state,
+                        &mut writer,
+                        &reader,
+                        stop,
+                        host_mutation_gate,
+                    ) {
+                        continue;
+                    }
+                    break;
+                }
+                match state.lock() {
+                    Ok(mut s) => s.handle(req),
+                    Err(_) => Response::Denied {
+                        reason: "the broker is in a failed state".into(),
+                    },
+                }
+            }
             Err(e) => Response::Denied {
                 reason: format!("malformed request: {e}"),
             },
@@ -630,6 +798,250 @@ fn serve_connection(stream: UnixStream, state: &Arc<Mutex<BrokerState>>) {
     }
 }
 
+#[derive(Debug)]
+enum PipeEvent {
+    Data { stderr: bool, data: Vec<u8> },
+    Eof,
+}
+
+fn pipe_reader<R: Read + Send + 'static>(
+    mut pipe: R,
+    stderr: bool,
+    tx: std::sync::mpsc::Sender<PipeEvent>,
+) {
+    std::thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match pipe.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let Some(data) = buffer.get(..n) else {
+                        break;
+                    };
+                    if tx
+                        .send(PipeEvent::Data {
+                            stderr,
+                            data: data.to_vec(),
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+        let _ = tx.send(PipeEvent::Eof);
+    });
+}
+
+fn peer_disconnected(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+
+    let mut byte = 0_u8;
+    // SAFETY: `byte` is valid for the one-byte non-consuming recv, and the fd
+    // belongs to `stream` for the duration of this call.
+    let result = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            (&raw mut byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    result == 0
+}
+
+fn stop_child(child: &mut Child) {
+    if let Some(group) = i32::try_from(child.id()).ok().and_then(i32::checked_neg) {
+        // The command is its process-group leader, so this also terminates any
+        // verifier/helper descendants which inherited its stdout or stderr.
+        // SAFETY: a negative pid targets exactly that process group.
+        let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn start_host_command(
+    command: &HostCommand,
+    state: &Arc<Mutex<BrokerState>>,
+) -> Result<Child, Response> {
+    if command.args.iter().map(String::len).sum::<usize>() > MAX_ARG_BYTES {
+        let reason = "management command arguments are too large".to_string();
+        if let Ok(s) = state.lock() {
+            s.log(
+                command.operation,
+                Some(command.program),
+                false,
+                Some(&reason),
+            );
+        }
+        return Err(Response::Denied { reason });
+    }
+    let mut process = std::process::Command::new(&command.binary);
+    process
+        .args(&command.args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    process.spawn().map_err(|error| {
+        let reason = format!("could not run {}: {error}", command.binary.display());
+        if let Ok(s) = state.lock() {
+            s.log(
+                command.operation,
+                Some(command.program),
+                false,
+                Some(&reason),
+            );
+        }
+        Response::Denied { reason }
+    })
+}
+
+fn acquire_host_mutation<'a>(
+    command: &HostCommand,
+    gate: &'a Mutex<()>,
+) -> Option<std::sync::MutexGuard<'a, ()>> {
+    command.mutating.then(|| {
+        gate.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    })
+}
+
+/// Run a host management command without retaining the state lock. Returns
+/// true when the complete response reached the guest.
+fn serve_host_command(
+    command: &HostCommand,
+    state: &Arc<Mutex<BrokerState>>,
+    writer: &mut UnixStream,
+    reader: &BufReader<UnixStream>,
+    stop: &Arc<AtomicBool>,
+    host_mutation_gate: &Arc<Mutex<()>>,
+) -> bool {
+    let _mutation_guard = acquire_host_mutation(command, host_mutation_gate);
+    let mut child = match start_host_command(command, state) {
+        Ok(child) => child,
+        Err(response) => {
+            return write_frame(writer, &WireFrame::Complete { response });
+        }
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (Some(child_stdout), Some(child_stderr)) = (child.stdout.take(), child.stderr.take())
+    else {
+        stop_child(&mut child);
+        return false;
+    };
+    pipe_reader(child_stdout, false, tx.clone());
+    pipe_reader(child_stderr, true, tx);
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut open_pipes: usize = 2;
+    let mut last_activity = Instant::now();
+    while open_pipes > 0 {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(PipeEvent::Data {
+                stderr: is_stderr,
+                data,
+            }) => {
+                let collected = if is_stderr { &mut stderr } else { &mut stdout };
+                if collected.len().saturating_add(data.len()) > MAX_OUTPUT_BYTES {
+                    stop_child(&mut child);
+                    let reason = "management command produced too much output".to_string();
+                    if let Ok(s) = state.lock() {
+                        s.log(
+                            command.operation,
+                            Some(command.program),
+                            false,
+                            Some(&reason),
+                        );
+                    }
+                    return write_frame(
+                        writer,
+                        &WireFrame::Complete {
+                            response: Response::Denied { reason },
+                        },
+                    );
+                }
+                collected.extend_from_slice(&data);
+                if !write_frame(
+                    writer,
+                    &WireFrame::Output {
+                        stderr: is_stderr,
+                        data,
+                    },
+                ) {
+                    stop_child(&mut child);
+                    log_disconnected(state, command);
+                    return false;
+                }
+                last_activity = Instant::now();
+            }
+            Ok(PipeEvent::Eof) => open_pipes = open_pipes.saturating_sub(1),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if stop.load(Ordering::Acquire) || peer_disconnected(reader.get_ref()) {
+                    stop_child(&mut child);
+                    log_disconnected(state, command);
+                    return false;
+                }
+                if last_activity.elapsed() >= Duration::from_secs(10) {
+                    if !write_frame(writer, &WireFrame::Heartbeat) {
+                        stop_child(&mut child);
+                        log_disconnected(state, command);
+                        return false;
+                    }
+                    last_activity = Instant::now();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let code = child
+        .wait()
+        .ok()
+        .and_then(|status| status.code())
+        .unwrap_or(1);
+    if let Ok(s) = state.lock() {
+        s.log(
+            command.operation,
+            Some(command.program),
+            true,
+            Some(&format!("exit {code}")),
+        );
+    }
+    write_frame(
+        writer,
+        &WireFrame::Complete {
+            response: Response::Command {
+                code,
+                stdout: String::new(),
+                stderr: String::new(),
+            },
+        },
+    )
+}
+
+fn log_disconnected(state: &Arc<Mutex<BrokerState>>, command: &HostCommand) {
+    if let Ok(s) = state.lock() {
+        s.log(
+            command.operation,
+            Some(command.program),
+            false,
+            Some("guest disconnected; command cancelled"),
+        );
+    }
+}
+
+fn write_frame(writer: &mut UnixStream, frame: &WireFrame) -> bool {
+    let Ok(mut bytes) = serde_json::to_vec(frame) else {
+        return false;
+    };
+    bytes.push(b'\n');
+    writer.write_all(&bytes).is_ok() && writer.flush().is_ok()
+}
+
 /// Ask the broker one question, from inside a guest.
 ///
 /// # Errors
@@ -637,6 +1049,40 @@ fn serve_connection(stream: UnixStream, state: &Arc<Mutex<BrokerState>>) {
 /// Returns an error if the socket can't be reached, the request can't be
 /// serialized, the write/read fails, or the reply isn't valid JSON.
 pub fn ask(socket: &Path, req: &Request) -> std::io::Result<Response> {
+    ask_streaming(socket, req, &mut std::io::sink(), &mut std::io::sink())
+}
+
+/// Ask the broker while copying host-command output to the supplied streams as
+/// soon as it is produced. The returned response remains fully populated so
+/// existing callers can continue to inspect or replay the captured output.
+///
+/// # Errors
+///
+/// Returns an error when the broker cannot be reached, the socket protocol is
+/// invalid, or streamed output cannot be written.
+pub fn ask_streaming(
+    socket: &Path,
+    req: &Request,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> std::io::Result<Response> {
+    ask_streaming_with_progress(socket, req, stdout, stderr, false)
+}
+
+/// Streaming variant which also renders a sparse liveness message on stderr
+/// while a host command is silent. Callers should enable this only for a TTY.
+///
+/// # Errors
+///
+/// Returns an error when the broker cannot be reached, the socket protocol is
+/// invalid, or streamed output cannot be written.
+pub fn ask_streaming_with_progress(
+    socket: &Path,
+    req: &Request,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    show_progress: bool,
+) -> std::io::Result<Response> {
     let stream = UnixStream::connect(socket)?;
     let mut writer = stream.try_clone()?;
     let mut bytes = serde_json::to_vec(req)?;
@@ -644,9 +1090,49 @@ pub fn ask(socket: &Path, req: &Request) -> std::io::Result<Response> {
     writer.write_all(&bytes)?;
     writer.flush()?;
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    Ok(serde_json::from_str(&line)?)
+    let mut captured_stdout = Vec::new();
+    let mut captured_stderr = Vec::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "broker closed the connection before replying",
+            ));
+        }
+        // Non-command requests retain the original one-line wire format.
+        if let Ok(response) = serde_json::from_str::<Response>(&line) {
+            return Ok(response);
+        }
+        match serde_json::from_str::<WireFrame>(&line)? {
+            WireFrame::Output { stderr: true, data } => {
+                stderr.write_all(&data)?;
+                stderr.flush()?;
+                captured_stderr.extend_from_slice(&data);
+            }
+            WireFrame::Output {
+                stderr: false,
+                data,
+            } => {
+                stdout.write_all(&data)?;
+                stdout.flush()?;
+                captured_stdout.extend_from_slice(&data);
+            }
+            WireFrame::Heartbeat => {
+                if show_progress {
+                    stderr.write_all(b"Still working...\n")?;
+                    stderr.flush()?;
+                }
+            }
+            WireFrame::Complete { mut response } => {
+                if let Response::Command { stdout, stderr, .. } = &mut response {
+                    *stdout = String::from_utf8_lossy(&captured_stdout).into_owned();
+                    *stderr = String::from_utf8_lossy(&captured_stderr).into_owned();
+                }
+                return Ok(response);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -745,6 +1231,220 @@ mod tests {
                 stderr: String::new(),
             }
         );
+        drop(broker);
+    }
+
+    #[test]
+    fn host_output_streams_while_other_broker_requests_remain_responsive() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct ChannelWriter(std::sync::mpsc::Sender<Vec<u8>>);
+        impl Write for ChannelWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.send(bytes.to_vec()).unwrap();
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("base/usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let app = bin.join("app");
+        std::fs::write(
+            &app,
+            "#!/bin/sh\nprintf 'started\\n'\nsleep 1\nprintf 'finished\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+
+        let command_socket = socket.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let command = std::thread::spawn(move || {
+            let mut stdout = ChannelWriter(tx);
+            ask_streaming(
+                &command_socket,
+                &Request::AppUpdate { package: None },
+                &mut stdout,
+                &mut std::io::sink(),
+            )
+            .unwrap()
+        });
+
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(500)).unwrap(),
+            b"started\n"
+        );
+        let before = Instant::now();
+        assert!(matches!(
+            ask(&socket, &Request::Status),
+            Ok(Response::Status { .. })
+        ));
+        assert!(
+            before.elapsed() < Duration::from_millis(500),
+            "a management command must not retain the BrokerState lock"
+        );
+        assert_eq!(
+            command.join().unwrap(),
+            Response::Command {
+                code: 0,
+                stdout: "started\nfinished\n".into(),
+                stderr: String::new(),
+            }
+        );
+        drop(broker);
+    }
+
+    #[test]
+    fn host_updates_serialize_without_blocking_status() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("base/usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let events = dir.path().join("events");
+        let app = bin.join("app");
+        std::fs::write(
+            &app,
+            format!(
+                "#!/bin/sh\nprintf '%s-start\\n' \"$2\" >> '{}'\n\
+                 if [ \"$2\" = first ]; then sleep 1; fi\n\
+                 printf '%s-end\\n' \"$2\" >> '{}'\n",
+                events.display(),
+                events.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+
+        let first_socket = socket.clone();
+        let first = std::thread::spawn(move || {
+            ask(
+                &first_socket,
+                &Request::AppUpdate {
+                    package: Some("first".into()),
+                },
+            )
+            .unwrap()
+        });
+        for _ in 0..50 {
+            if std::fs::read_to_string(&events).is_ok_and(|text| text.contains("first-start")) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let second_socket = socket.clone();
+        let second = std::thread::spawn(move || {
+            ask(
+                &second_socket,
+                &Request::AppUpdate {
+                    package: Some("second".into()),
+                },
+            )
+            .unwrap()
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            std::fs::read_to_string(&events).unwrap(),
+            "first-start\n",
+            "the second update started before the first update exited"
+        );
+
+        let before = Instant::now();
+        assert!(matches!(
+            ask(&socket, &Request::Status),
+            Ok(Response::Status { .. })
+        ));
+        assert!(before.elapsed() < Duration::from_millis(500));
+        assert!(matches!(
+            first.join().unwrap(),
+            Response::Command { code: 0, .. }
+        ));
+        assert!(matches!(
+            second.join().unwrap(),
+            Response::Command { code: 0, .. }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&events).unwrap(),
+            "first-start\nfirst-end\nsecond-start\nsecond-end\n"
+        );
+        drop(broker);
+    }
+
+    #[test]
+    fn disconnecting_the_guest_cancels_the_host_command() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("base/usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let app = bin.join("app");
+        std::fs::write(
+            &app,
+            format!(
+                "#!/bin/sh\nsleep 30 &\nhelper=$!\nprintf '%s %s' $$ \"$helper\" > '{}'\nwait\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        serde_json::to_writer(&mut stream, &Request::AppUpdate { package: None }).unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+        for _ in 0..50 {
+            if pid_file.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pids: Vec<i32> = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2);
+        drop(stream);
+
+        let mut stopped = Vec::new();
+        for _ in 0..50 {
+            stopped = pids
+                .iter()
+                .copied()
+                .filter(|pid| {
+                    // SAFETY: signal 0 only probes whether a test-recorded pid exists.
+                    (unsafe { libc::kill(*pid, 0) }) == -1
+                })
+                .collect();
+            if stopped.len() == pids.len() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            stopped, pids,
+            "the command process group survived its guest connection"
+        );
+        let audit = broker.state().lock().unwrap().audit.read_all();
+        assert!(audit.iter().any(|record| {
+            !record.allowed
+                && record
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("disconnected"))
+        }));
         drop(broker);
     }
 
