@@ -160,8 +160,9 @@ fn preview_rect(cursor: Point, preview: &DragPreview) -> Rect {
             let scale = preferred_scale.min(maximum_scale) * 0.96;
             (source_w * scale, source_h * scale)
         }
-        DragPreview::Text(_) | DragPreview::Kind(_) => (PREVIEW_MIN_W * 0.96, PREVIEW_MIN_H * 0.96),
-        DragPreview::Image { .. } => (PREVIEW_MIN_W * 0.96, PREVIEW_MIN_H * 0.96),
+        DragPreview::Text(_) | DragPreview::Kind(_) | DragPreview::Image { .. } => {
+            (PREVIEW_MIN_W * 0.96, PREVIEW_MIN_H * 0.96)
+        }
     };
     let x0 = cursor.x + CHIP_DX;
     let y0 = cursor.y + CHIP_DY + CHIP_H + 6.0;
@@ -248,13 +249,18 @@ fn draw_text_preview(
     let mut y = rect.y0 + f64::from(theme.tokens.spacing.s3);
     for source_line in value.lines().filter(|line| !line.trim().is_empty()).take(5) {
         let line: String = source_line.chars().take(34).collect();
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "text layout accepts f32 widths and the bounded preview is at most 560 px"
+        )]
+        let max_width = (rect.width() - 2.0 * f64::from(theme.tokens.spacing.s3)) as f32;
         text.draw_text(
             scene,
             &line,
             size,
             theme.tokens.colors.text_primary,
             Affine::translate((rect.x0 + f64::from(theme.tokens.spacing.s3), y)),
-            Some((rect.width() - 2.0 * f64::from(theme.tokens.spacing.s3)) as f32),
+            Some(max_width),
         );
         y += line_h;
         if y + line_h > rect.y1 {

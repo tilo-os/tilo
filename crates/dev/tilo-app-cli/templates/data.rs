@@ -148,6 +148,11 @@ impl TableModel for Rows {
 }
 
 /// A hundred-million-row table with bounded data and retained-widget windows.
+///
+/// # Panics
+///
+/// Panics if a generated row binding no longer matches the resource action
+/// declared by this template.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"

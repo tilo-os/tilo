@@ -2389,11 +2389,11 @@ impl GroupRow {
             .group_drag
             .filter(|drag| drag.moved)
             .and(self.group_reorder_target)
-            .or_else(|| match self.tab_drop_target {
+            .or(match self.tab_drop_target {
                 Some(TabDropTarget::GroupGap { gap_index }) => Some(gap_index),
                 _ => None,
             })
-            .or_else(|| match self.cross_strip_drop_target {
+            .or(match self.cross_strip_drop_target {
                 Some(TabDropTarget::GroupGap { gap_index }) => Some(gap_index),
                 _ => None,
             });
@@ -2706,11 +2706,10 @@ impl GroupRow {
             return false;
         };
         if src_idx == dst_idx {
-            let Some(from) = self.groups[src_idx]
-                .tabs()
-                .iter()
-                .position(|tab| tab.id == tab_id)
-            else {
+            let Some(group) = self.groups.get_mut(src_idx) else {
+                return false;
+            };
+            let Some(from) = group.tabs().iter().position(|tab| tab.id == tab_id) else {
                 return false;
             };
             let to = if tab_index > from {
@@ -2718,8 +2717,8 @@ impl GroupRow {
             } else {
                 tab_index
             }
-            .min(self.groups[src_idx].tab_count().saturating_sub(1));
-            if to == from || !self.groups[src_idx].reorder_tab(from, to) {
+            .min(group.tab_count().saturating_sub(1));
+            if to == from || !group.reorder_tab(from, to) {
                 return false;
             }
             self.pending_topology_change = true;

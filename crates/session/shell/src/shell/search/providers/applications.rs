@@ -2190,10 +2190,13 @@ mod native_application_tests {
                 groups: ids
                     .iter()
                     .enumerate()
-                    .map(|(index, id)| crate::shell::placement::GroupSpan {
-                        id: *id,
-                        x0: index as f64 * 100.0,
-                        x1: index as f64 * 100.0 + 100.0,
+                    .map(|(index, id)| {
+                        let index = f64::from(u32::try_from(index).expect("fixture group index"));
+                        crate::shell::placement::GroupSpan {
+                            id: *id,
+                            x0: index * 100.0,
+                            x1: index.mul_add(100.0, 100.0),
+                        }
                     })
                     .collect(),
                 visible_x0: 0.0,
@@ -2236,5 +2239,7 @@ mod native_application_tests {
             vec![ids[0], ids[1], ids[2], files_group, ids[3]],
             "the native search provider must use the same rightmost-visible placement as launched apps",
         );
+        drop(tree);
+        drop(state);
     }
 }

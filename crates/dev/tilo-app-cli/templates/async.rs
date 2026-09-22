@@ -23,6 +23,11 @@ fn count_entries() -> Result<usize, String> {
 }
 
 /// A complete button → worker → typed state → retained subtree loop.
+///
+/// # Panics
+///
+/// Panics if a generated action binding no longer matches the resource action
+/// declared immediately above it, or if its JSON arguments cannot be encoded.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"
