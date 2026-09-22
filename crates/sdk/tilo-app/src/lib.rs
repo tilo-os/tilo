@@ -20,23 +20,31 @@ pub mod prelude {
         HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
+    pub use ui_core::automerge::transaction::Transactable;
     pub use ui_core::automerge::{AutoCommit, ObjId};
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::record::{RecordCheckout, RecordId, RecordKind};
     pub use ui_core::taffy::{NodeId, TaffyTree};
     pub use ui_core::tilo_actions;
+    pub use ui_core::tilo_actions::{ActionError, ActionRegistry, Doc, ExecutionLocus, Resource};
+    pub use ui_core::tokens::TextRole;
     pub use ui_core::vello::Scene;
     pub use ui_core::vello::kurbo::{Affine, Point, Rect, Size};
+    pub use ui_core::widget::data_table::{
+        ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
+    };
     pub use ui_core::widget::resource_actions;
     pub use ui_core::widget::resource_actions::{ActionForm, ActionValue};
+    pub use ui_core::widget::virtual_list::{
+        ListModel, ListModelChange, ListRowState, VirtualList,
+    };
     pub use ui_core::widget::{
         ActionEmitter, AppShell, AudiencePresentationProvider, Banner, Button, Card, Checkbox,
         Collaborative, Column, CompleteContentProvider, Container, Continuable, ControlBindingKind,
         ControlBindingMetadata, Dropdown, EmptyState, EventCtx, FloatingSurfaceProvider,
-        FullscreenProvider, ModelView, NarrowScreen, NativeViewLifecycle, NumberInput,
+        FullscreenProvider, ModelView, NarrowScreen, NativeViewLifecycle, NumberInput, QrWidget,
         ResourceOperationStart, Row, SearchField, SearchResultsView, Slider, Spacer, Spinner,
-        Stack, Text, TextInput, Toggle, TreeNode, TreeView, VirtualList, Widget, labeled_check,
-        labeled_field,
+        Stack, Text, TextInput, Toggle, TreeNode, TreeView, Widget, labeled_check, labeled_field,
     };
     pub use ui_core::winit::event::WindowEvent;
     pub use ui_core::{
