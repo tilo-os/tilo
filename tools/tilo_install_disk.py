@@ -58,7 +58,7 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     script = args.disk_image.resolve(strict=True)
     if not script.is_file():
         raise ValueError(f"disk-image tool is not a file: {script}")
-    return {
+    result = {
         "authoritative_image": args.image,
         "local_mirror": args.mirror.removeprefix("docker://"),
         "image_digest": authoritative_digest,
@@ -71,10 +71,20 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
         "disk_image_tool": {"path": str(script), "sha256": sha256(script)},
         "size": args.size,
     }
+    if args.bootc_helper:
+        helper = args.bootc_helper.resolve(strict=True)
+        if helper.is_symlink() or not helper.is_file():
+            raise ValueError("bootc helper must be a regular, non-symlink file")
+        result["bootc_helper"] = {
+            "path": str(helper),
+            "bytes": helper.stat().st_size,
+            "sha256": sha256(helper),
+        }
+    return result
 
 
 def command(args: argparse.Namespace, inputs: dict[str, Any]) -> list[str]:
-    return [
+    result = [
         "bash",
         inputs["disk_image_tool"]["path"],
         inputs["authoritative_image"],
@@ -88,6 +98,9 @@ def command(args: argparse.Namespace, inputs: dict[str, Any]) -> list[str]:
         inputs["size"],
         "--raw",
     ]
+    if "bootc_helper" in inputs:
+        result.extend(("--bootc-helper", inputs["bootc_helper"]["path"]))
+    return result
 
 
 def write_receipt(path: Path, receipt: dict[str, Any]) -> None:
@@ -149,6 +162,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--firstboot-seed", type=Path, required=True, help="NAME:SHA512_CRYPT seed file")
     result.add_argument("--size", default="64G")
     result.add_argument("--disk-image", type=Path, default=repo / "os/dev/disk-image.sh")
+    result.add_argument("--bootc-helper", type=Path, help="reviewed ARM64 bootc helper to inject read-only")
     result.add_argument("--receipt", type=Path, help="new immutable JSON receipt path")
     result.add_argument("--dry-run", action="store_true", help="validate and print the exact command without root or disk writes")
     return result
