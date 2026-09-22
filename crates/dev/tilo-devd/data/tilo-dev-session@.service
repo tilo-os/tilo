@@ -1,0 +1,33 @@
+# One dev slot's graphical session: a PAM login for tds-<slot> through the
+# production greetd stack, then the production session entry point. Dev
+# image only; tilo-devd starts, stops and configures it through drop-ins:
+#   50-tilo-dev-layers.conf  ExtensionDirectories= (the slot's layers)
+#   50-tilo-dev-seat.conf    XDG_SEAT=seat-<slot> and the drm backend (headful),
+#                            or seat0/VT 1 while the slot holds the seat0 lease
+# Without a seat drop-in the session is headless. Provisional: seat sessions
+# are validated on a real VM; a seatless user-class session for the headless
+# backend is not yet.
+[Unit]
+Description=Tilo dev session for slot %i
+After=systemd-user-sessions.service systemd-logind.service
+Wants=systemd-logind.service
+
+[Service]
+Type=simple
+User=tds-%i
+PAMName=greetd
+Environment=TILO_DEV_BACKEND=headless
+Environment=XDG_SESSION_TYPE=wayland
+Environment=XDG_SESSION_CLASS=user
+Environment=XDG_SESSION_DESKTOP=tilo
+Environment=LIBSEAT_BACKEND=logind
+# tilo-control reaches the session here (the compositor's dev-overrides
+# feature reads TILO_TEST_CONTROL).
+Environment=TILO_TEST_CONTROL=/run/tilo-dev/%i/control.sock
+RuntimeDirectory=tilo-dev/%i
+# PAM moves the process into session-N.scope, so `journalctl -u` does not
+# see its output; tilo-dev logs reads this identifier instead.
+SyslogIdentifier=tilo-session-%i
+ExecStart=/usr/libexec/tilo-session --backend ${TILO_DEV_BACKEND}
+Restart=always
+RestartSec=2
