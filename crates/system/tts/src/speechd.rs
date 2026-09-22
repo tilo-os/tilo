@@ -78,14 +78,14 @@ impl SpeechDispatcherSpeaker {
     /// voices: both run behind the same socket, so it's a one-line change.
     pub fn set_output_module(&mut self, module: &str) {
         if let Err(e) = self.client.set_output_module(ClientScope::Current, module) {
-            log::warn!("speechd: set_output_module({module}) failed: {e}");
+            tracing::warn!("speechd: set_output_module({module}) failed: {e}");
         }
     }
 
     /// Set the language (BCP-47-ish, e.g. `"en"`, `"de"`), per SSIP `SET … LANGUAGE`.
     pub fn set_language(&mut self, lang: &str) {
         if let Err(e) = self.client.set_language(ClientScope::Current, lang) {
-            log::warn!("speechd: set_language({lang}) failed: {e}");
+            tracing::warn!("speechd: set_language({lang}) failed: {e}");
         }
     }
 }
@@ -98,12 +98,12 @@ impl Speaker for SpeechDispatcherSpeaker {
         if utterance.interrupt
             && let Err(e) = self.client.cancel(MessageScope::All)
         {
-            log::debug!("speechd: cancel before interrupting speak failed: {e}");
+            tracing::debug!("speechd: cancel before interrupting speak failed: {e}");
         }
 
         // Apply this utterance's priority for the upcoming message.
         if let Err(e) = self.client.set_priority(utterance.priority.to_ssip()) {
-            log::debug!("speechd: set_priority failed: {e}");
+            tracing::debug!("speechd: set_priority failed: {e}");
         }
 
         // SSIP SPEAK: `SPEAK\r\n`, then the text line(s), then `.\r\n`. The
@@ -117,7 +117,7 @@ impl Speaker for SpeechDispatcherSpeaker {
 
         match result {
             Ok(_) => self.in_flight = true,
-            Err(e) => log::warn!("speechd: speak failed: {e}"),
+            Err(e) => tracing::warn!("speechd: speak failed: {e}"),
         }
     }
 
@@ -125,10 +125,10 @@ impl Speaker for SpeechDispatcherSpeaker {
         // STOP cuts off speech immediately; CANCEL also flushes the queue. For a
         // silence key we want both: stop what's talking and drop what's pending.
         if let Err(e) = self.client.stop(MessageScope::All) {
-            log::debug!("speechd: stop failed: {e}");
+            tracing::debug!("speechd: stop failed: {e}");
         }
         if let Err(e) = self.client.cancel(MessageScope::All) {
-            log::debug!("speechd: cancel failed: {e}");
+            tracing::debug!("speechd: cancel failed: {e}");
         }
         self.in_flight = false;
     }
@@ -136,7 +136,7 @@ impl Speaker for SpeechDispatcherSpeaker {
     fn set_rate(&mut self, rate: f32) {
         let ssip_rate = rate_to_ssip(rate);
         if let Err(e) = self.client.set_rate(ClientScope::Current, ssip_rate) {
-            log::warn!("speechd: set_rate({ssip_rate}) failed: {e}");
+            tracing::warn!("speechd: set_rate({ssip_rate}) failed: {e}");
         }
     }
 
@@ -144,7 +144,7 @@ impl Speaker for SpeechDispatcherSpeaker {
         // SSIP `SET self SYNTHESIS_VOICE <name>` — a named voice within the
         // current output module.
         if let Err(e) = self.client.set_synthesis_voice(ClientScope::Current, voice) {
-            log::warn!("speechd: set_synthesis_voice({voice}) failed: {e}");
+            tracing::warn!("speechd: set_synthesis_voice({voice}) failed: {e}");
         }
     }
 

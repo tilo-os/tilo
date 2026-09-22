@@ -15853,10 +15853,10 @@ name = "tts"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
- "log",
  "nix 0.30.1",
  "ssip-client",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
