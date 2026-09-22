@@ -466,6 +466,18 @@ impl WindowGroup {
         let rect = self.new_tab_rect();
         rect.area() > 0.0 && rect.contains(point)
     }
+
+    /// Publish the same host-level request as the tab bar's `+` control when
+    /// an ancestor has already resolved an otherwise ambiguous clipped-edge
+    /// hit. Mouse button events carry no coordinates, so this avoids asking a
+    /// stale child cursor cache to repeat `GroupRow`'s exact hit-test.
+    pub(crate) fn request_new_tab_if_hit(&mut self, point: Point) -> bool {
+        if !self.new_tab_hit(point) {
+            return false;
+        }
+        self.pending_new_tab = Some(self.id);
+        true
+    }
     /// Not done inside [`Self::new`]: a group is also built by a bare `ui`
     /// host and by tests with no records at all, where an unbound tile
     /// keeps editing whatever document the parent pass carries.
