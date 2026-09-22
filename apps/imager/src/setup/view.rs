@@ -1607,10 +1607,11 @@ impl SetupApp {
             blockers.push_str(blocker);
         }
         let copy_status = self.review_copy_status(plan.experience);
-        let installed = matches!(
-            self.desktop_flow.state(),
-            DesktopFlowState::Installed { .. }
-        );
+        let installed = plan.experience == Experience::Desktop
+            && matches!(
+                self.desktop_flow.state(),
+                DesktopFlowState::Installed { .. }
+            );
         let header = stack().push(Box::new(
             Text::new(if installed {
                 "Tilo Desktop is installed"
@@ -3755,7 +3756,7 @@ mod tests {
 
         assert!(app.poll_background());
         assert_eq!(app.status, expected);
-        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+        let harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
         assert!(harness.a11y_node_named("Review Tilo setup").is_some());
         assert!(
             harness
