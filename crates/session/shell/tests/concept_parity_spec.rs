@@ -723,11 +723,10 @@ fn global_search_selected_row_is_indigo_500_not_grey() {
 }
 
 /// Audit `concept-coverage.md:22,128-131` (`QuickSettings.tsx:181-201`):
-/// The top row keeps common shell actions one gesture away. Tilo adds a
-/// notification-history tile beside Settings, Privacy and Power because the
-/// compositor, not Settings, owns delivered notification history.
+/// Session destinations stay one gesture away without displacing the live
+/// controls people opened Quick Settings to use.
 #[test]
-fn quick_settings_renders_settings_privacy_history_and_power_actions() {
+fn quick_settings_renders_a_danger_marked_power_utility() {
     let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     open_quick_settings(&chrome);
@@ -772,7 +771,7 @@ fn quick_settings_renders_settings_privacy_history_and_power_actions() {
 
     let fills = collect_solid_colors(&scene);
 
-    // Power tile must use the theme's danger colour (not the mockup's literal
+    // Power utility must use the theme's danger colour (not the mockup's literal
     // red-500, which no palette has) as a low-alpha wash — accept the
     // premultiplied form — plus a marked glyph so a bare wash doesn't pass.
     let danger = theme.tokens.colors.semantic.danger.to_rgba8();
@@ -786,7 +785,7 @@ fn quick_settings_renders_settings_privacy_history_and_power_actions() {
         || contains_color_close(&fills, premul, 4);
     assert!(
         has_danger_wash,
-        "QuickSettings top action row must include a Power tile marked \
+        "QuickSettings utility rail must include a Power action marked \
          with the theme's danger colour, nominal ({}, {}, {}) or \
          premultiplied {premul:?}. Observed solid-colour fills: {fills:?}.",
         danger.r, danger.g, danger.b
