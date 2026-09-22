@@ -20,19 +20,97 @@ pub mod prelude {
         HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
+    pub use ui_core::automerge::{AutoCommit, ObjId};
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::record::{RecordCheckout, RecordId, RecordKind};
+    pub use ui_core::taffy::{NodeId, TaffyTree};
     pub use ui_core::tilo_actions;
+    pub use ui_core::vello::Scene;
+    pub use ui_core::vello::kurbo::{Affine, Point, Rect, Size};
     pub use ui_core::widget::resource_actions;
     pub use ui_core::widget::resource_actions::{ActionForm, ActionValue};
     pub use ui_core::widget::{
-        ActionEmitter, AudiencePresentationProvider, Button, Checkbox, Collaborative,
-        CompleteContentProvider, Continuable, ControlBindingKind, ControlBindingMetadata, Dropdown,
-        FloatingSurfaceProvider, FullscreenProvider, NativeViewLifecycle, NumberInput,
-        ResourceOperationStart, Slider, Text, TextInput, Widget, labeled_check, labeled_field,
+        ActionEmitter, AppShell, AudiencePresentationProvider, Banner, Button, Card, Checkbox,
+        Collaborative, Column, CompleteContentProvider, Container, Continuable, ControlBindingKind,
+        ControlBindingMetadata, Dropdown, EmptyState, EventCtx, FloatingSurfaceProvider,
+        FullscreenProvider, ModelView, NarrowScreen, NativeViewLifecycle, NumberInput,
+        ResourceOperationStart, Row, SearchField, SearchResultsView, Slider, Spacer, Spinner,
+        Stack, Text, TextInput, Toggle, TreeNode, TreeView, VirtualList, Widget, labeled_check,
+        labeled_field,
     };
+    pub use ui_core::winit::event::WindowEvent;
     pub use ui_core::{
-        App, LocalState, RevisionHistory, SearchRegistry, State, Theme, collaboration,
-        history_source, presence, search,
+        App, LatestRequest, LatestTask, LocalState, PresenceCtx, RevisionHistory, SearchRegistry,
+        State, TextRenderer, Theme, UndoAccess, UndoRequest, UndoStatus, collaboration, column,
+        history_source, presence, row, search, stack,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prelude::*;
+    use std::collections::HashMap;
+
+    fn custom_event_handler(_event: &ui_core::winit::event::WindowEvent, ctx: &mut EventCtx<'_>) {
+        // App-defined widgets receive the same event and CRDT context as
+        // built-ins; implementing Widget requires no adapter framework.
+        let _ = (&mut ctx.state, ctx.path, ctx.node_id);
+    }
+
+    struct CustomWidget {
+        inner: Text,
+    }
+
+    impl Widget for CustomWidget {
+        fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+            self.inner.sync(state, path);
+        }
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.inner.build_layout(taffy, theme, node_map)
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.inner.apply_layout(taffy, node, origin);
+        }
+
+        fn draw(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            text_renderer: &mut TextRenderer,
+            theme: &Theme,
+            presence: &PresenceCtx,
+        ) {
+            self.inner
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
+
+        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+            self.inner.handle_event_ctx(event, ctx);
+        }
+
+        fn name(&self) -> &'static str {
+            "CustomWidget"
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.inner.get_rect()
+        }
+    }
+
+    #[test]
+    fn prelude_exposes_the_integrated_custom_widget_surface() {
+        std::hint::black_box(custom_event_handler);
+        std::hint::black_box(CustomWidget {
+            inner: Text::new("custom-widget"),
+        });
+        std::hint::black_box(SearchRegistry::new());
+        std::hint::black_box(ActionForm::new("note", "Note", "save", "Save"));
+    }
 }
