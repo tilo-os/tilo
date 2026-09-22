@@ -219,7 +219,7 @@ fn assert_local_app_behavior() {
     assert!(app.continuation.pending_view.is_none());
     assert!(!app.collaboration.manager.is_connected());
     assert!(app.collaboration.manager.primary_route().is_none());
-    assert!(app.floating_surface_client.is_none());
+    assert!(app.floating.client.is_none());
     assert!(app.presence.broadcast_scope.is_none());
     assert_ne!(author, "ambient-workspace-user");
     assert!(!app.presence_ctx.is_own_identity("ambient-workspace-user"));
