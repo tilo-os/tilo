@@ -288,6 +288,7 @@ jobs:
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
             --build-arg "BASE_REF=$BASE_REF" \
             --build-arg "RPMS_REF=$RPMS_REF" \
+            --build-arg "KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}" \
             --output "type=local,dest=$probe" .
           TILO_KERNEL_PATH="$probe/vmlinuz" \
           TILO_GEN_INIT_CPIO="$probe/gen_init_cpio" \
