@@ -178,7 +178,7 @@ class AppReleaseTests(unittest.TestCase):
                         'dependencies': [{'path': str(root / dep)} for dep in dependencies]}
             metadata = {'packages': [
                 package('format', 'crates/format'),
-                package('pkg-cli', 'crates/packaging/pkg-cli', ['crates/format']),
+                package('tilo-app-package-cli', 'crates/packaging/tilo-app-package-cli', ['crates/format']),
                 package('runtime-dylib', 'crates/runtime/runtime-dylib'),
                 package('notes-bin', 'apps/notes'), package('settings-bin', 'apps/settings'),
             ]}
@@ -482,7 +482,7 @@ dependencies = ["markdown-parser 1.1.0"]
         )
 
     def test_release_graph_keeps_image_codecs_explicit(self) -> None:
-        """One app must not enable unused image codecs in every thin qpkg."""
+        """One app must not enable unused image codecs in every thin tapp."""
         expected = {
             ROOT / "apps/slides/Cargo.toml": ["jpeg", "png", "gif", "webp"],
             ROOT / "crates/doc/qdoc-pdf/Cargo.toml": ["jpeg", "png"],

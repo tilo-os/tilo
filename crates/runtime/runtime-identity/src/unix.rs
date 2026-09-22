@@ -1688,7 +1688,7 @@ mod tests {
                 &mut writer,
                 &wire::Request::CollaborationOp {
                     workspace_id: "workspace".into(),
-                    app_id: "dev.tilo.notes".into(),
+                    app_id: "so.tilo.notes".into(),
                     record_id: "record".into(),
                     unsigned_op: sent,
                 },

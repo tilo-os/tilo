@@ -429,9 +429,9 @@ pub fn spawn_with_agent_actions(
     // App fixtures use the same agent-only endpoint as Scribe. Admission and
     // app authority remain separate, so each host receives only its own app.
     for (host, app) in [
-        ("ada", "dev.tilo.word-processor"),
-        ("photos", "dev.tilo.photos"),
-        ("files", "dev.tilo.file-explorer"),
+        ("ada", "so.tilo.word-processor"),
+        ("photos", "so.tilo.photos"),
+        ("files", "so.tilo.file-explorer"),
     ] {
         workspace
             .grant_as(

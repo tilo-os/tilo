@@ -51,9 +51,11 @@ NON_COMPILING_DOCS = {
 # inputs. Keep exact source/test pairs: unknown tools, deleted files, workflows,
 # compiler wrappers and packaging implementation changes retain native coverage.
 QUALITY_ONLY_HELPERS = {
+    ".githooks/pre-commit": "tools/tests/test_pre_commit_contract.py",
     "scripts/ci-run.sh": "tools/tests/test_ci_run.py",
     "tools/ci/check-changed-rustfmt.sh": "tools/tests/test_changed_rust_comparison.py",
     "tools/ci/check_changed_rust_allows.py": "tools/tests/test_changed_rust_comparison.py",
+    "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
@@ -104,6 +106,11 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
 }
 NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
+# A tilo-ui lib-test link has repeatedly exceeded 5 GiB RSS by itself. Its
+# affected shard also links shell and other test targets, so the general 10 GiB
+# envelope can OOM even when the source is valid. ARM has no large label and is
+# already serialized by the workflow.
+LARGE_X86_TEST_PACKAGES = {"tilo-ui"}
 GLOBAL_FILES = {
     "Cargo.toml",
     "Cargo.lock",
@@ -358,7 +365,12 @@ def make_plan(
         for shard in balance(selected, packages, effective_shards):
             shard_names = set(shard["packages"].split()[1::2])
             test_names = sorted(tested & shard_names)
-            matrix.append({**shard, "arch": arch, "runner": runner,
+            selected_runner = (
+                "runner-large"
+                if arch == "x86_64" and LARGE_X86_TEST_PACKAGES.intersection(test_names)
+                else runner
+            )
+            matrix.append({**shard, "arch": arch, "runner": selected_runner,
                            "test_packages": " ".join(f"-p {name}" for name in test_names)})
     return {
         "full": full,

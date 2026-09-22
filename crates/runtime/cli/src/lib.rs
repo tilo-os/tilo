@@ -200,8 +200,8 @@ mod tests {
     fn standalone_state_dir_honours_xdg() {
         unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/xdg") };
         assert_eq!(
-            standalone_state_dir("notes.tilo.dev"),
-            PathBuf::from("/tmp/xdg/notes.tilo.dev")
+            standalone_state_dir("notes.tilo.sh"),
+            PathBuf::from("/tmp/xdg/notes.tilo.sh")
         );
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }

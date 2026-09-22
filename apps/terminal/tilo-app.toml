@@ -16,7 +16,7 @@
 
 
 [package]
-id       = "dev.tilo.terminal"
+id       = "so.tilo.terminal"
 name     = "Terminal"
 category = "System"
 version  = "0.1.0"

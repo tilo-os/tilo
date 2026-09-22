@@ -1,7 +1,7 @@
 //! The user's data, as distinct from the package's files.
 //!
 //! Uninstalling has two halves that must not be conflated. The payload
-//! is the publisher's: bytes that came out of a signed `.qpkg`, exactly
+//! is the publisher's: bytes that came out of a signed `.tapp`, exactly
 //! reproducible by reinstalling, and removing them costs nothing.
 //! The app's *state* is the user's: notes they wrote, settings they
 //! chose, whatever the app saved. It lives outside the payload, at
@@ -191,12 +191,12 @@ mod tests {
     #[test]
     fn every_room_holding_state_for_a_package_is_found() {
         let tmp = tempfile::tempdir().unwrap();
-        seed(tmp.path(), "personal", "dev.tilo.notes", b"aaaa");
-        seed(tmp.path(), "e3f1-room-uuid", "dev.tilo.notes", b"bbbbbbbb");
+        seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
+        seed(tmp.path(), "e3f1-room-uuid", "so.tilo.notes", b"bbbbbbbb");
         // Another package in the same room must not be swept in.
-        seed(tmp.path(), "personal", "dev.tilo.other", b"cccc");
+        seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
 
-        let found = find(tmp.path(), "dev.tilo.notes");
+        let found = find(tmp.path(), "so.tilo.notes");
         let rooms: Vec<&str> = found.iter().map(|s| s.room.as_str()).collect();
         assert_eq!(rooms, vec!["e3f1-room-uuid", "personal"]);
         assert_eq!(total_bytes(&found), 12);
@@ -206,19 +206,19 @@ mod tests {
     #[test]
     fn a_package_that_was_never_launched_has_no_state() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(find(tmp.path(), "dev.tilo.never-run").is_empty());
+        assert!(find(tmp.path(), "so.tilo.never-run").is_empty());
     }
 
     #[test]
     fn removing_state_leaves_the_other_packages_alone() {
         let tmp = tempfile::tempdir().unwrap();
-        seed(tmp.path(), "personal", "dev.tilo.notes", b"aaaa");
-        let other = seed(tmp.path(), "personal", "dev.tilo.other", b"cccc");
-        let found = find(tmp.path(), "dev.tilo.notes");
+        seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
+        let other = seed(tmp.path(), "personal", "so.tilo.other", b"cccc");
+        let found = find(tmp.path(), "so.tilo.notes");
         let (removed, failures) = remove(&found);
         assert_eq!(removed, 1);
         assert!(failures.is_empty());
-        assert!(find(tmp.path(), "dev.tilo.notes").is_empty());
+        assert!(find(tmp.path(), "so.tilo.notes").is_empty());
         assert!(other.exists(), "another package's state must survive");
     }
 
@@ -226,7 +226,7 @@ mod tests {
     /// name, or "remove this app's state" would silently miss it.
     #[test]
     fn the_package_component_matches_the_launchers_sanitiser() {
-        assert_eq!(sanitise("dev.tilo.notes"), "dev.tilo.notes");
+        assert_eq!(sanitise("so.tilo.notes"), "so.tilo.notes");
         assert_eq!(sanitise("dev/tilo/notes"), "dev_tilo_notes");
         assert_eq!(sanitise(".."), format!("pkg_{}", fnv1a("..")));
     }
@@ -234,13 +234,13 @@ mod tests {
     #[test]
     fn a_symlinked_subtree_is_measured_but_not_followed() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = seed(tmp.path(), "personal", "dev.tilo.notes", b"aaaa");
+        let dir = seed(tmp.path(), "personal", "so.tilo.notes", b"aaaa");
         let elsewhere = tmp.path().join("big");
         std::fs::create_dir_all(&elsewhere).unwrap();
         std::fs::write(elsewhere.join("huge.bin"), vec![0u8; 100_000]).unwrap();
         std::os::unix::fs::symlink(&elsewhere, dir.join("link")).unwrap();
 
-        let found = find(tmp.path(), "dev.tilo.notes");
+        let found = find(tmp.path(), "so.tilo.notes");
         assert_eq!(found.len(), 1);
         assert!(
             found[0].bytes < 1000,

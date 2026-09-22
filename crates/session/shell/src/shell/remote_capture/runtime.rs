@@ -1322,11 +1322,11 @@ mod tests {
     }
 
     fn app() -> VerifiedAppRegistration {
-        VerifiedAppRegistration::new_verified("dev.tilo.Camera", "workspace-a").unwrap()
+        VerifiedAppRegistration::new_verified("so.tilo.Camera", "workspace-a").unwrap()
     }
 
     fn other_app() -> VerifiedAppRegistration {
-        VerifiedAppRegistration::new_verified("dev.tilo.Calls", "workspace-a").unwrap()
+        VerifiedAppRegistration::new_verified("so.tilo.Calls", "workspace-a").unwrap()
     }
 
     fn runtime() -> RemoteCaptureFabricRuntime {
@@ -1519,14 +1519,14 @@ mod tests {
             )
             .unwrap();
 
-        target.teardown_target_app("dev.tilo.Camera", "workspace-a");
+        target.teardown_target_app("so.tilo.Camera", "workspace-a");
 
         assert!(target.target_sessions.is_empty());
         assert_eq!(target.registry.phase(session_id), None);
         assert_eq!(target.outbound.len(), 1);
         assert_eq!(
             target.outbound.values().next().unwrap().app.app_id(),
-            "dev.tilo.Calls"
+            "so.tilo.Calls"
         );
         assert!(target.approve_target(session_id, now).is_err());
         assert!(matches!(

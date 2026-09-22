@@ -33,7 +33,7 @@ if [ -n "$kernel_refs" ]; then
     and (map(.ref) | unique | length) == 2
     and all(.[].ref;
       type == "string"
-      and test("^code\\.podesta\\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$"))
+      and test("^code\\.podesta\\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$"))
   ' >/dev/null || {
     printf 'release provenance: invalid TILO_KERNEL_REFS_JSON\n' >&2
     exit 1
@@ -73,7 +73,7 @@ printf '%s' "$release_children" | jq -e '
 }
 
 jq -n \
-  --arg source "git+ssh://code.sandbox.example/qos/tilo@$GITHUB_SHA" \
+  --arg source "git+ssh://code.sandbox.example/qos/qos@$GITHUB_SHA" \
   --arg digest "$RELEASE_DIGEST" \
   --arg base "$BASE_REF" \
   --arg rpms "$RPMS_REF" \
@@ -85,7 +85,7 @@ jq -n \
   --arg epoch "$SOURCE_DATE_EPOCH" \
   '{
     buildDefinition: {
-      buildType: "https://tilo.dev/buildtypes/bootc-os/v1",
+      buildType: "https://tilo.sh/buildtypes/bootc-os/v1",
       externalParameters: ({generation: ($generation|tonumber)}
         + if ($release_children | length) == 0 then {}
           else {children: $release_children}

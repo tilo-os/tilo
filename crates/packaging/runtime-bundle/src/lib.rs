@@ -299,7 +299,7 @@ pub struct BuildOptions<'a> {
     pub extra_libs: &'a [PathBuf],
 }
 
-/// Signing identity for [`build_bundle_with`]: JSON `{ "secret_key_hex": "<64-hex>" }`, same shape as `tilo-pkg`.
+/// Signing identity for [`build_bundle_with`]: JSON `{ "secret_key_hex": "<64-hex>" }`, same shape as `tilo-app-package`.
 #[derive(Clone)]
 pub struct Identity {
     signing_key: ed25519_dalek::SigningKey,

@@ -20,7 +20,7 @@ prefix='https://downloads.example/tilo/public-downloads/releases/download/imager
 write_fragment x86_64 "$prefix/tilo-installer-linux-x86_64.img.zst"
 write_fragment aarch64 "$prefix/tilo-installer-linux-aarch64.img.zst"
 GITHUB_REF_NAME=imager-v1.2.3 \
-GITHUB_SERVER_URL=https://downloads.example \
+TILO_RELEASE_SERVER=https://downloads.example \
 TILO_RELEASE_REPOSITORY=tilo/public-downloads \
   "$repo/apps/imager/packaging/build-release-catalog.sh" \
     "$work/fragments" "$work/catalog"
@@ -31,7 +31,7 @@ jq -e --arg prefix "$prefix/" \
 write_fragment x86_64 \
   'https://code.sandbox.example/qos/qos/releases/download/imager-v1.2.3/tilo-installer-linux-x86_64.img.zst'
 if GITHUB_REF_NAME=imager-v1.2.3 \
-   GITHUB_SERVER_URL=https://downloads.example \
+   TILO_RELEASE_SERVER=https://downloads.example \
    TILO_RELEASE_REPOSITORY=tilo/public-downloads \
      "$repo/apps/imager/packaging/build-release-catalog.sh" \
        "$work/fragments" "$work/rejected" >/dev/null 2>&1; then

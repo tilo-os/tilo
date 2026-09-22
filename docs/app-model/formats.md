@@ -5,7 +5,7 @@ the `tilo:format-provider` interface. The `tilo-format-host` daemon loads
 providers via wasmtime, exposes a Cap'n Proto socket, and the editor / FS
 layer routes `detect / import / export` calls through it.
 
-Same packaging pipeline: your provider is a `.qpkg` with
+Same packaging pipeline: your provider is a `.tapp` with
 `kind = "format-provider"` and a WASM binary in the payload.
 
 ## The WIT interface
@@ -74,8 +74,8 @@ The host reads its provider list from
 ```toml
 [[provider]]
 mime     = "text/markdown"
-package  = "dev.tilo.qdoc-md"
-wasm     = "/home/user/.local/share/tilo-format-providers/dev.tilo.qdoc-md/component.wasm"
+package  = "so.tilo.qdoc-md"
+wasm     = "/home/user/.local/share/tilo-format-providers/so.tilo.qdoc-md/component.wasm"
 version  = "0.1.0"
 priority = "installed"
 trust    = ["tilo-curated/2026.07"]
@@ -95,7 +95,7 @@ Fields:
 - `trust` — the trust roots the host considers when admitting the
   provider. Free-form strings, stored verbatim.
 
-Installers writing new provider `.qpkg`s should append a row here (the
+Installers writing new provider `.tapp`s should append a row here (the
 `tilo-install` integration for provider packages is scoped to future
 work; today registration is a hand-edit of this file).
 
@@ -105,7 +105,7 @@ Your provider's `manifest.toml`:
 
 ```toml
 [package]
-id      = "dev.tilo.qdoc-md"
+id      = "so.tilo.qdoc-md"
 version = "0.1.0"
 kind    = "format-provider"
 
@@ -242,7 +242,7 @@ Output at `target/wasm32-wasip2/release/qdoc_codec_markdown_wasm.wasm`.
 
 ### Package
 
-Same `tilo-pkg pack` flow as any other package. The `component.wasm` file
+Same `tilo-app-package pack` flow as any other package. The `component.wasm` file
 must sit at the payload root (a top-level file, not nested).
 
 ```
@@ -253,10 +253,10 @@ payload/
 Then:
 
 ```bash
-tilo-pkg pack \
+tilo-app-package pack \
     --manifest manifest.toml \
     --payload  payload \
-    --output   qdoc-md.qpkg
+    --output   qdoc-md.tapp
 ```
 
 ### Registration
@@ -268,8 +268,8 @@ then append the provider row to
 ```toml
 [[provider]]
 mime     = "text/markdown"
-package  = "dev.tilo.qdoc-md"
-wasm     = "~/.local/share/tilo-apps/payloads/dev.tilo.qdoc-md/component.wasm"
+package  = "so.tilo.qdoc-md"
+wasm     = "~/.local/share/tilo-apps/payloads/so.tilo.qdoc-md/component.wasm"
 version  = "0.1.0"
 priority = "installed"
 trust    = []
