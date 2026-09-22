@@ -28,6 +28,7 @@ use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
 };
+use crate::widget::EventCtx;
 use crate::widget::data_table::{
     RowType, centered_text_top, renderer_type_size, row_estimate, text_band, type_line_height,
 };
