@@ -3718,6 +3718,39 @@ mod tests {
     }
 
     #[test]
+    fn desktop_review_ignores_unselected_full_os_download_status() {
+        let mut app = SetupApp::for_shot("setup-review");
+        app.desktop_revision = app.desktop_flow.revision();
+        app.internal_download_revision = u64::MAX;
+        let expected = app.status.clone();
+
+        assert!(app.poll_background());
+        assert_eq!(app.status, expected);
+    }
+
+    #[test]
+    fn full_os_review_ignores_unselected_desktop_install_status() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+        app.apply_command(SetupCommand::Next);
+        app.apply_command(SetupCommand::Next);
+        assert_eq!(app.controller().page(), SetupPage::Review);
+        app.internal_download_revision = app.internal_download_flow.as_ref().unwrap().revision();
+        app.desktop_flow = DesktopFlow::from_fixture_state(DesktopFlowState::Installed {
+            selection: fixture_desktop_selection(false),
+            result: super::super::desktop_install::InstalledDesktop {
+                version: "0.1.9-1.fc44".into(),
+                session_entry: "/usr/share/wayland-sessions/tilo.desktop".into(),
+            },
+        });
+        app.desktop_revision = u64::MAX;
+        let expected = app.status.clone();
+
+        assert!(app.poll_background());
+        assert_eq!(app.status, expected);
+    }
+
+    #[test]
     fn semantic_operations_refuse_stale_identities_and_malformed_arguments() {
         let mut app = supported_fixture();
         invoke_setup(
