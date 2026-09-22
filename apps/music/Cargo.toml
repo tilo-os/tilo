@@ -24,9 +24,9 @@ audio = ["dep:gstreamer", "dep:tokio", "ui/portal", "ui/mpris"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:rquickjs"]
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:tilo-net", "dep:rquickjs"]
 # Enable network lyrics without the full live backend; live already enables them.
-lyrics = ["dep:reqwest"]
+lyrics = ["dep:reqwest", "dep:tilo-net"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -57,7 +57,8 @@ taffy.workspace = true
 # Optional: enabled only by the `audio` / `live` / `lyrics`
 # features above. Versions pinned to match the workspace lock so no extra
 # copies resolve (tokio mirrors the `chat` app + `fs` submodule pins).
-reqwest = { workspace = true, optional = true, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { workspace = true, optional = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
 gstreamer = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream

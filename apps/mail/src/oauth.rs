@@ -336,7 +336,7 @@ pub fn exchange_code(
         ("code", code),
         ("code_verifier", verifier),
     ];
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -530,7 +530,7 @@ pub fn refresh_tokens(
         ("client_id", client_id),
         ("refresh_token", refresh_token),
     ];
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;

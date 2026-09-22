@@ -3949,7 +3949,7 @@ fn avatar_fetcher() -> ui::Fetcher {
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     Arc::new(|url: &str| {
         let client = CLIENT.get_or_init(|| {
-            reqwest::blocking::Client::builder()
+            tilo_net::http::blocking_client()
                 .timeout(std::time::Duration::from_secs(8))
                 .user_agent("Tilo Mail")
                 .build()

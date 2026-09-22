@@ -27,7 +27,8 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 accounts = { path = "../../crates/system/accounts" }
-reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 roxmltree = "0.20"
 zeroize.workspace = true
 # Source of truth for which extensions are editable documents (so the file

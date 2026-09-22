@@ -76,5 +76,23 @@ class UiClockContractTests(unittest.TestCase):
         self.assertIn("differently", reasons[0])
 
 
+    def test_crate_clippy_list_may_extend_the_root_list(self):
+        root = self.fixture({}, crate_clippy=None)
+        (root / "clippy.toml").write_text(
+            ROOT_CLIPPY + 'disallowed-methods = ["reqwest::get"]\n', encoding="utf-8"
+        )
+        crate = root / "crates/sdk/ui-core/clippy.toml"
+        crate.write_text(
+            ROOT_CLIPPY + 'disallowed-methods = ["reqwest::get", "std::time::Instant::now"]\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(contract.audit(root), [])
+        crate.write_text(
+            ROOT_CLIPPY + 'disallowed-methods = ["std::time::Instant::now"]\n', encoding="utf-8"
+        )
+        reasons = [v.reason for v in contract.audit(root)]
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("differently", reasons[0])
+
 if __name__ == "__main__":
     unittest.main()

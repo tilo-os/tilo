@@ -61,7 +61,7 @@ fn fetch_rules(
     force: bool,
 ) -> Result<(String, bool), String> {
     use std::io::Read;
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| e.to_string())?;

@@ -27,7 +27,8 @@ uuid.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 base64.workspace = true
 
 [lints]

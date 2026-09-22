@@ -726,7 +726,7 @@ fn verified_image_observed(
 
     let archive_part = root.join("tilo-installer.img.zst.part");
     let image_part = root.join("tilo-installer.img.part");
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .user_agent("Tilo-Imager/1")
         .timeout(std::time::Duration::from_secs(60 * 60))
         .build()
@@ -911,7 +911,7 @@ mod tests {
     }
 
     fn test_client() -> reqwest::blocking::Client {
-        reqwest::blocking::Client::builder().build().unwrap()
+        tilo_net::http::blocking_client().build().unwrap()
     }
 
     #[test]

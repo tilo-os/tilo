@@ -119,7 +119,7 @@ impl InternalTransport {
         Self::client(production_origin(), Duration::from_secs(30))
     }
     fn client(origin: Url, timeout: Duration) -> Result<Self, String> {
-        let client = Client::builder()
+        let client = tilo_net::http::blocking_client()
             .connect_timeout(Duration::from_secs(10))
             .timeout(timeout)
             .no_gzip()

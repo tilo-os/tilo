@@ -113,7 +113,7 @@ fn signed_report(key: &SigningKey, request_id: &str, now: u64) -> SignedModerati
 async fn moderation_http_is_signed_idempotent_authorized_and_verifiable() {
     let h = spawn_server(true).await;
     let entry = sample_entry(&h.publisher, 100);
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     client
         .post(url(h.addr, "/entries"))
         .json(&sign_change_request(EntryAction::Add, entry, &h.publisher))
@@ -218,7 +218,9 @@ async fn moderation_http_is_signed_idempotent_authorized_and_verifiable() {
 #[tokio::test]
 async fn oversized_moderation_body_is_rejected_before_parse_or_disk_write() {
     let h = spawn_server(true).await;
-    let response = reqwest::Client::new()
+    let response = tilo_net::http::client()
+        .build()
+        .expect("http client")
         .post(url(h.addr, "/moderation/mutations"))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body("x".repeat(70 * 1024))
@@ -226,7 +228,9 @@ async fn oversized_moderation_body_is_rejected_before_parse_or_disk_write() {
         .await
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
-    let page: TransparencyPage = reqwest::Client::new()
+    let page: TransparencyPage = tilo_net::http::client()
+        .build()
+        .expect("http client")
         .get(url(h.addr, "/moderation/transparency?from=1&limit=10"))
         .send()
         .await
@@ -323,7 +327,7 @@ fn url(addr: SocketAddr, path: &str) -> String {
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     let body: serde_json::Value = client
         .get(url(h.addr, "/health"))
         .send()
@@ -345,7 +349,9 @@ async fn server_refuses_a_tampered_or_expired_published_snapshot() {
         serde_json::to_vec_pretty(&snapshot).unwrap(),
     )
     .unwrap();
-    let response = reqwest::Client::new()
+    let response = tilo_net::http::client()
+        .build()
+        .expect("http client")
         .get(url(h.addr, "/entries"))
         .send()
         .await
@@ -356,7 +362,7 @@ async fn server_refuses_a_tampered_or_expired_published_snapshot() {
 #[tokio::test]
 async fn registry_handshake_uses_stored_identity() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     let body: RegistryHandshake = client
         .get(url(h.addr, "/registry"))
         .send()
@@ -376,7 +382,7 @@ async fn signed_post_stays_private_until_approval() {
     let entry = sample_entry(&h.publisher, 100);
     let req = sign_change_request(EntryAction::Add, entry.clone(), &h.publisher);
 
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     let resp = client
         .post(url(h.addr, "/entries"))
         .json(&req)
@@ -452,7 +458,7 @@ async fn add_then_update_bumps_stored_entry() {
 
     let entry_v1 = sample_entry(&h.publisher, 100);
     let req_v1 = sign_change_request(EntryAction::Add, entry_v1, &h.publisher);
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     client
         .post(url(h.addr, "/entries"))
         .json(&req_v1)
@@ -509,7 +515,7 @@ async fn add_then_update_bumps_stored_entry() {
 #[tokio::test]
 async fn update_rejects_when_updated_at_not_strictly_greater() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     let v1 = sample_entry(&h.publisher, 100);
     client
@@ -540,7 +546,7 @@ async fn update_rejects_when_updated_at_not_strictly_greater() {
 #[tokio::test]
 async fn delete_keeps_entry_public_until_approval() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     let entry = sample_entry(&h.publisher, 100);
     client
@@ -589,7 +595,7 @@ async fn delete_keeps_entry_public_until_approval() {
 #[tokio::test]
 async fn unauthorised_publisher_gets_403() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     // Build a request signed by the outsider — a valid Ed25519
     // signature, but the pubkey is not in the allowlist.
@@ -609,7 +615,7 @@ async fn unauthorised_publisher_gets_403() {
 #[tokio::test]
 async fn tampered_signature_gets_403() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     let entry = sample_entry(&h.publisher, 100);
     let mut req = sign_change_request(EntryAction::Add, entry, &h.publisher);
@@ -633,7 +639,7 @@ async fn add_denied_when_publisher_cannot_add_new() {
     // Same publisher as normal, but the allowlist says
     // can_add_new = false — they may only edit their own rows.
     let h = spawn_server(false).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     let entry = sample_entry(&h.publisher, 100);
     let req = sign_change_request(EntryAction::Add, entry, &h.publisher);
@@ -649,7 +655,7 @@ async fn add_denied_when_publisher_cannot_add_new() {
 #[tokio::test]
 async fn publisher_cannot_hijack_another_publishers_entry() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     // The allowlisted publisher creates an entry.
     let entry_v1 = sample_entry(&h.publisher, 100);
@@ -692,7 +698,7 @@ async fn publisher_cannot_hijack_another_publishers_entry() {
 #[tokio::test]
 async fn bad_json_returns_400() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     let resp = client
         .post(url(h.addr, "/entries"))
         .header("content-type", "application/json")
@@ -706,7 +712,9 @@ async fn bad_json_returns_400() {
 #[tokio::test]
 async fn oversized_change_request_returns_413_without_touching_disk() {
     let h = spawn_server(true).await;
-    let response = reqwest::Client::new()
+    let response = tilo_net::http::client()
+        .build()
+        .expect("http client")
         .post(url(h.addr, "/entries"))
         .body(vec![b'x'; 1024 * 1024 + 1])
         .send()

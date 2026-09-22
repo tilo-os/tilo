@@ -187,7 +187,7 @@ pub fn fetch_version_bytes(
         return Err(BundleReviewError::PrivateAddress(version.tapp_url.clone()));
     }
     // Pin the already-checked address to prevent DNS rebinding.
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(policy.timeout)
         .redirect(reqwest::redirect::Policy::none())
         .resolve(host, address)

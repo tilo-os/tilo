@@ -97,7 +97,7 @@ pub fn resolve_full_audio(video_id: &str) -> Option<ResolvedStream> {
     {
         return None;
     }
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(8))
         .user_agent(USER_AGENT)
         .build()
@@ -187,7 +187,7 @@ mod tests {
     fn android_vr_resolves_and_serves_media() {
         let stream = resolve_full_audio("dQw4w9WgXcQ").expect("Android VR player response");
         assert!(stream.size_bytes > 2 * 1024 * 1024);
-        let response = reqwest::blocking::Client::builder()
+        let response = tilo_net::http::blocking_client()
             .timeout(std::time::Duration::from_secs(8))
             .user_agent(USER_AGENT)
             .build()
