@@ -16,7 +16,9 @@ use crate::namespace::{ContentAuthority, Namespace, NodeKind};
 use crate::record_access::RecordAccessBinding;
 use crate::record_protocol::{RecordMutationSink, RecordMutationSinkError};
 use crate::record_replication::{RecordEnvelopeV1, RecordOperationV1, RecordSnapshot};
-use crate::record_repository::RecordRepository;
+use crate::record_repository::{RecordRepository, RecordRepositoryError};
+use crate::record_transaction::RecordTransactionJournalError;
+use crate::transaction_coordinator::RecordTransactionCoordinatorError;
 
 #[derive(Clone)]
 struct RemoteTransactionRuntime {
@@ -99,6 +101,7 @@ impl RecordMaterializer {
     ///
     /// Returns an error if the authenticated scope does not match the envelope
     /// or if the mutation cannot be projected safely.
+    #[cfg(test)]
     pub fn apply(
         &self,
         scope: RecordAccessBinding,
@@ -115,7 +118,7 @@ impl RecordMaterializer {
         {
             return Err(RecordMaterializerError::BindingMismatch);
         }
-        self.apply_exact(scope.record_id, envelope, snapshot)
+        self.apply_exact(scope.record_id, envelope, snapshot, None)
     }
 
     /// Heal any durable repository operations that were not projected before
@@ -129,7 +132,11 @@ impl RecordMaterializer {
     // Reconciliation intentionally keeps the journal guard across the atomic
     // durable coordinator call; splitting the bounded replay phases would
     // obscure their required ordering.
-    #[allow(clippy::too_many_lines, clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::significant_drop_tightening,
+        reason = "Replay phases stay ordered, and the journal guard remains held through durable transaction coordination before reconciliation advances."
+    )]
     pub fn reconcile_repository(
         &self,
         repository: &RecordRepository,
@@ -144,7 +151,7 @@ impl RecordMaterializer {
             for envelope in batch.envelopes.iter().filter(|envelope| {
                 matches!(&envelope.operation, RecordOperationV1::AppendVersion(_))
             }) {
-                match self.apply_exact(key.record_id, envelope, &batch.snapshot) {
+                match self.apply_exact(key.record_id, envelope, &batch.snapshot, Some(repository)) {
                     Ok(()) => {
                         report.operations_replayed = report.operations_replayed.saturating_add(1);
                     }
@@ -162,7 +169,7 @@ impl RecordMaterializer {
                     RecordOperationV1::SetContentRevision(_)
                 )
             }) {
-                match self.apply_exact(key.record_id, envelope, &batch.snapshot) {
+                match self.apply_exact(key.record_id, envelope, &batch.snapshot, Some(repository)) {
                     Ok(()) => {
                         report.operations_replayed = report.operations_replayed.saturating_add(1);
                     }
@@ -181,7 +188,7 @@ impl RecordMaterializer {
                     matches!(&envelope.operation, RecordOperationV1::SetMetadata(_))
                 })
             {
-                match self.apply_exact(key.record_id, envelope, &batch.snapshot) {
+                match self.apply_exact(key.record_id, envelope, &batch.snapshot, Some(repository)) {
                     Ok(()) => {
                         report.operations_replayed = report.operations_replayed.saturating_add(1);
                     }
@@ -201,7 +208,12 @@ impl RecordMaterializer {
                             | (RecordOperationV1::ResolveConflict { .. }, 1)
                     )
                 }) {
-                    match self.apply_exact(key.record_id, envelope, &batch.snapshot) {
+                    match self.apply_exact(
+                        key.record_id,
+                        envelope,
+                        &batch.snapshot,
+                        Some(repository),
+                    ) {
                         Ok(()) => {
                             report.operations_replayed =
                                 report.operations_replayed.saturating_add(1);
@@ -243,7 +255,16 @@ impl RecordMaterializer {
                 .clone()
                 .apply_mutation_transaction(&transaction)
                 .is_ok_and(|delta| delta.is_none());
-            if history_complete && namespace_already_complete {
+            // Checked restores may still own a seeded Prepared reservation
+            // even if both projections arrived independently. Their journal
+            // completion must run before taking this projection-only fast path.
+            if history_complete
+                && namespace_already_complete
+                && !matches!(
+                    transaction.manifest.operation,
+                    collab_types::FileMutationOperation::RestoreContent { .. }
+                )
+            {
                 report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
                 continue;
             }
@@ -267,30 +288,49 @@ impl RecordMaterializer {
                         .map_err(|_| RecordMaterializerError::TransactionRecoveryUnavailable)?;
                 }
                 let sync = self.sync.clone();
-                crate::transaction_coordinator::complete_replacement_transaction_after_repository(
-                    &mut journal,
-                    history,
-                    &self.namespace,
-                    &runtime.namespace_path,
-                    &entry,
-                    move |delta| {
-                        if let Ok(current) = sync.read()
-                            && let Some(current) = current.as_ref()
-                        {
-                            current.broadcast_delta(delta);
-                        }
-                        Ok(())
-                    },
-                )
-                .map_err(|error| match error {
-                    crate::transaction_coordinator::RecordTransactionCoordinatorError::History(
-                        HistoryError::Io(_),
-                    )
-                    | crate::transaction_coordinator::RecordTransactionCoordinatorError::Io(_)
-                    | crate::transaction_coordinator::RecordTransactionCoordinatorError::NamespacePoisoned => {
-                        RecordMaterializerError::TransactionRecoveryUnavailable
+                let broadcast = move |delta| {
+                    if let Ok(current) = sync.read()
+                        && let Some(current) = current.as_ref()
+                    {
+                        current.broadcast_delta(delta);
                     }
-                    crate::transaction_coordinator::RecordTransactionCoordinatorError::History(_) => {
+                    Ok(())
+                };
+                let completion = if matches!(
+                    entry.transaction.manifest.operation,
+                    collab_types::FileMutationOperation::RestoreContent { .. }
+                ) {
+                    crate::transaction_coordinator::complete_checked_restore_after_repository(
+                        repository,
+                        &mut journal,
+                        history,
+                        &self.namespace,
+                        &runtime.namespace_path,
+                        &entry,
+                        broadcast,
+                    )
+                } else {
+                    crate::transaction_coordinator::complete_replacement_transaction_after_repository(
+                        &mut journal,
+                        history,
+                        &self.namespace,
+                        &runtime.namespace_path,
+                        &entry,
+                        broadcast,
+                    )
+                };
+                completion.map_err(|error| match error {
+                    RecordTransactionCoordinatorError::History(HistoryError::Io(_))
+                    | RecordTransactionCoordinatorError::Io(_)
+                    | RecordTransactionCoordinatorError::NamespacePoisoned
+                    | RecordTransactionCoordinatorError::Repository(
+                        RecordRepositoryError::Io(_)
+                        | RecordRepositoryError::StatePoisoned
+                        | RecordRepositoryError::TransactionJournal(
+                            RecordTransactionJournalError::Io(_),
+                        ),
+                    ) => RecordMaterializerError::TransactionRecoveryUnavailable,
+                    RecordTransactionCoordinatorError::History(_) => {
                         RecordMaterializerError::HistoryRejected
                     }
                     _ => RecordMaterializerError::TransactionRejected,
@@ -302,7 +342,7 @@ impl RecordMaterializer {
                         HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
                         _ => RecordMaterializerError::HistoryRejected,
                     })?;
-                if let collab_types::FileMutationOperationV1::MergeContentConflict {
+                if let collab_types::FileMutationOperation::MergeContentConflict {
                     source_record,
                     conflict_id,
                     ..
@@ -326,12 +366,45 @@ impl RecordMaterializer {
                         )
                         .map_err(|_| RecordMaterializerError::HistoryRejected)?;
                 }
-                let delta = self
-                    .namespace
-                    .lock()
-                    .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
-                    .apply_mutation_transaction(&transaction)
-                    .map_err(|_| RecordMaterializerError::TransactionRejected)?;
+                let delta = if matches!(
+                    transaction.manifest.operation,
+                    collab_types::FileMutationOperation::RestoreContent { .. }
+                ) {
+                    let mut namespace = self
+                        .namespace
+                        .lock()
+                        .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?;
+                    let record_id = transaction.manifest.participants[0].record_id;
+                    let projection = repository
+                        .projection_lease(crate::record_repository::RecordRepositoryKey {
+                            workspace_id: self.workspace_id,
+                            record_id,
+                        })
+                        .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?;
+                    if let Some(binding) = &projection.snapshot.binding {
+                        namespace
+                            .apply_signed_binding(binding)
+                            .map_err(|_| RecordMaterializerError::BindingMismatch)?;
+                    }
+                    if let Some(ino) = namespace.ensure_ino_for_record_id(record_id)
+                        && let Some(revision) = projection.snapshot.content_revision
+                    {
+                        if namespace.content_revision_for(ino) != Some(revision) {
+                            namespace.set_content_revision(
+                                ino,
+                                &revision,
+                                transaction.manifest.timestamp_ms,
+                            );
+                        }
+                    }
+                    Some(namespace.save_incremental())
+                } else {
+                    self.namespace
+                        .lock()
+                        .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
+                        .apply_mutation_transaction(&transaction)
+                        .map_err(|_| RecordMaterializerError::TransactionRejected)?
+                };
                 if let Some(delta) = delta
                     && let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
@@ -346,12 +419,16 @@ impl RecordMaterializer {
 
     // Keep the exhaustive operation projection in one match so every accepted
     // operation has one visible fail-closed namespace/history policy.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The operation match keeps record binding checks and each metadata, revision, history, conflict, and transaction projection policy together."
+    )]
     fn apply_exact(
         &self,
         record_id: FileRecordId,
         envelope: &RecordEnvelopeV1,
         snapshot: &RecordSnapshot,
+        repository: Option<&RecordRepository>,
     ) -> Result<(), RecordMaterializerError> {
         if envelope.record_id != record_id || snapshot.record_id != record_id {
             return Err(RecordMaterializerError::BindingMismatch);
@@ -366,6 +443,35 @@ impl RecordMaterializer {
             .namespace
             .lock()
             .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?;
+        let mut history_lease = if matches!(
+            envelope.operation,
+            RecordOperationV1::AppendConflict(_) | RecordOperationV1::ResolveConflict { .. }
+        ) {
+            Some(
+                self.history
+                    .as_ref()
+                    .ok_or(RecordMaterializerError::HistoryUnavailable)?
+                    .lease()
+                    .map_err(|_| RecordMaterializerError::HistoryUnavailable)?,
+            )
+        } else {
+            None
+        };
+        // Repository admission completes before this sink is called. Taking R
+        // only after N prevents a delayed handoff from reinstalling an older
+        // captured winner, while retaining R protects the actual installation.
+        let projection = repository
+            .map(|repository| {
+                repository.projection_lease(crate::record_repository::RecordRepositoryKey {
+                    workspace_id: self.workspace_id,
+                    record_id,
+                })
+            })
+            .transpose()
+            .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?;
+        let snapshot = projection
+            .as_ref()
+            .map_or(snapshot, |lease| &lease.snapshot);
         if matches!(&envelope.operation, RecordOperationV1::SetBinding(_)) {
             let binding = snapshot
                 .binding
@@ -378,6 +484,7 @@ impl RecordMaterializer {
                 .apply_signed_binding(binding)
                 .map_err(|_| RecordMaterializerError::BindingMismatch)?;
             let delta = changed.then(|| namespace.save_incremental());
+            drop(projection);
             drop(namespace);
             if let Some(delta) = delta
                 && let Ok(sync) = self.sync.read()
@@ -447,6 +554,7 @@ impl RecordMaterializer {
                     return Err(RecordMaterializerError::NamespaceUnavailable);
                 }
                 let delta = namespace.save_incremental();
+                drop(projection);
                 drop(namespace);
                 if let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
@@ -456,6 +564,7 @@ impl RecordMaterializer {
             }
             RecordOperationV1::AppendVersion(version) => {
                 // Do not hold the namespace lock across durable history I/O.
+                drop(projection);
                 drop(namespace);
                 let history = self
                     .history
@@ -484,6 +593,7 @@ impl RecordMaterializer {
                     return Err(RecordMaterializerError::NamespaceUnavailable);
                 }
                 let delta = namespace.save_incremental();
+                drop(projection);
                 drop(namespace);
                 if let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
@@ -491,48 +601,71 @@ impl RecordMaterializer {
                     sync.broadcast_delta(delta);
                 }
             }
-            RecordOperationV1::AppendConflict(conflict) => {
-                drop(namespace);
-                let history = self
-                    .history
-                    .as_ref()
+            RecordOperationV1::AppendConflict(_) | RecordOperationV1::ResolveConflict { .. } => {
+                let conflict_id = match &envelope.operation {
+                    RecordOperationV1::AppendConflict(conflict) => conflict.id,
+                    RecordOperationV1::ResolveConflict { conflict_id, .. } => *conflict_id,
+                    _ => unreachable!(),
+                };
+                let conflict = if repository.is_some() {
+                    snapshot
+                        .conflicts
+                        .iter()
+                        .find(|conflict| conflict.id == conflict_id)
+                        .ok_or(RecordMaterializerError::HistoryRejected)?
+                        .clone()
+                } else {
+                    // Pure projection tests supply a single-operation snapshot.
+                    match &envelope.operation {
+                        RecordOperationV1::AppendConflict(conflict) => conflict.clone(),
+                        RecordOperationV1::ResolveConflict { resolution, .. } => {
+                            let history = history_lease
+                                .as_mut()
+                                .ok_or(RecordMaterializerError::HistoryUnavailable)?;
+                            history
+                                .resolve(record_id, conflict_id, resolution.clone())
+                                .map_err(history_projection_error)?;
+                            return Ok(());
+                        }
+                        _ => unreachable!(),
+                    }
+                };
+                let history = history_lease
+                    .as_mut()
                     .ok_or(RecordMaterializerError::HistoryUnavailable)?;
-                // Startup reconciliation may replay the original signed open
-                // conflict after a completed transaction has durably resolved
-                // that exact conflict. Preserve the stronger resolved state;
-                // only an exact record/member match is an idempotent replay.
-                if history.snapshot(record_id).is_some_and(|state| {
-                    state.conflicts.iter().any(|existing| {
-                        existing.id == conflict.id
-                            && existing.record_id == conflict.record_id
-                            && existing.versions == conflict.versions
-                            && existing.status == collab_types::ConflictStatus::Resolved
-                    })
-                }) {
-                    return Ok(());
+                if let Some(resolution) = &conflict.resolution {
+                    let result = snapshot
+                        .versions
+                        .iter()
+                        .find(|version| version.id == resolution.result)
+                        .ok_or(RecordMaterializerError::HistoryRejected)?;
+                    // A complete transaction can contribute its immutable result
+                    // before the transaction projection pass. Import that exact
+                    // verified version before projecting its resolved conflict.
+                    history
+                        .append_batch(std::slice::from_ref(result))
+                        .map_err(history_projection_error)?;
                 }
-                history
-                    .record_conflict(conflict.clone())
-                    .map_err(|error| match error {
-                        HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
-                        _ => RecordMaterializerError::HistoryRejected,
-                    })?;
-            }
-            RecordOperationV1::ResolveConflict {
-                conflict_id,
-                resolution,
-            } => {
-                drop(namespace);
-                let history = self
-                    .history
-                    .as_ref()
-                    .ok_or(RecordMaterializerError::HistoryUnavailable)?;
-                history
-                    .resolve(record_id, *conflict_id, resolution.clone())
-                    .map_err(|error| match error {
-                        HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
-                        _ => RecordMaterializerError::HistoryRejected,
-                    })?;
+                let existing = history.snapshot(record_id).and_then(|state| {
+                    state
+                        .conflicts
+                        .into_iter()
+                        .find(|value| value.id == conflict_id)
+                });
+                if let Some(existing) = existing {
+                    if existing.versions != conflict.versions {
+                        return Err(RecordMaterializerError::HistoryRejected);
+                    }
+                    if let Some(resolution) = conflict.resolution {
+                        history
+                            .resolve(record_id, conflict_id, resolution)
+                            .map_err(history_projection_error)?;
+                    }
+                } else {
+                    history
+                        .record_conflict(conflict)
+                        .map_err(history_projection_error)?;
+                }
             }
             RecordOperationV1::PrepareTransaction(_)
             | RecordOperationV1::CommitTransaction { .. } => {
@@ -546,30 +679,48 @@ impl RecordMaterializer {
     }
 }
 
+fn history_projection_error(error: HistoryError) -> RecordMaterializerError {
+    match error {
+        HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
+        _ => RecordMaterializerError::HistoryRejected,
+    }
+}
+
 impl RecordMutationSink for RecordMaterializer {
     fn record_mutation(
         &self,
+        repository: &RecordRepository,
         scope: RecordAccessBinding,
         envelope: &RecordEnvelopeV1,
         snapshot: &RecordSnapshot,
     ) -> Result<(), RecordMutationSinkError> {
-        self.apply(scope, envelope, snapshot)
-            .map_err(|error| match error {
-                RecordMaterializerError::WrongWorkspace
-                | RecordMaterializerError::BindingMismatch
-                | RecordMaterializerError::InvalidEnvelope
-                | RecordMaterializerError::MissingConvergedMetadata
-                | RecordMaterializerError::MissingConvergedContentRevision
-                | RecordMaterializerError::UnknownOrTombstonedRecord(_)
-                | RecordMaterializerError::NotAFile
-                | RecordMaterializerError::HistoryRejected
-                | RecordMaterializerError::TransactionRejected => RecordMutationSinkError::Rejected,
-                RecordMaterializerError::NamespaceUnavailable
-                | RecordMaterializerError::HistoryUnavailable
-                | RecordMaterializerError::TransactionRecoveryUnavailable => {
-                    RecordMutationSinkError::Unavailable
-                }
-            })
+        let result = if scope.workspace_id != self.workspace_id {
+            Err(RecordMaterializerError::WrongWorkspace)
+        } else if scope.record_id != envelope.record_id
+            || scope.record_id != snapshot.record_id
+            || scope.person != envelope.actor.person
+            || scope.device != envelope.actor.device
+        {
+            Err(RecordMaterializerError::BindingMismatch)
+        } else {
+            self.apply_exact(scope.record_id, envelope, snapshot, Some(repository))
+        };
+        result.map_err(|error| match error {
+            RecordMaterializerError::WrongWorkspace
+            | RecordMaterializerError::BindingMismatch
+            | RecordMaterializerError::InvalidEnvelope
+            | RecordMaterializerError::MissingConvergedMetadata
+            | RecordMaterializerError::MissingConvergedContentRevision
+            | RecordMaterializerError::UnknownOrTombstonedRecord(_)
+            | RecordMaterializerError::NotAFile
+            | RecordMaterializerError::HistoryRejected
+            | RecordMaterializerError::TransactionRejected => RecordMutationSinkError::Rejected,
+            RecordMaterializerError::NamespaceUnavailable
+            | RecordMaterializerError::HistoryUnavailable
+            | RecordMaterializerError::TransactionRecoveryUnavailable => {
+                RecordMutationSinkError::Unavailable
+            }
+        })
     }
 
     fn reconcile_repository(
@@ -635,8 +786,8 @@ mod tests {
         ConflictMergeCodecV1, ConflictResolution, ConflictStatus, ConflictStrategy, ContentHash,
         ContentRevisionV1, Ed25519PublicKey, FILE_BINDING_VERSION,
         FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileConflictV1,
-        FileMetadataV1, FileMutationOperationV1, FileMutationParticipantRoleV1,
-        FileMutationParticipantV1, FileMutationTransactionManifestV1, FileMutationTransactionV1,
+        FileMetadataV1, FileMutationOperation, FileMutationParticipant,
+        FileMutationParticipantRole, FileMutationTransaction, FileMutationTransactionManifest,
         FileNodeKind, FileProvenance, FileVersionId, FileVersionV1, IndexStatus,
     };
     use ed25519_dalek::SigningKey;
@@ -762,6 +913,75 @@ mod tests {
                 },
             }
         }
+    }
+
+    #[test]
+    fn delayed_materialization_uses_current_repository_not_captured_snapshot() {
+        use crate::record_replication::{RecordAction, RecordAuthorizer};
+        use crate::record_repository::RecordRepositoryKey;
+        struct Allow;
+        impl RecordAuthorizer for Allow {
+            fn actor_is_certified(&self, _: &FileActor) -> bool {
+                true
+            }
+            fn allows(&self, _: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
+                true
+            }
+        }
+        let fixture = Fixture::new();
+        let repository =
+            RecordRepository::open(fixture.temp.path().join("delayed-records")).unwrap();
+        let key = RecordRepositoryKey {
+            workspace_id: fixture.workspace,
+            record_id: fixture.record,
+        };
+        let old = FileMetadataV1 {
+            schema_version: collab_types::files::FILE_METADATA_VERSION,
+            record_id: fixture.record,
+            content_hash: Some(ContentHash([41; 32])),
+            byte_len: 41,
+            mime: None,
+            previews: vec![],
+            latest_actor: Some(fixture.actor),
+            observed_at_ms: 41,
+            index_status: IndexStatus::Pending,
+            properties: None,
+        };
+        let old_envelope = fixture.envelope(1, RecordOperationV1::SetMetadata(old.clone()));
+        repository.apply(key, &old_envelope, &Allow).unwrap();
+        let captured = repository.snapshot(key, &fixture.actor, &Allow).unwrap();
+        let current = FileMetadataV1 {
+            content_hash: Some(ContentHash([42; 32])),
+            byte_len: 42,
+            observed_at_ms: 42,
+            ..old
+        };
+        let current_envelope = fixture.envelope(2, RecordOperationV1::SetMetadata(current));
+        // Deterministically withhold N while the delayed sink hands off its
+        // captured snapshot. The repository can accept a later operation while
+        // projection waits; releasing N must select that current projection.
+        let (entered, wait) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let namespace = fixture.namespace.lock().unwrap();
+            let worker = scope.spawn(|| {
+                entered.send(()).unwrap();
+                fixture
+                    .materializer
+                    .record_mutation(&repository, fixture.binding(), &old_envelope, &captured)
+                    .unwrap();
+            });
+            wait.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            repository.apply(key, &current_envelope, &Allow).unwrap();
+            drop(namespace);
+            worker.join().unwrap();
+        });
+        let namespace = fixture.namespace.lock().unwrap();
+        assert_eq!(
+            namespace.hash_for(fixture.ino).unwrap().as_bytes(),
+            &[42; 32]
+        );
+        assert_eq!(namespace.getattr(fixture.ino).unwrap().size, 42);
     }
 
     #[test]
@@ -986,6 +1206,97 @@ mod tests {
     }
 
     #[test]
+    fn delayed_open_conflict_projects_repository_resolution() {
+        use crate::record_replication::{RecordAction, RecordAuthorizer};
+        use crate::record_repository::RecordRepositoryKey;
+        struct Allow;
+        impl RecordAuthorizer for Allow {
+            fn actor_is_certified(&self, _: &FileActor) -> bool {
+                true
+            }
+            fn allows(&self, _: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
+                true
+            }
+        }
+        let fixture = Fixture::new();
+        let repository = RecordRepository::open(fixture.temp.path().join("conflict-race")).unwrap();
+        let key = RecordRepositoryKey {
+            workspace_id: fixture.workspace,
+            record_id: fixture.record,
+        };
+        let first = FileVersionV1 {
+            id: FileVersionId::new(),
+            record_id: fixture.record,
+            parents: vec![],
+            actor: fixture.actor,
+            timestamp_ms: 1,
+            content_hash: None,
+            metadata_hash: ContentHash([1; 32]),
+            provenance: FileProvenance::Create,
+        };
+        let second = FileVersionV1 {
+            id: FileVersionId::new(),
+            parents: vec![first.id],
+            timestamp_ms: 2,
+            provenance: FileProvenance::Edit,
+            ..first.clone()
+        };
+        let result = FileVersionV1 {
+            id: FileVersionId::new(),
+            parents: vec![first.id, second.id],
+            timestamp_ms: 3,
+            provenance: FileProvenance::ConflictResolution,
+            ..first.clone()
+        };
+        fixture
+            .history
+            .append_batch(&[first.clone(), second.clone(), result.clone()])
+            .unwrap();
+        let conflict = FileConflictV1 {
+            id: Uuid::new_v4(),
+            record_id: fixture.record,
+            versions: vec![first.id, second.id],
+            status: ConflictStatus::Open,
+            resolution: None,
+        };
+        let resolution = ConflictResolution {
+            strategy: ConflictStrategy::Merge,
+            result: result.id,
+            actor: fixture.actor,
+            timestamp_ms: 3,
+        };
+        let operations = [
+            RecordOperationV1::AppendVersion(first),
+            RecordOperationV1::AppendVersion(second),
+            RecordOperationV1::AppendConflict(conflict.clone()),
+            RecordOperationV1::AppendVersion(result),
+            RecordOperationV1::ResolveConflict {
+                conflict_id: conflict.id,
+                resolution: resolution.clone(),
+            },
+        ];
+        let mut captured = None;
+        for (index, operation) in operations.into_iter().enumerate() {
+            let envelope = fixture.envelope(index as u64 + 1, operation);
+            repository.apply(key, &envelope, &Allow).unwrap();
+            if index == 2 {
+                captured = Some((
+                    envelope,
+                    repository.snapshot(key, &fixture.actor, &Allow).unwrap(),
+                ));
+            }
+        }
+        let (envelope, snapshot) = captured.unwrap();
+        fixture
+            .materializer
+            .record_mutation(&repository, fixture.binding(), &envelope, &snapshot)
+            .unwrap();
+        let state = fixture.history.snapshot(fixture.record).unwrap();
+        assert_eq!(state.conflicts[0].status, ConflictStatus::Resolved);
+        assert_eq!(state.conflicts[0].resolution, Some(resolution));
+    }
+
+    #[test]
     fn accepted_conflict_transitions_project_into_typed_history() {
         let fixture = Fixture::new();
         let first = FileVersionV1 {
@@ -1059,7 +1370,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // End-to-end restart recovery scenario.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The recovery fixture commits version, revision, and metadata without projections, then checks startup repair and idempotent history replay."
+    )] // End-to-end restart recovery scenario.
     fn startup_reconciliation_heals_committed_but_unprojected_operations() {
         use crate::record_replication::{RecordAction, RecordAuthorizer};
         use crate::record_repository::{RecordRepository, RecordRepositoryKey};
@@ -1196,7 +1510,10 @@ mod tests {
     /// persisted independently with the same signed prepare+commit pair, and
     /// the materializer runs after every received stream batch.
     #[test]
-    #[allow(clippy::too_many_lines)] // Both participant orders and restart phases.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The scenario covers both participant delivery orders, restart after one durable participant, recovery failure/retry, and exact replay."
+    )] // Both participant orders and restart phases.
     fn remote_replacement_transaction_materializes_only_after_both_participants_in_either_order() {
         use crate::record_replication::{RecordAction, RecordAuthorizer};
         use crate::record_repository::{RecordRepository, RecordRepositoryKey};
@@ -1392,12 +1709,12 @@ mod tests {
                     content_hash: Some(hash),
                     metadata_hash: ContentHash([3; 32]),
                     provenance: match role {
-                        FileMutationParticipantRoleV1::Source => FileProvenance::Rename,
-                        FileMutationParticipantRoleV1::Replaced => FileProvenance::Delete,
+                        FileMutationParticipantRole::Source => FileProvenance::Rename,
+                        FileMutationParticipantRole::Replaced => FileProvenance::Delete,
                         _ => unreachable!("replacement fixture role"),
                     },
                 };
-                let mut participant = FileMutationParticipantV1 {
+                let mut participant = FileMutationParticipant {
                     record_id,
                     role,
                     expected_version,
@@ -1407,7 +1724,7 @@ mod tests {
                         parent: Some(root_record),
                         name: "destination.txt".into(),
                         kind: FileNodeKind::File,
-                        tombstoned: role == FileMutationParticipantRoleV1::Replaced,
+                        tombstoned: role == FileMutationParticipantRole::Replaced,
                         actor,
                         observed_at_ms: 2,
                     },
@@ -1429,25 +1746,25 @@ mod tests {
                 participant(
                     source_record,
                     source_expected,
-                    FileMutationParticipantRoleV1::Source,
+                    FileMutationParticipantRole::Source,
                     ContentHash([1; 32]),
                 ),
                 participant(
                     replaced_record,
                     replaced_expected,
-                    FileMutationParticipantRoleV1::Replaced,
+                    FileMutationParticipantRole::Replaced,
                     ContentHash([2; 32]),
                 ),
             ];
             participants.sort_by_key(|value| value.record_id);
-            let transaction = FileMutationTransactionV1::signed(
-                FileMutationTransactionManifestV1 {
+            let transaction = FileMutationTransaction::signed(
+                FileMutationTransactionManifest {
                     schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                     transaction_id: Uuid::new_v4(),
                     workspace_id: workspace,
                     actor,
                     timestamp_ms: 2,
-                    operation: FileMutationOperationV1::ReplacementRename {
+                    operation: FileMutationOperation::ReplacementRename {
                         source_parent: root_record,
                         source_name: "source.txt".into(),
                         destination_parent: root_record,
@@ -1696,7 +2013,10 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // Shared end-to-end merge/restart scenario helper.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The shared UTF-8 and Automerge merge fixture checks exact revision projection, history resolution, journal cleanup, and restart replay."
+    )] // Shared end-to-end merge/restart scenario helper.
     fn remote_completed_merge_case(codec: ConflictMergeCodecV1) {
         use crate::record_replication::{RecordAction, RecordAuthorizer};
         use crate::record_repository::{RecordRepository, RecordRepositoryKey};
@@ -1884,9 +2204,9 @@ mod tests {
             byte_len: 15,
             metadata_hash: result.metadata_hash,
         };
-        let mut participant = FileMutationParticipantV1 {
+        let mut participant = FileMutationParticipant {
             record_id,
-            role: FileMutationParticipantRoleV1::MergeSource,
+            role: FileMutationParticipantRole::MergeSource,
             expected_version: current.id,
             proposed_binding: FileBindingV1 {
                 schema_version: FILE_BINDING_VERSION,
@@ -1903,14 +2223,14 @@ mod tests {
             projection_hash: ContentHash([0; 32]),
         };
         participant.projection_hash = participant.computed_projection_hash().unwrap();
-        let transaction = FileMutationTransactionV1::signed(
-            FileMutationTransactionManifestV1 {
+        let transaction = FileMutationTransaction::signed(
+            FileMutationTransactionManifest {
                 schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
                 transaction_id: Uuid::new_v4(),
                 workspace_id: workspace,
                 actor,
                 timestamp_ms: 4,
-                operation: FileMutationOperationV1::MergeContentConflict {
+                operation: FileMutationOperation::MergeContentConflict {
                     source_record: record_id,
                     parent_record: root_record,
                     source_name: "merge.txt".into(),

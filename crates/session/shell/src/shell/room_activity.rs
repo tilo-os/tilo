@@ -150,6 +150,13 @@ enum ActivityFocus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "work-session boundaries are constructed only by replay tests for now"
+    )
+)]
 enum BoundaryDirection {
     IntoNewer,
     IntoOlder,

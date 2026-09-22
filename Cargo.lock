@@ -11432,6 +11432,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-chromium-blocker"
+version = "0.1.0"
+dependencies = [
+ "adblock",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "qos-ntfs-helper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "qos-ntfs-protocol",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "qos-ntfs-protocol"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "qrcode"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12304,6 +12334,14 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "runtime-connected"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tilo-connected-protocol",
 ]
 
 [[package]]
@@ -14850,6 +14888,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+]
+
+[[package]]
+name = "tilo-connected-protocol"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

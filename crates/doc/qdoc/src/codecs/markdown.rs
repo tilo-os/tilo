@@ -14,7 +14,7 @@ use crate::model::{DocMut, DocRef};
 use crate::schema::{
     MARK_NOTE_REF, PROP_AUTHOR, PROP_KEYWORDS, PROP_MODIFIED, PROP_SUBJECT, PROP_TITLE,
 };
-use crate::snapshot::{AttrVal, BlockView, DocSnapshot, NoteView};
+use crate::snapshot::{AttrVal, BlockView, NoteView};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use std::collections::BTreeMap;
 // `write!` into a `String` cannot fail; the discarded `Result` is the
@@ -40,7 +40,12 @@ impl FormatProvider for MarkdownCodec {
     }
 
     fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError> {
-        Ok(export_md(&doc.materialize()).into_bytes())
+        let snapshot = doc.materialize();
+        Ok(export_views(
+            &snapshot.properties,
+            &snapshot.blocks,
+            &snapshot.notes,
+        ))
     }
 }
 
@@ -651,12 +656,29 @@ fn import_md(src: &str, doc: &mut DocMut) {
     state.finish(doc);
 }
 
-fn export_md(snap: &DocSnapshot) -> String {
+/// Export Markdown from complete, already materialized document views.
+///
+/// The caller supplies properties, body blocks in document order, and notes from
+/// the same document revision. This uses the same renderer as [`MarkdownCodec`]
+/// without reading or materializing a CRDT. Like the normal Markdown export,
+/// headers, footers, comments, and image blob metadata are not represented.
+pub fn export_views(
+    properties: &BTreeMap<String, String>,
+    blocks: &[BlockView],
+    notes: &[NoteView],
+) -> Vec<u8> {
+    export_md(properties, blocks, notes).into_bytes()
+}
+
+fn export_md(
+    properties: &BTreeMap<String, String>,
+    blocks: &[BlockView],
+    notes: &[NoteView],
+) -> String {
     let mut out = String::new();
-    out.push_str(&render_front_matter(&snap.properties));
+    out.push_str(&render_front_matter(properties));
     let body_start = out.len();
-    let mut footnotes = Footnotes::new(snap);
-    let blocks = &snap.blocks;
+    let mut footnotes = Footnotes::new(notes);
     let mut i = 0;
     let mut prev_kind: Option<&str> = None;
     while let Some(b) = blocks.get(i) {
@@ -894,9 +916,9 @@ struct Footnotes<'a> {
 }
 
 impl<'a> Footnotes<'a> {
-    fn new(snap: &'a DocSnapshot) -> Self {
+    fn new(notes: &'a [NoteView]) -> Self {
         Footnotes {
-            index: snap.notes.iter().map(|n| (n.id.clone(), n)).collect(),
+            index: notes.iter().map(|n| (n.id.clone(), n)).collect(),
             numbers: std::collections::BTreeMap::new(),
             order: Vec::new(),
         }
@@ -1033,6 +1055,44 @@ fn render_inline_notes(
 mod tests {
     use super::*;
     use crate::Document;
+    use crate::snapshot::DocSnapshot;
+
+    #[test]
+    fn borrowed_views_match_document_export() {
+        let cases = [
+            "---\ntitle: \"Notes: café\"\nauthor: Ada\nlang: fr\n---\n\n# Résumé\n\nHello **世界** and *é* with [link](https://qos.dev/).\n",
+            "| Name | Value |\n| --- | --- |\n| **α** | café |\n\n```rust\nlet café = 1;\n```\n",
+            "Text[^second] and again[^second], then[^first].\n\n[^first]: First note.\n\n[^second]: Unicode café note.\n",
+            "- [x] done\n- [ ] pending\n\n1. ordered\n2. next\n",
+            "",
+        ];
+        for source in cases {
+            let mut document = Document::new();
+            MarkdownCodec
+                .import(source.as_bytes(), &mut document.as_mut())
+                .unwrap();
+            let expected = MarkdownCodec.export(document.as_ref()).unwrap();
+            let snapshot = document.materialize();
+            // Export stays usable after the CRDT is gone: these are the complete,
+            // already materialized inputs, not a handle that can re-read it.
+            drop(document);
+            let actual = export_views(&snapshot.properties, &snapshot.blocks, &snapshot.notes);
+            assert_eq!(actual, expected, "source: {source:?}");
+            let text = String::from_utf8(actual).unwrap();
+            if source.contains("[^second]") {
+                assert!(text.contains("[^1]: Unicode café note."), "{text}");
+                assert!(text.contains("[^2]: First note."), "{text}");
+            }
+            if source.contains("```rust") {
+                assert!(text.contains("```rust\nlet café = 1;\n```"), "{text}");
+                assert!(text.contains("**α**"), "{text}");
+            }
+            if source.contains("Résumé") {
+                assert!(text.contains("title: \"Notes: café\""), "{text}");
+                assert!(text.contains("**世界**"), "{text}");
+            }
+        }
+    }
 
     #[test]
     fn roundtrip_basic() {

@@ -52,6 +52,7 @@ fn game_sched_attr() -> SchedAttr {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn apply_game_uclamp() -> libc::c_long {
     let mut attr = game_sched_attr();
     // Preserve the launcher/cgroup's existing policy, nice value, deadline
@@ -79,6 +80,7 @@ fn apply_game_uclamp() -> libc::c_long {
     unsafe { libc::syscall(libc::SYS_sched_setattr, 0, &raw const attr, 0) }
 }
 
+#[cfg(target_os = "linux")]
 fn apply_game_timer_slack() -> libc::c_int {
     // SAFETY: PR_SET_TIMERSLACK consumes one integer value and no pointers.
     // Timer slack, like the utilization clamp, is inherited by game children.
@@ -89,6 +91,7 @@ fn game_ioprio() -> libc::c_int {
     (IOPRIO_CLASS_BEST_EFFORT << IOPRIO_CLASS_SHIFT) | GAME_IO_PRIORITY
 }
 
+#[cfg(target_os = "linux")]
 fn apply_game_io_priority() -> libc::c_long {
     // SAFETY: ioprio_set consumes scalar values only. WHO_PROCESS/who=0 scopes
     // the best-effort priority to the current process; children inherit it.
@@ -102,6 +105,7 @@ fn apply_game_io_priority() -> libc::c_long {
 /// Returns an OS error when Tilo's required scheduler ABI or timer-slack policy
 /// is present but cannot be applied. A kernel with no uclamp support at all is
 /// tolerated so packages remain launchable on non-Tilo development hosts.
+#[cfg(target_os = "linux")]
 pub fn apply_game_performance_hints() -> std::io::Result<()> {
     if apply_game_uclamp() != 0 {
         let error = std::io::Error::last_os_error();
@@ -124,12 +128,20 @@ pub fn apply_game_performance_hints() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Non-Linux hosts retain their native scheduler policy. The Linux game hints
+/// are optional platform tuning and do not gate launching a game elsewhere.
+#[cfg(not(target_os = "linux"))]
+pub fn apply_game_performance_hints() -> std::io::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const EXEC_PROBE_ENV: &str = "TILO_GAME_HINT_EXEC_PROBE";
 
+    #[cfg(target_os = "linux")]
     fn current_uclamp_min() -> Option<u32> {
         let mut scheduler = game_sched_attr();
         // SAFETY: scheduler is a live writable sched_attr and the remaining
@@ -212,6 +224,7 @@ mod tests {
         .expect("game-hint test thread");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn public_hint_path_applies_timer_slack_or_reports_a_real_error() {
         std::thread::spawn(|| {
