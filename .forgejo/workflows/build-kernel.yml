@@ -243,15 +243,25 @@ jobs:
         run: |
           set -euo pipefail
           case '${{ matrix.arch }}' in
-            aarch64) apt_qemu=qemu-system-arm; fedora_qemu=qemu-system-aarch64;;
-            x86_64) apt_qemu=qemu-system-x86; fedora_qemu=qemu-system-x86;;
+            aarch64)
+              apt_qemu=qemu-system-arm
+              fedora_qemu=qemu-system-aarch64
+              apt_firmware=qemu-efi-aarch64
+              fedora_firmware=edk2-aarch64
+              ;;
+            x86_64)
+              apt_qemu=qemu-system-x86
+              fedora_qemu=qemu-system-x86
+              apt_firmware=ovmf
+              fedora_firmware=edk2-ovmf
+              ;;
             *) exit 2;;
           esac
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio zstd "$apt_qemu"
+            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio zstd dosfstools mtools "$apt_qemu" "$apt_firmware"
           else
-            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm zstd "$fedora_qemu"
+            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm zstd dosfstools mtools "$fedora_qemu" "$fedora_firmware"
           fi
 
       - name: Boot the packaged native kernel and verify module signatures
