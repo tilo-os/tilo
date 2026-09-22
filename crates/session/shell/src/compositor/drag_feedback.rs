@@ -25,12 +25,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
-use vello::peniko::Fill;
-
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
-use vello::peniko::{
-    Blob, Color, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
-};
+use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 
 use ui::color_compat::ColorCompat;
 use ui::text_render::TextRenderer;
@@ -95,7 +90,10 @@ pub fn draw(
     theme: &Theme,
     text: &mut TextRenderer,
 ) {
-    if let Some(label) = label {
+    if let Some(preview) = visual.preview.as_ref() {
+        draw_preview(scene, cursor, preview, theme, text);
+    }
+    if let Some(label) = visual.label.as_deref() {
         // Theme type tokens already carry the user's text scale; the chip
         // paints with those resolved sizes, so the renderer must not scale
         // them again (HIG §7a) — reset for this pass, as the shell's
