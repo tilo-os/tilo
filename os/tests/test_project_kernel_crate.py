@@ -15,7 +15,7 @@ class ProjectionTests(unittest.TestCase):
         root=tomllib.loads((ROOT/'Cargo.toml').read_text());member=tomllib.loads((ROOT/'crates/system/tilo-crypto/Cargo.toml').read_text())
         projected=module.project_manifest(root,member)
         self.assertEqual(set(projected['dependencies']),set(member['dependencies']))
-        for name in ('ring','rand10','picky-asn1','picky-asn1-der','rsa'):
+        for name in ('ring','rand10','cms','x509-cert','rsa'):
             self.assertEqual(projected['dependencies'][name],member['dependencies'][name])
         self.assertEqual(projected['dependencies']['rand']['version'],root['workspace']['dependencies']['rand'])
 

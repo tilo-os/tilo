@@ -25,10 +25,6 @@ hex.workspace = true
 libc.workspace = true
 object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }
 p256 = { version = "0.13", features = ["pem"] }
-picky = { version = "=7.0.0-rc.26", default-features = false, features = ["pkcs7", "time_conversion", "wincert"] }
-picky-asn1 = "0.10"
-picky-asn1-der = "0.5"
-picky-asn1-x509 = "0.15"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 rand.workspace = true
 rand10 = { package = "rand", version = "0.10" }

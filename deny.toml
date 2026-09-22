@@ -15,7 +15,7 @@ ignore = [
     # signatures; every Tilo private-key operation, including Authenticode, uses
     # ring's blinded signer. cargo-deny reports at package granularity, so keep
     # this exact advisory acknowledged while tests reject RSA decryption and
-    # regressions to RustCrypto/Picky private signing in tilo-crypto.
+    # regressions to RustCrypto private signing in tilo-crypto.
     "RUSTSEC-2023-0071",
 ]
 # Maintenance notices remain actionable when Tilo selects the crate directly.
