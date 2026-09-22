@@ -812,15 +812,14 @@ impl RichTextLayout {
         reason = "visual/segments are grapheme counts within one glyph cluster, always far below f32's 24-bit exact-integer range"
     )]
     fn caret_stops(&self, run: &cosmic_text::LayoutRun<'_>) -> Vec<(f32, TextPosition)> {
-        use unicode_segmentation::UnicodeSegmentation;
-
         #[cfg(test)]
         tests::CARET_STOP_RUNS.with(|count| count.set(count.get() + 1));
         let mut stops = Vec::new();
         for glyph in run.glyphs {
             let cluster = run.text.get(glyph.start..glyph.end).unwrap_or("");
-            let mut boundaries: Vec<usize> =
-                cluster.grapheme_indices(true).map(|(at, _)| at).collect();
+            let mut boundaries: Vec<usize> = crate::text_break::grapheme_indices(cluster)
+                .map(|(at, _)| at)
+                .collect();
             boundaries.push(cluster.len());
             let segments = boundaries.len().saturating_sub(1).max(1);
             for visual in 0..=segments {

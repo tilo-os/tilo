@@ -14961,7 +14961,6 @@ dependencies = [
  "unic-langid",
  "unicode-linebreak",
  "unicode-script",
- "unicode-segmentation",
  "url",
  "uuid",
  "vello",

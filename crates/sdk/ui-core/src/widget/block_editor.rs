@@ -4069,7 +4069,6 @@ fn markdown_table_layout(
     theme: &Theme,
 ) -> TablePreviewLayout {
     use crate::text_render::TextWeight;
-    use unicode_segmentation::UnicodeSegmentation;
     let mut rows = markdown_table_data_rows(source);
     let columns = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
     let scale = f64::from(theme.text_scale);
@@ -4086,7 +4085,7 @@ fn markdown_table_layout(
                 .0
                 > text_width
             {
-                for (index, grapheme) in word.graphemes(true).enumerate() {
+                for (index, grapheme) in crate::text_break::graphemes(word).enumerate() {
                     if index > 0 {
                         display.push('\u{200b}');
                     }
@@ -4154,7 +4153,8 @@ fn markdown_table_layout(
                             .0
                             > text_width
                         {
-                            for (index, grapheme) in word.graphemes(true).enumerate() {
+                            for (index, grapheme) in crate::text_break::graphemes(word).enumerate()
+                            {
                                 if index > 0 {
                                     display.push('\u{200b}');
                                 }

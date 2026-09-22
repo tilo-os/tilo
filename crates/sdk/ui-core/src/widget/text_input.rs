@@ -14,6 +14,7 @@ use crate::gesture::{DragSelect, Granularity};
 use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
+use crate::text_break::{grapheme_indices, graphemes};
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -29,7 +30,6 @@ use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::BlendMode;
@@ -1458,7 +1458,7 @@ impl TextInput {
         let ci = self
             .text
             .get(r.start..b)
-            .map_or(0, |s| s.graphemes(true).count());
+            .map_or(0, |s| graphemes(s).count());
         r.char_x
             .get(ci)
             .copied()
@@ -1469,7 +1469,7 @@ impl TextInput {
         let Some(row_text) = self.text.get(r.start..r.end) else {
             return r.end;
         };
-        match row_text.grapheme_indices(true).nth(ci) {
+        match grapheme_indices(row_text).nth(ci) {
             Some((b, _)) => r.start.saturating_add(b),
             None => r.end,
         }
@@ -1717,7 +1717,7 @@ impl TextInput {
         let Some(para) = self.text.get(start..end) else {
             return;
         };
-        let mut boundaries: Vec<usize> = para.grapheme_indices(true).map(|(i, _)| i).collect();
+        let mut boundaries: Vec<usize> = grapheme_indices(para).map(|(i, _)| i).collect();
         boundaries.push(para.len()); // end sentinel
         let cum: Vec<f64> = boundaries
             .iter()
@@ -3806,7 +3806,7 @@ impl TextInput {
         let mut best_idx = 0;
         // Stale if the text changed since the last draw and this fires before
         // the next one — fall back to skipping rather than panicking.
-        for (i, _) in self.text.grapheme_indices(true) {
+        for (i, _) in grapheme_indices(&self.text) {
             let Some(&x) = self.char_x_positions.get(i) else {
                 continue;
             };
@@ -4473,8 +4473,7 @@ impl Widget for TextInput {
             }
             Action::SetSelection { anchor, focus } => {
                 let byte_at = |character_index: usize| {
-                    self.text
-                        .grapheme_indices(true)
+                    grapheme_indices(&self.text)
                         .nth(character_index)
                         .map_or(self.text.len(), |(byte, _)| byte)
                 };
@@ -4740,7 +4739,7 @@ impl TextInput {
             .resize(self.text.len().saturating_add(1), 0.0);
         if self.masked() {
             self.single_layout = None;
-            for (byte_idx, _) in self.text.grapheme_indices(true) {
+            for (byte_idx, _) in grapheme_indices(&self.text) {
                 let (w, _) =
                     self.measure_str(text_renderer, &self.display_prefix(byte_idx), text_size);
                 if let Some(slot) = self.char_x_positions.get_mut(byte_idx) {
@@ -4797,9 +4796,7 @@ impl TextInput {
                 return 0.0;
             };
             let end_byte = self.text_to_layout_byte(self.text.len());
-            let positions: Vec<(usize, f64)> = self
-                .text
-                .grapheme_indices(true)
+            let positions: Vec<(usize, f64)> = grapheme_indices(&self.text)
                 .map(|(byte_idx, _)| {
                     let x = layout.caret_geometry(self.text_to_layout_byte(byte_idx)).0;
                     (byte_idx, f64::from(x))
