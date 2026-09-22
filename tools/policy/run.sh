@@ -35,5 +35,7 @@ run 'Application text-stack contract' python3 tools/policy/check_app_text_contra
 run 'Application resource/action contract' \
   python3 tools/policy/check_app_resource_action_contract.py
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
+run 'Dev-override features stay out of production images' \
+  python3 tools/policy/check_dev_overrides_contract.py
 
 printf '\nRepository policy suite OK\n'
