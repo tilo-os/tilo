@@ -48,7 +48,7 @@ use capnp::capability::Promise;
 use capnp_rpc::twoparty;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp};
 #[cfg(unix)]
-use nix::fcntl::{F_GETFD, fcntl};
+use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -108,7 +108,7 @@ pub fn service_fd(name: &str) -> Option<RawFd> {
         // returns EBADF and we return None. We hand the BorrowedFd
         // immediately back to fcntl and discard it.
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-        fcntl(borrowed, F_GETFD).ok()?;
+        fcntl_getfd(borrowed).ok()?;
         Some(fd)
     }
 }
@@ -178,7 +178,7 @@ impl CapnpClient {
             let owned = unsafe { OwnedFd::from_raw_fd(fd) };
             // The launcher clears CLOEXEC only for the initial app exec. Once
             // the SDK owns the connection, later children must not retain it.
-            fcntl(&owned, nix::fcntl::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC))
+            fcntl_setfd(&owned, FdFlags::CLOEXEC)
                 .map_err(io::Error::from)
                 .map_err(NotAvailable::ConnectionFailed)?;
             let std_stream = std::os::unix::net::UnixStream::from(owned);
