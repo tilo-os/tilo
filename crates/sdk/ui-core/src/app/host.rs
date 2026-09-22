@@ -1142,7 +1142,7 @@ impl AppHandler {
         }
         for id in stalled {
             tracing::warn!(%id, "floating surface missed its first-buffer deadline; returning it to the app");
-            if let Some(client) = self.app.floating_surface_client.as_mut() {
+            if let Some(client) = self.app.floating.client.as_mut() {
                 let _ = client.send(
                     &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss {
                         id: id.clone(),
@@ -1396,17 +1396,15 @@ impl AppHandler {
             self.last_primary_frame_presented,
         );
         for id in cleared {
-            let sent =
-                self.app
-                    .floating_surface_client
-                    .as_mut()
-                    .is_some_and(|client| {
-                        client
-                    .send(&crate::floating_surface::FloatingSurfaceClientMessage::SourceCleared {
-                        id: id.clone(),
-                    })
+            let sent = self.app.floating.client.as_mut().is_some_and(|client| {
+                client
+                    .send(
+                        &crate::floating_surface::FloatingSurfaceClientMessage::SourceCleared {
+                            id: id.clone(),
+                        },
+                    )
                     .is_ok()
-                    });
+            });
             if sent {
                 self.floating_source_clear_frames.remove(&id);
             }
@@ -1418,7 +1416,8 @@ impl AppHandler {
         for id in destinations_presented {
             let sent = self
                 .app
-                .floating_surface_client
+                .floating
+                .client
                 .as_mut()
                 .is_some_and(|client| {
                     client
@@ -2687,7 +2686,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             let surface_id = surface.id.clone();
             match event {
                 WindowEvent::CloseRequested => {
-                    if let Some(client) = self.app.floating_surface_client.as_mut() {
+                    if let Some(client) = self.app.floating.client.as_mut() {
                         let _ = client.send(
                             &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss {
                                 id: surface_id.clone(),
