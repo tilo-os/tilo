@@ -1652,27 +1652,57 @@ impl Widget for GroupRow {
         // A bare wheel NEVER moves the strip — that only happens via
         // `scroll_group_into_view_animated`, not this event path.
 
-        self.dispatch_to_handles(
+        // A clipped group's trailing `+` can overlap the invisible resize
+        // seam at the viewport edge. The exact painted control owns that
+        // press; otherwise the seam keeps its usual first refusal.
+        let new_tab_press = matches!(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            root,
-            handled,
-            focus_target,
-            taffy,
-        );
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && self
+            .groups
+            .iter()
+            .any(|group| group.new_tab_hit(self.last_cursor));
+        if new_tab_press {
+            self.dispatch_to_groups(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                taffy,
+            );
+        }
+        if !*handled {
+            self.dispatch_to_handles(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                taffy,
+            );
+        }
         self.apply_pending_handle_resizes();
-        self.dispatch_to_groups(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            root,
-            handled,
-            focus_target,
-            taffy,
-        );
+        if !new_tab_press {
+            self.dispatch_to_groups(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                taffy,
+            );
+        }
         self.prune_closed_groups();
         self.resolve_tab_detaches(handled);
     }
