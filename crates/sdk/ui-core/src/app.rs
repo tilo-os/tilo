@@ -7,7 +7,6 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-#[cfg(test)]
 use std::cell::Cell;
 
 #[path = "profiling/native_input_isolation.rs"]
@@ -22,6 +21,7 @@ mod close_admission;
 mod document_history;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
+include!("app/continuation.rs");
 mod runtime;
 use runtime::{
     AccessibilityRuntime, ActionRuntime, CollaborationRuntime, ContinuationRuntime, HistoryRuntime,
@@ -179,22 +179,6 @@ fn scroll_opt_disabled() -> bool {
 /// redraw, so their raw demand must not keep an otherwise-idle app awake.
 const fn animation_pump_needed(needs_frame: bool, reduce_motion: bool) -> bool {
     needs_frame && !reduce_motion
-}
-
-fn continuation_publication(
-    app_id: String,
-    metadata: Option<&crate::collaboration::ContinuationMetadata>,
-    had_previous: bool,
-) -> Option<CollabRequest> {
-    match metadata {
-        Some(metadata) => Some(CollabRequest::ReportContinuation {
-            app_id,
-            schema_version: metadata.schema_version,
-            metadata: metadata.bytes.clone(),
-        }),
-        None if had_previous => Some(CollabRequest::ClearContinuation { app_id }),
-        None => None,
-    }
 }
 
 #[cfg(test)]
@@ -443,127 +427,6 @@ pub struct ActionUiRoute {
     pub disabled: bool,
 }
 
-/// Host-owned state for retained layout and widget lookup.
-///
-/// Keeping these values together makes invalidation and layout solving one
-/// responsibility instead of a collection of loosely related `App` fields.
-struct LayoutRuntime {
-    taffy: TaffyTree<()>,
-    root_node: Option<NodeId>,
-    node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
-    layout_dirty: bool,
-    /// Set when a widget reports `take_structure_dirty()`: without a taffy
-    /// rebuild before the next layout pass, runtime-spawned widgets have no
-    /// `NodeId` and `apply_layout` skips them.
-    structure_dirty: bool,
-    /// Diffed against `inner_size()` in `about_to_wait` to catch a resize
-    /// that arrived without a `Resized` event.
-    last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
-    /// Last successfully settled logical viewport. Scale changes count even
-    /// when physical pixels stay fixed; scroll-only frames reuse the solve.
-    last_layout_logical: Option<(f64, f64)>,
-}
-
-impl LayoutRuntime {
-    fn new() -> Self {
-        Self {
-            taffy: TaffyTree::new(),
-            root_node: None,
-            node_map: std::collections::HashMap::new(),
-            layout_dirty: true,
-            structure_dirty: false,
-            last_frame_size: None,
-            last_layout_logical: None,
-        }
-    }
-}
-
-/// Host-owned action discovery, dispatch, and invocation state.
-///
-/// Actions remain directly connected to the retained widget tree; this
-/// boundary centralizes their runtime lifecycle rather than separating them
-/// from UI capabilities.
-struct ActionRuntime {
-    action_palette: Option<crate::action_palette::ActionPalette>,
-    action_registry: tilo_actions::ActionRegistry,
-    action_transport: Box<dyn tilo_actions::ActionTransport>,
-    /// Resource declarations are expensive tree materialisations and used by
-    /// input gating, Ctrl+K, accessibility and broker publication. Keep one
-    /// exact snapshot until the host crosses a state-mutation boundary.
-    resource_cache: RefCell<Option<ResourceCache>>,
-    bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
-    bound_publication: crate::bound_dispatch::BoundPublication,
-    last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
-    #[cfg(test)]
-    bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
-    action_directory_stamp: Option<(action_directory_snapshot::DirectoryWitness, String)>,
-    action_directory_snapshot: Option<action_directory_snapshot::ActionDirectorySnapshot>,
-    bound_invocations: std::collections::HashMap<
-        tilo_actions::InvocationId,
-        crate::bound_dispatch::BoundActionTarget,
-    >,
-    local_resource_cache: RefCell<Option<LocalResourceCache>>,
-    open_resource_search_cache: RefCell<Option<OpenResourceSearchCache>>,
-    resource_generation: Cell<u64>,
-    permission_generation: Cell<u64>,
-    last_control_availability: Option<(ResourceCacheKey, u64)>,
-    last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
-    #[cfg(test)]
-    action_surface_publication_attempts: u64,
-    /// Opaque, revision-bound continuation state for the broker pull
-    /// directory. It holds provider cursors, never resource bodies, and is
-    /// touched only by the main/UI thread.
-    action_directory_cursors: std::collections::HashMap<String, ActionDirectoryCursor>,
-    /// Background/streaming operations admitted by the retained widget tree.
-    /// They remain here until the widget reports exactly one terminal update.
-    directed_invocations: std::collections::HashMap<tilo_actions::InvocationId, DirectedInvocation>,
-    /// Same lifecycle for actions started from this window rather than by the
-    /// broker; terminal state is reflected by the owning widget's UI.
-    local_invocations: std::collections::HashMap<
-        tilo_actions::InvocationId,
-        (tilo_actions::ActionAddress, tilo_actions::OperationKind),
-    >,
-    /// A generic app-launch request finishes an already-admitted source
-    /// invocation only after the session reports the staging/launch result.
-    pending_application_launches: std::collections::HashMap<u64, tilo_actions::InvocationId>,
-    /// Correlates local requests routed through the authoritative session
-    /// broker. `None` means this process has consumed the complete u64
-    /// namespace and must refuse rather than alias an earlier request.
-    next_broker_request_id: Option<u64>,
-}
-
-impl ActionRuntime {
-    fn new() -> Self {
-        Self {
-            action_palette: None,
-            action_registry: tilo_actions::ActionRegistry::new(),
-            action_transport: Box::new(tilo_actions::LocalTransport::new()),
-            resource_cache: RefCell::new(None),
-            bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
-            bound_publication: crate::bound_dispatch::BoundPublication::default(),
-            last_published_bound_route: None,
-            #[cfg(test)]
-            bound_broker_route_for_test: None,
-            action_directory_stamp: None,
-            action_directory_snapshot: None,
-            bound_invocations: std::collections::HashMap::new(),
-            local_resource_cache: RefCell::new(None),
-            open_resource_search_cache: RefCell::new(None),
-            resource_generation: Cell::new(0),
-            permission_generation: Cell::new(0),
-            last_control_availability: None,
-            last_published_actions: None,
-            #[cfg(test)]
-            action_surface_publication_attempts: 0,
-            action_directory_cursors: std::collections::HashMap::new(),
-            directed_invocations: std::collections::HashMap::new(),
-            local_invocations: std::collections::HashMap::new(),
-            pending_application_launches: std::collections::HashMap::new(),
-            next_broker_request_id: Some(0),
-        }
-    }
-}
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -611,7 +474,7 @@ pub struct App {
     last_theme_store_check: Instant,
     input: InputRuntime,
 
-    history: HistoryRuntime,
+    history_runtime: HistoryRuntime,
 
     collaboration: CollaborationRuntime,
     pub presence_ctx: PresenceCtx,
@@ -621,12 +484,7 @@ pub struct App {
 
     accessibility: AccessibilityRuntime,
 
-    /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
-    /// frame so a steady desired state issues one `set_fullscreen` call â€”
-    /// see [`fullscreen_request_decision`].
-    fullscreen_requested: bool,
-    /// To distinguish app-driven from compositor-driven transitions.
-    fullscreen_active: bool,
+    window: WindowRuntime,
 
     pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
     persistence: PersistenceRuntime,
@@ -645,40 +503,7 @@ pub struct App {
     profiler: Option<crate::profiling::FrameProfiler>,
     native_input_probe: Option<Box<dyn Fn() -> serde_json::Value>>,
 
-    /// Wins over the automatic env/package-id/binary-name resolution.
-    window_title: Option<String>,
-    /// Wins over `TILO_PACKAGE_ID`/binary-name resolution for the Wayland
-    /// `xdg_toplevel.app_id`. System surfaces use this as a stable identity.
-    window_app_id: Option<String>,
-
-    /// Optional app â†’ shell lifecycle channel for detachable surfaces. It is
-    /// discovered from the launcher-provided service fd and absent outside a
-    /// Tilo session, where apps simply keep their overlays attached.
-    floating_surface_client: Option<crate::floating_surface::FloatingSurfaceServiceClient>,
-    last_floating_presentations:
-        std::collections::HashMap<String, crate::floating_surface::FloatingSurfacePresentation>,
-    /// Activity IDs from the previous service pump, including generic
-    /// browser/capture mirrors that do not own a secondary native window.
-    /// Comparing this set lets an app toggle `PiP` off with an explicit Dismiss
-    /// instead of abandoning a compositor mirror until process exit.
-    last_active_floating_ids: std::collections::HashSet<String>,
-    /// IDs whose shell `PrepareSurface`/`Adopted` reply has established
-    /// desktop coordinate space. Before this edge, presentation geometry is
-    /// still app-local and must not overwrite the translated detach request.
-    prepared_floating_presentations: std::collections::HashSet<String>,
-    /// App-local â†’ desktop translation supplied by the shell for each
-    /// prepared native surface. While a frozen transfer proxy owns the pixels,
-    /// pointer capture can still arrive through the primary app window; the
-    /// runtime uses this to keep that held drag in desktop coordinates.
-    floating_coordinate_offsets: std::collections::HashMap<String, vello::kurbo::Vec2>,
-    /// Native surfaces temporarily hidden while their live content is back
-    /// inside the app. They retain the same compositor capability and warm
-    /// renderer until the activity ends or detaches again.
-    suspended_floating_presentations: std::collections::HashSet<String>,
-    /// Lifecycle edges also drive the runtime's secondary-window set. The
-    /// root sees them immediately; `AppHandler` drains this copy where an
-    /// `ActiveEventLoop` is available for window creation/destruction.
-    floating_host_messages: Vec<crate::floating_surface::FloatingSurfaceHostMessage>,
+    floating: FloatingRuntime,
 }
 
 /// Lazy private inputs keep discovery at the original initializer/callback boundary.
@@ -1359,36 +1184,16 @@ impl App {
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
             last_theme_store_check: Instant::now(),
-            history: HistoryRuntime::new(),
+            history_runtime: HistoryRuntime::new(),
             collaboration: CollaborationRuntime::new(
                 inputs.collab_manager,
                 inputs.local_author.resolve(),
             ),
             presence_ctx: inputs.presence_ctx.resolve(),
             permission_ctx: PermissionContext::permissive(),
-            presence_broadcast_scope: None,
-            pointer_space: None,
-            followed_peer: None,
-            last_pointer_broadcast: None,
-            last_focus_presence: None,
-            last_location_presence: None,
-            last_view_presence: None,
-            presence_broadcast_sink: None,
-            frame_tick: None,
-            current_cursor: CursorIcon::Default,
-            tooltip_host: crate::widget::TooltipHost::new(),
-            // Auto-enable if the shell mirrored TILO_A11Y_* into this sandbox.
-            screen_reader: (inputs.screen_reader)(),
-            screen_reader_modifier_down: false,
-            live_region_last: std::collections::HashMap::new(),
-            focus_trap_active: false,
-            focus_before_trap: None,
-            base_theme: configured_theme,
-            a11y: crate::a11y::A11ySettings::default(),
-            text_scale: 1.0,
-            ui_scale: 1.0,
-            fullscreen_requested: false,
-            fullscreen_active: false,
+            presence: PresenceRuntime::new(),
+            accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
+            window: WindowRuntime::new(),
             legacy_persistence: crate::launch::LegacyPersistencePolicy::Host,
             persistence: PersistenceRuntime::new(),
             autosave_generation: 0,
@@ -1404,15 +1209,7 @@ impl App {
             last_playback_publish: None,
             profiler: (inputs.profiler)(),
             native_input_probe: None,
-            window_title: None,
-            window_app_id: None,
-            floating_surface_client: (inputs.floating_surface_client)(),
-            last_floating_presentations: std::collections::HashMap::new(),
-            last_active_floating_ids: std::collections::HashSet::new(),
-            prepared_floating_presentations: std::collections::HashSet::new(),
-            floating_coordinate_offsets: std::collections::HashMap::new(),
-            suspended_floating_presentations: std::collections::HashSet::new(),
-            floating_host_messages: Vec::new(),
+            floating: FloatingRuntime::new((inputs.floating_surface_client)()),
         };
 
         app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
@@ -1482,346 +1279,6 @@ impl App {
         // from keeping the compositor awake under reduced motion.
         self.root_widget
             .set_motion_reduced(self.theme.reduce_motion);
-    }
-}
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the service pump keeps one ordered lifecycle transaction in a single function"
-    )]
-    fn pump_floating_surface_service(&mut self) -> bool {
-        let active_ids = self
-            .root_widget
-            .active_floating_surface_ids()
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let Some(client) = self.floating_surface_client.as_mut() else {
-            let mut changed = false;
-            // Outside a Tilo session there is no trusted shell chooser to
-            // open. Drain the edge so reconnecting later cannot replay a
-            // stale user gesture.
-            while self.root_widget.take_capture_studio_request().is_some() {}
-            while let Some(request) = self.root_widget.take_floating_surface_request() {
-                let message = crate::floating_surface::FloatingSurfaceHostMessage::Reattach {
-                    id: request.id,
-                };
-                self.root_widget.on_floating_surface_host_message(&message);
-                self.floating_host_messages.push(message);
-                changed = true;
-            }
-            let _ = self.root_widget.take_floating_surface_source_updates();
-            self.last_active_floating_ids = self
-                .root_widget
-                .active_floating_surface_ids()
-                .into_iter()
-                .collect();
-            return changed;
-        };
-
-        let mut changed = false;
-        while let Some(mode) = self.root_widget.take_capture_studio_request() {
-            let mode = match mode {
-                crate::widget::CaptureMode::Screenshot => {
-                    crate::floating_surface::CaptureStudioProtocolMode::Screenshot
-                }
-                crate::widget::CaptureMode::Recording => {
-                    crate::floating_surface::CaptureStudioProtocolMode::Recording
-                }
-                crate::widget::CaptureMode::Pip => {
-                    crate::floating_surface::CaptureStudioProtocolMode::PictureInPicture
-                }
-            };
-            if let Err(error) = client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::OpenCaptureStudio { mode },
-            ) {
-                tracing::warn!(%error, "shell capture-studio request failed");
-                self.floating_surface_client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
-            changed = true;
-        }
-        while let Some(request) = self.root_widget.take_floating_surface_request() {
-            self.suspended_floating_presentations.remove(&request.id);
-            let message = crate::floating_surface::FloatingSurfaceClientMessage::Present {
-                request: (&request).into(),
-            };
-            if let Err(error) = client.send(&message) {
-                tracing::warn!(%error, "floating-surface service send failed; keeping app UI local");
-                self.floating_surface_client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
-        }
-        for (id, region) in self.root_widget.take_floating_surface_source_updates() {
-            if let Err(error) = client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::UpdateRegion {
-                    id,
-                    region: crate::floating_surface::protocol_rect_array(region),
-                },
-            ) {
-                tracing::warn!(%error, "floating-surface source update failed");
-                self.floating_surface_client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
-        }
-
-        // Generic live mirrors have no `FloatingSurfacePresentation`: their
-        // pixels live in the shell capture host. The stable activity-ID edge
-        // is therefore their authoritative close/toggle signal.
-        for id in generic_floating_ids_to_dismiss(
-            &self.last_active_floating_ids,
-            &active_ids,
-            &self.last_floating_presentations,
-            &self.suspended_floating_presentations,
-        ) {
-            if let Err(error) =
-                client.send(&crate::floating_surface::FloatingSurfaceClientMessage::Dismiss { id })
-            {
-                tracing::warn!(%error, "floating-surface dismiss failed");
-                self.floating_surface_client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
-        }
-
-        let presentations = self
-            .root_widget
-            .floating_surface_presentations()
-            .into_iter()
-            .map(|presentation| (presentation.id.clone(), presentation))
-            .collect::<std::collections::HashMap<_, _>>();
-        for (id, presentation) in &presentations {
-            if !self.prepared_floating_presentations.contains(id) {
-                continue;
-            }
-            let changed = self
-                .last_floating_presentations
-                .get(id)
-                .is_none_or(|previous| previous != presentation);
-            if changed
-                && let Err(error) = client.send(
-                    &crate::floating_surface::FloatingSurfaceClientMessage::SurfaceGeometry {
-                        id: id.clone(),
-                        rect: crate::floating_surface::protocol_rect_array(
-                            presentation.window_rect,
-                        ),
-                        content_rect: crate::floating_surface::protocol_rect_array(
-                            presentation.content_rect,
-                        ),
-                    },
-                )
-            {
-                tracing::warn!(%error, "floating-surface geometry send failed");
-                self.floating_surface_client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
-            if presentation.returning_to_app && !self.suspended_floating_presentations.contains(id)
-            {
-                self.suspended_floating_presentations.insert(id.clone());
-                if let Err(error) = client.send(
-                    &crate::floating_surface::FloatingSurfaceClientMessage::Suspend {
-                        id: id.clone(),
-                        rect: crate::floating_surface::protocol_rect_array(
-                            presentation.window_rect,
-                        ),
-                        content_rect: crate::floating_surface::protocol_rect_array(
-                            presentation.content_rect,
-                        ),
-                    },
-                ) {
-                    tracing::warn!(%error, "floating-surface return handoff failed");
-                    self.floating_surface_client = None;
-                    self.reattach_after_floating_service_loss();
-                    return changed;
-                }
-            }
-        }
-        for id in self.last_floating_presentations.keys() {
-            if presentations.contains_key(id) {
-                continue;
-            }
-            if self.suspended_floating_presentations.contains(id) {
-                continue;
-            }
-            let Some(previous) = self.last_floating_presentations.get(id) else {
-                continue;
-            };
-            let message = if active_ids.contains(id) {
-                self.suspended_floating_presentations.insert(id.clone());
-                crate::floating_surface::FloatingSurfaceClientMessage::Suspend {
-                    id: id.clone(),
-                    rect: crate::floating_surface::protocol_rect_array(previous.window_rect),
-                    content_rect: crate::floating_surface::protocol_rect_array(
-                        previous.content_rect,
-                    ),
-                }
-            } else {
-                crate::floating_surface::FloatingSurfaceClientMessage::Dismiss { id: id.clone() }
-            };
-            if let Err(error) = client.send(&message) {
-                tracing::warn!(%error, "floating-surface lifecycle send failed");
-                self.floating_surface_client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
-        }
-        // The activity can end while its native surface is already suspended,
-        // so no presentation edge remains to trigger permanent cleanup.
-        let ended_suspended = self
-            .suspended_floating_presentations
-            .iter()
-            .filter(|id| !active_ids.contains(*id))
-            .cloned()
-            .collect::<Vec<_>>();
-        for id in ended_suspended {
-            if let Err(error) = client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss { id: id.clone() },
-            ) {
-                tracing::warn!(%error, "floating-surface dismiss send failed");
-                self.floating_surface_client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
-            self.suspended_floating_presentations.remove(&id);
-        }
-        let geometry_changed = presentations != self.last_floating_presentations;
-        self.last_floating_presentations = presentations;
-
-        let messages = match client.pump() {
-            Ok(messages) => messages,
-            Err(error) => {
-                tracing::warn!(%error, "floating-surface service disconnected; keeping app UI local");
-                self.floating_surface_client = None;
-                self.reattach_after_floating_service_loss();
-                return changed;
-            }
-        };
-        for message in messages {
-            match &message {
-                crate::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
-                    id,
-                    coordinate_offset,
-                    ..
-                } => {
-                    self.floating_coordinate_offsets.insert(
-                        id.clone(),
-                        vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
-                    );
-                    if self.prepared_floating_presentations.insert(id.clone()) {
-                        // Force one geometry publication on the next pump,
-                        // even when the pixels did not move while preparing.
-                        self.last_floating_presentations.remove(id);
-                    }
-                }
-                crate::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. } => {
-                    if self.prepared_floating_presentations.insert(id.clone()) {
-                        self.last_floating_presentations.remove(id);
-                    }
-                }
-                crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
-                | crate::floating_surface::FloatingSurfaceHostMessage::Closed { id } => {
-                    self.prepared_floating_presentations.remove(id);
-                    self.floating_coordinate_offsets.remove(id);
-                    self.suspended_floating_presentations.remove(id);
-                }
-                crate::floating_surface::FloatingSurfaceHostMessage::Suspended { id } => {
-                    self.prepared_floating_presentations.remove(id);
-                    self.floating_coordinate_offsets.remove(id);
-                    self.suspended_floating_presentations.insert(id.clone());
-                }
-                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. } => {}
-            }
-            if let crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { bounds } =
-                &message
-            {
-                match crate::floating_surface::protocol_rect(*bounds) {
-                    Ok(bounds) => {
-                        self.root_widget.set_floating_surface_bounds(bounds);
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "shell sent invalid floating-surface bounds");
-                    }
-                }
-            }
-            self.root_widget.on_floating_surface_host_message(&message);
-            self.floating_host_messages.push(message);
-            changed = true;
-        }
-        self.last_active_floating_ids = self
-            .root_widget
-            .active_floating_surface_ids()
-            .into_iter()
-            .collect();
-        changed || geometry_changed
-    }
-
-    fn reattach_after_floating_service_loss(&mut self) {
-        let ids = self
-            .last_floating_presentations
-            .keys()
-            .chain(self.suspended_floating_presentations.iter())
-            .cloned()
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        self.last_floating_presentations.clear();
-        self.last_active_floating_ids.clear();
-        self.prepared_floating_presentations.clear();
-        self.floating_coordinate_offsets.clear();
-        self.suspended_floating_presentations.clear();
-        for id in ids {
-            let message = crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id };
-            self.root_widget.on_floating_surface_host_message(&message);
-            self.floating_host_messages.push(message);
-        }
-    }
-
-    fn take_floating_host_messages(
-        &mut self,
-    ) -> Vec<crate::floating_surface::FloatingSurfaceHostMessage> {
-        std::mem::take(&mut self.floating_host_messages)
-    }
-
-    /// Re-express a held pointer delivered through the primary app window in
-    /// desktop space while a prepared floating presentation is still active.
-    /// This is the transfer-proxy interval: pixels already live in the shell,
-    /// but the native secondary may not have committed and taken pointer focus
-    /// yet. Once the root reattaches, its presentation disappears immediately,
-    /// so the very next primary event remains app-local as usual.
-    fn primary_floating_pointer_event(
-        &self,
-        event: &WindowEvent,
-        scale_factor: f64,
-    ) -> Option<WindowEvent> {
-        if !self.root_widget.wants_pointer_capture() {
-            return None;
-        }
-        let offset = self
-            .root_widget
-            .floating_surface_presentations()
-            .iter()
-            .find_map(|presentation| self.floating_coordinate_offsets.get(&presentation.id))?;
-        let dx = offset.x * scale_factor;
-        let dy = offset.y * scale_factor;
-        match event {
-            WindowEvent::CursorMoved {
-                device_id,
-                position,
-            } => Some(WindowEvent::CursorMoved {
-                device_id: *device_id,
-                position: PhysicalPosition::new(position.x + dx, position.y + dy),
-            }),
-            WindowEvent::Touch(touch) => {
-                let mut translated = *touch;
-                translated.location.x += dx;
-                translated.location.y += dy;
-                Some(WindowEvent::Touch(translated))
-            }
-            _ => None,
-        }
     }
 
     /// Lets the hosted app register its action types, e.g.
@@ -2207,7 +1664,11 @@ impl App {
             .with_native_presentation(|root, _, _, _| root.control_action_bindings())
             .unwrap_or_default();
         for binding in bindings {
-            for path in self.semantic_tree.control_paths(&binding.control_id) {
+            for path in self
+                .accessibility
+                .semantic_tree
+                .control_paths(&binding.control_id)
+            {
                 let Some(semantic_id) = path.last() else {
                     continue;
                 };
@@ -2219,6 +1680,7 @@ impl App {
                 );
                 let semantic_address = address.resource == format!("ui:{encoded_node_id}")
                     && self
+                        .accessibility
                         .semantic_tree
                         .action(semantic_id, &address.action)
                         .is_some();
@@ -2230,7 +1692,7 @@ impl App {
                 if !matches_address {
                     continue;
                 }
-                let Some(node) = self.semantic_tree.node(semantic_id) else {
+                let Some(node) = self.accessibility.semantic_tree.node(semantic_id) else {
                     continue;
                 };
                 routes.push(ActionUiRoute {
@@ -2319,7 +1781,7 @@ impl App {
         if let Some(route) = &self.actions.bound_broker_route_for_test {
             return Some(route);
         }
-        self.collab_manager.primary_route()
+        self.collaboration.manager.primary_route()
     }
     fn publication_app_id(&self) -> String {
         if crate::bound_dispatch::has_matching_broker_component(
@@ -2434,7 +1896,8 @@ impl App {
         // broker owns the capability and asks the UI thread to materialise a
         // bounded page; large apps therefore do not become a flattened RPC
         // catalogue just because they are visible in shell search.
-        self.collab_manager
+        self.collaboration
+            .manager
             .publish_action_directory(publication_app_id.clone());
         let resources = self.publication_resources();
         // Use this exact snapshot for coverage as well as publication. That
@@ -2464,10 +1927,12 @@ impl App {
                 .as_ref()
                 .is_some_and(|actions| !actions.is_empty())
             {
-                self.collab_manager.send(CollabRequest::PublishActions {
-                    app_id: publication_app_id,
-                    actions: Vec::new(),
-                });
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::PublishActions {
+                        app_id: publication_app_id,
+                        actions: Vec::new(),
+                    });
                 self.actions.last_published_actions = Some(Vec::new());
             }
             return;
@@ -2509,10 +1974,12 @@ impl App {
             {
                 return;
             }
-            self.collab_manager.send(CollabRequest::PublishActions {
-                app_id: crate::collaboration::local_app_id(),
-                actions: Vec::new(),
-            });
+            self.collaboration
+                .manager
+                .send(CollabRequest::PublishActions {
+                    app_id: crate::collaboration::local_app_id(),
+                    actions: Vec::new(),
+                });
             self.actions.last_published_actions = Some(Vec::new());
             return;
         }
@@ -2522,10 +1989,12 @@ impl App {
             return;
         }
         let actions = descriptors.iter().map(Self::exported_action).collect();
-        self.collab_manager.send(CollabRequest::PublishActions {
-            app_id: publication_app_id,
-            actions,
-        });
+        self.collaboration
+            .manager
+            .send(CollabRequest::PublishActions {
+                app_id: publication_app_id,
+                actions,
+            });
         self.actions.last_published_actions = Some(descriptors);
     }
 
@@ -3389,7 +2858,7 @@ impl App {
     }
 
     fn pump_action_directory_requests(&mut self) {
-        for request in self.collab_manager.take_action_directory_requests() {
+        for request in self.collaboration.manager.take_action_directory_requests() {
             match request {
                 ActionDirectoryRequest::Query { query, reply } => {
                     let _ = reply.send(self.action_directory_page(query));
@@ -3407,34 +2876,6 @@ impl App {
         }
     }
 
-    /// Publish only a changed, app-declared resume projection. This remains
-    /// deliberately separate from document collaboration: a continuation
-    /// report is private to the local session and cannot make a remote app
-    /// focus itself or start playing media.
-    fn publish_continuation_metadata(&mut self) {
-        self.apply_pending_continuation_restore();
-        if !self.collab_manager.is_connected() || self.pending_continuation_view.is_some() {
-            return;
-        }
-        let semantic = self.root_widget.continuable().and_then(|continuable| {
-            continuable.continuation_metadata(&self.state.doc, &self.state.root)
-        });
-        let view = <Self as crate::view::FreezeThaw>::capture_view(self);
-        let metadata = compose_structural_continuation_metadata(view, semantic);
-        if metadata == self.last_published_continuation {
-            return;
-        }
-        if let Some(request) = continuation_publication(
-            crate::collaboration::local_app_id(),
-            metadata.as_ref(),
-            self.last_published_continuation.is_some(),
-        ) {
-            self.collab_manager.send(request);
-        }
-        self.last_published_continuation = metadata;
-    }
-
-impl App {
     /// Publish private source descriptors over the authenticated local app
     /// broker. Public cross-device state is derived by the shell and remains
     /// path/URL-free; this report never enters the room document.
@@ -3466,52 +2907,6 @@ impl App {
             });
         self.last_published_playback = Some(reports);
         self.last_playback_publish = Some(now);
-    }
-}
-
-    fn apply_pending_continuation_restore(&mut self) {
-        if let Some(metadata) = self.pending_continuation_restore.take() {
-            if metadata.schema_version == STRUCTURAL_CONTINUATION_SCHEMA {
-                if let Ok(envelope) =
-                    postcard::from_bytes::<StructuralContinuationEnvelope>(&metadata.bytes)
-                    && valid_structural_envelope(&envelope)
-                {
-                    self.pending_continuation_view = Some(envelope.presentation.into_view());
-                    if let Some(semantic) = envelope.semantic {
-                        let root = self.state.root.clone();
-                        let metadata = crate::collaboration::ContinuationMetadata {
-                            schema_version: semantic.schema_version,
-                            bytes: semantic.bytes,
-                        };
-                        if let Some(continuable) = self.root_widget.continuable_mut() {
-                            let _ = continuable.restore_continuation_metadata(
-                                &metadata,
-                                &mut self.state.doc,
-                                &root,
-                            );
-                        }
-                        self.invalidate_widget_resource_cache();
-                    }
-                }
-                return;
-            }
-            if metadata.schema_version == GENERIC_VIEW_CONTINUATION_SCHEMA {
-                if let Ok(view) = postcard::from_bytes::<PortableContinuationView>(&metadata.bytes)
-                {
-                    self.pending_continuation_view = Some(view.into_view());
-                }
-                return;
-            }
-            let root = self.state.root.clone();
-            if let Some(continuable) = self.root_widget.continuable_mut() {
-                let _ = continuable.restore_continuation_metadata(
-                    &metadata,
-                    &mut self.state.doc,
-                    &root,
-                );
-            }
-            self.invalidate_widget_resource_cache();
-        }
     }
 
     fn invoke_published_action(
@@ -3561,7 +2956,8 @@ impl App {
                 },
             },
         };
-        self.collab_manager
+        self.collaboration
+            .manager
             .send(CollabRequest::UpdateInvocation { id, update });
     }
 
@@ -3605,13 +3001,13 @@ impl App {
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         Self::dispatch_broker_request(
             &mut self.actions.next_broker_request_id,
-            self.collab_manager.is_connected(),
+            self.collaboration.manager.is_connected(),
             address,
             typed_arguments,
             argument,
             confirmation_evidence,
             |request| {
-                self.collab_manager.send(request);
+                self.collaboration.manager.send(request);
             },
         )
     }
@@ -3737,7 +3133,7 @@ impl App {
             spec,
             encoded,
             actor,
-            &self.local_author.0,
+            &self.collaboration.local_author.0,
             confirmed_by_broker,
             tilo_actions::InvocationId::new(),
             ambient_context,
@@ -3832,7 +3228,7 @@ impl App {
         if !broker_admitted
             && ((kind == tilo_actions::OperationKind::Effect
                 && invocation.is_none()
-                && (broker_delivery.is_some() || self.collab_manager.is_connected()))
+                && (broker_delivery.is_some() || self.collaboration.manager.is_connected()))
                 || (kind == tilo_actions::OperationKind::Document
                     && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred))
         {
@@ -3985,7 +3381,7 @@ impl App {
         invocation: Option<tilo_actions::InvocationId>,
         ambient_context: Option<&tilo_actions::ActionContext>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let mut resources = if actor == self.local_author.0 {
+        let mut resources = if actor == self.collaboration.local_author.0 {
             self.collect_local_resources()
         } else {
             self.collect_resources()
@@ -3996,7 +3392,7 @@ impl App {
                 &self.state.doc,
                 &address.resource,
             );
-            let fallback = if actor == self.local_author.0 {
+            let fallback = if actor == self.collaboration.local_author.0 {
                 fallback.and_then(|resource| self.filter_resource_for_local_actor(resource))
             } else {
                 fallback
@@ -4012,7 +3408,7 @@ impl App {
             confirmation_satisfied,
         )?;
         let kind = resolved.kind;
-        if kind == tilo_actions::OperationKind::View && actor != self.local_author.0 {
+        if kind == tilo_actions::OperationKind::View && actor != self.collaboration.local_author.0 {
             return Err(tilo_actions::DoorError::Unavailable {
                 code: "private_view".into(),
                 reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
@@ -4027,7 +3423,7 @@ impl App {
         if kind == tilo_actions::OperationKind::Effect
             && invocation.is_none()
             && !broker_admitted
-            && self.collab_manager.is_connected()
+            && self.collaboration.manager.is_connected()
         {
             return self.invoke_via_broker(
                 address,
@@ -4066,7 +3462,7 @@ impl App {
                     "application launch payload is out of bounds".into(),
                 ));
             }
-            if !self.collab_manager.is_connected() {
+            if !self.collaboration.manager.is_connected() {
                 return Err(tilo_actions::DoorError::Unavailable {
                     code: "authoritative_host_unavailable".into(),
                     reason: "Opening staged media requires the workspace action broker".into(),
@@ -4079,7 +3475,8 @@ impl App {
                 ));
             };
             self.admit_application_launch(request_id, invocation)?;
-            self.collab_manager
+            self.collaboration
+                .manager
                 .send(CollabRequest::LaunchPublishedApplication {
                     request_id,
                     app_id: launch.app_id,
@@ -4094,36 +3491,41 @@ impl App {
                 Ok(handled) => handled,
                 Err(message) => {
                     if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                        self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                            address: address.clone(),
-                            update: tilo_actions::InvocationUpdate::Failed {
-                                invocation: operation_invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "semantic_action_failed".into(),
-                                    message: message.clone(),
-                                    details: None,
-                                    retryable: false,
+                        self.collaboration
+                            .manager
+                            .send(CollabRequest::RecordLocalEffect {
+                                address: address.clone(),
+                                update: tilo_actions::InvocationUpdate::Failed {
+                                    invocation: operation_invocation,
+                                    error: tilo_actions::ActionFailure {
+                                        code: "semantic_action_failed".into(),
+                                        message: message.clone(),
+                                        details: None,
+                                        retryable: false,
+                                    },
                                 },
-                            },
-                        });
+                            });
                     }
                     return Err(tilo_actions::DoorError::Failed(message));
                 }
             };
             if !handled {
                 if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                    self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                        address: address.clone(),
-                        update: tilo_actions::InvocationUpdate::Failed {
-                            invocation: operation_invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "unknown_action".into(),
-                                message: "the semantic target no longer accepts this action".into(),
-                                details: None,
-                                retryable: false,
+                    self.collaboration
+                        .manager
+                        .send(CollabRequest::RecordLocalEffect {
+                            address: address.clone(),
+                            update: tilo_actions::InvocationUpdate::Failed {
+                                invocation: operation_invocation,
+                                error: tilo_actions::ActionFailure {
+                                    code: "unknown_action".into(),
+                                    message: "the semantic target no longer accepts this action"
+                                        .into(),
+                                    details: None,
+                                    retryable: false,
+                                },
                             },
-                        },
-                    });
+                        });
                 }
                 return Err(tilo_actions::DoorError::Unknown(address.clone()));
             }
@@ -4135,13 +3537,15 @@ impl App {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
             if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                    address: address.clone(),
-                    update: tilo_actions::InvocationUpdate::Succeeded {
-                        invocation: operation_invocation,
-                        output: tilo_actions::ActionOutput::default(),
-                    },
-                });
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::RecordLocalEffect {
+                        address: address.clone(),
+                        update: tilo_actions::InvocationUpdate::Succeeded {
+                            invocation: operation_invocation,
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                    });
             }
             return Ok(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
@@ -4158,7 +3562,7 @@ impl App {
             resolved,
             encoded,
             actor,
-            &self.local_author.0,
+            &self.collaboration.local_author.0,
             broker_admitted,
             operation_invocation,
             ambient_context,
@@ -4175,10 +3579,12 @@ impl App {
                             retryable: false,
                         },
                     };
-                    self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                        address: address.clone(),
-                        update,
-                    });
+                    self.collaboration
+                        .manager
+                        .send(CollabRequest::RecordLocalEffect {
+                            address: address.clone(),
+                            update,
+                        });
                 }
                 return Err(message);
             }
@@ -4200,13 +3606,15 @@ impl App {
             && kind == tilo_actions::OperationKind::Effect
             && invocation.is_none()
         {
-            self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                address: address.clone(),
-                update: tilo_actions::InvocationUpdate::Succeeded {
-                    invocation: operation_invocation,
-                    output: output.clone(),
-                },
-            });
+            self.collaboration
+                .manager
+                .send(CollabRequest::RecordLocalEffect {
+                    address: address.clone(),
+                    update: tilo_actions::InvocationUpdate::Succeeded {
+                        invocation: operation_invocation,
+                        output: output.clone(),
+                    },
+                });
         }
         // Effect/view operations are allowed to switch presentation-only
         // resources without touching Automerge.
@@ -4225,7 +3633,7 @@ impl App {
             tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::Value::Object(intent.arguments.clone())
         );
-        let actor = self.local_author.0.clone();
+        let actor = self.collaboration.local_author.0.clone();
         let result = self.invoke_bound_target(
             target,
             Some(&argument),
@@ -4330,7 +3738,7 @@ impl App {
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
                 serde_json::Value::Object(intent.arguments.clone())
             );
-            let actor = self.local_author.0.clone();
+            let actor = self.collaboration.local_author.0.clone();
             let result = self.invoke_resource_action(
                 &intent.address,
                 Some(&json),
@@ -4368,7 +3776,7 @@ impl App {
     }
 
     fn fail_pending_application_launches_on_disconnect(&mut self) -> bool {
-        if self.collab_manager.is_connected() {
+        if self.collaboration.manager.is_connected() {
             return false;
         }
 
@@ -4378,7 +3786,7 @@ impl App {
             let Some(directed) = self.actions.directed_invocations.remove(&invocation) else {
                 continue;
             };
-            self.collab_manager.send(CollabRequest::UpdateInvocation {
+            self.collaboration.manager.send(CollabRequest::UpdateInvocation {
                 id: directed.wire_id,
                 update: tilo_actions::InvocationUpdate::Failed {
                     invocation,
@@ -4457,10 +3865,12 @@ impl App {
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.directed_invocations.remove(&invocation);
             }
-            self.collab_manager.send(CollabRequest::UpdateInvocation {
-                id: pending.wire_id,
-                update,
-            });
+            self.collaboration
+                .manager
+                .send(CollabRequest::UpdateInvocation {
+                    id: pending.wire_id,
+                    update,
+                });
             changed = true;
         }
         let local_invocations = self
@@ -4527,7 +3937,8 @@ impl App {
                 } else {
                     update
                 };
-                self.collab_manager
+                self.collaboration
+                    .manager
                     .send(CollabRequest::RecordLocalEffect { address, update });
             }
             changed = true;
@@ -4723,7 +4134,7 @@ impl App {
             return false;
         };
         let root = self.state.root.clone();
-        let consumed = palette.handle_key(event, &self.modifiers, &mut self.state.doc, &root);
+        let consumed = palette.handle_key(event, &self.input.modifiers, &mut self.state.doc, &root);
         // An operation row may have fired. Document mutations go through the
         // deterministic executor; effects/views route to the owning widget.
         let pending = self
@@ -4733,7 +4144,7 @@ impl App {
             .and_then(crate::action_palette::ActionPalette::take_operation);
         if let Some(pending) = pending {
             let argument = pending.wire_argument();
-            let actor = self.local_author.0.clone();
+            let actor = self.collaboration.local_author.0.clone();
             // Confirmation was collected by the palette, but the request has
             // not crossed the session broker yet. Host-required documents are
             // therefore submitted to that broker rather than applied here.
@@ -4915,32 +4326,32 @@ impl App {
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
     pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
-        let mut s = self.a11y;
-        s.screen_reader = self.screen_reader.is_some();
+        let mut s = self.accessibility.a11y;
+        s.screen_reader = self.accessibility.screen_reader.is_some();
         s
     }
 
     pub fn text_scale(&self) -> f32 {
-        self.text_scale
+        self.accessibility.text_scale
     }
 
     /// Layout grows to fit so text never clips; the value is clamped to a
     /// sane range by the theme.
     pub fn set_text_scale(&mut self, factor: f32) {
         let _entry = self.enter_wake_scope();
-        self.text_scale = factor;
+        self.accessibility.text_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
     }
 
     pub fn ui_scale(&self) -> f32 {
-        self.ui_scale
+        self.accessibility.ui_scale
     }
 
     pub fn set_ui_scale(&mut self, factor: f32) {
         let _entry = self.enter_wake_scope();
-        self.ui_scale = factor;
+        self.accessibility.ui_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -4953,47 +4364,47 @@ impl App {
         environment: crate::interaction::InteractionEnvironment,
     ) {
         let _entry = self.enter_wake_scope();
-        if self.interaction == environment {
+        if self.input.interaction == environment {
             return;
         }
-        self.interaction = environment;
+        self.input.interaction = environment;
         self.root_widget.set_interaction_environment(environment);
         self.invalidate_widget_resource_cache();
         self.layout.layout_dirty = true;
     }
 
     pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
-        self.interaction
+        self.input.interaction
     }
 
     /// Override platform HIG conventions for a native shell or deterministic
     /// cross-platform test. Ordinary apps use the host default.
     pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         let _entry = self.enter_wake_scope();
-        if self.platform == conventions {
+        if self.input.platform == conventions {
             return;
         }
-        self.platform = conventions;
+        self.input.platform = conventions;
         self.root_widget.set_platform_conventions(conventions);
         self.invalidate_widget_resource_cache();
         self.layout.layout_dirty = true;
     }
 
     pub fn platform_conventions(&self) -> crate::platform::PlatformConventions {
-        self.platform
+        self.input.platform
     }
 
     pub fn high_contrast(&self) -> bool {
-        self.a11y.high_contrast
+        self.accessibility.a11y.high_contrast
     }
 
     /// Off restores the captured base theme, not a hard-coded default.
     pub fn set_high_contrast(&mut self, on: bool) {
         let _entry = self.enter_wake_scope();
-        if self.a11y.high_contrast == on {
+        if self.accessibility.a11y.high_contrast == on {
             return;
         }
-        self.a11y.high_contrast = on;
+        self.accessibility.a11y.high_contrast = on;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -5001,20 +4412,20 @@ impl App {
 
     pub fn toggle_high_contrast(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
-        self.set_high_contrast(!self.a11y.high_contrast);
-        self.a11y.high_contrast
+        self.set_high_contrast(!self.accessibility.a11y.high_contrast);
+        self.accessibility.a11y.high_contrast
     }
 
     pub fn reduce_motion(&self) -> bool {
-        self.a11y.reduce_motion
+        self.accessibility.a11y.reduce_motion
     }
 
     pub fn set_reduce_motion(&mut self, on: bool) {
         let _entry = self.enter_wake_scope();
-        if self.a11y.reduce_motion == on {
+        if self.accessibility.a11y.reduce_motion == on {
             return;
         }
-        self.a11y.reduce_motion = on;
+        self.accessibility.a11y.reduce_motion = on;
         self.rebuild_theme();
     }
 
@@ -5022,7 +4433,7 @@ impl App {
     /// theme doesn't discard them.
     pub fn set_theme(&mut self, theme: Theme) {
         let _entry = self.enter_wake_scope();
-        self.base_theme = theme;
+        self.accessibility.base_theme = theme;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -5032,24 +4443,24 @@ impl App {
     /// site to a no-op.
     pub fn set_screen_reader_enabled(&mut self, enabled: bool) {
         let _entry = self.enter_wake_scope();
-        match (enabled, self.screen_reader.is_some()) {
+        match (enabled, self.accessibility.screen_reader.is_some()) {
             (true, false) => {
-                self.screen_reader = Some(Self::configured_screen_reader());
+                self.accessibility.screen_reader = Some(Self::configured_screen_reader());
                 self.announce_current_focus();
             }
             (false, true) => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.stop();
                 }
-                self.screen_reader = None;
-                self.live_region_last.clear();
+                self.accessibility.screen_reader = None;
+                self.accessibility.live_region_last.clear();
             }
             _ => {}
         }
     }
 
     pub fn screen_reader_enabled(&self) -> bool {
-        self.screen_reader.is_some()
+        self.accessibility.screen_reader.is_some()
     }
 
     /// Installs a caller-provided reader (e.g. over a test `NullSpeaker` so
@@ -5057,12 +4468,12 @@ impl App {
     #[doc(hidden)]
     pub fn set_screen_reader(&mut self, reader: Option<crate::screen_reader::ScreenReader>) {
         let _entry = self.enter_wake_scope();
-        self.screen_reader = reader;
+        self.accessibility.screen_reader = reader;
     }
 
     #[doc(hidden)]
     pub fn screen_reader(&self) -> Option<&crate::screen_reader::ScreenReader> {
-        self.screen_reader.as_ref()
+        self.accessibility.screen_reader.as_ref()
     }
 
     fn announce_current_focus(&mut self) {
@@ -5071,7 +4482,7 @@ impl App {
             .inspect_node(id, |widget| widget.accessibility())
             .ok()
             .flatten();
-        if let (Some(node), Some(sr)) = (node, self.screen_reader.as_mut()) {
+        if let (Some(node), Some(sr)) = (node, self.accessibility.screen_reader.as_mut()) {
             sr.announce_focus(&node);
         }
     }
@@ -5097,7 +4508,7 @@ impl App {
         use winit::event::ElementState;
         use winit::keyboard::{Key, NamedKey};
 
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return false;
         }
         let WindowEvent::KeyboardInput { event: ke, .. } = event else {
@@ -5105,21 +4516,21 @@ impl App {
         };
 
         if let Key::Named(NamedKey::Insert) = ke.logical_key {
-            self.screen_reader_modifier_down = ke.state == ElementState::Pressed;
+            self.accessibility.screen_reader_modifier_down = ke.state == ElementState::Pressed;
             return false;
         }
 
-        if ke.state != ElementState::Pressed || !self.screen_reader_modifier_down {
+        if ke.state != ElementState::Pressed || !self.accessibility.screen_reader_modifier_down {
             return false;
         }
 
         // Handled before the named-key arm since winit delivers H/F as
         // character keys, not named keys.
         if let Key::Character(ref c) = ke.logical_key {
-            let shift = self.modifiers.state().shift_key();
+            let shift = self.input.modifiers.state().shift_key();
             match c.to_ascii_lowercase().as_str() {
                 "h" => {
-                    if let Some(sr) = self.screen_reader.as_mut() {
+                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                         if shift {
                             sr.read_prev_heading(self.root_widget.as_ref());
                         } else {
@@ -5129,7 +4540,7 @@ impl App {
                     return true;
                 }
                 "f" => {
-                    if let Some(sr) = self.screen_reader.as_mut() {
+                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                         if shift {
                             sr.read_prev_control(self.root_widget.as_ref());
                         } else {
@@ -5147,19 +4558,19 @@ impl App {
         };
         match named {
             NamedKey::ArrowDown => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_all(self.root_widget.as_ref());
                 }
                 true
             }
             NamedKey::ArrowRight => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_next(self.root_widget.as_ref());
                 }
                 true
             }
             NamedKey::ArrowLeft => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_prev(self.root_widget.as_ref());
                 }
                 true
@@ -5169,7 +4580,7 @@ impl App {
                 true
             }
             NamedKey::Escape => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.stop();
                 }
                 true
@@ -5178,7 +4589,6 @@ impl App {
         }
     }
 
-impl App {
     /// Reconciles both directions, idempotently: app-driven (push
     /// `fullscreen_intent` to the window on change) and compositor-driven
     /// (read the actual state back and notify the root on a transition, e.g.
@@ -5371,7 +4781,6 @@ impl App {
         }
         best.map(|(_, rect, label)| (rect, label))
     }
-}
 
     /// Called once per event-loop wakeup, so it must be cheap and
     /// non-blocking.
@@ -5379,26 +4788,26 @@ impl App {
     where
         F: FnMut(&mut PresenceCtx) -> bool + Send + Sync + 'static,
     {
-        self.frame_tick = Some(Box::new(tick));
+        self.presence.frame_tick = Some(Box::new(tick));
     }
 
     pub fn set_presence_broadcast_sink<F>(&mut self, sink: F)
     where
         F: Fn(&PresenceKey, &PresencePayload) + Send + Sync + 'static,
     {
-        self.presence_broadcast_sink = Some(Box::new(sink));
+        self.presence.broadcast_sink = Some(Box::new(sink));
     }
 
     pub fn clear_presence_broadcast_sink(&mut self) {
-        self.presence_broadcast_sink = None;
+        self.presence.broadcast_sink = None;
     }
 
     pub fn set_pointer_space(&mut self, space: crate::presence::PointerSpace) {
-        self.pointer_space = Some(space);
+        self.presence.pointer_space = Some(space);
     }
 
     fn local_pointer_key(&self) -> PresenceKey {
-        match self.pointer_space.clone() {
+        match self.presence.pointer_space.clone() {
             Some(space) => PresenceKey::Pointer { space },
             None => PresenceKey::local_surface_pointer(),
         }
@@ -5408,16 +4817,16 @@ impl App {
     /// pointer is in â€” see [`Self::set_pointer_space`].
     pub fn set_presence_broadcast_scope(&mut self, key: Option<PresenceKey>) {
         let _entry = self.enter_wake_scope();
-        self.presence_broadcast_scope.clone_from(&key);
+        self.presence.broadcast_scope.clone_from(&key);
         // Reset the throttle so a new scope's first move fires immediately.
-        self.last_pointer_broadcast = None;
+        self.presence.last_pointer_broadcast = None;
         // Arrival remains ephemeral presence only. Document catch-up is a
         // broker-directed request with one selected snapshot responder.
         if let Some(k) = key {
             tracing::debug!(
                 target: "tilo.state",
                 event = "presence_arrived",
-                connected = self.collab_manager.is_connected(),
+                connected = self.collaboration.manager.is_connected(),
                 "publishing collaboration presence"
             );
             self.broadcast_presence(k, crate::collaboration::PresencePayload::Arrived);
@@ -5425,7 +4834,7 @@ impl App {
     }
 
     pub fn presence_broadcast_scope(&self) -> Option<&PresenceKey> {
-        self.presence_broadcast_scope.as_ref()
+        self.presence.broadcast_scope.as_ref()
     }
 
     pub fn presence_ctx(&self) -> &PresenceCtx {
@@ -5436,15 +4845,15 @@ impl App {
     }
 
     pub fn set_followed_peer(&mut self, user_id: Option<String>) {
-        self.followed_peer = user_id;
+        self.presence.followed_peer = user_id;
     }
 
     pub fn followed_peer(&self) -> Option<&str> {
-        self.followed_peer.as_deref()
+        self.presence.followed_peer.as_deref()
     }
 
     pub fn followed_peer_target(&self) -> Option<[f32; 2]> {
-        let id = self.followed_peer.as_deref()?;
+        let id = self.presence.followed_peer.as_deref()?;
         self.presence_ctx.peer_pointer(id)
     }
 
@@ -5456,7 +4865,7 @@ impl App {
     ) -> bool {
         let _entry = self.enter_wake_scope();
         if let Some(uid) = self.presence_ctx.hit_test_offscreen_mist(viewport, point) {
-            self.followed_peer = Some(uid);
+            self.presence.followed_peer = Some(uid);
             true
         } else {
             false
@@ -5495,10 +4904,11 @@ impl App {
         let _entry = self.enter_wake_scope();
         // Fan out to the optional out-of-band sink first (the shell's Iroh
         // bridge) so a slow socket never delays the network path.
-        if let Some(sink) = self.presence_broadcast_sink.as_ref() {
+        if let Some(sink) = self.presence.broadcast_sink.as_ref() {
             sink(&key, &payload);
         }
-        self.collab_manager
+        self.collaboration
+            .manager
             .send(CollabRequest::Presence { key, payload });
     }
 
@@ -5533,23 +4943,42 @@ impl App {
         true
     }
 
+    fn respond_primary_document_snapshot(&mut self) {
+        match self.primary_document_snapshot() {
+            Ok(data) => {
+                let _ = self
+                    .collaboration
+                    .manager
+                    .send(crate::collaboration::CollabRequest::document_snapshot(data));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: primary snapshot refused");
+            }
+        }
+    }
+
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
-        if self.collab_manager.is_connected() {
-            let (delta, heads) = self.state.pending_outbound_delta();
-            if !delta.is_empty() {
-                tracing::debug!(
-                    target: "tilo.state",
-                    event = "document_send",
-                    kind = "incremental",
-                    bytes = delta.len(),
-                    heads = heads.len(),
-                    "queueing document mutation"
-                );
-                if self.collab_manager.send(
-                    crate::collaboration::CollabRequest::document_incremental(delta),
-                ) {
-                    self.state.advance_outbound(heads);
+        if self.collaboration.manager.is_connected() {
+            match self.pending_primary_document_delta() {
+                Ok((delta, heads)) if !delta.is_empty() => {
+                    tracing::debug!(
+                        target: "tilo.state",
+                        event = "document_send",
+                        kind = "incremental",
+                        bytes = delta.len(),
+                        heads = heads.len(),
+                        "queueing document mutation"
+                    );
+                    if self.collaboration.manager.send(
+                        crate::collaboration::CollabRequest::document_incremental(delta),
+                    ) {
+                        self.advance_primary_document(heads);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "collab: primary document is unavailable");
                 }
             }
         }
@@ -5560,21 +4989,21 @@ impl App {
     /// incremental cursor and route separate so an annotation/document delta
     /// can never be merged into the index (or vice versa).
     fn broadcast_room_index_delta(&mut self) {
-        let connected = self.room_collab_manager.as_ref().map_or_else(
-            || self.records.is_some() && self.collab_manager.is_connected(),
+        let connected = self.collaboration.room_manager.as_ref().map_or_else(
+            || self.persistence.records.is_some() && self.collaboration.manager.is_connected(),
             CollaborationManager::is_connected,
         );
         if !connected {
             return;
         }
-        let Some(room) = self.room_index.as_mut() else {
+        let Some(room) = self.persistence.room_index.as_mut() else {
             return;
         };
         let (delta, heads) = room.pending_outbound_delta();
         if delta.is_empty() {
             return;
         }
-        if let Some(manager) = self.room_collab_manager.as_mut() {
+        if let Some(manager) = self.collaboration.room_manager.as_mut() {
             if manager.is_connected()
                 && manager.send(crate::collaboration::CollabRequest::document_incremental(
                     delta,
@@ -5582,16 +5011,13 @@ impl App {
             {
                 room.advance_outbound(heads);
             }
-        } else if self.records.is_some() && self.collab_manager.is_connected() {
+        } else if self.persistence.records.is_some() && self.collaboration.manager.is_connected() {
             // Before the first record checkout the primary manager is the
             // room route. It becomes `room_collab_manager` at that checkout.
             // Do not advance this cursor for ordinary (non-record) apps.
-            if self
-                .collab_manager
-                .send(crate::collaboration::CollabRequest::document_incremental(
-                    delta,
-                ))
-            {
+            if self.collaboration.manager.send(
+                crate::collaboration::CollabRequest::document_incremental(delta),
+            ) {
                 room.advance_outbound(heads);
             }
         }
@@ -5604,7 +5030,7 @@ impl App {
                 .ok()
                 .flatten()
         });
-        if current != self.last_focus_presence {
+        if current != self.presence.last_focus {
             // When the caret advances forward under the same scope, publish
             // `Typing` for the inserted run so peers light up a fading
             // highlighter. Backspace/left-arrow and scope changes don't
@@ -5612,7 +5038,7 @@ impl App {
             if let (
                 Some((new_key, PresencePayload::Caret { pos: new_pos })),
                 Some((old_key, PresencePayload::Caret { pos: old_pos })),
-            ) = (&current, &self.last_focus_presence)
+            ) = (&current, &self.presence.last_focus)
                 && new_key == old_key
                 && new_pos > old_pos
             {
@@ -5627,7 +5053,7 @@ impl App {
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
             }
-            self.last_focus_presence = current;
+            self.presence.last_focus = current;
         }
     }
 
@@ -5635,11 +5061,11 @@ impl App {
     /// focus.
     fn broadcast_location_presence(&mut self) {
         let current = self.root_widget.presence_payload();
-        if current != self.last_location_presence {
+        if current != self.presence.last_location {
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
             }
-            self.last_location_presence = current;
+            self.presence.last_location = current;
         }
     }
 
@@ -5649,12 +5075,12 @@ impl App {
     /// inert paired payload; the receiver recognises the key and decodes the
     /// subset instead.
     fn broadcast_view_presence(&mut self) {
-        if !self.collab_manager.is_connected() && self.presence_broadcast_sink.is_none() {
+        if !self.collaboration.manager.is_connected() && self.presence.broadcast_sink.is_none() {
             return;
         }
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
         let subset = crate::view::ViewSubset::from_view(&view);
-        if self.last_view_presence.as_ref() == Some(&subset) {
+        if self.presence.last_view.as_ref() == Some(&subset) {
             return;
         }
         self.broadcast_presence(
@@ -5664,7 +5090,7 @@ impl App {
             // with the routing key intact.
             crate::collaboration::PresencePayload::Arrived,
         );
-        self.last_view_presence = Some(subset);
+        self.presence.last_view = Some(subset);
     }
 
     /// Following a peer who hasn't published a View yet latches the intent
@@ -5672,17 +5098,17 @@ impl App {
     /// View arrives.
     pub fn follow(&mut self, peer_id: impl Into<String>) {
         let _entry = self.enter_wake_scope();
-        self.followed_peer = Some(peer_id.into());
+        self.presence.followed_peer = Some(peer_id.into());
         self.apply_follow();
     }
 
     pub fn unfollow(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.followed_peer = None;
+        self.presence.followed_peer = None;
     }
 
     fn apply_follow(&mut self) {
-        let Some(id) = self.followed_peer.clone() else {
+        let Some(id) = self.presence.followed_peer.clone() else {
             return;
         };
         let Some(view) = self
@@ -5707,7 +5133,7 @@ impl App {
     pub fn poll_and_apply_collab_events(&mut self) {
         let _entry = self.enter_wake_scope();
         self.pump_room_index_events();
-        let events = self.collab_manager.poll();
+        let events = self.collaboration.manager.poll();
         for event in events {
             self.apply_collab_event_for_test(event);
         }
@@ -5721,7 +5147,7 @@ impl App {
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) -> bool {
-        let Some(room) = self.room_index.as_mut() else {
+        let Some(room) = self.persistence.room_index.as_mut() else {
             return false;
         };
         let applied = match collab_types::DocumentMutation::decode(
@@ -5739,7 +5165,10 @@ impl App {
             }
         };
         if applied
-            && let (Some(records), Some(room)) = (self.records.as_mut(), self.room_index.as_ref())
+            && let (Some(records), Some(room)) = (
+                self.persistence.records.as_mut(),
+                self.persistence.room_index.as_ref(),
+            )
         {
             records.discover_room(room.document());
             self.invalidate_widget_resource_cache();
@@ -5751,7 +5180,7 @@ impl App {
     /// presence are record scoped, so an index update cannot alter the app's
     /// resource/action namespace or presentation state.
     fn pump_room_index_events(&mut self) -> bool {
-        let Some(manager) = self.room_collab_manager.as_mut() else {
+        let Some(manager) = self.collaboration.room_manager.as_mut() else {
             return false;
         };
         let events = manager.poll();
@@ -5783,9 +5212,10 @@ impl App {
                     }
                 }
                 CollabEvent::DocumentSnapshotRequested { .. } => {
-                    if let (Some(manager), Some(room)) =
-                        (self.room_collab_manager.as_mut(), self.room_index.as_mut())
-                    {
+                    if let (Some(manager), Some(room)) = (
+                        self.collaboration.room_manager.as_mut(),
+                        self.persistence.room_index.as_mut(),
+                    ) {
                         let snapshot = room.document_mut().save();
                         let _ = manager.send(
                             crate::collaboration::CollabRequest::document_snapshot(snapshot),
@@ -5833,10 +5263,7 @@ impl App {
                     None => self.unfollow(),
                 },
                 CollabEvent::DocumentSnapshotRequested { .. } => {
-                    let data = self.state.save();
-                    let _ = self
-                        .collab_manager
-                        .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                    self.respond_primary_document_snapshot();
                 }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     self.presence_ctx
@@ -5956,10 +5383,12 @@ impl App {
                             },
                         },
                     };
-                    self.collab_manager.send(CollabRequest::UpdateInvocation {
-                        id: pending.wire_id,
-                        update,
-                    });
+                    self.collaboration
+                        .manager
+                        .send(CollabRequest::UpdateInvocation {
+                            id: pending.wire_id,
+                            update,
+                        });
                 }
                 // The generic catalogue/client responses are consumed by
                 // widgets such as Agent through their collaboration event
@@ -6101,10 +5530,7 @@ impl App {
                 None => self.unfollow(),
             },
             CollabEvent::DocumentSnapshotRequested { .. } => {
-                let data = self.state.save();
-                let _ = self
-                    .collab_manager
-                    .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                self.respond_primary_document_snapshot();
             }
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);
@@ -6173,10 +5599,12 @@ impl App {
                         },
                     },
                 };
-                self.collab_manager.send(CollabRequest::UpdateInvocation {
-                    id: pending.wire_id,
-                    update,
-                });
+                self.collaboration
+                    .manager
+                    .send(CollabRequest::UpdateInvocation {
+                        id: pending.wire_id,
+                        update,
+                    });
             }
             _ => {}
         }
@@ -6187,10 +5615,9 @@ impl App {
     }
 
     pub fn local_author(&self) -> &crate::permissions::UserId {
-        &self.local_author
+        &self.collaboration.local_author
     }
 
-impl App {
     #[doc(hidden)]
     pub fn state_mut_for_test(&mut self) -> &mut crate::state::State {
         self.invalidate_widget_resource_cache();
@@ -6268,10 +5695,10 @@ impl App {
             })
             .unwrap_or_default();
         self.focusable_order = order;
-        match (self.focus_trap_active, trap_active) {
+        match (self.accessibility.focus_trap_active, trap_active) {
             (false, true) => {
                 // Modal just opened: remember prior focus, move into the trap.
-                self.focus_before_trap = self.focused_node;
+                self.accessibility.focus_before_trap = self.focused_node;
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
                 } else {
@@ -6283,6 +5710,7 @@ impl App {
             (true, false) => {
                 // Modal closed: restore only if that element still exists.
                 let restore = self
+                    .accessibility
                     .focus_before_trap
                     .take()
                     .filter(|id| self.focusable_order.contains(id));
@@ -6300,7 +5728,7 @@ impl App {
             }
             (false, false) => {}
         }
-        self.focus_trap_active = trap_active;
+        self.accessibility.focus_trap_active = trap_active;
     }
 
     /// The decode lives on [`crate::presence::PresenceCtx`] so the
@@ -6347,7 +5775,7 @@ impl App {
             RemotePresenceEffect::InteractionAdvanced => {
                 if let Some(interaction) = interaction
                     && let Some(text) = self.presence_ctx.interaction_announcement(&interaction)
-                    && let Some(reader) = self.screen_reader.as_mut()
+                    && let Some(reader) = self.accessibility.screen_reader.as_mut()
                 {
                     let assertive = matches!(
                         interaction.phase,
@@ -6373,14 +5801,14 @@ impl App {
                 self.set_focused_node(Some(id));
                 if let Some(metadata) = entry.widget_metadata {
                     let _ = self.mutate_node(id, |widget| widget.set_state(&metadata));
-                    self.last_stable_metadata = Some(metadata);
+                    self.history_runtime.stable_metadata = Some(metadata);
                 }
-                self.last_stable_focus_idx = Some(idx);
+                self.history_runtime.stable_focus_idx = Some(idx);
             }
         } else {
             self.set_focused_node(None);
-            self.last_stable_focus_idx = None;
-            self.last_stable_metadata = None;
+            self.history_runtime.stable_focus_idx = None;
+            self.history_runtime.stable_metadata = None;
         }
         self.layout.layout_dirty = true;
         self.needs_sync = true;
@@ -6443,10 +5871,12 @@ impl App {
                 } else {
                     match request {
                         crate::undo::UndoRequest::Undo => {
-                            self.state.undo_as(Some(&self.local_author), None, None)
+                            self.state
+                                .undo_as(Some(&self.collaboration.local_author), None, None)
                         }
                         crate::undo::UndoRequest::Redo => {
-                            self.state.redo_as(Some(&self.local_author), None, None)
+                            self.state
+                                .redo_as(Some(&self.collaboration.local_author), None, None)
                         }
                     }
                 };
@@ -6532,15 +5962,15 @@ impl App {
         // not the CRDT â€” `changed` lets those skip persisting/syncing.
         let context = self.root_widget.take_commit_context();
         let changed = self.state.commit_action_authored_with_context(
-            self.last_stable_focus_idx,
-            self.last_stable_metadata.clone(),
-            Some(self.local_author.clone()),
+            self.history_runtime.stable_focus_idx,
+            self.history_runtime.stable_metadata.clone(),
+            Some(self.collaboration.local_author.clone()),
             context,
         );
-        self.last_stable_focus_idx = self
+        self.history_runtime.stable_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.last_stable_metadata = self.focused_node.and_then(|id| {
+        self.history_runtime.stable_metadata = self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| widget.get_state())
                 .ok()
                 .flatten()
@@ -6568,12 +5998,14 @@ impl App {
             self.focused_node = new_id;
             if let Some(node) = new_id {
                 let _ = self.mutate_node(node, |widget| widget.set_focus(true));
-                if self.screen_reader.is_some() {
+                if self.accessibility.screen_reader.is_some() {
                     let access = self
                         .inspect_node(node, |widget| widget.accessibility())
                         .ok()
                         .flatten();
-                    if let (Some(access), Some(reader)) = (access, self.screen_reader.as_mut()) {
+                    if let (Some(access), Some(reader)) =
+                        (access, self.accessibility.screen_reader.as_mut())
+                    {
                         reader.announce_focus(&access);
                     }
                 }
@@ -6621,7 +6053,7 @@ impl App {
     }
 
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
-        self.screen_reader.as_ref()?;
+        self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
         let node = self
             .inspect_node(id, |widget| widget.accessibility())
@@ -6639,7 +6071,7 @@ impl App {
         if self.focused_node != Some(pre_id) {
             return;
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         let Some(node) = self
@@ -6653,13 +6085,13 @@ impl App {
         if now.is_empty() || now == pre_state {
             return;
         }
-        if let Some(sr) = self.screen_reader.as_mut() {
+        if let Some(sr) = self.accessibility.screen_reader.as_mut() {
             sr.announce_value_change(now);
         }
     }
 
     fn text_review_snapshot(&self) -> Option<(NodeId, usize, String)> {
-        self.screen_reader.as_ref()?;
+        self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
         let (caret, text) = self
             .inspect_node(id, |widget| widget.text_review())
@@ -6677,7 +6109,7 @@ impl App {
         if self.focused_node != Some(pre_id) {
             return;
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         let Some((now_caret, now_text)) = self
@@ -6702,11 +6134,11 @@ impl App {
                         .get(..now_caret)
                         .and_then(|s| s.chars().next_back())
                 });
-            if let (Some(ch), Some(sr)) = (ch, self.screen_reader.as_mut()) {
+            if let (Some(ch), Some(sr)) = (ch, self.accessibility.screen_reader.as_mut()) {
                 sr.echo_char(ch);
             }
         } else if let Some(word) = word_at(&now_text, now_caret)
-            && let Some(sr) = self.screen_reader.as_mut()
+            && let Some(sr) = self.accessibility.screen_reader.as_mut()
         {
             sr.echo_word(&word);
         }
@@ -6726,7 +6158,7 @@ impl App {
             }
             w.for_each_child(&mut |child| visit(child, out));
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         // A live region without an accessible name can't be tracked stably
@@ -6738,8 +6170,10 @@ impl App {
         let mut to_announce: Vec<(crate::a11y::Politeness, String)> = Vec::new();
         for (key, politeness, text) in seen {
             current_keys.insert(key.clone());
-            let changed = self.live_region_last.get(&key) != Some(&text);
-            self.live_region_last.insert(key, text.clone());
+            let changed = self.accessibility.live_region_last.get(&key) != Some(&text);
+            self.accessibility
+                .live_region_last
+                .insert(key, text.clone());
             // Clearing a region to empty updates the snapshot silently.
             if changed && !text.is_empty() {
                 to_announce.push((politeness, text));
@@ -6747,10 +6181,11 @@ impl App {
         }
         // Drop snapshots for regions that left the tree, so a region that
         // reappears with the same text announces afresh.
-        self.live_region_last
+        self.accessibility
+            .live_region_last
             .retain(|k, _| current_keys.contains(k));
 
-        if let Some(sr) = self.screen_reader.as_mut() {
+        if let Some(sr) = self.accessibility.screen_reader.as_mut() {
             for (politeness, text) in to_announce {
                 let (priority, interrupt) = match politeness {
                     // Assertive cuts in; polite is queued at notification
@@ -6811,7 +6246,7 @@ impl App {
     /// pointer click-through â€” gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
-        modal_rect.is_none() || self.focus_trap_active
+        modal_rect.is_none() || self.accessibility.focus_trap_active
     }
 
     /// Tab normally belongs to the host's focus order. A focused editor-like
@@ -6838,7 +6273,7 @@ impl App {
             if event.state == winit::event::ElementState::Pressed
                 && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
         {
-            return self.focus_tab(self.modifiers.state().shift_key());
+            return self.focus_tab(self.input.modifiers.state().shift_key());
         }
         false
     }
@@ -7182,11 +6617,11 @@ impl App {
                     &components,
                 )
             });
-        self.semantic_tree = tree;
+        self.accessibility.semantic_tree = tree;
         delta
     }
     pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
-        &self.semantic_tree
+        &self.accessibility.semantic_tree
     }
 
     /// A [`Verb`](crate::a11y_tree::SemanticActionKind::Verb) routes through
@@ -7212,11 +6647,11 @@ impl App {
 
         let _entry = self.enter_wake_scope();
         // Cloned so the mutation below is free to borrow doc/registry/transport.
-        let Some(action) = self.semantic_tree.action(id, name).cloned() else {
+        let Some(action) = self.accessibility.semantic_tree.action(id, name).cloned() else {
             return Ok(false);
         };
-        if let Some(target) = self.semantic_tree.bound_target(id, name) {
-            let actor = self.local_author.0.clone();
+        if let Some(target) = self.accessibility.semantic_tree.bound_target(id, name) {
+            let actor = self.collaboration.local_author.0.clone();
             match self.invoke_bound_target(&target, arg, &actor, false, false, None, None, None) {
                 Ok(_) => return Ok(true),
                 Err(tilo_actions::DoorError::ConfirmationRequired) => {
@@ -7241,7 +6676,11 @@ impl App {
             }
             SemanticActionKind::AppPrompted { .. } => {
                 let arg = arg.unwrap_or("");
-                let Some(encoded) = self.semantic_tree.build_prompted(id, name, arg) else {
+                let Some(encoded) = self
+                    .accessibility
+                    .semantic_tree
+                    .build_prompted(id, name, arg)
+                else {
                     return Ok(false);
                 };
                 if self.is_history_encoded_local(&encoded) {
@@ -7258,7 +6697,7 @@ impl App {
                     other => other,
                 };
                 let Some((taffy_raw, semantic_target, bounds)) =
-                    self.semantic_tree.node(id).and_then(|n| {
+                    self.accessibility.semantic_tree.node(id).and_then(|n| {
                         n.widget_taffy_id
                             .map(|taffy| (taffy, n.semantic_target.clone(), n.bounds))
                     })
@@ -7374,10 +6813,10 @@ impl App {
         {
             self.set_focused_node(Some(first));
         }
-        self.history.stable_focus_idx = self
+        self.history_runtime.stable_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        self.history.stable_metadata = self.focused_node.and_then(|id| {
+        self.history_runtime.stable_metadata = self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| widget.get_state())
                 .ok()
                 .flatten()
@@ -7569,7 +7008,7 @@ impl App {
     /// Precedence: explicit override â†’ `TILO_APP_NAME` â†’ package id â†’ binary
     /// name â†’ generic default.
     pub fn resolved_window_title(&self) -> String {
-        resolve_window_title(self.window_title.as_deref())
+        resolve_window_title(self.window.title.as_deref())
     }
 
     /// `records` owns per-record documents and persistence; `room_index` is
@@ -7605,17 +7044,18 @@ impl App {
         // Discovery is metadata-only: it must not create an empty record
         // replica or join a collaboration route for every indexed document.
         records.discover_room(&room_index);
-        self.records = Some(records);
-        self.room_index = Some(crate::state::DocumentReplica::new(room_index));
+        self.persistence.records = Some(records);
+        self.persistence.room_index = Some(crate::state::DocumentReplica::new(room_index));
         self
     }
 
     pub fn records(&self) -> Option<&crate::record::RecordSet> {
-        self.records.as_ref()
+        self.persistence.records.as_ref()
     }
 
     pub fn room_index(&self) -> Option<&automerge::AutoCommit> {
-        self.room_index
+        self.persistence
+            .room_index
             .as_ref()
             .map(crate::state::DocumentReplica::document)
     }
@@ -7632,13 +7072,14 @@ impl App {
     )]
     pub fn record_tick(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
-        let Some(set) = self.records.as_mut() else {
+        let Some(set) = self.persistence.records.as_mut() else {
             return false;
         };
         let switched = crate::record::tick(
             set,
             &mut self.state,
-            self.room_index
+            self.persistence
+                .room_index
                 .as_mut()
                 .map(crate::state::DocumentReplica::document_mut),
             &*self.root_widget,
@@ -7661,31 +7102,32 @@ impl App {
                 // index before moving the editable document to its record
                 // route. The two Automerge graphs never share a channel or
                 // an apply target.
-                if self.room_collab_manager.is_none() {
+                if self.collaboration.room_manager.is_none() {
                     let room = std::mem::replace(
-                        &mut self.collab_manager,
+                        &mut self.collaboration.manager,
                         CollaborationManager::for_record(&id),
                     );
-                    self.room_collab_manager = Some(room);
+                    self.collaboration.room_manager = Some(room);
                 } else {
-                    self.collab_manager = CollaborationManager::for_record(&id);
+                    self.collaboration.manager = CollaborationManager::for_record(&id);
                 }
                 tracing::debug!(
                     target: "tilo.state",
                     event = "record_checkout",
                     record = id.as_str(),
-                    connected = self.collab_manager.is_connected(),
+                    connected = self.collaboration.manager.is_connected(),
                     "switched document collaboration route"
                 );
                 self.needs_sync = true;
                 self.layout.layout_dirty = true;
                 // Presence announces the location; document catch-up is an
                 // independently directed broker request on the new route.
-                if let Some(scope) = self.presence_broadcast_scope.clone() {
+                if let Some(scope) = self.presence.broadcast_scope.clone() {
                     self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
                 }
                 let _ = self
-                    .collab_manager
+                    .collaboration
+                    .manager
                     .send(crate::collaboration::CollabRequest::RequestDocumentSnapshot);
                 true
             }
@@ -7697,17 +7139,18 @@ impl App {
     /// instead of the live document â€” sending the live doc to both would put
     /// a record's content in the room index.
     fn autosave_tick(&mut self) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        match self.records.as_mut() {
+        match self.persistence.records.as_mut() {
             Some(set) => {
                 set.tick(&mut self.state.doc);
-                if let (Some(saver), Some(room)) =
-                    (self.autosave.as_mut(), self.room_index.as_mut())
-                {
+                if let (Some(saver), Some(room)) = (
+                    self.persistence.autosave.as_mut(),
+                    self.persistence.room_index.as_mut(),
+                ) {
                     saver.request(room.document_mut());
                 }
             }
             None => {
-                if let Some(saver) = self.autosave.as_mut() {
+                if let Some(saver) = self.persistence.autosave.as_mut() {
                     saver.request(&mut self.state.doc);
                 }
             }
@@ -7755,15 +7198,18 @@ impl App {
             }
             return;
         }
-        if let Some(set) = self.records.as_mut() {
+        if let Some(set) = self.persistence.records.as_mut() {
             set.flush(&mut self.state.doc);
-            if let (Some(saver), Some(room)) = (self.autosave.as_mut(), self.room_index.as_mut()) {
+            if let (Some(saver), Some(room)) = (
+                self.persistence.autosave.as_mut(),
+                self.persistence.room_index.as_mut(),
+            ) {
                 saver.request(room.document_mut());
                 saver.flush();
             }
             return;
         }
-        if let Some(saver) = self.autosave.as_mut() {
+        if let Some(saver) = self.persistence.autosave.as_mut() {
             saver.request(&mut self.state.doc);
             saver.flush();
         }
@@ -7772,7 +7218,7 @@ impl App {
     /// Lets a caller check [`crate::persist::Autosave::last_error`] rather
     /// than assuming the disk accepted the writes.
     pub fn autosave(&self) -> Option<&crate::persist::Autosave> {
-        self.autosave.as_ref()
+        self.persistence.autosave.as_ref()
     }
 
     pub fn run(self) {
@@ -8302,6 +7748,40 @@ fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboR
     widget.collect_damage(regions);
 }
 
+fn draw_visible_tooltip(
+    app: &mut App,
+    scene: &mut Scene,
+    transform: Affine,
+    width: u32,
+    height: u32,
+    scale_factor: f32,
+) {
+    app.input.tooltip_host.tick(Instant::now());
+    let Some((text, anchor)) = app
+        .input
+        .tooltip_host
+        .visible()
+        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
+    else {
+        return;
+    };
+    let viewport = KurboRect::new(
+        0.0,
+        0.0,
+        f64::from(width) / f64::from(scale_factor),
+        f64::from(height) / f64::from(scale_factor),
+    );
+    crate::widget::tooltip::draw_hover_tooltip(
+        scene,
+        transform,
+        &mut app.text_renderer,
+        &app.theme,
+        anchor,
+        &text,
+        viewport,
+    );
+}
+
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
 /// Draws the root widget, its overlay, the action palette, and any visible
 /// tooltip into `scene`. Returns the transform and logical window rect the
@@ -8379,7 +7859,11 @@ fn draw_frame_content(
     if app.history_chrome_enabled {
         let context = crate::standalone_history::HistoryReadContext {
             document: &app.state.doc,
-            active_record: app.records.as_ref().and_then(|records| records.active()),
+            active_record: app
+                .persistence
+                .records
+                .as_ref()
+                .and_then(|records| records.active()),
             document_identity: app.state.document_identity(),
             permissions: &app.permission_ctx,
         };
@@ -8644,7 +8128,7 @@ fn run_layout_pass(
                         Some(&app.focusable_order),
                     )
                 };
-                if app.focus_trap_active && app.focused_node.is_none() {
+                if app.accessibility.focus_trap_active && app.focused_node.is_none() {
                     app.set_focused_node(app.focusable_order.first().copied());
                 }
             } else {
@@ -8716,7 +8200,7 @@ fn run_layout_pass(
             .is_none_or(|history| history.live_interactive())
         && let Some(host) = native_host
     {
-        app.root_widget.mount_native_views(host);
+        crate::widget::mount_native_views(app.root_widget.as_mut(), host);
     }
     if app
         .history
@@ -9025,7 +8509,7 @@ impl AppHandler {
             use winit::platform::wayland::WindowAttributesExtWayland;
             let package_id = std::env::var("TILO_PACKAGE_ID").ok();
             let app_id = resolve_app_id(
-                self.app.window_app_id.as_deref().or(package_id.as_deref()),
+                self.app.window.app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()
                     .ok()
                     .and_then(|path| {
@@ -9410,7 +8894,7 @@ impl AppHandler {
         }
         for id in stalled {
             tracing::warn!(%id, "floating surface missed its first-buffer deadline; returning it to the app");
-            if let Some(client) = self.app.floating_surface_client.as_mut() {
+            if let Some(client) = self.app.floating.client.as_mut() {
                 let _ = client.send(
                     &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss {
                         id: id.clone(),
@@ -9598,7 +9082,7 @@ impl AppHandler {
         app.root_widget.handle_event(
             &event,
             scale,
-            &app.modifiers,
+            &app.input.modifiers,
             &mut app.state.doc,
             &app.state.root,
             &mut handled,
@@ -9716,17 +9200,15 @@ impl AppHandler {
             self.last_primary_frame_presented,
         );
         for id in cleared {
-            let sent =
-                self.app
-                    .floating_surface_client
-                    .as_mut()
-                    .is_some_and(|client| {
-                        client
-                    .send(&crate::floating_surface::FloatingSurfaceClientMessage::SourceCleared {
-                        id: id.clone(),
-                    })
+            let sent = self.app.floating.client.as_mut().is_some_and(|client| {
+                client
+                    .send(
+                        &crate::floating_surface::FloatingSurfaceClientMessage::SourceCleared {
+                            id: id.clone(),
+                        },
+                    )
                     .is_ok()
-                    });
+            });
             if sent {
                 self.floating_source_clear_frames.remove(&id);
             }
@@ -9738,7 +9220,7 @@ impl AppHandler {
         for id in destinations_presented {
             let sent = self
                 .app
-                .floating_surface_client
+                .floating.client
                 .as_mut()
                 .is_some_and(|client| {
                     client
@@ -9787,9 +9269,10 @@ impl AppHandler {
                     (progress.pending, palette.take_search_announcement())
                 });
         needs_followup_redraw |= search_pending;
-        if let (Some(reader), Some(announcement)) =
-            (app.screen_reader.as_mut(), search_announcement)
-        {
+        if let (Some(reader), Some(announcement)) = (
+            app.accessibility.screen_reader.as_mut(),
+            search_announcement,
+        ) {
             reader.announce(announcement, tts::Priority::Notification, false);
         }
 
@@ -9887,7 +9370,10 @@ impl AppHandler {
             height,
             scale_factor,
             structure_rebuilt,
-            Some(&crate::widget::NativeViewHost::live(window, app.platform)),
+            Some(&crate::widget::NativeViewHost::live(
+                window,
+                app.input.platform,
+            )),
         ) else {
             return;
         };
@@ -9912,8 +9398,8 @@ impl AppHandler {
         damage_regions.clear();
         full_redraw_required |= app.debug_mode
             || app.actions.action_palette.is_some()
-            || app.tooltip_host.needs_frame()
-            || app.tooltip_host.visible().is_some()
+            || app.input.tooltip_host.needs_frame()
+            || app.input.tooltip_host.visible().is_some()
             || !app.presence_ctx.remote_cursors.is_empty()
             || app
                 .profiler
@@ -10238,10 +9724,12 @@ impl AppHandler {
             None
         } else {
             match &event {
-                WindowEvent::Touch(_) => Some(app.interaction.with_touch_modality()),
+                WindowEvent::Touch(_) => Some(app.input.interaction.with_touch_modality()),
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => Some(app.interaction.with_pointer_modality()),
+                | WindowEvent::MouseWheel { .. } => {
+                    Some(app.input.interaction.with_pointer_modality())
+                }
                 WindowEvent::KeyboardInput {
                     event:
                         winit::event::KeyEvent {
@@ -10249,7 +9737,7 @@ impl AppHandler {
                             ..
                         },
                     ..
-                } => Some(app.interaction.with_keyboard_modality()),
+                } => Some(app.input.interaction.with_keyboard_modality()),
                 _ => None,
             }
         };
@@ -10288,11 +9776,11 @@ impl AppHandler {
                 WindowEvent::CursorMoved { position, .. } => {
                     let now = Instant::now();
                     if pointer_broadcast_allowed(
-                        app.last_pointer_broadcast,
+                        app.presence.last_pointer_broadcast,
                         now,
                         Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
                     ) {
-                        app.last_pointer_broadcast = Some(now);
+                        app.presence.last_pointer_broadcast = Some(now);
                         let where_it_is = app.local_pointer_key();
                         #[allow(
                             clippy::cast_possible_truncation,
@@ -10310,7 +9798,7 @@ impl AppHandler {
                 WindowEvent::CursorLeft { .. } => {
                     let where_it_was = app.local_pointer_key();
                     app.broadcast_presence(where_it_was, PresencePayload::Left);
-                    app.last_pointer_broadcast = None;
+                    app.presence.last_pointer_broadcast = None;
                 }
                 _ => {}
             }
@@ -10341,7 +9829,7 @@ impl AppHandler {
                     },
                     ..
                 } if (c.as_str() == "k" || c.as_str() == "K")
-                    && app.platform.command_modifier_down(app.modifiers.state())
+                    && app.input.platform.command_modifier_down(app.input.modifiers.state())
             );
             if !is_ctrl_k
                 && matches!(event, WindowEvent::KeyboardInput { .. })
@@ -10397,7 +9885,10 @@ impl AppHandler {
         }
 
         if !handled
-            && app.platform.command_modifier_down(app.modifiers.state())
+            && app
+                .input
+                .platform
+                .command_modifier_down(app.input.modifiers.state())
             && let WindowEvent::KeyboardInput {
                 event:
                     winit::event::KeyEvent {
@@ -10408,7 +9899,7 @@ impl AppHandler {
                 ..
             } = event
         {
-            let shift = app.modifiers.state().shift_key();
+            let shift = app.input.modifiers.state().shift_key();
             let history_request = crate::undo::shortcut(c, true, shift);
             if let Some(request) = history_request {
                 if app.root_widget.handle_local_undo_request(request) {
@@ -10449,12 +9940,12 @@ impl AppHandler {
                     } else {
                         match request {
                             crate::undo::UndoRequest::Undo => app.state.undo_as(
-                                Some(&app.local_author),
+                                Some(&app.collaboration.local_author),
                                 current_focus_idx,
                                 current_meta,
                             ),
                             crate::undo::UndoRequest::Redo => app.state.redo_as(
-                                Some(&app.local_author),
+                                Some(&app.collaboration.local_author),
                                 current_focus_idx,
                                 current_meta,
                             ),
@@ -10511,7 +10002,7 @@ impl AppHandler {
             };
             if let (Some(d), true, true) = (
                 dir,
-                app.modifiers.state().alt_key(),
+                app.input.modifiers.state().alt_key(),
                 app.keyboard_nav_allowed(modal_rect),
             ) {
                 app.navigate_focus(d);
@@ -10536,10 +10027,11 @@ impl AppHandler {
                             (f64::from(*x), f64::from(*y), false)
                         }
                     };
-                    app.nav_gestures
+                    app.input
+                        .nav_gestures
                         .on_scroll(dx, dy, map_phase(*phase), precise)
                 }
-                WindowEvent::PanGesture { delta, phase, .. } => app.nav_gestures.on_scroll(
+                WindowEvent::PanGesture { delta, phase, .. } => app.input.nav_gestures.on_scroll(
                     f64::from(delta.x),
                     f64::from(delta.y),
                     map_phase(*phase),
@@ -10547,7 +10039,7 @@ impl AppHandler {
                 ),
                 WindowEvent::Touch(t) => {
                     let width = f64::from(window.inner_size().width);
-                    app.nav_gestures.on_touch(
+                    app.input.nav_gestures.on_touch(
                         t.id,
                         t.location.x,
                         t.location.y,
@@ -10648,8 +10140,11 @@ impl AppHandler {
             } = event
         {
             use crate::a11y::Action;
-            let ctrl = app.platform.command_modifier_down(app.modifiers.state());
-            let shift = app.modifiers.state().shift_key();
+            let ctrl = app
+                .input
+                .platform
+                .command_modifier_down(app.input.modifiers.state());
+            let shift = app.input.modifiers.state().shift_key();
             // (action to repeat, how many times)
             let (action, times) = match named {
                 winit::keyboard::NamedKey::ArrowLeft if ctrl => {
@@ -10766,14 +10261,14 @@ impl AppHandler {
             let scale = window.scale_factor();
             let logical = Point::new(position.x / scale, position.y / scale);
             let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
-            if app.current_cursor != desired {
-                app.current_cursor = desired;
+            if app.input.current_cursor != desired {
+                app.input.current_cursor = desired;
                 window.set_cursor(desired);
             }
             // `on_pointer` keeps the dwell running over the same
             // region and restarts it on a new one.
             let target = app.tooltip_target_at(logical);
-            if app.tooltip_host.on_pointer(target, Instant::now()) {
+            if app.input.tooltip_host.on_pointer(target, Instant::now()) {
                 window.request_redraw();
             }
         }
@@ -10787,7 +10282,7 @@ impl AppHandler {
                 | WindowEvent::KeyboardInput { .. }
                 | WindowEvent::Touch(_)
                 | WindowEvent::CursorLeft { .. }
-        ) && app.tooltip_host.dismiss()
+        ) && app.input.tooltip_host.dismiss()
         {
             window.request_redraw();
         }
@@ -10925,7 +10420,7 @@ impl AppHandler {
                         }
                     }
                 }
-                WindowEvent::ModifiersChanged(modifiers) => self.app.modifiers = modifiers,
+                WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
                 other => {
                     let handled = self.app.root_widget.handle_audience_presentation_event(
                         &other,
@@ -10958,7 +10453,7 @@ impl AppHandler {
             let surface_id = surface.id.clone();
             match event {
                 WindowEvent::CloseRequested => {
-                    if let Some(client) = self.app.floating_surface_client.as_mut() {
+                    if let Some(client) = self.app.floating.client.as_mut() {
                         let _ = client.send(
                             &crate::floating_surface::FloatingSurfaceClientMessage::Dismiss {
                                 id: surface_id.clone(),
@@ -10981,7 +10476,7 @@ impl AppHandler {
                         }
                     }
                 }
-                WindowEvent::ModifiersChanged(modifiers) => self.app.modifiers = modifiers,
+                WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
                 other => self.dispatch_floating_event(&window, desktop_rect, other),
             }
             return;
@@ -10998,7 +10493,7 @@ impl AppHandler {
         }
         if let WindowEvent::Touch(touch) = &event {
             self.app
-                .set_interaction_environment(self.app.interaction.with_touch_modality());
+                .set_interaction_environment(self.app.input.interaction.with_touch_modality());
             let pointer_events = self.touch_pointer.events(touch);
             self.dispatching_touch_pointer = true;
             for pointer_event in pointer_events {
@@ -11048,18 +10543,16 @@ impl AppHandler {
             WindowEvent::ScaleFactorChanged { .. } => {
                 // The render path reads `window.scale_factor()` each frame,
                 // so we just need to invalidate layout and redraw.
-                self.app
-                    .root_widget
-                    .mount_native_views(&crate::widget::NativeViewHost::live(
-                        &window,
-                        self.app.platform,
-                    ));
+                crate::widget::mount_native_views(
+                    self.app.root_widget.as_mut(),
+                    &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
+                );
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, &window),
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.app.modifiers = modifiers;
+                self.app.input.modifiers = modifiers;
             }
             other => self.handle_other_window_event(&window, other),
         }
@@ -11288,7 +10781,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
-        let title = resolve_window_title(self.app.window_title.as_deref());
+        let title = resolve_window_title(self.app.window.title.as_deref());
         let icon = crate::window_icon::resolve();
         let window_attributes = Window::default_attributes()
             .with_title(title)
@@ -11324,7 +10817,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .or_else(|_| std::env::var("QOS_PACKAGE_ID"))
                 .ok();
             let app_id = resolve_app_id(
-                self.app.window_app_id.as_deref().or(package_id.as_deref()),
+                self.app.window.app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()
                     .ok()
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
@@ -11685,7 +11178,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Without this a first peer with no input never re-syncs to seed its
         // doc after the grace window, so a late joiner diverges.
-        if app.collab_manager.is_connected() && app.root_widget.needs_idle_sync() {
+        if app.collaboration.manager.is_connected() && app.root_widget.needs_idle_sync() {
             app.needs_sync = true;
             request_primary_redraw();
         }
@@ -11744,7 +11237,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // A background pump can run while its visible projection is stable.
         // Redrawing only on a changed snapshot avoids full-scene GPU work on
         // every otherwise-idle collaboration wake.
-        if let Some(tick) = app.frame_tick.as_mut()
+        if let Some(tick) = app.presence.frame_tick.as_mut()
             && tick(&mut app.presence_ctx)
         {
             request_primary_redraw();
@@ -11983,10 +11476,10 @@ mod pointer_broadcast_tests {
         let state = State::new();
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(state, root);
-        app.last_pointer_broadcast = Some(Instant::now());
+        app.presence.last_pointer_broadcast = Some(Instant::now());
         app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: "home".into() }));
         assert!(
-            app.last_pointer_broadcast.is_none(),
+            app.presence.last_pointer_broadcast.is_none(),
             "scope change must clear the throttle so the next move broadcasts immediately"
         );
         assert_eq!(
@@ -13056,7 +12549,10 @@ mod focus_trap_tests {
     fn closed_modal_does_not_trap_focus() {
         let (mut app, _open) = host_app();
         app.init_layout();
-        assert!(!app.focus_trap_active, "no trap while the modal is closed");
+        assert!(
+            !app.accessibility.focus_trap_active,
+            "no trap while the modal is closed"
+        );
         assert_eq!(
             app.focusable_order.len(),
             2,
@@ -13073,7 +12569,10 @@ mod focus_trap_tests {
         open.set(true);
         app.refresh_focus_order();
 
-        assert!(app.focus_trap_active, "an open modal traps focus");
+        assert!(
+            app.accessibility.focus_trap_active,
+            "an open modal traps focus"
+        );
         assert_eq!(
             app.focusable_order.len(),
             2,
@@ -13092,7 +12591,7 @@ mod focus_trap_tests {
         app.init_layout();
         open.set(true);
         app.refresh_focus_order();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
         let modal_set: std::collections::HashSet<_> = app.focusable_order.iter().copied().collect();
         let first = app.focusable_order[0];
@@ -13137,7 +12636,7 @@ mod focus_trap_tests {
         // switch off the App's own Tab/arrow navigation.
         let (mut app, _open) = host_app();
         app.init_layout();
-        assert!(!app.focus_trap_active);
+        assert!(!app.accessibility.focus_trap_active);
         assert!(
             app.keyboard_nav_allowed(None),
             "with no modal, Tab runs normally"
@@ -13157,13 +12656,13 @@ mod focus_trap_tests {
 
         open.set(true);
         app.refresh_focus_order();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_ne!(app.focused_node, Some(outer), "focus moved into the modal");
 
         open.set(false);
         app.refresh_focus_order();
         assert!(
-            !app.focus_trap_active,
+            !app.accessibility.focus_trap_active,
             "trap released when the modal closes"
         );
         assert_eq!(
@@ -13486,7 +12985,25 @@ mod fullscreen_tests {
         }
     }
 
+    impl crate::widget::FullscreenProvider for FsRoot {
+        fn fullscreen_intent(&self) -> Option<bool> {
+            self.want
+        }
+        fn on_fullscreen_changed(&mut self, active: bool) {
+            self.changes.borrow_mut().push(active);
+        }
+    }
+
     impl Widget for FsRoot {
+        fn fullscreen_provider(&self) -> Option<&dyn crate::widget::FullscreenProvider> {
+            Some(self)
+        }
+
+        fn fullscreen_provider_mut(
+            &mut self,
+        ) -> Option<&mut dyn crate::widget::FullscreenProvider> {
+            Some(self)
+        }
         fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
@@ -13527,12 +13044,6 @@ mod fullscreen_tests {
         fn get_rect(&self) -> Rect {
             self.rect
         }
-        fn fullscreen_intent(&self) -> Option<bool> {
-            self.want
-        }
-        fn on_fullscreen_changed(&mut self, active: bool) {
-            self.changes.borrow_mut().push(active);
-        }
     }
 
     #[test]
@@ -13555,7 +13066,7 @@ mod fullscreen_tests {
         assert!(app.note_actual_fullscreen(false));
 
         assert_eq!(*changes.borrow(), vec![true, false]);
-        assert!(!app.fullscreen_active);
+        assert!(!app.window.fullscreen_active);
     }
 
     #[test]
@@ -14392,7 +13903,7 @@ mod action_palette_tests {
         assert!(app.state.commit_action_authored_with_context(
             None,
             None,
-            Some(app.local_author.clone()),
+            Some(app.collaboration.local_author.clone()),
             Some(context),
         ));
         let changes = app.state.doc.get_changes(&before);
@@ -14721,15 +14232,15 @@ mod view_presence_tests {
         // Model launcher delivery before first layout, which is the real
         // continuation order. The view waits until focus/layout nodes exist.
         let mut receiver = App::new(State::new(), Box::new(ViewRoot::new()));
-        receiver.pending_continuation_restore = Some(metadata);
+        receiver.continuation.pending_restore = Some(metadata);
         receiver.apply_pending_continuation_restore();
-        assert!(receiver.pending_continuation_view.is_some());
+        assert!(receiver.continuation.pending_view.is_some());
         receiver.init_layout();
 
         let restored = <App as FreezeThaw>::capture_view(&receiver);
         assert_eq!(restored.scroll, vec![48.0, 12.0]);
         assert_eq!(restored.view_mode.as_deref(), Some("grid"));
-        assert!(receiver.pending_continuation_view.is_none());
+        assert!(receiver.continuation.pending_view.is_none());
     }
 
     #[test]
@@ -14851,9 +14362,9 @@ mod view_presence_tests {
         )
         .unwrap();
         let mut receiver = App::new(State::new(), Box::new(ViewRoot::new()));
-        receiver.pending_continuation_restore = Some(metadata);
+        receiver.continuation.pending_restore = Some(metadata);
         receiver.apply_pending_continuation_restore();
-        assert!(receiver.pending_continuation_view.is_some());
+        assert!(receiver.continuation.pending_view.is_some());
         receiver.init_layout();
         let restored = <App as FreezeThaw>::capture_view(&receiver);
         assert_eq!(restored.scroll, vec![64.0]);
@@ -15593,7 +15104,7 @@ mod semantic_tree_app_tests {
         let result = app.invoke_resource_action(
             &address,
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -15619,7 +15130,7 @@ mod semantic_tree_app_tests {
         let denied = app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("test.lazy", "bump"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -15633,7 +15144,7 @@ mod semantic_tree_app_tests {
         let allowed = app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("test.lazy", "bump"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -15668,7 +15179,7 @@ mod semantic_tree_app_tests {
         let result = app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("test.lazy.child", "bump"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -15877,7 +15388,7 @@ mod semantic_tree_app_tests {
         let result = app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("test.invalid", "decode"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -15901,9 +15412,9 @@ mod semantic_tree_app_tests {
         app.state.doc.put(ROOT, "draft", "unfinished").unwrap();
         let pending = app.state.doc.pending_ops();
         for (action, actor) in [
-            ("host-bump", app.local_author.0.clone()),
+            ("host-bump", app.collaboration.local_author.0.clone()),
             ("inspect", "agent:Scribe".to_string()),
-            ("missing", app.local_author.0.clone()),
+            ("missing", app.collaboration.local_author.0.clone()),
         ] {
             let result = app.invoke_resource_action(
                 &tilo_actions::ActionAddress::new("test.counter", action),
@@ -15930,7 +15441,7 @@ mod semantic_tree_app_tests {
         assert!(app.state.commit_action_authored_with_context(
             None,
             None,
-            Some(app.local_author.clone()),
+            Some(app.collaboration.local_author.clone()),
             Some(context),
         ));
         let changes = app.state.doc.get_changes(&before);
@@ -15950,7 +15461,7 @@ mod semantic_tree_app_tests {
         let local = app.invoke_resource_action(
             &address,
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -16206,7 +15717,7 @@ mod semantic_tree_app_tests {
         let result = app.invoke_resource_action(
             &tilo_actions::ActionAddress::new("test.counter", "ping"),
             None,
-            &app.local_author.0.clone(),
+            &app.collaboration.local_author.0.clone(),
             false,
             false,
             None,
@@ -17895,7 +17406,7 @@ mod bound_component_tests {
             .is_some(),
             "fixture must publish its operation before admission"
         );
-        let actor = app.local_author.0.clone();
+        let actor = app.collaboration.local_author.0.clone();
         assert!(matches!(
             app.invoke_resource_action(
                 &tilo_actions::ActionAddress::new("bound:probe", "follow-up"),
@@ -18201,7 +17712,7 @@ mod bound_component_tests {
         let mut fixture = ActionFixture::broker();
         let outer = fixture.app.state.doc.get_heads();
         let address = tilo_actions::ActionAddress::new("bound:probe", "follow-up");
-        let actor = fixture.app.local_author.0.clone();
+        let actor = fixture.app.collaboration.local_author.0.clone();
         let error = fixture
             .app
             .invoke_resource_action(&address, None, &actor, true, false, None, None, None)
@@ -18330,7 +17841,11 @@ mod bound_component_tests {
     fn task4_semantic_and_palette_targets_keep_equal_id_lifetimes() {
         let mut fixture = ActionFixture::new();
         fixture.app.refresh_semantic_tree();
-        let targets = fixture.app.semantic_tree.bound_actions_for_test();
+        let targets = fixture
+            .app
+            .accessibility
+            .semantic_tree
+            .bound_actions_for_test();
         let (id, _) = targets
             .iter()
             .find(|(_, target)| {
@@ -18379,7 +17894,7 @@ mod bound_component_tests {
                 .invoke_bound_target(
                     &target,
                     None,
-                    &fixture.app.local_author.0.clone(),
+                    &fixture.app.collaboration.local_author.0.clone(),
                     true,
                     false,
                     None,
@@ -18454,7 +17969,7 @@ mod bound_component_tests {
                 .resolve_publication_resource(&alias, "follow-up")
                 .is_none()
         );
-        let actor = fixture.app.local_author.0.clone();
+        let actor = fixture.app.collaboration.local_author.0.clone();
         assert!(
             fixture
                 .app
@@ -19088,7 +18603,7 @@ mod bound_component_tests {
         let mut fixture = ActionFixture::broker();
         let target = fixture.target(1, "follow-up");
         let resources = fixture.app.publication_resources();
-        let actor = fixture.app.local_author.0.clone();
+        let actor = fixture.app.collaboration.local_author.0.clone();
         let evidence = serde_json::json!({"token": "controlled-confirmation"});
         let mut requests = Vec::new();
         // This seam captures submission only; no broker acceptance is simulated.
@@ -19205,7 +18720,7 @@ mod bound_component_tests {
             let target = fixture.target(1, "apply");
             let first = fixture.bindings[0].clone();
             let outer = fixture.app.state.doc.get_heads();
-            let actor = fixture.app.local_author.0.clone();
+            let actor = fixture.app.collaboration.local_author.0.clone();
             let result = first
                 .with_document(&mut fixture.app.state.doc, |doc, _| {
                     doc.put(ROOT, "before-nested", "A").unwrap();
@@ -19567,9 +19082,9 @@ mod prepared_runner_tests {
             },
             |app| {
                 applies.set(applies.get() + 1);
-                app.base_theme = Theme::light();
+                app.accessibility.base_theme = Theme::light();
                 // This controlled stand-in never creates a narrator or reads settings.
-                app.a11y.screen_reader = true;
+                app.accessibility.a11y.screen_reader = true;
             },
         );
         draw_prepared_component_test_frame(&mut app);
@@ -19581,9 +19096,9 @@ mod prepared_runner_tests {
         assert_eq!(applies.get(), 0);
         assert!(!changed);
         assert!(app.theme_store_stamp.is_none());
-        assert!(app.screen_reader.is_none());
-        assert!(!app.a11y.screen_reader);
-        assert_presentation(&app.base_theme, 2.0, 1.25);
+        assert!(app.accessibility.screen_reader.is_none());
+        assert!(!app.accessibility.a11y.screen_reader);
+        assert_presentation(&app.accessibility.base_theme, 2.0, 1.25);
         let observation = observed.borrow();
         let (theme, renderer_scale) = observation.draws.last().unwrap();
         assert_eq!(*renderer_scale, 1.5);
@@ -19616,7 +19131,7 @@ mod prepared_runner_tests {
                 },
                 |app| {
                     applies.set(applies.get() + 1);
-                    app.base_theme = Theme::light();
+                    app.accessibility.base_theme = Theme::light();
                 },
             );
             assert_eq!(changed, expected_changed);
@@ -19624,7 +19139,7 @@ mod prepared_runner_tests {
             assert_eq!(applies.get(), expected_applies);
             assert_eq!(app.layout.layout_dirty, expected_changed);
             assert_eq!(app.layout.structure_dirty, expected_changed);
-            assert!(app.screen_reader.is_none());
+            assert!(app.accessibility.screen_reader.is_none());
         }
         assert!(app.theme_store_stamp.is_none());
         assert_eq!(app.theme.name, Theme::light().name);
@@ -19707,7 +19222,7 @@ mod prepared_runner_tests {
         let component = editable_component(&host, 11);
         let binding = component.callback_binding();
         let mut app = App::from_component(component, runner_inputs()).unwrap();
-        assert!(app.autosave.is_none() && app.records.is_none());
+        assert!(app.persistence.autosave.is_none() && app.persistence.records.is_none());
         assert_saved_body(&host, &binding, "initialized");
         edit_bound_record(&mut app, &binding);
         app.autosave_tick().unwrap();
@@ -20153,6 +19668,7 @@ mod prepared_runner_tests {
     fn activate_palette_action(app: &mut App, action: &str) {
         app.refresh_semantic_tree();
         let target = app
+            .accessibility
             .semantic_tree
             .bound_actions_for_test()
             .into_iter()
@@ -21300,7 +20816,7 @@ mod viewport_composition_tests {
             .unwrap();
         for width in [920, 600, 1200] {
             frame(&mut app, width);
-            assert!(app.focus_trap_active);
+            assert!(app.accessibility.focus_trap_active);
             let focused = app.focused_node.expect("modal editor remains focused");
             assert!(app.focusable_order.contains(&focused));
             assert_eq!(
@@ -21334,8 +20850,8 @@ mod viewport_composition_tests {
         let oscillate = root.oscillate.clone();
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
-        let host = crate::widget::NativeViewHost::headless(app.platform, 1.0);
-        app.root_widget.mount_native_views(&host);
+        let host = crate::widget::NativeViewHost::headless(app.input.platform, 1.0);
+        crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
         for width in [1200, 920] {
             let mounts = calls
                 .borrow()
@@ -21409,13 +20925,13 @@ mod viewport_composition_tests {
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
         app.init_layout();
         frame(&mut app, 1200);
-        assert!(!app.focus_trap_active);
+        assert!(!app.accessibility.focus_trap_active);
         let outside = app.focusable_order[0];
         app.set_focused_node(Some(outside));
         app.mutate_node(outside, |widget| widget.set_state("5:b:1"))
             .unwrap();
         frame(&mut app, 920);
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         let focused = app.focused_node.expect("modal owns focus");
         assert!(app.focusable_order.contains(&focused));
         assert!(
