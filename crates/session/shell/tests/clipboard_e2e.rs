@@ -3264,9 +3264,12 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
         let shape = tree_shape(&tree);
         if shape.0 == before.0 + 1
             && shape.1 == before.1 + 1
-            && foreign_group_for_app(&tree, "so.tilo.word-processor").is_some()
+            && shape
+                .2
+                .iter()
+                .any(|title| !before.2.contains(title) && title.ends_with(".txt"))
         {
-            break shape;
+            break (shape, tree);
         }
         assert!(
             started.elapsed() < DEADLINE,
@@ -3276,9 +3279,22 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
         std::thread::sleep(Duration::from_millis(20));
     };
     assert_eq!(
-        after.0,
+        after.0.0,
         before.0 + 1,
         "the outer edge must create a sibling group for dragged text"
+    );
+    let opened_title = after
+        .0
+        .2
+        .iter()
+        .find(|title| !before.2.contains(title) && title.ends_with(".txt"))
+        .expect("the materialised text tab has a .txt title");
+    let (_, opened_group_titles) = group_for_tab_title(&after.1, opened_title)
+        .expect("the materialised text belongs to a durable window group");
+    assert_eq!(
+        opened_group_titles,
+        [opened_title.as_str()],
+        "the outer edge creates a singleton sibling group"
     );
 }
 
@@ -3560,6 +3576,33 @@ fn foreign_group_for_app(
     }
 }
 
+/// Find the durable group containing a tab title and return every title in
+/// that group. Hosted apps do not have a foreign process/app id, so their
+/// persisted tab identity is the interaction-level oracle.
+fn group_for_tab_title(
+    value: &serde_json::Value,
+    wanted_title: &str,
+) -> Option<(u64, Vec<String>)> {
+    if let Some(tabs) = value.get("tabs").and_then(serde_json::Value::as_array) {
+        let titles: Vec<String> = tabs
+            .iter()
+            .filter_map(|tab| tab.get("title")?.as_str().map(str::to_owned))
+            .collect();
+        if titles.iter().any(|title| title == wanted_title) {
+            return Some((value.get("id")?.as_u64()?, titles));
+        }
+    }
+    match value {
+        serde_json::Value::Array(values) => values
+            .iter()
+            .find_map(|value| group_for_tab_title(value, wanted_title)),
+        serde_json::Value::Object(values) => values
+            .values()
+            .find_map(|value| group_for_tab_title(value, wanted_title)),
+        _ => None,
+    }
+}
+
 /// Drag a real image out of hosted Files and release on another tiled
 /// window's body. This proves the new shell-owned behavior end to end: the
 /// carried pixels remain visible, the underlying client is not offered the
@@ -3625,7 +3668,6 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
         foreign_group_for_app(&before_tree, "org.tilo.test.dnd-target")
             .expect("the destination client belongs to a durable window group");
     assert_eq!(before_foreign_order, ["org.tilo.test.dnd-target"]);
-    const IMAGE_EDITOR_APP_ID: &str = "so.tilo.image-editor";
 
     drag_file_row_to_shell_target(&compositor, row, target_point);
     compositor.pointer_button(false);
@@ -3633,7 +3675,7 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
     let after = loop {
         let tree = compositor.workspace_tree();
         let shape = tree_shape(&tree);
-        if shape.1 == before.1 + 1 && foreign_group_for_app(&tree, IMAGE_EDITOR_APP_ID).is_some() {
+        if shape.1 == before.1 + 1 && group_for_tab_title(&tree, "photo.png").is_some() {
             break (shape, tree);
         }
         assert!(
@@ -3647,15 +3689,15 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
         after.0.0, before.0,
         "an interior body drop joins the existing group rather than creating a new one"
     );
-    let (opened_group, after_foreign_order) = foreign_group_for_app(&after.1, IMAGE_EDITOR_APP_ID)
+    let (opened_group, after_titles) = group_for_tab_title(&after.1, "photo.png")
         .expect("the opened image belongs to a durable window group");
     assert_eq!(
         opened_group, target_group,
         "the image must join the group under the pointer"
     );
     assert_eq!(
-        after_foreign_order,
-        ["org.tilo.test.dnd-target", IMAGE_EDITOR_APP_ID],
+        after_titles,
+        ["Dnd Target", "photo.png"],
         "a right-interior drop appends the opened image after the target tab"
     );
 
