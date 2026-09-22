@@ -93,13 +93,34 @@ done
 
 gcc -O2 -Wall -Wextra -Werror -o "$work/init" \
   "$repo/os/tests/secureboot_vm_enroll.c"
-loader=$(ldd "$work/init" | awk '/ld-linux/ { print $1; exit }')
-libc=$(ldd "$work/init" | awk '/libc\.so/ { print $3; exit }')
-libgcc=$(ldd "$crypto" | awk '/libgcc_s/ { print $3; exit }')
+ldd "$work/init" > "$work/init.ldd"
+ldd "$crypto" > "$work/crypto.ldd"
+interpreter=$(readelf -l "$work/init" \
+  | sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')
+test -f "$interpreter"
+mapfile -t runtime_files < <(
+  {
+    printf '%s\n' "$interpreter"
+    awk '/=> \// { print $3 } $1 ~ /^\// { print $1 }' \
+      "$work/init.ldd" "$work/crypto.ldd"
+  } | sort -u
+)
+runtime_dirs=()
+for dependency in "${runtime_files[@]}"; do
+  test -f "$dependency"
+  directory=$(dirname "$dependency")
+  while [ "$directory" != / ]; do
+    runtime_dirs+=("$directory")
+    directory=$(dirname "$directory")
+  done
+done
+mapfile -t runtime_dirs < <(printf '%s\n' "${runtime_dirs[@]}" | sort -u)
 list="$work/initramfs.list"
 {
   printf 'dir /sys 0755 0 0\n'
-  printf 'dir /lib64 0755 0 0\n'
+  for directory in "${runtime_dirs[@]}"; do
+    printf 'dir %s 0755 0 0\n' "$directory"
+  done
   printf 'file /init %s 0755 0 0\n' "$work/init"
   printf 'file /tilo-crypto %s 0755 0 0\n' "$crypto"
   for key in PK KEK db; do
@@ -107,9 +128,9 @@ list="$work/initramfs.list"
   done
   printf 'file /PK.key %s 0600 0 0\n' "$work/PK.key"
   printf 'file /PK.crt %s 0600 0 0\n' "$work/PK.crt"
-  printf 'file %s %s 0755 0 0\n' "$loader" "$loader"
-  printf 'file %s %s 0755 0 0\n' "$libc" "$libc"
-  printf 'file %s %s 0755 0 0\n' "$libgcc" "$libgcc"
+  for dependency in "${runtime_files[@]}"; do
+    printf 'file %s %s 0755 0 0\n' "$dependency" "$dependency"
+  done
 } > "$list"
 "$gen_cpio" -o "$work/enroll.cpio" "$list"
 
