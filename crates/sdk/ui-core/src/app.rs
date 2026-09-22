@@ -7976,6 +7976,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         text_renderer: &mut TextRenderer,
         depth: usize,
         cycle: &[Color; 3],
+        label_ground: Color,
     ) {
         let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
             return;
@@ -8000,7 +8001,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            Color::from_rgba8(0, 0, 0, 180),
+            label_ground,
             None,
             &bg_rect,
         );
@@ -8024,6 +8025,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
                 text_renderer,
                 depth.saturating_add(1),
                 cycle,
+                label_ground,
             );
         });
     }
@@ -8032,6 +8034,13 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         app.theme.tokens.colors.semantic.info,
         app.theme.tokens.colors.semantic.success,
     ];
+    let label_ground = app
+        .theme
+        .tokens
+        .colors
+        .surfaces
+        .scrim
+        .with_alpha(180.0 / 255.0);
     draw_debug_recursive(
         app.root_widget.as_ref(),
         scene,
@@ -8039,6 +8048,7 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
         &mut app.text_renderer,
         0,
         &debug_outline_cycle,
+        label_ground,
     );
 }
 
