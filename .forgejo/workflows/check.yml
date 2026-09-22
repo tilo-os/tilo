@@ -311,6 +311,14 @@ jobs:
           bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
           cargo build --locked -p install
 
+      - name: Generate native NTFS fixtures
+        if: contains(matrix.test_packages, '-p qos-ntfs-helper')
+        run: |
+          fixtures=$(mktemp -d /tmp/qos-ntfs-fixtures.XXXXXX)
+          rmdir "$fixtures"
+          python3 crates/session/qos-ntfs-helper/tests/build_native_fixtures.py --output "$fixtures"
+          printf 'QOS_NTFS_FIXTURES=%s\n' "$fixtures" >> "$GITHUB_ENV"
+
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:

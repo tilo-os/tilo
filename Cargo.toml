@@ -29,6 +29,9 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/session/qos-ntfs-helper",
+    "crates/session/qos-ntfs-protocol",
+    "crates/browser/chromium-blocker",
     # Core product surfaces
     "crates/session/shell",
     "crates/sdk/ui-core",
@@ -157,6 +160,7 @@ members = [
     "crates/runtime/cli",
     "crates/runtime/runtime",
     "crates/runtime/runtime-collab",
+    "crates/runtime/runtime-connected",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
     "crates/runtime/runtime-fs",
@@ -168,6 +172,7 @@ members = [
     # Session
     "crates/session/greeter",
     "crates/session/installer",
+    "crates/session/tilo-connected-protocol",
     "crates/session/tilo-unlock-helper",
 
     # System
@@ -281,6 +286,7 @@ taffy = "0.10.1"
 winit = "0.30.13"
 automerge = "0.8.0"
 pollster = "0.4.0"
+rustc-hash = "2.1"
 
 # ---------------------------------------------------------------------------
 # Async runtime and networking
@@ -476,7 +482,7 @@ openh264-sys2 = { path = "vendor/openh264-sys2" }
 # narrower wrapper.h. Keep the missing direct includes locally until upstream
 # ships the same fix; clean Fedora 44 builds otherwise fail in static_fns.c.
 libspa-sys = { path = "vendor/libspa-sys" }
-# Pinned DX12 compiled-shader import/export; see vendor/wgpu-hal/TILO-PATCH.md.
+# Pinned DX12 shader cache and opt-in Metal presentation feedback.
 wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
