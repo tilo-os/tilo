@@ -307,7 +307,7 @@ impl CardHandle {
             // Writeback connectors are capture sinks rather than physical or
             // virtual displays.  Do not infer that from the human-readable
             // connector name: QEMU/virtio/Bochs expose perfectly usable KMS
-            // displays as `Virtual-N`, and rejecting that label makes qOS
+            // displays as `Virtual-N`, and rejecting that label makes Tilo
             // immediately exit in a VM even while the connector is connected
             // and advertises modes.
             if info.interface() == connector::Interface::Writeback {
@@ -618,7 +618,10 @@ pub struct HwCursor {
 impl HwCursor {
     /// Move the cursor so its top-left (hot-spot) sits at `(x, y)` in output pixels; a failing ioctl is logged and ignored — a missed move must never crash input.
     pub fn move_to(&self, x: i32, y: i32) {
-        #[allow(deprecated)]
+        #[allow(
+            deprecated,
+            reason = "the DRM crate exposes hardware cursor movement only through this deprecated ioctl wrapper"
+        )]
         if let Err(e) = self.card.move_cursor(self.crtc, (x, y)) {
             tracing::trace!("DRM scanout: move_cursor failed: {e}");
         }
@@ -971,24 +974,30 @@ impl DrmScanout {
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
         let cursor_size =
             super::input_config::AccessibilityInputSettings::load().effective_cursor_size();
-        let (cursor_buffer, hw_cursor_active) =
-            match Self::setup_hw_cursor(&card, crtc, cursor_size) {
-                Ok(buf) => {
-                    // Centre it so a fresh boot shows the pointer before input arrives.
-                    let center_x = i32::try_from(width / 2).unwrap_or(i32::MAX);
-                    let center_y = i32::try_from(height / 2).unwrap_or(i32::MAX);
-                    #[allow(deprecated)]
-                    let _ = card.move_cursor(crtc, (center_x, center_y));
-                    tracing::info!("DRM scanout: hardware cursor plane active");
-                    (Some(buf), true)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "DRM scanout: hardware cursor unavailable ({e}); using software cursor"
-                    );
-                    (None, false)
-                }
-            };
+        let (cursor_buffer, hw_cursor_active) = match Self::setup_hw_cursor(
+            &card,
+            crtc,
+            cursor_size,
+        ) {
+            Ok(buf) => {
+                // Centre it so a fresh boot shows the pointer before input arrives.
+                let center_x = i32::try_from(width / 2).unwrap_or(i32::MAX);
+                let center_y = i32::try_from(height / 2).unwrap_or(i32::MAX);
+                #[allow(
+                    deprecated,
+                    reason = "the DRM crate exposes hardware cursor movement only through this deprecated ioctl wrapper"
+                )]
+                let _ = card.move_cursor(crtc, (center_x, center_y));
+                tracing::info!("DRM scanout: hardware cursor plane active");
+                (Some(buf), true)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "DRM scanout: hardware cursor unavailable ({e}); using software cursor"
+                );
+                (None, false)
+            }
+        };
 
         Ok(Self {
             card,
@@ -1031,7 +1040,10 @@ impl DrmScanout {
             paint_cursor_argb(map.as_mut(), pitch, cursor_size);
         }
         // Hotspot (0,0): the arrow's tip is the buffer's top-left pixel, so plane position == pointer position; virtual GPUs (virtio-gpu/QXL) use it to place the host pointer.
-        #[allow(deprecated)]
+        #[allow(
+            deprecated,
+            reason = "the DRM crate exposes cursor-plane binding only through this deprecated ioctl wrapper"
+        )]
         card.set_cursor2(crtc, Some(&cbuf), (0, 0))
             .map_err(|e| format!("set_cursor2: {e}"))?;
         Ok(cbuf)
@@ -1107,7 +1119,10 @@ impl DrmScanout {
         if self.hw_cursor_active
             && let Some(buf) = self.cursor_buffer.as_ref()
         {
-            #[allow(deprecated)]
+            #[allow(
+                deprecated,
+                reason = "the DRM crate exposes cursor-plane rebinding only through this deprecated ioctl wrapper"
+            )]
             if let Err(e) = self.card.set_cursor2(self.crtc, Some(buf), (0, 0)) {
                 tracing::warn!(
                     "DRM scanout: re-binding the cursor plane on resume failed ({e}); \

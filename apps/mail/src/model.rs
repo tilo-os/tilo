@@ -927,7 +927,7 @@ mod tests {
             rfc_message_id: None,
             in_reply_to: None,
             from: Addr::new("Ada Lovelace", "ada@analytical.example"),
-            to: vec![Addr::bare("you@tilo.example")],
+            to: vec![Addr::bare("you@example.test")],
             cc: vec![],
             subject: subject.into(),
             body: "First line.\nSecond line.".into(),

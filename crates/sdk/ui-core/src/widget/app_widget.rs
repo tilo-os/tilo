@@ -114,8 +114,9 @@ mod component_adapter {
     use crate::application::AppComponent;
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
-        AudiencePresentationWidgetExt, AutoCommit, CaptureMode, Continuable,
-        ControlBindingMetadata, DragPayload, FloatingSurfaceProvider, FloatingSurfaceWidgetExt,
+        AudiencePresentationWidgetExt, AutoCommit, CaptureMode, CompleteContentProvider,
+        CompleteContentWidgetExt, Continuable, ControlBindingMetadata, DragPayload,
+        FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt,
         HashMap, HashSet, Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey,
         ResourceOperationStart, Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
@@ -334,7 +335,90 @@ mod component_adapter {
         clippy::too_many_arguments,
         reason = "existing Widget callback signatures"
     )]
+    impl FullscreenProvider for BoundAppWidget {
+        fn fullscreen_intent(&self) -> Option<bool> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            self.component.root.as_deref()?.fullscreen_intent()
+        }
+
+        fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return crate::fullscreen::FullscreenRequest::mirror(
+                    crate::fullscreen::FullscreenTarget::Largest,
+                );
+            };
+            self.component.root.as_deref().map_or_else(
+                || {
+                    crate::fullscreen::FullscreenRequest::mirror(
+                        crate::fullscreen::FullscreenTarget::Largest,
+                    )
+                },
+                FullscreenWidgetExt::fullscreen_params,
+            )
+        }
+
+        fn on_fullscreen_changed(&mut self, active: bool) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.on_fullscreen_changed(active);
+            }
+        }
+    }
+
+    impl CompleteContentProvider for BoundAppWidget {
+        fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            root.complete_content_size()
+        }
+
+        fn draw_complete_content(
+            &mut self,
+            scene: &mut Scene,
+            bounds: vello::kurbo::Rect,
+            transform: Affine,
+            text_renderer: &mut TextRenderer,
+            theme: &Theme,
+            presence: &PresenceCtx,
+        ) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return false;
+            };
+            root.draw_complete_content(scene, bounds, transform, text_renderer, theme, presence)
+        }
+    }
+
     impl Widget for BoundAppWidget {
+        fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+            Some(self)
+        }
+
+        fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+            Some(self)
+        }
+
+        fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
+            Some(self)
+        }
+
+        fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
+            Some(self)
+        }
+
         fn continuable(&self) -> Option<&dyn Continuable> {
             Some(self)
         }
@@ -574,32 +658,6 @@ mod component_adapter {
                 presence,
                 &permissions,
             );
-        }
-        fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.complete_content_size()
-        }
-        fn draw_complete_content(
-            &mut self,
-            scene: &mut Scene,
-            bounds: vello::kurbo::Rect,
-            transform: Affine,
-            text_renderer: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return false;
-            };
-            root.draw_complete_content(scene, bounds, transform, text_renderer, theme, presence)
         }
         fn handle_event(
             &mut self,
@@ -994,38 +1052,6 @@ mod component_adapter {
                 return false;
             };
             root.take_focus_reset()
-        }
-        fn fullscreen_intent(&self) -> Option<bool> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.fullscreen_intent()
-        }
-        fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return crate::fullscreen::FullscreenRequest::mirror(
-                    crate::fullscreen::FullscreenTarget::Largest,
-                );
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return crate::fullscreen::FullscreenRequest::mirror(
-                    crate::fullscreen::FullscreenTarget::Largest,
-                );
-            };
-            root.fullscreen_params()
-        }
-        fn on_fullscreen_changed(&mut self, active: bool) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.on_fullscreen_changed(active);
         }
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
             let binding = self.component.callback_binding();

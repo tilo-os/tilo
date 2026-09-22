@@ -35,7 +35,7 @@ SH
 chmod 0700 "$askpass"
 
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone \
-  "$GITHUB_SERVER_URL/qos/site.git" "$work/site"
+  "$GITHUB_SERVER_URL/tilo/site.git" "$work/site"
 manifest="$work/site/src/data/imager-release.json"
 contract="$work/site/src/data/install-contract.json"
 test -f "$manifest"
@@ -125,13 +125,13 @@ for asset_key in macosX64Dmg macosX64Portable macosArm64Dmg macosArm64Portable; 
     || { printf 'landing page does not expose required macOS asset %s\n' "$asset_key" >&2; exit 1; }
 done
 if grep -R -Fq -- 'https://code.podesta.ai/qos/qos/releases/download/' "$work/site/dist" \
-   || grep -R -Fq -- 'https://code.podesta.ai/tilo/releases/download/' "$work/site/dist"; then
+   || grep -R -Fq -- 'https://code.podesta.ai/qos/releases/download/' "$work/site/dist"; then
   printf 'landing page still contains private-source release downloads\n' >&2
   exit 1
 fi
 
 git -C "$work/site" config user.name "Tilo release automation"
-git -C "$work/site" config user.email "release-bot@tilo.dev"
+git -C "$work/site" config user.email "release-bot@tilo.so"
 git -C "$work/site" add src/data/imager-release.json src/data/install-contract.json
 if git -C "$work/site" diff --cached --quiet; then
   printf 'landing page already targets %s\n' "$GITHUB_REF_NAME"

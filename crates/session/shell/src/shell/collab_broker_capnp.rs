@@ -71,7 +71,7 @@ const NEARBY_TARGET_HANDLE_TTL: Duration = Duration::from_secs(30);
 const NEARBY_TRANSFER_HANDLE_TTL: Duration = Duration::from_secs(120);
 const MAX_NEARBY_TRANSFER_HANDLES: usize = 256;
 const NEARBY_DESTINATION_HANDLE_TTL: Duration = Duration::from_secs(120);
-const FILES_APP_ID: &str = "dev.tilo.file-explorer";
+const FILES_APP_ID: &str = "so.tilo.file-explorer";
 
 #[derive(Clone)]
 struct NearbyTargetBinding {
@@ -1023,7 +1023,10 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the broker request preserves every typed resolution field at the queue boundary"
+    )]
     /// # Errors
     ///
     /// Returns an error when the target is invalid, the bounded broker queue
@@ -1067,7 +1070,10 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the broker request preserves every typed invocation field at the queue boundary"
+    )]
     /// # Errors
     ///
     /// Returns an error when invocation inputs are invalid, the bounded broker
@@ -2981,7 +2987,11 @@ impl CapnpBrokerState {
     /// Atomically resolve and start a directory action on the broker
     /// `LocalSet`.  No cached descriptor, eager surface entry, or compositor
     /// thread participates in admission.
-    #[allow(clippy::too_many_arguments, clippy::future_not_send)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::future_not_send,
+        reason = "the LocalSet-bound action admission keeps all verified actor and directory inputs explicit"
+    )]
     async fn start_action_directory_for_actor(
         &self,
         directories: &LocalActionDirectoryRegistry,
@@ -3071,7 +3081,10 @@ impl CapnpBrokerState {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the token binds the directory action to the full verified invocation context"
+    )]
     #[allow(
         clippy::needless_pass_by_value,
         reason = "the owned confirmation is intentionally matched without retaining caller-owned approval material"
@@ -7755,7 +7768,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             return Promise::err(error);
         }
         let route = self.route();
-        if route.app_id != "dev.tilo.settings" {
+        if route.app_id != "so.tilo.settings" {
             return Promise::err(capnp::Error::failed(
                 "Wi-Fi continuity is restricted to the certified Settings application".into(),
             ));
@@ -9520,7 +9533,7 @@ mod tests {
         workspace: &str,
     ) -> crate::shell::realtime_session::VerifiedAppRegistration {
         crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
-            "dev.tilo.chat",
+            "so.tilo.chat",
             workspace,
         )
         .expect("verified test app")
@@ -9712,7 +9725,7 @@ mod tests {
             None,
             None,
         );
-        let channel = "dev.tilo.notes#room:test#record:daily";
+        let channel = "so.tilo.notes#room:test#record:daily";
         let mut first = state.subscribe_context(channel, 7);
         let mut second = state.subscribe_context(channel, 9);
         let _requester = state.subscribe_context(channel, 12);
@@ -9730,7 +9743,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the integration test keeps the complete two-peer offer and cutover lifecycle together"
+    )]
     fn production_realtime_bridge_delivers_two_peer_offer_and_cutover() {
         use crate::shell::realtime_session::{
             BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
@@ -9769,7 +9785,7 @@ mod tests {
         let target =
             crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
         let app =
-            VerifiedAppRegistration::new_verified("dev.tilo.calls", "work").expect("verified app");
+            VerifiedAppRegistration::new_verified("so.tilo.calls", "work").expect("verified app");
         let intent = RealtimeResumeIntent {
             room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
             semantic_position: Some("main-stage".into()),
@@ -9935,7 +9951,7 @@ mod tests {
         ));
         let (subscriber, _events) = mpsc::unbounded_channel();
         let app =
-            VerifiedAppRegistration::new_verified("dev.tilo.calls", "work").expect("verified app");
+            VerifiedAppRegistration::new_verified("so.tilo.calls", "work").expect("verified app");
         {
             let mut realtime = state.realtime.lock().expect("target bridge");
             realtime.broker = Arc::clone(&target_broker);
@@ -10080,7 +10096,7 @@ mod tests {
         ));
         let (subscriber, mut events) = mpsc::unbounded_channel();
         let app =
-            VerifiedAppRegistration::new_verified("dev.tilo.calls", "work").expect("verified app");
+            VerifiedAppRegistration::new_verified("so.tilo.calls", "work").expect("verified app");
         {
             let mut realtime = state.realtime.lock().expect("target bridge");
             realtime.broker = Arc::clone(&target_broker);
@@ -10180,11 +10196,11 @@ mod tests {
             "launcher test",
         );
         assert_eq!(
-            stage_launch_content("dev.tilo.photos", "", &mut workspace).expect("plain launch"),
+            stage_launch_content("so.tilo.photos", "", &mut workspace).expect("plain launch"),
             None
         );
-        assert!(stage_launch_content("dev.tilo.photos", "not-a-hash", &mut workspace).is_err());
-        assert!(stage_launch_content("dev.tilo.photos", &"a".repeat(64), &mut workspace).is_err());
+        assert!(stage_launch_content("so.tilo.photos", "not-a-hash", &mut workspace).is_err());
+        assert!(stage_launch_content("so.tilo.photos", &"a".repeat(64), &mut workspace).is_err());
     }
 
     #[cfg(unix)]
@@ -10206,12 +10222,12 @@ mod tests {
             crate::shell::state::WorkspaceId::new(),
             "launcher test",
         );
-        assert!(stage_launch_content("dev.tilo.photos", &hash, &mut workspace).is_err());
+        assert!(stage_launch_content("so.tilo.photos", &hash, &mut workspace).is_err());
         std::fs::remove_file(&staged).expect("remove corrupt fixture");
         let target = runtime.path().join("outside");
         std::fs::write(&target, b"outside").expect("outside fixture");
         std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
-        assert!(stage_launch_content("dev.tilo.photos", &hash, &mut workspace).is_err());
+        assert!(stage_launch_content("so.tilo.photos", &hash, &mut workspace).is_err());
         // SAFETY: paired with the guarded process-wide override above.
         unsafe {
             if let Some(previous) = previous {
@@ -10349,7 +10365,7 @@ mod tests {
         tree.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
         let membership = tree.shared();
-        let route = CrdtRoute::record("dev.tilo.atlas", cluster_id.clone(), "atlas");
+        let route = CrdtRoute::record("so.tilo.atlas", cluster_id.clone(), "atlas");
         let fanout = Arc::new(FanoutState::new());
         let (state, bridge_rx) = CapnpBrokerState::new(
             &fanout,
@@ -10613,7 +10629,7 @@ mod tests {
                     peer_id,
                     ActionDirectoryRoot {
                         peer_id,
-                        app_id: "dev.tilo.test".into(),
+                        app_id: "so.tilo.test".into(),
                         cluster_id: fixture.cluster_id.clone(),
                         record_id: format!("root-{peer_id}"),
                     },
@@ -11243,7 +11259,7 @@ mod tests {
         else {
             panic!("the certified document was not published to the peer network");
         };
-        assert_eq!(app_id, "dev.tilo.notes");
+        assert_eq!(app_id, "so.tilo.notes");
         assert_eq!(cluster_id, &route.cluster_id);
         assert_eq!(record_id, "meeting-notes");
         assert_eq!(
@@ -11266,11 +11282,7 @@ mod tests {
             "Typed document room",
         );
         workspace.set_owner(&principal);
-        let route = CrdtRoute::record(
-            "dev.tilo.notes",
-            workspace.room.to_string(),
-            "meeting-notes",
-        );
+        let route = CrdtRoute::record("so.tilo.notes", workspace.room.to_string(), "meeting-notes");
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();
@@ -11414,10 +11426,10 @@ mod tests {
         );
         fanout.attach_capnp(Arc::clone(&state));
 
-        let target = CrdtRoute::record("dev.tilo.notes", "room-1", "note-a");
-        let other_record = CrdtRoute::record("dev.tilo.notes", "room-1", "note-b");
-        let other_app = CrdtRoute::record("dev.tilo.files", "room-1", "note-a");
-        let other_room = CrdtRoute::record("dev.tilo.notes", "room-2", "note-a");
+        let target = CrdtRoute::record("so.tilo.notes", "room-1", "note-a");
+        let other_record = CrdtRoute::record("so.tilo.notes", "room-1", "note-b");
+        let other_app = CrdtRoute::record("so.tilo.files", "room-1", "note-a");
+        let other_room = CrdtRoute::record("so.tilo.notes", "room-2", "note-a");
         let mut target_rx = state.subscribe_ops(&target.channel_key(), 2);
         let mut other_record_rx = state.subscribe_ops(&other_record.channel_key(), 3);
         let mut other_app_rx = state.subscribe_ops(&other_app.channel_key(), 4);
@@ -11474,7 +11486,7 @@ mod tests {
             "Action room",
         );
         workspace.set_owner("owner");
-        let route = CrdtRoute::app("dev.tilo.files", workspace.room.to_string());
+        let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();
@@ -11490,7 +11502,7 @@ mod tests {
             7,
             PublishedSurface {
                 peer_id: 7,
-                app_id: "dev.tilo.files".into(),
+                app_id: "so.tilo.files".into(),
                 route,
                 actions: vec![
                     PublishedAction {
@@ -11705,9 +11717,9 @@ mod tests {
 
         let launchable = PublishedSurface {
             peer_id: 99,
-            app_id: "dev.tilo.files".into(),
+            app_id: "so.tilo.files".into(),
             route: CrdtRoute::app(
-                "dev.tilo.files",
+                "so.tilo.files",
                 state
                     .surfaces
                     .lock()
@@ -11801,7 +11813,7 @@ mod tests {
 
         let rules = serde_json::to_value(vec![collab_types::PermissionProfileRule::grant(
             collab_types::Scope::Action {
-                app: "dev.tilo.notes".into(),
+                app: "so.tilo.notes".into(),
                 action: "note.open".into(),
             },
             collab_types::Verb::Read,
@@ -11857,7 +11869,7 @@ mod tests {
         assert!(workspace.allows(
             &workspace.actor_for_person(&"alice".into()),
             &collab_types::ResourceRef::Action {
-                app: "dev.tilo.notes".into(),
+                app: "so.tilo.notes".into(),
                 action: "note.open".into(),
             },
             collab_types::Verb::Read,
@@ -12213,7 +12225,7 @@ mod tests {
 
     fn continuation_route_for(room: crate::shell::state::RoomId, instance: u64) -> CrdtRoute {
         CrdtRoute::record(
-            "dev.tilo.browser",
+            "so.tilo.browser",
             room.to_string(),
             format!("continuation:{instance}"),
         )
@@ -12231,7 +12243,7 @@ mod tests {
             &mut reports,
             continuation_policy(false),
             &route,
-            "dev.tilo.browser",
+            "so.tilo.browser",
             metadata.schema_version,
             metadata.bytes,
         );
@@ -12241,7 +12253,7 @@ mod tests {
             reports
                 .resume_for(
                     room,
-                    "dev.tilo.browser",
+                    "so.tilo.browser",
                     crate::shell::personal_continuity::AppInstanceId(11),
                 )
                 .is_none()
@@ -12264,7 +12276,7 @@ mod tests {
                 &mut reports,
                 continuation_policy(true),
                 route,
-                "dev.tilo.browser",
+                "so.tilo.browser",
                 metadata.schema_version,
                 metadata.bytes,
             )
@@ -12272,14 +12284,14 @@ mod tests {
         }
 
         assert!(
-            clear_continuation_for_route(&mut reports, &first, "dev.tilo.browser")
+            clear_continuation_for_route(&mut reports, &first, "so.tilo.browser")
                 .expect("exact clear")
         );
         assert!(
             reports
                 .resume_for(
                     room,
-                    "dev.tilo.browser",
+                    "so.tilo.browser",
                     crate::shell::personal_continuity::AppInstanceId(11),
                 )
                 .is_none()
@@ -12288,17 +12300,17 @@ mod tests {
             reports
                 .resume_for(
                     room,
-                    "dev.tilo.browser",
+                    "so.tilo.browser",
                     crate::shell::personal_continuity::AppInstanceId(22),
                 )
                 .is_some()
         );
-        assert!(clear_continuation_for_route(&mut reports, &second, "dev.tilo.editor").is_err());
+        assert!(clear_continuation_for_route(&mut reports, &second, "so.tilo.editor").is_err());
         assert!(
             reports
                 .resume_for(
                     room,
-                    "dev.tilo.browser",
+                    "so.tilo.browser",
                     crate::shell::personal_continuity::AppInstanceId(22),
                 )
                 .is_some()

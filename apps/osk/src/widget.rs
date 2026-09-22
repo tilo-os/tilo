@@ -998,7 +998,10 @@ struct CellState {
 }
 
 /// Draw a rounded "button" cell (used for both keys and toolbar items).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the cell painter keeps renderer, geometry, label, theme and interaction state explicit"
+)]
 fn draw_cell(
     scene: &mut Scene,
     transform: Affine,
@@ -1092,7 +1095,10 @@ fn draw_cell(
 /// Draw one suggestion chip: a pill with the word, themed by state. The `top`
 /// (best / auto-inserted) chip is accented; the rest are neutral. All colours
 /// come from theme tokens.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the suggestion painter keeps renderer, geometry, word and chip state explicit"
+)]
 fn draw_suggestion_chip(
     scene: &mut Scene,
     transform: Affine,
@@ -2542,7 +2548,7 @@ mod tests {
         // The compositor recognises the keyboard by this exact app-id to keep
         // it out of the tile layout and own its visibility. If this drifts, the
         // keyboard would be treated as an ordinary window — so pin the value.
-        assert_eq!(crate::KEYBOARD_APP_ID, "dev.tilo.osk");
+        assert_eq!(crate::KEYBOARD_APP_ID, "so.tilo.osk");
     }
 
     #[test]

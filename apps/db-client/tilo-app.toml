@@ -6,7 +6,7 @@
 
 
 [package]
-id       = "dev.tilo.db-client"
+id       = "so.tilo.db-client"
 name     = "Database Client"
 category = "Development"
 version  = "0.1.0"

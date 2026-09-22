@@ -15,7 +15,7 @@ env RELEASE_DIGEST="$digest" TILO_GENERATION=42 GITHUB_SHA="$source" \
   "$repo/os/dev/release-freshness.sh" "$tmp/two.json"
 cmp "$tmp/one.json" "$tmp/two.json"
 jq -e --arg digest "$digest" --arg source "$source" '
-  .schema == "https://tilo.dev/security/release-freshness/v1"
+  .schema == "https://tilo.sh/security/release-freshness/v1"
   and .repository == "code.podesta.ai/qos/tilo"
   and .digest == $digest
   and .sourceRevision == $source
@@ -37,7 +37,7 @@ if env RELEASE_DIGEST='sha256:not-a-digest' TILO_GENERATION=42 GITHUB_SHA="$sour
 fi
 
 workflow="$repo/.forgejo/workflows/build-image.yml"
-grep -Fq -- '--type https://tilo.dev/security/release-freshness/v1' "$workflow"
+grep -Fq -- '--type https://tilo.sh/security/release-freshness/v1' "$workflow"
 grep -Fq 'release freshness attestation is absent, expired, or does not bind this release' "$workflow"
 grep -Fq 'and .expiresAt > $now' "$workflow"
 

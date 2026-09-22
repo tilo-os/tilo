@@ -11,7 +11,7 @@ import canonical_app_verifier
 
 def create(directory, pkg_binary, runtime_binary, signers_path, source, architecture):
     # This file comes from the signing invocation, not the downloaded collection.
-    # It contains public keys only. Never substitute keys extracted from qpkgs.
+    # It contains public keys only. Never substitute keys extracted from tapps.
     signers = channel.read_json(signers_path.read_bytes())
     channel.require(set(signers) == {'app_publisher', 'runtime_publisher'}, 'explicit signing invocation keys required')
     verifier_path = Path(canonical_app_verifier.__file__).resolve()

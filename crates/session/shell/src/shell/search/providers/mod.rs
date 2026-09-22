@@ -14,7 +14,7 @@ pub mod records;
 pub mod text_app;
 
 pub use actions::ActionsProvider;
-pub use applications::ApplicationsProvider;
+pub use applications::{ApplicationsProvider, NativeApplicationsProvider};
 pub use continuity::{CallContinuityActionsProvider, DeviceContinuityActionsProvider};
 pub use editor::EditorProvider;
 pub use files::FilesProvider;

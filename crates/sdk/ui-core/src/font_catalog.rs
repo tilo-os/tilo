@@ -36,7 +36,7 @@ pub(crate) fn windows_font_system(locale: String) -> Option<FontSystem> {
         }
     });
     database.as_ref().map(|db| {
-        FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::QosFallback)
+        FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::TiloFallback)
     })
 }
 
@@ -63,7 +63,10 @@ pub struct FontCatalogError {
 }
 
 impl FontCatalogError {
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "owned conversion inputs let callers pass either paths or formatted errors without borrowing temporaries"
+    )]
     fn at(path: impl Into<PathBuf>, problem: impl ToString) -> Self {
         Self {
             path: path.into(),
@@ -158,7 +161,10 @@ impl FontCatalog {
     }
 
     // Injection is private, synchronous, and per-call: no test changes a global.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "font discovery, validation and database construction form one ordered loading transaction"
+    )]
     fn load_with_system(
         &self,
         discover: impl FnOnce(&mut fontdb::Database),
@@ -294,7 +300,7 @@ impl FontCatalog {
         Ok(FontSystem::new_with_locale_and_db_and_fallback(
             self.locale.clone(),
             db,
-            fallback::QosFallback,
+            fallback::TiloFallback,
         ))
     }
 }
@@ -308,7 +314,10 @@ fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
 }
 
 #[cfg(not(windows))]
-#[allow(clippy::large_stack_arrays)]
+#[allow(
+    clippy::large_stack_arrays,
+    reason = "the fixed 64 KiB hashing buffer avoids heap allocation during font discovery"
+)]
 fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
     let mut file = std::fs::File::open(path).map_err(|e| FontCatalogError::at(path, e))?;
     let mut hash = Sha256::new();

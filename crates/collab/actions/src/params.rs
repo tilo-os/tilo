@@ -1164,7 +1164,7 @@ mod rich_schema_tests {
         });
         assert!(validate_schema_definition(&one_of).is_ok());
         assert!(validate_json_schema(&json!("Workspace"), &one_of).is_ok());
-        assert!(validate_json_schema(&json!({"App": "dev.tilo.notes"}), &one_of).is_ok());
+        assert!(validate_json_schema(&json!({"App": "so.tilo.notes"}), &one_of).is_ok());
         assert!(validate_json_schema(&json!({"App": "notes", "extra": true}), &one_of).is_err());
         assert!(
             validate_schema_definition(&json!({

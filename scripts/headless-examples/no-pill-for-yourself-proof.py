@@ -56,7 +56,7 @@ APPLICATIONS = "applications"
 # participant, not the process or the package. A word processor and a
 # file manager side by side are still one person, and if the rule were
 # keyed on the app id instead this pair would slip past it.
-APPS = ("dev.tilo.word-processor", "dev.tilo.file-explorer")
+APPS = ("so.tilo.word-processor", "so.tilo.file-explorer")
 
 # The name this session runs under. Set explicitly so the assertion has
 # a literal to look for rather than having to guess what the machine

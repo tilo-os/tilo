@@ -9,11 +9,11 @@ You need:
 
 - A Rust toolchain (rustc / cargo), as pinned by the repository's
   `rust-toolchain.toml`.
-- The Tilo packaging tools: `tilo-pkg`, `tilo-install`, `tilo-launcher`,
+- The Tilo packaging tools: `tilo-app-package`, `tilo-install`, `tilo-launcher`,
   `tilo-cli-shim`, `tilo-runtime-bundle`. Build them from the workspace:
 
   ```bash
-  cargo build --release -p pkg-cli -p install -p launcher -p cli-shim -p runtime-bundle
+  cargo build --release -p tilo-app-package-cli -p install -p launcher -p cli-shim -p runtime-bundle
   ```
 
 - `bubblewrap` (`sudo dnf install bubblewrap` on Fedora). The launcher
@@ -161,7 +161,7 @@ the launcher supplies both, and a manifest that declares `sandbox.fs.read`
 or `sandbox.fs.write` is refused at install and at launch. See
 [`sandbox.md`](./sandbox.md).
 
-Notes on the placeholder `publisher.identity`: `tilo-pkg pack` with no
+Notes on the placeholder `publisher.identity`: `tilo-app-package pack` with no
 `--identity` flag generates a fresh Ed25519 keypair, signs the package
 with it, and overwrites this field with the generated public key. What you
 put here is discarded. For repeatable publishing, pass
@@ -182,21 +182,21 @@ root.
 ## Step 8: pack
 
 ```
-$ tilo-pkg pack \
+$ tilo-app-package pack \
     --manifest /tmp/hw-walkthrough/pkg-workdir/manifest.toml \
     --payload  /tmp/hw-walkthrough/pkg-workdir/payload \
-    --output   /tmp/hw-walkthrough/my-example-hello.qpkg
-packed qpkg:20bd87389c30f2a0fcbb162845b15e88e72aa281a50322c6080dcd811cc311bb (4 blobs)
+    --output   /tmp/hw-walkthrough/my-example-hello.tapp
+packed tapp:20bd87389c30f2a0fcbb162845b15e88e72aa281a50322c6080dcd811cc311bb (4 blobs)
 ```
 
-The `qpkg:<hex>` is the content-addressed identity: BLAKE3 of the
+The `tapp:<hex>` is the content-addressed identity: BLAKE3 of the
 173-byte signed root. Four blobs: signed root, manifest, collection,
 and the entrypoint binary.
 
 ## Step 9: install
 
 ```
-$ tilo-install install /tmp/hw-walkthrough/my-example-hello.qpkg
+$ tilo-install install /tmp/hw-walkthrough/my-example-hello.tapp
 tilo-install: WARN — package self-signed by ed25519:d7830a490384cbbebdc713adec05dddb4ff7db090ca9bf9dd95d775841e47d4a (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
 installed: my.example.hello 0.1.0
   payload  : /tmp/tilo-hw-data/tilo-apps/payloads/my.example.hello
@@ -204,7 +204,7 @@ installed: my.example.hello 0.1.0
 run with:  tilo-install run my.example.hello
 ```
 
-The self-signed warning is expected — `tilo-pkg pack` generated a fresh
+The self-signed warning is expected — `tilo-app-package pack` generated a fresh
 keypair for this build. Everything works; add an attestor and use
 `--require-attestor` (see [`trust.md`](./trust.md)) when you're ready to
 harden.
@@ -251,7 +251,7 @@ into your home directory:
 ```bash
 unset XDG_DATA_HOME XDG_CONFIG_HOME
 tilo-install runtime install --version 2026.07 --from-host --force
-tilo-install install /tmp/hw-walkthrough/my-example-hello.qpkg
+tilo-install install /tmp/hw-walkthrough/my-example-hello.tapp
 tilo-install list
 tilo-install run my.example.hello
 ```
@@ -269,7 +269,7 @@ tilo-install runtime remove 2026.07
 - **Add a `[cli]` block** to your manifest for PATH commands. See
   [`cli-apps.md`](./cli-apps.md).
 - **Get a real signing identity** and store it out-of-band. See
-  [`trust.md`](./trust.md) for `tilo-pkg pack --identity`.
+  [`trust.md`](./trust.md) for `tilo-app-package pack --identity`.
 - **Ship a Flatpak alongside** for stock Linux. See
   [`cross-target.md`](./cross-target.md).
 - **Publish a format codec** as a WASM Component. See
