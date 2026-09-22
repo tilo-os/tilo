@@ -1,17 +1,14 @@
-use ui::LocalState;
-use ui::tokens::TextRole;
-use ui::widget::resource_actions::ActionForm;
-use ui::widget::{
-    Button, Checkbox, Dropdown, NumberInput, Slider, Text, TextInput, Widget, labeled_check,
-    labeled_field,
+use ui::prelude::{
+    ActionForm, Button, Checkbox, Dropdown, LocalState, NumberInput, Slider, Text, TextInput,
+    TextRole, Widget, labeled_check, labeled_field, resource_actions,
 };
 
 /// A complete local form → action/resource → retained output loop.
 ///
 /// # Panics
 ///
-/// Panics if the statically declared form fields cannot be bound. That would
-/// indicate that this generated template and its form declaration diverged.
+/// Panics if the generated form's static field declarations and bindings
+/// drift apart.
 #[expect(
     clippy::expect_used,
     reason = "field names are declared on the action form immediately above"
@@ -81,5 +78,5 @@ pub fn app_root() -> Box<dyn Widget> {
         greeting,
         reset,
     ]);
-    ui::widget::resource_actions::form(root, form)
+    resource_actions::form(root, form)
 }

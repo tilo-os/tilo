@@ -145,7 +145,10 @@ enum QuickSettingsDamage {
 
 // The four flags are independent lifecycle signals from the handoff protocol;
 // wrapping them would only obscure the truth table at this private boundary.
-#[allow(clippy::fn_params_excessive_bools)]
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "the four booleans are independent handoff lifecycle signals"
+)]
 fn floating_transfer_proxy_needed(
     suspended: bool,
     native_presented: bool,
@@ -1149,8 +1152,11 @@ impl FrameBuilder {
 
         let mut scene = Scene::new();
         scene.append(&sections.backdrop, None);
-        scene.append(&sections.topbar, None);
         scene.append(&sections.workspace, None);
+        // OS chrome owns this layer. Its normal controls stay inside the
+        // reserved top-bar band, while anchored surfaces such as the center
+        // widget editor must remain above app tabs and client content.
+        scene.append(&sections.topbar, None);
         scene.append(&sections.quick_settings, None);
         scene.append(&sections.above_quick_settings, None);
         if self.watch_configured_theme && self.night_light {
@@ -1941,10 +1947,7 @@ impl FrameBuilder {
                 .unwrap_or_else(|| {
                     self.transient_overlays.push((
                         *surface_id,
-                        ForeignSurfaceWidget::new_floating(
-                            *surface_id,
-                            "dev.tilo.transient".into(),
-                        ),
+                        ForeignSurfaceWidget::new_floating(*surface_id, "so.tilo.transient".into()),
                     ));
                     self.transient_overlays.len().saturating_sub(1)
                 });

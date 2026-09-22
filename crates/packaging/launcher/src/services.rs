@@ -61,7 +61,7 @@ pub const COMPAT_SERVICE: &str = "compat";
 /// Settings credential operation by merely connecting to the socket.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 pub const APP_HOST_SERVICE: &str = "app-host";
-const STORE_APP_ID: &str = "dev.tilo.store";
+const STORE_APP_ID: &str = "so.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 const COMPAT_PROTOCOL_VERSION: u16 = 1;
 /// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
@@ -636,13 +636,13 @@ mod tests {
             stream.read_exact(&mut bytes).expect("payload");
             serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
         });
-        let bind = resolve_identity_bind("dev.tilo.notes", Some("room-7"), false)
+        let bind = resolve_identity_bind("so.tilo.notes", Some("room-7"), false)
             .expect("resolve")
             .expect("identity bind");
         assert_eq!(bind.name, IDENTITY_SERVICE);
         assert_eq!(bind.child_fd, 31);
         let handshake = reader.join().expect("reader");
-        assert_eq!(handshake["app_id"], "dev.tilo.notes");
+        assert_eq!(handshake["app_id"], "so.tilo.notes");
         assert_eq!(handshake["workspace_id"], "room-7");
 
         unsafe {
@@ -683,7 +683,7 @@ mod tests {
             &services,
             false,
             ServiceLaunchContext {
-                app_id: "dev.tilo.notes",
+                app_id: "so.tilo.notes",
                 workspace_id: Some("room-7"),
             },
         )
@@ -692,7 +692,7 @@ mod tests {
         let (magic, handoff) = reader.join().expect("reader");
         assert_eq!(magic, COLLAB_LAUNCH_MAGIC);
         assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
-        assert_eq!(handoff["app_id"], "dev.tilo.notes");
+        assert_eq!(handoff["app_id"], "so.tilo.notes");
         assert_eq!(handoff["workspace_id"], "room-7");
 
         unsafe {
@@ -788,14 +788,14 @@ mod tests {
         let mut services = BTreeMap::new();
         services.insert(SHELL_UI_SERVICE.to_string(), "optional@1".to_string());
         let resolved = resolve_service_binds(&services, false).unwrap();
-        authenticate_shell_ui_bind(&resolved, "dev.tilo.chat").unwrap();
+        authenticate_shell_ui_bind(&resolved, "so.tilo.chat").unwrap();
 
         let (stream, _) = listener.accept().unwrap();
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line).unwrap();
         let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(handshake["protocol"], 1);
-        assert_eq!(handshake["app_id"], "dev.tilo.chat");
+        assert_eq!(handshake["app_id"], "so.tilo.chat");
     }
 
     /// What `/proc/self/fd/<n>` says a descriptor points at — `socket:[<inode>]`

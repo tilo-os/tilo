@@ -167,7 +167,7 @@ mod tests {
     /// package.
     fn example_manifest() -> crate::manifest::MinimalManifest {
         toml::from_str(
-            "[package]\nid = \"dev.tilo.example\"\nversion = \"1.0.0\"\n\
+            "[package]\nid = \"so.tilo.example\"\nversion = \"1.0.0\"\n\
              [entrypoint]\nbin = \"bin/example\"\n",
         )
         .expect("the fixture manifest parses")
@@ -214,13 +214,13 @@ mod tests {
     #[test]
     fn an_unknown_desktop_id_is_reported() {
         let err = run_host(
-            "dev.tilo.definitely-not-installed-anywhere",
+            "so.tilo.definitely-not-installed-anywhere",
             &LaunchEnv::default(),
         )
         .expect_err("nothing has that id");
         assert!(
             err.to_string()
-                .contains("dev.tilo.definitely-not-installed-anywhere"),
+                .contains("so.tilo.definitely-not-installed-anywhere"),
             "the error must name what could not be found: {err}"
         );
     }

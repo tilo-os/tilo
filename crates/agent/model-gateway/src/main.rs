@@ -46,9 +46,9 @@ enum Action {
 }
 
 const MAX_HANDOFF: usize = 4096;
-const SETTINGS_APP: &str = "dev.tilo.settings";
-const AGENT_APP: &str = "dev.tilo.agent";
-const PHOTOS_APP: &str = "dev.tilo.photos";
+const SETTINGS_APP: &str = "so.tilo.settings";
+const AGENT_APP: &str = "so.tilo.agent";
+const PHOTOS_APP: &str = "so.tilo.photos";
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant

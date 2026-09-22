@@ -61,7 +61,7 @@ python -m unittest discover -s tools/tests -p test_app_packaging_coordinator.py 
 ```
 
 The explicit apply flag permits only repository
-`qos/ci-workflow-pilot-20260918-9245-repeat` and `packaging-coordinator-probe.yml`.
+`tilo/ci-workflow-pilot-20260918-9245-repeat` and `packaging-coordinator-probe.yml`.
 Before dispatch, the API must confirm repository privacy and that the requested
 SHA contains the exact retained fixture (normalizing CRLF to LF). The fixture only
 prints its immutable source/intent/baseline; it has no checkout, build, secrets,

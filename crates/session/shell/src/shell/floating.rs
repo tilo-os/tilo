@@ -1,6 +1,6 @@
 //! Shared floating-surface presentation and lifecycle policy.
 use std::sync::Arc;
-pub const OSK_APP_ID: &str = "dev.tilo.osk";
+pub const OSK_APP_ID: &str = "so.tilo.osk";
 /// Frozen pixels from the final app-owned frame. The shell moves this exact
 /// image under the pointer while the authenticated secondary surface warms,
 /// then drops it atomically on the first native buffer.
@@ -199,7 +199,7 @@ mod floating_lifecycle_tests {
             token: "5e8f16a2a2e24bf7ad86758f2f28e316".into(),
             connection: 7,
             public_id: "maps-navigation:active".into(),
-            app_id: "dev.tilo.maps".into(),
+            app_id: "so.tilo.maps".into(),
             content_rect: vello::kurbo::Rect::new(100.0, 80.0, 420.0, 260.0),
             rect: vello::kurbo::Rect::new(92.0, 72.0, 428.0, 268.0),
             transfer_frame: None,

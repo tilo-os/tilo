@@ -49,7 +49,7 @@ SHELL = REPO / "target" / "debug" / "shell"
 LAUNCHER = REPO / "target" / "debug" / "tilo-launcher"
 
 # The two the demo opens first.
-DEFAULT_APPS = ["dev.tilo.file-explorer", "dev.tilo.word-processor"]
+DEFAULT_APPS = ["so.tilo.file-explorer", "so.tilo.word-processor"]
 
 # The compositor's action surface. Launching an app is an action like
 # any other, which is what lets this drive the production path rather

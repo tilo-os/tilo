@@ -13,7 +13,7 @@ path = "src/lib.rs"
 name = "tilo-registry-server"
 path = "src/main.rs"
 
-# Self-hostable HTTP registry for `.qpkg` bundles. Serves the
+# Self-hostable HTTP registry for `.tapp` bundles. Serves the
 # `RegistryHandshake`, entry index, and a signed-POST endpoint so
 # publishers can add / update / delete their own entries. Owner
 # controls a `publishers.toml` allowlist; TLS is deliberately out
@@ -24,7 +24,7 @@ path = "src/main.rs"
 atomic-file = { path = "../../../crates/system/atomic-file" }
 registry-types = { path = "../registry-types" }
 app-registry = { path = "../app-registry" }
-pkg = { path = "../pkg" }
+tilo-app-package = { path = "../tilo-app-package" }
 
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "fs", "time", "io-util"] }
 hyper        = { version = "1", features = ["server", "http1"] }

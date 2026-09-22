@@ -61,7 +61,7 @@ fn install_locales() -> Result<(), ui::i18n::I18nError> {
 pub fn main() {
     install_locales().expect("valid bundled Snippets locales");
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.snippets", snippets::app_root)
+        &LaunchSpec::new("so.tilo.snippets", snippets::app_root)
             .shot_root(shot_root)
             .scenarios(&["narrow", "detail", "empty"])
             .configure_app(|app| snippets::actions::register(app.action_registry_mut())),
