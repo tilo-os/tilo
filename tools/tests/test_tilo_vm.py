@@ -86,7 +86,9 @@ class TiloVmTests(unittest.TestCase):
                 ]
             )
             completed = mock.Mock(returncode=0, stdout="{}\n", stderr="")
-            with mock.patch.object(tilo_vm, "run_launcher", return_value=completed):
+            with mock.patch.object(tilo_vm, "powershell", return_value="pwsh"), mock.patch.object(
+                tilo_vm, "run_launcher", return_value=completed
+            ):
                 self.assertEqual(tilo_vm.preflight_or_start(args, start=False), 0)
             receipt = json.loads((runs / "receipt-test" / "run.json").read_text())
             self.assertEqual(receipt["schema"], "tilo.vm-run/v1")
