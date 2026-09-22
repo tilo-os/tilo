@@ -240,13 +240,33 @@ mod guest {
     }
 
     fn ask(req: &Request) -> anyhow::Result<Response> {
-        ush::broker::ask(&broker_socket(), req).map_err(|e| {
+        use std::io::IsTerminal as _;
+
+        let show_progress = std::io::stderr().is_terminal();
+        let mut stdout = std::io::stdout().lock();
+        let mut stderr = std::io::stderr().lock();
+        let mut response = ush::broker::ask_streaming_with_progress(
+            &broker_socket(),
+            req,
+            &mut stdout,
+            &mut stderr,
+            show_progress,
+        )
+        .map_err(|e| {
             anyhow::anyhow!(
                 "the broker is not reachable at {} ({e}). These commands only \
                  work inside a guest — run `ush` first.",
                 broker_socket().display()
             )
-        })
+        })?;
+        // Command output was already copied live. Keep `broker::ask`'s fully
+        // buffered response compatible for library callers, but do not replay
+        // it in the guest CLI.
+        if let Response::Command { stdout, stderr, .. } = &mut response {
+            stdout.clear();
+            stderr.clear();
+        }
+        Ok(response)
     }
 
     fn report(resp: Response) -> i32 {
@@ -435,9 +455,28 @@ explain when the host does not offer them.\n";
             .chain(args.iter().map(String::as_str))
             .collect::<Vec<_>>()
             .join(" ");
+        let suggestion = args.first().and_then(|verb| {
+            let candidates: &[&str] = match program {
+                "app" | "store" => &["update", "list", "search", "repo"],
+                "system" => &["update", "status"],
+                "tilo" => &["update", "status", "app", "store", "system"],
+                _ => &[],
+            };
+            candidates
+                .iter()
+                .copied()
+                .map(|candidate| (strsim::levenshtein(verb, candidate), candidate))
+                .min_by_key(|(distance, _)| *distance)
+                .filter(|(distance, _)| *distance <= 2)
+                .map(|(_, candidate)| candidate)
+        });
+        let hint = suggestion.map_or_else(
+            || format!("try `{program} --help`"),
+            |suggestion| format!("did you mean `{program} {suggestion}`?"),
+        );
         format!(
             "`{command}` is not available from this sandbox. App discovery and signed \
-             app/system updates use typed host requests here; try `{program} --help`"
+             app/system updates use typed host requests here; {hint}"
         )
     }
 
@@ -1015,6 +1054,11 @@ explain when the host does not offer them.\n";
                 .to_string();
             assert!(error.contains("`app install browser`"));
             assert!(error.contains("app --help"));
+
+            let typo = management_request("app", &argv(&["udpate", "browser"]))
+                .unwrap_err()
+                .to_string();
+            assert!(typo.contains("did you mean `app update`?"), "{typo}");
         }
     }
 }
