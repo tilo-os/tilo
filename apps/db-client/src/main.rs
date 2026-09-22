@@ -35,6 +35,10 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         db_client::app_root_for_shot_empty(width)
     } else if args.has("--status") {
         db_client::app_root_for_shot_status(width)
+    } else if args.has("--connect") {
+        db_client::app_root_for_shot_connect(width)
+    } else if args.has("--confirm") {
+        db_client::app_root_for_shot_confirm(width)
     } else {
         db_client::app_root_for_shot(width)
     })
@@ -47,7 +51,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.db-client", db_client::app_root)
             .shot_root(shot_root)
-            .allowed_flags(&["--empty", "--status"])
+            .allowed_flags(&["--empty", "--status", "--connect", "--confirm"])
             .configure_app(|app| {
                 db_client::actions::register(app.action_registry_mut());
                 app.set_window_title(Some("Database Client".into()));

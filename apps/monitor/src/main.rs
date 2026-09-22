@@ -68,28 +68,34 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         return run_interaction_bench(viewport);
     }
-    ui::launch::run(
-        &LaunchSpec::new("so.tilo.monitor", monitor::app_root)
-            .shot_handler(render_shot)
-            .scenarios(&[
-                "detail",
-                "interval-popover",
-                "resources",
-                "resources-many",
-                "empty",
-                "process-loading",
-                "process-permission-error",
-                "no-results",
-                "tree-collapsed",
-                "tree-expanded",
-                "per-process",
-                "per-process-collapsed",
-                "context-menu",
-                "kill-confirm",
-            ])
-            .configure_app(configure_app),
-    )?;
+    ui::launch::run(&launch_spec(monitor::app_root))?;
     Ok(())
+}
+
+fn launch_spec(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
+    launch_spec_base(root).history(&monitor::framework_history::HISTORY)
+}
+
+fn launch_spec_base(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
+    LaunchSpec::new("dev.tilo.monitor", root)
+        .shot_handler(render_shot)
+        .scenarios(&[
+            "detail",
+            "interval-popover",
+            "resources",
+            "resources-many",
+            "empty",
+            "process-loading",
+            "process-permission-error",
+            "no-results",
+            "tree-collapsed",
+            "tree-expanded",
+            "per-process",
+            "per-process-collapsed",
+            "context-menu",
+            "kill-confirm",
+        ])
+        .configure_app(configure_app)
 }
 
 fn configure_app(app: &mut ui::App) {
@@ -109,31 +115,10 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_shot_to_png(
         Box::new(app),
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
-        &shot_theme(args),
+        ui::launch::shot_theme(args),
         out,
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
-}
-
-/// Reproduce the live accessibility theme in Monitor's custom offscreen path.
-/// Unlike the generic launch harness, this app owns its shot renderer, so it
-/// must explicitly thread text scale and reduced-motion preferences through.
-fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let reduce_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| {
-            let value = value.trim();
-            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-        });
-    theme
-        .with_text_scale(args.text_scale.unwrap_or(1.0))
-        .with_reduce_motion(reduce_motion)
 }
 
 /// Parse `--viewport WxH` (e.g. `--viewport 480x900`) for `--shots`.
@@ -158,23 +143,21 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
-    theme: &Theme,
+    theme: Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
-    // `Theme::with_text_scale` has already expanded Monitor's token sizes.
-    // The live app keeps `TextRenderer` at its base multiplier, so doing the
-    // same here avoids multiplying custom immediate-mode text a second time.
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
 
-    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
+    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -186,22 +169,20 @@ fn render_shot_to_png(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -211,7 +192,7 @@ fn render_shot_to_png(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        theme,
+        &theme,
         &presence,
         &permission,
     );
@@ -488,4 +469,81 @@ fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error:
 
     report_bench_totals(&totals);
     Ok(())
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::*;
+    use ui::history_mode::{HistoryDefinition, HistoryPresentation, HistoryScopeDefinition};
+
+    static FOREIGN_HISTORY: HistoryDefinition = HistoryDefinition {
+        app_id: "dev.tilo.foreign",
+        scopes: &[HistoryScopeDefinition {
+            key: "foreign",
+            title: "Foreign",
+            presentation: HistoryPresentation::External { reason: "foreign" },
+            content_schema: None,
+        }],
+    };
+
+    fn inert_root() -> Box<dyn Widget> {
+        Box::new(monitor::MonitorApp::new())
+    }
+
+    fn memory_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+        (
+            ui::State::new(),
+            ui::persist::Autosave::disabled("controlled Monitor launch"),
+        )
+    }
+
+    #[test]
+    fn production_launch_spec_installs_the_root_history_definition() {
+        let spec = launch_spec(inert_root).open_app_global_state(memory_state);
+        spec.validate_history_declaration().unwrap();
+        let mut app = spec.build_controlled_app_for_test().unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(std::ptr::eq(
+            installed.unwrap(),
+            &monitor::framework_history::HISTORY
+        ));
+        assert!(std::ptr::eq(
+            root.unwrap(),
+            &monitor::framework_history::HISTORY
+        ));
+        assert!(
+            app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("History"))
+        );
+    }
+
+    #[test]
+    fn missing_and_foreign_launch_declarations_are_not_admitted() {
+        let missing = launch_spec_base(inert_root).open_app_global_state(memory_state);
+        assert_eq!(
+            missing.validate_history_declaration(),
+            Err(ui::history_mode::HistoryRegistrationError::Missing)
+        );
+        let app = missing.build_controlled_app_for_test().unwrap();
+        let (installed, root) = app.controlled_history_definitions_for_test();
+        assert!(installed.is_none());
+        assert!(std::ptr::eq(
+            root.unwrap(),
+            &monitor::framework_history::HISTORY
+        ));
+
+        let foreign = launch_spec_base(inert_root)
+            .history(&FOREIGN_HISTORY)
+            .open_app_global_state(memory_state);
+        assert_eq!(
+            foreign.validate_history_declaration(),
+            Err(ui::history_mode::HistoryRegistrationError::ForeignSource)
+        );
+        assert!(matches!(
+            foreign.build_controlled_app_for_test(),
+            Err(LaunchError::Operation(message)) if message.contains("different installed application")
+        ));
+    }
 }

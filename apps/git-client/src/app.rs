@@ -24,13 +24,13 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, TextInput, TextInputKind, Widget};
+use ui::widget::{ButtonFace, FlapState, SplitLayout, TextInput, TextInputKind, Widget};
 
 use crate::changes::{ChangesColumn, ChangesHit};
 use crate::diffview::{self, DiffView};
 use crate::draw;
 use crate::graph::{self, GraphLayout};
-use crate::history::HistoryView;
+use crate::history::{self, HistoryView};
 use crate::model::{ChangeArea, DiffKey, DiffMap, FileChange, RepoModel};
 use crate::panels::{BranchAction, PanelHit, PanelsView, RemoteAction};
 use crate::settings::{DiffLayout, Settings};
@@ -94,6 +94,93 @@ const TABS: [(Screen, &str); 3] = [
 ];
 
 const APPBAR_H: f64 = 56.0;
+/// Second app-bar row that hosts the screen tabs when the title, tab group and
+/// settings cluster cannot share the 56px row (narrow windows). Nothing is
+/// hidden or overwritten: the title keeps `TITLE_MIN_W`, the settings stay on
+/// the first row and the tabs move underneath.
+const APPBAR_TAB_ROW_H: f64 = 44.0;
+/// Horizontal app-bar gutter: the title's left inset and the cluster's right
+/// inset are the same value so the bar reads as one composed row.
+const APPBAR_GUTTER: f64 = 20.0;
+/// Width the overlay-mode hamburger occupies before the title starts.
+const HAMBURGER_SLOT: f64 = 44.0;
+/// Narrowest title block the one-row app bar may leave before it wraps.
+const TITLE_MIN_W: f64 = 96.0;
+/// Height shared by every app-bar control (tabs, segmented control, syntax
+/// toggle, hamburger) so they sit on one centre line.
+const APPBAR_CONTROL_H: f64 = 32.0;
+/// Gap between the tab group and the settings cluster, and between the two
+/// settings controls.
+const APPBAR_CLUSTER_GAP: f64 = 12.0;
+/// Fractional app-bar text sizes. Whole-number sizes (15 px Bold title, 14 px
+/// branch pill, 13 px tabs, 12 px settings, 13/12 px diff header) stay inline
+/// at their call sites — the F1 spacing ratchet counts named whole-number
+/// `f32` consts and these files carry none to spare.
+const SUBTITLE_FONT: f32 = 11.5;
+const DIFF_DISCARD_FONT: f32 = 11.5;
+
+/// App-bar band and control heights measured from the renderer the bar paints
+/// with: the 1× constants until the text scale outgrows them, then the
+/// measured lines plus their padding, so the title, subtitle, pill, tabs and
+/// settings grow together instead of the subtitle overprinting the title.
+/// `Default` is the bar's 1× rhythm: 9 px above the title, 3 px to the
+/// subtitle (9 + 18.75 + 3 + 14.4 + 9 ≤ 56), 7 px around a tab label inside a
+/// 32 px control and 6 px around a control inside its row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BarMetrics {
+    /// Height of the title row (title + subtitle stack).
+    row_h: f64,
+    /// Height of the wrapped tab row.
+    tab_row_h: f64,
+    /// Height of every bar control (tabs, segmented switch, toggle, hamburger).
+    control_h: f64,
+    /// Measured title and subtitle line heights.
+    title_h: f64,
+    subtitle_h: f64,
+    /// Vertical rhythm: title block padding, title→subtitle gap, tab label
+    /// padding inside a control, control padding inside a row.
+    title_pad: f64,
+    title_gap: f64,
+    control_pad: f64,
+    row_pad: f64,
+}
+
+impl Default for BarMetrics {
+    fn default() -> Self {
+        Self {
+            row_h: APPBAR_H,
+            tab_row_h: APPBAR_TAB_ROW_H,
+            control_h: APPBAR_CONTROL_H,
+            title_h: 18.75,
+            subtitle_h: 14.375,
+            title_pad: 9.0,
+            title_gap: 3.0,
+            control_pad: 7.0,
+            row_pad: 6.0,
+        }
+    }
+}
+
+impl BarMetrics {
+    fn measure(tr: &mut TextRenderer) -> Self {
+        let one = Self::default();
+        let title_h = f64::from(tr.measure_weighted("Ag", 15.0, None, TextWeight::Bold).1);
+        let subtitle_h = f64::from(tr.measure("Ag", SUBTITLE_FONT, None).1);
+        let tab_h = f64::from(tr.measure_weighted("Ag", 13.0, None, TextWeight::Medium).1);
+        let control_h = (tab_h + 2.0 * one.control_pad).max(APPBAR_CONTROL_H);
+        let stack = one.title_pad + title_h + one.title_gap + subtitle_h + one.title_pad;
+        let row_h = stack.max(control_h + 2.0 * one.row_pad).max(APPBAR_H);
+        let tab_row_h = (control_h + 2.0 * one.row_pad).max(APPBAR_TAB_ROW_H);
+        Self {
+            row_h,
+            tab_row_h,
+            control_h,
+            title_h,
+            subtitle_h,
+            ..one
+        }
+    }
+}
 const CHANGES_COL_W: f64 = 320.0;
 
 /// Below this allocated width (logical px) the primary list column stops
@@ -213,12 +300,26 @@ pub struct GitClientApp {
     change_hits: Vec<Box<dyn Fn(Point) -> Option<ChangesHit>>>,
     change_semantic_hits: Vec<(Rect, ChangesHit)>,
     diff_hunk_buttons: Vec<diffview::HunkButton>,
+    /// Row metrics the diff painted last, so wheel scrolling clamps to the
+    /// same pitch the rows use at the current text scale.
+    diff_metrics: diffview::Metrics,
+    /// Measured diff-pane header height from the last draw.
+    diff_header_h: f64,
     /// Hit rect for the diff-header "Discard file" button (worktree side only).
     discard_file_rect: Rect,
     history_rows: Vec<Rect>,
+    /// Row metrics the commit list painted last (see `diff_metrics`).
+    history_metrics: history::Metrics,
     panel_hits: Vec<Box<dyn Fn(Point) -> Option<PanelHit>>>,
     panel_semantic_hits: Vec<(Rect, PanelHit)>,
     tab_rects: Vec<(Screen, Rect)>,
+    /// Measured app-bar height from the last draw: one row, or two when the
+    /// tabs wrap under the title on a narrow window. Body, scroll and hit
+    /// computations read this rather than the one-row constant.
+    appbar_h: f64,
+    /// Title block (name, branch pill, subtitle) from the last draw, so tests
+    /// can prove it never runs under the tab group or the settings cluster.
+    title_rect: Rect,
 }
 
 impl Default for GitClientApp {
@@ -283,6 +384,31 @@ impl GitClientApp {
         let mut app = Self::from_model(RepoModel::default(), DiffMap::new());
         app.awaiting_repo = true;
         app
+    }
+
+    /// `--shots --scenario`: open a screen directly so each one can be
+    /// reviewed from a single offscreen frame.
+    pub fn shot_screen(&mut self, screen: Screen) {
+        self.switch_screen(screen);
+    }
+
+    /// `--shots --scenario split`: the side-by-side diff layout, pinned so
+    /// the document sync does not fold it back to the stored preference.
+    pub fn shot_split_diff(&mut self) {
+        self.settings.diff_layout = DiffLayout::SideBySide;
+        self.settings_forced = true;
+    }
+
+    /// `--shots --scenario commit`: a typed commit summary so the commit box
+    /// and its primary action render in their enabled state.
+    pub fn shot_commit_message(&mut self, message: &str) {
+        self.commit_input.set_text(message);
+    }
+
+    /// `--shots --scenario discard`: the two-click discard confirmation
+    /// armed on the selected file, so the danger state is capturable.
+    pub fn shot_arm_discard(&mut self) {
+        self.armed_discard = Some(DiscardTarget::File);
     }
 
     /// Construct from an explicit model — used by the sample path and tests.
@@ -370,11 +496,16 @@ impl GitClientApp {
             change_hits: Vec::new(),
             change_semantic_hits: Vec::new(),
             diff_hunk_buttons: Vec::new(),
+            diff_metrics: diffview::Metrics::default(),
+            diff_header_h: 36.0,
             discard_file_rect: Rect::ZERO,
             history_rows: Vec::new(),
+            history_metrics: history::Metrics::default(),
             panel_hits: Vec::new(),
             panel_semantic_hits: Vec::new(),
             tab_rects: Vec::new(),
+            appbar_h: APPBAR_H,
+            title_rect: Rect::ZERO,
         }
     }
 
@@ -608,16 +739,6 @@ impl GitClientApp {
             return SplitLayout::Docked;
         }
         SplitLayout::from_width(self.rect.width(), NARROW_BREAKPOINT)
-    }
-
-    fn appbar_height(&self) -> f64 {
-        if self.rect.width() >= NARROW_BREAKPOINT {
-            APPBAR_H
-        } else if self.rect.width() >= 420.0 {
-            APPBAR_H * 2.0
-        } else {
-            APPBAR_H * 3.0
-        }
     }
 
     /// Whether the primary list column is currently a revealed/open overlay.
@@ -966,72 +1087,139 @@ impl GitClientApp {
 
     fn draw_appbar(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme) {
         let c = &theme.tokens.colors;
+        let overlay = self.layout_mode() == SplitLayout::Overlay;
+        // Measure every cluster before placing anything: the title is clamped
+        // against measured neighbours, never against a guessed width.
+        let (widths, tabs_total) = Self::measure_appbar_tabs(tr, self.rect.width() < 420.0);
+        let (seg_w, syn_w) = Self::measure_settings_cluster(tr);
+        let cluster_w = seg_w + APPBAR_CLUSTER_GAP + syn_w;
+        let left_pad = if overlay { HAMBURGER_SLOT } else { 0.0 };
+        let title_x = self.rect.x0 + APPBAR_GUTTER + left_pad;
+        // Tab group background carries a 6px inset on either side.
+        let tab_group_w = tabs_total + 12.0;
+        let one_row_right = self.rect.x1 - APPBAR_GUTTER;
+        let cluster_x = one_row_right - cluster_w;
+        let one_row_tabs_left = cluster_x - APPBAR_CLUSTER_GAP - tab_group_w;
+        // Wrap the tabs under the title when a readable title cannot sit
+        // beside the tab group and the settings on one row.
+        let wrap = one_row_tabs_left - 8.0 - title_x < TITLE_MIN_W;
+        let m = BarMetrics::measure(tr);
+        // On the narrowest windows even the title and measured settings cannot
+        // share a row. Keep upstream's separate settings row at that limit.
+        let separate_settings_row = cluster_x - APPBAR_CLUSTER_GAP - title_x < 40.0;
+        self.appbar_h = if separate_settings_row {
+            m.row_h * 2.0 + m.tab_row_h
+        } else if wrap {
+            m.row_h + m.tab_row_h
+        } else {
+            m.row_h
+        };
         let bar = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + self.appbar_height(),
+            self.rect.y0 + self.appbar_h,
         );
         draw::fill_rect(scene, t, bar, c.surfaces.raised);
-        draw::hline(scene, t, bar.y1, bar.x0, bar.x1, c.border_standard);
+        draw::hline(
+            scene,
+            t,
+            bar.y1,
+            bar.x0,
+            bar.x1,
+            draw::edge(c.surfaces.raised),
+        );
+        let row1 = Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + m.row_h);
 
         // Hamburger toggle: shown only when the primary list column has
         // collapsed into an overlay flap (narrow window, master-detail
         // screen). It summons/dismisses the flap. The title block shifts
         // right to make room. Outside overlay mode there's no flap to toggle.
-        let left_pad = if self.layout_mode() == SplitLayout::Overlay {
-            self.draw_hamburger(scene, t, theme, bar);
-            44.0
+        if overlay {
+            self.draw_hamburger(scene, t, theme, row1, m.control_h);
         } else {
             self.hamburger_rect = Rect::ZERO;
-            0.0
-        };
+        }
 
-        // Screen tabs (centered group on the right side of name). Measure the
-        // group first so the title can be clamped to stop before it on a
-        // narrow window instead of running underneath.
         self.tab_rects.clear();
-        // Keep the settings cluster wide enough for the full "Syntax" label.
-        // The old 46px icon-sized control left only "Syn" visible in the
-        // shipped shot, which made a presentation preference look like a
-        // truncated status label.
-        let settings_w = 230.0;
-        let wrapped = bar.width() < NARROW_BREAKPOINT;
-        let separate_settings_row = bar.width() < 420.0;
-        let (widths, total) = Self::measure_appbar_tabs(tr, separate_settings_row);
-        let tx_start = if wrapped {
-            bar.x0 + (bar.width() - total) / 2.0
+        if wrap {
+            // Row 1: title + settings cluster. Row 2: the screen tabs, left
+            // aligned on the same gutter as the title.
+            let title_limit = if separate_settings_row {
+                one_row_right
+            } else {
+                cluster_x - APPBAR_CLUSTER_GAP
+            };
+            self.draw_appbar_title(scene, tr, t, theme, row1, title_x, title_limit, &m);
+            let settings_row = if separate_settings_row {
+                Rect::new(bar.x0, row1.y1 + m.tab_row_h, bar.x1, bar.y1)
+            } else {
+                row1
+            };
+            self.draw_settings_cluster(
+                scene,
+                tr,
+                t,
+                theme,
+                settings_row,
+                cluster_x,
+                seg_w,
+                syn_w,
+                m.control_h,
+            );
+            let row2 = Rect::new(bar.x0, row1.y1, bar.x1, row1.y1 + m.tab_row_h);
+            let tx_start = bar.x0 + APPBAR_GUTTER + 6.0;
+            self.draw_appbar_tab_group(
+                scene,
+                tr,
+                t,
+                theme,
+                row2,
+                &widths,
+                tabs_total,
+                tx_start,
+                m.control_h,
+            );
         } else {
-            bar.x1 - settings_w - total - 20.0
-        };
-        let tab_group_left = tx_start - 6.0;
+            let tx_start = one_row_tabs_left + 6.0;
+            let title_limit = one_row_tabs_left - 8.0;
+            self.draw_appbar_title(scene, tr, t, theme, row1, title_x, title_limit, &m);
+            self.draw_appbar_tab_group(
+                scene,
+                tr,
+                t,
+                theme,
+                row1,
+                &widths,
+                tabs_total,
+                tx_start,
+                m.control_h,
+            );
+            self.draw_settings_cluster(
+                scene,
+                tr,
+                t,
+                theme,
+                row1,
+                cluster_x,
+                seg_w,
+                syn_w,
+                m.control_h,
+            );
+        }
+    }
 
-        // Repo name + branch. Clamp the title so it ellipsises before the tab
-        // group rather than colliding with it when the bar is tight.
-        let title_x = bar.x0 + 20.0 + left_pad;
-        let title_right = if separate_settings_row {
-            bar.x1 - 12.0
-        } else if wrapped {
-            bar.x1 - settings_w
-        } else {
-            tab_group_left
+    /// Measured widths of the two settings controls: the Unified/Split
+    /// segmented control (both halves as wide as the wider label) and the
+    /// Syntax toggle, each with symmetric label padding.
+    fn measure_settings_cluster(tr: &mut TextRenderer) -> (f64, f64) {
+        let label_w = |tr: &mut TextRenderer, label: &str| {
+            f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0)
         };
-        self.draw_appbar_title(scene, tr, t, theme, bar, title_x, title_right);
-
-        let tabs_bar = if wrapped {
-            Rect::new(bar.x0, bar.y0 + APPBAR_H, bar.x1, bar.y0 + APPBAR_H * 2.0)
-        } else {
-            bar
-        };
-        self.draw_appbar_tab_group(scene, tr, t, theme, tabs_bar, &widths, total, tx_start);
-
-        // Settings cluster on the far right: diff layout toggle + flags.
-        let settings_bar = if separate_settings_row {
-            Rect::new(bar.x0, bar.y0 + APPBAR_H * 2.0, bar.x1, bar.y1)
-        } else {
-            bar
-        };
-        self.draw_settings_cluster(scene, tr, t, theme, settings_bar, settings_w);
+        let half = label_w(tr, "Unified").max(label_w(tr, "Split")) + 24.0;
+        let seg_w = half * 2.0 + 6.0;
+        let syn_w = label_w(tr, "Syntax") + 24.0;
+        (seg_w, syn_w)
     }
 
     /// Each tab's pixel width and their combined width (including the 6px
@@ -1063,46 +1251,53 @@ impl GitClientApp {
         theme: &Theme,
         bar: Rect,
         title_x: f64,
-        tab_group_left: f64,
+        right_limit: f64,
+        m: &BarMetrics,
     ) {
         let c = &theme.tokens.colors;
-        let title_max = (tab_group_left - title_x - 8.0).max(40.0) as f32;
+        let title_max = (right_limit - title_x).max(40.0) as f32;
+        // Elide rather than wrap: a wrapped repository name or subtitle used
+        // to spill out of the bar on a narrow window.
+        let name = tr.elide_to_width_weighted(&self.model.name, 15.0, title_max, TextWeight::Bold);
+        let (nw, _) = tr.measure_weighted(&name, 15.0, None, TextWeight::Bold);
+        let nh = m.title_h;
+        // The title + subtitle stack centres in the row: at 1× that is the
+        // historical `y0 + 9`, at 2× the row has grown to hold both lines.
+        let stack_h = nh + m.title_gap + m.subtitle_h;
+        let title_y = bar.y0 + (bar.height() - stack_h) / 2.0;
         draw::text_weighted(
             scene,
             tr,
             t,
-            &self.model.name,
+            &name,
             15.0,
             c.text_primary,
             title_x,
-            bar.y0 + 9.0,
-            Some(title_max),
+            title_y,
+            None,
             TextWeight::Bold,
         );
-        let nw = f64::from(
-            tr.measure_weighted(&self.model.name, 15.0, None, TextWeight::Bold)
-                .0,
-        )
-        .min(f64::from(title_max));
-        let pill_x = title_x + 8.0 + nw;
-        // Only paint the branch pill if it still fits left of the tab group.
-        let pill_width = f64::from(
-            tr.measure_weighted(&self.model.head, 14.0, None, TextWeight::Medium)
-                .0,
-        ) + 12.0;
-        if pill_x + pill_width + 8.0 <= tab_group_left {
+        let mut right = title_x + f64::from(nw);
+        let pill_x = right + 8.0;
+        // Paint the branch pill only when its *measured* width fits left of
+        // the next control (the pill measures `head` at 14px Medium with 6px
+        // padding either side); centre it on the title's measured line.
+        let pill_h = draw::pill_height(tr, 14.0);
+        let pill_w = draw::pill_width(tr, &self.model.head, 14.0);
+        if pill_x + pill_w <= right_limit {
             draw::pill(
                 scene,
                 tr,
                 t,
                 pill_x,
-                bar.y0 + 9.0,
-                20.0,
+                title_y + (nh - pill_h) / 2.0,
+                14.0,
                 &self.model.head,
                 Color::WHITE,
                 theme.accent_primary,
-                None,
+                draw::PillEdge::Bare,
             );
+            right = pill_x + pill_w;
         }
         // change count subtitle — or the last action error when present.
         let (sub, sub_color) = if self.remote_job.is_some() {
@@ -1124,24 +1319,27 @@ impl GitClientApp {
                 ),
             }
         };
+        self.status_text.clone_from(&sub);
+        let sub = tr.elide_to_width(&sub, SUBTITLE_FONT, title_max);
+        let (sw, _) = tr.measure(&sub, SUBTITLE_FONT, None);
         self.status_rect = Rect::new(
             title_x,
-            bar.y0 + 30.0,
+            title_y + nh + m.title_gap,
             title_x + f64::from(title_max),
-            bar.y0 + 46.0,
+            title_y + nh + m.title_gap + m.subtitle_h,
         );
-        self.status_text.clone_from(&sub);
         draw::text(
             scene,
             tr,
             t,
             &sub,
-            11.5,
+            SUBTITLE_FONT,
             sub_color,
             title_x,
-            bar.y0 + 30.0,
-            Some(title_max),
+            title_y + nh + m.title_gap,
+            None,
         );
+        self.title_rect = Rect::new(title_x, bar.y0, right.max(title_x + f64::from(sw)), bar.y1);
     }
 
     /// Draw the tab-group pill background and each tab, recording its hit
@@ -1160,12 +1358,14 @@ impl GitClientApp {
         widths: &[f64],
         total: f64,
         tx_start: f64,
+        tab_h: f64,
     ) {
         let c = &theme.tokens.colors;
-        let tab_h = 32.0;
-        let tab_y = bar.y0 + (APPBAR_H - tab_h) / 2.0;
+        let tab_y = bar.y0 + (bar.height() - tab_h) / 2.0;
         let group_bg = Rect::new(tx_start - 6.0, tab_y, tx_start + total + 6.0, tab_y + tab_h);
-        draw::fill_round(scene, t, group_bg, 9.0, c.surfaces.base);
+        // The tab group is a base-toned track on the raised bar; its derived
+        // edge is what separates the two surfaces on the dark preset.
+        draw::card(scene, t, group_bg, 9.0, c.surfaces.base);
         let mut tx = tx_start;
         for (i, (screen, label)) in TABS.iter().enumerate() {
             let Some(&w) = widths.get(i) else {
@@ -1178,6 +1378,7 @@ impl GitClientApp {
             }
             let fg = if active { Color::WHITE } else { c.text_dim };
             let lw = f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0);
+            let ty_1 = draw::centered_top(tr, label, 13.0, TextWeight::Medium, tab_y, tab_h);
             draw::text_weighted(
                 scene,
                 tr,
@@ -1186,7 +1387,7 @@ impl GitClientApp {
                 13.0,
                 fg,
                 tx + (w - lw) / 2.0,
-                tab_y + 8.0,
+                ty_1,
                 None,
                 TextWeight::Medium,
             );
@@ -1195,6 +1396,10 @@ impl GitClientApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
     fn draw_settings_cluster(
         &mut self,
         scene: &mut Scene,
@@ -1202,15 +1407,16 @@ impl GitClientApp {
         t: Affine,
         theme: &Theme,
         bar: Rect,
-        cluster_w: f64,
+        x: f64,
+        seg_w: f64,
+        syn_w: f64,
+        control_h: f64,
     ) {
         let c = &theme.tokens.colors;
-        let x = bar.x1 - cluster_w;
-        let y = bar.y0 + (APPBAR_H - 32.0) / 2.0;
+        let y = bar.y0 + (bar.height() - control_h) / 2.0;
         // Diff-layout segmented control.
-        let seg_w = 150.0;
-        let seg = Rect::new(x, y, x + seg_w, y + 32.0);
-        draw::fill_round(scene, t, seg, 9.0, c.surfaces.base);
+        let seg = Rect::new(x, y, x + seg_w, y + control_h);
+        draw::card(scene, t, seg, 9.0, c.surfaces.base);
         let half = seg_w / 2.0;
         let unified_active = self.settings.diff_layout == DiffLayout::Unified;
         let active_rect = if unified_active {
@@ -1224,6 +1430,7 @@ impl GitClientApp {
             let fg = if active { Color::WHITE } else { c.text_dim };
             let cx = seg.x0 + half * i as f64;
             let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
+            let ty_2 = draw::centered_top(tr, label, 12.0, TextWeight::Medium, y, control_h);
             draw::text_weighted(
                 scene,
                 tr,
@@ -1232,7 +1439,7 @@ impl GitClientApp {
                 12.0,
                 fg,
                 cx + (half - lw) / 2.0,
-                y + 8.0,
+                ty_2,
                 None,
                 TextWeight::Medium,
             );
@@ -1244,23 +1451,18 @@ impl GitClientApp {
         // Syntax-highlight toggle. Keep the visible label explicit: this is a
         // preference, not a repository status, and "Syn" is ambiguous when a
         // control is viewed without its tooltip or action palette.
-        let hx = seg.x1 + 10.0;
-        let hl = Rect::new(hx, y, hx + 64.0, y + 32.0);
+        let hx = seg.x1 + APPBAR_CLUSTER_GAP;
+        let hl = Rect::new(hx, y, hx + syn_w, y + control_h);
         let on = self.settings.syntax_highlight;
-        draw::fill_round(
-            scene,
-            t,
-            hl,
-            9.0,
-            if on {
-                theme.accent_primary
-            } else {
-                c.surfaces.base
-            },
-        );
+        if on {
+            draw::fill_round(scene, t, hl, 9.0, theme.accent_primary);
+        } else {
+            draw::card(scene, t, hl, 9.0, c.surfaces.base);
+        }
         let hlfg = if on { Color::WHITE } else { c.text_dim };
         let label = "Syntax";
         let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
+        let ty_3 = draw::centered_top(tr, label, 12.0, TextWeight::Medium, y, control_h);
         draw::text_weighted(
             scene,
             tr,
@@ -1269,7 +1471,7 @@ impl GitClientApp {
             12.0,
             hlfg,
             hl.x0 + (hl.width() - lw) / 2.0,
-            y + 8.0,
+            ty_3,
             None,
             TextWeight::Medium,
         );
@@ -1279,35 +1481,46 @@ impl GitClientApp {
     /// Draw the hamburger toggle at the left of the app bar and record its hit
     /// rect. Highlighted while the flap is open so it reads as an active
     /// toggle. Three stacked bars — the universal "open the menu" affordance.
-    fn draw_hamburger(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, bar: Rect) {
-        let c = &theme.tokens.colors;
-        let size = 32.0;
+    fn draw_hamburger(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        bar: Rect,
+        size: f64,
+    ) {
         let bx = bar.x0 + 12.0;
-        let by = bar.y0 + (APPBAR_H - size) / 2.0;
+        let by = bar.y0 + (bar.height() - size) / 2.0;
         let btn = Rect::new(bx, by, bx + size, by + size);
+        self.hamburger_rect = btn;
+        self.paint_hamburger(scene, t, theme, btn);
+    }
+
+    /// Paint the hamburger glyph into `btn` (its placed rect) — also used to
+    /// repaint it above an open flap so the toggle stays reachable.
+    fn paint_hamburger(&self, scene: &mut Scene, t: Affine, theme: &Theme, btn: Rect) {
+        let c = &theme.tokens.colors;
+        let size = btn.height();
         let open = self.flap_open();
-        draw::fill_round(
-            scene,
-            t,
-            btn,
-            8.0,
-            if open {
-                theme.accent_primary
-            } else {
-                c.surfaces.base
-            },
-        );
+        if open {
+            draw::fill_round(scene, t, btn, 8.0, theme.accent_primary);
+        } else {
+            draw::card(scene, t, btn, 8.0, c.surfaces.base);
+        }
         let fg = if open { Color::WHITE } else { c.text_dim };
-        // Three bars.
+        // Three 2px bars at a 6px pitch, centred as a block in the button.
         let inset = 8.0;
         let x0 = btn.x0 + inset;
         let x1 = btn.x1 - inset;
+        let bar_h = 2.0;
+        let pitch = 6.0;
+        let block_h = pitch * 2.0 + bar_h;
+        let block_top = btn.y0 + (size - block_h) / 2.0;
         for i in 0..3 {
-            let ly = btn.y0 + 10.0 + f64::from(i) * 6.0;
-            let line = Rect::new(x0, ly, x1, ly + 2.0);
+            let ly = block_top + f64::from(i) * pitch;
+            let line = Rect::new(x0, ly, x1, ly + bar_h);
             draw::fill_round(scene, t, line, 1.0, fg);
         }
-        self.hamburger_rect = btn;
     }
 
     /// Resolve a master-detail screen's geometry responsively from the flap.
@@ -1374,7 +1587,9 @@ impl GitClientApp {
         if list_visible {
             let msg = self.commit_input.value().to_string();
             let out = ChangesColumn::draw(
-                &mut draw::PaintCtx::new(scene, tr, t),
+                scene,
+                tr,
+                t,
                 theme,
                 col,
                 &self.model,
@@ -1405,10 +1620,22 @@ impl GitClientApp {
         theme: &Theme,
         pane: Rect,
     ) {
-        let header = Rect::new(pane.x0, pane.y0, pane.x1, pane.y0 + 36.0);
+        // The header is 36 px at 1× and grows to hold its 13 px title line
+        // plus padding at larger text scales; the body and scroll clamp read
+        // the same measured height.
+        let (_, title_h) = tr.measure_weighted("Ag", 13.0, None, TextWeight::Medium);
+        self.diff_header_h = (f64::from(title_h) + 2.0 * 9.0).max(36.0);
+        let header = Rect::new(pane.x0, pane.y0, pane.x1, pane.y0 + self.diff_header_h);
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, header, c.surfaces.raised);
-        draw::hline(scene, t, header.y1, header.x0, header.x1, c.border_standard);
+        draw::hline(
+            scene,
+            t,
+            header.y1,
+            header.x0,
+            header.x1,
+            draw::edge(c.surfaces.raised),
+        );
 
         let key = self.current_diff_key();
         // Pull the header facts out as owned values so the `self.diffs` borrow
@@ -1438,15 +1665,24 @@ impl GitClientApp {
                 staged,
             );
         } else {
+            let hint = "Select a file to view its diff";
+            let hy = draw::centered_top(
+                tr,
+                hint,
+                13.0,
+                TextWeight::Regular,
+                header.y0,
+                header.height(),
+            );
             draw::text(
                 scene,
                 tr,
                 t,
-                "Select a file to view its diff",
+                hint,
                 13.0,
                 c.text_dim,
                 header.x0 + 16.0,
-                header.y0 + 9.0,
+                hy,
                 None,
             );
         }
@@ -1481,6 +1717,7 @@ impl GitClientApp {
         };
         let summary = format!("+{adds}  −{dels}");
         let aw = f64::from(draw::mono_width(tr, &summary, 12.0));
+        let sy = draw::mono_centered_top(tr, &summary, 12.0, header.y0, header.height());
         draw::mono(
             scene,
             tr,
@@ -1489,17 +1726,28 @@ impl GitClientApp {
             12.0,
             c.text_dim,
             header.x1 - aw - 16.0,
-            header.y0 + 10.0,
+            sy,
         );
 
         // Discard-file affordance on the worktree (unstaged / untracked)
         // side of a real repo. Two-click armed: shows "Discard file?" when
         // armed, filled danger.
-        let mut title_max = (header.width() - 160.0) as f32;
+        let mut title_max = (header.width() - aw - 16.0 - 16.0 - 12.0).max(40.0) as f32;
         let can_discard = self.repo_path.is_some() && !staged && self.selected_change.is_some();
         if can_discard {
             title_max = self.draw_discard_file_button(scene, tr, t, theme, header, aw);
         }
+        // Elide rather than wrap: a second title line has no room in the
+        // header band and used to paint over the diff's first row.
+        let title = tr.elide_to_width_weighted(&title, 13.0, title_max, TextWeight::Medium);
+        let ty = draw::centered_top(
+            tr,
+            &title,
+            13.0,
+            TextWeight::Medium,
+            header.y0,
+            header.height(),
+        );
         draw::text_weighted(
             scene,
             tr,
@@ -1508,8 +1756,8 @@ impl GitClientApp {
             13.0,
             c.text_primary,
             header.x0 + 16.0,
-            header.y0 + 9.0,
-            Some(title_max),
+            ty,
+            None,
             TextWeight::Medium,
         );
     }
@@ -1525,40 +1773,30 @@ impl GitClientApp {
         header: Rect,
         summary_w: f64,
     ) -> f32 {
-        let c = &theme.tokens.colors;
         let armed = self.armed_discard == Some(DiscardTarget::File);
         let label = if armed {
             "Discard file?"
         } else {
             "Discard file"
         };
-        let lw = f64::from(tr.measure_weighted(label, 11.5, None, TextWeight::Medium).0);
+        let lw = f64::from(
+            tr.measure_weighted(label, DIFF_DISCARD_FONT, None, TextWeight::Medium)
+                .0,
+        );
         let bw = lw + 20.0;
         let bx = header.x1 - summary_w - 16.0 - 12.0 - bw;
         let brect = Rect::new(bx, header.y0 + 6.0, bx + bw, header.y1 - 6.0);
-        let bg = if armed {
-            c.semantic.danger
+        // Destructive outline at rest, filled danger once armed — the shared
+        // face keeps the danger ink legible on every ground it sits on.
+        let face = ButtonFace::new(brect, label)
+            .radius(6.0)
+            .text_size(DIFF_DISCARD_FONT);
+        let face = if armed {
+            face.danger()
         } else {
-            c.lift(0.72)
+            face.danger_outline()
         };
-        let fg = if armed {
-            Color::WHITE
-        } else {
-            c.semantic.danger
-        };
-        draw::fill_round(scene, t, brect, 6.0, bg);
-        draw::text_weighted(
-            scene,
-            tr,
-            t,
-            label,
-            11.5,
-            fg,
-            bx + 10.0,
-            header.y0 + 10.0,
-            None,
-            TextWeight::Medium,
-        );
+        draw::button(scene, tr, t, theme, &face);
         self.discard_file_rect = brect;
         (bx - header.x0 - 24.0).max(40.0) as f32
     }
@@ -1587,19 +1825,21 @@ impl GitClientApp {
             _ => None,
         };
         if let Some(diff) = key.and_then(|k| self.diffs.get(k)) {
-            self.diff_hunk_buttons = DiffView::draw(
-                &mut draw::PaintCtx::new(scene, tr, t),
+            let out = DiffView::draw_with_metrics(
+                scene,
+                tr,
+                t,
                 theme,
                 viewport,
                 diff,
                 self.diff_scroll,
                 &self.settings,
-                crate::diffview::HunkInteraction {
-                    hovered: self.hover_hunk,
-                    staged_side: staged,
-                    armed_discard: armed_hunk,
-                },
+                self.hover_hunk,
+                staged,
+                armed_hunk,
             );
+            self.diff_hunk_buttons = out.buttons;
+            self.diff_metrics = out.metrics;
         } else {
             draw::fill_rect(scene, t, viewport, c.surfaces.base);
             self.diff_hunk_buttons.clear();
@@ -1633,7 +1873,9 @@ impl GitClientApp {
                 let detail = Rect::new(split, body.y0, body.x1, body.y1);
                 if let Some(commit) = self.model.commits.get(self.selected_commit) {
                     HistoryView::draw_detail(
-                        &mut draw::PaintCtx::new(scene, tr, t),
+                        scene,
+                        tr,
+                        t,
                         theme,
                         detail,
                         commit,
@@ -1642,8 +1884,10 @@ impl GitClientApp {
                 }
                 if self.flap.reveal() > 0.001 {
                     let list = Rect::new(body.x0, body.y0, split, body.y1);
-                    self.history_rows = HistoryView::draw_list(
-                        &mut draw::PaintCtx::new(scene, tr, t),
+                    let out = HistoryView::draw_list(
+                        scene,
+                        tr,
+                        t,
                         theme,
                         list,
                         &self.model,
@@ -1651,6 +1895,8 @@ impl GitClientApp {
                         self.selected_commit,
                         self.history_scroll,
                     );
+                    self.history_rows = out.rows;
+                    self.history_metrics = out.metrics;
                 } else {
                     self.history_rows.clear();
                 }
@@ -1661,7 +1907,9 @@ impl GitClientApp {
                 let detail = body;
                 if let Some(commit) = self.model.commits.get(self.selected_commit) {
                     HistoryView::draw_detail(
-                        &mut draw::PaintCtx::new(scene, tr, t),
+                        scene,
+                        tr,
+                        t,
                         theme,
                         detail,
                         commit,
@@ -1673,8 +1921,10 @@ impl GitClientApp {
                     let slide = self.flap.slide();
                     let x0 = body.x0 - FLAP_W * (1.0 - slide);
                     let list = Rect::new(x0, body.y0, x0 + FLAP_W, body.y1);
-                    self.history_rows = HistoryView::draw_list(
-                        &mut draw::PaintCtx::new(scene, tr, t),
+                    let out = HistoryView::draw_list(
+                        scene,
+                        tr,
+                        t,
                         theme,
                         list,
                         &self.model,
@@ -1682,6 +1932,8 @@ impl GitClientApp {
                         self.selected_commit,
                         self.history_scroll,
                     );
+                    self.history_rows = out.rows;
+                    self.history_metrics = out.metrics;
                 } else {
                     self.history_rows.clear();
                 }
@@ -1724,7 +1976,6 @@ impl GitClientApp {
         presence: &PresenceCtx,
         body: Rect,
     ) {
-        let c = &theme.tokens.colors;
         let tb = Rect::new(body.x0, body.y0, body.x1, body.y0 + 56.0);
         // Reserve room for the 3 action buttons (84*3 + gaps + margins ≈ 300).
         let actions_w = 300.0;
@@ -1754,33 +2005,16 @@ impl GitClientApp {
         // Create button.
         let brect = Rect::new(bx, y, bx + btn_w, y + h);
         let enabled = !self.branch_input.value().trim().is_empty();
-        draw::fill_round(
-            scene,
-            t,
-            brect,
-            6.0,
-            if enabled {
-                theme.accent_primary
-            } else {
-                c.lift(0.72)
-            },
-        );
-        let fg = if enabled { Color::WHITE } else { c.neutral[5] };
-        let lw = f64::from(
-            tr.measure_weighted("Branch", 12.0, None, TextWeight::Medium)
-                .0,
-        );
-        draw::text_weighted(
+        draw::button(
             scene,
             tr,
             t,
-            "Branch",
-            12.0,
-            fg,
-            bx + (btn_w - lw) / 2.0,
-            y + 6.0,
-            None,
-            TextWeight::Medium,
+            theme,
+            &ButtonFace::new(brect, "Branch")
+                .primary()
+                .radius(6.0)
+                .text_size(12.0)
+                .disabled(!enabled),
         );
         self.new_branch_button = brect;
     }
@@ -1915,33 +2149,17 @@ impl GitClientApp {
         self.open_input_rect = field;
         let brect = Rect::new(field.x1 + gap, y, cx + cw, y + field_h);
         let enabled = !self.open_input.value().trim().is_empty();
-        draw::fill_round(
-            scene,
-            t,
-            brect,
-            8.0,
-            if enabled {
-                theme.accent_primary
-            } else {
-                c.lift(0.72)
-            },
-        );
-        let fg = if enabled { Color::WHITE } else { c.neutral[5] };
-        let ow = f64::from(
-            tr.measure_weighted("Open", 14.0, None, TextWeight::Semibold)
-                .0,
-        );
-        draw::text_weighted(
+        draw::button(
             scene,
             tr,
             t,
-            "Open",
-            14.0,
-            fg,
-            brect.x0 + (brect.width() - ow) / 2.0,
-            brect.y0 + 11.0,
-            None,
-            TextWeight::Semibold,
+            theme,
+            &ButtonFace::new(brect, "Open")
+                .primary()
+                .radius(8.0)
+                .text_size(14.0)
+                .weight(TextWeight::Semibold)
+                .disabled(!enabled),
         );
         self.open_button_rect = brect;
 
@@ -1990,7 +2208,7 @@ impl GitClientApp {
                 Screen::History => FLAP_W,
                 _ => CHANGES_COL_W,
             };
-            if pos.y < self.rect.y0 + self.appbar_height() {
+            if pos.y < self.rect.y0 + self.appbar_h {
                 return;
             }
             if pos.x > self.rect.x0 + col_w {
@@ -2207,8 +2425,13 @@ impl GitClientApp {
                 if over_list {
                     self.changes_scroll = (self.changes_scroll - dy).max(0.0);
                 } else {
-                    let max = self.current_diff().map_or(0.0, DiffView::content_height)
-                        - (self.rect.height() - self.appbar_height() - 36.0);
+                    // Clamp at the pitch and header height the last draw
+                    // painted, so 2× rows scroll as far as they extend.
+                    let metrics = self.diff_metrics;
+                    let max = self
+                        .current_diff()
+                        .map_or(0.0, |d| DiffView::content_height_with_metrics(d, &metrics))
+                        - (self.rect.height() - self.appbar_h - self.diff_header_h);
                     self.diff_scroll = (self.diff_scroll - dy).clamp(0.0, max.max(0.0));
                 }
             }
@@ -2220,8 +2443,8 @@ impl GitClientApp {
                 };
                 let over_list = pos.x < self.rect.x0 + list_w && self.flap_open();
                 if over_list {
-                    let max = HistoryView::content_height(&self.model)
-                        - (self.rect.height() - self.appbar_height());
+                    let max = HistoryView::content_height(&self.model, &self.history_metrics)
+                        - (self.rect.height() - self.appbar_h);
                     self.history_scroll = (self.history_scroll - dy).clamp(0.0, max.max(0.0));
                 } else {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
@@ -2637,7 +2860,7 @@ impl Widget for GitClientApp {
 
         let body = Rect::new(
             self.rect.x0,
-            self.rect.y0 + self.appbar_height(),
+            self.rect.y0 + self.appbar_h,
             self.rect.x1,
             self.rect.y1,
         );
@@ -2647,17 +2870,10 @@ impl Widget for GitClientApp {
             Screen::Panels => self.draw_panels(scene, tr, transform, theme, presence, body),
         }
         if self.layout_mode() == SplitLayout::Overlay && self.flap_open() {
-            self.draw_hamburger(
-                scene,
-                transform,
-                theme,
-                Rect::new(
-                    self.rect.x0,
-                    self.rect.y0,
-                    self.rect.x1,
-                    self.rect.y0 + APPBAR_H,
-                ),
-            );
+            // Repaint the toggle above the open flap at the rect the app bar
+            // placed it — the same measured row, not a fixed 1× bar height.
+            let btn = self.hamburger_rect;
+            self.paint_hamburger(scene, transform, theme, btn);
         }
     }
 
@@ -3651,7 +3867,7 @@ mod tests {
                         rect.x0 >= 0.0
                             && rect.x1 <= width
                             && rect.y0 >= 0.0
-                            && rect.y1 <= app.appbar_height(),
+                            && rect.y1 <= app.appbar_h,
                         "control {index} is outside the {width}px window: {rect:?}"
                     );
                     for other in controls.iter().skip(index + 1) {
@@ -3763,5 +3979,150 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(app.focus, Some(Field::Commit));
+    }
+
+    /// Paint one frame with a real text renderer so every measured app-bar
+    /// rect (`tab_rects`, settings cluster, hamburger, title block) is the
+    /// production geometry, not a hand-poked stand-in.
+    fn draw_frame(app: &mut GitClientApp) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Widget::draw(
+            app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+    }
+
+    fn intersects(a: Rect, b: Rect) -> bool {
+        a.area() > 0.0 && b.area() > 0.0 && a.intersect(b).area() > 0.0
+    }
+
+    #[test]
+    fn appbar_controls_stay_inside_the_window_and_never_overlap() {
+        for width in [390.0, 480.0, 680.0, 800.0, 1280.0] {
+            let mut app = app_at(width, Screen::Changes);
+            draw_frame(&mut app);
+
+            let mut controls: Vec<(&str, Rect)> = Vec::new();
+            for (screen, rect) in &app.tab_rects {
+                controls.push((
+                    match screen {
+                        Screen::Changes => "tab.changes",
+                        Screen::History => "tab.history",
+                        Screen::Panels => "tab.panels",
+                    },
+                    *rect,
+                ));
+            }
+            controls.push(("settings.layout", app.settings_seg));
+            controls.push(("settings.syntax", app.settings_syn));
+            if app.hamburger_rect.area() > 0.0 {
+                controls.push(("hamburger", app.hamburger_rect));
+            }
+            controls.push(("title", app.title_rect));
+            assert_eq!(
+                app.tab_rects.len(),
+                TABS.len(),
+                "{width}: every screen tab is placed"
+            );
+
+            let bar = Rect::new(0.0, 0.0, width, app.appbar_h);
+            for (name, rect) in &controls {
+                assert!(
+                    rect.area() > 0.0,
+                    "{width}: {name} must be painted with a real rect"
+                );
+                assert!(
+                    rect.x0 >= bar.x0 - 0.01 && rect.x1 <= bar.x1 + 0.01,
+                    "{width}: {name} {rect:?} leaves the window horizontally"
+                );
+                assert!(
+                    rect.y0 >= bar.y0 - 0.01 && rect.y1 <= bar.y1 + 0.01,
+                    "{width}: {name} {rect:?} leaves the app bar {bar:?}"
+                );
+            }
+            for (i, (a_name, a)) in controls.iter().enumerate() {
+                for (b_name, b) in controls.iter().skip(i + 1) {
+                    assert!(
+                        !intersects(*a, *b),
+                        "{width}: {a_name} {a:?} overlaps {b_name} {b:?}"
+                    );
+                }
+            }
+            // The title keeps a readable minimum whichever row layout applies.
+            assert!(
+                app.title_rect.width() >= 40.0,
+                "{width}: title block {:?} collapsed",
+                app.title_rect
+            );
+            // A wide window keeps the one-row bar; the wrapped bar is exactly
+            // one extra tab row, so the body never loses more than that.
+            if width >= 1280.0 {
+                assert_eq!(app.appbar_h, APPBAR_H, "{width}: wide bar stays one row");
+            } else {
+                assert!(
+                    app.appbar_h == APPBAR_H || app.appbar_h == APPBAR_H + APPBAR_TAB_ROW_H,
+                    "{width}: unexpected app-bar height {}",
+                    app.appbar_h
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn appbar_controls_share_one_centre_line_per_row() {
+        let mut app = app_at(1280.0, Screen::Changes);
+        draw_frame(&mut app);
+        let row_centre = APPBAR_H / 2.0;
+        for (_, rect) in &app.tab_rects {
+            assert!(
+                (rect.center().y - row_centre).abs() < 0.01,
+                "tab {rect:?} off-centre"
+            );
+            assert!((rect.height() - APPBAR_CONTROL_H).abs() < 0.01);
+        }
+        for rect in [app.settings_seg, app.settings_syn] {
+            assert!(
+                (rect.center().y - row_centre).abs() < 0.01,
+                "{rect:?} off-centre"
+            );
+            assert!((rect.height() - APPBAR_CONTROL_H).abs() < 0.01);
+        }
+        // Equal gutters: the title starts as far from the left edge as the
+        // settings cluster ends from the right edge.
+        assert!((app.title_rect.x0 - APPBAR_GUTTER).abs() < 0.01);
+        assert!((1280.0 - app.settings_syn.x1 - APPBAR_GUTTER).abs() < 0.01);
+    }
+
+    #[test]
+    fn wrapped_appbar_moves_the_body_down_with_it() {
+        let mut app = app_at(480.0, Screen::Changes);
+        draw_frame(&mut app);
+        assert_eq!(
+            app.appbar_h,
+            APPBAR_H + APPBAR_TAB_ROW_H,
+            "480px cannot hold title, tabs and settings on one row"
+        );
+        // Tabs sit on the second row, left aligned on the title gutter.
+        let first_tab = app.tab_rects[0].1;
+        assert!(
+            first_tab.y0 >= APPBAR_H - 0.01,
+            "tabs wrap under the title: {first_tab:?}"
+        );
+        assert!((first_tab.x0 - (APPBAR_GUTTER + 6.0)).abs() < 0.01);
+        // Nothing from the body (diff header row) is painted under the bar:
+        // the hunk buttons the diff emits all start below the measured bar.
+        for button in &app.diff_hunk_buttons {
+            assert!(
+                button.rect.y0 >= app.appbar_h,
+                "hunk button {:?} paints under the app bar",
+                button.rect
+            );
+        }
     }
 }

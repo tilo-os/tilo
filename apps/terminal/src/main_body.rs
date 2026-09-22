@@ -1,7 +1,7 @@
 use ui::ColorCompat;
 use ui::{
     Theme,
-    text_render::{FontChoice, TextRenderer, TextWeight},
+    text_render::{FontChoice, TextRenderer, TextStyle, TextWeight},
     widget::{PressOutcome, ScrollMetrics, Scrollbar, TextInput, Widget},
 };
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
@@ -494,6 +494,8 @@ pub struct TerminalWidget {
 
     char_w: f64,
     char_h: f64,
+    forced_cell: bool,
+    theme_font_size: f32,
     /// Cached font size, refreshed from `theme.tokens.font_size_base` on every
     /// `draw`. `measure` runs before `draw` and does not receive a theme, so
     /// it reads this cached value instead of hard-coding a size. Seeded with
@@ -765,6 +767,8 @@ impl TerminalWidget {
             // these dimensions until the first draw completes).
             char_w: 9.0,
             char_h: 18.0,
+            forced_cell: false,
+            theme_font_size: 0.0,
             font_size: 0.0,
             grid_id: None,
             alt_grid_id: None,
@@ -962,6 +966,7 @@ impl TerminalWidget {
     /// A compact visual lifecycle state. The detailed transport cause stays in
     /// the accessible description/live region, where it is neither clipped at
     /// 200% text scale nor mistaken for a recoverable command prompt.
+    #[cfg(test)]
     pub(crate) const fn disconnected_badge_label() -> &'static str {
         "Session ended"
     }
@@ -1518,6 +1523,11 @@ impl TerminalWidget {
         self.grid_rect = rect;
         self.char_w = char_w;
         self.char_h = char_h;
+        self.forced_cell = true;
+    }
+
+    fn cell_h(measured_line_h: f32) -> f64 {
+        f64::from(measured_line_h).ceil().max(1.0)
     }
 
     /// The inner grid content rect (below the header, inside the padding).
@@ -2404,19 +2414,23 @@ impl Widget for TerminalWidget {
         // `theme.tokens.font_size_base`). Before the first draw the cache is
         // 0.0 and we keep the constructor-seeded char_w/char_h so layout still
         // yields a usable grid.
-        if self.font_size > 0.0 {
-            // Measure with the monospace family so the cell advance matches
-            // the mono glyphs `draw` actually paints.
-            let (w, _h) = text_renderer.measure_styled(
-                " ",
-                self.font_size,
-                None,
-                TextWeight::Regular,
-                false,
-                true,
-            );
+        if self.forced_cell {
+            return taffy::Size::ZERO;
+        }
+        let font_size = if self.theme_font_size > 0.0 {
+            text_renderer
+                .renderer_input_style(&TextStyle::new(self.theme_font_size))
+                .size
+        } else if self.font_size > 0.0 {
+            self.font_size
+        } else {
+            ui::tokens::TypeScale::default().base
+        };
+        let (w, h) =
+            text_renderer.measure_styled(" ", font_size, None, TextWeight::Regular, false, true);
+        if w > 0.0 && h > 0.0 {
             self.char_w = f64::from(w).max(1.0);
-            self.char_h = (f64::from(self.font_size) * 1.25f64).ceil().max(1.0);
+            self.char_h = Self::cell_h(h);
         }
         taffy::Size::ZERO
     }
@@ -2512,7 +2526,7 @@ impl Widget for TerminalWidget {
         // than waiting for `draw`: at a large accessibility text scale, the
         // old default 18px row height produced too many blank PTY rows, and
         // the actual output landed above the first painted viewport.
-        self.font_size = theme.tokens.font_size_base;
+        self.theme_font_size = theme.tokens.font_size_base;
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see the
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
@@ -2561,7 +2575,9 @@ impl Widget for TerminalWidget {
         // Pull every visual parameter from design tokens. Nothing in this
         // method may hard-code a color, font size, or padding — the OS owns
         // the theme and swapping it must reflect in the rendered output.
-        let font_size = theme.tokens.font_size_base;
+        let font_size = text_renderer
+            .renderer_input_style(&TextStyle::new(theme.tokens.font_size_base))
+            .size;
         let palette = &theme.tokens.terminal_palette;
         // Horizontal gutter between the terminal's left edge and the first
         // glyph column. Sourced from the shared spacing scale (`s1` == 4px
@@ -2601,10 +2617,10 @@ impl Widget for TerminalWidget {
         // if the two disagreed, each colour run would be positioned on a grid
         // finer than its glyphs and the row would smear over itself.
         let mono = self.resolve_mono(theme, text_renderer);
-        let (w, _h) =
+        let (w, h) =
             text_renderer.measure_font(" ", font_size, None, TextWeight::Regular, false, &mono);
         self.char_w = f64::from(w).max(1.0);
-        self.char_h = (f64::from(font_size) * 1.25f64).ceil().max(1.0);
+        self.char_h = Self::cell_h(h);
 
         // `measure` happens before we can resolve the theme's actual
         // monospace face. Reconcile the PTY geometry after that exact
@@ -4570,7 +4586,9 @@ impl TerminalWidget {
         );
 
         let label = "Tilo Terminal";
-        let size = theme.tokens.typography.scale.lg;
+        let size = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.lg))
+            .size;
         let (lw, _) = tr.measure(label, size, None);
         tr.draw_text_weighted(
             scene,
@@ -4597,10 +4615,11 @@ impl TerminalWidget {
         if !self.is_disconnected() || self.grid_rect.width() <= 0.0 {
             return;
         }
-        let label = Self::disconnected_badge_label();
-        let size = theme.tokens.typography.scale.sm;
+        let label = self.disconnected_message();
+        let size = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+            .size;
         let pad = f64::from(theme.tokens.spacing.s2);
-        let height = f64::from(size) * 1.7;
         // Reuse the renderer's shared elision behaviour instead of letting a
         // lifecycle message run under the scrollbar or off a narrow / 200%
         // text-scale surface. The complete state remains in accessibility;
@@ -4610,28 +4629,28 @@ impl TerminalWidget {
             size,
             (self.grid_rect.width() - pad * 4.0).max(0.0) as f32,
         );
-        let (label_w, _) = tr.measure(&label, size, None);
-        let width = (f64::from(label_w) + pad * 2.0).min(self.grid_rect.width() - pad);
+        let (label_w, label_h) = tr.measure(&label, size, None);
+        let height = f64::from(label_h) + pad;
+        let width = (f64::from(label_w) + pad * 2.0).min(self.grid_rect.width());
         let rect = Rect::new(
             self.grid_rect.x0 + pad,
             self.grid_rect.y1 - height - pad,
             self.grid_rect.x0 + pad + width,
             self.grid_rect.y1 - pad,
         );
-        let card = RoundedRect::from_rect(rect, f64::from(theme.tokens.spacing.s1));
-        scene.fill(
-            Fill::NonZero,
+        ui::surface::card(
+            scene,
             transform,
+            rect,
+            f64::from(theme.tokens.spacing.s1),
             theme.tokens.colors.lift(0.3),
-            None,
-            &card,
         );
         tr.draw_text_weighted(
             scene,
             &label,
             size,
             theme.text_primary,
-            transform * Affine::translate((rect.x0 + pad, rect.y0 + f64::from(size) * 0.25)),
+            transform * Affine::translate((rect.x0 + pad, rect.y0 + pad / 2.0)),
             None,
             TextWeight::Medium,
         );
@@ -4948,7 +4967,12 @@ impl TerminalWidget {
         // grow past a narrow pane's edge after that refresh.
         menu.set_viewport(Some(self.rect));
         let p = self.last_cursor_pos;
-        menu.open_at([p.x as f32, p.y as f32]);
+        let viewport = if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+            self.rect
+        } else {
+            Rect::new(p.x, p.y, p.x + 1.0, p.y + 1.0)
+        };
+        menu.open_anchored(Rect::from_origin_size(p, (0.0, 0.0)), viewport);
         self.context_menu = menu;
     }
 
