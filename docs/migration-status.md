@@ -38,6 +38,12 @@ Before enabling the unfinished features, delivery still requires:
 - Completed synchronization orchestration and recovery, native filesystem
   qualification, and reviewed first-login copying across the Full-OS reboot.
 
+The [September 22 installer-release run](https://code.sandbox.example/qos/qos/actions/runs/17758)
+still refused to build installation media because it had no signed,
+digest-pinned multi-architecture OS image. The earlier
+[successful ARM development finalization](https://code.sandbox.example/qos/qos/actions/runs/12058)
+does not satisfy that release input or establish USB-free boot support.
+
 The pending Connected history implementation is also failing its maximum
 4,096-step Linux ext4 replay test. The real 4,095-step prehistory and its
 empty-log reopen pass, but replaying the terminal events consumes the existing
