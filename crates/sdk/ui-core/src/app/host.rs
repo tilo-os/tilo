@@ -107,6 +107,13 @@ struct ImeWindowState {
     height: u32,
 }
 
+#[derive(Clone, Copy)]
+struct IdleWake {
+    visual_work: bool,
+    collaboration_connected: bool,
+    scheduled_deadline: Option<Instant>,
+}
+
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.
 fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboRect>) {
@@ -2791,10 +2798,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "winit idle work must remain ordered within its single lifecycle callback"
-    )]
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.app.service_close_admission();
         if self.app.finish_close_if_ready() {
@@ -2807,7 +2810,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         };
         self.sync_ime(&window);
+        let host_needs_fast_pump = self.pump_idle_host_integrations(event_loop, &window);
+        self.pump_idle_app_services(&window);
+        let mut wake = self.pump_idle_animation(&window);
+        wake.visual_work |= host_needs_fast_pump;
+        Self::configure_idle_control_flow(event_loop, wake);
+    }
+}
 
+impl AppHandler {
+    fn pump_idle_host_integrations(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Arc<Window>,
+    ) -> bool {
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
             self.app.layout.layout_dirty = true;
@@ -2821,10 +2837,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if self.recover_stalled_floating_windows() {
             window.request_redraw();
         }
-        // `RedrawRequested` polls the asynchronous renderer setup. The shell
-        // keeps showing its live transfer proxy in the meantime, so these
-        // frames are cheap but essential: the first real buffer should take
-        // ownership as soon as it is ready, without waiting for fresh input.
+        // Poll renderer setup while the shell keeps its live transfer proxy.
         for surface in &self.floating_windows {
             if !surface.suspended && !surface.adopted {
                 surface.window.request_redraw();
@@ -2837,24 +2850,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if awaiting_primary_first_present {
             window.request_redraw();
         }
-        // This runs before the ordinary fullscreen reconciliation below. If a
-        // real second output appears, the root is notified first and keeps
-        // the local window as the presenter dashboard; if it disappears the
-        // existing fullscreen path immediately becomes the safe fallback.
-        self.sync_audience_presentation(event_loop, &window);
+        // Reconcile a real audience output before fullscreen fallback.
+        self.sync_audience_presentation(event_loop, window);
         if let Some(audience) = self.audience_presentation.as_ref()
             && audience.render_init.is_some()
         {
-            // Poll the worker result without ever blocking the presenter
-            // event loop; this is short-lived only while GPU setup runs.
             audience.window.request_redraw();
         }
-        let app = &mut self.app;
+        awaiting_primary_first_present
+            || self
+                .floating_windows
+                .iter()
+                .any(|surface| !surface.suspended && !surface.adopted)
+    }
 
-        // Catches a compositor reconfigure that changes `inner_size()`
-        // without delivering `Resized`.
-        if let Some(prev) = app.layout.last_frame_size
-            && window.inner_size() != prev
+    fn pump_idle_app_services(&mut self, window: &Arc<Window>) {
+        let app = &mut self.app;
+        // Catch compositor reconfiguration without a Resized event.
+        if let Some(previous) = app.layout.last_frame_size
+            && window.inner_size() != previous
         {
             app.layout.layout_dirty = true;
             window.request_redraw();
@@ -2868,106 +2882,75 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
         app.publish_playback_handoff();
-
-        // Keep pumping frames while any "just typed" highlighter mark is
-        // still fading, so the taper animates instead of freezing.
-        let typing_now = Instant::now();
-        app.presence_ctx.prune_typing(typing_now);
-        let typing_active = app.presence_ctx.has_active_typing(typing_now);
-        if typing_active {
-            window.request_redraw();
-        }
-
         if app.dispatch_control_invocations() != 0 {
             app.needs_sync = true;
             app.layout.layout_dirty = true;
             window.request_redraw();
         }
-
         if app.service_history() {
             app.needs_sync = true;
             app.layout.layout_dirty = true;
             window.request_redraw();
         }
-
         if app.root_widget.needs_commit() {
             app.commit_action();
             app.root_widget.on_commit();
             app.needs_sync = true;
             window.request_redraw();
         }
-
-        // Level-triggered rather than hooked into individual mutations:
-        // widgets write to the document from many places.
         if let Err(error) = app.autosave_tick() {
             crate::diag!("[app] component autosave tick refused: {error:?}");
         }
-
-        if app.reconcile_fullscreen(&window) {
+        if app.reconcile_fullscreen(window) {
             window.request_redraw();
         }
-
-        // Run both: Settings' open Appearance pane may intentionally override
-        // the file-level base with its richer live accessibility intent.
         let configured_changed = app.reconcile_configured_theme();
         let appearance_changed = app.reconcile_appearance();
         if configured_changed || appearance_changed {
             app.needs_sync = true;
             window.request_redraw();
         }
-
-        // The active page/view can change during `sync` (e.g. the initial
-        // auto-select), which the post-event broadcast above wouldn't catch.
         app.broadcast_location_presence();
         app.broadcast_view_presence();
-
-        // Run here too, not only `RedrawRequested`, since painting isn't
-        // guaranteed — a background tab, or a first frame behind a shader
-        // compile.
         if app.record_tick() {
             window.request_redraw();
         }
-
-        // Without this a first peer with no input never re-syncs to seed its
-        // doc after the grace window, so a late joiner diverges.
         if app.collaboration.manager.is_connected() && app.root_widget.needs_idle_sync() {
             app.needs_sync = true;
             window.request_redraw();
         }
-
         app.broadcast_doc_delta();
-
-        // Flag drained by the draw handler, not here — just pump a redraw.
         if app.root_widget.take_structure_dirty() {
             app.layout.structure_dirty = true;
             window.request_redraw();
         }
+    }
 
+    fn pump_idle_animation(&mut self, window: &Arc<Window>) -> IdleWake {
+        let app = &mut self.app;
+        let now = Instant::now();
+        app.presence_ctx.prune_typing(now);
+        let typing_active = app.presence_ctx.has_active_typing(now);
+        if typing_active {
+            window.request_redraw();
+        }
         let scheduled_deadline = crate::close_admission::wake_deadline(
             app.root_widget.next_wake_deadline(),
             app.close_admission.save_waiting,
-            Instant::now(),
+            now,
         );
-        let scheduled_due = scheduled_deadline.is_some_and(|deadline| deadline <= Instant::now());
+        let scheduled_due = scheduled_deadline.is_some_and(|deadline| deadline <= now);
         if scheduled_due {
             app.needs_sync = true;
             window.request_redraw();
         }
-
-        // A hover tooltip is not motion, so it reveals even under
-        // reduce-motion — requested independently of the animation pump.
         let tooltip_pending = app.input.tooltip_host.needs_frame();
         if tooltip_pending {
             window.request_redraw();
         }
-
-        // Reduced motion lets the loop go idle since animated widgets
-        // already paint their resting state.
         let needs_frame = app.root_widget.needs_animation_frame();
         if needs_frame && !app.theme.reduce_motion {
             app.needs_sync = true;
-            // Forces `apply_layout` since an animation tick (e.g. momentum
-            // fling) can reposition content without an input event.
             app.layout.layout_dirty = true;
             window.request_redraw();
             for surface in &self.floating_windows {
@@ -2977,39 +2960,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 audience.window.request_redraw();
             }
         }
-
-        // A background pump can run while its visible projection is stable.
-        // Redrawing only on a changed snapshot avoids full-scene GPU work on
-        // every otherwise-idle collaboration wake.
         if let Some(tick) = app.presence.frame_tick.as_mut()
             && tick(&mut app.presence_ctx)
         {
             window.request_redraw();
         }
+        IdleWake {
+            visual_work: animation_pump_needed(needs_frame, app.theme.reduce_motion)
+                || tooltip_pending
+                || typing_active
+                || scheduled_due,
+            collaboration_connected: app.collaboration.manager.is_connected(),
+            scheduled_deadline,
+        }
+    }
 
-        // `Wait` sleeps until real input. Visual work keeps a display-cadence
-        // pump; an otherwise-idle collaboration socket gets a slower bounded
-        // poll because its shovel does not yet own a winit wake proxy.
-        let awaiting_floating_pixels = self
-            .floating_windows
-            .iter()
-            .any(|surface| !surface.suspended && !surface.adopted);
-        let visual_work =
-            // A widget may keep reporting animation demand until it receives
-            // another paint. Under reduced motion we intentionally suppress
-            // that paint above, so counting the raw flag here would leave an
-            // otherwise-idle app waking at 60 Hz forever.
-            animation_pump_needed(needs_frame, app.theme.reduce_motion)
-            || tooltip_pending
-            || typing_active
-            || awaiting_floating_pixels
-            || awaiting_primary_first_present
-            || scheduled_due;
+    fn configure_idle_control_flow(event_loop: &ActiveEventLoop, wake: IdleWake) {
         match idle_pump_deadline(
             Instant::now(),
-            visual_work,
-            app.collaboration.manager.is_connected(),
-            scheduled_deadline,
+            wake.visual_work,
+            wake.collaboration_connected,
+            wake.scheduled_deadline,
         ) {
             IdlePumpCadence::Deadline(deadline) => {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
