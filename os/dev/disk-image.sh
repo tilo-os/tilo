@@ -305,12 +305,14 @@ QCOW="$OUTDIR/disk.qcow2"
 MNT="$OUTDIR/.mnt"
 DEFS="$OUTDIR/.repart.d"
 LOG="$OUTDIR/.install.log"
+ESP_VERIFY="$OUTDIR/.esp-verify"
+ESP_STAGED=0
 
 cleanup() {
   sudo -n umount -R "$MNT" 2>/dev/null || true
   [ -n "${LOOP:-}" ] && sudo -n losetup -d "$LOOP" 2>/dev/null || true
   [ -z "${SOURCE_POLICY:-}" ] || rm -f "$SOURCE_POLICY"
-  rm -rf "$DEFS"
+  rm -rf "$DEFS" "$ESP_VERIFY"
 }
 trap cleanup EXIT
 
@@ -449,8 +451,21 @@ mkdir -p "$MNT"
 sudo -n mount "${LOOP}p2" "$MNT"
 if [ "$BOOT_IS_ESP" = yes ]; then ESP_AT="$MNT/boot"; else ESP_AT="$MNT/boot/efi"; fi
 sudo -n mkdir -p "$ESP_AT"
-sudo -n mount "${LOOP}p1" "$ESP_AT"
-msg "2/4 mounted ${LOOP}p2 -> $MNT, ${LOOP}p1 -> $ESP_AT"
+if [ "${TILO_DISK_FORCE_MTOOLS_ESP:-0}" != 1 ] \
+   && sudo -n mount "${LOOP}p1" "$ESP_AT" 2>"$OUTDIR/.esp-mount.log"; then
+  msg "2/4 mounted ${LOOP}p2 -> $MNT, ${LOOP}p1 -> $ESP_AT"
+else
+  if [ "${TILO_DISK_FORCE_MTOOLS_ESP:-0}" != 1 ] \
+     && grep -qw vfat /proc/filesystems 2>/dev/null; then
+    die "mounting the vfat ESP ${LOOP}p1 at $ESP_AT failed even though this kernel
+  advertises vfat support. Refusing to hide a disk or mount failure behind the
+  userspace ESP fallback. See $OUTDIR/.esp-mount.log"
+  fi
+  command -v mcopy >/dev/null \
+    || die "this kernel cannot mount vfat and mcopy is unavailable; install mtools"
+  ESP_STAGED=1
+  msg "2/4 mounted ${LOOP}p2 -> $MNT; staging ESP files at $ESP_AT for mtools"
+fi
 
 # --- install ------------------------------------------------------------------
 # --generic-image is what keeps the install off the *build host's* firmware: it
@@ -567,6 +582,41 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
   sudo -n ln -sfn /usr/lib/systemd/system/tilo-firstboot-user.service \
     "$t_etc/systemd/system/multi-user.target.wants/tilo-firstboot-user.service"
   msg "seeded $firstboot_user for first-boot account creation"
+fi
+
+# WSL kernels can omit vfat entirely. bootc can still finalize the boot tree in
+# the root filesystem; copy that tree into the already-formatted ESP with
+# mtools, verify every payload byte by copying it back, and only then remove the
+# staging copy. Native Linux keeps the normal mounted-vfat path above.
+if [ "$ESP_STAGED" = 1 ]; then
+  shopt -s dotglob nullglob
+  esp_entries=("$ESP_AT"/*)
+  [ "${#esp_entries[@]}" -gt 0 ] || die "bootc produced no staged ESP payload at $ESP_AT"
+  if sudo -n find "$ESP_AT" -mindepth 1 \( -type l -o ! -type d ! -type f \) -print -quit \
+       | grep -q .; then
+    die "staged ESP contains a symlink or special file, which mtools cannot preserve safely"
+  fi
+  rm -rf "$ESP_VERIFY"
+  mkdir -p "$ESP_VERIFY"
+  msg "copying finalized ESP payload to ${LOOP}p1 with mtools"
+  sudo -n mcopy -s -p -m -i "${LOOP}p1" "${esp_entries[@]}" ::/
+  sudo -n mcopy -s -p -m -i "${LOOP}p1" '::/*' "$ESP_VERIFY/"
+  sudo -n chown -R "$(id -u):$(id -g)" "$ESP_VERIFY"
+  (
+    cd "$ESP_AT"
+    find . -type f -print0 | sort -z | xargs -0 -r sha256sum
+  ) >"$OUTDIR/.esp-source.sha256"
+  (
+    cd "$ESP_VERIFY"
+    find . -type f -print0 | sort -z | xargs -0 -r sha256sum
+  ) >"$OUTDIR/.esp-copied.sha256"
+  cmp -s "$OUTDIR/.esp-source.sha256" "$OUTDIR/.esp-copied.sha256" \
+    || die "mtools ESP verification failed; staged /boot was left intact"
+  sudo -n mount -o remount,rw "$MNT"
+  sudo -n find "$ESP_AT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  [ -z "$(sudo -n find "$ESP_AT" -mindepth 1 -print -quit)" ] \
+    || die "could not remove the verified duplicate ESP payload from the root filesystem"
+  msg "verified ESP payload and removed its root-filesystem staging copy"
 fi
 
 cleanup
