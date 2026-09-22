@@ -29,6 +29,10 @@ use shell::compositor::{self, Mode};
 use shell::shell::identity_provisioning;
 use shell::{firstboot, portal};
 
+const SECRET_SERVICE_STARTUP_ATTEMPTS: usize = 8;
+const SECRET_SERVICE_STARTUP_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(250);
+
 /// Install a panic hook that writes a crash report to
 /// `~/.cache/tilo/crashes/<timestamp>-<pid>.log` and echoes the panic message +
 /// log path to stderr — without this, a session launched outside a
@@ -160,13 +164,33 @@ fn existing_identity_failure_action(
         return ExistingIdentityFailureAction::FailClosed;
     }
 
-    if identity_provisioning::is_secret_service_unavailable(error)
-        || error.kind() == std::io::ErrorKind::InvalidData
-    {
+    if error.kind() == std::io::ErrorKind::InvalidData {
         ExistingIdentityFailureAction::EnterTrustedRecovery
     } else {
         ExistingIdentityFailureAction::FailClosed
     }
+}
+
+fn verify_existing_identity_with_retry(
+    mut verify: impl FnMut() -> Result<firstboot::ProvisionOutcome, std::io::Error>,
+) -> Result<firstboot::ProvisionOutcome, std::io::Error> {
+    for attempt in 1..=SECRET_SERVICE_STARTUP_ATTEMPTS {
+        match verify() {
+            Err(error)
+                if identity_provisioning::is_secret_service_unavailable(&error)
+                    && attempt < SECRET_SERVICE_STARTUP_ATTEMPTS =>
+            {
+                tracing::info!(
+                    attempt,
+                    max_attempts = SECRET_SERVICE_STARTUP_ATTEMPTS,
+                    "Secret Service is not ready; retrying existing identity verification"
+                );
+                std::thread::sleep(SECRET_SERVICE_STARTUP_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final startup verification attempt always returns")
 }
 
 fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode> {
@@ -227,7 +251,9 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                 return Some(std::process::ExitCode::FAILURE);
             };
             let paths = firstboot::collaboration_identity_paths();
-            if let Err(error) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
+            if let Err(error) = verify_existing_identity_with_retry(|| {
+                firstboot::ensure_collaboration_identity(identity_dir, &paths)
+            }) {
                 match existing_identity_failure_action(
                     provision_requested,
                     compositor::parse_mode_from_args(),
@@ -257,6 +283,22 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                                 "Tilo identity chain is incomplete or invalid: {error}"
                             );
                         }
+                        return Some(std::process::ExitCode::FAILURE);
+                    }
+                }
+            }
+            if !provision_requested {
+                match shell::onboarding_view::clear_verified_pre_acquisition_progress(identity_dir)
+                {
+                    Ok(true) => tracing::info!(
+                        "cleared interrupted pre-acquisition onboarding journal after identity verification"
+                    ),
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            "could not reconcile verified identity onboarding progress"
+                        );
                         return Some(std::process::ExitCode::FAILURE);
                     }
                 }
@@ -307,8 +349,8 @@ mod tests {
         );
         assert_eq!(
             existing_identity_failure_action(false, Mode::Native, &unavailable_keyring),
-            ExistingIdentityFailureAction::EnterTrustedRecovery,
-            "keyring unavailability keeps its existing native recovery behavior",
+            ExistingIdentityFailureAction::FailClosed,
+            "transient keyring unavailability must not be presented as identity corruption",
         );
         assert_eq!(
             existing_identity_failure_action(false, Mode::Hosted, &invalid_cert),
