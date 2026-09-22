@@ -119,35 +119,157 @@ pub fn hash_account_password(password: &mut [u8]) -> Result<String, String> {
     result
 }
 
+/// Decode exactly one PEM or DER certificate, returning its DER bytes and the
+/// parsed structure. PEM input must hold a single `CERTIFICATE` block followed
+/// by nothing but whitespace.
+fn decode_single_certificate(bytes: &[u8]) -> Result<(Vec<u8>, x509_cert::Certificate), String> {
+    use der::Decode;
+
+    let der = if bytes.starts_with(b"-----BEGIN") {
+        let (label, der) = pem_certificate_block(bytes).ok_or("invalid PEM certificate")?;
+        if label != "CERTIFICATE" {
+            return Err("certificate contains trailing data or has the wrong PEM label".into());
+        }
+        der
+    } else {
+        bytes.to_vec()
+    };
+    let certificate = x509_cert::Certificate::from_der(&der).map_err(|error| {
+        if matches!(error.kind(), der::ErrorKind::TrailingData { .. }) {
+            "certificate contains trailing DER data"
+        } else {
+            "invalid X.509 certificate"
+        }
+    })?;
+    Ok((der, certificate))
+}
+
+/// Split one RFC 7468 block into its label and decoded body.
+///
+/// Line width is not enforced, so certificates wrapped by tools other than
+/// OpenSSL are accepted; anything but whitespace after the block is not.
+fn pem_certificate_block(bytes: &[u8]) -> Option<(String, Vec<u8>)> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text.lines();
+    let label = lines
+        .next()?
+        .trim_end()
+        .strip_prefix("-----BEGIN ")?
+        .strip_suffix("-----")?;
+    let end_line = format!("-----END {label}-----");
+    let mut body = String::new();
+    loop {
+        let line = lines.next()?.trim();
+        if line == end_line {
+            break;
+        }
+        if line.contains(':') || line.starts_with("-----") {
+            return None;
+        }
+        body.push_str(line);
+    }
+    if !lines.all(|line| line.trim().is_empty()) {
+        return None;
+    }
+    Some((label.to_owned(), STANDARD.decode(&body).ok()?))
+}
+
+/// Format a distinguished name as comma-separated `TYPE=value` pairs in
+/// encoded order, joining multi-valued RDNs with ` + `.
+fn display_name(name: &x509_cert::name::Name) -> String {
+    name.0
+        .iter()
+        .map(|rdn| {
+            rdn.0
+                .iter()
+                .map(|attribute| {
+                    format!(
+                        "{}={}",
+                        attribute_type_abbreviation(&attribute.oid),
+                        attribute_value_text(&attribute.value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" + ")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn attribute_type_abbreviation(oid: &const_oid::ObjectIdentifier) -> String {
+    use const_oid::db::{DB, rfc3280, rfc4519};
+
+    let known = [
+        (rfc4519::CN, "CN"),
+        (rfc4519::C, "C"),
+        (rfc4519::L, "L"),
+        (rfc4519::ST, "ST"),
+        (rfc4519::O, "O"),
+        (rfc4519::OU, "OU"),
+        (rfc4519::DC, "DC"),
+        (rfc3280::EMAIL_ADDRESS, "Email"),
+    ];
+    known
+        .iter()
+        .find(|(known, _)| known == oid)
+        .map(|(_, name)| (*name).to_owned())
+        .or_else(|| DB.by_oid(oid).map(str::to_owned))
+        .unwrap_or_else(|| oid.to_string())
+}
+
+fn attribute_value_text(value: &der::Any) -> String {
+    use der::{Tag, Tagged as _};
+
+    match value.tag() {
+        Tag::NumericString
+        | Tag::VisibleString
+        | Tag::PrintableString
+        | Tag::TeletexString
+        | Tag::VideotexString
+        | Tag::Utf8String
+        | Tag::Ia5String => std::str::from_utf8(value.value())
+            .map_or_else(|_| hex::encode_upper(value.value()), str::to_owned),
+        Tag::BmpString => {
+            let units = value
+                .value()
+                .chunks_exact(2)
+                .filter_map(|pair| pair.try_into().ok().map(u16::from_be_bytes));
+            char::decode_utf16(units)
+                .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
+                .collect()
+        }
+        _ => hex::encode_upper(value.value()),
+    }
+}
+
+/// Render an X.509 time as `Mon DD HH:MM:SS YYYY +00:00`.
+fn display_time(time: x509_cert::time::Time) -> String {
+    let format = time::macros::format_description!(
+        "[month repr:short] [day padding:space] [hour]:[minute]:[second] [year padding:none] [offset_hour sign:mandatory]:[offset_minute]"
+    );
+    i64::try_from(time.to_unix_duration().as_secs())
+        .ok()
+        .and_then(|seconds| time::OffsetDateTime::from_unix_timestamp(seconds).ok())
+        .and_then(|moment| moment.format(format).ok())
+        .unwrap_or_else(|| "invalid date".to_owned())
+}
+
 /// Parse PEM or DER certificate bytes without invoking a general-purpose CLI.
 ///
 /// # Errors
 ///
 /// Returns an error for malformed, trailing, non-certificate, or expired data.
 pub fn inspect_certificate(bytes: &[u8]) -> Result<CertificateInfo, String> {
-    use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
-
-    let der = if bytes.starts_with(b"-----BEGIN") {
-        let (rest, pem) = parse_x509_pem(bytes).map_err(|_| "invalid PEM certificate")?;
-        if !rest.iter().all(u8::is_ascii_whitespace) || pem.label != "CERTIFICATE" {
-            return Err("certificate contains trailing data or has the wrong PEM label".into());
-        }
-        pem.contents
-    } else {
-        bytes.to_vec()
-    };
-    let (rest, certificate) =
-        parse_x509_certificate(&der).map_err(|_| "invalid X.509 certificate")?;
-    if !rest.is_empty() {
-        return Err("certificate contains trailing DER data".into());
-    }
-    if certificate.validity().not_after.timestamp()
-        <= x509_parser::time::ASN1Time::now().timestamp()
-    {
-        return Err(format!(
-            "certificate expired at {}",
-            certificate.validity().not_after
-        ));
+    let (der, certificate) = decode_single_certificate(bytes)?;
+    let validity = &certificate.tbs_certificate.validity;
+    let expires = display_time(validity.not_after);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system clock is before the Unix epoch")?;
+    if validity.not_after.to_unix_duration().as_secs() <= now.as_secs() {
+        return Err(format!("certificate expired at {expires}"));
     }
 
     let fingerprint = Sha256::digest(&der)
@@ -156,8 +278,8 @@ pub fn inspect_certificate(bytes: &[u8]) -> Result<CertificateInfo, String> {
         .collect::<Vec<_>>()
         .join(":");
     Ok(CertificateInfo {
-        subject: certificate.subject().to_string(),
-        expires: certificate.validity().not_after.to_string(),
+        subject: display_name(&certificate.tbs_certificate.subject),
+        expires,
         sha256_fingerprint: fingerprint,
     })
 }
@@ -168,21 +290,7 @@ pub fn inspect_certificate(bytes: &[u8]) -> Result<CertificateInfo, String> {
 ///
 /// Returns an error for malformed, trailing, or non-certificate input.
 pub fn certificate_sha256(bytes: &[u8]) -> Result<String, String> {
-    use x509_parser::{parse_x509_certificate, pem::parse_x509_pem};
-
-    let der = if bytes.starts_with(b"-----BEGIN") {
-        let (rest, pem) = parse_x509_pem(bytes).map_err(|_| "invalid PEM certificate")?;
-        if !rest.iter().all(u8::is_ascii_whitespace) || pem.label != "CERTIFICATE" {
-            return Err("certificate contains trailing data or has the wrong PEM label".into());
-        }
-        pem.contents
-    } else {
-        bytes.to_vec()
-    };
-    let (rest, _) = parse_x509_certificate(&der).map_err(|_| "invalid X.509 certificate")?;
-    if !rest.is_empty() {
-        return Err("certificate contains trailing DER data".into());
-    }
+    let (der, _) = decode_single_certificate(bytes)?;
     Ok(hex::encode(Sha256::digest(&der)))
 }
 
@@ -1316,12 +1424,62 @@ mod tests {
     }
 
     #[test]
+    fn certificate_inspection_reports_subject_expiry_and_bounds_pem_input() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+        let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
+        let pem = fixture.ca_certificate_pem.as_str();
+        let info = inspect_certificate(pem.as_bytes()).expect("inspect CA certificate");
+        assert_eq!(info.subject, "CN=Tilo Disposable Registry CA");
+        let (month, rest) = info.expires.split_once(' ').expect("month");
+        assert_eq!(month.len(), 3, "{}", info.expires);
+        assert!(rest.ends_with(" +00:00"), "{}", info.expires);
+        assert_eq!(info.sha256_fingerprint.len(), 32 * 3 - 1);
+
+        let der = certificate_der(pem.as_bytes()).expect("certificate DER");
+        let digest = certificate_sha256(pem.as_bytes()).expect("PEM digest");
+        assert_eq!(certificate_sha256(&der), Ok(digest.clone()));
+        assert_eq!(
+            info.sha256_fingerprint.replace(':', "").to_lowercase(),
+            digest
+        );
+
+        let body = STANDARD.encode(&der);
+        let rewrapped = format!(
+            "-----BEGIN CERTIFICATE-----\r\n{}\r\n-----END CERTIFICATE-----\r\n\r\n  \n",
+            body.as_bytes()
+                .chunks(76)
+                .map(|line| std::str::from_utf8(line).unwrap())
+                .collect::<Vec<_>>()
+                .join("\r\n")
+        );
+        assert_eq!(
+            certificate_sha256(rewrapped.as_bytes()),
+            Ok(digest),
+            "line width and trailing whitespace are not part of the certificate"
+        );
+
+        let bundle = format!("{pem}{pem}");
+        assert!(inspect_certificate(bundle.as_bytes()).is_err());
+        assert!(certificate_sha256(format!("{pem}trailing").as_bytes()).is_err());
+        let relabeled = pem.replace("CERTIFICATE", "PUBLIC KEY");
+        assert!(certificate_sha256(relabeled.as_bytes()).is_err());
+        let mut trailing_der = der.clone();
+        trailing_der.push(0);
+        assert_eq!(
+            certificate_sha256(&trailing_der),
+            Err("certificate contains trailing DER data".into())
+        );
+        assert!(certificate_sha256(&der[..der.len() - 1]).is_err());
+    }
+
+    #[test]
     fn generated_secure_boot_certificate_round_trips() {
         let generated =
             generate_secure_boot_certificate("Tilo test db").expect("generate RSA cert");
         assert!(generated.private_key_pem.contains("PRIVATE KEY"));
         let info = inspect_certificate(generated.certificate_pem.as_bytes()).expect("inspect cert");
-        assert!(info.subject.contains("Tilo test db"));
+        assert_eq!(info.subject, "CN=Tilo test db");
         assert_eq!(
             certificate_sha256(generated.certificate_pem.as_bytes())
                 .unwrap()
@@ -1422,62 +1580,62 @@ mod tests {
 
     #[test]
     fn generated_tls_fixture_has_constrained_ca_and_loopback_san() {
-        use x509_parser::{
-            extensions::{GeneralName, ParsedExtension},
-            pem::parse_x509_pem,
+        use der::{Decode, DecodePem};
+        use x509_cert::{
+            Certificate,
+            ext::pkix::{
+                AuthorityKeyIdentifier, BasicConstraints, SubjectAltName, SubjectKeyIdentifier,
+                name::GeneralName,
+            },
         };
+
+        fn extension<T: for<'a> Decode<'a>>(
+            certificate: &Certificate,
+            oid: const_oid::ObjectIdentifier,
+        ) -> Option<T> {
+            certificate
+                .tbs_certificate
+                .extensions
+                .as_deref()?
+                .iter()
+                .find(|extension| extension.extn_id == oid)
+                .map(|extension| T::from_der(extension.extn_value.as_bytes()).unwrap())
+        }
 
         let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
         assert!(fixture.server_private_key_pem.contains("PRIVATE KEY"));
 
-        let (_, ca_pem) = parse_x509_pem(fixture.ca_certificate_pem.as_bytes()).unwrap();
-        let ca = ca_pem.parse_x509().unwrap();
-        assert!(ca.basic_constraints().unwrap().unwrap().value.ca);
+        let ca = Certificate::from_pem(fixture.ca_certificate_pem.as_bytes()).unwrap();
+        let ca_constraints: BasicConstraints =
+            extension(&ca, const_oid::db::rfc5280::ID_CE_BASIC_CONSTRAINTS).unwrap();
+        assert!(ca_constraints.ca);
 
-        let (_, server_pem) = parse_x509_pem(fixture.server_certificate_pem.as_bytes()).unwrap();
-        let server = server_pem.parse_x509().unwrap();
-        let ca_key_id = ca
-            .extensions()
-            .iter()
-            .find_map(|extension| {
-                if let ParsedExtension::SubjectKeyIdentifier(identifier) =
-                    extension.parsed_extension()
-                {
-                    Some(identifier.0)
-                } else {
-                    None
-                }
-            })
-            .expect("CA subject key identifier");
-        let issuer_key_id = server
-            .extensions()
-            .iter()
-            .find_map(|extension| {
-                if let ParsedExtension::AuthorityKeyIdentifier(identifier) =
-                    extension.parsed_extension()
-                {
-                    identifier.key_identifier.as_ref().map(|key| key.0)
-                } else {
-                    None
-                }
-            })
-            .expect("server authority key identifier");
+        let server = Certificate::from_pem(fixture.server_certificate_pem.as_bytes()).unwrap();
+        let ca_key_id: SubjectKeyIdentifier =
+            extension(&ca, const_oid::db::rfc5280::ID_CE_SUBJECT_KEY_IDENTIFIER)
+                .expect("CA subject key identifier");
+        let issuer_key_id = extension::<AuthorityKeyIdentifier>(
+            &server,
+            const_oid::db::rfc5280::ID_CE_AUTHORITY_KEY_IDENTIFIER,
+        )
+        .and_then(|identifier| identifier.key_identifier)
+        .expect("server authority key identifier");
         assert_eq!(
-            issuer_key_id, ca_key_id,
+            issuer_key_id, ca_key_id.0,
             "server identifies the signing CA key"
         );
         assert!(
-            !server
-                .basic_constraints()
-                .unwrap()
-                .is_some_and(|constraints| constraints.value.ca)
-        );
-        let san = server.subject_alternative_name().unwrap().unwrap();
-        assert!(
-            san.value.general_names.iter().any(
-                |name| matches!(name, GeneralName::IPAddress(bytes) if *bytes == [127, 0, 0, 1])
+            !extension::<BasicConstraints>(
+                &server,
+                const_oid::db::rfc5280::ID_CE_BASIC_CONSTRAINTS
             )
+            .is_some_and(|constraints| constraints.ca)
         );
+        let san: SubjectAltName =
+            extension(&server, const_oid::db::rfc5280::ID_CE_SUBJECT_ALT_NAME).unwrap();
+        assert!(san.0.iter().any(
+            |name| matches!(name, GeneralName::IpAddress(bytes) if bytes.as_bytes() == [127, 0, 0, 1])
+        ));
     }
 
     #[test]
