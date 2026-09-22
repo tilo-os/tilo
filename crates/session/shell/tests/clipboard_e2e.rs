@@ -3322,6 +3322,14 @@ impl Compositor {
         assert!(resp.get("ok").is_some(), "set_group_width failed: {resp:?}");
     }
 
+    fn seed_files_drag(&self, path: &Path) {
+        let resp = self.control(&serde_json::json!({
+            "op": "seed_files_drag",
+            "paths": [path],
+        }));
+        assert!(resp.get("ok").is_some(), "seed_files_drag failed: {resp:?}");
+    }
+
     fn pointer_move(&self, x: f64, y: f64) {
         let resp = self.control(&serde_json::json!({"op": "pointer_move", "x": x, "y": y}));
         assert!(resp.get("ok").is_some(), "pointer_move failed: {resp:?}");
@@ -3487,16 +3495,17 @@ fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
 fn drag_file_row_onto_client(
     compositor: &Compositor,
     target: &mut TestClient,
+    path: &Path,
     row: (f64, f64),
     target_point: (f64, f64),
 ) {
     const STEPS: u32 = 12;
     compositor.pointer_move(row.0, row.1);
     compositor.pointer_button(true);
-    // The row publishes `ArmDrag` through the app command queue. Let the
-    // normal frame pump apply that command before the first synthetic move;
-    // real pointer input naturally has this event-loop gap between edges.
-    std::thread::sleep(Duration::from_millis(100));
+    // Files' widget tests own press-to-drag arming. Seed the exact production
+    // slot here so this integration case isolates the compositor's hand-off
+    // into a Wayland data-device drag while retaining a real chrome grab.
+    compositor.seed_files_drag(path);
     // Cross the file row's drag threshold while still inside the row. The
     // client can be close enough vertically that interpolating straight to
     // it otherwise leaves the row on the very first motion event.
@@ -3610,7 +3619,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     // its on-screen part, since the tile may extend past the left edge.
     let row = locate_file_row(&compositor);
 
-    drag_file_row_onto_client(&compositor, &mut target, row, target_point);
+    drag_file_row_onto_client(&compositor, &mut target, &photo, row, target_point);
     // The client's accept-mime/action requests from `enter` must reach the
     // compositor before release, or the drop is refused as unaccepted —
     // matching the protocol and what a real client's event loop avoids by
