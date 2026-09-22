@@ -3490,14 +3490,18 @@ fn drag_file_row_onto_client(
     // Cross the file row's drag threshold while still inside the row. The
     // client can be close enough vertically that interpolating straight to
     // it otherwise leaves the row on the very first motion event.
-    compositor.pointer_move(row.0 + 8.0, row.1);
+    // Test-control coordinates are physical while the hosted widget applies
+    // the output scale factor. Move far enough to clear the 6 logical-pixel
+    // threshold even on a 2x output, then interpolate from that latched point.
+    let latched = (row.0 + 24.0, row.1);
+    compositor.pointer_move(latched.0, latched.1);
     target.pump();
     std::thread::sleep(Duration::from_millis(30));
     for i in 1..=STEPS {
         let t = f64::from(i) / f64::from(STEPS);
         compositor.pointer_move(
-            row.0 + (target_point.0 - row.0) * t,
-            row.1 + (target_point.1 - row.1) * t,
+            latched.0 + (target_point.0 - latched.0) * t,
+            latched.1 + (target_point.1 - latched.1) * t,
         );
         target.pump();
         std::thread::sleep(Duration::from_millis(30));
