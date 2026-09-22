@@ -45,10 +45,11 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
-grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-kernel.yml" \
+grep -Fq "github.event_name != 'pull_request'" "$workflows/build-kernel.yml" \
+  && grep -Fq 'tilo-kernel-buildcache:{0},mode=min' "$workflows/build-kernel.yml" \
   && ! grep -Eq 'cache-to:.*tilo-kernel-buildcache:.*mode=max' "$workflows/build-kernel.yml" \
-  && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
-  || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
+  && ok 'kernel cache export skips PRs and excludes its multi-gigabyte intermediate build tree' \
+  || bad 'kernel cache export can duplicate work or exhaust a PR runner'
 
 if grep -Fq 'runner: runner-disk-100g-arm64' "$workflows/build-kernel.yml" \
   && grep -Fxq '            runner: runner-disk-100g' "$workflows/build-kernel.yml" \
