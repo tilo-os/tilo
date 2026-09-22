@@ -41,8 +41,7 @@ libc.workspace = true
 zeroize.workspace = true
 chacha20poly1305.workspace = true
 argon2.workspace = true
-getrandom.workspace = true
-rand_core.workspace = true
+rand_core = { workspace = true, features = ["getrandom"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 tempfile.workspace = true

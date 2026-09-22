@@ -7,6 +7,7 @@
 use std::io::Read;
 
 use accounts::SecretItem;
+use rand_core::{OsRng, RngCore as _};
 use zeroize::Zeroizing;
 
 pub const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
@@ -255,8 +256,9 @@ pub fn export_encrypted_backup(
     }
     let mut salt = [0_u8; BACKUP_SALT_BYTES];
     let mut nonce = [0_u8; BACKUP_NONCE_BYTES];
-    getrandom::getrandom(&mut salt)
-        .and_then(|()| getrandom::getrandom(&mut nonce))
+    OsRng
+        .try_fill_bytes(&mut salt)
+        .and_then(|()| OsRng.try_fill_bytes(&mut nonce))
         .map_err(|_| "Secure randomness is unavailable; no backup was created".to_string())?;
     let key = derive_backup_key(passphrase, &salt)?;
     let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));

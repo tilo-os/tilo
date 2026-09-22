@@ -46,10 +46,10 @@ rqrr = { workspace = true, default-features = true }
 image = { workspace = true, features = ["png", "jpeg"] }
 
 # Host-native screenshot/photo selection uses the XDG file portal.
-# TOTP secrets are sealed at rest with XChaCha20-Poly1305; `getrandom` supplies
-# key/nonce material and `zeroize` clears plaintext and derived keys.
+# TOTP secrets are sealed at rest with XChaCha20-Poly1305; `rand_core`'s OsRng
+# supplies key/nonce material and `zeroize` clears plaintext and derived keys.
 chacha20poly1305.workspace = true
-getrandom.workspace = true
+rand_core = { workspace = true, features = ["getrandom"] }
 zeroize.workspace = true
 
 [target.'cfg(windows)'.dependencies]

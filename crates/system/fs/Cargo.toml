@@ -18,7 +18,6 @@ filesystem = [
     "dep:qdoc",
     "dep:collab-types",
     "dep:ed25519-dalek",
-    "dep:getrandom",
     "dep:thumbnail",
     "dep:tilo-user-identity",
     "dep:tilo-power-mgmt",
@@ -80,7 +79,6 @@ automerge = { workspace = true, optional = true }
 qdoc = { path = "../../doc/qdoc", optional = true }
 collab-types = { path = "../../collab/collab-types", optional = true }
 ed25519-dalek = { workspace = true, optional = true }
-getrandom = { workspace = true, optional = true }
 # The shared thumbnail generator + content-addressed cache. Default features
 # only (raster images + EPUB covers — pure Rust, no native deps): the OS
 # filesystem daemon host-generates the light preview types and never pulls

@@ -11,6 +11,7 @@ use collab_types::{
     ContentRevisionV1, Ed25519PublicKey, FileActor, Signature, canonical_bytes, sign_event,
     verify_event,
 };
+use rand::{RngCore as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -63,7 +64,10 @@ pub struct ReplicaAckV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(clippy::large_enum_variant)] // Boxing would change the versioned wire schema.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Boxing would change the versioned wire schema."
+)]
 pub enum ReplicaAckResponseV1 {
     Acknowledged(ReplicaAckV1),
     Denied,
@@ -78,7 +82,9 @@ impl ReplicaAckRequestV1 {
     /// Returns an error on randomness failure or invalid scope/revision.
     pub fn new(workspace_id: Uuid, revision: ContentRevisionV1) -> Result<Self, ReplicaAckError> {
         let mut nonce = [0_u8; 32];
-        getrandom::getrandom(&mut nonce).map_err(|_| ReplicaAckError::Randomness)?;
+        OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|_| ReplicaAckError::Randomness)?;
         let request = Self {
             protocol_version: REPLICA_ACK_PROTOCOL_VERSION,
             workspace_id,
