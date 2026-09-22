@@ -505,11 +505,7 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
     // controller's two-second background poll cannot rebuild the toolbar
     // between `click_named` resolving its rect and dispatching the pointer.
     driver
-        .perform_semantic_named(
-            "history-files-retry",
-            None,
-            &ui::a11y::Action::Activate,
-        )
+        .perform_semantic_named("history-files-retry", None, &ui::a11y::Action::Activate)
         .unwrap();
     assert!(
         driver.wait_until(std::time::Duration::from_secs(5), |_| {
