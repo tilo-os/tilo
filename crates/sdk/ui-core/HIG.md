@@ -2,18 +2,20 @@
 
 ## Purpose & philosophy
 
-These guidelines are **as strict and detailed as the GNOME HIG**, but with one
-deliberate difference: they are meant to be **auto-enforcing at the code level**.
+The toolkit should make balanced, adaptive layouts easy to author. Shared
+patterns encode useful defaults for spacing, hierarchy, readable width, and
+interaction. When the same correction recurs across apps, improve the shared
+pattern so applications inherit the better default.
 
-GTK's age and history let you build applications that badly violate the GNOME
-HIG while still "working". Tilo avoids that by making the right thing the *default*
-thing in the `ui` toolkit, and by having the toolkit **nudge or refuse** the
-wrong thing. When a rule here recurs across apps, the correct response is to
-promote a `ui` primitive that bakes the rule in — not to reimplement it (and
-re-violate it) per app.
+Automatic, guided, and fully manual composition are all supported. An application
+may position standard controls with authored dimensions and responsive rules,
+including on ordinary forms and app chrome, without exception approval. Shared
+control behavior, accessible names, reachable actions, and actual clipping still
+matter. A custom gap or rectangle alone does not establish poor quality.
 
-> Rule of thumb: if an app can express a bad-UX layout without effort, that is a
-> toolkit bug, not just an app bug.
+Use [Form composition](FORM_COMPOSITION.md) for the automatic/guided path and
+[Manual layout](MANUAL_LAYOUT.md) for shared child measurement, exact placement,
+mixed regions, and existing inspection tools.
 
 ---
 
@@ -192,7 +194,19 @@ completeness does not exempt a screen from these requirements.
   jammed edge-to-edge, controls are not scattered. A clear reading order and a
   single primary action per screen. Groups are separated by space and hierarchy,
   not by hairlines and boxes-within-boxes.
-- **Typographic hierarchy.** Size / weight / color establish
+- **Nothing touches.** Every neighbouring pair keeps a token-step gap (`s1`+). A
+  fixed offset that produces a touch, an overlap or a clipped glyph at 1× is a
+  defect regardless of how it was authored — the screenshot decides, not the
+  byte-identical frame. Content is centred in its container: icon + label
+  blocks in tiles, leading icons and trailing controls on the row's centre
+  line, text on its measured line box.
+- **An edge you draw is derived.** Where an app paints its own card, row or
+  pill edge, it comes from `ui::surface::{card, edge_on, separator}` or
+  `ui::chrome::panel_border`, measured against the surface it sits on;
+  `border_standard` is a rule on `surfaces.base`, never a stroke on `raised`
+  or `overlay` (on the dark preset the two are three shades apart and the
+  edge vanishes).
+- **Real typographic hierarchy.** Size / weight / color establish
   title → section → body → caption; digits that line up use tabular figures. No
   wall of same-size text; no illegible low-contrast label on a colored fill
   (the permissions-pane and camera regressions were exactly this).
@@ -221,9 +235,142 @@ empty, and a mid-interaction state), then inspect the output. When a pattern
 recurs (a media/participant grid, a stat tile, a huddle overlay, a segmented
 control), promote it to a `ui` primitive so the shared version is the default.
 
+### 7a. Let content determine ordinary layout
+
+Choose a shared composition by what the region contains:
+
+| Region | Starting point | Decisions supplied by the framework |
+|---|---|---|
+| Account or settings form | `FormPage`, `Form`, `Section`, `Field` | One page gutter, readable width, related-field spacing, measured label placement, wrapping and scrolling |
+| Card with a title, content and actions | `Card::composed` with a header and footer | Content height, consistent card gutter, footer containment and alignment |
+| Small primary/secondary action group | `Actions` | Measured unspecified button sizes, wrapping and trailing alignment |
+| Long command strip | `Toolbar` | Measured command sizes, bounded overflow menu, keyboard navigation and accessible command bounds |
+| Main writing surface | `Scrollable::with_content_min_viewport_height()` | Short auto-height content fills the viewport; long content retains its intrinsic scroll extent |
+| Empty list or first-use pane | `EmptyState` | Wrapped title/message, measured action height, centering and decorative shedding |
+| Authored canvas or custom arrangement | `Manual` or existing layout primitives | Shared child measurement and ordinary control behavior; the author chooses geometry |
+
+Give primary content the remaining workspace. Empty optional docks should not
+reserve a large area before they have useful content. A short query or request
+can start compact and retain a visible resize route. Bound prose and forms to a
+readable width; keep document, image, map and editing canvases useful at full
+workspace width. These are different content needs, so a single global maximum
+width or larger global gap cannot produce good balance.
+
+Keep related title, explanation and action rows close enough to read as a group,
+with a larger separation before the next group. Avoid repeating a page title
+inside its first section or wrapping each grouping in another padded surface.
+When commands or panes no longer fit, use wrapping, a labelled disclosure, or
+the existing overview/detail navigation. Preserve selected state and the return
+route through the transition.
+
+For custom text painting, measure and draw with the same style and width.
+Theme typography tokens are already resolved logical sizes; pass those styles
+through `TextRenderer::renderer_input_style` once before calling the legacy
+renderer-relative APIs. Base font sizes supplied to editor controls remain base
+sizes. Do not compensate for a scale mismatch with smaller fonts or offsets.
+
+An empty state's title and action can exceed a physically small pane even after
+decoration is removed. Retained callers can use `EmptyState::into_scrollable()`;
+immediate callers use `minimum_essential_height` and provide their own scroll
+owner. Check the action after scrolling, including pointer and keyboard use.
+
+For a primary editor, give the Scrollable a viewport and opt into a minimum
+content height:
+
+```rust
+Scrollable::new_vertical()
+    .fill_parent_height()
+    .with_content_min_viewport_height()
+    .with_child(Box::new(editor))
+```
+
+`fill_parent_height()` sizes the viewport. The additional opt-in lets short
+auto-height content fill that viewport while long content scrolls. Ordinary
+multiline form fields remain content-sized by default, and a child's explicit
+fixed height stays authoritative. Scratchpad uses this composition with its
+existing editor and Save action.
+
+For inline rich text, use `RichTextLine` marks so measurement, glyphs, caret,
+selection and links share one shaped layout. Do not paint styled words over a
+plain text field: their different advances create doubled glyphs and misplaced
+interaction targets. Code chips and rules are decorations around those shaped
+ranges, not separately positioned text.
+
+For a long command strip, let `Toolbar` choose the visible commands from
+renderer measurements and put the remainder in its owned overflow menu. The
+same original callbacks remain available through pointer, keyboard and semantic
+activation. Use the ordinary Widget measurement and overlay lifecycle;
+`recompute_visible` is a compatibility estimate for callers without a renderer,
+not the final measured layout. A small form footer should still use `Actions`
+when wrapping its few buttons gives a clearer result.
+
+Explicit dimensions remain authored choices. Use guided overrides or fully
+[manual composition](MANUAL_LAYOUT.md) wherever the default does not express the
+intended layout. Evaluate the resulting reading order, useful content area,
+containment and action reachability rather than counting custom pixel values.
+
+### 7b. Spacing tokens, insets and density
+
+Every gap and inset is a step on `theme.tokens.spacing` (`s1`–`s16` =
+4 / 8 / 12 / 16 / 24 / 32 / 48 / 64); every control height, hit target, panel
+width and icon size is a field of `theme.tokens.metrics` (§9.6). Both scale
+with `ui_scale`; a custom theme's `spacing_px` rescales the whole spacing scale
+proportionally and leaves metrics alone. That is also why a hit target must
+read `metrics.min_pointer_target`, never a spacing step: a control that sizes
+its minimum from `spacing.s8` shrinks with a dense gutter preference.
+`Spacing::BASE` and `Metrics::BASE` are the unscaled reference values for the
+few chrome constants that must be compile-time.
+
+Rhythm inside a group versus between groups:
+
+| Relationship | Step | Typical use |
+|---|---|---|
+| Label ↔ its control, icon ↔ its label | `s1` / `metrics.icon_label_gap` | stacked field label, button icon |
+| Related rows that read as one group | `s2` | title + explanation, help copy under a field |
+| Siblings of equal weight | `s3` (`gap_standard`, the `Row`/`Column` default) | toolbar buttons, list rows |
+| Section padding, gap between Panel sections | `s4` | panel body, card gutter |
+| Before the next group; page gutter | `s6` (the `Column` default inset) | form sections, page edge |
+| Between major regions | `s8`+ | header block ↔ content |
+
+One rhythm per panel or screen: the same relationship always gets the same
+step. A section gap of 30 px beside one of 18 px for the same relationship is
+a defect even when both are "authored".
+
+The framework supplies the values so callers state the relationship, not the
+number:
+
+- `Row::with_gap(px)` / `Column::with_gap(px)` change the gap between children;
+  `Row::with_justify(..)` and `Row::with_align_items(..)` place them along and
+  across the row. Defaults (gap `s3`, children centred, start-packed) are
+  unchanged.
+- `Spacer::token(SpacingStep::S4)` is a fixed gap that resolves from the Theme
+  at layout time and therefore follows `ui_scale`; `Spacer::fixed(px)` is the
+  authored-pixel form. Neither grows. `Spacer::new()` still grows to push
+  siblings apart.
+- `insets_all(px)`, `insets_xy(horizontal, vertical)` and
+  `insets(top, right, bottom, left)` build a taffy padding `Rect` from token
+  values in one expression instead of four `length(..)` fields.
+
+`tests/f1_spacing_token_audit.rs` ratchets module-level pixel constants and
+literal `length(N)` values in widget, chrome, shell and app production code:
+a file may never carry more than its baseline records, and one that sheds a
+literal lowers its line in the same commit. It shares its file walk,
+`#[cfg(test)]` span finder and baseline plumbing with the colour ratchet in
+`tests/design_token_audit.rs` (`tests/support/ratchet.rs`), so both audits
+see exactly the same production lines.
+
+A custom theme's `spacing_px` is built inside `CustomThemeSpec::SPACING_PX_MIN
+..= SPACING_PX_MAX` (6–22, the Themes app's range) even though the schema
+admits 2–64: the whole scale is proportional to it, and 2 px would put `s1`
+under a pixel.
+
 ---
 
 ## 8. Never hand-roll an interactive primitive
+
+Manual positioning of standard widgets is supported. The guidance below concerns
+reimplementing their interaction and editing behavior, not choosing their geometry.
+
 
 **Use the shared `ui` widget for every interactive primitive — text field,
 button, dialog, dropdown, checkbox, toggle, slider, tabs, menu, tooltip,
@@ -398,6 +545,8 @@ active strip, selected row, chosen scope chip, current power profile — uses th
 This is `ui::chrome::selection_tier` (promoted out of `widget::tabs`, where it
 was `pub(crate)` and therefore unreachable from the shell — which is precisely
 why the shell grew its own incompatible answers). Call it; do not restate it.
+This includes toolkit list selection: `TreeView`, `Table`, `DataTable` and
+`Sidebar` rows are a lift, never an accent wash.
 
 **One caveat the tier cannot absorb for you.** `Colors::lift` interpolates from
 `surfaces.base` toward `surfaces.raised`, and where those two are close it
@@ -496,6 +645,59 @@ cannot fix: the name says white while the value is a veneer, and the strength is
 on. `lift` and `hairline_on` take that measurement, so a hairline stays a
 hairline on a palette their author never saw. Reach for those.
 
+#### Rest edges (toolkit and shell)
+
+At rest (idle, enabled) every control, card and popup has a **visible derived
+edge or a clear contrast step** against the surface it sits on, at 1× in dark
+and light alike. "Edge" is `ui::surface::edge_on(fill)` painted as a crisp
+inset 1 px stroke (`ui::surface::card`, `pill`, or the same geometry inline);
+chosen states use `selection_tier` (Controls) or `glass_selector` (Selectors);
+focus stays `border_focus`; disabled is the rest face under
+`widget::DISABLED_ALPHA`, so rest and disabled never look the same.
+
+| Control | Rest fill | Rest edge |
+|---|---|---|
+| Button Neutral / Disabled, Dropdown field | `surfaces.raised` | `edge_on(raised)` |
+| Card / Container / ContentCard | as today | `edge_on(fill)`; a section inside a card gets space, not a second edge |
+| TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
+| Dropdown list, ContextMenu, Popover, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt, Toast, ModalDialog, ModalFrame | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`; separators `separator(.., s3, ..)`, never full-bleed |
+| Tooltip | as today | `edge_on(fill)` |
+| Segmented / ToggleGroup track | `surfaces.raised` | `edge_on(track)`; active segment `glass_selector` |
+| Chip quiet | `surfaces.raised` | `edge_on(raised)`; selected accent, no edge |
+| Toggle | off `lift(1.0)`, on `accent_primary` | `edge_on(track)`; one knob colour for both states |
+| Slider | unfilled `lift(1.0)`, filled `accent_primary` | `edge_on(unfilled)`; thumb contrasts against both halves |
+| Checkbox | unchecked `surfaces.raised` | `edge_on(raised)` |
+| Table / DataTable rules | — | `edge_on(table_fill)`, never into a rounded corner |
+| TreeView / Sidebar / VirtualList rows | transparent | none; selection is `selection_tier` |
+| Divider | — | `border_standard` only on `surfaces.base`; `Divider::on(surface)` elsewhere |
+| App chrome Toolbar / StatusBar | as today | `chrome_hairline` |
+| Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
+
+A declared border or ramp token (`border_standard`, `border_strong`,
+`overlay_border_strong`, `colors.neutral[..]`) on a chrome surface is a defect;
+`tests/design_token_audit.rs::declared_borders_in_chrome_do_not_grow` ratchets
+their count against `tests/chrome_declared_border_baseline.txt`.
+
+**One painter per row of that table.** `ui::surface::card(fill)` is the edged
+opaque surface; `ui::surface::panel(theme)` is the Panel row (`panel_ground`
+fill + `panel_border`) so no app spells the pair; `ui::surface::card_on(fill,
+ground)` is for a translucent wash (an accent tint, a hover film) — the edge
+derives from what the eye sees, the wash composited over its ground, because a
+hairline judged by a 16 % wash's own RGB flips polarity on light and vanishes.
+`edge_on` assumes an opaque fill. All three snap their rect to whole logical
+pixels and `separator` lands on one device-pixel row (`separator_rect`): a 1 px
+edge on a fractional coordinate is two half-covered rows that fall under
+`HAIRLINE_MIN_DELTA` even when the colour registers.
+
+**Selection lifts from the ground it sits on.** `chrome::selection_tier` measures
+its lift against `surfaces.base`; a row on `panel_ground`, a raised sidebar or a
+card is within rounding distance of that lift on dark and high-contrast (Δ
+0.008 / 0.002). Use `chrome::selection_tier_on(theme, state, ground)` there — it
+keeps the base lift where it registers and otherwise walks `LIFT_ALPHA_STEPS`
+until the active fill clears the ground by `HAIRLINE_MIN_DELTA`, with hover
+halfway between. The same rule for one control never yields a different fill
+depending on which panel hosts it, because the ground is the input.
+
 ### 9.6 Type and density
 
 Chrome type is a **compressed** version of the app scale — chrome labels a thing,
@@ -510,14 +712,64 @@ it does not host prose.
 | Bar label | `scale.sm` (12) | `medium` | `text_primary` |
 | Numeric readout | `scale.sm` (12) | `semibold`, tabular | `text_primary` |
 
-Density, so two panels built by two people come out the same size:
+Density, so two panels built by two people come out the same size. Each value
+is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
+`ui_scale` like spacing; read it from there rather than restating the number:
 
-- Bar height 40; Bar control height 28.
+- Bar height 40 (`bar_height`; also the shared `Button`/`Dropdown` default);
+  Bar control height 28 (`bar_control_height`).
 - Panel padding `spacing.s4` (16); gap between Panel sections `spacing.s4`.
-- Panel row / Control height 44; Selector height 28.
-- Minimum pointer target 32×32 — a 20 px glyph gets a 32 px hit rect.
-- Panel width: 320 for a utility Panel (quick settings), 360 for a roster or
-  list Panel, 560 for a sheet with a form in it.
+- Panel row / Control height 44 (`panel_row_height`); Selector height 28
+  (`selector_height`).
+- Minimum pointer target 32×32 (`min_pointer_target`) — a 20 px glyph
+  (`icon_md`) gets a 32 px hit rect. Glyphs: `icon_sm` 14, `icon_md` 20,
+  `icon_lg` 24; icon-to-label gap `icon_label_gap` 6.
+- Panel width: 320 for a utility Panel (quick settings,
+  `panel_width_utility`; an overlay drawer is the same width,
+  `drawer_width`), 360 for a roster or list Panel (`panel_width_list`), 560
+  for a sheet with a form in it (`panel_width_sheet`).
+- Responsive shells: a genuine sidebar docks at `sidebar_width` 280, an
+  overview column at `overview_width` 340, and a sidebar docks beside its
+  content at or above `compact_breakpoint` 720. `NavShell` and `AppShell`
+  read those defaults from `theme.tokens.metrics` in `build_layout`, so they
+  follow `ui_scale`. `NavSplit` (300 / 900), `NavShell`'s 700 breakpoint and
+  `AppShell`'s 264 sidebar predate the tokens; the proposal on record is one
+  set for all four shells — sidebar `sidebar_width` 280, breakpoint
+  `compact_breakpoint` 720 (drawer: 720 + `drawer_width − sidebar_width` =
+  760), and one chip for `AppShell`'s Back button (34) and `NavShell`'s
+  collapse / Back chip (36): `min_pointer_target` 32 inside an `s3` inset,
+  which also makes the chip band (56) equal to a 56 px header bar.
+- **One text-scale rule for shell inputs (`Theme::responsive_scale`).** A
+  breakpoint or pane width handed to `NavSplit`, `NavShell`, `AppShell` or
+  `SidebarDrawer` is **authored at 1×** and the shell resolves it against the
+  theme when the tree is built: `× ui_scale × text_scale.max(1.0)`
+  (`Metrics::text_growth`). Panes and breakpoints are sized by the text they
+  hold, so they grow with it and never shrink below the authored geometry;
+  an app passes `with_breakpoint(760.0)` and deletes its own
+  `× text_scale` arithmetic (`widget::AuthoredExtent` is the rule as a
+  value, for a host that needs it directly). A width sized by icons rather
+  than text — a rail — takes the `with_icon_*_width` builder
+  (`SidebarDrawer::icon_docked_width`) and follows `ui_scale` alone.
+  `SidebarDrawer` has no `build_layout`, so a host adopting the rule calls
+  `drawer.scale_for(theme)` once from its own; until it does, the drawer lays
+  out the authored geometry, which is what every drawer host does today.
+  Read the resolved values back (`shell.breakpoint()`, `sidebar_width()`)
+  rather than comparing a window width against the authored constant. A
+  shell control that carries one line of text (the Back chip, the search
+  slot) grows by `widget::text_control_height(authored, theme)` — the
+  authored height until the body line outgrows it, then line + the authored
+  padding — never by the whole scale.
+- **Shell panes are measured with the host's theme and renderer.** A
+  `NavSplit` / `NavShell` pane is built against the theme its outer tree was
+  built with and solved in `adjust_layout_with_measure` with the renderer
+  the host hands the layout pass; a `Text` under a split measures at the
+  same text scale as everything beside it. Never lay a child out against
+  `Theme::dark()` or a fresh `TextRenderer::new()` on a draw or layout path.
+- **A docked sidebar keeps its full height.** The collapse chip sits in the
+  docked sidebar's own header row, which the sidebar clears horizontally
+  (mail: `CHIP_CLEARANCE`), so the three panes' headers share one top edge.
+  Only an overlay drawer, and a narrow content pane the chip floats over,
+  start below the chip band.
 
 ### 9.7 Motion
 
@@ -655,6 +907,9 @@ Grep a chrome diff for these; each hit is a role you skipped:
 - `surface_white_` / `border_white_` (any suffix) — a declared strength, never
   measured against its ground (§9.5)
 - `colors.neutral[` in chrome (use `surfaces.*`)
+- `.border_standard` / `.border_strong` / `overlay_border_strong` stroked on a
+  raised or overlay surface — a declared edge (§9.5); ratcheted by
+  `design_token_audit.rs::declared_borders_in_chrome_do_not_grow`
 - a numeric literal passed as a corner radius
 - `Duration::from_millis(` with a literal in an animation
 - a `Command::new` / blocking read reachable from `draw`

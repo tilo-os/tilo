@@ -7,14 +7,14 @@
 //! This module closes that gap in three lines. Instead of
 //!
 //! ```ignore
-//! ui::App::from_factory(ui::State::new(), my_app::app_root).run();
+//! tilo_ui::App::from_factory(tilo_ui::State::new(), my_app::app_root).run();
 //! ```
 //!
 //! an app writes
 //!
 //! ```ignore
-//! let (state, autosave) = ui::persist::open("so.tilo.my-app");
-//! ui::App::from_factory(state, my_app::app_root)
+//! let (state, autosave) = tilo_ui::persist::open("dev.tilo.my-app");
+//! tilo_ui::App::from_factory(state, my_app::app_root)
 //!     .with_autosave(autosave)
 //!     .run();
 //! ```
@@ -35,7 +35,7 @@
 // StoreError>` in this module large. Shrinking it means editing the
 // `app_state` crate; boxing it here instead means changing the return
 // type of these `pub fn`s, a public-API change that ripples to every
-// crate that calls into `ui::persist` (`shell` included). Neither is a
+// crate that calls into `tilo_ui::persist` (`shell` included). Neither is a
 // same-crate lint fix, so the size is accepted rather than exempted
 // function-by-function.
 #![allow(clippy::result_large_err)]

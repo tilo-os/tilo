@@ -11,13 +11,8 @@ use crate::widget::Widget;
 mod native_quit_request;
 
 impl App {
+    #[cfg(test)]
     pub(super) fn admit_native_close_request(&mut self) -> bool {
-        // Native hosts may deliver another window-close or application Quit
-        // while a decision is already visible. Coalesce it at the native
-        // boundary so explicit API retries can still re-check repaired owners.
-        if self.close_admission.dialog.is_some() {
-            return false;
-        }
         self.request_close() && self.finish_close_if_ready()
     }
 
@@ -32,6 +27,12 @@ impl App {
     pub fn request_close(&mut self) -> bool {
         if self.close_admission.admitted {
             return true;
+        }
+        // Native hosts may deliver another window-close or application Quit
+        // while a decision is already visible. Coalesce it here so it cannot
+        // replace the session, semantic addresses, focus, or failure detail.
+        if self.close_admission.dialog.is_some() {
+            return false;
         }
         self.close_admission.ready = false;
         if self.close_admission.save_waiting {
@@ -588,7 +589,7 @@ mod tests {
                 "fixture root owns persistence",
             ))
             .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
-        assert!(!app.admit_native_close_request());
+        assert!(!app.request_close());
         assert!(!app.close_admission.admitted);
         assert!(app.close_admission.dialog.is_some());
         let resource = app.close_admission.resources()[0].id.clone();
@@ -600,7 +601,7 @@ mod tests {
             .unwrap();
         fail.set(false);
         assert!(
-            !app.admit_native_close_request(),
+            !app.request_close(),
             "a duplicate native close cannot replace the failure decision"
         );
         assert_eq!(

@@ -447,20 +447,24 @@ impl PageJumpPalette {
     /// The palette card's background fill and border.
     fn draw_card_chrome(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         let scale = f64::from(theme.text_scale);
-        let shape = RoundedRect::from_rect(rect, 12.0 * scale);
+        let radius = 12.0 * scale;
+        let shape = RoundedRect::from_rect(rect, radius);
+        // Panel role (HIG §9.1): panel ground + the derived panel edge as a
+        // crisp inset stroke; a declared `border_standard` was invisible
+        // against `raised` on the dark preset.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0 * scale),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(rect, radius),
         );
     }
 
@@ -514,8 +518,8 @@ impl PageJumpPalette {
             &tokens.typography.style(TextRole::Body),
             tokens.colors.text_primary,
             tokens.colors.text_dim,
-            tokens.colors.accent[5].with_alpha_factor(0.3),
-            tokens.colors.accent[5],
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX].with_alpha_factor(0.3),
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
             true,
         );
         input_rect
@@ -545,8 +549,9 @@ impl PageJumpPalette {
         // it isn't enlarged twice while the row band scales once.
         let row_size = 14.0;
         if self.visible.is_empty() {
-            let label = "No notes match";
-            let y = list_top + (ROW_HEIGHT * scale - f64::from(row_size) * scale) / 2.0;
+            let label = "No pages match";
+            let (_, label_h) = text_renderer.measure(label, row_size, None);
+            let y = list_top + (ROW_HEIGHT * scale - f64::from(label_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -585,19 +590,15 @@ impl PageJumpPalette {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[5],
+                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
                     None,
                     &hl,
                 );
             }
-            let subtitle = self.subtitles.get(&row.id);
-            let ty = if subtitle.is_some() {
-                row_rect.y0 + 7.0 * scale
-            } else {
-                row_rect.y0 + (row_rect.height() - f64::from(row_size) * scale) / 2.0
-            };
-            let available = (row_rect.width() - 24.0 * scale).max(0.0) as f32;
-            let title = text_renderer.elide_to_width(&row.title, row_size, available);
+            // Centre on the measured line (already at the renderer's scale),
+            // not on the font size.
+            let (_, title_h) = text_renderer.measure(&row.title, row_size, None);
+            let ty = row_rect.y0 + (row_rect.height() - f64::from(title_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &title,
@@ -828,7 +829,7 @@ mod tests {
             let colors = &theme.tokens.colors;
             let ratio = crate::a11y::contrast_ratio(
                 colors.on_accent(ON_FILL_MIN_CONTRAST),
-                colors.accent[5],
+                colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
             );
             assert!(
                 ratio >= ON_FILL_MIN_CONTRAST,

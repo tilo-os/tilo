@@ -5,7 +5,7 @@
 //! An app that uses `ui` cannot avoid touching `vello`, `taffy`, `winit` and
 //! `automerge` — it hands scenes to a widget tree, sizes nodes in the same
 //! Taffy tree, receives the same winit events, and mutates the same Automerge
-//! document. Each is re-exported here; prefer `ui::vello` over declaring a
+//! document. Each is re-exported here; prefer `tilo_ui::vello` over declaring a
 //! separate `vello` dependency.
 //!
 //! This is not a style preference. Cargo will happily resolve two
@@ -14,11 +14,11 @@
 //! from `vello::Scene` in the other, so a widget tree built against the
 //! toolkit's copy cannot be handed a scene built against the app's — a type
 //! error at best, and a confusing one ("expected `Scene`, found `Scene`").
-//! Going through `ui::` makes the version question unaskable.
+//! Going through `tilo_ui::` makes the version question unaskable.
 //!
 //! ```ignore
-//! use ui::vello::kurbo::{Affine, Rect};   // not `use vello::kurbo::...`
-//! use ui::winit::event::WindowEvent;
+//! use tilo_ui::vello::kurbo::{Affine, Rect};   // not `use vello::kurbo::...`
+//! use tilo_ui::winit::event::WindowEvent;
 //! ```
 //!
 //! Apps that already declare these directly keep working — the workspace
@@ -88,6 +88,7 @@ pub mod gpu;
 pub mod gpu_video;
 pub mod graph_editor;
 pub mod headless;
+pub mod history_mode;
 pub mod history_source;
 #[cfg(all(windows, feature = "notifications"))]
 pub mod host_notifications;
@@ -137,6 +138,7 @@ pub mod status_bubble;
 pub mod surface;
 pub mod sysdirs;
 pub mod text_edit;
+pub mod text_metrics;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
@@ -155,7 +157,7 @@ pub mod window_icon;
 // `kurbo` and `peniko` come through `vello`, where the geometry and paint
 // types in every `draw` signature live.
 /// The AccessKit types the bridge and [`headless::Driver`] hand back,
-/// re-exported so an app crate can name them (`ui::accesskit::Role`) without
+/// re-exported so an app crate can name them (`tilo_ui::accesskit::Role`) without
 /// taking its own dependency on a version that must match this one exactly.
 pub use accesskit;
 pub use automerge;
@@ -255,6 +257,9 @@ pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
+pub use history_mode::{
+    HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
+};
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use widget::collaboration_overview::{CollaborationOverview, CollaborationOverviewAction};
 pub use widget::history::{
@@ -267,7 +272,7 @@ pub use widget::history_group::{
 };
 pub use widget::history_scrubber::HistoryScrubber;
 pub use widget::name_field::{NameField, NameFieldOutcome};
-// Re-exported so an app reaches the whole history stack through `ui::`
+// Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.
 pub use history_source::groups as history_groups;
 pub use history_source::{
@@ -339,5 +344,9 @@ pub use permissions::{
 
 pub mod application;
 pub mod application_view;
+pub mod native_scenario;
+pub mod synthetic_input;
 
 pub mod bound_dispatch;
+
+mod presentation_feedback;

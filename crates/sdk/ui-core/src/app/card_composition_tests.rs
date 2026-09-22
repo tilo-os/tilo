@@ -1,6 +1,13 @@
 use super::*;
-use crate::widget::{Actions, Button, Card, CardGrid, Element, Text};
+use crate::widget::{
+    Actions, Button, Card, CardGrid, Column, Element, EmptyState, Scrollable, Text,
+};
 use automerge::ReadDoc;
+use std::cell::Cell;
+use std::rc::Rc;
+use winit::dpi::PhysicalPosition;
+use winit::event::{ElementState, KeyEvent, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
 fn fixture() -> App {
     let cards: Vec<Element> = (0_usize..3)
@@ -35,12 +42,16 @@ fn fixture() -> App {
 }
 
 fn layout(app: &mut App, width: u32) {
+    layout_in(app, width, 1600);
+}
+
+fn layout_in(app: &mut App, width: u32, height: u32) {
     app.layout.layout_dirty = true;
     run_layout_pass(
         app,
         app.layout.root_node.unwrap(),
         width,
-        1600,
+        height,
         1.0,
         false,
         None,
@@ -124,4 +135,174 @@ fn content_card_host_geometry_focus_click_and_resize_are_coherent_before_paint()
             assert!(rect.height() >= 40.0);
         }
     }
+}
+
+fn named_key_event(key: NamedKey, state: ElementState) -> WindowEvent {
+    let logical_key = Key::Named(key);
+    let event = KeyEvent::synthetic(
+        winit::event::RawKeyEvent {
+            physical_key: PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified),
+            state,
+        },
+        logical_key.clone(),
+        None,
+        KeyLocation::Standard,
+        false,
+        None,
+        logical_key,
+    );
+    WindowEvent::KeyboardInput {
+        device_id: winit::event::DeviceId::dummy(),
+        event,
+        is_synthetic: false,
+    }
+}
+
+fn send_widget_then_host_fallback(app: &mut App, event: &WindowEvent) -> bool {
+    let mut handled = false;
+    let mut focus_target = None;
+    app.root_widget.handle_event(
+        event,
+        1.0,
+        &app.modifiers,
+        &mut app.state.doc,
+        &app.state.root,
+        &mut handled,
+        &mut focus_target,
+        app.layout.root_node.unwrap(),
+        &app.layout.taffy,
+    );
+    if let Some(target) = focus_target {
+        app.set_focused_node(Some(target));
+    }
+    app.handle_unconsumed_activation_key(event, &mut handled);
+    handled
+}
+
+#[test]
+fn short_card_stack_scroll_and_tab_activate_final_action_once_from_enter() {
+    let invocations = Rc::new(Cell::new(0));
+    let activated = invocations.clone();
+    let mut content = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(8.0);
+    for index in 0..8 {
+        content = content.push(Box::new(Card::composed(Box::new(Text::new(&format!(
+            "Application {index}: {}",
+            "A useful multi-line description that remains inside its card. ".repeat(3)
+        ))))));
+    }
+    content = content.push(Box::new(
+        Button::new("final-action", "Open all applications", None).on_click(move || {
+            activated.set(activated.get() + 1);
+        }),
+    ));
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(Scrollable::new_vertical().with_child(Box::new(content))),
+    );
+    app.init_layout();
+    layout_in(&mut app, 480, 360);
+
+    let final_node = *app
+        .focusable_order
+        .last()
+        .expect("final action is focusable");
+    let before = app
+        .inspect_node(final_node, |widget| widget.get_rect())
+        .unwrap();
+    assert!(before.y0 >= 360.0, "final action starts below the viewport");
+
+    let wheel = WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -10_000.0)),
+        phase: TouchPhase::Moved,
+    };
+    assert!(send_widget_then_host_fallback(&mut app, &wheel));
+    layout_in(&mut app, 480, 360);
+    let after = app
+        .inspect_node(final_node, |widget| widget.get_rect())
+        .unwrap();
+    assert!(
+        after.y0 >= 0.0 && after.y1 <= 360.0,
+        "final action is reachable after scrolling: {after:?}"
+    );
+
+    for _ in 0..app.focusable_order.len() {
+        assert!(app.focus_tab(false));
+    }
+    assert_eq!(app.focused_node, Some(final_node));
+
+    assert!(send_widget_then_host_fallback(
+        &mut app,
+        &named_key_event(NamedKey::Enter, ElementState::Pressed)
+    ));
+    assert_eq!(invocations.get(), 1, "Enter adds exactly one invocation");
+    send_widget_then_host_fallback(
+        &mut app,
+        &named_key_event(NamedKey::Enter, ElementState::Released),
+    );
+    assert_eq!(
+        invocations.get(),
+        1,
+        "the key release must not invoke the action again"
+    );
+    let mut already_handled = true;
+    app.handle_unconsumed_activation_key(
+        &named_key_event(NamedKey::Enter, ElementState::Pressed),
+        &mut already_handled,
+    );
+    assert_eq!(
+        invocations.get(),
+        1,
+        "a widget-consumed Enter press must not invoke the host fallback"
+    );
+}
+
+#[test]
+fn scrollable_empty_state_action_uses_the_real_tab_and_enter_host_route() {
+    let root = EmptyState::new("No messages are available")
+        .with_icon(crate::icons::Icon::Inbox)
+        .with_message("Reconnect to load messages.")
+        .with_action("Review connection settings")
+        .with_action_path("empty.review")
+        .into_scrollable()
+        .with_height(50.0);
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+    app.init_layout();
+    layout_in(&mut app, 240, 50);
+
+    let action_node = *app
+        .focusable_order
+        .iter()
+        .find(|&&node| {
+            app.inspect_node(node, |widget| widget.name() == "EmptyState")
+                .unwrap_or(false)
+        })
+        .expect("empty-state action is in host focus order");
+    let wheel = WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -10_000.0)),
+        phase: TouchPhase::Moved,
+    };
+    assert!(send_widget_then_host_fallback(&mut app, &wheel));
+    layout_in(&mut app, 240, 50);
+
+    for _ in 0..app.focusable_order.len() {
+        if app.focused_node == Some(action_node) {
+            break;
+        }
+        assert!(app.focus_tab(false));
+    }
+    assert_eq!(app.focused_node, Some(action_node));
+    assert!(send_widget_then_host_fallback(
+        &mut app,
+        &named_key_event(NamedKey::Enter, ElementState::Pressed),
+    ));
+    assert!(matches!(
+        app.state.doc.get(automerge::ROOT, "empty.review"),
+        Ok(Some((automerge::Value::Scalar(value), _)))
+            if value.as_ref().to_bool() == Some(true)
+    ));
 }

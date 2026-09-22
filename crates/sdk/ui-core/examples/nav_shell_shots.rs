@@ -155,7 +155,7 @@ fn to_f32(v: u32) -> f32 {
 /// layout pass. `apply_layout` at an unchanged size is a no-op for the flap
 /// reconcile (same breakpoint side), so it preserves the snapped state.
 fn shoot(shell: &mut NavShell, w: u32, h: u32, out: &Path, set: impl Fn(&mut NavShell)) {
-    let theme = Theme::dark();
+    let theme = shot_theme();
     let mut tr = TextRenderer::new();
 
     let mut taffy = TaffyTree::<()>::new();
@@ -207,7 +207,7 @@ pub fn run(_args: &[String]) {
         return;
     }
     let dir = PathBuf::from(dir);
-    let theme = Theme::dark();
+    let theme = shot_theme();
 
     // 1. WIDE: three abreast, docked sidebar (open), collapse chevron.
     let mut s = make_shell(&theme);
@@ -247,4 +247,16 @@ pub fn run(_args: &[String]) {
             sh.snap_pane(NavPane::Detail);
         },
     );
+}
+
+/// `QOS_SHOTS_THEME` picks the palette (`dark` by default) and
+/// `QOS_SHOTS_TEXT_SCALE` the text scale — the switches every app's `--shots`
+/// honours through `tilo_ui::launch::shot_theme`, whose `LaunchArgs` an example
+/// cannot construct. An unknown theme name is an error, never a silent dark
+/// shot: a capture that cannot observe its subject must fail.
+fn shot_theme() -> Theme {
+    tilo_ui::launch::shot_theme_from_env().unwrap_or_else(|error| {
+        eprintln!("ui-shots: {error}");
+        std::process::exit(2)
+    })
 }

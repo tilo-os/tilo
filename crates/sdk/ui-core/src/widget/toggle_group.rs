@@ -34,6 +34,14 @@ fn usize_to_f32(n: usize) -> f32 {
     f32::from(u16::try_from(n).unwrap_or(u16::MAX))
 }
 
+/// Intrinsic strip geometry: 120 px per segment so a two-word label fits
+/// without truncation, 36 px tall — between the 32 px fine-pointer target and
+/// the 40 px button so the strip reads as a peer of a button row without
+/// dwarfing its own labels. `apply_layout` re-partitions whatever width the
+/// host actually assigns.
+const SEGMENT_WIDTH: f32 = 120.0;
+const STRIP_HEIGHT: f32 = 44.0;
+
 pub struct Segment {
     pub label: String,
 }
@@ -491,23 +499,31 @@ impl ToggleGroup {
                     }
                 }
                 scene.pop_layer();
+                // Separators and outer edge derive from the track (HIG
+                // §9.5); separators stop `s1` short of the edge so they
+                // never run into the corner radius.
+                let track_edge = crate::surface::edge_on(colors.surfaces.raised);
+                let inset = f64::from(theme.tokens.spacing.s1);
                 let sep = Stroke::new(1.0);
                 for seg in segs.iter().take(segs.len().saturating_sub(1)) {
                     let x = seg.x1;
                     scene.stroke(
                         &sep,
                         transform,
-                        colors.border_standard,
+                        track_edge,
                         None,
-                        &Line::new(Point::new(x, outer.y0), Point::new(x, outer.y1)),
+                        &Line::new(
+                            Point::new(x, outer.y0 + inset),
+                            Point::new(x, outer.y1 - inset),
+                        ),
                     );
                 }
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
-                    colors.border_standard,
+                    track_edge,
                     None,
-                    &outer_shape,
+                    &crate::surface::edge_outline(outer, face.radius),
                 );
             }
             SegmentedStyle::Pill => {
@@ -716,9 +732,8 @@ impl Widget for ToggleGroup {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // 120px per segment, 44px tall; segments always share the
-        // available width equally in `apply_layout`.
-        let width = usize_to_f32(self.segments.len().max(1)) * 120.0;
+        // Segments always share the available width equally in `apply_layout`.
+        let width = usize_to_f32(self.segments.len().max(1)) * SEGMENT_WIDTH;
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: if self.flexible_width {
@@ -726,7 +741,7 @@ impl Widget for ToggleGroup {
                 } else {
                     Dimension::length(width)
                 },
-                height: Dimension::length(44.0),
+                height: Dimension::length(STRIP_HEIGHT),
             },
             // A segmented strip has an intrinsic label-bearing width. In a
             // horizontal `Scrollable`, shrinking it to the viewport defeats
@@ -792,6 +807,10 @@ impl Widget for ToggleGroup {
         let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
         let face = SegmentedFace::new(&self.segment_rects, &labels, self.selected)
             .style(self.style)
+            .text_size(crate::text_metrics::renderer_type_size(
+                text_renderer,
+                theme.tokens.typography.scale.sm,
+            ))
             .radius(radius);
         Self::paint(scene, transform, text_renderer, theme, &face);
 
@@ -1104,6 +1123,38 @@ mod tests {
             &tree,
         );
         handled
+    }
+
+    #[test]
+    fn retained_labels_apply_resolved_text_scale_exactly_once() {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut text = crate::font_catalog::fixture_renderer();
+            text.set_text_scale(scale);
+            let mut group = group_at(
+                vec![Segment::new("Params"), Segment::new("Headers")],
+                0,
+                Rect::new(0.0, 0.0, 384.0, 52.0),
+            );
+            let mut scene = Scene::new();
+            group.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(!runs.is_empty());
+            for run in runs {
+                assert!(
+                    (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.001,
+                    "{scale}x text must paint once at resolved size {}, got {}",
+                    theme.tokens.typography.scale.sm,
+                    run.font_size
+                );
+            }
+        }
     }
 
     #[test]

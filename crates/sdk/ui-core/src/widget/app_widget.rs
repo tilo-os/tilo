@@ -1215,7 +1215,7 @@ mod component_adapter {
             // Consumed under the canonical record admission.
             None
         }
-        fn set_undo_status(&mut self, _: &crate::undo::UndoStatus) {
+        fn set_undo_status(&mut self, _: &mut dyn FnMut() -> crate::undo::UndoStatus) {
             // Individual bound nodes receive their own record/instance status.
         }
         fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {

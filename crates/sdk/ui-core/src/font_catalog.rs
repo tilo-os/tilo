@@ -65,7 +65,7 @@ pub struct FontCatalogError {
 impl FontCatalogError {
     #[allow(
         clippy::needless_pass_by_value,
-        reason = "owned conversion inputs let callers pass either paths or formatted errors without borrowing temporaries"
+        reason = "The error constructor accepts owned diagnostics and string literals and stores their formatted message."
     )]
     fn at(path: impl Into<PathBuf>, problem: impl ToString) -> Self {
         Self {
@@ -103,7 +103,7 @@ pub fn catalog_manifest_sha256() -> String {
     hex::encode(Sha256::digest(MANIFEST.as_bytes()))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn fixture_catalog() -> FontCatalog {
     FontCatalog::controlled_fixture(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
@@ -118,7 +118,7 @@ pub(crate) fn fixture_font_system() -> FontSystem {
         .expect("checked-in canonical font fixture")
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn fixture_renderer() -> crate::text_render::TextRenderer {
     crate::text_render::TextRenderer::with_font_catalog(&fixture_catalog())
         .expect("checked-in canonical renderer fixture")
@@ -163,7 +163,7 @@ impl FontCatalog {
     // Injection is private, synchronous, and per-call: no test changes a global.
     #[allow(
         clippy::too_many_lines,
-        reason = "font discovery, validation and database construction form one ordered loading transaction"
+        reason = "Catalog loading keeps manifest/hash/face validation, system-font filtering, and canonical-family checks in one sequence."
     )]
     fn load_with_system(
         &self,
@@ -316,7 +316,7 @@ fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
 #[cfg(not(windows))]
 #[allow(
     clippy::large_stack_arrays,
-    reason = "the fixed 64 KiB hashing buffer avoids heap allocation during font discovery"
+    reason = "A single fixed 64 KiB stack buffer bounds memory while streaming each font into SHA-256."
 )]
 fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
     let mut file = std::fs::File::open(path).map_err(|e| FontCatalogError::at(path, e))?;

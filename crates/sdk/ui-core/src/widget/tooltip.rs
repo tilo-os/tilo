@@ -7,11 +7,10 @@ use automerge::{AutoCommit, ObjId};
 use std::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::color_compat::ColorCompat;
+use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
 
 /// Middle of the 400-600ms comfort band: shows help promptly on a
@@ -25,21 +24,6 @@ const CHIP_GAP: f64 = 6.0;
 const CHIP_MARGIN: f64 = 6.0;
 /// Hard cap so a pathological label can't paint a chip wider than the window.
 const CHIP_MAX_W: f64 = 320.0;
-
-/// Rounds a channel-times-alpha-scale product into a colour byte. Every
-/// caller passes `channel * alpha_scale` where `channel` is a `u8`
-/// widened to `f32` and `alpha_scale` is at most `1.0`, so `value` is
-/// always in `[0.0, 255.0]` — the `.clamp` below makes that provably
-/// safe regardless.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "value is clamped into [0.0, 255.0] on the line above, so the \
-              cast can never truncate or flip sign"
-)]
-fn channel_byte(value: f32) -> u8 {
-    value.round().clamp(0.0, 255.0) as u8
-}
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
 /// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
@@ -64,7 +48,10 @@ fn px_f32(v: f64) -> f32 {
 }
 
 pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, text_size: f32) -> (f64, f64) {
-    let (tw, _th) = text_renderer.measure(label, text_size, None);
+    // `text_size` is the theme-resolved size: it sizes the box in theme
+    // space and is divided back out once for the renderer's own measure.
+    let (tw, _th) =
+        text_renderer.measure(label, renderer_type_size(text_renderer, text_size), None);
     let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(CHIP_MAX_W);
     let h = (f64::from(text_size) + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
     (w, h)
@@ -108,46 +95,36 @@ pub fn draw_chip(
 ) {
     let radius = f64::from(theme.tokens.radii.sm);
 
-    // Vello has no blur primitive on this path, so two stacked translucent
-    // copies offset downward approximate a soft shadow.
-    let elev = &theme.tokens.elevation.e2;
-    let base = elev.color;
-    for (inflate, dy, alpha_scale) in [(3.0_f64, 5.0_f64, 0.5_f32), (1.0, 2.0, 1.0)] {
-        let a = channel_byte(f32::from(base.a()) * alpha_scale);
-        let col = Color::from_rgba8(base.r(), base.g(), base.b(), a);
-        let sr = Rect::new(
-            rect.x0 - inflate,
-            rect.y0 - inflate + dy,
-            rect.x1 + inflate,
-            rect.y1 + inflate + dy,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            col,
-            None,
-            &RoundedRect::from_rect(sr, radius + inflate),
-        );
-    }
+    // The elevation token's own blur, following the chip's radius — the same
+    // painter every other raised surface uses, rather than two hand-offset
+    // translucent copies approximating it.
+    crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
 
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        vello::peniko::Fill::NonZero,
+    // Fill + a rest edge derived from the fill itself (HIG §9.5 "Tooltip:
+    // as today, `edge_on(fill)`"), as a crisp 1 px inset stroke. The chip is
+    // centred under its anchor and so usually lands on a half pixel; snap
+    // the painted box to the grid or the hairline smears across two
+    // columns at half strength and stops registering on the dark preset.
+    let snapped = Rect::new(
+        rect.x0.round(),
+        rect.y0.round(),
+        rect.x1.round(),
+        rect.y1.round(),
+    );
+    crate::surface::card(
+        scene,
         transform,
+        snapped,
+        radius,
         theme.tokens.colors.surfaces.overlay,
-        None,
-        &shape,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &shape,
     );
 
-    let text_size = theme.tokens.typography.scale.sm;
-    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
+    let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    // Centre on the measured line, not the font size: the chip's box is
+    // sized from the font size, so the label otherwise sits low by half the
+    // face's ascent/descent difference.
+    let (_, label_h) = text_renderer.measure(label, text_size, None);
+    let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,

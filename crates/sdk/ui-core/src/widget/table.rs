@@ -70,6 +70,10 @@ const BOUNDARY_HIT: f64 = 11.0;
 const RESIZE_HIT: f64 = 4.0;
 const PILL_R: f64 = 8.0;
 const DELETE_SIDE: f64 = 15.0;
+/// Cell type, a deliberate off-scale value between `base` (14) and `lg` (16):
+/// the authored default of this grid, kept exact at 1×. `TextInput` takes a
+/// *base* size and applies the renderer's text scale itself, so the cells
+/// still follow the accessibility text scale.
 const CELL_FONT: f32 = 15.0;
 
 // ---------------------------------------------------------------------------
@@ -933,7 +937,7 @@ impl Table {
             if hovered {
                 theme.accent_primary
             } else {
-                theme.border_standard
+                crate::surface::edge_on(box_color)
             },
             None,
             &rr,
@@ -984,8 +988,16 @@ impl Table {
     ) {
         let tk = &theme.tokens;
         let line = Stroke::new(1.0);
-        let line_color = tk.colors.border_white_10;
+        // Rules derive from the body surface they cross (HIG §9.5): a white
+        // veneer vanishes on a light table, a declared border on a dark one.
+        let line_color = crate::surface::edge_on(tk.colors.surfaces.raised);
+        // A 1 px rule centred on an integer edge smears over two half-alpha
+        // columns; the edges are whole pixels (see `draw`), so centre each
+        // rule on the pixel just inside the body.
+        let snap_x = |x: f64| if x >= gr { x - 0.5 } else { x + 0.5 };
+        let snap_y = |y: f64| if y >= gb { y - 0.5 } else { y + 0.5 };
         for &x in xs {
+            let x = snap_x(x);
             scene.stroke(
                 &line,
                 transform,
@@ -995,6 +1007,7 @@ impl Table {
             );
         }
         for &y in ys {
+            let y = snap_y(y);
             scene.stroke(
                 &line,
                 transform,
@@ -1003,17 +1016,20 @@ impl Table {
                 &Line::new((gl, y), (gr, y)),
             );
         }
-        // Heavier separator under the header.
+        // Heavier separator under the header: the same crisp 1 px rule at
+        // the active-glow strength, so it reads darker/brighter rather than
+        // as a blurred one-and-a-half pixel band.
         if self.header
             && self.n_rows() >= 1
             && let Some(&y1) = ys.get(1)
         {
+            let y = snap_y(y1);
             scene.stroke(
-                &Stroke::new(1.5),
+                &line,
                 transform,
-                theme.border_standard,
+                crate::surface::edge_on_with(tk.colors.surfaces.raised, crate::chrome::GLOW_ALPHA),
                 None,
-                &Line::new((gl, y1), (gr, y1)),
+                &Line::new((gl, y), (gr, y)),
             );
         }
 
@@ -1478,12 +1494,18 @@ impl Widget for Table {
         }
 
         let (xs, ys) = self.grid_edges();
+        // Painted geometry snaps to whole pixels so a 1 px rule is exactly
+        // one row or column: a column width is a doc value and fractional
+        // after a drag. Hit-testing keeps the exact edges; the difference is
+        // under half a pixel.
+        let xs: Vec<f64> = xs.into_iter().map(f64::round).collect();
+        let ys: Vec<f64> = ys.into_iter().map(f64::round).collect();
         // Reached only past `is_empty()`, so both edge lists have >= 2
         // entries; the fallbacks below never actually apply.
         let gl = xs.first().copied().unwrap_or(self.rect.x0 + LEFT_GUTTER);
-        let gr = self.grid_right();
+        let gr = self.grid_right().round();
         let gt = ys.first().copied().unwrap_or(self.rect.y0 + TOP_GUTTER);
-        let gb = self.grid_bottom();
+        let gb = self.grid_bottom().round();
         let body = Rect::new(gl, gt, gr, gb);
 
         // Grid body surface + header band + zebra rows.
@@ -1498,10 +1520,19 @@ impl Widget for Table {
             let [y0, y1] = *w else { continue };
             let row_rect = Rect::new(gl, y0, gr, y1);
             let is_header = self.header && r == 0;
+            // Header band and zebra stripe are derived tiers on the body
+            // surface (HIG §9.5), so they flip polarity on a light palette
+            // instead of laying a white veneer over a white table.
             let fill = if is_header {
-                tk.colors.surface_white_10
+                crate::widget::data_table::tier_on(
+                    tk.colors.surfaces.raised,
+                    crate::chrome::HAIRLINE_ALPHA,
+                )
             } else if r % 2 == 1 {
-                tk.colors.surface_white_5
+                crate::widget::data_table::tier_on(
+                    tk.colors.surfaces.raised,
+                    crate::widget::data_table::ZEBRA_ALPHA,
+                )
             } else {
                 continue;
             };

@@ -47,9 +47,14 @@ pub mod add_device_host;
 pub mod create_identity;
 pub mod invite_accept;
 pub mod invite_mint;
+mod line_edit_compat;
 pub mod pair_device;
 pub mod recovery_share;
 pub mod recovery_verify;
+mod sheet;
+
+#[allow(deprecated, reason = "stable SDK compatibility re-export")]
+pub use line_edit_compat::LineEditState;
 
 /// Disk-format record for a persisted identity.
 ///
@@ -1860,7 +1865,7 @@ pub fn mint_invite(
 /// storage, encryption/signing failure, or an exhausted authority quota.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the identity card painter keeps renderer, geometry, content and interaction state explicit"
+    reason = "Broker invites bind channel identity, owner signing identity, inviter label, role and expiry, redemption endpoint/certificate, and authority storage."
 )]
 pub fn mint_invite_for_broker(
     channel: ChannelId,
@@ -1902,7 +1907,7 @@ pub fn mint_invite_for_broker(
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "the identity action painter keeps renderer, geometry, label and interaction state explicit"
+    reason = "Invite signing binds channel and owner identity, recipient-visible label, role/expiry, redemption endpoint/certificate, and the issuing authority."
 )]
 fn mint_invite_at(
     channel: ChannelId,
@@ -2124,281 +2129,9 @@ impl RecoveryChallenge {
     }
 }
 
-/// Single-line text edit state shared by the identity-flow inline
-/// inputs; screens render the caret at `cursor` and any
-/// `selection_range()`.
-#[derive(Clone, Debug, Default)]
-pub struct LineEditState {
-    pub text: String,
-    /// Byte index into `text`. Always on a char boundary.
-    pub cursor: usize,
-    /// Anchor end of the selection. `None` when nothing is selected.
-    pub selection_anchor: Option<usize>,
-}
-
-impl LineEditState {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_text(text: impl Into<String>) -> Self {
-        let text = text.into();
-        let cursor = text.len();
-        Self {
-            text,
-            cursor,
-            selection_anchor: None,
-        }
-    }
-
-    /// `(lo, hi)` byte-index pair, both on char boundaries.
-    pub fn selection_range(&self) -> Option<(usize, usize)> {
-        let anchor = self.selection_anchor?;
-        match anchor.cmp(&self.cursor) {
-            std::cmp::Ordering::Equal => None,
-            std::cmp::Ordering::Less => Some((anchor, self.cursor)),
-            std::cmp::Ordering::Greater => Some((self.cursor, anchor)),
-        }
-    }
-
-    pub fn selected_text(&self) -> &str {
-        match self.selection_range() {
-            // `selection_range` always returns char-boundary offsets, so
-            // `get` succeeds; the fallback only guards against that
-            // invariant somehow not holding.
-            Some((lo, hi)) => self.text.get(lo..hi).unwrap_or(""),
-            None => "",
-        }
-    }
-
-    /// Clamped to bounds and snapped to a char boundary; `extend`
-    /// keeps the anchor.
-    pub fn move_cursor(&mut self, pos: usize, extend: bool) {
-        let mut pos = pos.min(self.text.len());
-        while pos > 0 && !self.text.is_char_boundary(pos) {
-            pos = pos.saturating_sub(1);
-        }
-        if extend {
-            self.selection_anchor.get_or_insert(self.cursor);
-        } else {
-            self.selection_anchor = None;
-        }
-        self.cursor = pos;
-    }
-
-    /// Returns `true` if anything was removed.
-    pub fn delete_selection(&mut self) -> bool {
-        let Some((lo, hi)) = self.selection_range() else {
-            return false;
-        };
-        self.text.replace_range(lo..hi, "");
-        self.cursor = lo;
-        self.selection_anchor = None;
-        true
-    }
-
-    pub fn insert_str(&mut self, s: &str) {
-        let _ = self.delete_selection();
-        self.text.insert_str(self.cursor, s);
-        self.cursor = self.cursor.saturating_add(s.len());
-        self.selection_anchor = None;
-    }
-
-    fn prev_char_boundary(&self) -> usize {
-        if self.cursor == 0 {
-            return 0;
-        }
-        let mut p = self.cursor.saturating_sub(1);
-        while p > 0 && !self.text.is_char_boundary(p) {
-            p = p.saturating_sub(1);
-        }
-        p
-    }
-
-    fn next_char_boundary(&self) -> usize {
-        if self.cursor >= self.text.len() {
-            return self.text.len();
-        }
-        let mut p = self.cursor.saturating_add(1);
-        while p < self.text.len() && !self.text.is_char_boundary(p) {
-            p = p.saturating_add(1);
-        }
-        p
-    }
-
-    /// The usual editor definition: scans left to where non-alphanumeric
-    /// meets alphanumeric.
-    fn prev_word_boundary(&self) -> usize {
-        let bytes = self.text.as_bytes();
-        let is_alnum_before = |p: usize| {
-            bytes
-                .get(p.saturating_sub(1))
-                .is_some_and(u8::is_ascii_alphanumeric)
-        };
-        let mut p = self.cursor;
-        while p > 0 && !is_alnum_before(p) {
-            p = p.saturating_sub(1);
-        }
-        while p > 0 && is_alnum_before(p) {
-            p = p.saturating_sub(1);
-        }
-        p
-    }
-
-    fn next_word_boundary(&self) -> usize {
-        let bytes = self.text.as_bytes();
-        let len = bytes.len();
-        let is_alnum_at = |p: usize| bytes.get(p).is_some_and(u8::is_ascii_alphanumeric);
-        let mut p = self.cursor;
-        while p < len && is_alnum_at(p) {
-            p = p.saturating_add(1);
-        }
-        while p < len && !is_alnum_at(p) {
-            p = p.saturating_add(1);
-        }
-        p
-    }
-
-    /// `text_input` is `KeyEvent::text` — the OS's printable text for
-    /// this key, if any.
-    pub fn apply_key(
-        &mut self,
-        key: &winit::keyboard::Key,
-        modifiers: &winit::event::Modifiers,
-        text_input: Option<&str>,
-    ) -> bool {
-        use winit::event::Modifiers;
-        use winit::keyboard::{Key, NamedKey};
-        let ctrl = modifiers.state().control_key();
-        let shift = modifiers.state().shift_key();
-        let _ = Modifiers::default(); // silence unused-import lint in some compositions
-
-        match key {
-            Key::Named(NamedKey::ArrowLeft) => {
-                let target = if ctrl {
-                    self.prev_word_boundary()
-                } else {
-                    self.prev_char_boundary()
-                };
-                self.move_cursor(target, shift);
-                true
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                let target = if ctrl {
-                    self.next_word_boundary()
-                } else {
-                    self.next_char_boundary()
-                };
-                self.move_cursor(target, shift);
-                true
-            }
-            Key::Named(NamedKey::Home) => {
-                self.move_cursor(0, shift);
-                true
-            }
-            Key::Named(NamedKey::End) => {
-                self.move_cursor(self.text.len(), shift);
-                true
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if self.delete_selection() {
-                    return true;
-                }
-                if self.cursor == 0 {
-                    return false;
-                }
-                let target = if ctrl {
-                    self.prev_word_boundary()
-                } else {
-                    self.prev_char_boundary()
-                };
-                self.text.replace_range(target..self.cursor, "");
-                self.cursor = target;
-                true
-            }
-            Key::Named(NamedKey::Delete) => {
-                if self.delete_selection() {
-                    return true;
-                }
-                if self.cursor >= self.text.len() {
-                    return false;
-                }
-                let target = if ctrl {
-                    self.next_word_boundary()
-                } else {
-                    self.next_char_boundary()
-                };
-                self.text.replace_range(self.cursor..target, "");
-                true
-            }
-            Key::Character(s) if ctrl => self.apply_ctrl_shortcut(s),
-            _ => {
-                // Skip control codes: they arrive as zero-width chars on some platforms.
-                if let Some(t) = text_input {
-                    let cleaned: String = t.chars().filter(|c| !c.is_control()).collect();
-                    if !cleaned.is_empty() {
-                        self.insert_str(&cleaned);
-                        return true;
-                    }
-                }
-                false
-            }
-        }
-    }
-
-    /// Handles Ctrl+A/C/X/V; `s` is the character text from the key
-    /// event. Returns `true` if the shortcut was recognised and applied.
-    fn apply_ctrl_shortcut(&mut self, s: &str) -> bool {
-        match s.to_lowercase().as_str() {
-            "a" => {
-                self.selection_anchor = Some(0);
-                self.cursor = self.text.len();
-                true
-            }
-            "c" => {
-                let sel = self.selected_text();
-                let bytes = if sel.is_empty() {
-                    self.text.clone()
-                } else {
-                    sel.to_string()
-                };
-                crate::text_selection::clipboard_copy(&bytes);
-                true
-            }
-            "x" => {
-                if self.selection_range().is_some() {
-                    let sel = self.selected_text().to_string();
-                    crate::text_selection::clipboard_copy(&sel);
-                    self.delete_selection();
-                    true
-                } else {
-                    false
-                }
-            }
-            "v" => {
-                if let Some(pasted) = crate::text_selection::clipboard_paste() {
-                    let cleaned: String = pasted.chars().filter(|c| !c.is_control()).collect();
-                    self.insert_str(&cleaned);
-                    true
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        }
-    }
-}
-
-/// Terminal "Done" success card; falls back to a generic message if
-/// the store has no record.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the `transform * Affine::translate(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-)]
-#[allow(
-    clippy::similar_names,
-    reason = "cx/cy is the standard center-x/center-y coordinate naming convention; distinguishing them further would reduce clarity"
-)]
+/// Terminal "Done" success card, on the shared sheet: avatar disc and
+/// name on one row, the two closing lines under them. Falls back to a
+/// generic message if the store has no record.
 fn draw_done_card(
     store: &dyn IdentityStore,
     scene: &mut Scene,
@@ -2407,92 +2140,107 @@ fn draw_done_card(
     theme: &Theme,
     viewport: Rect,
 ) {
-    use vello::kurbo::{RoundedRect, Stroke};
+    use sheet::{Align, FORM_SHEET_WIDTH, Role, Rows, Sheet, SheetSpec, line_height, paint_text};
     use vello::peniko::{Color, Fill};
-    let backdrop = Color::from_rgba8(0, 0, 0, 180);
-    scene.fill(Fill::NonZero, transform, backdrop, None, &viewport);
-    let card_w = 480.0;
-    let card_h = 280.0;
-    let card_x = viewport.x0 + (viewport.width() - card_w) / 2.0;
-    let card_y = viewport.y0 + (viewport.height() - card_h) / 2.0;
-    let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
-    let radius = 12.0;
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        theme.tokens.colors.surfaces.raised,
-        None,
-        &RoundedRect::from_rect(card, radius),
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &RoundedRect::from_rect(card, radius),
-    );
-    let pad = 32.0;
+
+    const TITLE: &str = "You're all set";
+    const SAVED: &str = "Your identity is saved. You can close this window.";
+    const NEXT: &str = "Start the desktop from a terminal to begin collaborating.";
+
     let (display_name, avatar) = match store.load() {
         Ok(Some(rec)) => (rec.display_name.clone(), rec.avatar_color),
         _ => ("Your identity".to_string(), [120, 120, 200]),
     };
-    let avatar_d = 56.0;
-    let avatar_cx = card.x0 + pad + avatar_d / 2.0;
-    let avatar_cy = card.y0 + pad + avatar_d / 2.0;
+    let signed_in = format!("Signed in as {display_name}");
+    let spec = SheetSpec {
+        title: TITLE,
+        max_width: FORM_SHEET_WIDTH,
+        actions: &[],
+    };
+    let sp = &theme.tokens.spacing;
+    // The avatar is one `s12` disc; the name row is as tall as the disc and
+    // the two closing captions sit one `s6` below it, `s1` apart.
+    let avatar_d = f64::from(sp.s12);
+    let caption_h = line_height(text_renderer, theme, Role::Caption);
+    let plan = |mut rows: Rows| {
+        let name_row = rows.row(avatar_d);
+        rows.gap(sp.s6);
+        let saved = rows.row(caption_h);
+        rows.gap(sp.s1);
+        let next = rows.row(caption_h);
+        (name_row, saved, next, rows.bottom())
+    };
+    let body_w = Sheet::body_width(viewport, spec.max_width, theme);
+    let (_, _, _, wanted) = plan(Rows::measuring(body_w));
+    let sheet = Sheet::layout(viewport, &spec, wanted, text_renderer, theme);
+    let (name_row, saved, next, _) = plan(Rows::new(sheet.body()));
+
+    sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+    let avatar_centre = (name_row.x0 + avatar_d / 2.0, name_row.center().y);
+    // A per-person colour is identity, not decoration (HIG §9.4), so it is
+    // the one fill here the theme does not own; its initial takes the ink
+    // that reads against it rather than an assumed white.
     let avatar_color = Color::from_rgb8(avatar[0], avatar[1], avatar[2]);
     scene.fill(
         Fill::NonZero,
         transform,
         avatar_color,
         None,
-        &vello::kurbo::Circle::new((avatar_cx, avatar_cy), avatar_d / 2.0),
+        &vello::kurbo::Circle::new(avatar_centre, avatar_d / 2.0),
     );
     let initial: String = display_name
         .chars()
         .next()
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_default();
-    let (iw, _) = text_renderer.measure(&initial, 28.0, None);
-    text_renderer.draw_text(
+    let disc = Rect::new(
+        name_row.x0,
+        name_row.y0,
+        name_row.x0 + avatar_d,
+        name_row.y1,
+    );
+    sheet::paint_text_in(
         scene,
+        transform,
+        text_renderer,
+        theme,
+        disc,
         &initial,
-        28.0,
-        Color::from_rgb8(255, 255, 255),
-        transform * Affine::translate((avatar_cx - f64::from(iw) / 2.0, avatar_cy - 16.0)),
-        None,
+        Role::Code,
+        theme.on_surface(avatar_color).ink,
+        Align::Center,
+        false,
     );
-    text_renderer.draw_text(
+    let name_rect = Rect::new(
+        disc.x1 + f64::from(sp.s4),
+        name_row.y0,
+        name_row.x1,
+        name_row.y1,
+    );
+    paint_text(
         scene,
-        "You're all set",
-        22.0,
-        theme.tokens.colors.text_primary,
-        transform * Affine::translate((card.x0 + pad + avatar_d + 16.0, card.y0 + pad + 4.0)),
-        None,
+        transform,
+        text_renderer,
+        theme,
+        name_rect,
+        &signed_in,
+        Role::Value,
+        Align::Start,
+        false,
     );
-    text_renderer.draw_text(
-        scene,
-        &format!("Signed in as {display_name}"),
-        14.0,
-        theme.tokens.colors.text_dim,
-        transform * Affine::translate((card.x0 + pad + avatar_d + 16.0, card.y0 + pad + 32.0)),
-        None,
-    );
-    text_renderer.draw_text(
-        scene,
-        "Your identity is saved. You can close this window.",
-        13.0,
-        theme.tokens.colors.text_dim,
-        transform * Affine::translate((card.x0 + pad, card.y0 + pad + avatar_d + 32.0)),
-        None,
-    );
-    text_renderer.draw_text(
-        scene,
-        "Start the desktop from a terminal to begin collaborating.",
-        13.0,
-        theme.tokens.colors.text_dim,
-        transform * Affine::translate((card.x0 + pad, card.y0 + pad + avatar_d + 56.0)),
-        None,
-    );
+    for (rect, label) in [(saved, SAVED), (next, NEXT)] {
+        paint_text(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            rect,
+            label,
+            Role::Caption,
+            Align::Start,
+            false,
+        );
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2644,7 +2392,52 @@ impl IdentityFlow {
     }
 }
 
+impl IdentityFlow {
+    /// The screen currently shown, as a widget — `None` on the terminal
+    /// card, which the flow paints itself.
+    fn current_widget(&self) -> Option<&dyn Widget> {
+        Some(match self.current {
+            IdentityFlowScreen::CreateIdentity => &*self.create_identity,
+            IdentityFlowScreen::RecoveryShare => &*self.recovery_share,
+            IdentityFlowScreen::RecoveryVerify => &*self.recovery_verify,
+            IdentityFlowScreen::AddDeviceHost => &*self.add_device_host,
+            IdentityFlowScreen::PairDevice => &*self.pair_device,
+            IdentityFlowScreen::InviteMint => &*self.invite_mint,
+            IdentityFlowScreen::InviteAccept => &*self.invite_accept,
+            IdentityFlowScreen::Done => return None,
+        })
+    }
+
+    fn current_widget_mut(&mut self) -> Option<&mut (dyn Widget + '_)> {
+        Some(match self.current {
+            IdentityFlowScreen::CreateIdentity => &mut *self.create_identity,
+            IdentityFlowScreen::RecoveryShare => &mut *self.recovery_share,
+            IdentityFlowScreen::RecoveryVerify => &mut *self.recovery_verify,
+            IdentityFlowScreen::AddDeviceHost => &mut *self.add_device_host,
+            IdentityFlowScreen::PairDevice => &mut *self.pair_device,
+            IdentityFlowScreen::InviteMint => &mut *self.invite_mint,
+            IdentityFlowScreen::InviteAccept => &mut *self.invite_accept,
+            IdentityFlowScreen::Done => return None,
+        })
+    }
+}
+
 impl Widget for IdentityFlow {
+    /// The active screen is a child, so the headless driver, the inspector
+    /// and assistive technology can reach it by its `test_id`. Without this
+    /// the flow was a leaf and no screen was addressable at all.
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.current_widget().into_iter().collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.current_widget_mut().into_iter().collect()
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("identity_flow")
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         match self.current {
             IdentityFlowScreen::CreateIdentity => self.create_identity.sync(state, path),
@@ -2658,32 +2451,35 @@ impl Widget for IdentityFlow {
         }
     }
 
+    /// The flow is a real parent node with the active screen as its one
+    /// child, matching `children()`. Returning the screen's own node here
+    /// used to be enough; now that a screen has children of its own (its
+    /// embedded text fields), every walk that zips `children()` against
+    /// `taffy.children(node)` — focus order, accessibility — needs the two
+    /// trees to agree at this level too.
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        match self.current {
-            IdentityFlowScreen::CreateIdentity => {
-                self.create_identity.build_layout(taffy, theme, node_map)
-            }
-            IdentityFlowScreen::RecoveryShare => {
-                self.recovery_share.build_layout(taffy, theme, node_map)
-            }
-            IdentityFlowScreen::RecoveryVerify => {
-                self.recovery_verify.build_layout(taffy, theme, node_map)
-            }
-            IdentityFlowScreen::AddDeviceHost => {
-                self.add_device_host.build_layout(taffy, theme, node_map)
-            }
-            IdentityFlowScreen::PairDevice => self.pair_device.build_layout(taffy, theme, node_map),
-            IdentityFlowScreen::InviteMint => self.invite_mint.build_layout(taffy, theme, node_map),
-            IdentityFlowScreen::InviteAccept => {
-                self.invite_accept.build_layout(taffy, theme, node_map)
-            }
-            IdentityFlowScreen::Done => taffy.leaf_node(Style::default()),
-        }
+        let fill = Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        let screen = match self.current_widget_mut() {
+            Some(screen) => vec![screen.build_layout(taffy, theme, node_map)],
+            // The terminal card owns the viewport like every other screen;
+            // a default (zero-width) leaf centred it on the window's left
+            // edge, half off-screen.
+            None => Vec::new(),
+        };
+        let node = taffy.parent_node(fill, &screen);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -2694,27 +2490,15 @@ impl Widget for IdentityFlow {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        match self.current {
-            IdentityFlowScreen::CreateIdentity => {
-                self.create_identity.apply_layout(taffy, node, origin);
-            }
-            IdentityFlowScreen::RecoveryShare => {
-                self.recovery_share.apply_layout(taffy, node, origin);
-            }
-            IdentityFlowScreen::RecoveryVerify => {
-                self.recovery_verify.apply_layout(taffy, node, origin);
-            }
-            IdentityFlowScreen::AddDeviceHost => {
-                self.add_device_host.apply_layout(taffy, node, origin);
-            }
-            IdentityFlowScreen::PairDevice => self.pair_device.apply_layout(taffy, node, origin),
-            IdentityFlowScreen::InviteMint => self.invite_mint.apply_layout(taffy, node, origin),
-            IdentityFlowScreen::InviteAccept => {
-                self.invite_accept.apply_layout(taffy, node, origin);
-            }
-            IdentityFlowScreen::Done => {
-                // No inner screen; self.rect already set above.
-            }
+        // The screen is the flow's first taffy child; its layout is
+        // relative to the flow's rect.
+        let screen_node = taffy
+            .children(node)
+            .ok()
+            .and_then(|children| children.first().copied());
+        let screen_origin = Point::new(self.rect.x0, self.rect.y0);
+        if let (Some(screen_node), Some(screen)) = (screen_node, self.current_widget_mut()) {
+            screen.apply_layout(taffy, screen_node, screen_origin);
         }
     }
 
@@ -2878,6 +2662,80 @@ impl Widget for IdentityFlow {
 
     fn is_layout_dirty(&self) -> bool {
         true
+    }
+}
+
+/// Synthetic `winit` events for the screens' unit tests, which drive
+/// `handle_event_screen` directly rather than through a harness. One copy
+/// here rather than one per screen module.
+#[cfg(test)]
+pub(super) mod test_events {
+    use taffy::{NodeId, Style, TaffyTree};
+    use vello::kurbo::Point;
+    use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, WindowEvent};
+    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+
+    use crate::widget::TaffyTreeExt;
+
+    fn synth_device() -> DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// A key press carrying `logical_key` and the OS's printable `text`,
+    /// built the way the headless driver builds its own key events.
+    pub(crate) fn key(logical_key: Key, text: Option<&str>) -> WindowEvent {
+        let text: Option<winit::keyboard::SmolStr> = text.map(Into::into);
+        let event = KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                ),
+                state: ElementState::Pressed,
+            },
+            logical_key.clone(),
+            text.clone(),
+            KeyLocation::Standard,
+            false,
+            text,
+            logical_key,
+        );
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    /// A printable character press.
+    pub(crate) fn char(ch: &str) -> WindowEvent {
+        key(Key::Character(ch.into()), Some(ch))
+    }
+
+    /// A named (non-printing) key press.
+    pub(crate) fn named(k: NamedKey) -> WindowEvent {
+        key(Key::Named(k), None)
+    }
+
+    pub(crate) fn cursor_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: synth_device(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+
+    pub(crate) fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// A throwaway tree and node for `handle_event_screen`'s parameters.
+    pub(crate) fn scratch_node() -> (TaffyTree<()>, NodeId) {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.leaf_node(Style::default());
+        (taffy, node)
     }
 }
 
