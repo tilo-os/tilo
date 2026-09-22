@@ -3497,7 +3497,11 @@ fn drag_file_row_onto_client(
     // Test-control coordinates are physical while the hosted widget applies
     // the output scale factor. Move far enough to clear the 6 logical-pixel
     // threshold even on a 2x output, then interpolate from that latched point.
-    let latched = (row.0 - 24.0, row.1);
+    // The row is visible only in the narrow strip between the sidebar and
+    // the adjacent client. Moving left re-enters sidebar chrome before the
+    // file view can cross its drag threshold; move toward the client so the
+    // source can latch and immediately hand the drag off.
+    let latched = (row.0 + 24.0, row.1);
     compositor.pointer_move(latched.0, latched.1);
     target.pump();
     std::thread::sleep(Duration::from_millis(30));

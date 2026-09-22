@@ -492,7 +492,11 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
     source.set_target(Some(
         crate::framework_history::target(&a, record_a, "A again".into()).unwrap(),
     ));
-    wait(&mut driver, "history-files-result");
+    // The result button survives target changes. Wait for A's immutable
+    // timeline entry instead so the A -> B -> A reconciliation has completed
+    // before the retry command is produced; commands from the superseded B
+    // presentation are deliberately discarded by the host.
+    wait(&mut driver, &select);
     use std::os::unix::fs::MetadataExt;
     let before_retry = std::fs::metadata(&a).unwrap();
     let before_retry_ctime = (before_retry.ctime(), before_retry.ctime_nsec());

@@ -456,6 +456,16 @@ impl WindowGroup {
     pub fn new_tab_rect(&self) -> Rect {
         self.bar.new_tab_rect()
     }
+
+    /// Whether `point` is on the group's trailing new-tab control.
+    ///
+    /// The chip can remain visible at a clipped strip edge, where coarse
+    /// group bounds are an ambiguous owner for a coordinate-only button
+    /// event. GroupRow uses this exact painted target to route the press.
+    pub(crate) fn new_tab_hit(&self, point: Point) -> bool {
+        let rect = self.new_tab_rect();
+        rect.area() > 0.0 && rect.contains(point)
+    }
     /// Not done inside [`Self::new`]: a group is also built by a bare `ui`
     /// host and by tests with no records at all, where an unbound tile
     /// keeps editing whatever document the parent pass carries.

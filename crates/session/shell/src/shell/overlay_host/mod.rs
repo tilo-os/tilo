@@ -4789,21 +4789,24 @@ impl ShellOverlayHost {
     /// the outside; this method is how a caller waiting for the tree to go
     /// quiet tells them apart.
     pub fn any_tile_opening(&mut self) -> bool {
+        let mut any_opening = false;
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as every other `group_row_ptrs`
             // accessor — the pointer comes from a `Box<GroupRow>` owned by
             // the content tree, the host outlives the content, and
             // `&mut self` gives us unaliased access for this call.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
-            if row
+            // Do not short-circuit: asking every group is what latches a
+            // newly published client frame as presented. Returning at the
+            // first opening group would leave later foreign tabs opening
+            // forever even though their buffers are already available.
+            any_opening = row
                 .groups
                 .iter()
-                .any(ui::widget::WindowGroup::any_tile_opening)
-            {
-                return true;
-            }
+                .map(ui::widget::WindowGroup::any_tile_opening)
+                .fold(any_opening, |seen, opening| opening || seen);
         }
-        false
+        any_opening
     }
 
     /// Drain app-owned requests for shell chrome after the app's event path
