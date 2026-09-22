@@ -8846,7 +8846,7 @@ mod tests {
         // constant — tied here so flipping the production call site to a literal `true` fails.
         assert_eq!(
             crate::compositor::dev_env::DEV_ENV_OVERRIDES,
-            cfg!(debug_assertions)
+            cfg!(debug_assertions) || cfg!(feature = "dev-overrides")
         );
     }
 
