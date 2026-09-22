@@ -1,4 +1,4 @@
-# Dev VMs with per-agent overlays
+# Dev VMs with per-agent slots
 
 ## Outcome
 
@@ -131,6 +131,29 @@ compiles. A contract check guarantees that production images never enable the fe
    plus a logind session opened on each by a `PAMName=` unit.
 2. `ExtensionDirectories=` on `user@<uid>.service` and on the session unit: user units and
    the bwrap-based launcher see the overlay's `/usr`.
+
+## Revisions after the spike and review
+
+- The per-agent object is called a **slot** (`tilo-dev slot …`, user `tds-<name>`, seat
+  `seat-<slot>`). "Overlay" below means slot.
+- The session unit uses `PAMName=greetd` and `SyslogIdentifier=tilo-session-%i`. A swap stops the
+  session unit, restarts `user@<uid>`, then starts the session unit. A VM-wide swap also restarts
+  every slot. Layers are SELinux-labelled at import and listed bottom-first. vkms cards have a
+  fixed connector count, and hotplug means toggling connector status. See the spike results.
+- Adapters also expose serial, screenshot, reset and native control (QMP/virsh/COM pipe) for
+  debugging before the network is up.
+- Storage: allocated-byte accounting, caps, a free-space floor, and `tilo-dev gc [--dry-run]`.
+  In-VM target dirs are disposable and evicted least-recently-used first. sccache stays the shared cache.
+- Layer provenance records the base digest, source and dirty hashes, the target triple, the
+  Cargo.lock hash and the toolchain. Local layers are never promoted, because CI rebuilds from source.
+  "Same commit" applies only to CI building the dev image.
+- Locks and leases cover VM-wide operations and the seat0 claim, and the daemon reconciles its
+  state after a crash.
+- Native architecture is the default. Emulation is explicit and slow.
+- Receipts carry per-phase timings and cache hits, compared against these goals: warm build
+  < 60s, swap + restart < 10s, cached boot < 30s.
+- Boot-level components (kernel, UKI, bootloader, initramfs, installer) are not swappable. `swap`
+  redirects them to the existing `os/dev/` scenario drivers.
 
 ## Later: cloud dev VMs (not in this phase)
 
