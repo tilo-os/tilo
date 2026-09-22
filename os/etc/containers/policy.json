@@ -10,6 +10,9 @@
           "keyPath": "/usr/share/tilo/cosign.pub",
           "signedIdentity": { "type": "matchRepository" }
         }
+      ],
+      "code.podesta.ai/qos/tilo-dev": [
+        { "type": "reject" }
       ]
     }
   }
