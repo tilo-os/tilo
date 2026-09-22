@@ -172,6 +172,10 @@ pub enum DrillInOutcome {
 pub struct DrillInList {
     back: Rect,
     rows: Vec<Rect>,
+    first_visible: usize,
+    row_count: usize,
+    visible_capacity: usize,
+    wheel_remainder: f64,
 }
 
 impl DrillInList {
@@ -221,7 +225,10 @@ impl DrillInList {
     }
 
     pub fn row_at(&self, point: Point) -> Option<usize> {
-        self.rows.iter().position(|row| row.contains(point))
+        self.rows
+            .iter()
+            .position(|row| row.contains(point))
+            .map(|slot| self.first_visible.saturating_add(slot))
     }
 
     pub fn rows(&self) -> &[Rect] {
@@ -340,6 +347,7 @@ impl DrillInList {
         row: Rect,
         _index: usize,
         cursor: Option<Point>,
+        trailing_reserve: f64,
         label: &str,
     ) -> Rect {
         let hovered = cursor.is_some_and(|point| row.contains(point));

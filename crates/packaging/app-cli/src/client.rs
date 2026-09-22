@@ -1,0 +1,480 @@
+//! HTTP client for a Tilo registry.
+//!
+//! Two endpoints, both blocking — every caller runs these on a worker
+//! thread, never on a frame thread:
+//!
+//!   * `GET {base_url}/registry` — informational metadata, accepted only
+//!     when it names the already-pinned owner key.
+//!   * `GET {base_url}/entries`  — an owner-signed catalogue snapshot.
+//!
+//! Every fetched entry is signature-checked against its own declared
+//! publisher pubkey via [`registry_types::verify_entry_signature`]. A
+//! separate allowlist check compares the entry's publisher pubkey
+//! against the registry *owner's* allowlisted publishers.
+//!
+//! Nothing here is a trust decision about *installing*. A registry
+//! describes what exists; `tilo-install` re-verifies the actual bytes
+//! fail-closed before it extracts one of them. An entry that fails its
+//! signature check is [`TrustLevel::Untrusted`], and callers that put
+//! software in front of a user are expected to drop those rather than
+//! rank them — see [`crate::available`].
+
+use std::io::Read as _;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use registry_types::{RegistryEntry, RegistryHandshake, SignedRegistrySnapshot};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+use crate::config::{RegistryConfig, config_dir, placeholder_owner_pubkey};
+
+/// Reasonable default request timeout — a fresh registry contacted
+/// over WAN should still fit. Overridable via `TILO_STORE_HTTP_TIMEOUT`.
+const DEFAULT_TIMEOUT_SECS: u64 = 10;
+const MAX_INDEX_RESPONSE_BYTES: u64 = registry_types::MAX_SNAPSHOT_ENCODED_BYTES as u64;
+
+fn http_timeout() -> Duration {
+    std::env::var("TILO_STORE_HTTP_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map_or_else(
+            || Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+            Duration::from_secs,
+        )
+}
+
+#[derive(Debug, Error)]
+pub enum RegistryError {
+    #[error("http: {0}")]
+    Http(String),
+    #[error("json decode: {0}")]
+    Decode(String),
+    #[error("empty response")]
+    Empty,
+    #[error("registry snapshot proof failed: {0}")]
+    Proof(#[from] registry_types::SnapshotError),
+    #[error("registry snapshot was rolled back or replayed")]
+    Rollback,
+    #[error("registry snapshot checkpoint could not be persisted: {0}")]
+    Checkpoint(String),
+    #[error("registry handshake owner does not match the pinned key")]
+    OwnerMismatch,
+    #[error("registry URL must be credential-free HTTPS (or loopback HTTP for development)")]
+    UnsafeEndpoint,
+}
+
+/// Trust classification for a fetched entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrustLevel {
+    /// The publisher signature and the pinned registry owner's exact snapshot
+    /// signature and authorization policy all verified.
+    PublisherSigned,
+    /// The publisher signature failed to verify.
+    Untrusted,
+}
+
+impl TrustLevel {
+    /// Whether an entry at this level may be offered to a user as
+    /// something to open.
+    ///
+    /// `Untrusted` means the metadata itself — the name, the
+    /// description, the download URL — was not signed by the key it
+    /// claims. Offering that as a row would let a registry put any
+    /// name it liked on any download, so it is dropped before it
+    /// reaches a list.
+    pub fn is_offerable(self) -> bool {
+        matches!(self, TrustLevel::PublisherSigned)
+    }
+}
+
+/// One entry plus its trust state.
+#[derive(Clone, Debug)]
+pub struct VerifiedEntry {
+    pub entry: RegistryEntry,
+    pub trust: TrustLevel,
+}
+
+/// Last accepted proof for one pinned registry identity.
+#[derive(Debug, Deserialize, Serialize)]
+struct SnapshotCheckpoint {
+    sequence: u64,
+    snapshot_hash_hex: String,
+}
+
+fn client() -> Result<reqwest::blocking::Client, RegistryError> {
+    reqwest::blocking::Client::builder()
+        .user_agent("app/0.1")
+        .timeout(http_timeout())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| RegistryError::Http(e.to_string()))
+}
+
+/// Fetch and parse informational registry metadata, rejecting an owner identity
+/// that differs from the preconfigured pin. This endpoint never establishes
+/// trust on first contact.
+///
+/// # Errors
+///
+/// Returns an error if the request fails, the response is empty, or
+/// the body doesn't decode as a [`RegistryHandshake`].
+pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, RegistryError> {
+    let url = registry_url(reg, "registry")?;
+    let c = client()?;
+    let text = c
+        .get(url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
+        .map_err(|e| RegistryError::Http(e.to_string()))?;
+    if text.trim().is_empty() {
+        return Err(RegistryError::Empty);
+    }
+    let handshake: RegistryHandshake =
+        serde_json::from_str(&text).map_err(|e| RegistryError::Decode(e.to_string()))?;
+    if !handshake
+        .owner_pubkey_hex
+        .eq_ignore_ascii_case(&reg.owner_pubkey_hex)
+    {
+        return Err(RegistryError::OwnerMismatch);
+    }
+    Ok(handshake)
+}
+
+/// Fetch `/entries` and classify each result.
+///
+/// # Errors
+///
+/// Returns an error if the request fails, is oversized, is not a signed
+/// snapshot, fails any signature/authorization/freshness check, or rolls back
+/// the durable checkpoint.
+pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, RegistryError> {
+    let snapshot = fetch_snapshot(reg)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)
+}
+
+/// Fetch and verify the complete owner-signed snapshot while advancing the
+/// durable anti-rollback checkpoint.
+///
+/// # Errors
+///
+/// Returns an error if the endpoint is unsafe, the response fails or exceeds
+/// the size limit, any proof check fails, or the snapshot would roll back or
+/// fork the durable checkpoint.
+pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<SignedRegistrySnapshot, RegistryError> {
+    let url = registry_url(reg, "entries")?;
+    let c = client()?;
+    let response = c
+        .get(url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|e| RegistryError::Http(e.to_string()))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_INDEX_RESPONSE_BYTES)
+    {
+        return Err(RegistryError::Decode(
+            "snapshot response is too large".into(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_INDEX_RESPONSE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| RegistryError::Http(e.to_string()))?;
+    if bytes.is_empty() {
+        return Err(RegistryError::Empty);
+    }
+    if bytes.len() as u64 > MAX_INDEX_RESPONSE_BYTES {
+        return Err(RegistryError::Decode(
+            "snapshot response is too large".into(),
+        ));
+    }
+    let snapshot: SignedRegistrySnapshot =
+        serde_json::from_slice(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let _ = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)?;
+    persist_checkpoint(reg, &snapshot)?;
+    Ok(snapshot)
+}
+
+fn registry_url(reg: &RegistryConfig, suffix: &str) -> Result<reqwest::Url, RegistryError> {
+    let mut url = reqwest::Url::parse(&reg.base_url).map_err(|_| RegistryError::UnsafeEndpoint)?;
+    let loopback_http =
+        url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    if (url.scheme() != "https" && !loopback_http)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+    {
+        return Err(RegistryError::UnsafeEndpoint);
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    let path = format!("{}/{}", url.path().trim_end_matches('/'), suffix);
+    url.set_path(&path);
+    Ok(url)
+}
+
+/// Pure proof verification used by HTTP and fixture tests.
+///
+/// # Errors
+///
+/// Returns an error if the pinned owner key is absent or a placeholder, or if
+/// the snapshot fails its owner signature, publisher authorization,
+/// freshness, bounds, or publisher-signature checks.
+pub fn classify_snapshot(
+    snapshot: &SignedRegistrySnapshot,
+    owner_pubkey_hex: &str,
+    now_unix: u64,
+) -> Result<Vec<VerifiedEntry>, RegistryError> {
+    if owner_pubkey_hex.is_empty() || owner_pubkey_hex == placeholder_owner_pubkey() {
+        return Err(registry_types::SnapshotError::OwnerKey.into());
+    }
+    registry_types::verify_snapshot(snapshot, owner_pubkey_hex, now_unix)?;
+    Ok(snapshot
+        .entries
+        .iter()
+        .cloned()
+        .map(|entry| VerifiedEntry {
+            entry,
+            trust: TrustLevel::PublisherSigned,
+        })
+        .collect())
+}
+
+fn checkpoint_path(reg: &RegistryConfig) -> Option<std::path::PathBuf> {
+    let mut hasher = blake3::Hasher::new();
+    // The owner key is the registry identity. Transport aliases may change,
+    // but must not reset anti-rollback history.
+    hasher.update(reg.owner_pubkey_hex.as_bytes());
+    Some(
+        config_dir()?
+            .join("registry-checkpoints")
+            .join(format!("{}.json", hasher.finalize().to_hex())),
+    )
+}
+
+fn persist_checkpoint(
+    reg: &RegistryConfig,
+    snapshot: &SignedRegistrySnapshot,
+) -> Result<(), RegistryError> {
+    let Some(path) = checkpoint_path(reg) else {
+        return Ok(());
+    };
+    let hash = registry_types::snapshot_hash(snapshot)?;
+    #[cfg(unix)]
+    let _lock = checkpoint_lock(&path)?;
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let old: SnapshotCheckpoint = serde_json::from_slice(&bytes)
+                .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
+            validate_checkpoint(&old, snapshot.sequence, &hash)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(RegistryError::Checkpoint(error.to_string())),
+    }
+    let checkpoint = SnapshotCheckpoint {
+        sequence: snapshot.sequence,
+        snapshot_hash_hex: hash,
+    };
+    let bytes = serde_json::to_vec(&checkpoint)
+        .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
+    atomic_file::write_creating_parent(&path, &bytes)
+        .map_err(|error| RegistryError::Checkpoint(error.to_string()))
+}
+
+#[cfg(unix)]
+fn checkpoint_lock(path: &std::path::Path) -> Result<std::fs::File, RegistryError> {
+    use std::os::fd::AsRawFd as _;
+    let lock_path = path.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)
+        .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
+    // SAFETY: `file` owns a live descriptor for the duration of the returned
+    // guard. `flock` neither takes ownership nor dereferences user memory.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(RegistryError::Checkpoint(
+            std::io::Error::last_os_error().to_string(),
+        ));
+    }
+    Ok(file)
+}
+
+fn validate_checkpoint(
+    old: &SnapshotCheckpoint,
+    sequence: u64,
+    hash: &str,
+) -> Result<(), RegistryError> {
+    if sequence < old.sequence || (sequence == old.sequence && hash != old.snapshot_hash_hex) {
+        Err(RegistryError::Rollback)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use registry_types::{RegistryVersion, sign_entry};
+
+    pub(crate) fn signed_entry() -> RegistryEntry {
+        // Deterministic key so signing is reproducible under `cargo
+        // test`; cryptographic hygiene is not what this asserts.
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let pk_hex = hex::encode(key.verifying_key().to_bytes());
+        let mut entry = RegistryEntry {
+            package_id: "so.tilo.editor".into(),
+            name: "Editor".into(),
+            description: "CRDT-native editor".into(),
+            tagline: "Native Tilo OS app".into(),
+            images: registry_types::LocalizedImages::english_icon(
+                "https://apps.tilo.so/images/test-icon.svg",
+                "Test icon",
+            ),
+            supported_languages: vec!["en".into()],
+            categories: vec!["Productivity".into()],
+            source_url: None,
+            homepage: None,
+            publisher_pubkey_hex: pk_hex,
+            versions: vec![RegistryVersion {
+                version: "0.1.0".into(),
+                tapp_url: "https://apps.tilo.so/editor/0.1.0.tapp".into(),
+                tapp_root_hash_hex: "cd".repeat(32),
+                tapp_size_bytes: 1024,
+                released_at_unix: 100,
+                tapp_blake3_hex: "ef".repeat(32),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: std::env::consts::ARCH.into(),
+                    isa: "x86_64".into(),
+                    runtime: None,
+                },
+            }],
+            updated_at_unix: 200,
+            signature_hex: String::new(),
+        };
+        sign_entry(&mut entry, &key);
+        entry
+    }
+
+    fn snapshot(owner: &SigningKey) -> SignedRegistrySnapshot {
+        let entry = signed_entry();
+        let mut snapshot = SignedRegistrySnapshot {
+            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            sequence: 1,
+            issued_at_unix: 100,
+            expires_at_unix: 200,
+            previous_snapshot_hash_hex: String::new(),
+            moderation_head_hex: String::new(),
+            publishers: vec![registry_types::PublisherAuthorization {
+                pubkey_hex: entry.publisher_pubkey_hex.clone(),
+                can_add_new: true,
+            }],
+            entries: vec![entry],
+            owner_signature_hex: String::new(),
+            channel_authorization: None,
+        };
+        registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
+        snapshot
+    }
+
+    #[test]
+    fn only_owner_authorized_snapshot_is_offerable() {
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let snapshot = snapshot(&owner);
+        let out = classify_snapshot(
+            &snapshot,
+            &hex::encode(owner.verifying_key().to_bytes()),
+            150,
+        )
+        .unwrap();
+        assert_eq!(out[0].trust, TrustLevel::PublisherSigned);
+        assert!(out[0].trust.is_offerable());
+
+        assert!(classify_snapshot(&snapshot, &placeholder_owner_pubkey(), 150).is_err());
+        let mut tampered = snapshot;
+        tampered.entries[0].name = "hijacked".into();
+        assert!(
+            classify_snapshot(
+                &tampered,
+                &hex::encode(owner.verifying_key().to_bytes()),
+                150
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn durable_checkpoint_rejects_rollback_and_same_sequence_fork() {
+        let old = SnapshotCheckpoint {
+            sequence: 8,
+            snapshot_hash_hex: "aa".repeat(32),
+        };
+        assert!(matches!(
+            validate_checkpoint(&old, 7, &"bb".repeat(32)),
+            Err(RegistryError::Rollback)
+        ));
+        assert!(matches!(
+            validate_checkpoint(&old, 8, &"bb".repeat(32)),
+            Err(RegistryError::Rollback)
+        ));
+        validate_checkpoint(&old, 8, &"aa".repeat(32)).unwrap();
+        validate_checkpoint(&old, 9, &"bb".repeat(32)).unwrap();
+    }
+
+    #[test]
+    fn registry_endpoint_rejects_credentials_remote_plaintext_and_redirectable_query() {
+        for base_url in [
+            "http://registry.test",
+            "https://placeholder:placeholder@registry.test",
+            "https://registry.test/base?next=https://evil.test",
+        ] {
+            let registry = RegistryConfig {
+                name: "test".into(),
+                base_url: base_url.into(),
+                owner_pubkey_hex: "11".repeat(32),
+                enabled: true,
+                channel: tilo_app_package::version::ReleaseChannel::Stable,
+            };
+            if base_url.contains('?') {
+                assert_eq!(
+                    registry_url(&registry, "entries").unwrap().as_str(),
+                    "https://registry.test/base/entries"
+                );
+            } else {
+                assert!(matches!(
+                    registry_url(&registry, "entries"),
+                    Err(RegistryError::UnsafeEndpoint)
+                ));
+            }
+        }
+        let loopback = RegistryConfig {
+            name: "dev".into(),
+            base_url: "http://127.0.0.1:8080".into(),
+            owner_pubkey_hex: "11".repeat(32),
+            enabled: true,
+            channel: tilo_app_package::version::ReleaseChannel::Stable,
+        };
+        assert_eq!(
+            registry_url(&loopback, "entries").unwrap().as_str(),
+            "http://127.0.0.1:8080/entries"
+        );
+    }
+}

@@ -200,7 +200,7 @@ impl CallState {
                 title: "Active call".into(),
                 role: ui::floating_surface::FloatingRole::ActiveCall,
                 source: ui::floating_surface::FloatingSource::AppElement {
-                    app_id: "dev.tilo.chat".into(),
+                    app_id: "so.tilo.chat".into(),
                     element_id: format!("active-call:{}", self.channel),
                     region: source_region,
                 },
@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(
             request.source,
             ui::floating_surface::FloatingSource::AppElement {
-                app_id: "dev.tilo.chat".into(),
+                app_id: "so.tilo.chat".into(),
                 element_id: "active-call:c_huddle".into(),
                 region,
             }

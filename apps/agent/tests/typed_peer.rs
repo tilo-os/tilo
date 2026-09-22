@@ -278,7 +278,10 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
 ///
 /// Panics if a successful document action produces no CRDT delta or that
 /// delta cannot be sent through the typed test peer.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the test helper carries the complete document invocation and peer context"
+)]
 pub fn service_document_invocation(
     peer: &mut TypedPeer,
     replica: &mut automerge::AutoCommit,
@@ -353,11 +356,11 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
     spawn_with_agent_actions(
         path,
         &[
-            ("dev.tilo.word-processor", "align-center"),
-            ("dev.tilo.word-processor", "delete"),
-            ("dev.tilo.word-processor", "insert-table"),
-            ("dev.tilo.word-processor", "place-image"),
-            ("dev.tilo.photos", "rotate-right"),
+            ("so.tilo.word-processor", "align-center"),
+            ("so.tilo.word-processor", "delete"),
+            ("so.tilo.word-processor", "insert-table"),
+            ("so.tilo.word-processor", "place-image"),
+            ("so.tilo.photos", "rotate-right"),
         ],
     )
 }
@@ -425,9 +428,9 @@ pub fn spawn_with_agent_actions(
     // App fixtures use the same agent-only endpoint as Scribe. Admission and
     // app authority remain separate, so each host receives only its own app.
     for (host, app) in [
-        ("ada", "dev.tilo.word-processor"),
-        ("photos", "dev.tilo.photos"),
-        ("files", "dev.tilo.file-explorer"),
+        ("ada", "so.tilo.word-processor"),
+        ("photos", "so.tilo.photos"),
+        ("files", "so.tilo.file-explorer"),
     ] {
         workspace
             .grant_as(

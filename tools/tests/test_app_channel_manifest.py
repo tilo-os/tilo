@@ -24,8 +24,8 @@ class ChannelReaderTests(unittest.TestCase):
         self.receipt = {'schema': c.RECEIPT_SCHEMA, 'architecture': 'x86_64', 'source_sha': 'a' * 40,
                         'collection': {'format': 'tilo-apps-tar-gzip/v1', 'sha256': '4' * 64, 'bytes': 123},
                         'runtime': {'version': '2026.07', 'root_hash': '5' * 64, 'publisher': '2' * 64, 'signature_hex': '6' * 128},
-                        'packages': [{'file': 'app-1-x86_64.qpkg', 'app_id': 'dev.test.app', 'version': '1', 'sha256': '7' * 64,
-                                      'package_id': 'qpkg:' + '8' * 64, 'publisher': '1' * 64, 'isa': 'v3'}],
+                        'packages': [{'file': 'app-1-x86_64.tapp', 'app_id': 'dev.test.app', 'version': '1', 'sha256': '7' * 64,
+                                      'package_id': 'tapp:' + '8' * 64, 'publisher': '1' * 64, 'isa': 'v3'}],
                         'verification': {'verifier_sha256': '3' * 64, 'package_identity': 'blake3-ed25519-signed-root-v1',
                                          'runtime_identity': 'blake3-ed25519-runtime-bundle-v1'},
                         'publication': {'status': 'unpublished'}}
@@ -116,7 +116,7 @@ class ChannelReaderTests(unittest.TestCase):
 
     def test_malformed_signed_identity_rejected(self):
         receipt = self.published()
-        receipt['packages'][0]['package_id'] = 'qpkg:unsigned'
+        receipt['packages'][0]['package_id'] = 'tapp:unsigned'
         with self.assertRaisesRegex(ValueError, 'invalid digest'):
             self.select(self.manifest(receipt))
 
