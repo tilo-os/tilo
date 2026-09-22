@@ -11,8 +11,21 @@ gen_cpio="${TILO_GEN_INIT_CPIO:-$TILO_KERNEL_AUDIT_DIR/linux/usr/gen_init_cpio}"
 crypto="${TILO_CRYPTO_BIN:-$repo/target/release/tilo-crypto}"
 case "$arch" in
   x86_64)
-    firmware_code="${TILO_SECUREBOOT_VM_CODE:-/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd}"
-    firmware_vars="${TILO_SECUREBOOT_VM_VARS:-/usr/share/edk2/ovmf/OVMF_VARS.fd}"
+    for directory in /usr/share/edk2/ovmf /usr/share/OVMF; do
+      if [ -f "$directory/OVMF_CODE.secboot.fd" ] \
+         && [ -f "$directory/OVMF_VARS.fd" ]; then
+        firmware_code="$directory/OVMF_CODE.secboot.fd"
+        firmware_vars="$directory/OVMF_VARS.fd"
+        break
+      elif [ -f "$directory/OVMF_CODE_4M.secboot.fd" ] \
+           && [ -f "$directory/OVMF_VARS_4M.fd" ]; then
+        firmware_code="$directory/OVMF_CODE_4M.secboot.fd"
+        firmware_vars="$directory/OVMF_VARS_4M.fd"
+        break
+      fi
+    done
+    firmware_code="${TILO_SECUREBOOT_VM_CODE:-${firmware_code:-}}"
+    firmware_vars="${TILO_SECUREBOOT_VM_VARS:-${firmware_vars:-}}"
     qemu=qemu-system-x86_64
     efi_target=x86_64-pc-win32-coff
     ld_emulation=i386pep
