@@ -439,6 +439,10 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && [ "$image_tools_line" -lt "$image_auth_line" ] \
   && grep -Fq 'ntfs-3g podman' "$workflow" \
   && grep -Fq 'mtype ntfscp podman qemu-img' "$workflow" \
+  && grep -Fq 'cycle_graphics=(--graphics software)' "$workflow" \
+  && grep -Fq 'export TILO_ACCEL=tcg' "$workflow" \
+  && grep -Fq 'if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then' "$workflow" \
+  && grep -Fq 'test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm' "$workflow" \
   && grep -Fq -- '--prepared-alongside' "$workflow" \
   && grep -Fq -- '--guided-alongside' "$workflow" \
   && grep -Fq 'dist/installer-guided-alongside-cycle' "$workflow" \
