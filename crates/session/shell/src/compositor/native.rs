@@ -5643,11 +5643,6 @@ pub fn run() {
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
-    // Test-control commands are intentionally serviced after this tick's
-    // paint gate. Preserve their redraw edge for the following iteration;
-    // dropping it here records input latency forever without ever producing
-    // the reflecting frame.
-    let mut injected_redraw_pending = false;
     let mut frame_clock_retired_serial = 0u64;
     while !close_requested {
         let iter_t0 = Instant::now();
