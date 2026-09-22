@@ -26,7 +26,7 @@ tracing.workspace = true
 bounded-command = { path = "../bounded-command" }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", features = ["signal"] }
+rustix = { workspace = true, features = ["process"] }
 # Pure-Rust speech-dispatcher SSIP client. MIT OR Apache-2.0 — no C
 # linkage, no GPL propagation (speech-dispatcher sits behind the socket).
 ssip-client = "0.10"

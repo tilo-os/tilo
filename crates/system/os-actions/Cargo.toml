@@ -18,13 +18,13 @@ path = "src/lib.rs"
 [dependencies]
 bounded-command = { path = "../bounded-command" }
 libc.workspace = true
+rustix.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true
 rand_core.workspace = true
 thiserror.workspace = true
-nix = { version = "0.30.1", features = ["ioctl"] }
 tilo-crypto = { path = "../tilo-crypto" }
 # Bluetooth is the one control here that cannot be a shell-out: a scan lives
 # as long as its D-Bus connection, and pairing needs an agent object BlueZ
