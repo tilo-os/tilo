@@ -277,6 +277,7 @@ fn folder_resource(
             }
         )),
         badge: Some(format!("Folder {}", folder.index + 1)),
+        preview: None,
     })
     .with_action(set_mode)
     .with_action(clear_mode)
@@ -323,6 +324,7 @@ fn suggestion_resource(suggestion: &SuggestionProjection, choices_open: bool) ->
             .into(),
         ),
         badge: Some("Suggestion".into()),
+        preview: None,
     })
     .with_action(select)
 }
@@ -459,6 +461,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
             open_closed(state.selection.imports_open),
         )),
         badge: Some("Selection".into()),
+        preview: None,
     })
     .with_children(folder_resources);
     let suggestions =
@@ -484,6 +487,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
             state.page
         )),
         badge: Some("Review".into()),
+        preview: None,
     });
     let availability = Resource::new(
         "imager.setup.availability",
@@ -504,6 +508,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
             yes_no(state.availability.open_imports),
         )),
         badge: Some("Availability".into()),
+        preview: None,
     });
 
     Resource::new(SETUP_RESOURCE_ID, "imager.setup", "Guided Tilo setup")
@@ -533,6 +538,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
                 }
                 .into(),
             ),
+            preview: None,
         })
         .with_action(choose_experience)
         .with_action(common_mode)
