@@ -9,7 +9,9 @@ toolchain, and it is unsealed. Two ways that could leak into production:
    * os/Containerfile.dev must label and mark itself as the dev flavour, unseal
      its base and never build a UKI of its own;
    * its RPM snapshot default must be the production one (os/rpms-snapshot.env),
-     so it installs what the production builder of the same commit installed;
+     and its toolchain list (os/scripts/builder-packages.txt) must be exactly
+     what os/Containerfile's builder stage installs, so it compiles with what
+     the production builder of the same commit compiles with;
    * every script or workflow that builds os/Containerfile.dev may tag and push
      it only under a `tilo-dev` name, never code.sandbox.example/qos/tilo or
      localhost/tilo;
@@ -148,6 +150,34 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
     return findings
 
 
+def check_builder_packages(repo: Path) -> list[Finding]:
+    """The dev toolchain list must equal what os/Containerfile's builder stage installs."""
+    generator = repo / "os/scripts/builder-packages.py"
+    listing = repo / "os/scripts/builder-packages.txt"
+    if not generator.is_file():
+        return []
+    module = load("builder_packages_for_dev_contract", generator)
+    try:
+        committed = [line.strip() for line in listing.read_text(encoding="utf-8").splitlines()
+                     if line.strip() and not line.startswith("#")]
+    except OSError:
+        committed = []
+    findings = []
+    for arch in ("x86_64", "aarch64"):
+        wanted = module.builder_packages(repo / "os/Containerfile", "builder", arch)
+        if committed != wanted:
+            added = sorted(set(wanted) - set(committed))
+            removed = sorted(set(committed) - set(wanted))
+            findings.append(Finding(
+                rel(repo, listing), f"differs from the packages os/Containerfile's builder stage installs "
+                f"on {arch} (missing: {', '.join(added) or '-'}; extra: {', '.join(removed) or '-'})",
+                "the dev image compiles its binaries and in-VM builds with this list, so it must be "
+                "exactly the production builder's toolchain",
+                "run `python3 os/scripts/builder-packages.py --write` and commit the result."))
+            break
+    return findings
+
+
 def builders_of_dev_image(repo: Path) -> list[Path]:
     candidates = [*sorted((repo / ".forgejo/workflows").glob("*.y*ml")),
                   *sorted((repo / "os").rglob("*.sh")), *sorted((repo / "tools").rglob("*.sh"))]
@@ -255,7 +285,8 @@ def check_production_containerfiles(repo: Path) -> list[Finding]:
 
 
 def audit(repo: Path = REPO) -> list[Finding]:
-    return [*check_dev_containerfile(repo), *check_dev_image_names(repo), *check_production_policy(repo),
+    return [*check_dev_containerfile(repo), *check_builder_packages(repo), *check_dev_image_names(repo),
+            *check_production_policy(repo),
             *check_production_containerfiles(repo)]
 
 
