@@ -1974,6 +1974,9 @@ fn dispatch_synth_event(
     if to_client(state, fb, event, ctx.modifiers) {
         return;
     }
+    if let Some(st) = state.as_deref_mut() {
+        client_input::finish_chrome_drag_into_shell(st, fb, event);
+    }
     fb.dispatch_event(
         event,
         &ctx.modifiers,
@@ -2311,11 +2314,14 @@ fn execute_planned_action(
             // test surface. A snapshot must show a drag's carried item too, drawn by
             // the live present loop on top of the scene.
             let drag = state.as_ref().and_then(|s| {
-                (s.selection.dnd_active || s.selection.chrome_drag.is_some()).then(|| {
+                (s.selection.dnd_active
+                    || s.selection.chrome_drag.is_some()
+                    || file_explorer::external_drag::unclaimed().is_some())
+                .then(|| {
                     let (cx, cy) = s.client_input.cursor();
                     (
                         vello::kurbo::Point::new(cx, cy),
-                        s.selection.dnd_label.get(),
+                        s.selection.dnd_label.snapshot(),
                     )
                 })
             });
@@ -2405,7 +2411,10 @@ static SNAPSHOT_RENDERERS_BUILT: std::sync::atomic::AtomicUsize =
 fn write_snapshot_png(
     fb: &mut FrameBuilder,
     path: &std::path::Path,
-    drag: Option<(vello::kurbo::Point, Option<String>)>,
+    drag: Option<(
+        vello::kurbo::Point,
+        crate::compositor::drag_feedback::DragVisual,
+    )>,
 ) {
     use std::io::Write;
     let (w, h) = fb.viewport();
@@ -2432,15 +2441,9 @@ fn write_snapshot_png(
     // open panel. This is capture-only; live rendering retains its animation.
     fb.host_mut().force_palette_settled();
     let mut scene = fb.paint_settled();
-    if let Some((cursor, label)) = drag {
+    if let Some((cursor, visual)) = drag {
         let theme = fb.theme().clone();
-        drag_feedback::draw(
-            &mut scene,
-            cursor,
-            label.as_deref(),
-            &theme,
-            fb.text_renderer_mut(),
-        );
+        drag_feedback::draw(&mut scene, cursor, &visual, &theme, fb.text_renderer_mut());
     }
     let scene = scene;
     // The renderer is kept between snapshots, rebuilt only on viewport resize.
@@ -5687,6 +5690,11 @@ pub fn run() {
                                 &test_control_ctx.modifiers,
                             );
                         if !to_client {
+                            session_changed |= client_input::finish_chrome_drag_into_shell(
+                                &mut state,
+                                &mut frame_builder,
+                                wev,
+                            );
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
                             session_changed |= frame_builder.dispatch_event(
                                 wev,
@@ -5836,6 +5844,8 @@ pub fn run() {
 
         state.expire_host_launch_activations();
         crate::shell::launcher::expire_pending_placements();
+        session_changed |=
+            crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
 
         // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
@@ -6248,7 +6258,7 @@ pub fn run() {
             backend.outputs(),
         );
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
-        client_input::pump_chrome_drag(&mut state, &frame_builder);
+        client_input::pump_chrome_drag(&mut state, &mut frame_builder);
 
         // Hand the remote-input firewall this frame's screen: foreign tile
         // positions, keyboard holder, chrome-drawn-over, locked — refreshed before remote events drain.
@@ -6929,14 +6939,17 @@ pub fn run() {
                 }
                 // On top of everything, since a drag is over whatever it's over — drawn
                 // here (not by either app) because once the pointer leaves the source window, neither end can paint the carried item.
-                if state.selection.dnd_active || state.selection.chrome_drag.is_some() {
-                    let label = state.selection.dnd_label.get();
+                if state.selection.dnd_active
+                    || state.selection.chrome_drag.is_some()
+                    || file_explorer::external_drag::unclaimed().is_some()
+                {
+                    let visual = state.selection.dnd_label.snapshot();
                     let (cx, cy) = state.client_input.cursor();
                     let theme = frame_builder.theme().clone();
                     drag_feedback::draw(
                         &mut frame_paint.scene,
                         vello::kurbo::Point::new(cx, cy),
-                        label.as_deref(),
+                        &visual,
                         &theme,
                         frame_builder.text_renderer_mut(),
                     );

@@ -44,7 +44,10 @@ use ui::presence::PresenceCtx;
 use ui::state::State;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{AppKind, TabBar, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
+use ui::widget::{
+    AppKind, FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, Widget, WindowGroup,
+    WindowWidth,
+};
 
 use crate::support::offscreen::OffscreenRenderer;
 use crate::support::snapshot::SnapshotAssertion;
@@ -682,7 +685,7 @@ fn press_and_drag_to(ctx: &mut DragCtx<'_>, from: Point, to: Point) {
 /// renderer is available. Split out of [`e2e_tab_drag_reorder`] to keep
 /// that test short — its three capture points are otherwise identical.
 fn render_frame_to(
-    group: &mut dyn Widget,
+    group: &mut WindowGroup,
     tr: &mut TextRenderer,
     theme: &Theme,
     presence: &PresenceCtx,
@@ -692,6 +695,16 @@ fn render_frame_to(
     if let Some(r) = renderer_opt.as_mut() {
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, tr, theme, presence);
+        if group.drag_in_flight() {
+            FloatingSurfaceProvider::draw_floating_surfaces(
+                group,
+                &mut s,
+                Affine::IDENTITY,
+                tr,
+                theme,
+                presence,
+            );
+        }
         r.render_png(&s, Color::from_rgb8(0x02, 0x06, 0x14), path);
     }
 }
