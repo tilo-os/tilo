@@ -307,12 +307,14 @@ DEFS="$OUTDIR/.repart.d"
 LOG="$OUTDIR/.install.log"
 ESP_VERIFY="$OUTDIR/.esp-verify"
 ESP_STAGED=0
-ESP_TMPFS_MOUNTED=0
+ESP_STAGE_BIND_MOUNTED=0
+ESP_STAGE=""
+ESP_UUID=""
 
 cleanup() {
-  if [ "$ESP_TMPFS_MOUNTED" = 1 ]; then
+  if [ "$ESP_STAGE_BIND_MOUNTED" = 1 ]; then
     sudo -n umount "$ESP_AT" 2>/dev/null || true
-    ESP_TMPFS_MOUNTED=0
+    ESP_STAGE_BIND_MOUNTED=0
   fi
   sudo -n umount -R "$MNT" 2>/dev/null || true
   [ -n "${LOOP:-}" ] && sudo -n losetup -d "$LOOP" 2>/dev/null || true
@@ -468,15 +470,21 @@ else
   fi
   command -v mcopy >/dev/null \
     || die "this kernel cannot mount vfat and mcopy is unavailable; install mtools"
-  # bootc requires /boot (or /boot/efi) to be a mount point and rejects an
-  # empty directory in the target root. A bounded tmpfs supplies that mount on
-  # kernels which cannot mount vfat; its contents are copied and verified into
-  # the real ESP below, then the tmpfs is explicitly unmounted.
-  sudo -n mount -t tmpfs \
-    -o "size=${esp_mib}M,mode=0755,nosuid,nodev,noexec" \
-    tilo-esp-stage "$ESP_AT" \
-    || die "could not mount the bounded ESP staging tmpfs at $ESP_AT"
-  ESP_TMPFS_MOUNTED=1
+  ESP_UUID="$(sudo -n blkid -s UUID -o value "${LOOP}p1")"
+  [[ "$ESP_UUID" =~ ^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$ ]] \
+    || die "could not read the formatted ESP UUID from ${LOOP}p1"
+  # bootc's empty-root verifier requires /boot (or /boot/efi) to be a mount
+  # point. A bind mount from the target Btrfs filesystem has the same st_dev as
+  # the root, so bootc does not mistake it for a boot filesystem and inspect a
+  # synthetic UUID. For composefs, --boot-mount-spec below supplies the real
+  # ESP UUID that belongs in the UKI arguments and installed fstab.
+  ESP_STAGE="$MNT/.tilo-esp-stage"
+  sudo -n install -d -m 0700 "$ESP_STAGE"
+  sudo -n mount --bind "$ESP_STAGE" "$ESP_AT" \
+    || die "could not bind the ESP staging directory at $ESP_AT"
+  sudo -n mount -o remount,bind,nosuid,nodev,noexec "$ESP_AT" \
+    || die "could not apply safe options to the ESP staging bind mount"
+  ESP_STAGE_BIND_MOUNTED=1
   ESP_STAGED=1
   msg "2/4 mounted ${LOOP}p2 -> $MNT; staging ESP files at $ESP_AT for mtools"
 fi
@@ -490,6 +498,8 @@ install_args=(to-filesystem --generic-image --skip-fetch-check
   --target-imgref "$TARGET_IMGREF")
 [ "$COMPOSEFS" = yes ] && install_args+=(--composefs-backend)
 [ -n "$BOOTLOADER" ] && install_args+=(--bootloader "$BOOTLOADER")
+[ "$ESP_STAGED" = 1 ] && [ "$BOOT_IS_ESP" = yes ] \
+  && install_args+=(--boot-mount-spec "UUID=$ESP_UUID")
 [ -n "$SRC_REF" ] && install_args+=(--source-imgref "$SRC_REF")
 install_args+=("${KARGS[@]+"${KARGS[@]}"}")
 install_args+=("/run/host$MNT")
@@ -606,6 +616,9 @@ if [ "$ESP_STAGED" = 1 ]; then
   shopt -s dotglob nullglob
   esp_entries=("$ESP_AT"/*)
   [ "${#esp_entries[@]}" -gt 0 ] || die "bootc produced no staged ESP payload at $ESP_AT"
+  esp_payload_bytes="$(sudo -n du -sb "$ESP_AT" | awk '{print $1}')"
+  [ "$esp_payload_bytes" -le $(( esp_mib * 1024 * 1024 )) ] \
+    || die "staged ESP payload exceeds the formatted ${esp_mib} MiB partition"
   if sudo -n find "$ESP_AT" -mindepth 1 \( -type l -o ! -type d ! -type f \) -print -quit \
        | grep -q .; then
     die "staged ESP contains a symlink or special file, which mtools cannot preserve safely"
@@ -626,13 +639,24 @@ if [ "$ESP_STAGED" = 1 ]; then
   ) >"$OUTDIR/.esp-copied.sha256"
   cmp -s "$OUTDIR/.esp-source.sha256" "$OUTDIR/.esp-copied.sha256" \
     || die "mtools ESP verification failed; staged /boot was left intact"
+  if [ "$BOOT_IS_ESP" = yes ]; then
+    t_etc="$(sudo -n sh -c "ls -d $MNT/state/deploy/*/etc $MNT/ostree/deploy/*/deploy/*/etc 2>/dev/null | head -1")"
+    [ -n "$t_etc" ] || die "could not find installed /etc to verify the ESP mount specification"
+    [ "$(sudo -n awk -v source="UUID=$ESP_UUID" \
+        '$1 == source && $2 == "/boot" { count++ } END { print count + 0 }' \
+        "$t_etc/fstab")" -eq 1 ] \
+      || die "installed fstab does not contain exactly one /boot entry for ESP UUID=$ESP_UUID"
+  fi
   sudo -n mount -o remount,rw "$MNT"
   sudo -n find "$ESP_AT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
   [ -z "$(sudo -n find "$ESP_AT" -mindepth 1 -print -quit)" ] \
     || die "could not remove the verified duplicate ESP payload from the root filesystem"
   sudo -n umount "$ESP_AT" \
-    || die "verified ESP copy, but could not unmount its staging tmpfs"
-  ESP_TMPFS_MOUNTED=0
+    || die "verified ESP copy, but could not unmount its staging bind mount"
+  ESP_STAGE_BIND_MOUNTED=0
+  sudo -n rmdir "$ESP_STAGE" \
+    || die "could not remove the empty ESP staging directory"
+  ESP_STAGE=""
   msg "verified ESP payload and removed its temporary staging mount"
 fi
 
