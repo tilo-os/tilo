@@ -3470,7 +3470,11 @@ fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
         x1 > x0 + 20.0,
         "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]"
     );
-    (f64::midpoint(x0, x1), y + h / 2.0)
+    // The mostly off-screen Files group can sit underneath shell chrome on
+    // the left. Start beside its visible right edge, where the adjacent
+    // client proves the strip is unobscured, while leaving room to latch the
+    // drag inside the row.
+    ((x1 - 20.0).max(x0 + 1.0), y + h / 2.0)
 }
 
 /// Press on the file row and carry it over to the client in small steps —
@@ -3493,7 +3497,7 @@ fn drag_file_row_onto_client(
     // Test-control coordinates are physical while the hosted widget applies
     // the output scale factor. Move far enough to clear the 6 logical-pixel
     // threshold even on a 2x output, then interpolate from that latched point.
-    let latched = (row.0 + 24.0, row.1);
+    let latched = (row.0 - 24.0, row.1);
     compositor.pointer_move(latched.0, latched.1);
     target.pump();
     std::thread::sleep(Duration::from_millis(30));

@@ -2166,21 +2166,33 @@ impl GroupRow {
         focus_target: &mut Option<NodeId>,
         taffy: &TaffyTree<()>,
     ) {
-        for (i, g) in self.groups.iter_mut().enumerate() {
-            let Some(&node_id) = self.node_ids.get(i) else {
-                break;
-            };
-            // Button events carry no coordinates and each child remembers the
-            // last cursor position. Route them only to the group under that
-            // cursor (or the group holding a capture), otherwise an earlier
-            // off-target tile can consume a click before a later group's tab
-            // controls see it.
-            if matches!(event, WindowEvent::MouseInput { .. })
-                && !g.get_rect().contains(self.last_cursor)
-                && !g.wants_pointer_capture()
-            {
+        // Mouse buttons carry no position, so dispatch the group that owns the
+        // remembered cursor (or an active capture) before siblings. Keep every
+        // sibling in the fallback order: synthetic and keyboard-adjacent test
+        // paths can legitimately lack a preceding cursor move.
+        let preferred = matches!(event, WindowEvent::MouseInput { .. }).then(|| {
+            self.groups
+                .iter()
+                .position(|group| group.wants_pointer_capture())
+                .or_else(|| {
+                    self.groups
+                        .iter()
+                        .position(|group| group.get_rect().contains(self.last_cursor))
+                })
+        });
+        let preferred = preferred.flatten();
+        let mut order = Vec::with_capacity(self.groups.len());
+        if let Some(i) = preferred {
+            order.push(i);
+        }
+        order.extend((0..self.groups.len()).filter(|i| Some(*i) != preferred));
+        for i in order {
+            let Some(g) = self.groups.get_mut(i) else {
                 continue;
-            }
+            };
+            let Some(&node_id) = self.node_ids.get(i) else {
+                continue;
+            };
             g.handle_event(
                 event,
                 scale_factor,
