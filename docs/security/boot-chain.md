@@ -283,6 +283,17 @@ strict `/dev/mem`, and compiles kexec out entirely, but Secure Boot remains what
 authenticates the kernel containing those controls and closes the pre-kernel
 replacement boundary.
 
+### systemd filesystem restrictions
+
+Tilo's kernel enables `CONFIG_BPF_LSM=y`, `CONFIG_DEBUG_INFO_BTF=y`, and has
+`bpf` in `CONFIG_LSM`. These are a boot requirement for the systemd version in
+the image: PID 1 installs its BPF LSM program for `RestrictFileSystems=` before
+starting units. Leaving BPF LSM out makes systemd exit during early userspace,
+before recovery or installer services can run. This does not enable
+unprivileged BPF: `CONFIG_BPF_UNPRIV_DEFAULT_OFF=y` and the image policy keep
+that disabled. `tilo-security-audit` verifies both the compiled options and
+that `bpf` is present in the live LSM stack.
+
 PCR 7 measures the Secure Boot policy. A former LUKS TPM design bound only to
 that register; it has been removed because PCR 7 does not identify the selected
 Tilo UKI. With Secure Boot off, such a binding would merely record "Secure Boot
