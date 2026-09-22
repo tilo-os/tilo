@@ -13013,13 +13013,13 @@ impl ShellOverlayHost {
                 crate::shell::quick_settings::actions::log_qs_result(
                     "set_brightness",
                     self.qs_actions.set_brightness(value_pct),
-                )
+                );
             }
             Some(SliderCommit::Volume(value_pct)) => {
                 crate::shell::quick_settings::actions::log_qs_result(
                     "set_volume",
                     self.qs_actions.set_volume(value_pct),
-                )
+                );
             }
             None => return false,
         }
