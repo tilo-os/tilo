@@ -6812,7 +6812,6 @@ impl ShellOverlayHost {
             .unwrap_or_default();
         if self.palette_visible && current_scope == effective {
             self.palette_visible = false;
-            return;
         }
         if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
@@ -7432,7 +7431,6 @@ impl ShellOverlayHost {
                 }
             }
             self.palette_visible = false;
-            return;
         }
     }
 
@@ -8190,7 +8188,7 @@ impl ShellOverlayHost {
             MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
             MouseScrollDelta::PixelDelta(position) => -position.y / (56.0 * scale_factor.max(0.1)),
         };
-        let owned = match state.current_level() {
+        match state.current_level() {
             crate::shell::quick_settings::QsLevel::Wifi => {
                 let changed = self.qs_wifi_pane.scroll_wheel(panel, &state, rows);
                 if changed {
@@ -8215,8 +8213,7 @@ impl ShellOverlayHost {
                 true
             }
             _ => false,
-        };
-        owned
+        }
     }
 
     /// Keyboard navigation for the notification drill-in. It is deliberately
@@ -13903,6 +13900,78 @@ const OVERVIEW_PANEL_START_SCALE: f64 = 0.97;
 /// clipped row reads as "there is more" rather than unfinished.
 const OVERVIEW_SCROLL_FADE_PX: f64 = 40.0;
 
+fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &[usize]) -> bool {
+    let drill_state = host.chrome.as_ref().and_then(|chrome| {
+        let state = chrome.borrow();
+        matches!(
+            state.quick_settings.current_level(),
+            crate::shell::quick_settings::QsLevel::Wifi
+                | crate::shell::quick_settings::QsLevel::Bluetooth
+                | crate::shell::quick_settings::QsLevel::Vpn
+        )
+        .then(|| state.quick_settings.clone())
+    });
+    if let Some(drill_state) = drill_state {
+        let focused = match drill_state.current_level() {
+            crate::shell::quick_settings::QsLevel::Wifi => host
+                .qs_wifi_pane
+                .focus_accessibility_path(child_path, host.quick_settings_rect(), &drill_state),
+            crate::shell::quick_settings::QsLevel::Bluetooth => {
+                host.qs_bluetooth_pane.focus_accessibility_path(
+                    child_path,
+                    host.quick_settings_rect(),
+                    &drill_state.bt_devices,
+                )
+            }
+            crate::shell::quick_settings::QsLevel::Vpn => {
+                host.qs_vpn_pane.focus_accessibility_path(
+                    child_path,
+                    host.quick_settings_rect(),
+                    &drill_state.vpns,
+                )
+            }
+            _ => false,
+        };
+        if focused && let Some(chrome) = host.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        return focused;
+    }
+    let notification_focus = host.chrome.as_ref().and_then(|chrome| {
+        let state = chrome.borrow();
+        if !matches!(
+            state.quick_settings.current_level(),
+            crate::shell::quick_settings::QsLevel::Notifications
+        ) {
+            return None;
+        }
+        match child_path {
+            [0, 1] if !state.notification_history().is_empty() => Some(false),
+            [0, index]
+                if state.can_undo_notification_history_clear()
+                    && *index
+                        == if state.notification_history().is_empty() {
+                            2
+                        } else {
+                            3
+                        } =>
+            {
+                Some(true)
+            }
+            _ => None,
+        }
+    });
+    if let Some(undo) = notification_focus {
+        host.qs_notification_action_focus = Some(undo);
+        true
+    } else {
+        host.chrome.as_ref().is_some_and(|chrome| {
+            host.qs_root
+                .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
+        })
+    }
+}
+
 impl Widget for ShellOverlayHost {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
@@ -15796,79 +15865,7 @@ impl Widget for ShellOverlayHost {
                 .collaborators_overlay
                 .focus_accessibility_path(child_path),
             AccessibleOverlay::QuickSettings => {
-                let drill_state = self.chrome.as_ref().and_then(|chrome| {
-                    let state = chrome.borrow();
-                    matches!(
-                        state.quick_settings.current_level(),
-                        crate::shell::quick_settings::QsLevel::Wifi
-                            | crate::shell::quick_settings::QsLevel::Bluetooth
-                            | crate::shell::quick_settings::QsLevel::Vpn
-                    )
-                    .then(|| state.quick_settings.clone())
-                });
-                if let Some(drill_state) = drill_state {
-                    let focused = match drill_state.current_level() {
-                        crate::shell::quick_settings::QsLevel::Wifi => {
-                            self.qs_wifi_pane.focus_accessibility_path(
-                                child_path,
-                                self.quick_settings_rect(),
-                                &drill_state,
-                            )
-                        }
-                        crate::shell::quick_settings::QsLevel::Bluetooth => {
-                            self.qs_bluetooth_pane.focus_accessibility_path(
-                                child_path,
-                                self.quick_settings_rect(),
-                                &drill_state.bt_devices,
-                            )
-                        }
-                        crate::shell::quick_settings::QsLevel::Vpn => {
-                            self.qs_vpn_pane.focus_accessibility_path(
-                                child_path,
-                                self.quick_settings_rect(),
-                                &drill_state.vpns,
-                            )
-                        }
-                        _ => false,
-                    };
-                    if focused && let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().bump();
-                    }
-                    return focused;
-                }
-                let notification_focus = self.chrome.as_ref().and_then(|chrome| {
-                    let state = chrome.borrow();
-                    if !matches!(
-                        state.quick_settings.current_level(),
-                        crate::shell::quick_settings::QsLevel::Notifications
-                    ) {
-                        return None;
-                    }
-                    match child_path {
-                        [0, 1] if !state.notification_history().is_empty() => Some(false),
-                        [0, index]
-                            if state.can_undo_notification_history_clear()
-                                && *index
-                                    == if state.notification_history().is_empty() {
-                                        2
-                                    } else {
-                                        3
-                                    } =>
-                        {
-                            Some(true)
-                        }
-                        _ => None,
-                    }
-                });
-                if let Some(undo) = notification_focus {
-                    self.qs_notification_action_focus = Some(undo);
-                    true
-                } else {
-                    self.chrome.as_ref().is_some_and(|chrome| {
-                        self.qs_root
-                            .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
-                    })
-                }
+                focus_quick_settings_accessibility(self, child_path)
             }
             AccessibleOverlay::WorkspaceSettings => {
                 matches!(child_path, [0])
@@ -24585,8 +24582,11 @@ mod modal_curve_tests {
             !host.needs_animation_frame_at(raised_at),
             "the static hold must not repaint continuously"
         );
-        assert!(host.needs_animation_frame_at(raised_at + OSD_HOLD - OSD_FADE));
-        assert!(host.needs_animation_frame_at(raised_at + OSD_HOLD - Duration::from_millis(1)));
+        let expiry = raised_at.checked_add(OSD_HOLD).unwrap();
+        assert!(host.needs_animation_frame_at(expiry.checked_sub(OSD_FADE).unwrap()));
+        assert!(
+            host.needs_animation_frame_at(expiry.checked_sub(Duration::from_millis(1)).unwrap())
+        );
         assert!(
             !host.needs_animation_frame_at(raised_at + OSD_HOLD),
             "the expired readout must let the compositor idle"

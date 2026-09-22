@@ -294,7 +294,7 @@ pub struct QuickSettingsState {
     /// drill-in list.
     pub nav_stack: Vec<QsLevel>,
     pub wifi_networks: Vec<WifiNetwork>,
-    /// True only while NetworkManager discovery is outstanding.
+    /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
     /// Last discovery failure, kept separate from an honest empty result.
     pub wifi_scan_error: Option<String>,

@@ -180,11 +180,14 @@ impl Osd {
     /// after waking, so dropping it at the deadline would skip the final
     /// clearing frame.
     pub fn next_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
-        let fade_start = self.raised_at + OSD_HOLD.saturating_sub(OSD_FADE);
+        let fade_start = self
+            .raised_at
+            .checked_add(OSD_HOLD.saturating_sub(OSD_FADE))
+            .unwrap_or(self.raised_at);
         if now < fade_start {
             Some(fade_start)
         } else {
-            Some(self.raised_at + OSD_HOLD)
+            self.raised_at.checked_add(OSD_HOLD)
         }
     }
 
@@ -462,14 +465,14 @@ mod tests {
     fn opaque_hold_sleeps_until_fade_then_only_fade_animates() {
         let o = Osd::volume(0.5, false);
         let t0 = o.raised_at;
-        let fade_start = t0 + OSD_HOLD - OSD_FADE;
-        let expiry = t0 + OSD_HOLD;
+        let expiry = t0.checked_add(OSD_HOLD).unwrap();
+        let fade_start = expiry.checked_sub(OSD_FADE).unwrap();
 
         assert!(!o.needs_animation_frame_at(t0));
         assert_eq!(o.next_wake_deadline_at(t0), Some(fade_start));
         assert!(o.needs_animation_frame_at(fade_start));
         assert_eq!(o.next_wake_deadline_at(fade_start), Some(expiry));
-        assert!(o.needs_animation_frame_at(expiry - Duration::from_millis(1)));
+        assert!(o.needs_animation_frame_at(expiry.checked_sub(Duration::from_millis(1)).unwrap()));
         assert!(!o.needs_animation_frame_at(expiry));
         assert_eq!(
             o.next_wake_deadline_at(expiry),

@@ -128,11 +128,6 @@ impl DisplayHardwareSnapshot {
     ///
     /// Returns an error if `XDG_RUNTIME_DIR` is unset or relative, `self`
     /// can't be serialised, or the snapshot file can't be written.
-    /// Persist the ordered top-bar widget selection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the configuration cannot be serialized or written.
     pub fn save(&self) -> std::io::Result<()> {
         let path = display_snapshot_path()
             .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
@@ -888,6 +883,11 @@ impl TopBarWidgetsConfig {
         .normalised()
     }
 
+    /// Persist the ordered top-bar widget selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configuration cannot be serialized or written.
     pub fn save(&self) -> std::io::Result<()> {
         let value =
             serde_json::to_value(self.clone().normalised()).map_err(std::io::Error::other)?;

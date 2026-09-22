@@ -57,6 +57,12 @@ pub enum SliderCommit {
     Volume(f32),
 }
 
+struct ControlPaint {
+    control: QuickSettingsControl,
+    rect: Rect,
+    on: bool,
+}
+
 /// Root interaction state.  Editing uses the shared Tilo reorder controller;
 /// it never serialises paint geometry, only stable control identifiers.
 pub struct QuickSettingsRoot {
@@ -1153,7 +1159,9 @@ impl QuickSettingsRoot {
             &ButtonFace::new(done, "Done")
                 .primary()
                 .hovered(cursor.is_some_and(|point| done.contains(point)))
-                .focused(self.keyboard_focus == Some(self.edit_controls(state).len() + 1))
+                .focused(
+                    self.keyboard_focus == Some(self.edit_controls(state).len().saturating_add(1)),
+                )
                 .accessible_name("Finish customizing Quick Settings"),
         );
     }
@@ -1370,48 +1378,17 @@ impl QuickSettingsRoot {
                 .focused(self.keyboard_focus == Some(Self::CONTROL_FOCUS_START.saturating_add(i)))
                 .accessible_name(Self::rendered_label(c, s)),
         );
-        ui::icons::draw_icon(
+        self.draw_control_content(
             scene,
             transform,
-            Rect::new(
-                r.x0 + self.scaled(14.),
-                r.y0 + self.scaled(9.),
-                r.x0 + self.scaled(32.),
-                r.y0 + self.scaled(27.),
-            ),
-            Self::icon(c, s),
-            if on {
-                colors.accent[5]
-            } else {
-                colors.text_primary
+            text,
+            theme,
+            s,
+            &ControlPaint {
+                control: c,
+                rect: r,
+                on,
             },
-            1.5,
-        );
-        text.draw_text_weighted(
-            scene,
-            Self::rendered_label(c, s),
-            theme.tokens.typography.scale.sm,
-            colors.text_primary,
-            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(34.)).into()),
-            None,
-            TextWeight::Semibold,
-        );
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
-        )]
-        let sub = text.elide_to_width(
-            Self::subline(c, s),
-            theme.tokens.typography.scale.xs,
-            (r.width() - self.scaled(70.)) as f32,
-        );
-        text.draw_text(
-            scene,
-            &sub,
-            theme.tokens.typography.scale.xs,
-            colors.text_dim,
-            transform.pre_translate((r.x0 + self.scaled(14.), r.y0 + self.scaled(48.)).into()),
-            None,
         );
         if Self::has_details(c, s) {
             let details = self.control_details_rect(r);
@@ -1473,6 +1450,64 @@ impl QuickSettingsRoot {
                 ),
             );
         }
+    }
+
+    fn draw_control_content(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        state: &QuickSettingsState,
+        paint: &ControlPaint,
+    ) {
+        let &ControlPaint { control, rect, on } = paint;
+        let colors = &theme.tokens.colors;
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                rect.x0 + self.scaled(14.),
+                rect.y0 + self.scaled(9.),
+                rect.x0 + self.scaled(32.),
+                rect.y0 + self.scaled(27.),
+            ),
+            Self::icon(control, state),
+            if on {
+                colors.accent[5]
+            } else {
+                colors.text_primary
+            },
+            1.5,
+        );
+        text.draw_text_weighted(
+            scene,
+            Self::rendered_label(control, state),
+            theme.tokens.typography.scale.sm,
+            colors.text_primary,
+            transform
+                .pre_translate((rect.x0 + self.scaled(14.), rect.y0 + self.scaled(34.)).into()),
+            None,
+            TextWeight::Semibold,
+        );
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "quick-settings panel geometry is bounded by compositor output dimensions; f32 text width is sufficient for shaping"
+        )]
+        let sub = text.elide_to_width(
+            Self::subline(control, state),
+            theme.tokens.typography.scale.xs,
+            (rect.width() - self.scaled(70.)) as f32,
+        );
+        text.draw_text(
+            scene,
+            &sub,
+            theme.tokens.typography.scale.xs,
+            colors.text_dim,
+            transform
+                .pre_translate((rect.x0 + self.scaled(14.), rect.y0 + self.scaled(48.)).into()),
+            None,
+        );
     }
     #[allow(
         clippy::too_many_lines,

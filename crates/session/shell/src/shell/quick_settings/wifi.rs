@@ -21,6 +21,16 @@ use crate::shell::quick_settings::WifiPasswordPrompt;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
 use crate::shell::quick_settings::drill_in::{DrillInList, DrillInOutcome};
 
+fn f32v(value: f64) -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "quick-settings geometry is bounded to desktop pixel dimensions representable as f32"
+    )]
+    {
+        value as f32
+    }
+}
+
 #[derive(Default)]
 pub struct QuickSettingsWifiPane {
     list: DrillInList,
@@ -222,19 +232,28 @@ impl QuickSettingsWifiPane {
             .iter()
             .filter_map(|index| match *index {
                 Self::BACK_FOCUS => Some(
-                    AccessNode::new(Role::Button)
-                        .with_name("Back")
-                        .with_state(AccessState::new().focusable(true)),
+                    AccessNode::new(Role::Button).with_name("Back").with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.keyboard_focus == Some(*index)),
+                    ),
                 ),
                 Self::WIFI_FOCUS => Some(
-                    AccessNode::new(Role::Switch)
-                        .with_name("Wi-Fi")
-                        .with_state(AccessState::new().focusable(true).checked(state.wifi)),
+                    AccessNode::new(Role::Switch).with_name("Wi-Fi").with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.keyboard_focus == Some(*index))
+                            .checked(state.wifi),
+                    ),
                 ),
                 Self::RESCAN_FOCUS => Some(
                     AccessNode::new(Role::Button)
                         .with_name("Scan for Wi-Fi networks")
-                        .with_state(AccessState::new().focusable(true)),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.keyboard_focus == Some(*index)),
+                        ),
                 ),
                 Self::HOTSPOT_FOCUS => Some(
                     AccessNode::new(Role::Switch)
@@ -242,6 +261,7 @@ impl QuickSettingsWifiPane {
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
+                                .focused(self.keyboard_focus == Some(*index))
                                 .checked(state.radios.hotspot_active),
                         ),
                 ),
@@ -253,7 +273,11 @@ impl QuickSettingsWifiPane {
                             .with_name(item.ssid.clone())
                             .with_description(if item.secure { "Secured" } else { "Open" })
                             .with_position(network.saturating_add(1), state.wifi_networks.len())
-                            .with_state(AccessState::new().focusable(true)),
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.keyboard_focus == Some(*index)),
+                            ),
                     )
                 }
             })
@@ -300,13 +324,19 @@ impl QuickSettingsWifiPane {
         let current = self
             .keyboard_focus
             .and_then(|focus| order.iter().position(|candidate| *candidate == focus));
+        let last = order.len().saturating_sub(1);
         let position = match (current, backwards) {
-            (Some(position), true) => position.checked_sub(1).unwrap_or(order.len() - 1),
-            (Some(position), false) => position.saturating_add(1) % order.len(),
-            (None, true) => order.len() - 1,
+            (Some(position), true) => position.checked_sub(1).unwrap_or(last),
+            (Some(position), false) => position
+                .saturating_add(1)
+                .checked_rem(order.len())
+                .unwrap_or_default(),
+            (None, true) => last,
             (None, false) => 0,
         };
-        let focus = order[position];
+        let Some(focus) = order.get(position).copied() else {
+            return;
+        };
         self.keyboard_focus = Some(focus);
         if let Some(network) = focus.checked_sub(Self::NETWORK_FOCUS_START) {
             self.list.ensure_visible(
@@ -673,7 +703,7 @@ impl QuickSettingsWifiPane {
                     theme.tokens.typography.scale.xs,
                     colors.accent[5],
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
-                    Some((row.width() - 120.0).max(1.0) as f32),
+                    Some(f32v((row.width() - 120.0).max(1.0))),
                 );
             } else if network.connected {
                 text.draw_text(
