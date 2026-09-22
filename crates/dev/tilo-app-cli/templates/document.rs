@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
-use ui::automerge::transaction::Transactable;
-use ui::tilo_actions::{self, ActionError, ActionRegistry, Doc, ExecutionLocus, Resource};
-use ui::tokens::TextRole;
-use ui::widget::{Text, TextInput, Widget, labeled_field};
+use ui::prelude::{
+    ActionError, ActionRegistry, Doc, ExecutionLocus, Resource, Text, TextInput, TextRole,
+    Transactable, Widget, labeled_field, tilo_actions,
+};
 
 const DOCUMENT_ACTION_TYPE: &str = "generated.document.action";
 
@@ -55,11 +55,51 @@ pub fn register_actions(registry: &mut ActionRegistry) {
 /// Panics only if serializing the generated `DocumentAction` enum fails.
 #[expect(
     clippy::expect_used,
-    clippy::too_many_lines,
-    reason = "the generated action enum is serializable; keeping this complete document example together makes its action and field bindings auditable"
+    reason = "the generated action enum contains only serializable strings and unit variants"
 )]
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();
+    let resource = document_resource();
+    let text_binding = |action_id: &str| {
+        tilo_actions::ActionBinding::new(
+            &resource,
+            resource
+                .actions
+                .iter()
+                .find(|action| action.id == action_id)
+                .expect("generated document resource exports its field action"),
+            |value| serde_json::Map::from_iter([("value".into(), serde_json::json!(value))]),
+        )
+        .expect("document field produces valid action arguments")
+    };
+    let title = TextInput::from_document_string("document-title")
+        .with_id("document-title-input")
+        .with_placeholder("document-title-placeholder")
+        .on_action(text_binding("set-title"));
+    let body = TextInput::from_document_string("document-body")
+        .with_id("document-body-input")
+        .with_placeholder("document-body-placeholder")
+        .multiline(true)
+        .on_action(text_binding("set-body"));
+    let root = Box::new(ui::column![
+        Text::new("document-heading").with_role(TextRole::Title),
+        labeled_field("document-title-label", title),
+        labeled_field("document-body-label", body),
+        Text::new("document-preview-heading").with_role(TextRole::Heading),
+        Text::from_document_string("document-title")
+            .with_role(TextRole::Heading)
+            .with_id("document-title-preview"),
+        Text::from_document_string("document-body").with_id("document-body-preview"),
+    ]);
+    ui::widget::resource_actions::immediate(root, resource, |_| {
+        Ok(tilo_actions::ActionOutput::default())
+    })
+}
+#[expect(
+    clippy::expect_used,
+    reason = "the generated action enum contains only serializable strings and unit variants"
+)]
+fn document_resource() -> Resource {
     let set_content = tilo_actions::ActionSpec::typed(
         "set-content",
         "Set document content",
@@ -124,7 +164,7 @@ pub fn app_root() -> Box<dyn Widget> {
             .expect("bound document body is serializable")
         },
     );
-    let resource = Resource::new("generated.document:root", "generated.document", "Document")
+    Resource::new("generated.document:root", "generated.document", "Document")
         .with_action(set_title)
         .with_action(set_body)
         .with_action(set_content)
@@ -136,39 +176,5 @@ pub fn app_root() -> Box<dyn Widget> {
                 &DocumentAction::Clear,
             )
             .expect("the generated document action is serializable"),
-        );
-    let text_binding = |action_id: &str| {
-        tilo_actions::ActionBinding::new(
-            &resource,
-            resource
-                .actions
-                .iter()
-                .find(|action| action.id == action_id)
-                .expect("generated document resource exports its field action"),
-            |value| serde_json::Map::from_iter([("value".into(), serde_json::json!(value))]),
         )
-        .expect("document field produces valid action arguments")
-    };
-    let title = TextInput::from_document_string("document-title")
-        .with_id("document-title-input")
-        .with_placeholder("document-title-placeholder")
-        .on_action(text_binding("set-title"));
-    let body = TextInput::from_document_string("document-body")
-        .with_id("document-body-input")
-        .with_placeholder("document-body-placeholder")
-        .multiline(true)
-        .on_action(text_binding("set-body"));
-    let root = Box::new(ui::column![
-        Text::new("document-heading").with_role(TextRole::Title),
-        labeled_field("document-title-label", title),
-        labeled_field("document-body-label", body),
-        Text::new("document-preview-heading").with_role(TextRole::Heading),
-        Text::from_document_string("document-title")
-            .with_role(TextRole::Heading)
-            .with_id("document-title-preview"),
-        Text::from_document_string("document-body").with_id("document-body-preview"),
-    ]);
-    ui::widget::resource_actions::immediate(root, resource, |_| {
-        Ok(tilo_actions::ActionOutput::default())
-    })
 }

@@ -1,5 +1,6 @@
-use ui::widget::{Banner, Button, Spinner, Text, Widget};
-use ui::{LatestTask, ModelView, tilo_actions, tokens::TextRole};
+use ui::prelude::{
+    Banner, Button, LatestTask, ModelView, Spinner, Text, TextRole, Widget, tilo_actions,
+};
 
 enum LoadState {
     Idle,
@@ -26,8 +27,8 @@ fn count_entries() -> Result<usize, String> {
 ///
 /// # Panics
 ///
-/// Panics if a generated action binding no longer matches the resource action
-/// declared immediately above it, or if its JSON arguments cannot be encoded.
+/// Panics if generated action metadata cannot be encoded or no longer matches
+/// its controls.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"

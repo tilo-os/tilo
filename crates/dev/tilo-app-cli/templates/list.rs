@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::ops::Range;
-use ui::LatestRequest;
-use ui::tilo_actions;
-use ui::widget::virtual_list::{ListModel, ListModelChange, ListRowState, VirtualList};
-use ui::widget::{Button, Container, Text, Widget};
+use ui::prelude::{
+    Button, Container, LatestRequest, ListModel, ListModelChange, ListRowState, Text, VirtualList,
+    Widget, tilo_actions,
+};
 
 const ITEM_COUNT: usize = 100_000_000;
 
@@ -157,8 +157,7 @@ impl ListModel for ActivityModel {
 ///
 /// # Panics
 ///
-/// Panics if a generated row binding no longer matches the resource action
-/// declared by this template.
+/// Panics if a generated row binding no longer matches the exported action.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"
