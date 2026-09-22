@@ -414,13 +414,16 @@ for policy in \
   'PrivateDevices=yes' \
   'PrivateNetwork=yes' \
   'ProtectKernelTunables=yes' \
-  'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID' \
+  'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_AUDIT_WRITE CAP_SETGID CAP_SETUID' \
   'AmbientCapabilities=' \
-  'RestrictAddressFamilies=AF_UNIX' \
+  'RestrictAddressFamilies=AF_UNIX AF_NETLINK' \
   'SystemCallFilter=@system-service'; do
   grep -Fqx "$policy" "$firstboot_unit" \
     || bad "first-boot account creator sandbox is missing: $policy"
 done
+if grep -Eq '^SystemCallFilter=~.*(^|[[:space:]])@network-io([[:space:]]|$)' "$firstboot_unit"; then
+  bad 'first-boot account creator blocks the libaudit socket syscalls required by useradd'
+fi
 
 installer_setup_unit="$repo_root/os/usr/lib/systemd/system/tilo-installer-setup.service"
 for policy in \
