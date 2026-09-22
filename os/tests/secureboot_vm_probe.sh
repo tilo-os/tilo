@@ -155,7 +155,7 @@ expect_log 'TILO_SECURE_BOOT_SECURE_BOOT=0' "$work/enroll.log"
 make_esp() {
   local image="$1" executable="$2"
   truncate -s 64M "$image"
-  mkfs.vfat -n TILO_SB_TEST "$image" >/dev/null
+  mkfs.vfat -n TILO_SBTEST "$image" >/dev/null
   mmd -i "$image" ::/EFI ::/EFI/BOOT
   mcopy -i "$image" "$executable" "::/EFI/BOOT/$boot_name"
   mcopy -i "$image" "$repo/os/tests/fixtures/secureboot-startup.nsh" ::/startup.nsh
