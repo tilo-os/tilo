@@ -1653,20 +1653,22 @@ impl Widget for GroupRow {
         // `scroll_group_into_view_animated`, not this event path.
 
         // A clipped group's trailing `+` can overlap the invisible resize
-        // seam at the viewport edge. The exact painted control owns that
-        // press; otherwise the seam keeps its usual first refusal.
-        let new_tab_press = matches!(
+        // seam at the viewport edge. The exact painted control owns both the
+        // cursor update and the press; otherwise the seam keeps its usual
+        // first refusal. Forwarding the move matters because button events
+        // carry no coordinates and the child bar hit-tests its cursor cache.
+        let new_tab_owned = matches!(
             event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    ..
+                }
         ) && self
             .groups
             .iter()
             .any(|group| group.new_tab_hit(self.last_cursor));
-        if new_tab_press {
+        if new_tab_owned {
             self.dispatch_to_groups(
                 event,
                 scale_factor,
@@ -1691,7 +1693,7 @@ impl Widget for GroupRow {
             );
         }
         self.apply_pending_handle_resizes();
-        if !new_tab_press {
+        if !new_tab_owned {
             self.dispatch_to_groups(
                 event,
                 scale_factor,
