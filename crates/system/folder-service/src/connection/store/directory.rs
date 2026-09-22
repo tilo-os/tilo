@@ -57,12 +57,17 @@ impl ConnectionStore {
         expected: u64,
         verified: bool,
         reconstructed: bool,
+        context: Option<&super::NativeReadContext<'_>>,
     ) -> Result<Vec<Row>, StoreError> {
-        let mut connection = self.connection(ConnectionId(registration.connection))?;
-        let mut operation = self.operation(OperationId {
-            connection: ConnectionId(registration.connection),
-            serial: registration.serial,
-        })?;
+        let mut connection =
+            self.connection_with_context(ConnectionId(registration.connection), context)?;
+        let mut operation = self.operation_with_context(
+            OperationId {
+                connection: ConnectionId(registration.connection),
+                serial: registration.serial,
+            },
+            context,
+        )?;
         let (intent, stage) = Self::directory_registration_join(&operation, registration)?;
         if connection.lifecycle != 0 || connection.fence != registration.fence {
             return Err(StoreError::Disconnected);
@@ -74,7 +79,9 @@ impl ConnectionStore {
         {
             return Err(StoreError::StaleRevision);
         }
-        let Some(Row::NativeRegistration(mut previous)) = self.row(&registration.key())? else {
+        let Some(Row::NativeRegistration(mut previous)) =
+            self.row_with_context(&registration.key(), context)?
+        else {
             return Err(StoreError::Corrupt);
         };
         if !verified {
@@ -117,8 +124,14 @@ impl ConnectionStore {
         &self,
         operation: &format::Operation,
     ) -> Result<EntryState, StoreError> {
+        Self::native_directory_baseline_value_with_rows(operation, self.rows()?)
+    }
+    pub(super) fn native_directory_baseline_value_with_rows(
+        operation: &format::Operation,
+        rows: impl Iterator<Item = Result<Row, StoreError>>,
+    ) -> Result<EntryState, StoreError> {
         let mut latest: Option<format::NativeRegistration> = None;
-        for row in self.rows()? {
+        for row in rows {
             if let Row::NativeRegistration(value) = row? {
                 if value.connection == operation.connection
                     && value.serial == operation.serial

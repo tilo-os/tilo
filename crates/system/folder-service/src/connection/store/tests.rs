@@ -1966,6 +1966,15 @@ fn native_prepared_addition_can_publish_without_dummy_recovery() {
     let mut live = store
         .begin_native_for_test(intent(&record), &session)
         .unwrap();
+    store
+        .reserve_native_reads(
+            &mut live,
+            &session,
+            16 * 1024 * 1024,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
     let reservation = store
         .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [7; 16])
         .unwrap();
@@ -2720,6 +2729,7 @@ fn native_paid_private_copy_and_reread_charge_short_reads_and_eof() {
         .unwrap();
     let source = temp.path().join("short-source");
     std::fs::write(&source, b"abc").unwrap();
+    let physical_trace = storage::physical_trace::begin();
     let preserved = store
         .preserve_file_with_context(
             reservation,
@@ -2739,10 +2749,58 @@ fn native_paid_private_copy_and_reread_charge_short_reads_and_eof() {
             .verify_recovery_with_context(&entry, Some(&context))
             .unwrap(),
     );
-    // Three physical passes, each one short payload read and one EOF probe.
+    let trace = physical_trace.finish();
+    let payload: Vec<_> = trace
+        .reads
+        .iter()
+        .filter(|read| read.name.starts_with("payload-"))
+        .collect();
+    assert_eq!(payload.len(), 6);
+    for (index, read) in payload.iter().enumerate() {
+        assert_eq!(
+            read.name,
+            if index < 2 {
+                "payload-copy"
+            } else {
+                "payload-hash"
+            }
+        );
+        assert_eq!(read.requested, 256 * 1024);
+        assert_eq!(read.returned, Some(if index % 2 == 0 { 3 } else { 0 }));
+    }
+    let currents: Vec<_> = trace
+        .reads
+        .iter()
+        .filter(|read| read.name == "CURRENT")
+        .collect();
+    assert_eq!(currents.len(), 15 * 2);
+    for pair in currents.chunks_exact(2) {
+        let length = usize::try_from(pair[0].length.unwrap()).unwrap();
+        assert!(length < 4096);
+        assert_eq!(pair[1].length, Some(length as u64));
+        assert_eq!((pair[0].requested, pair[0].returned), (4096, Some(length)));
+        assert_eq!(
+            (pair[1].requested, pair[1].returned),
+            (4097 - length, Some(0))
+        );
+    }
+    assert_eq!(trace.reads.len(), payload.len() + currents.len());
+    let requested: u64 = trace.reads.iter().map(|read| read.requested as u64).sum();
+    eprintln!(
+        "private-copy actual_reads={} current_passes={} payload_requests={} requested={requested} per_cut_lengths={:?}",
+        trace.reads.len(),
+        currents.len() / 2,
+        payload.len(),
+        currents
+            .chunks_exact(2)
+            .map(|p| p[0].length.unwrap())
+            .collect::<Vec<_>>()
+    );
+    // Three real payload passes retain six full requests; every metadata read
+    // is independently observed at Read::read, including its actual EOF cut.
     assert!(
         live.operation_reads()
-            .charge(format::READ_QUANTUM - 6 * 256 * 1024)
+            .charge(format::READ_QUANTUM - requested)
             .is_ok()
     );
     assert!(live.operation_reads().charge(1).is_err());
@@ -2790,14 +2848,51 @@ fn native_failed_payload_read_is_charged_and_partial_object_is_retained() {
         .write(true)
         .open(source)
         .unwrap();
+    let physical_trace = storage::physical_trace::begin();
     assert!(
         store
             .preserve_file_with_context(reservation, &mut source, &cancel, Some(&context))
             .is_err()
     );
+    let trace = physical_trace.finish();
+    assert_eq!(trace.reads.len(), 7);
+    let payload: Vec<_> = trace
+        .reads
+        .iter()
+        .filter(|read| read.name == "payload-copy")
+        .collect();
+    assert_eq!(payload.len(), 1);
+    assert_eq!(
+        (payload[0].requested, payload[0].returned),
+        (256 * 1024, None)
+    );
+    let currents: Vec<_> = trace
+        .reads
+        .iter()
+        .filter(|read| read.name == "CURRENT")
+        .collect();
+    assert_eq!(currents.len(), 6);
+    for pair in currents.chunks_exact(2) {
+        let length = usize::try_from(pair[0].length.unwrap()).unwrap();
+        assert!(length < 4096);
+        assert_eq!(pair[1].length, Some(length as u64));
+        assert_eq!((pair[0].requested, pair[0].returned), (4096, Some(length)));
+        assert_eq!(
+            (pair[1].requested, pair[1].returned),
+            (4097 - length, Some(0))
+        );
+    }
+    let requested: u64 = trace.reads.iter().map(|read| read.requested as u64).sum();
+    eprintln!(
+        "failed-copy actual_reads=7 current_passes=3 failed_payload_requests=1 requested={requested} per_cut_lengths={:?}",
+        currents
+            .chunks_exact(2)
+            .map(|p| p[0].length.unwrap())
+            .collect::<Vec<_>>()
+    );
     assert!(
         live.operation_reads()
-            .charge(format::READ_QUANTUM - 256 * 1024)
+            .charge(format::READ_QUANTUM - requested)
             .is_ok()
     );
     assert!(live.operation_reads().charge(1).is_err());
@@ -2998,6 +3093,15 @@ fn native_actual_outcome_is_durable_and_binds_prepared_stage() {
     let session = store.transaction_session(record.id).unwrap();
     let mut live = store
         .begin_native_for_test(intent(&record), &session)
+        .unwrap();
+    store
+        .reserve_native_reads(
+            &mut live,
+            &session,
+            16 * 1024 * 1024,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+            &AtomicBool::new(false),
+        )
         .unwrap();
     let reservation = store
         .reserve_native_namespace_with_nonce(&mut live, Side::Destination, [7; 16])
@@ -3595,10 +3699,22 @@ fn native_baseline_checkpoint_second_reduction_pays_again_and_pins_candidate() {
     )
     .unwrap();
     let before = store.current.generation;
+    let old_root = store.connection(record.id).unwrap().baseline_root;
+    let (mut credit, mut upper) = (0, 64 * 1024 * 1024 + 1);
+    while credit + 1 < upper {
+        let mid = credit + (upper - credit) / 2;
+        if live.reads.require_credit(mid).is_ok() {
+            credit = mid;
+        } else {
+            upper = mid;
+        }
+    }
+    let physical_trace = storage::physical_trace::begin();
     store.overlay_bytes = 8 * 1024 * 1024; // existing pressure seam, real checkpoint/GC follows
     store
         .append_native(
-            Change::BaselineCommit { directory_chain: None,
+            Change::BaselineCommit {
+                directory_chain: None,
                 directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
@@ -3613,13 +3729,51 @@ fn native_baseline_checkpoint_second_reduction_pays_again_and_pins_candidate() {
         )
         .unwrap();
     assert!(store.current.generation > before);
-    // Each reduction independently reads the candidate and old baseline, each
-    // constructor/traversal rereads its root, and each page read pays EOF.
+    let trace = physical_trace.finish();
+    assert_eq!(trace.reductions, vec![(root, old_root), (root, old_root)]);
+    assert_ne!(root, old_root);
+    // Independently preserve exactly two reductions, each with candidate and
+    // old-root constructor + traversal reads, including both EOF probes.
+    for reduction in 0..2 {
+        for root in [root.unwrap(), old_root.unwrap()] {
+            let reads: Vec<_> = trace
+                .reads
+                .iter()
+                .filter(|read| read.reduction == Some(reduction) && read.name == format::hex(&root))
+                .collect();
+            assert_eq!(reads.len(), 4);
+            for pair in reads.chunks_exact(2) {
+                let length = usize::try_from(pair[0].length.unwrap()).unwrap();
+                assert!(length < 4096);
+                assert_eq!(pair[1].length, Some(length as u64));
+                assert_eq!((pair[0].requested, pair[0].returned), (4096, Some(length)));
+                assert_eq!((pair[1].requested, pair[1].returned), (4096, Some(0)));
+            }
+        }
+    }
     assert!(
-        live.reads
-            .charge(64 * 1024 * 1024 - 2 * 2 * 2 * 2 * 4096)
-            .is_ok()
+        trace
+            .reads
+            .iter()
+            .all(|read| !read.name.is_empty() && read.returned.is_some())
     );
+    let requested: u64 = trace.reads.iter().map(|read| read.requested as u64).sum();
+    let mut inventory = std::collections::BTreeMap::<String, (usize, u64)>::new();
+    for read in &trace.reads {
+        let name = if read.name.len() == 64 {
+            "page"
+        } else {
+            &read.name
+        };
+        let entry = inventory.entry(name.to_owned()).or_default();
+        entry.0 += 1;
+        entry.1 += read.requested as u64;
+    }
+    eprintln!(
+        "baseline actual_reads={} reductions=2 exact_baseline_requests=16 exact_baseline_bytes=65536 requested={requested} credit_before={credit} inventory={inventory:?}",
+        trace.reads.len()
+    );
+    assert!(live.reads.charge(credit - requested).is_ok());
     assert!(live.reads.charge(1).is_err());
     assert_eq!(
         store

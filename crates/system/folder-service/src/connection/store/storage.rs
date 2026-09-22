@@ -37,6 +37,124 @@ pub(super) use windows::{
     Metadata, file_identity, open_file, read_file, regular, same_snapshot, validate_file,
 };
 
+// Test observation only: recorded after actual Read::read calls, never by a
+// charge callback. This state cannot supply a lease, credit or native authority.
+#[cfg(test)]
+pub(super) mod physical_trace {
+    use std::{cell::RefCell, io};
+    #[derive(Clone, Debug)]
+    pub struct Read {
+        pub reduction: Option<usize>,
+        pub name: String,
+        pub length: Option<u64>,
+        pub requested: usize,
+        pub returned: Option<usize>,
+    }
+    #[derive(Default, Debug)]
+    pub struct Trace {
+        pub reads: Vec<Read>,
+        pub reductions: Vec<(Option<[u8; 32]>, Option<[u8; 32]>)>,
+    }
+    #[derive(Default)]
+    struct Active {
+        trace: Trace,
+        reduction: Option<usize>,
+        name: String,
+        length: Option<u64>,
+    }
+    thread_local! { static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) }; }
+    pub struct Owner;
+    pub fn begin() -> Owner {
+        ACTIVE.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Active::default());
+        });
+        Owner
+    }
+    impl Owner {
+        pub fn finish(self) -> Trace {
+            ACTIVE.with(|slot| slot.borrow_mut().take().expect("active read trace").trace)
+        }
+    }
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            ACTIVE.with(|slot| {
+                slot.borrow_mut().take();
+            });
+        }
+    }
+    pub struct Name(Option<(String, Option<u64>)>);
+    pub fn name(name: &str, length: u64) -> Name {
+        Name(ACTIVE.with(|slot| {
+            slot.borrow_mut().as_mut().map(|active| {
+                (
+                    std::mem::replace(&mut active.name, name.to_owned()),
+                    std::mem::replace(&mut active.length, Some(length)),
+                )
+            })
+        }))
+    }
+    impl Drop for Name {
+        fn drop(&mut self) {
+            if let Some((name, length)) = self.0.take() {
+                ACTIVE.with(|slot| {
+                    if let Some(active) = slot.borrow_mut().as_mut() {
+                        active.name = name;
+                        active.length = length;
+                    }
+                });
+            }
+        }
+    }
+    pub struct Reduction(Option<Option<usize>>);
+    pub fn reduction(candidate: Option<[u8; 32]>, previous: Option<[u8; 32]>) -> Reduction {
+        Reduction(ACTIVE.with(|slot| {
+            slot.borrow_mut().as_mut().map(|active| {
+                let index = active.trace.reductions.len();
+                active.trace.reductions.push((candidate, previous));
+                active.reduction.replace(index)
+            })
+        }))
+    }
+    impl Drop for Reduction {
+        fn drop(&mut self) {
+            if let Some(previous) = self.0 {
+                ACTIVE.with(|slot| {
+                    if let Some(active) = slot.borrow_mut().as_mut() {
+                        active.reduction = previous;
+                    }
+                });
+            }
+        }
+    }
+    pub fn record(requested: usize, result: &io::Result<usize>) {
+        ACTIVE.with(|slot| {
+            if let Some(active) = slot.borrow_mut().as_mut() {
+                active.trace.reads.push(Read {
+                    reduction: active.reduction,
+                    name: active.name.clone(),
+                    length: active.length,
+                    requested,
+                    returned: result.as_ref().ok().copied(),
+                });
+            }
+        });
+    }
+    pub fn named(name: &str, length: Option<u64>, requested: usize, result: &io::Result<usize>) {
+        ACTIVE.with(|slot| {
+            if let Some(active) = slot.borrow_mut().as_mut() {
+                active.trace.reads.push(Read {
+                    reduction: active.reduction,
+                    name: name.to_owned(),
+                    length,
+                    requested,
+                    returned: result.as_ref().ok().copied(),
+                });
+            }
+        });
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Identity {
@@ -136,6 +254,7 @@ struct LogRead<'a, R> {
     storage: &'a Storage,
     reader: &'a mut R,
     refusal: Option<StoreError>,
+    context: Option<&'a super::NativeReadContext<'a>>,
 }
 impl<R: Read> Read for LogRead<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
@@ -146,7 +265,16 @@ impl<R: Read> Read for LogRead<'_, R> {
             self.refusal = Some(error);
             return Err(std::io::Error::other("bounded log read refused"));
         }
-        self.reader.read(buffer)
+        if let Some(context) = self.context {
+            if let Err(error) = context.charge(buffer.len() as u64) {
+                self.refusal = Some(error);
+                return Err(std::io::Error::other("native log read refused"));
+            }
+        }
+        let read = self.reader.read(buffer);
+        #[cfg(test)]
+        physical_trace::named("log", None, buffer.len(), &read);
+        read
     }
 }
 impl<R> LogRead<'_, R> {
@@ -157,6 +285,9 @@ impl<R> LogRead<'_, R> {
         let value = result?;
         // A final successful or EOF read may itself have crossed the deadline.
         self.storage.review_charge(0, 0, 0, 0)?;
+        if let Some(context) = self.context {
+            context.check()?;
+        }
         Ok(value)
     }
 }
@@ -487,6 +618,20 @@ impl Storage {
         lease.check()?;
         Ok(lease)
     }
+    pub(super) fn require_read_lease(&self) -> Result<(), StoreError> {
+        let budget = self
+            .read_budget
+            .lock()
+            .map_err(|_| StoreError::RecoveryRequired)?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or(StoreError::RecoveryRequired)?;
+        ReadLease {
+            slot: Arc::clone(&self.read_budget),
+            budget,
+        }
+        .check()
+    }
     pub(super) fn review_charge(
         &self,
         bytes: u64,
@@ -524,20 +669,43 @@ impl Storage {
         reader: &mut impl Read,
         sequence: u64,
     ) -> Result<Option<T>, StoreError> {
+        self.read_log_record_with_context(reader, sequence, None)
+    }
+    pub(super) fn read_log_record_with_context<T: serde::de::DeserializeOwned>(
+        &self,
+        reader: &mut impl Read,
+        sequence: u64,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<Option<T>, StoreError> {
+        if context.is_some() {
+            self.require_read_lease()?;
+        }
         let mut metered = LogRead {
             storage: self,
             reader,
             refusal: None,
+            context,
         };
         let result =
             super::framing::read_record(&mut metered, sequence).map_err(|_| StoreError::Corrupt);
         metered.complete(result)
     }
     pub(super) fn read_log_magic(&self, reader: &mut impl Read) -> Result<(), StoreError> {
+        self.read_log_magic_with_context(reader, None)
+    }
+    pub(super) fn read_log_magic_with_context(
+        &self,
+        reader: &mut impl Read,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<(), StoreError> {
+        if context.is_some() {
+            self.require_read_lease()?;
+        }
         let mut metered = LogRead {
             storage: self,
             reader,
             refusal: None,
+            context,
         };
         let mut magic = [0; 8];
         let result = metered.read_exact(&mut magic).map_err(StoreError::from);
@@ -559,6 +727,8 @@ impl Storage {
         if before.len() > max {
             return Err(StoreError::LimitExceeded);
         }
+        #[cfg(test)]
+        let _trace_name = physical_trace::name(name, before.len());
         let bytes = read_metered(&mut file, max, &|requested| {
             self.review_charge(requested as u64, 0, 0, 0)
         })?;
@@ -592,10 +762,30 @@ impl Storage {
         expected: &Current,
         identity: &Metadata,
     ) -> Result<(), StoreError> {
+        self.validate_current_with_context(expected, identity, None)
+    }
+    pub(super) fn validate_current_with_context(
+        &self,
+        expected: &Current,
+        identity: &Metadata,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<(), StoreError> {
+        if let Some(context) = context {
+            context.check()?;
+        }
         let pointer = read_file(&self.root, "CURRENT")?;
         validate_file(&self.root, "CURRENT", &pointer, identity)?;
-        if self.read_bytes(&self.root, "CURRENT", 4096)? != format::encode(expected)? {
+        if self.read_bytes_metered(&self.root, "CURRENT", 4096, &|n| {
+            if let Some(context) = context {
+                context.charge(n as u64)?;
+            }
+            Ok(())
+        })? != format::encode(expected)?
+        {
             return Err(StoreError::IdentityChanged);
+        }
+        if let Some(context) = context {
+            context.check()?;
         }
         Ok(())
     }
@@ -604,14 +794,23 @@ impl Storage {
 impl super::ConnectionStore {
     // Kept on the locked store so callers cannot supply substitute evidence for
     // its retained CURRENT and committed active-log snapshot.
-    #[cfg(not(windows))]
     pub(super) fn publish_current(
         &self,
         next: &Current,
         next_log: &File,
         next_log_identity: &Metadata,
     ) -> Result<Metadata, StoreError> {
-        self.validate()?;
+        self.publish_current_with_context(next, next_log, next_log_identity, None)
+    }
+    #[cfg(not(windows))]
+    pub(super) fn publish_current_with_context(
+        &self,
+        next: &Current,
+        next_log: &File,
+        next_log_identity: &Metadata,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<Metadata, StoreError> {
+        self.validate_with_context(context)?;
         let mut temporary = OwnedTemporary::create(&self.storage.root, OsStr::new("CURRENT"))?;
         temporary.file.write_all(&format::encode(next)?)?;
         let identity = regular(&temporary.file)?;
@@ -628,7 +827,7 @@ impl super::ConnectionStore {
         self.validate_next_log(next, next_log, next_log_identity)?;
         // This must follow every potentially blocking preparation stage. The
         // old pointer and old log still define the only committed generation.
-        self.validate()?;
+        self.validate_with_context(context)?;
         cap_primitives::fs::rename(
             &self.storage.root.file,
             Path::new(&temporary.name),
@@ -642,7 +841,8 @@ impl super::ConnectionStore {
         super::tests::checkpoint_boundary(super::tests::CheckpointBoundary::Published)?;
         // Keep old dependencies and poison on uncertainty after replacement too.
         self.storage.validate()?;
-        self.storage.validate_current(next, &identity)?;
+        self.storage
+            .validate_current_with_context(next, &identity, context)?;
         self.validate_next_log(next, next_log, next_log_identity)?;
         self.validate_log()?;
         Ok(identity)
@@ -692,7 +892,10 @@ pub(super) fn read_metered(
             .ok_or(StoreError::LimitExceeded)?;
         before_read(count)?;
         let target = buffer.get_mut(..count).ok_or(StoreError::LimitExceeded)?;
-        match reader.read(target) {
+        let read = reader.read(target);
+        #[cfg(test)]
+        physical_trace::record(target.len(), &read);
+        match read {
             Ok(0) => return Ok(bytes),
             Ok(read) => {
                 bytes.extend_from_slice(target.get(..read).ok_or(StoreError::Corrupt)?);
@@ -752,10 +955,13 @@ impl Storage {
         if before.len() > max {
             return Err(StoreError::LimitExceeded);
         }
+        #[cfg(test)]
+        let _trace_name = physical_trace::name(name, before.len());
         let bytes = read_metered(&mut file, max, &|requested| {
             self.review_charge(requested as u64, 0, 0, 0)?;
             before_read(requested)
         })?;
+        self.review_charge(0, 0, 0, 0)?;
         validate_file(parent, name, &file, &before)?;
         if !same_snapshot(&before, &regular(&file)?) {
             return Err(StoreError::IdentityChanged);
@@ -827,12 +1033,23 @@ impl Storage {
         root: Option<[u8; 32]>,
         key: &[u8],
     ) -> Result<Option<format::Row>, StoreError> {
+        self.find_with_context(root, key, None)
+    }
+    pub(super) fn find_with_context(
+        &self,
+        root: Option<[u8; 32]>,
+        key: &[u8],
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<Option<format::Row>, StoreError> {
+        if let Some(context) = context {
+            context.check()?;
+        }
         let Some(mut hash) = root else {
             return Ok(None);
         };
         let mut expected = None;
         for _ in 0..8 {
-            let page = self.page(hash)?;
+            let page = self.page_with_context(hash, context)?;
             if expected
                 .as_ref()
                 .is_some_and(|e| page.reference(hash).as_ref().ok() != Some(e))
@@ -864,7 +1081,7 @@ pub(super) struct TreeIter<'a> {
     failed: bool,
     visited: u64,
     page_limit: u64,
-    meter: Option<&'a dyn Fn(usize) -> Result<(), StoreError>>,
+    meter: Option<Box<dyn Fn(usize) -> Result<(), StoreError> + 'a>>,
 }
 impl<'a> TreeIter<'a> {
     pub fn new(storage: &'a Storage, root: Option<[u8; 32]>) -> Result<Self, StoreError> {
@@ -897,6 +1114,47 @@ impl<'a> TreeIter<'a> {
             .ok_or(StoreError::LimitExceeded)?;
         Ok(iter)
     }
+    pub(super) fn new_context(
+        storage: &'a Storage,
+        root: Option<[u8; 32]>,
+        count: Option<u32>,
+        context: Option<&'a super::NativeReadContext<'a>>,
+    ) -> Result<Self, StoreError> {
+        if let Some(context) = context {
+            context.check()?;
+        }
+        let mut stack = Vec::new();
+        let mut visited = 0;
+        let mut actual = 0;
+        if let Some(hash) = root {
+            let child = storage.page_with_context(hash, context)?.reference(hash)?;
+            actual = child.count;
+            if actual > 1_114_112 || count.is_some_and(|n| u64::from(n) != actual) {
+                return Err(StoreError::Corrupt);
+            }
+            stack.push(child);
+            visited = 1;
+        } else if count.is_some_and(|n| n != 0) {
+            return Err(StoreError::Corrupt);
+        }
+        let page_limit = actual
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(1))
+            .ok_or(StoreError::LimitExceeded)?;
+        let meter = context.map(|context| {
+            Box::new(move |n: usize| context.charge(n as u64))
+                as Box<dyn Fn(usize) -> Result<(), StoreError> + 'a>
+        });
+        Ok(Self {
+            storage,
+            stack,
+            rows: Vec::new().into_iter(),
+            failed: false,
+            visited,
+            page_limit,
+            meter,
+        })
+    }
     pub fn new_metered_baseline(
         storage: &'a Storage,
         root: Option<[u8; 32]>,
@@ -927,7 +1185,7 @@ impl<'a> TreeIter<'a> {
             } else {
                 u64::from(count) * 8 + 1
             },
-            meter: Some(meter),
+            meter: Some(Box::new(move |n| meter(n))),
         })
     }
 }
@@ -942,13 +1200,16 @@ impl Iterator for TreeIter<'_> {
                 return Some(self.storage.review_charge(0, 0, 1, 1).map(|()| row));
             }
             let child = self.stack.pop()?;
-            self.visited = self.visited.saturating_add(1);
             let result = (|| {
+                self.visited = self
+                    .visited
+                    .checked_add(1)
+                    .ok_or(StoreError::LimitExceeded)?;
                 if self.visited > self.page_limit {
                     return Err(StoreError::LimitExceeded);
                 }
-                let page = if let Some(meter) = self.meter {
-                    self.storage.page_metered(child.hash, meter)?
+                let page = if let Some(meter) = self.meter.as_ref() {
+                    self.storage.page_metered(child.hash, meter.as_ref())?
                 } else {
                     self.storage.page(child.hash)?
                 };
@@ -1253,7 +1514,10 @@ fn file_digest(
     let mut buffer = vec![0; 256 * 1024];
     loop {
         before_read(buffer.len())?;
-        let count = file.read(&mut buffer)?;
+        let read = file.read(&mut buffer);
+        #[cfg(test)]
+        physical_trace::named("digest", None, buffer.len(), &read);
+        let count = read?;
         if count == 0 {
             break;
         }
@@ -1289,15 +1553,33 @@ impl Storage {
         wanted: [u8; 32],
         baselines: bool,
     ) -> Result<bool, StoreError> {
+        self.contains_page_with_context(root, wanted, baselines, None)
+    }
+    fn contains_page_with_context(
+        &self,
+        root: Option<[u8; 32]>,
+        wanted: [u8; 32],
+        baselines: bool,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<bool, StoreError> {
+        if let Some(context) = context {
+            context.check()?;
+        }
         let Some(hash) = root else { return Ok(false) };
-        let mut stack = vec![self.page(hash)?.reference(hash)?];
-        let mut visited = 0_u64;
+        let root = self.page_with_context(hash, context)?.reference(hash)?;
+        let page_limit = root
+            .count
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(1))
+            .ok_or(StoreError::LimitExceeded)?;
+        let mut stack = vec![root];
+        let mut visited = 1_u64;
         while let Some(child) = stack.pop() {
             visited = visited.checked_add(1).ok_or(StoreError::LimitExceeded)?;
-            if visited > 2_097_152 {
+            if visited > page_limit {
                 return Err(StoreError::LimitExceeded);
             }
-            let page = self.page(child.hash)?;
+            let page = self.page_with_context(child.hash, context)?;
             if page.reference(child.hash)? != child {
                 return Err(StoreError::Corrupt);
             }
@@ -1306,19 +1588,29 @@ impl Storage {
             }
             match page.node {
                 format::Node::Index(children) => stack.extend(children.into_iter().rev()),
-                format::Node::Leaf(rows) if baselines => {
-                    for row in rows {
-                        let root = match row {
-                            format::Row::Connection(connection) => connection.baseline_root,
-                            format::Row::InitialChainReview(review) => Some(review.root),
-                            _ => None,
-                        };
-                        if self.contains_page(root, wanted, false)? {
-                            return Ok(true);
+                format::Node::Leaf(rows) => {
+                    let candidate = rows
+                        .iter()
+                        .any(|r| matches!(r, format::Row::ReviewedCandidateRootsV1(_)));
+                    if candidate && rows.len() != 1 {
+                        return Err(StoreError::Corrupt);
+                    }
+                    if baselines || candidate {
+                        for row in rows {
+                            for root in row.review_roots()? {
+                                let semantic = matches!(&row, format::Row::ReviewedCandidateRootsV1(c) if c.checkpoint.root() == Some(root));
+                                if self.contains_page_with_context(
+                                    Some(root),
+                                    wanted,
+                                    semantic,
+                                    context,
+                                )? {
+                                    return Ok(true);
+                                }
+                            }
                         }
                     }
                 }
-                format::Node::Leaf(_) => (),
             }
         }
         Ok(false)
@@ -1326,18 +1618,39 @@ impl Storage {
 }
 impl super::ConnectionStore {
     pub(super) fn page_referenced(&self, wanted: [u8; 32]) -> Result<bool, StoreError> {
+        self.page_referenced_with_context(wanted, None)
+    }
+    pub(super) fn page_referenced_with_context(
+        &self,
+        wanted: [u8; 32],
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<bool, StoreError> {
+        if let Some(context) = context {
+            context.check()?;
+        }
         use std::io::{Seek, SeekFrom};
         if self
             .storage
-            .contains_page(self.candidate_pin, wanted, false)?
+            .contains_page_with_context(self.candidate_pin, wanted, false, context)?
         {
             return Ok(true);
         }
         if self
             .storage
-            .contains_page(self.current.root, wanted, true)?
+            .contains_page_with_context(self.current.root, wanted, true, context)?
         {
             return Ok(true);
+        }
+        for row in self.overlay.values() {
+            self.storage.review_charge(0, 0, 1, 1)?;
+            for root in row.review_roots()? {
+                if self
+                    .storage
+                    .contains_page_with_context(Some(root), wanted, false, context)?
+                {
+                    return Ok(true);
+                }
+            }
         }
         // Earlier candidate roots in this active log remain replay dependencies,
         // even if a later baseline event superseded the connection's pointer.
@@ -1349,26 +1662,37 @@ impl super::ConnectionStore {
         log.seek(SeekFrom::Start(8))?;
         let _: format::LogHeader = self
             .storage
-            .read_log_record(&mut log, 0)?
+            .read_log_record_with_context(&mut log, 0, context)?
             .ok_or(StoreError::Corrupt)?;
         let mut sequence = format::next(self.current.sequence)?;
         while let Some(event) = self
             .storage
-            .read_log_record::<format::Event>(&mut log, sequence)?
+            .read_log_record_with_context::<format::Event>(&mut log, sequence, context)?
         {
-            let root = match event.change {
-                format::Change::BaselineCommit { root, .. } => root,
-                format::Change::InitialReviewAccepted { review, .. } => Some(review.root),
-                _ => None,
-            };
-            if self.storage.contains_page(root, wanted, false)? {
-                return Ok(true);
+            for root in event.change.review_roots()? {
+                if self
+                    .storage
+                    .contains_page_with_context(Some(root), wanted, false, context)?
+                {
+                    return Ok(true);
+                }
             }
             sequence = format::next(sequence)?;
         }
         Ok(false)
     }
     fn retired_log(&self, file: &mut File, generation: u64) -> Result<bool, StoreError> {
+        self.retired_log_with_context(file, generation, None)
+    }
+    fn retired_log_with_context(
+        &self,
+        file: &mut File,
+        generation: u64,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<bool, StoreError> {
+        if let Some(context) = context {
+            context.check()?;
+        }
         use std::io::{Seek, SeekFrom};
         if generation >= self.current.log {
             return Ok(false);
@@ -1377,10 +1701,10 @@ impl super::ConnectionStore {
             return Err(StoreError::LimitExceeded);
         }
         file.seek(SeekFrom::Start(0))?;
-        self.storage.read_log_magic(file)?;
+        self.storage.read_log_magic_with_context(file, context)?;
         let header: format::LogHeader = self
             .storage
-            .read_log_record(file, 0)?
+            .read_log_record_with_context(file, 0, context)?
             .ok_or(StoreError::Corrupt)?;
         if header.schema != 1
             || header.identity != self.storage.identity
@@ -1395,7 +1719,7 @@ impl super::ConnectionStore {
             let offset = file.stream_position()?;
             let Some(event) = self
                 .storage
-                .read_log_record::<format::Event>(file, sequence)?
+                .read_log_record_with_context::<format::Event>(file, sequence, context)?
             else {
                 if offset != file.metadata()?.len() {
                     return Err(StoreError::RecoveryRequired);
@@ -1414,8 +1738,17 @@ impl super::ConnectionStore {
         Ok(true)
     }
     pub(super) fn collect_garbage(&mut self) -> Result<usize, StoreError> {
+        self.collect_garbage_with_context(None)
+    }
+    pub(super) fn collect_garbage_with_context(
+        &mut self,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<usize, StoreError> {
+        if let Some(context) = context {
+            context.check()?;
+        }
         let _read_lease = self.storage.read_lease(false)?;
-        self.resume_gc()?;
+        self.resume_gc_with_context(context)?;
         let mut scan = match self.gc_scan.take() {
             Some(scan) => scan,
             None => GcScan {
@@ -1453,10 +1786,10 @@ impl super::ConnectionStore {
                 let Some(hash) = parse_hash(name) else {
                     continue;
                 };
-                if self.page_referenced(hash)? {
+                if self.page_referenced_with_context(hash, context)? {
                     continue;
                 }
-                self.storage.page(hash)?;
+                self.storage.page_with_context(hash, context)?;
             } else {
                 let Some(generation) = name
                     .strip_prefix("log-")
@@ -1468,7 +1801,7 @@ impl super::ConnectionStore {
                     continue;
                 }
                 let mut file = open_file(&parent, name, false)?;
-                if !self.retired_log(&mut file, generation)? {
+                if !self.retired_log_with_context(&mut file, generation, context)? {
                     continue;
                 }
             }
@@ -1481,10 +1814,16 @@ impl super::ConnectionStore {
                 } else {
                     16 * 1024 * 1024
                 },
-                &|requested| self.storage.review_charge(requested as u64, 0, 0, 1),
+                &|requested| {
+                    self.storage.review_charge(requested as u64, 0, 0, 1)?;
+                    if let Some(context) = context {
+                        context.charge(requested as u64)?;
+                    }
+                    Ok(())
+                },
             )?;
             validate_file(&parent, name, &file, &metadata)?;
-            self.validate()?;
+            self.validate_with_context(context)?;
             let intent = GcIntent {
                 schema: 1,
                 identity: self.storage.identity.clone(),
@@ -1503,22 +1842,42 @@ impl super::ConnectionStore {
             )?;
             #[cfg(windows)]
             drop(file);
-            self.finish_gc(&intent)?;
+            self.finish_gc_with_context(&intent, context)?;
             removed += 1;
         }
         self.gc_scan = Some(scan);
         Ok(removed)
     }
     pub(super) fn resume_gc(&self) -> Result<(), StoreError> {
+        self.resume_gc_with_context(None)
+    }
+    pub(super) fn resume_gc_with_context(
+        &self,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<(), StoreError> {
+        if let Some(context) = context {
+            context.check()?;
+        }
         let _read_lease = self.storage.read_lease(false)?;
         match metadata_nofollow(&self.storage.quarantine.file, Path::new("intent")) {
             Ok(_) => {
-                let bytes = self
-                    .storage
-                    .read_bytes(&self.storage.quarantine, "intent", 4096)?;
+                let bytes = self.storage.read_bytes_metered(
+                    &self.storage.quarantine,
+                    "intent",
+                    4096,
+                    &|n| {
+                        if let Some(context) = context {
+                            context.charge(n as u64)?;
+                        }
+                        Ok(())
+                    },
+                )?;
+                if let Some(context) = context {
+                    context.check()?;
+                }
                 let intent: GcIntent =
                     serde_json::from_slice(&bytes).map_err(|_| StoreError::RecoveryRequired)?;
-                self.finish_gc(&intent)
+                self.finish_gc_with_context(&intent, context)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 match metadata_nofollow(&self.storage.quarantine.file, Path::new("captured")) {
@@ -1530,7 +1889,17 @@ impl super::ConnectionStore {
         }
     }
     fn finish_gc(&self, intent: &GcIntent) -> Result<(), StoreError> {
-        self.validate()?;
+        self.finish_gc_with_context(intent, None)
+    }
+    fn finish_gc_with_context(
+        &self,
+        intent: &GcIntent,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<(), StoreError> {
+        if let Some(context) = context {
+            context.check()?;
+        }
+        self.validate_with_context(context)?;
         component(&intent.name)?;
         if intent.schema != 1
             || intent.identity != self.storage.identity
@@ -1546,7 +1915,7 @@ impl super::ConnectionStore {
         };
         if intent.page {
             let hash = parse_hash(&intent.name).ok_or(StoreError::Corrupt)?;
-            if hash != intent.digest || self.page_referenced(hash)? {
+            if hash != intent.digest || self.page_referenced_with_context(hash, context)? {
                 return Err(StoreError::RecoveryRequired);
             }
         } else {
@@ -1582,11 +1951,18 @@ impl super::ConnectionStore {
                     {
                         let (digest, length) =
                             file_digest(&mut source, intent.length, &|requested| {
-                                self.storage.review_charge(requested as u64, 0, 0, 1)
+                                self.storage.review_charge(requested as u64, 0, 0, 1)?;
+                                if let Some(context) = context {
+                                    context.charge(requested as u64)?;
+                                }
+                                Ok(())
                             })?;
                         if digest != intent.digest || length != intent.length {
                             return Err(StoreError::RecoveryRequired);
                         }
+                    }
+                    if let Some(context) = context {
+                        context.check()?;
                     }
                     #[cfg(not(windows))]
                     capture_no_replace(&parent, &intent.name, &quarantine)?;
@@ -1611,28 +1987,39 @@ impl super::ConnectionStore {
                     return Err(StoreError::RecoveryRequired);
                 }
                 let (digest, length) = file_digest(&mut captured, intent.length, &|requested| {
-                    self.storage.review_charge(requested as u64, 0, 0, 1)
+                    self.storage.review_charge(requested as u64, 0, 0, 1)?;
+                    if let Some(context) = context {
+                        context.charge(requested as u64)?;
+                    }
+                    Ok(())
                 })?;
                 if digest != intent.digest || length != intent.length {
                     return Err(StoreError::RecoveryRequired);
                 }
-                self.validate()?;
+                self.validate_with_context(context)?;
                 validate_file(&quarantine, "captured", &captured, &metadata)?;
                 #[cfg(not(windows))]
                 cap_primitives::fs::remove_file(&quarantine.file, Path::new("captured"))?;
                 #[cfg(windows)]
-                windows::delete(captured, self, "captured", &metadata, intent)?;
+                windows::delete(captured, self, "captured", &metadata, intent, context)?;
                 sync_directory(&quarantine)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        self.validate()?;
+        self.validate_with_context(context)?;
         validate_file(&quarantine, "intent", &intent_file, &intent_identity)?;
         #[cfg(not(windows))]
         cap_primitives::fs::remove_file(&quarantine.file, Path::new("intent"))?;
         #[cfg(windows)]
-        windows::delete(intent_file, self, "intent", &intent_identity, intent)?;
+        windows::delete(
+            intent_file,
+            self,
+            "intent",
+            &intent_identity,
+            intent,
+            context,
+        )?;
         sync_directory(&quarantine)?;
         Ok(())
     }
@@ -1750,5 +2137,23 @@ mod identity_wire_tests {
             serde_json::from_str::<GcIntent>(&native).is_ok(),
             cfg!(windows)
         );
+    }
+}
+
+impl Storage {
+    pub(super) fn page_with_context(
+        &self,
+        hash: [u8; 32],
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<format::PageNode, StoreError> {
+        if let Some(context) = context {
+            self.require_read_lease()?;
+            context.check()?;
+            let value = self.page_metered(hash, &|n| context.charge(n as u64))?;
+            context.check()?;
+            Ok(value)
+        } else {
+            self.page(hash)
+        }
     }
 }

@@ -374,6 +374,35 @@ pub(super) struct InitialChainReviewEntryV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub(super) enum InitialReviewCurrentV1 {
+    BetweenMembers {
+        step: u32,
+        entry: u32,
+        anchor: ChainOperationIdV1,
+        digest: [u8; 32],
+        next_index: u8,
+        predecessor: ChainOperationIdV1,
+    },
+    BetweenSteps {
+        last_step: u32,
+        completion_digest: [u8; 32],
+    },
+    ReviewComplete {
+        completion_digest: [u8; 32],
+    },
+    StepLimit {
+        progress_digest: [u8; 32],
+    },
+    Continuation {
+        operation: ChainOperationIdV1,
+        provenance_digest: [u8; 32],
+    },
+    AbandoningChain {
+        step: u32,
+        entry: u32,
+        anchor: ChainOperationIdV1,
+        digest: [u8; 32],
+        cut: ReviewAbandonCut,
+    },
     None {},
     Chain {
         step: u32,
@@ -1615,8 +1644,445 @@ impl NativeRecoveryFact {
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReviewKey {
+    pub connection: [u8; 16],
+    pub review: [u8; 32],
+    pub origin: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum PageRef {
+    Empty {},
+    Page { hash: [u8; 32] },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum BaselineVersion {
+    Absent {},
+    Present {
+        revision: u64,
+        root: PageRef,
+        count: u32,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum LineageRef {
+    Absent {},
+    Present {
+        origin: [u8; 32],
+        index: u32,
+        head: [u8; 32],
+        version: BaselineVersion,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReviewCut {
+    pub progress_revision: u64,
+    pub schedule_revision: u64,
+    pub control_sequence: u64,
+    pub current_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum ReviewPatch<T> {
+    Absent {},
+    Present { value: T },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum ReviewAbandonCut {
+    Member {
+        operation: ChainOperationIdV1,
+    },
+    BetweenMembers {
+        next_index: u8,
+        predecessor: ChainOperationIdV1,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum CommitReceiptV1 {
+    EqualityVerified {},
+    Regular { attempt: u32, outcome: [u8; 32] },
+    Directory { attempt: u32, outcome: [u8; 32] },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CommitWitness {
+    pub operation: ChainOperationIdV1,
+    pub precommit_revision: u64,
+    pub result_revision: u64,
+    pub intent_digest: [u8; 32],
+    pub admission_digest: [u8; 32],
+    pub budget: NativeBudget,
+    pub receipt: CommitReceiptV1,
+    pub before: BaselineVersion,
+    pub after: BaselineVersion,
+    pub existing_ancestors: ReviewPatch<ExistingAncestorPatchV1>,
+    pub directory_ancestors: ReviewPatch<DirectoryAncestorPatchV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum ReviewedSelectionV1 {
+    Chain {
+        anchor: ChainOperationIdV1,
+        digest: [u8; 32],
+        index: u8,
+        final_member: bool,
+    },
+    Equality {},
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum ReviewedResultProvenanceV1 {
+    ReviewStep {
+        step: u32,
+        entry: u32,
+        entry_digest: [u8; 32],
+        selected: ReviewedSelectionV1,
+    },
+    Continuation {
+        link_digest: [u8; 32],
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReviewedBaselineResultV1 {
+    pub version: u8,
+    pub key: ReviewKey,
+    pub provenance: ReviewedResultProvenanceV1,
+    pub cut: ReviewCut,
+    pub witness: CommitWitness,
+    pub lineage: LineageRef,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum ReviewArchiveRefV1 {
+    Absent {},
+    Present {
+        anchor: ChainOperationIdV1,
+        core_digest: [u8; 32],
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum ReviewTerminalV1 {
+    Completed {
+        operation: ChainOperationIdV1,
+        commit_digest: [u8; 32],
+        archive: ReviewArchiveRefV1,
+    },
+    Abandoned {
+        anchor: ChainOperationIdV1,
+        core_digest: [u8; 32],
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InitialReviewStepCompletedV1 {
+    pub version: u8,
+    pub key: ReviewKey,
+    pub step: u32,
+    pub entry: u32,
+    pub entry_digest: [u8; 32],
+    pub first_operation: ChainOperationIdV1,
+    pub terminal: ReviewTerminalV1,
+    pub resulting_progress: u64,
+    pub schedule_revision: u64,
+    pub control_sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReviewRemainingV1 {
+    pub unselected: u32,
+    pub structural: u32,
+    pub conflict: u32,
+    pub abandoned: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum ReviewLastStepV1 {
+    None {},
+    Step { step: u32, digest: [u8; 32] },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InitialReviewProgressV1 {
+    pub version: u8,
+    pub key: ReviewKey,
+    pub completed_steps: u32,
+    pub covered: u32,
+    pub remaining: ReviewRemainingV1,
+    pub coverage_digest: [u8; 32],
+    pub last_step: ReviewLastStepV1,
+    pub progress_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InitialReviewCompletedV1 {
+    pub version: u8,
+    pub key: ReviewKey,
+    pub completed_steps: u32,
+    pub entries: u32,
+    pub coverage_digest: [u8; 32],
+    pub last_step_digest: [u8; 32],
+    pub baseline: BaselineVersion,
+    pub lineage: LineageRef,
+    pub progress_revision: u64,
+    pub schedule_revision: u64,
+    pub control_sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum PostReviewKindV1 {
+    Ordinary {},
+    SelectedRestore { action_digest: [u8; 32] },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PostReviewOperationV1 {
+    pub version: u8,
+    pub key: ReviewKey,
+    pub completion_digest: [u8; 32],
+    pub operation: ChainOperationIdV1,
+    pub intent_digest: [u8; 32],
+    pub admission_digest: [u8; 32],
+    pub expected: u64,
+    pub baseline: BaselineVersion,
+    pub lineage: LineageRef,
+    pub kind: PostReviewKindV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReviewResultCutV1 {
+    pub progress_revision: u64,
+    pub schedule_revision: u64,
+    pub control_sequence: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum ArchiveCreatedV1 {
+    Baseline {
+        operation: ChainOperationIdV1,
+        witness_digest: [u8; 32],
+    },
+    Retirement {
+        before: ReviewCut,
+        inner: ReviewedInnerControlV1,
+        result: ReviewResultCutV1,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ArchiveCore {
+    pub version: u8,
+    pub key: ReviewKey,
+    pub endpoints: [storage::Identity; 2],
+    pub fence: u64,
+    pub anchor: ChainOperationIdV1,
+    pub digest: [u8; 32],
+    pub link_digest: [u8; 32],
+    pub retirement: DirectoryChainRetirementV1,
+    pub baseline: BaselineVersion,
+    pub created: ArchiveCreatedV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ChainCompletionBaselineV1 {
+    pub core: ArchiveCore,
+    pub ordinal: u32,
+    pub previous_set: [u8; 32],
+    pub set: [u8; 32],
+    pub lineage: LineageRef,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OriginArchiveV1 {
+    pub anchor: ChainOperationIdV1,
+    pub core_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ChainBaselineLineageV1 {
+    pub version: u8,
+    pub key: ReviewKey,
+    pub endpoints: [storage::Identity; 2],
+    pub fence: u64,
+    pub origin: [u8; 32],
+    pub origin_version: BaselineVersion,
+    pub origin_archive: OriginArchiveV1,
+    pub head_index: u32,
+    pub head_digest: [u8; 32],
+    pub current_version: BaselineVersion,
+    pub archives: u32,
+    pub set: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ChainBaselineSupersessionV1 {
+    pub version: u8,
+    pub key: ReviewKey,
+    pub endpoints: [storage::Identity; 2],
+    pub fence: u64,
+    pub index: u32,
+    pub previous: LineageRef,
+    pub operation: ChainOperationIdV1,
+    pub witness_digest: [u8; 32],
+    pub admission_digest: [u8; 32],
+    pub receipt_digest: [u8; 32],
+    pub result: BaselineVersion,
+    pub archives_before: u32,
+    pub set_before: [u8; 32],
+    pub archives_after: u32,
+    pub set_after: [u8; 32],
+    pub head: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReviewedCandidateRootsV1 {
+    pub version: u8,
+    pub connection: [u8; 16],
+    pub expected: u64,
+    pub checkpoint: PageRef,
+    pub review: PageRef,
+    pub before: BaselineVersion,
+    pub after: BaselineVersion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum CoverageEffectV1 {
+    Member {
+        index: u8,
+    },
+    ExistingAncestor {
+        prefix: u8,
+        receipt_digest: [u8; 32],
+    },
+    Equality {},
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum CoverageDecisionV1 {
+    Unselected {},
+    Structural {},
+    Conflict {},
+    Abandoned {
+        step: u32,
+        core_digest: [u8; 32],
+    },
+    Committed {
+        operation: ChainOperationIdV1,
+        commit_digest: [u8; 32],
+        effect: CoverageEffectV1,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CoverageEntryV1 {
+    pub ordinal: u32,
+    pub entry_digest: [u8; 32],
+    pub decision: CoverageDecisionV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum ReviewedBaselineProvenanceV1 {
+    ReviewedStep {
+        link_digest: [u8; 32],
+        operation: ChainOperationIdV1,
+        step: u32,
+        entry: u32,
+        expected_progress: u64,
+        expected_schedule: u64,
+        control_sequence: u64,
+        lineage: LineageRef,
+    },
+    Continuation {
+        provenance_digest: [u8; 32],
+        operation: ChainOperationIdV1,
+        expected_progress: u64,
+        expected_schedule: u64,
+        control_sequence: u64,
+        lineage: LineageRef,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReviewedBaselineBodyV1 {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub directory_chain: Option<DirectoryChainCommitV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub directory_ancestors: Option<DirectoryAncestorPatchV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "existing_ancestor_receipt"
+    )]
+    pub existing_ancestors: Option<ExistingAncestorPatchV1>,
+    pub connection: [u8; 16],
+    pub expected: u64,
+    pub root: Option<[u8; 32]>,
+    pub count: u32,
+    pub source: storage::Identity,
+    pub destination: storage::Identity,
+    pub initial_review: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "table", content = "value", deny_unknown_fields)]
 pub(super) enum Row {
+    ReviewedBaselineResultV1(ReviewedBaselineResultV1),
+    InitialReviewStepCompletedV1(InitialReviewStepCompletedV1),
+    InitialReviewProgressV1(InitialReviewProgressV1),
+    InitialReviewCompletedV1(InitialReviewCompletedV1),
+    PostReviewOperationV1(PostReviewOperationV1),
+    ChainCompletionBaselineV1(ChainCompletionBaselineV1),
+    ChainBaselineLineageV1(ChainBaselineLineageV1),
+    ChainBaselineSupersessionV1(ChainBaselineSupersessionV1),
+    ReviewedCandidateRootsV1(ReviewedCandidateRootsV1),
     InitialChainReview(InitialChainReviewV1),
     InitialChainReviewEntry(InitialChainReviewEntryV1),
     InitialReviewCursor(InitialReviewCursorV1),
@@ -1633,6 +2099,23 @@ pub(super) enum Row {
 impl Row {
     pub fn key(&self) -> Vec<u8> {
         match self {
+            Self::ReviewedBaselineResultV1(r) => {
+                key(12, r.key.connection, r.witness.operation.serial)
+            }
+            Self::InitialReviewStepCompletedV1(r) => {
+                let mut k = key(13, r.key.connection, r.key.origin);
+                k.extend(r.step.to_be_bytes());
+                k
+            }
+            Self::InitialReviewProgressV1(r) => key(14, r.key.connection, r.key.origin),
+            Self::InitialReviewCompletedV1(r) => key(15, r.key.connection, r.key.origin),
+            Self::PostReviewOperationV1(r) => key(16, r.key.connection, r.operation.serial),
+            Self::ChainCompletionBaselineV1(r) => {
+                key(17, r.core.key.connection, r.core.anchor.serial)
+            }
+            Self::ChainBaselineLineageV1(r) => key(18, r.key.connection, r.key.origin),
+            Self::ChainBaselineSupersessionV1(r) => key(19, r.key.connection, u64::from(r.index)),
+            Self::ReviewedCandidateRootsV1(r) => key(20, r.connection, r.expected),
             Self::InitialChainReview(r) => key(7, r.connection, r.original_revision),
             Self::InitialChainReviewEntry(r) => {
                 let mut k = key(8, r.connection, r.origin);
@@ -1657,6 +2140,15 @@ impl Row {
     }
     pub fn validate(&self) -> Result<(), StoreError> {
         match self {
+            Self::ReviewedBaselineResultV1(r) => r.validate()?,
+            Self::InitialReviewStepCompletedV1(r) => r.validate()?,
+            Self::InitialReviewProgressV1(r) => r.validate()?,
+            Self::InitialReviewCompletedV1(r) => r.validate()?,
+            Self::PostReviewOperationV1(r) => r.validate()?,
+            Self::ChainCompletionBaselineV1(r) => r.validate()?,
+            Self::ChainBaselineLineageV1(r) => r.validate()?,
+            Self::ChainBaselineSupersessionV1(r) => r.validate()?,
+            Self::ReviewedCandidateRootsV1(r) => r.validate()?,
             Self::InitialChainReview(r) => r.validate()?,
             Self::InitialChainReviewEntry(r) => r.validate()?,
             Self::InitialReviewCursor(r) => r.validate()?,
@@ -1730,6 +2222,24 @@ pub(in crate::connection) struct InitialEmptyBaselineV1 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
 pub(super) enum Change {
+    ReviewedBaselineCommit {
+        body: ReviewedBaselineBodyV1,
+        provenance: ReviewedBaselineProvenanceV1,
+    },
+    ReviewedContinuationIntent {
+        operation: Operation,
+        provenance: PostReviewOperationV1,
+        expected_progress: u64,
+        expected_schedule: u64,
+        control_sequence: u64,
+    },
+    ReviewedChainRetirement {
+        key: ReviewKey,
+        before: ReviewCut,
+        inner: ReviewedInnerControlV1,
+        baseline: BaselineVersion,
+        lineage: LineageRef,
+    },
     InitialReviewAccepted {
         review: InitialChainReviewV1,
         cursor: InitialReviewCursorV1,
@@ -2519,4 +3029,65 @@ fn strict_review_state<'de, D: serde::Deserializer<'de>>(
             executable,
         },
     })
+}
+
+impl Row {
+    /// Closed semantic page edges. Each durable fact exposes at most two roots;
+    /// only a checked transient candidate singleton exposes four.
+    pub(super) fn review_roots(&self) -> Result<Vec<[u8; 32]>, StoreError> {
+        self.validate()?;
+        let roots = match self {
+            Self::Connection(c) => vec![c.baseline_root],
+            Self::InitialChainReview(r) => vec![Some(r.root)],
+            Self::ReviewedBaselineResultV1(r) => {
+                vec![r.witness.before.root(), r.witness.after.root()]
+            }
+            Self::InitialReviewCompletedV1(r) => vec![r.baseline.root()],
+            Self::PostReviewOperationV1(r) => vec![r.baseline.root()],
+            Self::ChainCompletionBaselineV1(r) => vec![r.core.baseline.root()],
+            Self::ChainBaselineLineageV1(r) => {
+                vec![r.origin_version.root(), r.current_version.root()]
+            }
+            Self::ChainBaselineSupersessionV1(r) => vec![
+                match &r.previous {
+                    LineageRef::Absent {} => None,
+                    LineageRef::Present { version, .. } => version.root(),
+                },
+                r.result.root(),
+            ],
+            Self::ReviewedCandidateRootsV1(r) => vec![
+                r.checkpoint.root(),
+                r.review.root(),
+                r.before.root(),
+                r.after.root(),
+            ],
+            _ => Vec::new(),
+        };
+        Ok(roots.into_iter().flatten().collect())
+    }
+}
+impl Change {
+    pub(super) fn review_roots(&self) -> Result<Vec<[u8; 32]>, StoreError> {
+        let roots = match self {
+            Self::BaselineCommit { root, .. } => vec![*root],
+            Self::InitialReviewAccepted { review, .. } => vec![Some(review.root)],
+            Self::ReviewedBaselineCommit { body, provenance } => {
+                let lineage = match provenance {
+                    ReviewedBaselineProvenanceV1::ReviewedStep { lineage, .. }
+                    | ReviewedBaselineProvenanceV1::Continuation { lineage, .. } => lineage,
+                };
+                vec![
+                    body.root,
+                    match lineage {
+                        LineageRef::Absent {} => None,
+                        LineageRef::Present { version, .. } => version.root(),
+                    },
+                ]
+            }
+            Self::ReviewedContinuationIntent { provenance, .. } => vec![provenance.baseline.root()],
+            Self::ReviewedChainRetirement { baseline, .. } => vec![baseline.root()],
+            _ => Vec::new(),
+        };
+        Ok(roots.into_iter().flatten().collect())
+    }
 }

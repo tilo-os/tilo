@@ -241,15 +241,16 @@ impl Storage {
     }
 }
 impl super::super::ConnectionStore {
-    pub(in super::super) fn publish_current(
+    pub(in super::super) fn publish_current_with_context(
         &self,
         next: &Current,
         next_log: &File,
         next_log_identity: &Metadata,
+        context: Option<&super::super::NativeReadContext<'_>>,
     ) -> Result<Metadata, StoreError> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SERIAL: AtomicU64 = AtomicU64::new(0);
-        self.validate()?;
+        self.validate_with_context(context)?;
         let serial = SERIAL
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
             .map_err(|_| StoreError::LimitExceeded)?;
@@ -274,7 +275,7 @@ impl super::super::ConnectionStore {
         self.validate_next_log(next, next_log, next_log_identity)?;
         // Both retained old CURRENT and old log are checked after all blocking
         // preparation. validate releases its CURRENT inspection before rename.
-        self.validate()?;
+        self.validate_with_context(context)?;
         native::replace_current(
             &pointer,
             CurrentReplacement {
@@ -290,10 +291,13 @@ impl super::super::ConnectionStore {
         )?;
         // Independent reread permits the retained DELETE-capable writer guard.
         let mut reread = reread_file(&self.storage.root, "CURRENT")?;
-        let mut bytes = Vec::new();
-        Read::by_ref(&mut reread)
-            .take(4097)
-            .read_to_end(&mut bytes)?;
+        let bytes = super::read_metered(&mut reread, 4096, &|n| {
+            self.storage.review_charge(n as u64, 0, 0, 0)?;
+            if let Some(context) = context {
+                context.charge(n as u64)?;
+            }
+            Ok(())
+        })?;
         validate_file(&self.storage.root, "CURRENT", &reread, &identity)?;
         if bytes != format::encode(next)? {
             return Err(StoreError::IdentityChanged);
@@ -350,8 +354,16 @@ pub(super) fn delete(
     name: &'static str,
     metadata: &Metadata,
     intent: &GcIntent,
+    context: Option<&super::super::NativeReadContext<'_>>,
 ) -> Result<(), StoreError> {
-    store.validate()?;
+    store.validate_with_context(context)?;
+    let meter = |requested: usize| {
+        store.storage.review_charge(requested as u64, 0, 0, 1)?;
+        if let Some(context) = context {
+            context.charge(requested as u64)?;
+        }
+        Ok(())
+    };
     let parent = &store.storage.quarantine;
     validate_file(parent, name, &file, metadata)?;
     if intent.schema != 1
@@ -363,13 +375,15 @@ pub(super) fn delete(
     }
     let mut durable_intent = reread_file(parent, "intent")?;
     let bytes = format::encode(intent)?;
-    if file_digest(&mut durable_intent, 4096)? != (format::digest(&bytes), bytes.len() as u64) {
+    let actual = file_digest(&mut durable_intent, 4096, &meter)?;
+    meter(0)?;
+    if actual != (format::digest(&bytes), bytes.len() as u64) {
         return Err(StoreError::RecoveryRequired);
     }
     drop(durable_intent);
     if intent.page {
         let hash = parse_hash(&intent.name).ok_or(StoreError::Corrupt)?;
-        if hash != intent.digest || store.page_referenced(hash)? {
+        if hash != intent.digest || store.page_referenced_with_context(hash, context)? {
             return Err(StoreError::RecoveryRequired);
         }
     } else {
@@ -390,7 +404,9 @@ pub(super) fn delete(
         }
         _ => return Err(StoreError::RecoveryRequired),
     };
-    if file_digest(&mut file, expected_length)? != (expected_digest, expected_length) {
+    let actual = file_digest(&mut file, expected_length, &meter)?;
+    meter(0)?;
+    if actual != (expected_digest, expected_length) {
         return Err(StoreError::RecoveryRequired);
     }
     native::delete_captured(
@@ -604,12 +620,12 @@ mod tests {
         .unwrap();
         drop(source);
         let captured = mutation_file(&store.storage.quarantine, "captured").unwrap();
-        delete(captured, &store, "captured", &metadata, &intent).unwrap();
+        delete(captured, &store, "captured", &metadata, &intent, None).unwrap();
         assert!(!path.join("quarantine/captured").exists());
         assert!(path.join("quarantine/intent").exists());
         let intent_file = mutation_file(&store.storage.quarantine, "intent").unwrap();
         let identity = regular(&intent_file).unwrap();
-        delete(intent_file, &store, "intent", &identity, &intent).unwrap();
+        delete(intent_file, &store, "intent", &identity, &intent, None).unwrap();
         assert!(!path.join("quarantine/intent").exists());
     }
     #[test]

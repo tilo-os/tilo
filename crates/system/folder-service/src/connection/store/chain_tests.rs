@@ -623,7 +623,7 @@ fn chain_selection_vectors_control_and_stop_json_shapes() {
     }
 }
 
-fn seal_directory(mut b: Vec<u8>) -> Vec<u8> {
+pub(super) fn seal_directory(mut b: Vec<u8>) -> Vec<u8> {
     let length = u32::try_from(b.len() + 32).unwrap();
     b[4..8].copy_from_slice(&length.to_le_bytes());
     b.extend(Sha256::digest(&b));
@@ -669,7 +669,7 @@ fn directory_path_state(b: &mut Vec<u8>) {
     b.extend(2u64.to_le_bytes());
     b.push(0);
 }
-fn directory_wire_facts(baseline: bool) -> [Vec<u8>; 4] {
+pub(super) fn directory_wire_facts(baseline: bool) -> [Vec<u8>; 4] {
     let endpoints = |b: &mut Vec<u8>| {
         for v in [1, 2, 3, 4] {
             b.extend([v; 32]);
@@ -1307,6 +1307,8 @@ fn directory_phase_bytes(operation: &format::Operation, progress: u64) -> [Vec<u
         bytes
     };
     let mut intent = patch_header(intent, progress);
+    intent[249] = u8::from(operation.decision == 2);
+    intent[250] = operation.decision;
     intent[303..335].copy_from_slice(&format::digest(operation.native_identity.as_ref().unwrap()));
     let admission = operation.native_identity.as_ref().unwrap();
     intent.truncate(369);
@@ -1319,10 +1321,21 @@ fn directory_phase_bytes(operation: &format::Operation, progress: u64) -> [Vec<u
         directory_object(&mut parent, 22);
         stage[257..309].copy_from_slice(&parent);
     }
+    if operation.decision == 2 && operation.path.to_relative().unwrap().components().len() == 1 {
+        let mut parent = Vec::new();
+        directory_object(&mut parent, 11);
+        stage[257..309].copy_from_slice(&parent);
+    }
     let stage = seal_directory(stage);
     let mut outcome = patch_header(outcome, progress + 1);
     outcome[121..153].copy_from_slice(&intent[intent.len() - 32..]);
     outcome[153..185].copy_from_slice(&stage[stage.len() - 32..]);
+    if operation.decision == 2 {
+        let source = outcome[185..238].to_vec();
+        let destination = outcome[238..291].to_vec();
+        outcome[185..238].copy_from_slice(&destination);
+        outcome[238..291].copy_from_slice(&source);
+    }
     [intent, stage.clone(), seal_directory(outcome)]
 }
 fn phase_history(
@@ -1512,7 +1525,7 @@ fn chain_stop_history_staged_and_published_typed_evidence_preserves_phase() {
     }
 }
 
-fn baseline_change(store: &ConnectionStore, id: ConnectionId) -> Change {
+pub(super) fn baseline_change(store: &ConnectionStore, id: ConnectionId) -> Change {
     let c = store.connection(id).unwrap();
     let operation = store
         .operation(OperationId {
@@ -2925,7 +2938,7 @@ fn chain_checkpoint_closure_advisory_baseline_stop_wrapper_and_swapped_outcome()
 
 // A second fixture driver keeps a cached ordinary session in the same store
 // lifetime. Every transition still uses the common production append pipeline.
-fn advance_in_place(store: &mut ConnectionStore, id: ConnectionId, phase: u8) {
+pub(super) fn advance_in_place(store: &mut ConnectionStore, id: ConnectionId, phase: u8) {
     if phase == 0 {
         return;
     }

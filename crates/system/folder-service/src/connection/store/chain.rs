@@ -138,6 +138,8 @@ impl ConnectionStore {
             let view = ChainRows {
                 store: self,
                 replacements: &[],
+                retired: std::collections::BTreeMap::new(),
+                context: None,
             };
             let selection = view.member(operation)?;
             if schedule.state != Schedule::Running
@@ -216,6 +218,9 @@ use format::{
 /// Exhaustive routing prevents a future event from silently becoming chain progress.
 pub(super) fn change_connection(change: &Change) -> Result<[u8; 16], StoreError> {
     Ok(match change {
+        Change::ReviewedBaselineCommit { body, .. } => body.connection,
+        Change::ReviewedContinuationIntent { operation, .. } => operation.connection,
+        Change::ReviewedChainRetirement { key, .. } => key.connection,
         Change::InitialReviewAccepted { review, .. } => review.connection,
         Change::ReviewedIntent { operation, .. } => operation.connection,
         Change::ReviewedChainControl { control, .. } | Change::InitialReviewControl { control } => {
@@ -263,10 +268,18 @@ pub(super) fn change_connection(change: &Change) -> Result<[u8; 16], StoreError>
 
 impl ConnectionStore {
     pub(super) fn chain_event_guard(&self, change: &Change) -> Result<(), StoreError> {
+        self.chain_event_guard_with_context(change, None)
+    }
+    pub(super) fn chain_event_guard_with_context(
+        &self,
+        change: &Change,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<(), StoreError> {
         if matches!(change, Change::Create { .. }) {
             return Ok(());
         }
-        let connection = self.connection(ConnectionId(change_connection(change)?))?;
+        let connection =
+            self.connection_with_context(ConnectionId(change_connection(change)?), context)?;
         let Some(cursor) = &connection.directory_chain else {
             return if connection.directory_chain_schedule.is_some() {
                 Err(StoreError::Corrupt)
@@ -335,6 +348,7 @@ impl ConnectionStore {
         &self,
         change: &Change,
         rows: &mut [Row],
+        context: Option<&super::NativeReadContext<'_>>,
     ) -> Result<(), StoreError> {
         if matches!(
             change,
@@ -345,7 +359,8 @@ impl ConnectionStore {
         ) {
             return Ok(());
         }
-        let old = self.connection(ConnectionId(change_connection(change)?))?;
+        let old =
+            self.connection_with_context(ConnectionId(change_connection(change)?), context)?;
         let Some(old_cursor) = old.directory_chain else {
             return Ok(());
         };
@@ -629,11 +644,15 @@ impl ConnectionStore {
         connection: &format::Connection,
         commit: Option<&format::DirectoryChainCommitV1>,
         initial_review: bool,
+        context: Option<&super::NativeReadContext<'_>>,
     ) -> Result<bool, StoreError> {
-        let operation = self.operation(OperationId {
-            connection: ConnectionId(connection.id),
-            serial: connection.pending.ok_or(StoreError::RecoveryRequired)?,
-        })?;
+        let operation = self.operation_with_context(
+            OperationId {
+                connection: ConnectionId(connection.id),
+                serial: connection.pending.ok_or(StoreError::RecoveryRequired)?,
+            },
+            context,
+        )?;
         let Some(reference) = &operation.directory_chain_ref else {
             return if commit.is_none() && connection.directory_chain.is_none() {
                 Ok(false)
@@ -678,6 +697,7 @@ impl ConnectionStore {
         connection: &mut format::Connection,
         operation: &mut format::Operation,
         rows: &mut Vec<Row>,
+        context: Option<&super::NativeReadContext<'_>>,
     ) -> Result<(), StoreError> {
         let Some(cursor) = connection.directory_chain.as_mut() else {
             return Ok(());
@@ -689,7 +709,7 @@ impl ConnectionStore {
         let mut anchor = if reference.anchor.serial == operation.serial {
             operation.clone()
         } else {
-            self.operation(reference.anchor.operation()?)?
+            self.operation_with_context(reference.anchor.operation()?, context)?
         };
         let selection = first_selection(&anchor)?;
         cursor.current = None;
@@ -724,13 +744,15 @@ impl ConnectionStore {
 struct ChainRows<'a> {
     store: &'a ConnectionStore,
     replacements: &'a [Row],
+    context: Option<&'a super::NativeReadContext<'a>>,
+    retired: std::collections::BTreeMap<([u8; 16], u64), super::chain_review::RetiredBaselineView>,
 }
 impl ChainRows<'_> {
     fn row(&self, key: &[u8]) -> Result<Option<Row>, StoreError> {
         if let Some(row) = self.replacements.iter().find(|row| row.key() == key) {
             return Ok(Some(row.clone()));
         }
-        self.store.row(key)
+        self.store.row_with_context(key, self.context)
     }
     fn operation(&self, id: format::ChainOperationIdV1) -> Result<format::Operation, StoreError> {
         id.operation()?;
@@ -830,15 +852,30 @@ impl ChainRows<'_> {
         } else {
             selection.baseline
         };
-        if connection.baseline != committed_baseline {
+        let retired = if retirement.is_some() {
+            self.retired
+                .get(&(cursor.anchor.connection, cursor.anchor.serial))
+        } else {
+            None
+        };
+        let (baseline_revision, baseline_root, baseline_count) = retired.map_or(
+            (
+                connection.baseline,
+                connection.baseline_root,
+                connection.baseline_count,
+            ),
+            |view| (view.revision(), view.root(), view.count()),
+        );
+        if baseline_revision != committed_baseline {
             return Err(StoreError::Corrupt);
         }
         if let Some(revision) = committed_baseline {
-            self.store.read_baseline(
+            self.store.read_historical_baseline_with_context(
                 connection,
-                connection.baseline_root,
-                connection.baseline_count,
+                baseline_root,
+                baseline_count,
                 revision,
+                self.context,
             )?;
         }
         if let Some(previous) = cursor.predecessor {
@@ -934,16 +971,31 @@ impl ConnectionStore {
         reason = "Join differently named fields across operation, cursor, connection and native admission records."
     )]
     pub(super) fn validate_chain_history(&self, replacements: &[Row]) -> Result<(), StoreError> {
+        self.validate_chain_history_with_context(replacements, None)
+    }
+    pub(super) fn validate_chain_history_with_context(
+        &self,
+        replacements: &[Row],
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<(), StoreError> {
+        let _read_lease = self.history_read_context(context)?;
+        if let Some(context) = context {
+            context.check()?;
+        }
         let view = ChainRows {
             store: self,
             replacements,
+            retired: self.retired_baseline_views(replacements, context)?,
+            context,
         };
-        let existing = self.rows()?.filter(|row| match row.as_ref() {
-            Err(_) => true,
-            Ok(row) => !replacements
-                .iter()
-                .any(|replacement| replacement.key() == row.key()),
-        });
+        let existing = self
+            .rows_with_context(context)?
+            .filter(|row| match row.as_ref() {
+                Err(_) => true,
+                Ok(row) => !replacements
+                    .iter()
+                    .any(|replacement| replacement.key() == row.key()),
+            });
         let mut members = std::collections::BTreeMap::<
             ([u8; 16], u64),
             std::collections::BTreeMap<u8, u64>,
@@ -1017,11 +1069,27 @@ impl ConnectionStore {
                     view.member_phase(&operation)?;
                     if operation.stage == 4 {
                         let connection = view.connection(operation.connection)?;
-                        let baseline = self.read_baseline(
+                        let member = operation
+                            .directory_chain_ref
+                            .as_ref()
+                            .ok_or(StoreError::Corrupt)?;
+                        let retired = view
+                            .retired
+                            .get(&(member.anchor.connection, member.anchor.serial));
+                        let (revision, root, count) = retired.map_or(
+                            (
+                                connection.baseline,
+                                connection.baseline_root,
+                                connection.baseline_count,
+                            ),
+                            |view| (view.revision(), view.root(), view.count()),
+                        );
+                        let baseline = self.read_historical_baseline_with_context(
                             &connection,
-                            connection.baseline_root,
-                            connection.baseline_count,
-                            connection.baseline.ok_or(StoreError::Corrupt)?,
+                            root,
+                            count,
+                            revision.ok_or(StoreError::Corrupt)?,
+                            context,
                         )?;
                         let expected = if operation.decision == 1 {
                             &operation.source
@@ -1216,6 +1284,13 @@ impl ConnectionStore {
         self.require_no_review_or_chain_history(id)
     }
     pub(super) fn validate_live_chain_change(&self, change: &Change) -> Result<(), StoreError> {
+        self.validate_live_chain_change_with_context(change, None)
+    }
+    pub(super) fn validate_live_chain_change_with_context(
+        &self,
+        change: &Change,
+        context: Option<&super::NativeReadContext<'_>>,
+    ) -> Result<(), StoreError> {
         match change {
             Change::Fence { .. } | Change::Disconnect { .. } => return Ok(()),
             Change::Create { record } => {
@@ -1227,7 +1302,10 @@ impl ConnectionStore {
                     Err(StoreError::RecoveryRequired)
                 };
             }
-            Change::InitialReviewAccepted { .. }
+            Change::ReviewedBaselineCommit { .. }
+            | Change::ReviewedContinuationIntent { .. }
+            | Change::ReviewedChainRetirement { .. }
+            | Change::InitialReviewAccepted { .. }
             | Change::ReviewedIntent { .. }
             | Change::ReviewedChainControl { .. }
             | Change::InitialReviewControl { .. }
@@ -1246,7 +1324,10 @@ impl ConnectionStore {
             }
             _ => (),
         }
-        self.require_no_chain_history(ConnectionId(change_connection(change)?))
+        self.require_no_review_or_chain_history_with_context(
+            ConnectionId(change_connection(change)?),
+            context,
+        )
     }
 }
 
