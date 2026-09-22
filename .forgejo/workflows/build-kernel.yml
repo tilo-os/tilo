@@ -19,6 +19,7 @@ on:
       - "os/rpms-snapshot.env"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
+      - "os/dev/derive-rpm-package-set.py"
       - "os/dev/install-cached-cosign.sh"
       - "os/dev/open-kernel-snapshot-pr.py"
       - "os/dev/login-registry-with-retry.sh"
@@ -36,6 +37,7 @@ on:
       - "os/rpms-snapshot.env"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
+      - "os/dev/derive-rpm-package-set.py"
       - "os/dev/install-cached-cosign.sh"
       - "os/dev/open-kernel-snapshot-pr.py"
       - "os/dev/login-registry-with-retry.sh"
@@ -159,6 +161,11 @@ jobs:
             os/dev/login-registry-with-retry.sh \
               docker code.podesta.ai "$REGISTRY_USERNAME"
 
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: ${{ matrix.arch }}
+
       # Same mirrored base as the OS image — the modules have to link against
       # the userspace the image ships (os/base-snapshot.env).
       - name: Load BASE_REF (mirrored Fedora bootc base)
@@ -166,6 +173,42 @@ jobs:
 
       - name: Load RPMS_REF (frozen package snapshot)
         run: grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
+
+      - name: Verify the signed RPM snapshot input
+        run: |
+          set -euo pipefail
+          [[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] || {
+            printf 'RPMS_REF is not the digest-pinned Tilo RPM repository\n' >&2
+            exit 1
+          }
+          cosign verify --key keys/cosign.pub "$RPMS_REF" >/dev/null
+          digest="${RPMS_REF##*@}"
+          ./os/dev/derive-rpm-package-set.py --arch x86_64 | LC_ALL=C sort -u > package-roots-amd64.txt
+          ./os/dev/derive-rpm-package-set.py --arch aarch64 | LC_ALL=C sort -u > package-roots-arm64.txt
+          package_set_sha256="$(cat package-roots-amd64.txt package-roots-arm64.txt | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
+          package_amd64_sha256="$(sha256sum package-roots-amd64.txt | cut -d' ' -f1)"
+          package_arm64_sha256="$(sha256sum package-roots-arm64.txt | cut -d' ' -f1)"
+          provenance="$(cosign verify-attestation --key keys/cosign.pub \
+            --type slsaprovenance1 "$RPMS_REF")"
+          printf '%s' "$provenance" | jq -e --arg digest "$digest" \
+            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" \
+            --arg package_amd64_sha256 "$package_amd64_sha256" \
+            --arg package_arm64_sha256 "$package_arm64_sha256" '
+              [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
+              | any(
+                  ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/frozen-rpm-index/v1")
+                    or (.buildDefinition.buildType | endswith("/buildtypes/frozen-rpm-index/v1")))
+                  and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
+                  and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
+                  and .buildDefinition.externalParameters.packageSetSha256ByArchitecture
+                    == {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}
+                  and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+                )
+            ' >/dev/null || {
+              printf 'frozen RPM provenance does not bind its package set, digest, base, and architectures\n' >&2
+              exit 1
+            }
 
       # Reproducible: buildkit rewrites layer timestamps + the kernel's
       # KBUILD_BUILD_TIMESTAMP to SOURCE_DATE_EPOCH (see os/kernel/Containerfile).
@@ -307,12 +350,6 @@ jobs:
       # the OS image. The OS image build verifies this signature before it
       # `dnf swap`s the kernel in — see os/etc/containers/policy.json for
       # the trust root.
-      - name: Install checksum-pinned Cosign
-        if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
-        uses: ./.forgejo/actions/install-cosign
-        with:
-          cache-architecture: ${{ matrix.arch }}
-
       - name: Sign the published image
         if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
         env:
@@ -415,6 +452,7 @@ jobs:
         os/base-snapshot.env
         os/rpms-snapshot.env
         os/dev/assert-native-arch.sh
+        os/dev/derive-rpm-package-set.py
         os/dev/open-kernel-snapshot-pr.py
         os/dev/login-registry-with-retry.sh
         .forgejo/workflows/build-kernel.yml
