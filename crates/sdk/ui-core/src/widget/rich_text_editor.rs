@@ -35,7 +35,6 @@ use std::ops::Range;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
@@ -1205,8 +1204,7 @@ impl Widget for RichTextEditor {
             }
             Action::SetSelection { anchor, focus } => {
                 let byte_at = |character_index: usize| {
-                    self.text
-                        .grapheme_indices(true)
+                    crate::text_break::grapheme_indices(&self.text)
                         .nth(character_index)
                         .map_or(self.text.len(), |(byte, _)| byte)
                 };

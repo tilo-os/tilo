@@ -19,9 +19,9 @@
 //! coherent words instead of being reduced to an ASCII-style predicate.
 
 use std::ops::Range;
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::clipboard::ClipboardTarget;
+use crate::text_break::grapheme_indices;
 
 /// Which shaped run owns a caret at a shared logical byte boundary.
 ///
@@ -193,7 +193,7 @@ pub fn grapheme_boundary_at_or_before(text: &str, byte_idx: usize) -> usize {
         return text.len();
     }
     let byte_idx = byte_idx.min(text.len());
-    text.grapheme_indices(true)
+    grapheme_indices(text)
         .map(|(i, _)| i)
         .take_while(|&i| i <= byte_idx)
         .last()
@@ -206,7 +206,7 @@ pub fn grapheme_boundary_at_or_before(text: &str, byte_idx: usize) -> usize {
 /// compatibility.
 pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
     let byte_idx = byte_idx.min(text.len());
-    text.grapheme_indices(true)
+    grapheme_indices(text)
         .map(|(i, _)| i)
         .take_while(|&i| i < byte_idx)
         .last()
@@ -217,7 +217,7 @@ pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
 /// [`prev_char_boundary`] for the compatibility note.
 pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
     let byte_idx = byte_idx.min(text.len());
-    text.grapheme_indices(true)
+    grapheme_indices(text)
         .map(|(i, _)| i)
         .find(|&i| i > byte_idx)
         .unwrap_or(text.len())

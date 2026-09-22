@@ -252,6 +252,28 @@ impl OffsetMap {
     }
 }
 
+/// Extended grapheme clusters (UAX #29) paired with their starting byte
+/// offset, so combining marks, emoji modifiers, flags and ZWJ sequences stay
+/// whole.
+pub(crate) fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    use icu_segmenter::{GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed};
+    const SEGMENTER: GraphemeClusterSegmenterBorrowed<'static> = GraphemeClusterSegmenter::new();
+    let mut start = 0;
+    SEGMENTER
+        .segment_str(text)
+        .filter(|&end| end > 0)
+        .map(move |end| {
+            let cluster = (start, text.get(start..end).unwrap_or_default());
+            start = end;
+            cluster
+        })
+}
+
+/// Extended grapheme clusters (UAX #29) of `text`, in order.
+pub(crate) fn graphemes(text: &str) -> impl Iterator<Item = &str> {
+    grapheme_indices(text).map(|(_, cluster)| cluster)
+}
+
 /// Return Unicode word-like spans in original UTF-8 byte coordinates.
 /// Uses the same ICU segmentation as toolkit word selection and movement.
 pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
@@ -303,6 +325,17 @@ mod tests {
             );
         }
         assert!(unicode_word_ranges("\u{301} , .").next().is_none());
+    }
+
+    #[test]
+    fn grapheme_indices_keep_extended_clusters_whole() {
+        let text = "e\u{301}👨‍👩‍👧🇳🇱a";
+        let clusters: Vec<_> = grapheme_indices(text).collect();
+        assert_eq!(
+            clusters,
+            vec![(0, "e\u{301}"), (3, "👨‍👩‍👧"), (21, "🇳🇱"), (29, "a"),]
+        );
+        assert_eq!(graphemes("").count(), 0);
     }
 
     #[test]
