@@ -318,6 +318,10 @@ cleanup() {
   fi
   sudo -n umount -R "$MNT" 2>/dev/null || true
   [ -n "${LOOP:-}" ] && sudo -n losetup -d "$LOOP" 2>/dev/null || true
+  if [ -n "$ESP_STAGE" ] && [ -d "$ESP_STAGE" ]; then
+    sudo -n rm -rf -- "$ESP_STAGE" 2>/dev/null || true
+    ESP_STAGE=""
+  fi
   [ -z "${SOURCE_POLICY:-}" ] || rm -f "$SOURCE_POLICY"
   rm -rf "$DEFS" "$ESP_VERIFY"
 }
@@ -474,12 +478,21 @@ else
   [[ "$ESP_UUID" =~ ^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$ ]] \
     || die "could not read the formatted ESP UUID from ${LOOP}p1"
   # bootc's empty-root verifier requires /boot (or /boot/efi) to be a mount
-  # point. A bind mount from the target Btrfs filesystem has the same st_dev as
-  # the root, so bootc does not mistake it for a boot filesystem and inspect a
-  # synthetic UUID. For composefs, --boot-mount-spec below supplies the real
-  # ESP UUID that belongs in the UKI arguments and installed fstab.
-  ESP_STAGE="$MNT/.tilo-esp-stage"
-  sudo -n install -d -m 0700 "$ESP_STAGE"
+  # point and rejects every unrelated directory inside the target root. Keep
+  # the bind source outside $MNT on a real host filesystem with a UUID. bootc
+  # can inspect that mount while --boot-mount-spec below remains authoritative
+  # for the real ESP UUID in the UKI arguments and installed fstab.
+  esp_stage_parent="${TILO_DISK_ESP_STAGE_PARENT:-/var/tmp}"
+  [ -d "$esp_stage_parent" ] \
+    || die "ESP staging parent does not exist: $esp_stage_parent"
+  ESP_STAGE="$(mktemp -d "$esp_stage_parent/tilo-esp-stage.XXXXXX")"
+  chmod 0700 "$ESP_STAGE"
+  case "$(readlink -f "$ESP_STAGE")/" in
+    "$(readlink -f "$MNT")/"*) die "ESP staging directory must be outside the target root" ;;
+  esac
+  esp_stage_uuid="$(findmnt -n -o UUID --target "$ESP_STAGE")"
+  [ -n "$esp_stage_uuid" ] \
+    || die "ESP staging filesystem at $ESP_STAGE has no UUID; choose a real host filesystem with TILO_DISK_ESP_STAGE_PARENT"
   sudo -n mount --bind "$ESP_STAGE" "$ESP_AT" \
     || die "could not bind the ESP staging directory at $ESP_AT"
   sudo -n mount -o remount,bind,nosuid,nodev,noexec "$ESP_AT" \
