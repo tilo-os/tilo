@@ -22,7 +22,7 @@ jobs:
           python3 -I - <<'PY'
           import io, json, os, urllib.request, zipfile
           from pathlib import Path
-          api = 'https://code.podesta.ai/api/v1/repos/qos/ci-workflow-pilot-20260918-9245-repeat'
+          api = 'https://code.podesta.ai/api/v1/repos/tilo/ci-workflow-pilot-20260918-9245-repeat'
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, *args, **kwargs):
                   return None

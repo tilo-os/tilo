@@ -40,7 +40,7 @@ runtime-bundle = { path = "../runtime-bundle" }
 # `MinimalManifest` decoder, but security-relevant enums that both
 # sides must agree on (portal policy) come from here rather than
 # being duplicated.
-pkg = { path = "../pkg" }
+tilo-app-package = { path = "../tilo-app-package" }
 # The capability vocabulary. Workspace grants arrive as `CapOverride`
 # records and are evaluated with the same fail-closed decision function
 # the compositor and the filesystem use — a launcher-local permission

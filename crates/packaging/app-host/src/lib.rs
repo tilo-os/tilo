@@ -8,13 +8,13 @@
 //! ## Crate layout
 //!
 //! - [`store`] — on-disk content-addressed blob store + per-package
-//!   eagerly-extracted payload tree. Wraps [`pkg::BlobStore`].
+//!   eagerly-extracted payload tree. Wraps [`tilo_app_package::BlobStore`].
 //! - [`registry`] — `Pinned` / `Tried` index, persisted as TOML.
 //! - [`gc`] — LRU + size-pressure eviction.
 //! - [`fetch`] — remote fetch: resolve an app-id through the registry
-//!   protocol (`app-registry`), download the qpkg over iroh-blobs,
+//!   protocol (`app-registry`), download the tapp over iroh-blobs,
 //!   verify it fail-closed, and install it.
-//! - [`install`] — parse a .qpkg-shaped byte blob and ingest into the
+//! - [`install`] — parse a .tapp-shaped byte blob and ingest into the
 //!   Store + Registry.
 //! - [`service`] — Cap'n Proto `AppHost` server implementation.
 //! - [`transport`] — Unix-domain socket bind + accept loop (matches
@@ -69,9 +69,9 @@ pub mod app_host_capnp {
 }
 
 pub use gc::GcReport;
-pub use pkg::PackageId;
 pub use registry::{Pinning, RegistryEntry};
 pub use store::{Store, StoreError};
+pub use tilo_app_package::PackageId;
 
 /// Default root for the on-disk store. Layout:
 ///

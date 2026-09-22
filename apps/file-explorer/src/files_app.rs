@@ -34,8 +34,8 @@ use ui::tilo_actions::{
 };
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
-    Button, Column, EmptyState, NavShell, ScrollAxis, Scrollable, ShellMode, Spacer, Spinner, Text,
-    TextInput, Widget,
+    Button, Collaborative, Column, EmptyState, NavShell, ScrollAxis, Scrollable, ShellMode, Spacer,
+    Spinner, Text, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
@@ -191,7 +191,7 @@ fn hex_prefix(bytes: &[u8], count: usize) -> String {
 
 fn nearby_action_locator(kind: &str, bytes: &[u8; 16]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"dev.tilo.files.nearby-action-locator.v1\0");
+    hasher.update(b"so.tilo.files.nearby-action-locator.v1\0");
     hasher.update(kind.as_bytes());
     hasher.update([0]);
     hasher.update(bytes);
@@ -7707,32 +7707,7 @@ impl FileExplorerWidget {
     }
 }
 
-impl Widget for FileExplorerWidget {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "files.refresh",
-            "files.new-folder",
-            "files.paste",
-            "files.new-from-template",
-            "files.open",
-            "files.reveal-record",
-            "files.folder-command",
-            "files.entry-command",
-            "files.nearby-send",
-            "files.nearby-decide",
-            "files.nearby-retry",
-            "files.nearby-cancel",
-            "files.rename",
-            "files.share-link",
-            "files.remote-account",
-            "files.remote-dav",
-            // The hand-positioned recovery Button still publishes through the
-            // normal action door; this handler delegates its stable control
-            // resource back to the retained widget.
-            "tilo.ui.control.invoke",
-        ]
-    }
-
+impl Collaborative for FileExplorerWidget {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         self.nearby_send.poll_if_due(Instant::now());
         self.nearby_send.take_requests()
@@ -7829,6 +7804,37 @@ impl Widget for FileExplorerWidget {
             }
         }
         self.structure_dirty = true;
+    }
+}
+
+impl Widget for FileExplorerWidget {
+    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+        Some(self)
+    }
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "files.refresh",
+            "files.new-folder",
+            "files.paste",
+            "files.new-from-template",
+            "files.open",
+            "files.reveal-record",
+            "files.folder-command",
+            "files.entry-command",
+            "files.nearby-send",
+            "files.nearby-decide",
+            "files.nearby-retry",
+            "files.nearby-cancel",
+            "files.rename",
+            "files.share-link",
+            "files.remote-account",
+            "files.remote-dav",
+            // The hand-positioned recovery Button still publishes through the
+            // normal action door; this handler delegates its stable control
+            // resource back to the retained widget.
+            "tilo.ui.control.invoke",
+        ]
     }
 
     #[allow(

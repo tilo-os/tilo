@@ -182,7 +182,7 @@ def main():
             raise ValueError('explicit 23 GiB producer cgroup required')
         if not capacity_ok(min(free.values()), starting=True):
             raise ValueError('starting storage reserve not met')
-        inputs = vars(args) | {'jobs': 6, 'epoch': '0', 'runner_class': 'qos-package',
+        inputs = vars(args) | {'jobs': 6, 'epoch': '0', 'runner_class': 'tilo-package',
                               'disk_capacity_proven': False}
         write('inputs.json', inputs)
         pins = {}

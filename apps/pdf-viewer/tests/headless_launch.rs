@@ -81,7 +81,7 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
     }
     command
         .current_dir(root)
-        .env("TILO_PACKAGE_ID", "dev.tilo.pdf-viewer")
+        .env("TILO_PACKAGE_ID", "so.tilo.pdf-viewer")
         .env("TILO_WORKSPACE_ID", "00000000-0000-0000-0000-000000000000")
         .arg("--headless-drive")
         .arg(
@@ -193,7 +193,7 @@ fn cli_note_survives_other_document_and_restart() {
     assert_eq!(reopened["comments"], edited["comments"]);
     assert_eq!(std::fs::read(a).unwrap(), bytes);
     assert_eq!(std::fs::read(b).unwrap(), bytes);
-    let package = root.join("XDG_DATA_HOME/dev.tilo.pdf-viewer");
+    let package = root.join("XDG_DATA_HOME/so.tilo.pdf-viewer");
     assert!(
         !package.join("state.automerge").exists(),
         "PDF CLI must use its native room index, not a package-global substitute"

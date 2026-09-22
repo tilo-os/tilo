@@ -5,7 +5,7 @@
 #
 # What this proves:
 #   1. A Tilo-native app is a plain ELF linked against `tilo-runtime`.
-#   2. `tilo-pkg pack` produces a content-addressed, signed .qpkg.
+#   2. `tilo-app-package pack` produces a content-addressed, signed .tapp.
 #   3. `tilo-install install` verifies + extracts + registers in one shot.
 #   4. `tilo-install list / inspect` show a working registry.
 #   5. `tilo-install run` execs tilo-launcher with the right args, which:
@@ -35,11 +35,11 @@ hr "1. build tilo-hello + tools (release)"
 # demo idempotent + fast to re-run without needing distrobox from every
 # shell (some sub-shells can't launch nested distrobox containers).
 missing=0
-for b in tilo-hello tilo-pkg tilo-launcher tilo-install tilo-runtime-bundle; do
+for b in tilo-hello tilo-app-package tilo-launcher tilo-install tilo-runtime-bundle; do
   if [ ! -x "$INTEG/target/release/$b" ]; then missing=1; break; fi
 done
 if [ "$missing" -eq 1 ]; then
-  step distrobox enter my-distrobox -- bash -c "cd $INTEG && cargo build -p hello -p pkg-cli -p launcher -p install -p runtime-bundle --release >/dev/null 2>&1"
+  step distrobox enter my-distrobox -- bash -c "cd $INTEG && cargo build -p hello -p tilo-app-package-cli -p launcher -p install -p runtime-bundle --release >/dev/null 2>&1"
 else
   echo "  ✓ all release binaries already built"
 fi
@@ -53,7 +53,7 @@ hr "1b. install runtime bundle (tilo-runtime/2026.07) from host"
 hr "2. write manifest"
 cat > "$DEMO/manifest.toml" <<'EOF'
 [package]
-id       = "dev.tilo.hello"
+id       = "so.tilo.hello"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
@@ -92,31 +92,31 @@ ext  = []
 EOF
 echo "  manifest bytes: $(wc -c < "$DEMO/manifest.toml")"
 
-hr "3. pack (tilo-pkg)"
-step "$INTEG/target/release/tilo-pkg" pack \
+hr "3. pack (tilo-app-package)"
+step "$INTEG/target/release/tilo-app-package" pack \
   --manifest "$DEMO/manifest.toml" \
   --payload  "$DEMO/payload" \
-  --output   "$DEMO/tilo-hello.qpkg"
-ls -la "$DEMO/tilo-hello.qpkg" | awk '{print "  qpkg size:  ", $5, "bytes"}'
+  --output   "$DEMO/tilo-hello.tapp"
+ls -la "$DEMO/tilo-hello.tapp" | awk '{print "  tapp size:  ", $5, "bytes"}'
 
 hr "4. tilo-install install"
-step "$INTEG/target/release/tilo-install" install "$DEMO/tilo-hello.qpkg"
+step "$INTEG/target/release/tilo-install" install "$DEMO/tilo-hello.tapp"
 
 hr "5. tilo-install list"
 "$INTEG/target/release/tilo-install" list
 
 hr "6. tilo-install inspect"
-"$INTEG/target/release/tilo-install" inspect dev.tilo.hello
+"$INTEG/target/release/tilo-install" inspect so.tilo.hello
 
 hr "7. tilo-install run — sandbox + Landlock enforcement + graceful services"
 # NOTE: no --minimal-libs. The manifest declares `runtime = "tilo-runtime/2026.07"`,
 # and step 1b installed that bundle; the launcher mounts it automatically.
-"$INTEG/target/release/tilo-install" run dev.tilo.hello --no-services
+"$INTEG/target/release/tilo-install" run so.tilo.hello --no-services
 
 hr "8. tilo-install remove"
-"$INTEG/target/release/tilo-install" remove dev.tilo.hello
+"$INTEG/target/release/tilo-install" remove so.tilo.hello
 "$INTEG/target/release/tilo-install" list
 
 hr "done"
-echo "  qpkg:          $(sha256sum "$DEMO/tilo-hello.qpkg" | awk '{print $1}')"
+echo "  tapp:          $(sha256sum "$DEMO/tilo-hello.tapp" | awk '{print $1}')"
 echo "  registry file: $XDG_DATA_HOME/tilo-apps/registry.toml (removed with the package)"

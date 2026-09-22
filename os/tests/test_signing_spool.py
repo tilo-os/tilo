@@ -74,7 +74,7 @@ class SigningSpoolTests(unittest.TestCase):
             (self.work / name).mkdir(mode=0o700)
         self.context = {'schema': 1, 'job_id': 'fixture-job', 'pod_uid': 'fixture-pod', 'container_id': 'fixture-container',
                         'image_id': 'sha256:' + 'a' * 64, 'revision': 'a' * 40, 'architecture': 'aarch64',
-                        'manifest_sha256': 'b' * 64, 'target': 'registry.invalid/qos/test:aarch64'}
+                        'manifest_sha256': 'b' * 64, 'target': 'registry.invalid/tilo/test:aarch64'}
         self.config = self.work / 'bridge.json'
         self.config.write_bytes(spool.canonical({'schema': 1, 'context': self.context, 'spool': str(self.work / 'spool'),
             'public_certificate': str(self.home / 'efi-signing.crt'),

@@ -61,11 +61,11 @@ fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
         "From address present in the payload"
     );
     assert!(
-        text.contains("you@tilo.example"),
+        text.contains("you@example.test"),
         "To recipient present in the payload"
     );
     assert!(
-        text.contains("cc@tilo.example"),
+        text.contains("cc@example.test"),
         "Cc recipient present in the payload"
     );
     assert!(
@@ -77,11 +77,11 @@ fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
     assert_eq!(round.subject, "Loop check");
     assert_eq!(round.from.email, "ada@analytical.example");
     assert!(
-        round.to.iter().any(|a| a.email == "you@tilo.example"),
+        round.to.iter().any(|a| a.email == "you@example.test"),
         "To recipient survives"
     );
     assert!(
-        round.cc.iter().any(|a| a.email == "cc@tilo.example"),
+        round.cc.iter().any(|a| a.email == "cc@example.test"),
         "Cc recipient survives"
     );
 }
@@ -158,8 +158,8 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     // 4a) A compose produces a well-formed SMTP payload: the Send request builds
     //     real RFC 5322 MIME and reports its wire size.
     let draft = Draft {
-        to: "you@tilo.example".into(),
-        cc: "cc@tilo.example".into(),
+        to: "you@example.test".into(),
+        cc: "cc@example.test".into(),
         subject: "Loop check".into(),
         body: "This travels through the engine.".into(),
         ..Default::default()

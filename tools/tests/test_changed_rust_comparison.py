@@ -96,6 +96,28 @@ class ChangedRustComparisonTests(unittest.TestCase):
         self.assertEqual(self.arguments.read_text().splitlines(),
                          ["--edition", "2024", "--check", "--", "new.rs"])
 
+    def test_staged_mode_reads_the_index_instead_of_the_worktree(self):
+        staged = self.origin / "staged.rs"
+        staged.write_text("#[allow(dead_code)]\nfn staged() {}\n")
+        self.git(self.origin, "add", "staged.rs")
+        staged.write_text(
+            '#[allow(dead_code, reason = "working tree is not committed")]\n'
+            "fn staged() {}\n"
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(CI / "check_changed_rust_allows.py"),
+                "--root",
+                str(self.origin),
+                "--staged",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("staged.rs:1:", result.stderr)
+
     def test_force_push_preserves_exact_before_tree_instead_of_merge_base(self):
         result = self.check("allows", self.origin, "", self.base)
         self.assertNotEqual(result.returncode, 0)

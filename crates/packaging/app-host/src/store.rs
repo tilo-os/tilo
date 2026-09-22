@@ -9,8 +9,8 @@
 //! ```
 //!
 //! `Store` is the synchronous façade the service uses; it wraps a
-//! [`pkg::BlobStore`]-shaped `FsBlobStore` so the same store can go to
-//! `pkg::unpack` without copying bytes.
+//! [`tilo_app_package::BlobStore`]-shaped `FsBlobStore` so the same store can go to
+//! `tilo_app_package::unpack` without copying bytes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 use parking_lot::Mutex;
 use thiserror::Error;
 
-use pkg::blobs::{BlobHash, BlobStore, BlobStoreError, Collection};
-use pkg::id::PackageId;
-use pkg::signed::SignedRoot;
+use tilo_app_package::blobs::{BlobHash, BlobStore, BlobStoreError, Collection};
+use tilo_app_package::id::PackageId;
+use tilo_app_package::signed::SignedRoot;
 
 use crate::registry::{Pinning, Registry, RegistryEntry, RegistryError};
 
@@ -252,7 +252,7 @@ impl Store {
         Ok(freed)
     }
 
-    /// Insert an entry directly; used by the install flow after the qpkg has been parsed + the payload extracted.
+    /// Insert an entry directly; used by the install flow after the tapp has been parsed + the payload extracted.
     ///
     /// # Errors
     ///
@@ -266,7 +266,7 @@ impl Store {
     }
 
     /// Lock + hand out the inner blob store for an install operation that
-    /// needs to ingest several blobs and then unpack via `pkg::unpack`.
+    /// needs to ingest several blobs and then unpack via `tilo_app_package::unpack`.
     pub fn with_blobs<R>(&self, f: impl FnOnce(&mut FsBlobStore) -> R) -> R {
         let mut inner = self.inner.lock();
         f(&mut inner.blobs)
