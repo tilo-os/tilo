@@ -22,7 +22,7 @@ path = "src/lib.rs"
 
 [dependencies]
 thiserror.workspace = true
-log = "0.4"
+tracing.workspace = true
 bounded-command = { path = "../bounded-command" }
 
 [target.'cfg(unix)'.dependencies]

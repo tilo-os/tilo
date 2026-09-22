@@ -174,7 +174,7 @@ impl Speaker for EspeakSpeaker {
             }
         }
         if let Err(e) = self.spawn(&utterance.text) {
-            log::warn!("espeak-ng: failed to speak: {e}");
+            tracing::warn!("espeak-ng: failed to speak: {e}");
         }
     }
 
