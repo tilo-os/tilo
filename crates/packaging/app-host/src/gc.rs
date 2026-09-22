@@ -19,7 +19,7 @@
 //! so a large install can't push the store over its budget without a
 //! prompt cleanup pass.
 
-use pkg::id::PackageId;
+use tilo_app_package::id::PackageId;
 
 use crate::registry::{Pinning, RegistryEntry};
 use crate::store::{Store, StoreError};
@@ -104,10 +104,10 @@ pub fn sweep(store: &Store, max_bytes: u64) -> Result<GcReport, StoreError> {
 mod tests {
     use super::*;
     use crate::registry::RegistryEntry;
-    use pkg::blobs::{BlobStore, Collection};
-    use pkg::id::PackageId;
-    use pkg::signed::SignedRoot;
     use std::fs;
+    use tilo_app_package::blobs::{BlobStore, Collection};
+    use tilo_app_package::id::PackageId;
+    use tilo_app_package::signed::SignedRoot;
 
     fn write_payload(root: &std::path::Path, id: PackageId, bytes: usize) {
         let dir = root.join("payloads").join(id.to_hex());

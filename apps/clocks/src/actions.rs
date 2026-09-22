@@ -90,6 +90,7 @@ fn timer_resource(timer: &crate::Timer) -> Resource {
             crate::app::duration(remaining.saturating_mul(1_000))
         )),
         badge: timer.pinned_overlay.then_some("Floating".into()),
+        preview: None,
     })
     .with_action(op(
         "toggle",
@@ -133,6 +134,7 @@ fn alarm_resource(alarm: &crate::Alarm) -> Resource {
             crate::app::repeat_summary(&alarm.weekdays)
         )),
         badge: Some(if alarm.enabled { "On" } else { "Off" }.into()),
+        preview: None,
     })
     .with_action(op(
         "toggle",
@@ -155,6 +157,7 @@ fn world_clock_resource(clock: &crate::WorldClock) -> Resource {
     .with_presentation(ResourcePresentation {
         detail: Some(clock.timezone.clone()),
         badge: None,
+        preview: None,
     })
     .with_action(op(
         "remove",
@@ -208,6 +211,7 @@ pub fn provide_resources(state: &ClockState) -> Vec<Resource> {
                     .unwrap_or(u64::MAX),
             )),
             badge: state.stopwatch.pinned_overlay.then_some("Floating".into()),
+            preview: None,
         })
         .with_action(op(
             "toggle",

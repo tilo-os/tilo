@@ -6,7 +6,7 @@
 //!
 //! 1. Build a view of the struct that omits its `signature` field.
 //! 2. `postcard::to_allocvec` the view.
-//! 3. Prepend a fixed byte-constant "domain tag" (`qos-devcert-v1\0`
+//! 3. Prepend a fixed byte-constant "domain tag" (`tilo-devcert-v1\0`
 //!    etc.) and hash the concatenation with BLAKE3-256.
 //!
 //! The Ed25519 signature is then produced over the 32-byte hash, not
@@ -17,7 +17,7 @@
 //!   signature can never be reinterpreted as a `RevocationEntry`
 //!   signature, no matter how similar the byte layout).
 //! - **Wire-ABI stability**: adding a field forces a new tag
-//!   (`qos-devcert-v2\0`); we never accidentally accept an old
+//!   (`tilo-devcert-v2\0`); we never accidentally accept an old
 //!   signature over a new struct.
 //!
 //! This module holds the postcard helpers + the BLAKE3 wrapper.
@@ -97,7 +97,7 @@ pub fn from_canonical_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Cano
 /// hash that Ed25519's `sign()` and `verify()` accept as message
 /// bytes directly. Prefixing the raw postcard bytes with `domain_tag`
 /// gives us domain separation: a signature made under
-/// `qos-devcert-v1\0` cannot be reinterpreted as a signature made
+/// `tilo-devcert-v1\0` cannot be reinterpreted as a signature made
 /// under any other tag.
 ///
 /// # Errors

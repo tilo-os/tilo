@@ -171,14 +171,49 @@ impl Osd {
         now.saturating_duration_since(self.raised_at) < OSD_HOLD
     }
 
-    /// Place the slab low and centred within `viewport`, away from the
-    /// content most likely to be under the pointer.
+    /// Whether the readout is in the short fade tail and therefore needs a
+    /// frame on every presentation tick. The opaque part of the hold is
+    /// deliberately excluded: a static OSD should not keep the compositor
+    /// repainting for more than a second.
+    pub fn needs_animation_frame_at(&self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.raised_at);
+        elapsed >= OSD_HOLD.saturating_sub(OSD_FADE) && elapsed < OSD_HOLD
+    }
+
+    /// The next lifecycle boundary while the readout is static.
+    ///
+    /// During the opaque hold this wakes the compositor exactly when the
+    /// fade begins. During the fade, continuous animation frames do the work,
+    /// and the expiry boundary remains pending until the paint pass removes
+    /// the readout. Returning that overdue boundary is intentional: the event
+    /// loop decides whether a deadline caused damage by asking this method
+    /// after waking, so dropping it at the deadline would skip the final
+    /// clearing frame.
+    pub fn next_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
+        let fade_start = self
+            .raised_at
+            .checked_add(OSD_HOLD.saturating_sub(OSD_FADE))
+            .unwrap_or(self.raised_at);
+        if now < fade_start {
+            Some(fade_start)
+        } else {
+            self.raised_at.checked_add(OSD_HOLD)
+        }
+    }
+
+    /// Place the slab at the visual centre of `viewport`. Hardware feedback
+    /// belongs to the whole display rather than the app under the pointer;
+    /// centring it also gives the same location at normal and compact sizes.
     pub fn rect_in(viewport: Rect) -> Rect {
-        let w = 260.0_f64.min(viewport.width() * 0.6);
-        let h = 96.0_f64;
-        let cx = viewport.center().x;
-        let y1 = viewport.y1 - (viewport.height() * 0.12).max(56.0);
-        Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1)
+        let w = 288.0_f64.min((viewport.width() - 32.0).max(0.0));
+        let h = 104.0_f64.min((viewport.height() - 32.0).max(0.0));
+        let center = viewport.center();
+        Rect::new(
+            center.x - w / 2.0,
+            center.y - h / 2.0,
+            center.x + w / 2.0,
+            center.y + h / 2.0,
+        )
     }
 
     /// Paint this readout inside `viewport` at the supplied lifecycle alpha.
@@ -494,6 +529,26 @@ mod tests {
     }
 
     #[test]
+    fn opaque_hold_sleeps_until_fade_then_only_fade_animates() {
+        let o = Osd::volume(0.5, false);
+        let t0 = o.raised_at;
+        let expiry = t0.checked_add(OSD_HOLD).unwrap();
+        let fade_start = expiry.checked_sub(OSD_FADE).unwrap();
+
+        assert!(!o.needs_animation_frame_at(t0));
+        assert_eq!(o.next_wake_deadline_at(t0), Some(fade_start));
+        assert!(o.needs_animation_frame_at(fade_start));
+        assert_eq!(o.next_wake_deadline_at(fade_start), Some(expiry));
+        assert!(o.needs_animation_frame_at(expiry.checked_sub(Duration::from_millis(1)).unwrap()));
+        assert!(!o.needs_animation_frame_at(expiry));
+        assert_eq!(
+            o.next_wake_deadline_at(expiry),
+            Some(expiry),
+            "the overdue expiry remains observable until the paint pass clears it"
+        );
+    }
+
+    #[test]
     fn a_second_press_restarts_the_slab_instead_of_stacking_one() {
         let mut cur = None;
         raise(&mut cur, Osd::volume(0.3, false));
@@ -561,13 +616,20 @@ mod tests {
     fn slab_geometry_is_low_centered_and_width_bounded() {
         let viewport = Rect::new(20.0, 40.0, 1220.0, 840.0);
         let rect = Osd::rect_in(viewport);
-        assert_eq!(rect.width(), 260.0);
-        assert_eq!(rect.height(), 96.0);
-        assert_eq!(rect.center().x, viewport.center().x);
-        assert_eq!(viewport.y1 - rect.y1, 96.0);
+        assert_eq!(rect.width(), 288.0);
+        assert_eq!(rect.height(), 104.0);
+        assert_eq!(rect.center(), viewport.center());
 
         let narrow = Osd::rect_in(Rect::new(0.0, 0.0, 300.0, 500.0));
-        assert_eq!(narrow.width(), 180.0);
+        assert_eq!(narrow.width(), 268.0);
+        assert_eq!(narrow.height(), 104.0);
+        assert_eq!(narrow.center(), vello::kurbo::Point::new(150.0, 250.0));
+        assert_eq!(narrow.x0, 16.0);
+
+        let tiny = Osd::rect_in(Rect::new(5.0, 7.0, 125.0, 87.0));
+        assert_eq!(tiny.width(), 88.0);
+        assert_eq!(tiny.height(), 48.0);
+        assert_eq!(tiny.center(), vello::kurbo::Point::new(65.0, 47.0));
     }
 
     /// HIG §7a: the caption is scaled exactly once. The pass paints the

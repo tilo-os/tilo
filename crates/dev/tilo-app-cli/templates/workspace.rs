@@ -1,11 +1,8 @@
 use serde::{Deserialize, Serialize};
-use ui::LocalState;
-use ui::automerge::transaction::Transactable;
-use ui::tilo_actions::{self, ActionError, ActionRegistry, Doc, ExecutionLocus};
-use ui::tokens::TextRole;
-use ui::widget::{
-    AppShell, Button, ModelView, NarrowScreen, Text, TextInput, TreeNode, TreeView, Widget,
-    labeled_field,
+use ui::prelude::{
+    ActionError, ActionRegistry, AppShell, Button, Doc, ExecutionLocus, LocalState, ModelView,
+    NarrowScreen, Text, TextInput, TextRole, Transactable, TreeNode, TreeView, Widget,
+    labeled_field, tilo_actions,
 };
 
 const WORKSPACE_ACTION_TYPE: &str = "generated.workspace.action";
@@ -56,6 +53,10 @@ fn item_label(id: u64) -> String {
     ui::i18n::I18nManager::lookup_plain(message)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the generated workspace action contains only serializable fields"
+)]
 fn item_resource() -> tilo_actions::Resource {
     let mut resource = ui::widget::resource_actions::typed_resource(
         "generated.workspace-item",

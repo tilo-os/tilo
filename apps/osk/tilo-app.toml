@@ -11,7 +11,7 @@
 
 
 [package]
-id       = "dev.tilo.osk"
+id       = "so.tilo.osk"
 name     = "On-Screen Keyboard"
 category = "Accessibility"
 version  = "0.1.0"

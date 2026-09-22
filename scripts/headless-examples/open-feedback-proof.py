@@ -26,7 +26,7 @@ own defect: it would still be on screen over the running app.
 
 What the app is
 ---------------
-A real `.qpkg`, really packed and really signed, served over loopback by
+A real `.tapp`, really packed and really signed, served over loopback by
 `serve-test-registry` — the same setup `install-open-timing.py` measures
 against and the same one used on set. The session's app dir is empty, so
 "the machine does not have it" is a fact about a directory rather than a
@@ -37,7 +37,7 @@ Usage
     scripts/headless-examples/open-feedback-proof.py
 
     cargo build -p shell -p install -p launcher -p word-processor
-    cargo build -p app-catalogue --bins --examples
+    cargo build -p app-cli --bins --examples
 
 Exits non-zero if any claim fails.
 """
@@ -58,7 +58,7 @@ import time
 from reaper import die_with_parent, track
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-PACKAGE_ID = "dev.tilo.word-processor"
+PACKAGE_ID = "so.tilo.word-processor"
 DISPLAY_NAME = "Word Processor"
 QUERY = "word processor"
 
@@ -241,7 +241,7 @@ class Session:
 
 
 class Registry:
-    """`serve-test-registry` on loopback, serving one real signed `.qpkg`."""
+    """`serve-test-registry` on loopback, serving one real signed `.tapp`."""
 
     def __init__(self, example_bin, payload, config_dir, log_path):
         self.example_bin = example_bin
@@ -344,7 +344,7 @@ def main() -> int:
         REPO / "target" / "tilo-apps-live" / "payloads" / PACKAGE_ID / "bin"
         / "word-processor")
     tools = {}
-    for var, name in (("TILO_CATALOGUE_BIN", "tilo-catalogue"),
+    for var, name in (("TILO_APP_BIN", "app"),
                       ("TILO_INSTALL_BIN", "tilo-install"),
                       ("TILO_LAUNCHER_BIN", "tilo-launcher")):
         found = tool(name)
@@ -358,13 +358,13 @@ def main() -> int:
         missing.append(f"serve-test-registry ({example})")
     if not payload.exists():
         missing.append(f"word-processor payload ({payload})")
-    for var in ("TILO_CATALOGUE_BIN", "TILO_INSTALL_BIN", "TILO_LAUNCHER_BIN"):
+    for var in ("TILO_APP_BIN", "TILO_INSTALL_BIN", "TILO_LAUNCHER_BIN"):
         if var not in tools:
             missing.append(var)
     if missing:
         print("FAIL: not built:\n  " + "\n  ".join(missing), file=sys.stderr)
         print("\n  cargo build -p shell -p install -p launcher -p word-processor"
-              "\n  cargo build -p app-catalogue --bins --examples", file=sys.stderr)
+              "\n  cargo build -p app-cli --bins --examples", file=sys.stderr)
         return 2
 
     # A stale compositor produces a verdict about code that is not under

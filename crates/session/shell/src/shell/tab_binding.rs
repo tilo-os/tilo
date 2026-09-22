@@ -28,9 +28,17 @@ pub enum Placement {
     /// A tab inside an existing group. What a **document opened from another app** gets, so the
     /// strip doesn't grow a column every peek. Falls back to [`Placement::NewGroup`] when the named group no longer exists.
     TabIn(GroupId),
+    /// A tab at an exact insertion index in an existing group. Pointer drops use
+    /// this instead of [`Self::TabIn`] so landing left or right of a particular
+    /// tab remains stable even if focus changes while the app is starting.
+    TabAt(GroupId, usize),
     /// Its own window group, right of the group named here. Unlike [`Placement::NewGroup`] ("beside
     /// whatever has focus"), names a specific group, so the answer survives focus moving between launch and arrival. Falls back to [`Placement::NewGroup`] when gone, as [`Placement::TabIn`] does.
     RightOf(GroupId),
+    /// A new window group at an exact seam in a named strip. The index is
+    /// clamped to the live group count; a stale strip falls back to
+    /// [`Self::NewGroup`] rather than placing the window in an arbitrary strip.
+    GroupAt(StripId, usize),
     /// Into a tab that already exists, replacing whatever it holds. What a launch on behalf of a
     /// peer's window asks for ([`crate::shell::peer_windows`]): the tab already arrived in the room document. Falls back to [`Placement::NewGroup`] when the tab is gone by arrival.
     IntoTab(TabId),
@@ -180,6 +188,256 @@ pub fn open_hosted_app(
     tab_id
 }
 
+/// Rehome an existing tab through the same exact destination grammar used by
+/// a fresh drop. This is the deduplicated-document path: dragging a document
+/// which is already open moves its one live window instead of launching a
+/// duplicate or merely focusing the old location.
+#[allow(
+    clippy::too_many_lines,
+    reason = "relocation validates and applies every shared placement variant as one atomic topology update"
+)]
+pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placement) -> bool {
+    let source = tree.workspaces.iter().find_map(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.id == tab_id)
+                    .map(|tab_index| (strip.id, group.id, tab_index))
+            })
+        })
+    });
+    let Some((source_strip, source_group, source_index)) = source else {
+        return false;
+    };
+    let destination = match placement {
+        Placement::TabAt(group, index) => tree.workspaces.iter().find_map(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .any(|candidate| candidate.id == group)
+                    .then_some((
+                        strip.id,
+                        ui::widget::TabDropTarget::ExistingGroup {
+                            group_id: group,
+                            tab_index: index,
+                        },
+                    ))
+            })
+        }),
+        Placement::TabIn(group) => tree.workspaces.iter().find_map(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip.window_groups.iter().find_map(|candidate| {
+                    (candidate.id == group).then_some((
+                        strip.id,
+                        ui::widget::TabDropTarget::ExistingGroup {
+                            group_id: group,
+                            tab_index: candidate.tabs.len(),
+                        },
+                    ))
+                })
+            })
+        }),
+        Placement::GroupAt(strip, index) => Some((
+            strip,
+            ui::widget::TabDropTarget::GroupGap { gap_index: index },
+        )),
+        Placement::NewGroup | Placement::RightOf(_) | Placement::IntoTab(_) => None,
+    };
+    let Some((destination_strip, mut target)) = destination else {
+        return false;
+    };
+    if destination_strip != source_strip {
+        return tree.move_tab_across_strips(
+            source_strip,
+            destination_strip,
+            tab_id,
+            next_id(),
+            target,
+        );
+    }
+
+    let Some(strip) = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .find(|strip| strip.id == source_strip)
+    else {
+        return false;
+    };
+    let source_group_index = strip
+        .window_groups
+        .iter()
+        .position(|group| group.id == source_group)
+        .unwrap_or(0);
+    let Some(source_group_state) = strip.window_groups.get(source_group_index) else {
+        return false;
+    };
+    let source_group_len = source_group_state.tabs.len();
+    match &mut target {
+        ui::widget::TabDropTarget::ExistingGroup {
+            group_id,
+            tab_index,
+        } if *group_id == source_group && source_index < *tab_index => {
+            *tab_index = tab_index.saturating_sub(1);
+        }
+        ui::widget::TabDropTarget::GroupGap { gap_index }
+            if source_group_len == 1 && source_group_index < *gap_index =>
+        {
+            *gap_index = gap_index.saturating_sub(1);
+        }
+        _ => {}
+    }
+    let mut topology: Vec<ui::widget::GroupTopology> = strip
+        .window_groups
+        .iter()
+        .map(|group| ui::widget::GroupTopology {
+            id: group.id,
+            tab_ids: group.tabs.iter().map(|tab| tab.id).collect(),
+            active_tab: group.active_tab,
+            width: group.width.to_ui(),
+        })
+        .collect();
+    let Some(source_group_index) = topology.iter().position(|group| group.id == source_group)
+    else {
+        return false;
+    };
+    let remove_source_group = {
+        let Some(source_group_state) = topology.get_mut(source_group_index) else {
+            return false;
+        };
+        if source_index >= source_group_state.tab_ids.len() {
+            return false;
+        }
+        source_group_state.tab_ids.remove(source_index);
+        if source_group_state.active_tab == tab_id {
+            source_group_state.active_tab =
+                source_group_state.tab_ids.first().copied().unwrap_or(0);
+        }
+        source_group_state.tab_ids.is_empty()
+    };
+    if remove_source_group {
+        topology.remove(source_group_index);
+    }
+    match target {
+        ui::widget::TabDropTarget::ExistingGroup {
+            group_id,
+            tab_index,
+        } => {
+            let Some(group) = topology.iter_mut().find(|group| group.id == group_id) else {
+                return false;
+            };
+            group
+                .tab_ids
+                .insert(tab_index.min(group.tab_ids.len()), tab_id);
+            group.active_tab = tab_id;
+        }
+        ui::widget::TabDropTarget::GroupGap { gap_index } => topology.insert(
+            gap_index.min(topology.len()),
+            ui::widget::GroupTopology {
+                id: next_id(),
+                tab_ids: vec![tab_id],
+                active_tab: tab_id,
+                width: ui::widget::WindowWidth::Normal,
+            },
+        ),
+    }
+    tree.reconcile_strip_topology(source_strip, &topology)
+}
+
+/// Open or focus the one personal workspace-activity window in the active
+/// workspace. The tab is device-local, but otherwise uses the ordinary tiled
+/// window model so close, resize, tab/group reorder and persistence need no
+/// activity-specific implementations.
+pub fn open_workspace_activity(tree: &mut WorkspaceTree) -> TabId {
+    let active_workspace = tree.active;
+    let existing = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == active_workspace)
+        .and_then(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip.window_groups.iter().find_map(|group| {
+                    group.tabs.iter().find_map(|tab| {
+                        matches!(tab.tile, TileContent::WorkspaceActivity)
+                            .then_some((strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        });
+    if let Some((strip, group, tab)) = existing {
+        if let Some(workspace) = tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == active_workspace)
+            && let Some(group_state) = workspace
+                .strips
+                .iter_mut()
+                .find(|candidate| candidate.id == strip)
+                .and_then(|strip_state| {
+                    strip_state
+                        .window_groups
+                        .iter_mut()
+                        .find(|candidate| candidate.id == group)
+                })
+        {
+            group_state.active_tab = tab;
+        }
+        tree.active_strip.insert(active_workspace, strip);
+        tree.set_active_group(strip, group);
+        return tab;
+    }
+
+    let tab = Tab {
+        id: next_id(),
+        title: "While you were away".to_string(),
+        tile: TileContent::WorkspaceActivity,
+    };
+    let tab_id = place_tab(tree, tab, Placement::NewGroup);
+    // The local cache intentionally retains the window; room projection
+    // filters the typed tile before any collaborative document write.
+    tree.flush_to_disk();
+    tab_id
+}
+
+pub fn active_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, GroupId, TabId)> {
+    tree.active_workspace().and_then(|workspace| {
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                (group.active_tab != 0).then_some(())?;
+                group.tabs.iter().find_map(|tab| {
+                    (tab.id == group.active_tab
+                        && matches!(tab.tile, TileContent::WorkspaceActivity))
+                    .then_some((strip.id, group.id, tab.id))
+                })
+            })
+        })
+    })
+}
+
+/// The workspace-activity tab only owns keyboard input when its ordinary
+/// tiled group is the workspace's focused group. A selected tab in another
+/// visible group may still paint and receive pointer input, but must not
+/// steal keystrokes from the focused window.
+pub fn focused_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, GroupId, TabId)> {
+    let workspace = tree.active_workspace()?;
+    let strip_id = tree.active_strip.get(&workspace.id).copied()?;
+    let group_id = tree.active_group_for(strip_id)?;
+    let group = workspace
+        .strips
+        .iter()
+        .find(|strip| strip.id == strip_id)?
+        .window_groups
+        .iter()
+        .find(|group| group.id == group_id)?;
+    let tab = group.tabs.iter().find(|tab| {
+        tab.id == group.active_tab && matches!(tab.tile, TileContent::WorkspaceActivity)
+    })?;
+    Some((strip_id, group_id, tab.id))
+}
+
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
 /// Placement and tree decide where a window lands, not what's inside it, so both foreign and
 /// hosted-app opens route through here. Returns `new_tab`'s id even when it can't be spliced (no active workspace).
@@ -219,9 +477,23 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         return tab_id;
     }
 
-    // Target strip: the focused one, else the first. A recorded pointer to a strip that has since been closed falls back the same way.
-    let strip_idx = active_strip
-        .and_then(|id| ws.strips.iter().position(|s| s.id == id))
+    // An explicit pointer target can name a strip other than the focused one.
+    // Resolve it once; stale targets deliberately degrade to the ordinary
+    // focused-strip placement rule rather than landing in a random strip.
+    let explicit_strip = match placement {
+        Placement::GroupAt(strip, _) => ws.strips.iter().position(|s| s.id == strip),
+        Placement::TabAt(group, _) | Placement::TabIn(group) | Placement::RightOf(group) => {
+            ws.strips.iter().position(|s| {
+                s.window_groups
+                    .iter()
+                    .any(|candidate| candidate.id == group)
+            })
+        }
+        Placement::NewGroup | Placement::IntoTab(_) => None,
+    };
+    // Target strip: explicit destination, then focused one, else the first.
+    let strip_idx = explicit_strip
+        .or_else(|| active_strip.and_then(|id| ws.strips.iter().position(|s| s.id == id)))
         .unwrap_or(0);
     // `strip_idx` is either a position found in `ws.strips` or the fallback `0`, and the
     // empty-strips case already returned above, so this is always in bounds — `get_mut` keeps
@@ -231,11 +503,17 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     };
     let strip_id = strip.id;
 
-    // A `TabIn` whose group is gone degrades to a new group rather than silently landing somewhere arbitrary.
+    // A tab target whose group is gone degrades to a new group rather than
+    // silently landing somewhere arbitrary.
     let tab_target = match placement {
-        Placement::TabIn(g) => strip.window_groups.iter().position(|w| w.id == g),
+        Placement::TabIn(g) | Placement::TabAt(g, _) => {
+            strip.window_groups.iter().position(|w| w.id == g)
+        }
         // `IntoTab` only reaches here when its tab has gone; it degrades to a new group, as the variant's own documentation says.
-        Placement::NewGroup | Placement::RightOf(_) | Placement::IntoTab(_) => None,
+        Placement::NewGroup
+        | Placement::RightOf(_)
+        | Placement::GroupAt(_, _)
+        | Placement::IntoTab(_) => None,
     };
 
     if let Some(idx) = tab_target {
@@ -243,13 +521,16 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         let Some(group) = strip.window_groups.get_mut(idx) else {
             return tab_id;
         };
-        // Right of the tab the user was on, not at the end of the bar.
-        let after = group
-            .tabs
-            .iter()
-            .position(|t| t.id == group.active_tab)
-            .map_or(group.tabs.len(), |i| i.saturating_add(1));
-        group.tabs.insert(after, new_tab);
+        let insert_at = match placement {
+            Placement::TabAt(_, index) => index.min(group.tabs.len()),
+            // Right of the tab the user was on, not at the end of the bar.
+            _ => group
+                .tabs
+                .iter()
+                .position(|t| t.id == group.active_tab)
+                .map_or(group.tabs.len(), |i| i.saturating_add(1)),
+        };
+        group.tabs.insert(insert_at, new_tab);
         group.active_tab = tab_id;
         let group_id = group.id;
         tree.active_strip.insert(ws_id, strip_id);
@@ -271,9 +552,14 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         _ => None,
     }
     .or(active_group);
-    let insert_at = anchor
-        .and_then(|g| strip.window_groups.iter().position(|w| w.id == g))
-        .map_or(strip.window_groups.len(), |i| i.saturating_add(1));
+    let insert_at = match placement {
+        Placement::GroupAt(target_strip, index) if target_strip == strip_id => {
+            index.min(strip.window_groups.len())
+        }
+        _ => anchor
+            .and_then(|g| strip.window_groups.iter().position(|w| w.id == g))
+            .map_or(strip.window_groups.len(), |i| i.saturating_add(1)),
+    };
     strip.window_groups.insert(insert_at, group);
     tree.active_strip.insert(ws_id, strip_id);
     tree.set_active_group(strip_id, group_id);
@@ -698,7 +984,7 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
 /// Turn a wayland app-id into a tab-bar label. The app's own name wins (this session's
 /// launches, the installed package's manifest, or a host `.desktop` entry), since a tab must
 /// never show a raw machine identifier. Otherwise the trailing component is humanised
-/// (`dev.tilo.word-processor` → `Word Processor`), the same transform the package registry
+/// (`so.tilo.word-processor` → `Word Processor`), the same transform the package registry
 /// applies. Shared with window cards, so an app is never named two different ways.
 pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
     if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
@@ -763,6 +1049,49 @@ mod tests {
     }
 
     #[test]
+    fn workspace_activity_is_one_focusable_tiled_window_per_workspace() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.persist_path = None;
+        let groups_before = tree
+            .active_workspace()
+            .expect("active workspace")
+            .strips
+            .iter()
+            .map(|strip| strip.window_groups.len())
+            .sum::<usize>();
+
+        let first = open_workspace_activity(&mut tree);
+        let first_location = active_workspace_activity_tab(&tree).expect("window is active");
+        assert_eq!(first_location.2, first);
+        assert_eq!(
+            tree.active_workspace()
+                .expect("active workspace")
+                .strips
+                .iter()
+                .map(|strip| strip.window_groups.len())
+                .sum::<usize>(),
+            groups_before + 1,
+            "the recap is a normal window group"
+        );
+
+        let second = open_workspace_activity(&mut tree);
+        assert_eq!(second, first, "reopening focuses the existing singleton");
+        assert_eq!(active_workspace_activity_tab(&tree), Some(first_location));
+        assert_eq!(focused_workspace_activity_tab(&tree), Some(first_location));
+        assert_eq!(
+            tree.active_workspace()
+                .expect("active workspace")
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .filter(|tab| matches!(tab.tile, TileContent::WorkspaceActivity))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn accepted_surface_activation_persists_complete_focus_address() {
         let dir = tempfile::tempdir().expect("state dir");
         let path = dir.path().join("workspace.json");
@@ -806,7 +1135,7 @@ mod tests {
                 id: next_id(),
                 title: "Word Processor".into(),
                 tile: TileContent::PeerWindow {
-                    app_id: "dev.tilo.word-processor".into(),
+                    app_id: "so.tilo.word-processor".into(),
                     label: "Word Processor".into(),
                     note: "Opening here…".into(),
                 },
@@ -823,10 +1152,10 @@ mod tests {
             .sum();
 
         crate::shell::launcher::set_pending_placement(
-            "dev.tilo.word-processor",
+            "so.tilo.word-processor",
             Placement::IntoTab(target),
         );
-        let landed = adopt_toplevel(&mut tree, 7777, Some("dev.tilo.word-processor".into()));
+        let landed = adopt_toplevel(&mut tree, 7777, Some("so.tilo.word-processor".into()));
 
         assert_eq!(
             landed, target,
@@ -848,7 +1177,7 @@ mod tests {
         );
         match &tab_of(&tree, 7777).tile {
             TileContent::Foreign { app_id, surface_id } => {
-                assert_eq!(app_id, "dev.tilo.word-processor");
+                assert_eq!(app_id, "so.tilo.word-processor");
                 assert_eq!(*surface_id, 7777);
             }
             other => panic!("the tab must now host the real surface, got {other:?}"),
@@ -927,11 +1256,11 @@ mod tests {
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
 
         crate::shell::launcher::set_pending_placement(
-            "dev.tilo.gone",
+            "so.tilo.gone",
             // An id no tab in the tree carries.
             Placement::IntoTab(next_id()),
         );
-        let landed = adopt_toplevel(&mut tree, 7878, Some("dev.tilo.gone".into()));
+        let landed = adopt_toplevel(&mut tree, 7878, Some("so.tilo.gone".into()));
 
         assert_eq!(
             tree.workspaces[0].strips[0].window_groups.len(),
@@ -1168,7 +1497,7 @@ mod tests {
         };
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
 
-        launcher::set_pending_placement("dev.tilo.placefixture", Placement::TabIn(named));
+        launcher::set_pending_placement("so.tilo.placefixture", Placement::TabIn(named));
         // The client announces the bare trailing component, as the reverse-DNS convention has it.
         let _ = adopt_toplevel(&mut tree, 8080, Some("placefixture".into()));
         assert_eq!(
@@ -1223,7 +1552,7 @@ mod tests {
         let mut rendered = protocol.clone();
         let groups_before = rendered.workspaces[0].strips[0].window_groups.len();
 
-        launcher::set_pending_placement("dev.tilo.twotrees", Placement::TabIn(opener));
+        launcher::set_pending_placement("so.tilo.twotrees", Placement::TabIn(opener));
 
         // Protocol side adopts first, then the rendered tree mirrors it.
         let _ = adopt_toplevel(&mut protocol, 4711, Some("twotrees".into()));
@@ -1356,7 +1685,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         tree.persist_path = Some(state_path.clone());
         let (strip_id, prior_group) = focus_lone_window(&mut tree);
-        const PACKAGE: &str = "dev.tilo.failed-host";
+        const PACKAGE: &str = "so.tilo.failed-host";
         const SURFACE: u64 = 0xface;
 
         crate::shell::launcher::set_pending_placement(PACKAGE, Placement::NewGroup);
@@ -1424,7 +1753,7 @@ mod tests {
     fn failure_cleanup_never_closes_a_foreign_surface_that_painted() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_demo();
-        const PACKAGE: &str = "dev.tilo.painted-child";
+        const PACKAGE: &str = "so.tilo.painted-child";
         const SURFACE: u64 = 0xfade;
         crate::shell::launcher::set_pending_placement(PACKAGE, Placement::NewGroup);
         let tab = adopt_toplevel(&mut tree, SURFACE, Some(PACKAGE.into()));
@@ -1454,7 +1783,7 @@ mod tests {
     fn concurrent_same_package_failure_does_not_guess_which_foreign_tab_to_close() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_demo();
-        const PACKAGE: &str = "dev.tilo.concurrent-host";
+        const PACKAGE: &str = "so.tilo.concurrent-host";
         const SURFACE: u64 = 0xc0de;
         crate::shell::launcher::set_pending_placement(PACKAGE, Placement::NewGroup);
         let tab = adopt_toplevel(&mut tree, SURFACE, Some(PACKAGE.into()));
@@ -1648,7 +1977,7 @@ mod tests {
                         group: 0,
                         tab: 0,
                     },
-                    LaunchIntent::app("dev.tilo.browser").unwrap(),
+                    LaunchIntent::app("so.tilo.browser").unwrap(),
                     None,
                     ContinuityStamp {
                         counter: 10,
@@ -1658,11 +1987,11 @@ mod tests {
             },
         );
         crate::shell::launcher::set_pending_placement(
-            "dev.tilo.browser",
+            "so.tilo.browser",
             Placement::IntoTab(0x7171),
         );
         assert_eq!(
-            adopt_toplevel(&mut tree, 8080, Some("dev.tilo.browser".into())),
+            adopt_toplevel(&mut tree, 8080, Some("so.tilo.browser".into())),
             0x7171
         );
         assert!(!tree.continuation_tabs.contains(&0x7171));
@@ -1913,11 +2242,11 @@ mod tests {
         crate::shell::launcher::clear_launched_for_test();
 
         assert_eq!(
-            tab_label_for_foreign("dev.tilo.word-processor"),
+            tab_label_for_foreign("so.tilo.word-processor"),
             "Word Processor"
         );
         assert_eq!(
-            tab_label_for_foreign("dev.tilo.file-explorer"),
+            tab_label_for_foreign("so.tilo.file-explorer"),
             "File Explorer"
         );
         // The documented behaviour for an already-camel-cased id is unchanged.
@@ -1932,17 +2261,17 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn a_tab_takes_the_name_the_package_declares_even_without_a_launch() {
         let tmp = tempfile::tempdir().unwrap();
-        install_named(tmp.path(), "dev.tilo.file-explorer", "Files");
+        install_named(tmp.path(), "so.tilo.file-explorer", "Files");
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_launched_for_test();
 
-        assert_eq!(tab_label_for_foreign("dev.tilo.file-explorer"), "Files");
+        assert_eq!(tab_label_for_foreign("so.tilo.file-explorer"), "Files");
         // And by the trailing-component convention the app-id may use.
         assert_eq!(tab_label_for_foreign("file-explorer"), "Files");
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let _ = adopt_toplevel(&mut tree, 4242, Some("dev.tilo.file-explorer".to_string()));
+        let _ = adopt_toplevel(&mut tree, 4242, Some("so.tilo.file-explorer".to_string()));
         assert_eq!(
             tab_of(&tree, 4242).title,
             "Files",
@@ -2041,7 +2370,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn adopted_tab_takes_the_launched_app_name() {
         crate::shell::launcher::remember_launch(&crate::shell::launcher::InstalledApp {
-            package_id: "dev.tilo.adoptfixture".into(),
+            package_id: "so.tilo.adoptfixture".into(),
             display_name: "Adopt Fixture".into(),
             category: None,
             version: "0.1.0".into(),
@@ -2070,7 +2399,7 @@ mod tests {
         assert!(rename_tab_for_app_id(
             &mut tree,
             31338,
-            "dev.tilo.adoptfixture".into()
+            "so.tilo.adoptfixture".into()
         ));
         assert_eq!(tab_of(&tree, 31338).title, "Adopt Fixture");
     }
@@ -2160,7 +2489,7 @@ mod tests {
         let target_id = tree.workspaces[1].id;
 
         let tab =
-            adopt_toplevel_in_room(&mut tree, 8_888, Some("dev.tilo.notes".into()), target_room)
+            adopt_toplevel_in_room(&mut tree, 8_888, Some("so.tilo.notes".into()), target_room)
                 .expect("known room is accepted");
 
         assert_eq!(
@@ -2205,13 +2534,96 @@ mod tests {
             adopt_toplevel_in_room(
                 &mut tree,
                 9_999,
-                Some("dev.tilo.notes".into()),
+                Some("so.tilo.notes".into()),
                 crate::shell::state::RoomId::new()
             ),
             None
         );
         assert_eq!(tree.active, active);
         assert!(group_id_for_surface(&tree, 9_999).is_none());
+    }
+
+    #[test]
+    fn exact_drop_placements_preserve_tab_and_group_sides() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.persist_path = None;
+        let strip_id = tree.workspaces[0].strips[0].id;
+        let group_id = tree.workspaces[0].strips[0].window_groups[0].id;
+        let original_first = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+
+        let left = open_hosted_app(
+            &mut tree,
+            AppKind::Terminal,
+            "left",
+            Placement::TabAt(group_id, 0),
+        );
+        let right = open_hosted_app(
+            &mut tree,
+            AppKind::Terminal,
+            "right",
+            Placement::TabAt(group_id, usize::MAX),
+        );
+        let group = &tree.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(group.tabs.first().map(|tab| tab.id), Some(left));
+        assert_eq!(group.tabs.get(1).map(|tab| tab.id), Some(original_first));
+        assert_eq!(group.tabs.last().map(|tab| tab.id), Some(right));
+
+        let first_group = open_hosted_app(
+            &mut tree,
+            AppKind::Terminal,
+            "before",
+            Placement::GroupAt(strip_id, 0),
+        );
+        let last_group = open_hosted_app(
+            &mut tree,
+            AppKind::Terminal,
+            "after",
+            Placement::GroupAt(strip_id, usize::MAX),
+        );
+        let strip = &tree.workspaces[0].strips[0];
+        assert_eq!(strip.window_groups[0].tabs[0].id, first_group);
+        assert_eq!(strip.window_groups.last().unwrap().tabs[0].id, last_group);
+    }
+
+    #[test]
+    fn an_existing_document_tab_is_rehomed_without_duplication() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.persist_path = None;
+        tree.seed_doc_from_cache();
+        let strip_id = tree.workspaces[0].strips[0].id;
+        let group_id = tree.workspaces[0].strips[0].window_groups[0].id;
+        let tab_id = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let before = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .flat_map(|group| &group.tabs)
+            .count();
+
+        assert!(relocate_tab(
+            &mut tree,
+            tab_id,
+            Placement::GroupAt(strip_id, usize::MAX)
+        ));
+        let strip = &tree.workspaces[0].strips[0];
+        assert_eq!(
+            strip
+                .window_groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .filter(|tab| tab.id == tab_id)
+                .count(),
+            1
+        );
+        assert_eq!(
+            strip
+                .window_groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .count(),
+            before
+        );
+        assert_eq!(strip.window_groups.last().unwrap().tabs[0].id, tab_id);
+        assert_ne!(strip.window_groups.last().unwrap().id, group_id);
     }
 
     #[test]

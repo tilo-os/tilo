@@ -262,6 +262,73 @@ fn drop_over_right_group_routes_to_right_group_only() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the retained tree borrow is used for adjacent tab-order assertions"
+)]
+fn drop_on_left_side_of_first_tab_inserts_before_it() {
+    let (tree, strip_id, g_left, _g_right) = two_group_one_strip_tree();
+    let original_first = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let first_tab = host
+        .group_at_for_tests(strip_id, 0)
+        .and_then(|group| group.tab_rects().first().copied())
+        .expect("first tab has geometry");
+
+    hover_and_drop(
+        &mut host,
+        &layout,
+        Point::new(first_tab.x0 + 1.0, first_tab.center().y),
+        "/drop/before.ts",
+    );
+
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let group = tree.workspaces[0].strips[0]
+        .window_groups
+        .iter()
+        .find(|group| group.id == g_left)
+        .unwrap();
+    assert_eq!(group.tabs[0].title, "before.ts");
+    assert_eq!(group.tabs[1].id, original_first);
+}
+
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the retained tree borrow is used for the complete seam topology assertion"
+)]
+fn drop_between_groups_creates_a_group_at_that_seam() {
+    let (tree, strip_id, g_left, g_right) = two_group_one_strip_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let left = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("left group")
+        .get_rect();
+    let right = host
+        .group_at_for_tests(strip_id, 1)
+        .expect("right group")
+        .get_rect();
+
+    hover_and_drop(
+        &mut host,
+        &layout,
+        Point::new(f64::midpoint(left.x1, right.x0), left.center().y),
+        "/drop/between.unknown",
+    );
+
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let groups = &tree.workspaces[0].strips[0].window_groups;
+    assert_eq!(groups.len(), 3);
+    assert_eq!(groups[0].id, g_left);
+    assert_eq!(groups[1].tabs[0].title, "between.unknown");
+    assert_eq!(groups[2].id, g_right);
+}
+
+#[test]
 fn two_drops_route_to_the_two_distinct_groups_they_land_on() {
     let (tree, strip_id, g_left, g_right) = two_group_one_strip_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Pack every app that ships a `tilo-app.toml` into a signed `.qpkg` and install
+# Pack every app that ships a `tilo-app.toml` into a signed `.tapp` and install
 # it into the image-wide app store, so a fresh boot has a populated launcher
 # without the user running anything.
 #
 # The point of doing it this way, rather than by copying binaries into
-# /usr/bin: a preinstalled app goes through the *same* `tilo-pkg pack` +
+# /usr/bin: a preinstalled app goes through the *same* `tilo-app-package pack` +
 # `tilo-install install` path a user's own package goes through, and ends up
 # described by the same registry rows. Being preinstalled changes where the
 # payload lives and nothing else — no extra grants, no trust bypass, no
@@ -15,18 +15,18 @@
 # Envs:
 #   REPO           repo root, holding apps/*/tilo-app.toml   [default: /build]
 #   BIN_DIR        directory of built release binaries      [default: /out]
-#   QPKG_DIR       install these already-verified release qpkgs instead of
+#   TAPP_DIR       install these already-verified release tapps instead of
 #                  packing BIN_DIR (optional)
-#   EXPECTED_PUBKEY require every prebuilt qpkg to use this publisher (64 hex)
+#   EXPECTED_PUBKEY require every prebuilt tapp to use this publisher (64 hex)
 #   STORE          app store root; becomes TILO_APPS_DATA_DIR
 #                                          [default: /usr/share/tilo-apps]
-#   STAGE          scratch for payload trees + .qpkg files  [default: mktemp]
+#   STAGE          scratch for payload trees + .tapp files  [default: mktemp]
 #   IDENTITY_JSON  signing key; generated if absent    [default: $STAGE/id.json]
 #   PUBKEY_OUT     write the signing pubkey here (optional)
 #   PKG_BIN / INSTALL_BIN / BUNDLE_BIN / SHIM_BIN
 #                  tool paths                        [default: $BIN_DIR/<name>]
 #   REQUIRE_MIN    fail unless at least this many packages install [default: 1]
-#   MAX_QPKG_BYTES refuse a larger archive; defaults to the canonical 5 MiB
+#   MAX_TAPP_BYTES refuse a larger archive; defaults to the canonical 5 MiB
 #                  application-format ceiling and may only be made stricter
 #
 # STORE is written at its *final* path on purpose: `tilo-install` records
@@ -60,23 +60,23 @@ cleanup_stage() {
 trap cleanup_stage EXIT
 IDENTITY_JSON="${IDENTITY_JSON:-$STAGE/publisher.json}"
 PUBKEY_OUT="${PUBKEY_OUT:-}"
-PKG_BIN="${PKG_BIN:-$BIN_DIR/tilo-pkg}"
+PKG_BIN="${PKG_BIN:-$BIN_DIR/tilo-app-package}"
 INSTALL_BIN="${INSTALL_BIN:-$BIN_DIR/tilo-install}"
 BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/tilo-runtime-bundle}"
 SHIM_BIN="${SHIM_BIN:-$BIN_DIR/tilo-cli-shim}"
-QPKG_DIR="${QPKG_DIR:-}"
+TAPP_DIR="${TAPP_DIR:-}"
 EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
-POLICY_MAX_QPKG_BYTES=5242880
-MAX_QPKG_BYTES="${MAX_QPKG_BYTES:-$POLICY_MAX_QPKG_BYTES}"
+POLICY_MAX_TAPP_BYTES=5242880
+MAX_TAPP_BYTES="${MAX_TAPP_BYTES:-$POLICY_MAX_TAPP_BYTES}"
 
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
 die() { printf '[pack-apps] ERROR: %s\n' "$*" >&2; exit 1; }
 
-[[ "$MAX_QPKG_BYTES" =~ ^[0-9]+$ ]] \
-    || die "MAX_QPKG_BYTES must be an integer"
-(( MAX_QPKG_BYTES <= POLICY_MAX_QPKG_BYTES )) \
-    || die "MAX_QPKG_BYTES cannot exceed the 5 MiB application policy"
+[[ "$MAX_TAPP_BYTES" =~ ^[0-9]+$ ]] \
+    || die "MAX_TAPP_BYTES must be an integer"
+(( MAX_TAPP_BYTES <= POLICY_MAX_TAPP_BYTES )) \
+    || die "MAX_TAPP_BYTES cannot exceed the 5 MiB application policy"
 
 for t in "$PKG_BIN" "$INSTALL_BIN" "$BUNDLE_BIN"; do
     [ -x "$t" ] || die "$t not found or not executable"
@@ -91,7 +91,7 @@ initial_rows="$(grep -c '^\[\[entry\]\]' "$STORE/registry.toml" 2>/dev/null || t
 # already unpacked into the store by the time the image is sealed, so the
 # signature's job (binding manifest to payload during install) is done.
 prebuilt=0
-if [ -n "$QPKG_DIR" ] && compgen -G "$QPKG_DIR/*.qpkg" >/dev/null; then
+if [ -n "$TAPP_DIR" ] && compgen -G "$TAPP_DIR/*.tapp" >/dev/null; then
     prebuilt=1
     PUBKEY=''
 else
@@ -123,33 +123,33 @@ export TILO_APPS_DATA_DIR="$STORE"
 shipped=(); missing=(); failed=()
 
 if [ "$prebuilt" = 1 ]; then
-    for qpkg in "$QPKG_DIR"/*.qpkg; do
-        qpkg_bytes=$(wc -c < "$qpkg")
-        if [ "$qpkg_bytes" -gt "$MAX_QPKG_BYTES" ]; then
-            failed+=("$(basename "$qpkg"): $qpkg_bytes bytes exceeds $MAX_QPKG_BYTES")
+    for tapp in "$TAPP_DIR"/*.tapp; do
+        tapp_bytes=$(wc -c < "$tapp")
+        if [ "$tapp_bytes" -gt "$MAX_TAPP_BYTES" ]; then
+            failed+=("$(basename "$tapp"): $tapp_bytes bytes exceeds $MAX_TAPP_BYTES")
             continue
         fi
-        if ! "$PKG_BIN" verify "$qpkg" >"$STAGE/$(basename "$qpkg").verify.log" 2>&1; then
-            failed+=("$(basename "$qpkg"): signature or content verification failed")
+        if ! "$PKG_BIN" verify "$tapp" >"$STAGE/$(basename "$tapp").verify.log" 2>&1; then
+            failed+=("$(basename "$tapp"): signature or content verification failed")
             continue
         fi
-        package_pubkey=$("$PKG_BIN" inspect "$qpkg" \
+        package_pubkey=$("$PKG_BIN" inspect "$tapp" \
             | sed -n 's/^identity  *= *"ed25519:\([0-9a-fA-F]\{64\}\)".*/\1/p' \
             | head -1)
         [ -n "$package_pubkey" ] \
-            || { failed+=("$(basename "$qpkg"): publisher identity is missing"); continue; }
+            || { failed+=("$(basename "$tapp"): publisher identity is missing"); continue; }
         if [ -z "$PUBKEY" ]; then
             PUBKEY=$package_pubkey
         elif [ "$PUBKEY" != "$package_pubkey" ]; then
-            failed+=("$(basename "$qpkg"): collection mixes publisher identities")
+            failed+=("$(basename "$tapp"): collection mixes publisher identities")
             continue
         fi
-        if ! "$INSTALL_BIN" install "$qpkg" --allow-self-signed \
-                >"$STAGE/$(basename "$qpkg").install.log" 2>&1; then
-            failed+=("$(basename "$qpkg"): install failed")
+        if ! "$INSTALL_BIN" install "$tapp" --allow-self-signed \
+                >"$STAGE/$(basename "$tapp").install.log" 2>&1; then
+            failed+=("$(basename "$tapp"): install failed")
             continue
         fi
-        shipped+=("$(basename "$qpkg")")
+        shipped+=("$(basename "$tapp")")
     done
     [ -z "$PUBKEY_OUT" ] || { mkdir -p "$(dirname "$PUBKEY_OUT")"; printf '%s\n' "$PUBKEY" > "$PUBKEY_OUT"; }
     if [ -n "$EXPECTED_PUBKEY" ] && [ "${PUBKEY,,}" != "${EXPECTED_PUBKEY,,}" ]; then
@@ -180,7 +180,7 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     cp "$built" "$payload/$entry_bin"
     chmod 755 "$payload/$entry_bin"
 
-    # `tilo-pkg pack` refuses a manifest whose publisher.identity disagrees
+    # `tilo-app-package pack` refuses a manifest whose publisher.identity disagrees
     # with the signing key, so stamp this build's pubkey into a copy. The
     # committed manifest is never modified.
     staged_manifest="$STAGE/manifest-$id.toml"
@@ -189,25 +189,25 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     grep -q "ed25519:$PUBKEY" "$staged_manifest" \
         || { failed+=("$app ($id): could not stamp publisher identity"); continue; }
 
-    qpkg="$STAGE/$id.qpkg"
+    tapp="$STAGE/$id.tapp"
     if ! "$PKG_BIN" pack \
             --manifest "$staged_manifest" \
             --payload "$payload" \
-            --output "$qpkg" \
+            --output "$tapp" \
             --identity "$IDENTITY_JSON" >"$STAGE/$id.pack.log" 2>&1; then
         failed+=("$app ($id): pack failed — $(tail -3 "$STAGE/$id.pack.log" | tr '\n' ' ')")
         continue
     fi
 
-    qpkg_bytes="$(stat -c %s "$qpkg")"
-    if [ "$qpkg_bytes" -gt "$MAX_QPKG_BYTES" ]; then
-        failed+=("$app ($id): package is $qpkg_bytes bytes; limit is $MAX_QPKG_BYTES")
+    tapp_bytes="$(stat -c %s "$tapp")"
+    if [ "$tapp_bytes" -gt "$MAX_TAPP_BYTES" ]; then
+        failed+=("$app ($id): package is $tapp_bytes bytes; limit is $MAX_TAPP_BYTES")
         continue
     fi
 
     # Verify against the key we just signed with, so a mis-signed package
     # fails here rather than silently at first launch.
-    if ! "$PKG_BIN" verify --trusted-key "$PUBKEY" "$qpkg" >"$STAGE/$id.verify.log" 2>&1; then
+    if ! "$PKG_BIN" verify --trusted-key "$PUBKEY" "$tapp" >"$STAGE/$id.verify.log" 2>&1; then
         failed+=("$app ($id): verify failed — $(tail -3 "$STAGE/$id.verify.log" | tr '\n' ' ')")
         continue
     fi
@@ -215,13 +215,13 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     # Self-signed is what this is: the image publisher signed it, and no
     # third-party attestor vouched for it. Saying so explicitly is honest,
     # and it is the same flag a user passes for their own local package.
-    if ! "$INSTALL_BIN" install "$qpkg" --allow-self-signed \
+    if ! "$INSTALL_BIN" install "$tapp" --allow-self-signed \
             >"$STAGE/$id.install.log" 2>&1; then
         failed+=("$app ($id): install failed — $(tail -3 "$STAGE/$id.install.log" | tr '\n' ' ')")
         continue
     fi
 
-    shipped+=("$id ($qpkg_bytes bytes)")
+    shipped+=("$id ($tapp_bytes bytes)")
 done
 fi
 

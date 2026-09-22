@@ -8,7 +8,7 @@
 
 
 [package]
-id       = "dev.tilo.feeds"
+id       = "so.tilo.feeds"
 name     = "Feeds"
 category = "Network"
 version  = "0.1.0"

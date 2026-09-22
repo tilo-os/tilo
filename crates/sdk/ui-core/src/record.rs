@@ -667,6 +667,9 @@ pub struct RecordSet {
     canonical_root: Option<PathBuf>,
     pending: HashMap<RecordId, Reserved>,
     next_reservation: u64,
+    // Drop after the writers and reservations above. Temporary profiles must
+    // outlive asynchronous flushes and recovery handles, not just their host.
+    _profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
 struct Reserved {
@@ -706,6 +709,7 @@ impl RecordSet {
             canonical_root: None,
             pending: HashMap::new(),
             next_reservation: 0,
+            _profile_lifetime: None,
         }
     }
 
@@ -727,6 +731,7 @@ impl RecordSet {
             canonical_root: None,
             pending: HashMap::new(),
             next_reservation: 0,
+            _profile_lifetime: None,
         }
     }
 
@@ -1284,6 +1289,7 @@ pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 pub struct RecordOwners {
     root: PathBuf,
     owners: HashMap<(String, String), std::rc::Weak<std::cell::RefCell<RecordSet>>>,
+    profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
 impl RecordOwners {
@@ -1291,6 +1297,19 @@ impl RecordOwners {
         Self {
             root: profile_state_root,
             owners: HashMap::new(),
+            profile_lifetime: None,
+        }
+    }
+
+    /// Retain a host-owned profile resource until its last writer/recovery owner
+    /// is gone. Construct this before opening any records.
+    pub(crate) fn with_profile_lifetime(
+        profile_state_root: PathBuf,
+        lifetime: std::rc::Rc<dyn std::any::Any>,
+    ) -> Self {
+        Self {
+            profile_lifetime: Some(lifetime),
+            ..Self::new(profile_state_root)
         }
     }
 
@@ -1323,6 +1342,7 @@ impl RecordOwners {
             canonical_root: Some(self.root.clone()),
             pending: HashMap::new(),
             next_reservation: 0,
+            _profile_lifetime: self.profile_lifetime.clone(),
         });
         self.owners.insert(key, std::rc::Rc::downgrade(&store.0));
         Ok(store)
@@ -1975,6 +1995,72 @@ impl RecordStore {
         Ok(parked.action_state.generation)
     }
 
+    /// Merge broker-admitted bytes atomically into the canonical owner. Validate
+    /// on a private copy before ending local typing or changing the undo baseline.
+    pub(crate) fn merge_remote_document(
+        &self,
+        checkout: &RecordCheckout,
+        mutation: collab_types::DocumentMutation,
+    ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
+        let (_, _, workspace) = self
+            .canonical_namespace()
+            .ok_or("record has no canonical namespace")?;
+        self.with_action_state(&checkout.id, |doc, history, actions| {
+            let origin = home(doc).ok_or("record origin is missing")?;
+            let mut local = doc.clone();
+            actions.commit_for_save(&mut local);
+            let before = local.get_heads();
+            let mut candidate = local.clone();
+            let observed = match mutation {
+                collab_types::DocumentMutation::Snapshot(bytes) => {
+                    let mut incoming =
+                        AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+                    validate_replica_identity(&incoming, checkout, &workspace, &origin)?;
+                    let heads = incoming.get_heads();
+                    candidate
+                        .merge(&mut incoming)
+                        .map_err(|error| error.to_string())?;
+                    heads
+                }
+                collab_types::DocumentMutation::Incremental(bytes) => {
+                    // load_incremental deliberately accepts a valid prefix of
+                    // corrupt input. Validate the entire payload first. Missing
+                    // dependencies are valid for an incremental message and are
+                    // checked only after Automerge has parsed every chunk.
+                    match AutoCommit::load_with_options(
+                        &bytes,
+                        automerge::LoadOptions::new()
+                            .on_partial_load(automerge::OnPartialLoad::Error),
+                    ) {
+                        Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
+                        Err(error) => return Err(error.to_string()),
+                    }
+                    candidate
+                        .load_incremental(&bytes)
+                        .map_err(|error| error.to_string())?;
+                    candidate
+                        .get_changes(&before)
+                        .iter()
+                        .map(automerge::Change::hash)
+                        .collect()
+                }
+            };
+            validate_replica_identity(&candidate, checkout, &workspace, &origin)?;
+            let changed = candidate.get_heads() != before;
+            if changed {
+                // Finish the local span against LOCAL heads, never the merged
+                // heads: undoing it must leave the remote author's edits intact.
+                actions.finish_external(&mut local, history);
+                history.rebase(&mut candidate);
+                actions.generation = actions.generation.and_then(|value| value.checked_add(1));
+            }
+            // Keep valid changes with dependencies still in flight, too.
+            *doc = candidate;
+            Ok((changed, observed))
+        })
+        .map_err(|error| error.to_string())?
+    }
+
     /// Do something with a record's document. `None` if the record is not open here.
     pub fn with<R>(&self, id: &RecordId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
         let mut set = self.0.borrow_mut();
@@ -2065,6 +2151,40 @@ impl RecordStore {
     }
 }
 
+fn validate_replica_identity(
+    doc: &AutoCommit,
+    checkout: &RecordCheckout,
+    workspace: &str,
+    origin: &str,
+) -> Result<(), String> {
+    validate_identity(doc, checkout, workspace).map_err(|error| error.to_string())?;
+    // A losing CRDT value must not conceal a foreign identity. Independent
+    // equal stamps are harmless; every concurrent value must name this record.
+    for (value, object) in doc.get_all(ROOT, META).map_err(|error| error.to_string())? {
+        if value != Value::Object(ObjType::Map) {
+            return Err("conflicting record identity".into());
+        }
+        for (field, expected) in [
+            ("id", checkout.id.as_str()),
+            ("kind", checkout.kind.as_str()),
+            (ROOM, workspace),
+            ("home", origin),
+        ] {
+            let values = doc
+                .get_all(&object, field)
+                .map_err(|error| error.to_string())?;
+            if values.is_empty()
+                || values
+                    .iter()
+                    .any(|(value, _)| value.to_str() != Some(expected))
+            {
+                return Err("conflicting record identity".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 impl std::fmt::Debug for RecordStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RecordStore")
@@ -2102,7 +2222,7 @@ mod tests {
     fn save_status_older_ack_keeps_newer_pending_edit_saving() {
         let temp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(temp.path().join("state"));
-        let store = owners.open("dev.tilo.test", "status-room").unwrap();
+        let store = owners.open("so.tilo.test", "status-room").unwrap();
         let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         let mut reservation = store.reserve_record(&checkout).unwrap();
         reservation
@@ -2187,7 +2307,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
         let mut owners = RecordOwners::new(root);
-        let store = owners.open("dev.tilo.test", "room-a").unwrap();
+        let store = owners.open("so.tilo.test", "room-a").unwrap();
         let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         let mut token = store.reserve_record(&want).unwrap();
         let generation = token.generation;
@@ -2213,7 +2333,7 @@ mod tests {
             assert_eq!(reserved.generation, generation);
             assert!(std::sync::Arc::ptr_eq(&owner, &reserved.store));
         }
-        assert!(app_state::DocStore::open_canonical_at("dev.tilo.test", owner.dir()).is_err());
+        assert!(app_state::DocStore::open_canonical_at("so.tilo.test", owner.dir()).is_err());
         token
             .initialize(|doc| {
                 assert!(doc.get(ROOT, "discard").unwrap().is_none());
@@ -2254,8 +2374,8 @@ mod tests {
     fn canonical_repeated_handles_do_not_duplicate_writes_or_rebase_history() {
         let tmp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(tmp.path().join("state"));
-        let store = owners.open("dev.tilo.test", "room-a").unwrap();
-        let second = owners.open("dev.tilo.test", "room-a").unwrap();
+        let store = owners.open("so.tilo.test", "room-a").unwrap();
+        let second = owners.open("so.tilo.test", "room-a").unwrap();
         let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         store
             .reserve_record(&want)
@@ -2482,7 +2602,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temporary state directory");
         // SAFETY: serialised by this module's persistent-record tests.
         unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
-        let package = "dev.tilo.room-discovery";
+        let package = "so.tilo.room-discovery";
         let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
         let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
@@ -2898,7 +3018,7 @@ mod tests {
         );
 
         {
-            let mut set = RecordSet::open("dev.tilo.test-records").with_home(room_id);
+            let mut set = RecordSet::open("so.tilo.test-records").with_home(room_id);
             let mut state = State::new();
             let mut room = AutoCommit::new();
             // `a` is adopted: content exists before the record is named,
@@ -2911,7 +3031,7 @@ mod tests {
         }
 
         // A fresh process: same package, same record ids, nothing else shared.
-        let mut set = RecordSet::open("dev.tilo.test-records").with_home(room_id);
+        let mut set = RecordSet::open("so.tilo.test-records").with_home(room_id);
         let mut state = State::new();
         let mut room = AutoCommit::new();
         set.checkout(&mut state, Some(&mut room), &a);
@@ -2929,7 +3049,7 @@ mod tests {
 
         let dir = tmp
             .path()
-            .join("dev.tilo.test-records")
+            .join("so.tilo.test-records")
             .join(app_state::ROOMS_DIR)
             .join(room_id)
             .join(app_state::RECORDS_DIR);
@@ -2960,7 +3080,7 @@ mod tests {
         let record = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
 
         for (room, body) in [(a, "private to a"), (b, "private to b")] {
-            let mut set = RecordSet::open("dev.tilo.scoped-records").with_home(room);
+            let mut set = RecordSet::open("so.tilo.scoped-records").with_home(room);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &record));
             put_text(&mut state.doc, "body", body);
@@ -2968,7 +3088,7 @@ mod tests {
         }
 
         for (room, expected) in [(a, "private to a"), (b, "private to b")] {
-            let mut set = RecordSet::open("dev.tilo.scoped-records").with_home(room);
+            let mut set = RecordSet::open("so.tilo.scoped-records").with_home(room);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &record));
             assert_eq!(text(&state.doc, "body").as_deref(), Some(expected));

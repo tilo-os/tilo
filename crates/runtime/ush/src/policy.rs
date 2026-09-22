@@ -8,7 +8,7 @@
 //! second kind of grant — it mints exactly:
 //!
 //! ```text
-//! CapOverride { subject: Principal::App("dev.tilo.ush"),
+//! CapOverride { subject: Principal::App("so.tilo.ush"),
 //!               scope:   Scope::FsPath("/var/home/you/src"),
 //!               effect:  Effect::Grant,
 //!               verb:    Verb::Write }
