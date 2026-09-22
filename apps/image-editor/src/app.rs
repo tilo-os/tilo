@@ -472,11 +472,7 @@ impl ImageEditorApp {
             state,
             type_id,
             action,
-            tilo_actions::ActionContext::for_action(
-                "dev.tilo.image-editor",
-                "Image Editor",
-                action,
-            ),
+            tilo_actions::ActionContext::for_action("so.tilo.image-editor", "Image Editor", action),
         );
         self.project = ProjectDoc::read(state);
         self.rendered_project = None;

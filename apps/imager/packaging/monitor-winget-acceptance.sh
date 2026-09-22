@@ -19,7 +19,7 @@ SH
 chmod 0700 "$askpass"
 
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone --depth 1 \
-  "$GITHUB_SERVER_URL/qos/site.git" "$work/site"
+  "$GITHUB_SERVER_URL/tilo/site.git" "$work/site"
 manifest="$work/site/src/data/imager-release.json"
 test -f "$manifest"
 

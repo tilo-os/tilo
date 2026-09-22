@@ -49,7 +49,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.db-client", db_client::app_root)
+        &LaunchSpec::new("so.tilo.db-client", db_client::app_root)
             .shot_root(shot_root)
             .allowed_flags(&["--empty", "--status", "--connect", "--confirm"])
             .configure_app(|app| {

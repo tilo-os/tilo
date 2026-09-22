@@ -6,7 +6,11 @@ use crate::theme::Theme;
 use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
-use crate::widget::{Continuable, Widget};
+use crate::widget::{
+    AudiencePresentationProvider, AudiencePresentationWidgetExt, CompleteContentWidgetExt as _,
+    Continuable, FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider,
+    FullscreenWidgetExt, Widget,
+};
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -939,6 +943,150 @@ impl Continuable for TileHost {
     }
 }
 
+impl FloatingSurfaceProvider for TileHost {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+        match &mut self.content {
+            TileContent::App(widget) => widget.take_floating_surface_request(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+
+    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
+        match &mut self.content {
+            TileContent::App(widget) => widget.take_capture_studio_request(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+
+    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+        match &mut self.content {
+            TileContent::App(widget) => widget.take_floating_surface_source_updates(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+        }
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let TileContent::App(widget) = &mut self.content {
+            widget.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        if let TileContent::App(widget) = &mut self.content {
+            widget.set_floating_surface_bounds(bounds);
+        }
+    }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
+        match &self.content {
+            TileContent::App(widget) => widget.floating_surface_presentations(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+        }
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        match &self.content {
+            TileContent::App(widget) => widget.active_floating_surface_ids(),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
+        }
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        if let TileContent::App(widget) = &mut self.content {
+            widget.on_floating_surface_host_message(message);
+        }
+    }
+}
+
+impl AudiencePresentationProvider for TileHost {
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+        match &self.content {
+            TileContent::App(app) => app.audience_presentation_request(),
+            _ => None,
+        }
+    }
+
+    fn on_audience_presentation_changed(&mut self, active: bool) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_audience_presentation_changed(active);
+        }
+    }
+
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => {
+                app.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_audience_presentation_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(app) => app.handle_audience_presentation_event(event, state, path),
+            _ => false,
+        }
+    }
+
+    fn on_audience_presentation_closed(&mut self) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_audience_presentation_closed();
+        }
+    }
+}
+
+impl FullscreenProvider for TileHost {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        match &self.content {
+            TileContent::App(app) => app.fullscreen_intent(),
+            _ => None,
+        }
+    }
+
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        match &self.content {
+            TileContent::App(app) => app.fullscreen_params(),
+            _ => crate::fullscreen::FullscreenRequest::mirror(
+                crate::fullscreen::FullscreenTarget::Largest,
+            ),
+        }
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_fullscreen_changed(active);
+        }
+    }
+}
+
 impl Widget for TileHost {
     fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
         if let Some(error) = &self.record_error {
@@ -1074,69 +1222,6 @@ impl Widget for TileHost {
         match &mut self.content {
             TileContent::App(app) => app.take_focus_reset(),
             _ => false,
-        }
-    }
-    fn fullscreen_intent(&self) -> Option<bool> {
-        match &self.content {
-            TileContent::App(app) => app.fullscreen_intent(),
-            _ => None,
-        }
-    }
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        match &self.content {
-            TileContent::App(app) => app.fullscreen_params(),
-            _ => crate::fullscreen::FullscreenRequest::mirror(
-                crate::fullscreen::FullscreenTarget::Largest,
-            ),
-        }
-    }
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        if let TileContent::App(app) = &mut self.content {
-            app.on_fullscreen_changed(active);
-        }
-    }
-    fn audience_presentation_request(
-        &self,
-    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
-        match &self.content {
-            TileContent::App(app) => app.audience_presentation_request(),
-            _ => None,
-        }
-    }
-    fn on_audience_presentation_changed(&mut self, active: bool) {
-        if let TileContent::App(app) = &mut self.content {
-            app.on_audience_presentation_changed(active);
-        }
-    }
-    fn draw_audience_presentation(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: vello::kurbo::Rect,
-    ) -> bool {
-        match &mut self.content {
-            TileContent::App(app) => {
-                app.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
-            }
-            _ => false,
-        }
-    }
-    fn handle_audience_presentation_event(
-        &mut self,
-        event: &WindowEvent,
-        state: &mut AutoCommit,
-        path: &ObjId,
-    ) -> bool {
-        match &mut self.content {
-            TileContent::App(app) => app.handle_audience_presentation_event(event, state, path),
-            _ => false,
-        }
-    }
-    fn on_audience_presentation_closed(&mut self) {
-        if let TileContent::App(app) = &mut self.content {
-            app.on_audience_presentation_closed();
         }
     }
     fn view_state(&self) -> Option<crate::view::ViewContribution> {
@@ -1786,64 +1871,23 @@ impl Widget for TileHost {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-    fn take_floating_surface_request(
+
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
+
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
+
+    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
+        Some(self)
+    }
+
+    fn audience_presentation_provider_mut(
         &mut self,
-    ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        match &mut self.content {
-            TileContent::App(widget) => widget.take_floating_surface_request(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
-        }
-    }
-    fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
-        match &mut self.content {
-            TileContent::App(widget) => widget.take_capture_studio_request(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
-        }
-    }
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        match &mut self.content {
-            TileContent::App(widget) => widget.take_floating_surface_source_updates(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
-        }
-    }
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let TileContent::App(widget) = &mut self.content {
-            widget.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
-        }
-    }
-    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
-        if let TileContent::App(widget) = &mut self.content {
-            widget.set_floating_surface_bounds(bounds);
-        }
-    }
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<crate::floating_surface::FloatingSurfacePresentation> {
-        match &self.content {
-            TileContent::App(widget) => widget.floating_surface_presentations(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
-        }
-    }
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        match &self.content {
-            TileContent::App(widget) => widget.active_floating_surface_ids(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => Vec::new(),
-        }
-    }
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &crate::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        if let TileContent::App(widget) = &mut self.content {
-            widget.on_floating_surface_host_message(message);
-        }
+    ) -> Option<&mut dyn AudiencePresentationProvider> {
+        Some(self)
     }
     fn wants_pointer_capture(&self) -> bool {
         match &self.content {
@@ -2388,7 +2432,41 @@ mod tests {
         update: Option<Rect>,
     }
 
+    impl FloatingSurfaceProvider for FloatingProbe {
+        fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
+            self.update
+                .take()
+                .map(|rect| vec![("probe-pip".into(), rect)])
+                .unwrap_or_default()
+        }
+
+        fn active_floating_surface_ids(&self) -> Vec<String> {
+            vec!["probe-pip".into()]
+        }
+
+        fn on_floating_surface_host_message(
+            &mut self,
+            message: &crate::floating_surface::FloatingSurfaceHostMessage,
+        ) {
+            if matches!(
+                message,
+                crate::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. }
+                    if id == "probe-pip"
+            ) {
+                self.acknowledged.set(true);
+            }
+        }
+    }
+
     impl Widget for FloatingProbe {
+        fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+            Some(self)
+        }
+
+        fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+            Some(self)
+        }
+
         fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
         fn build_layout(
             &mut self,
@@ -2429,27 +2507,6 @@ mod tests {
         fn get_rect(&self) -> Rect {
             Rect::ZERO
         }
-        fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-            self.update
-                .take()
-                .map(|rect| vec![("probe-pip".into(), rect)])
-                .unwrap_or_default()
-        }
-        fn active_floating_surface_ids(&self) -> Vec<String> {
-            vec!["probe-pip".into()]
-        }
-        fn on_floating_surface_host_message(
-            &mut self,
-            message: &crate::floating_surface::FloatingSurfaceHostMessage,
-        ) {
-            if matches!(
-                message,
-                crate::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. }
-                    if id == "probe-pip"
-            ) {
-                self.acknowledged.set(true);
-            }
-        }
     }
 
     impl crate::widget::app_widget::AppWidget for FloatingProbe {
@@ -2476,14 +2533,20 @@ mod tests {
             update: Some(source),
         })));
 
-        assert_eq!(host.active_floating_surface_ids(), vec!["probe-pip"]);
         assert_eq!(
-            host.take_floating_surface_source_updates(),
+            FloatingSurfaceWidgetExt::active_floating_surface_ids(&host),
+            vec!["probe-pip"]
+        );
+        assert_eq!(
+            FloatingSurfaceWidgetExt::take_floating_surface_source_updates(&mut host),
             vec![("probe-pip".into(), source)]
         );
-        assert!(host.take_floating_surface_source_updates().is_empty());
+        assert!(
+            FloatingSurfaceWidgetExt::take_floating_surface_source_updates(&mut host).is_empty()
+        );
 
-        host.on_floating_surface_host_message(
+        FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+            &mut host,
             &crate::floating_surface::FloatingSurfaceHostMessage::Adopted {
                 id: "probe-pip".into(),
                 rect: [100.0, 80.0, 500.0, 305.0],
@@ -2509,7 +2572,7 @@ mod tests {
 
     fn canonical_store(root: &std::path::Path) -> RecordStore {
         let mut owners = crate::record::RecordOwners::new(root.to_path_buf());
-        owners.open("dev.tilo.tile-host-test", "room").unwrap()
+        owners.open("so.tilo.tile-host-test", "room").unwrap()
     }
 
     fn inspection_has_semantic(node: &crate::headless::InspectionNode, name: &str) -> bool {

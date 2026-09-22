@@ -132,6 +132,10 @@ fn dispatch_device_action(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive projection keeps every continuity state and its authorized action visibly paired"
+)]
 fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
     let mut actions = Vec::new();
     let label_for = |id: &crate::shell::personal_continuity::DeviceId| {
@@ -156,10 +160,10 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 id: format!(
                     "media.handoff.{}.{}",
                     opaque(
-                        "dev.tilo.continuity.media-session.v1",
+                        "so.tilo.continuity.media-session.v1",
                         media.session_id.as_bytes()
                     ),
-                    opaque("dev.tilo.continuity.device.v1", target.as_str().as_bytes())
+                    opaque("so.tilo.continuity.device.v1", target.as_str().as_bytes())
                 ),
                 title: format!("Play {} on {label}", media.title),
                 subtitle: "Move this live media session to an exact certified device".into(),
@@ -191,7 +195,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             id: format!(
                 "media.{}.{}",
                 verb.to_ascii_lowercase(),
-                opaque("dev.tilo.continuity.media-request.v1", &status.request_id)
+                opaque("so.tilo.continuity.media-request.v1", &status.request_id)
             ),
             title: format!("{verb} moving {}", status.title),
             subtitle: format!("Media handoff to {}", status.target_label),
@@ -206,7 +210,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                     "bluetooth.consent.{}.{}",
                     if approved { "allow" } else { "decline" },
                     opaque(
-                        "dev.tilo.continuity.bluetooth-request.v1",
+                        "so.tilo.continuity.bluetooth-request.v1",
                         &authorization.request_id
                     )
                 ),
@@ -251,7 +255,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 "bluetooth.{}.{}",
                 verb.to_ascii_lowercase(),
                 opaque(
-                    "dev.tilo.continuity.bluetooth-request.v1",
+                    "so.tilo.continuity.bluetooth-request.v1",
                     &status.request_id
                 )
             ),
@@ -270,7 +274,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             id: format!(
                 "audio.route.{}",
                 opaque(
-                    "dev.tilo.continuity.audio-node.v1",
+                    "so.tilo.continuity.audio-node.v1",
                     &output.node_id.to_le_bytes()
                 )
             ),
@@ -292,11 +296,11 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 id: format!(
                     "audio.forward.{}.{}",
                     opaque(
-                        "dev.tilo.continuity.audio-source.v1",
+                        "so.tilo.continuity.audio-source.v1",
                         &source.token.to_le_bytes()
                     ),
                     opaque(
-                        "dev.tilo.continuity.device.v1",
+                        "so.tilo.continuity.device.v1",
                         target.id.as_str().as_bytes()
                     )
                 ),
@@ -316,7 +320,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 id: format!(
                     "audio.consent.{}.{}",
                     if approved { "allow" } else { "decline" },
-                    opaque("dev.tilo.continuity.audio-session.v1", &consent.session_id)
+                    opaque("so.tilo.continuity.audio-session.v1", &consent.session_id)
                 ),
                 title: format!("{verb} live audio from {}", consent.label),
                 subtitle: "Resolve this exact remote-audio consent request".into(),
@@ -332,7 +336,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         actions.push(DeviceAction {
             id: format!(
                 "audio.stop.{}",
-                opaque("dev.tilo.continuity.audio-session.v1", &route.session_id)
+                opaque("so.tilo.continuity.audio-session.v1", &route.session_id)
             ),
             title: format!("Stop routing {}", route.label),
             subtitle: "Close and neutralize this exact live-audio route".into(),
@@ -354,7 +358,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 id: format!(
                     "spatial.place.{edge_name}.{}",
                     opaque(
-                        "dev.tilo.continuity.device.v1",
+                        "so.tilo.continuity.device.v1",
                         device.id.as_str().as_bytes()
                     )
                 ),
@@ -391,7 +395,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                     "grant"
                 },
                 opaque(
-                    "dev.tilo.continuity.device.v1",
+                    "so.tilo.continuity.device.v1",
                     device.id.as_str().as_bytes()
                 )
             ),
@@ -420,7 +424,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 id: format!(
                     "spatial.calibration.{verb}.{}",
                     opaque(
-                        "dev.tilo.continuity.device.v1",
+                        "so.tilo.continuity.device.v1",
                         proposal.peer.as_str().as_bytes()
                     )
                 ),
@@ -439,7 +443,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         actions.push(DeviceAction {
             id: format!(
                 "spatial.calibration.revert.{}",
-                opaque("dev.tilo.continuity.device.v1", peer.as_str().as_bytes())
+                opaque("so.tilo.continuity.device.v1", peer.as_str().as_bytes())
             ),
             title: format!("Revert placement for {}", label_for(peer)),
             subtitle: "Restore the previous certified-display placement".into(),
@@ -457,7 +461,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                     "display.mirror.consent.{}.{}",
                     if approved { "allow" } else { "decline" },
                     opaque(
-                        "dev.tilo.continuity.display-mirror-session.v1",
+                        "so.tilo.continuity.display-mirror-session.v1",
                         &consent.session_id
                     )
                 ),
@@ -480,7 +484,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 id: format!(
                     "display.mirror.stop.{}",
                     opaque(
-                        "dev.tilo.continuity.display-mirror-session.v1",
+                        "so.tilo.continuity.display-mirror-session.v1",
                         &status.session_id
                     )
                 ),
@@ -512,7 +516,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                     id: format!(
                         "display.mirror.request.{}",
                         opaque(
-                            "dev.tilo.continuity.device.v1",
+                            "so.tilo.continuity.device.v1",
                             target.id.as_str().as_bytes()
                         )
                     ),
@@ -541,10 +545,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         actions.push(DeviceAction {
             id: format!(
                 "tether.request.{}",
-                opaque(
-                    "dev.tilo.continuity.device.v1",
-                    phone.id.as_str().as_bytes()
-                )
+                opaque("so.tilo.continuity.device.v1", phone.id.as_str().as_bytes())
             ),
             title: format!("Ask {} for tethering", phone.label),
             subtitle: "Request a short-lived, phone-approved connection".into(),
@@ -561,7 +562,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                     id: format!(
                         "tether.consent.{}.{}",
                         if approved { "allow" } else { "decline" },
-                        opaque("dev.tilo.continuity.tether-request.v1", &status.request_id)
+                        opaque("so.tilo.continuity.tether-request.v1", &status.request_id)
                     ),
                     title: format!("{verb} tethering for {}", status.peer_label),
                     subtitle: "Resolve this exact phone-side consent request".into(),
@@ -577,7 +578,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             actions.push(DeviceAction {
                 id: format!(
                     "tether.disconnect.{}",
-                    opaque("dev.tilo.continuity.tether-request.v1", &status.request_id)
+                    opaque("so.tilo.continuity.tether-request.v1", &status.request_id)
                 ),
                 title: format!("Disconnect tethering from {}", status.peer_label),
                 subtitle: "Revoke this exact tethering request and its network route".into(),
@@ -612,7 +613,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 actions.push(DeviceAction {
                     id: format!(
                         "capture.request.{name}.{}",
-                        opaque("dev.tilo.continuity.device.v1", peer.id.as_str().as_bytes())
+                        opaque("so.tilo.continuity.device.v1", peer.id.as_str().as_bytes())
                     ),
                     title: format!("Use {} from {}", name, peer.label),
                     subtitle: "Request a one-session remote input for the focused app".into(),
@@ -631,10 +632,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 id: format!(
                     "capture.consent.{}.{}",
                     if approved { "allow" } else { "decline" },
-                    opaque(
-                        "dev.tilo.continuity.capture-request.v1",
-                        &consent.request_id
-                    )
+                    opaque("so.tilo.continuity.capture-request.v1", &consent.request_id)
                 ),
                 title: format!("{verb} remote input for {}", consent.app_label),
                 subtitle: "Resolve this exact source-side capture request".into(),
@@ -669,7 +667,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             id: format!(
                 "capture.session.{}.{}",
                 if confirm { "approve" } else { "stop" },
-                opaque("dev.tilo.continuity.capture-session.v1", &session_id)
+                opaque("so.tilo.continuity.capture-session.v1", &session_id)
             ),
             title: format!("{verb} from {}", label_for(&session.peer)),
             subtitle: "Act on this exact remote capture session".into(),
@@ -684,7 +682,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 id: format!(
                     "controller.stop.{}",
                     opaque(
-                        "dev.tilo.continuity.controller-session.v1",
+                        "so.tilo.continuity.controller-session.v1",
                         &forwarding.session.to_le_bytes()
                     )
                 ),
@@ -701,11 +699,11 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                     id: format!(
                         "controller.start.{}.{}",
                         opaque(
-                            "dev.tilo.continuity.controller-source.v1",
+                            "so.tilo.continuity.controller-source.v1",
                             &gamepad.token.to_le_bytes()
                         ),
                         opaque(
-                            "dev.tilo.continuity.device.v1",
+                            "so.tilo.continuity.device.v1",
                             target.id.as_str().as_bytes()
                         )
                     ),
@@ -727,7 +725,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                     "controller.consent.{}.{}",
                     if approved { "allow" } else { "decline" },
                     opaque(
-                        "dev.tilo.continuity.controller-forwarding.v1",
+                        "so.tilo.continuity.controller-forwarding.v1",
                         &authorization.forwarding_id
                     )
                 ),
@@ -839,7 +837,7 @@ fn device_projection(
 ) -> (String, Vec<SearchResult>) {
     let actions = device_actions(view);
     let revision = projection_revision(
-        "dev.tilo.continuity.device-action-revision.v1",
+        "so.tilo.continuity.device-action-revision.v1",
         ctx.needle,
         actions.iter().map(|entry| {
             (
@@ -954,11 +952,11 @@ fn call_actions(
                 id: format!(
                     "call.propose.{}.{}",
                     opaque(
-                        "dev.tilo.continuity.call-session.v1",
+                        "so.tilo.continuity.call-session.v1",
                         source.session.as_bytes()
                     ),
                     opaque(
-                        "dev.tilo.continuity.device.v1",
+                        "so.tilo.continuity.device.v1",
                         target.id.as_str().as_bytes()
                     )
                 ),
@@ -979,7 +977,7 @@ fn call_actions(
                     "call.consent.{}.{}",
                     if approved { "allow" } else { "decline" },
                     opaque(
-                        "dev.tilo.continuity.call-session.v1",
+                        "so.tilo.continuity.call-session.v1",
                         consent.session.as_bytes()
                     )
                 ),
@@ -1005,7 +1003,7 @@ fn call_projection(
 ) -> (String, Vec<SearchResult>) {
     let actions = call_actions(view, devices);
     let revision = projection_revision(
-        "dev.tilo.continuity.call-action-revision.v1",
+        "so.tilo.continuity.call-action-revision.v1",
         ctx.needle,
         actions.iter().map(|entry| {
             (
@@ -1274,8 +1272,8 @@ mod tests {
                 && action.confirm
         }));
         assert_ne!(
-            opaque("dev.tilo.continuity.device.v1", &[9; 16]),
-            opaque("dev.tilo.continuity.call-session.v1", &[9; 16])
+            opaque("so.tilo.continuity.device.v1", &[9; 16]),
+            opaque("so.tilo.continuity.call-session.v1", &[9; 16])
         );
         assert!(actions.iter().any(|action| {
             action.action

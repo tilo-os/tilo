@@ -7,7 +7,7 @@
 
 
 [package]
-id       = "dev.tilo.vpn"
+id       = "so.tilo.vpn"
 name     = "VPN Studio"
 category = "Network"
 version  = "0.1.0"

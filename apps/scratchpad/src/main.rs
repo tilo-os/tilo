@@ -9,7 +9,7 @@ use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.scratchpad", |_| {
+        &LaunchSpec::new_with_args("so.tilo.scratchpad", |_| {
             Err(LaunchError::Operation(
                 "Scratchpad requires its paired saved state and root; use --shots or --responsive-matrix for capture".into(),
             ))

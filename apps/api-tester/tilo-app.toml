@@ -6,7 +6,7 @@
 
 
 [package]
-id       = "dev.tilo.api-tester"
+id       = "so.tilo.api-tester"
 name     = "API Tester"
 category = "Development"
 version  = "0.1.0"

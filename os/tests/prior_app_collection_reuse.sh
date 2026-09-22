@@ -6,15 +6,15 @@ repo=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/bin" "$work/tmp" "$work/release/runtime/tilo-runtime/root" \
-  "$work/prior/qpkg" "$work/prior/runtime/tilo-runtime/root"
+  "$work/prior/tapp" "$work/prior/runtime/tilo-runtime/root"
 
 root=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 printf 'root_hash = "%s"\n' "$root" > "$work/release/runtime/tilo-runtime/root/bundle.toml"
 printf 'root_hash = "%s"\n' "$root" > "$work/prior/runtime/tilo-runtime/root/bundle.toml"
-printf 'old package\n' > "$work/prior/qpkg/old-1.0.1-dev.9+ga-x86_64.qpkg"
-printf '{"apps":[{"name":"old","id":"dev.tilo.old","package":"old","version":"1.0.1-dev.9+ga","declared_version":"1.0.0","runtime":"tilo-runtime/1.0.0"}]}\n' > "$work/prior/index.json"
+printf 'old package\n' > "$work/prior/tapp/old-1.0.1-dev.9+ga-x86_64.tapp"
+printf '{"apps":[{"name":"old","id":"so.tilo.old","package":"old","version":"1.0.1-dev.9+ga","declared_version":"1.0.0","runtime":"tilo-runtime/1.0.0"}]}\n' > "$work/prior/index.json"
 printf 'checksums\n' > "$work/prior/SHA256SUMS"
-tar -C "$work/prior" -czf "$work/prior.tar.gz" qpkg runtime index.json SHA256SUMS
+tar -C "$work/prior" -czf "$work/prior.tar.gz" tapp runtime index.json SHA256SUMS
 prior_sha=$(sha256sum "$work/prior.tar.gz" | cut -d' ' -f1)
 
 cat > "$work/bin/curl" <<'EOF'
@@ -49,7 +49,7 @@ export CURL_LOG="$work/curl.log"
 python3 - "$work" <<'PY'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-apps = [dict(name=name, id='dev.tilo.' + name, package=name, version='1.0.0', runtime='tilo-runtime/1.0.0') for name in ('old', 'new')]
+apps = [dict(name=name, id='so.tilo.' + name, package=name, version='1.0.0', runtime='tilo-runtime/1.0.0') for name in ('old', 'new')]
 (root / 'release/index.json').write_text(json.dumps({'apps': apps}))
 (root / 'plan.json').write_text(json.dumps({'catalog': apps}))
 PY
@@ -57,11 +57,11 @@ PATH="$work/bin:$PATH" tools/reuse_prior_app_collection.sh \
   "$work/release/index.json" "$work/plan.json" "$work/full-out" x86_64 '' ''
 [[ ! -e $CURL_LOG ]]
 
-printf '{"apps":[{"name":"new","id":"dev.tilo.new","package":"new","version":"1.0.1-dev.10+gb","declared_version":"1.0.0","runtime":"tilo-runtime/1.0.0"}]}\n' > "$work/release/index.json"
-internal_url=http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/tilo-app-collections/v1/tilo-apps-x86_64.tar.gz
+printf '{"apps":[{"name":"new","id":"so.tilo.new","package":"new","version":"1.0.1-dev.10+gb","declared_version":"1.0.0","runtime":"tilo-runtime/1.0.0"}]}\n' > "$work/release/index.json"
+internal_url=http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/tilo-app-collections/v1/tilo-apps-x86_64.tar.gz
 tools/reuse_prior_app_collection.sh "$work/release/index.json" "$work/plan.json" \
   "$work/partial-out" x86_64 "$internal_url" "$prior_sha"
-cmp "$work/prior/qpkg/old-1.0.1-dev.9+ga-x86_64.qpkg" "$work/partial-out/old-1.0.1-dev.9+ga-x86_64.qpkg"
+cmp "$work/prior/tapp/old-1.0.1-dev.9+ga-x86_64.tapp" "$work/partial-out/old-1.0.1-dev.9+ga-x86_64.tapp"
 jq -e '.catalog[] | select(.name == "old") | .version == "1.0.1-dev.9+ga"' "$work/plan.json" >/dev/null
 jq -e '.catalog[] | select(.name == "new") | .version == "1.0.1-dev.10+gb"' "$work/plan.json" >/dev/null
 
@@ -73,11 +73,11 @@ if tools/reuse_prior_app_collection.sh "$work/release/index.json" "$work/plan.js
   exit 1
 fi
 
-mkdir -p "$work/bad/qpkg" "$work/bad/runtime/tilo-runtime/root"
-cp "$work/prior/qpkg/old-1.0.1-dev.9+ga-x86_64.qpkg" "$work/bad/qpkg/"
+mkdir -p "$work/bad/tapp" "$work/bad/runtime/tilo-runtime/root"
+cp "$work/prior/tapp/old-1.0.1-dev.9+ga-x86_64.tapp" "$work/bad/tapp/"
 cp "$work/prior/runtime/tilo-runtime/root/bundle.toml" "$work/bad/runtime/tilo-runtime/root/"
 printf 'unexpected\n' > "$work/bad/escape"
-tar -C "$work/bad" -czf "$work/bad.tar.gz" qpkg runtime escape
+tar -C "$work/bad" -czf "$work/bad.tar.gz" tapp runtime escape
 export PRIOR_FIXTURE="$work/bad.tar.gz"
 bad_sha=$(sha256sum "$work/bad.tar.gz" | cut -d' ' -f1)
 if tools/reuse_prior_app_collection.sh "$work/release/index.json" "$work/plan.json" \

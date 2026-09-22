@@ -12,7 +12,7 @@ class FeedbackScopeTests(unittest.TestCase):
         self.assertRegex(workflow, r'python3 tools/ci/compiler_inputs\.py --output target/ci/compiler-inputs\.json --\s+check --locked --all-targets \$\{\{ matrix\.packages \}\}')
         self.assertIn('cargo nextest run --locked --profile ci ${{ matrix.test_packages }}', workflow)
         self.assertIn("if: matrix.test_packages != ''", workflow)
-        self.assertIn("if: contains(matrix.test_packages, '-p app-catalogue')", workflow)
+        self.assertIn("if: contains(matrix.test_packages, '-p app-cli')", workflow)
         self.assertIn('needs: [builder, select, security, affected, native-dependencies]', workflow)
         self.assertIn('test "$BUILDER_RESULT" = success', workflow)
         self.assertIn('*:true:success)', workflow)

@@ -108,7 +108,7 @@ impl PriorityContactRegistry {
     }
 
     /// Replace the whole projection. This is called only after the D-Bus
-    /// service verifies `dev.tilo.contacts`; keeping the check at that boundary
+    /// service verifies `so.tilo.contacts`; keeping the check at that boundary
     /// means this storage type never tries to infer authority from a string.
     ///
     /// # Errors
