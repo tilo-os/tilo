@@ -230,6 +230,9 @@ pub struct TabBar {
     /// ghost paints at `last_cursor - drag_offset` since `DragPayload::Tab` doesn't
     /// carry this.
     drag_offset: Option<vello::kurbo::Vec2>,
+    /// When the press crosses the drag threshold. The parent window uses the
+    /// same lift progress for the handle and its attached content preview.
+    drag_lifted_at: Option<Instant>,
     last_cursor: Point,
     pub pending_drag: Option<DragPayload>,
     pub pending_reorder: Option<(usize, usize)>,
@@ -294,9 +297,9 @@ impl TabBar {
     /// Source pill's opacity while the drag-ghost is visible; low enough to read as
     /// inactive but the slot still holds its place (no neighbour reflow).
     pub const SOURCE_PILL_DIM_ALPHA: f32 = 0.35;
-    /// Drag-ghost opacity; high enough that the pill chrome stays readable, low
-    /// enough that neighbours peek through.
-    pub const GHOST_PILL_ALPHA: f32 = 0.6;
+    /// The handle is visibly lifted but remains translucent enough for a drop
+    /// target to stay legible beneath it.
+    pub const GHOST_PILL_ALPHA: f32 = 0.5;
 
     pub fn new(group_id_tag: &str, tabs: Vec<TabDescriptor>, active_id: u64) -> Self {
         Self {
@@ -326,6 +329,7 @@ impl TabBar {
             show_maximize: true,
             press_origin: None,
             drag_offset: None,
+            drag_lifted_at: None,
             last_cursor: Point::ZERO,
             pending_drag: None,
             pending_reorder: None,
@@ -358,6 +362,10 @@ impl TabBar {
         };
     }
 
+    pub(crate) fn set_drag_overlay_owned_by_parent(&mut self, owned: bool) {
+        self.drag_overlay_owned_by_parent = owned;
+    }
+
     /// No-op before the first layout pass — nothing to spring from yet.
     fn snapshot_layout_for_spring(&mut self) {
         if self.tab_rects.len() != self.tabs.len() {
@@ -384,6 +392,7 @@ impl TabBar {
         self.press_origin = None;
         self.pending_drag = None;
         self.drag_offset = None;
+        self.drag_lifted_at = None;
         self.drop_zone_target = None;
         self.hover_drop_idx = None;
         self.layout_anim_started = None;
@@ -981,6 +990,36 @@ impl TabBar {
         Some(Rect::new(x0, y0, x0 + w, y0 + h))
     }
 
+    /// The complete visual description of the tab currently being carried.
+    /// The lift uses the theme's fast motion token; reduced motion snaps to the
+    /// tucked end state while preserving the spatial cue.
+    pub(crate) fn drag_visual(&self, theme: &Theme) -> Option<TabDragVisual> {
+        let tab_id = match &self.pending_drag {
+            Some(DragPayload::Tab { tab, .. }) => *tab,
+            _ => return None,
+        };
+        let source_idx = self.tabs.iter().position(|tab| tab.id == tab_id)?;
+        self.tab_rects.get(source_idx)?;
+        let lifted_handle = self.compute_ghost_rect()?;
+        let lift_progress = if theme.reduce_motion {
+            1.0
+        } else {
+            self.drag_lifted_at.map_or(1.0, |started| {
+                let span = theme.tokens.motion.durations.fast().as_secs_f64();
+                if span <= f64::EPSILON {
+                    1.0
+                } else {
+                    crate::ease_out((started.elapsed().as_secs_f64() / span).clamp(0.0, 1.0))
+                }
+            })
+        };
+        Some(TabDragVisual {
+            tab_id,
+            lifted_handle,
+            lift_progress,
+        })
+    }
+
     #[cfg(test)]
     pub fn ghost_rect(&self) -> Option<Rect> {
         self.compute_ghost_rect()
@@ -1493,6 +1532,7 @@ impl TabBar {
         // Reset drag/drop-zone state so a fresh drag starts with nothing stale
         // painting.
         self.drag_offset = None;
+        self.drag_lifted_at = None;
         self.drop_zone_target = None;
         self.drop_zone_animated_at = None;
         self.hover_drop_idx = None;
@@ -2284,6 +2324,7 @@ impl Widget for TabBar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.drag_lift_duration = theme.tokens.motion.durations.fast();
         // Guards one stale frame after a detach/insert mutates `tabs` outside the
         // layout pass; next `apply_layout` fixes it.
         if self.tab_rects.len() != self.tabs.len() {
@@ -2558,7 +2599,12 @@ impl Widget for TabBar {
         // Keeps the curve running once the pointer stops moving, until an
         // opening pill finishes.
         let reveal = self.reveal_in_flight();
-        drop_zone || layout || insert_fade || close_fade || hover_drop_fade || reveal
+        let drag_lift = !self.reduce_motion
+            && self.pending_drag.is_some()
+            && self
+                .drag_lifted_at
+                .is_some_and(|started| started.elapsed() < self.drag_lift_duration);
+        drop_zone || layout || insert_fade || close_fade || hover_drop_fade || reveal || drag_lift
     }
 }
 
@@ -2947,7 +2993,7 @@ impl TabBar {
     /// over everything. Not clipped to `self.rect`: cross-group drag handoff
     /// (`GroupRow::handle_event`) reads the raw cursor position, not the ghost.
     /// Hit-tests still use the original `tab_rects`.
-    fn draw_drag_ghost(
+    pub(crate) fn draw_drag_ghost(
         &self,
         scene: &mut Scene,
         transform: Affine,
@@ -3030,10 +3076,13 @@ impl TabBar {
                 .group_id_tag
                 .bytes()
                 .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)));
-            self.pending_drag = Some(DragPayload::Tab {
-                group: group_tag_hash,
-                tab: t.id,
-            });
+            if self.pending_drag.is_none() {
+                self.drag_lifted_at = Some(Instant::now());
+                self.pending_drag = Some(DragPayload::Tab {
+                    group: group_tag_hash,
+                    tab: t.id,
+                });
+            }
             *handled = true;
         }
         // Inside the bar → gap index from `drop_index_for`; outside → clear
@@ -4781,6 +4830,18 @@ mod tests {
             (ghost.height() - 28.0).abs() < 0.01,
             "ghost height tracks source pill height (got {})",
             ghost.height(),
+        );
+        assert_eq!(
+            TabBar::GHOST_PILL_ALPHA,
+            0.5,
+            "the lifted handle must remain half-transparent",
+        );
+        let reduced = b
+            .drag_visual(&Theme::dark().with_reduce_motion(true))
+            .expect("the same in-flight drag has a visual");
+        assert_eq!(
+            reduced.lift_progress, 1.0,
+            "reduced motion keeps the tucked end state without animating to it",
         );
     }
 

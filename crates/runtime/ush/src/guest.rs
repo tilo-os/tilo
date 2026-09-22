@@ -271,6 +271,9 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
     a.push(plan.runtime_bin.clone().into_os_string());
     a.push(format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into());
     for cmd in crate::GUEST_COMMANDS {
+        if !crate::guest_command_available(&plan.base, cmd) {
+            continue;
+        }
         a.push("--symlink".into());
         a.push("tilo-ush".into());
         a.push(format!("{}/{cmd}", crate::GUEST_BIN_DIR).into());
@@ -972,11 +975,40 @@ mod tests {
         );
         let w3 = window(&build_argv(&plan(), Some(9), None), 3);
         for cmd in crate::GUEST_COMMANDS {
+            if !crate::guest_command_available(&plan().base, cmd) {
+                continue;
+            }
             assert!(
                 w3.iter().any(|w| w[0] == "--symlink"
                     && w[1] == "tilo-ush"
                     && w[2] == format!("{}/{cmd}", crate::GUEST_BIN_DIR)),
                 "`{cmd}` has no shim in the guest"
+            );
+        }
+    }
+
+    #[test]
+    fn management_shims_follow_provider_availability() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan();
+        p.base = dir.path().to_path_buf();
+        let without = strings(&build_argv(&p, Some(9), None));
+        assert!(!without.iter().any(|arg| arg.ends_with("/tilo")));
+        assert!(!without.iter().any(|arg| arg.ends_with("/app")));
+
+        let bin = dir.path().join("usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("tilo"), "").unwrap();
+        std::fs::write(bin.join("app"), "").unwrap();
+        let provider = dir.path().join("usr/libexec/tilo-deployment");
+        std::fs::create_dir_all(provider.parent().unwrap()).unwrap();
+        std::fs::write(provider, "").unwrap();
+        let with = strings(&build_argv(&p, Some(9), None));
+        for command in ["tilo", "system", "app", "store"] {
+            assert!(
+                with.iter()
+                    .any(|arg| arg == &format!("{}/{command}", crate::GUEST_BIN_DIR)),
+                "{command} shim missing despite provider"
             );
         }
     }

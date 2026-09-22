@@ -1398,13 +1398,13 @@ mod tests {
         let mut d = Document::new();
         let id = d.insert_block(None, "paragraph");
         d.splice_text(&id, 0, 0, "go home now");
-        d.as_mut().add_mark(&id, 3, 7, "link", "https://tilo.dev/");
+        d.as_mut().add_mark(&id, 3, 7, "link", "https://tilo.so/");
 
         let exported = OdtCodec.export(d.as_ref()).unwrap();
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
         assert!(
-            content.contains(r#"<text:a xlink:href="https://tilo.dev/">home</text:a>"#),
+            content.contains(r#"<text:a xlink:href="https://tilo.so/">home</text:a>"#),
             "exported a text:a element: {content}"
         );
 
@@ -1418,7 +1418,7 @@ mod tests {
             .find(|m| m.name == "link")
             .expect("link survives round-trip");
         assert_eq!((link.start, link.end), (3, 7), "{:?}", b.marks);
-        assert_eq!(link.value, MarkValue::Str("https://tilo.dev/".into()));
+        assert_eq!(link.value, MarkValue::Str("https://tilo.so/".into()));
     }
 
     #[test]

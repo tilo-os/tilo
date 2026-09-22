@@ -49,7 +49,7 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 
-grep -Fq -- '--type https://tilo.dev/security/release-freshness/v1' "$workflow" \
+grep -Fq -- '--type https://tilo.sh/security/release-freshness/v1' "$workflow" \
   && grep -Fq 'release freshness attestation is absent, expired, or does not bind this release' "$workflow" \
   && grep -Fq '604800' "$freshness" \
   && ok 'channel promotion requires a bounded signed freshness statement' \
@@ -181,7 +181,7 @@ else
 fi
 
 children='[{"architecture":"x86_64","digest":"sha256:'"$hex"'"},{"architecture":"aarch64","digest":"sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
-kernel_refs='[{"architecture":"x86_64","ref":"code.sandbox.example/qos/qos-kernel@sha256:'"$hex"'"},{"architecture":"aarch64","ref":"code.sandbox.example/qos/qos-kernel@sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
+kernel_refs='[{"architecture":"x86_64","ref":"code.sandbox.example/qos/tilo-kernel@sha256:'"$hex"'"},{"architecture":"aarch64","ref":"code.sandbox.example/qos/tilo-kernel@sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
    TILO_KERNEL_REFS_JSON="$kernel_refs" TILO_RELEASE_CHILDREN_JSON="$children" \

@@ -203,7 +203,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.file-explorer", live_root)
+        &LaunchSpec::new_with_args("so.tilo.file-explorer", live_root)
             .open_state(open_state)
             .allowed_live_flags(&["--open-share-stdin"])
             .max_positionals(1),

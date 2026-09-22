@@ -165,7 +165,7 @@ struct PendingAttachmentSave {
 /// (`$XDG_CONFIG_HOME/tilo/accounts/`). The sample / `--shots` / test
 /// constructors target a throwaway sandbox directory instead, so exercising the
 /// save flow (or a test that adds an account) can never leak fabricated demo
-/// accounts into the real store. The historic leak — `you@tilo.example`,
+/// accounts into the real store. The historic leak — `you@example.test`,
 /// `you@hooli.example`, `new@host.example` appearing pre-configured in the live
 /// app — was exactly this: a test that drove the save path wrote the bundled
 /// sample store to the real config root.
@@ -659,7 +659,7 @@ impl MailApp {
             st.mailbox
                 .messages
                 .values()
-                .find(|m| m.from.email == "news@weekly.tilo.example")
+                .find(|m| m.from.email == "news@weekly.example.test")
                 .map(|m| m.id)
         };
         if let Some(id) = id {
@@ -6880,7 +6880,7 @@ mod tests {
 
         fixture.send(EngineEvent::Fetched {
             request_id: fixture.send_id,
-            account_id: "me@tilo.example".into(),
+            account_id: "me@example.test".into(),
             folder: Folder::Inbox,
             messages: Vec::new(),
         });
@@ -6898,7 +6898,7 @@ mod tests {
 
         fixture.send(EngineEvent::Fetched {
             request_id: fixture.refresh_id,
-            account_id: "me@tilo.example".into(),
+            account_id: "me@example.test".into(),
             folder: Folder::Inbox,
             messages: Vec::new(),
         });
@@ -7023,7 +7023,7 @@ mod tests {
     #[test]
     fn sample_mode_persists_to_a_sandbox_not_the_real_store() {
         // Regression guard for the leak where the bundled demo accounts
-        // (you@tilo.example, you@hooli.example, new@host.example) ended up in the
+        // (you@example.test, you@hooli.example, new@host.example) ended up in the
         // user's real ~/.config/tilo/accounts/store.json: the sample / shots /
         // test app must resolve a throwaway sandbox as its persist target, never
         // the real per-user config root.
@@ -7152,7 +7152,7 @@ mod tests {
         assert!(d.to.contains(&sender), "sender goes in To: {}", d.to);
         assert!(!d.cc.is_empty(), "other recipients populate Cc: {}", d.cc);
         assert!(
-            !d.cc.contains("you@tilo.example"),
+            !d.cc.contains("you@example.test"),
             "our own address is excluded from Cc: {}",
             d.cc
         );

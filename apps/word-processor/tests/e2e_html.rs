@@ -44,7 +44,7 @@ fn render_doc_to_html() -> String {
         // "See bold and a link here": mark "bold" strong, "a link" as a link.
         dm.splice_text(&p, 0, 0, "See bold and a link here");
         dm.add_mark(&p, 4, 8, "strong", true); // "bold"
-        dm.add_mark(&p, 13, 19, "link", "https://tilo.dev/"); // "a link"
+        dm.add_mark(&p, 13, 19, "link", "https://tilo.so/"); // "a link"
     }
     let snap = qdoc::model::materialize(&state.doc, &c);
     qdoc_html::render_html(&snap, qdoc_html::HtmlOptions::default())
@@ -89,7 +89,7 @@ fn open_html_recovers_headings_bold_link() {
         .expect("link survives");
     assert_eq!(
         link.value,
-        qdoc::document::MarkValue::Str("https://tilo.dev/".into())
+        qdoc::document::MarkValue::Str("https://tilo.so/".into())
     );
     assert_eq!(&p.text[link.start..link.end], "a link", "{:?}", p.marks);
 

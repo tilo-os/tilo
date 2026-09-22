@@ -76,7 +76,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELL = REPO / "target" / "debug" / "shell"
 LAUNCHER = REPO / "target" / "debug" / "tilo-launcher"
 
-APP = "dev.tilo.word-processor"
+APP = "so.tilo.word-processor"
 APPLICATIONS = "applications"
 
 failures: list[str] = []

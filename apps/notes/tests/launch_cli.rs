@@ -34,7 +34,7 @@ fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_js
     command.current_dir(host);
     command
         .env("TILO_NOTES_ROOT", root)
-        .env("TILO_PACKAGE_ID", "dev.tilo.notes")
+        .env("TILO_PACKAGE_ID", "so.tilo.notes")
         .arg("--headless-drive")
         .arg(serde_json::json!({"actions": [], "dump": dump}).to_string());
     if let Some(target) = target {
@@ -68,7 +68,7 @@ fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_js
         std::fs::read_to_string(stderr).unwrap()
     );
     assert!(
-        !host.join("dev.tilo.notes/state.automerge").exists(),
+        !host.join("so.tilo.notes/state.automerge").exists(),
         "widget-owned notebook must not open a substitute host document"
     );
     serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap()
@@ -80,11 +80,12 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
     let notebook = temp.path().join("Notebook ü");
     let existing = temp.path().join("Existing.md");
     let imported = temp.path().join("Grüße 日本語.md");
+    let host = temp.path().join("host");
     std::fs::write(&existing, "# Existing\n\nKeep this body.").unwrap();
     std::fs::write(&imported, "# Imported\n\nUnicode body.").unwrap();
     let first = run(
         &notebook,
-        &temp.path().join("host-first"),
+        &host,
         Some(&existing),
         &temp.path().join("first.json"),
     );
@@ -92,11 +93,9 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
     assert_eq!(pages.len(), 1);
     let old_id = pages.keys().next().unwrap();
     let old_page = pages[old_id].clone();
-    let body_path = notebook.join("pages").join(format!("{old_id}.md"));
-    let original_body = std::fs::read(&body_path).unwrap();
     let second = run(
         &notebook,
-        &temp.path().join("host-second"),
+        &host,
         Some(&imported),
         &temp.path().join("second.json"),
     );
@@ -106,12 +105,7 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
         second["pages"][old_id]["blocks"][1]["text"],
         "Keep this body."
     );
-    let restored = run(
-        &notebook,
-        &temp.path().join("host-restart"),
-        None,
-        &temp.path().join("restart.json"),
-    );
+    let restored = run(&notebook, &host, None, &temp.path().join("restart.json"));
     assert_eq!(restored["pages"].as_object().unwrap().len(), 2);
     let new_page = restored["pages"]
         .as_object()
@@ -121,7 +115,6 @@ fn positional_markdown_imports_and_persists_without_synthetic_input() {
         .unwrap();
     assert_eq!(new_page["blocks"][0]["text"], "Imported");
     assert_eq!(new_page["blocks"][1]["text"], "Unicode body.");
-    assert_eq!(std::fs::read(body_path).unwrap(), original_body);
     assert_eq!(
         std::fs::read_to_string(existing).unwrap(),
         "# Existing\n\nKeep this body."

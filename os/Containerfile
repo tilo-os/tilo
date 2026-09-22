@@ -404,7 +404,7 @@ COPY . /build
 # image with no apps. The browser is filtered out only because it alone needs
 # the `wpe` feature and the TILO_WITH_BROWSER condition.
 #
-# `pkg-cli`, `install` and `cli-shim` build the packaging tools: `tilo-pkg` and
+# `tilo-app-package-cli`, `install` and `cli-shim` build the packaging tools: `tilo-app-package` and
 # `tilo-install` pack and install those apps into the image-wide store below,
 # and `tilo-install` ships so the running system can install and remove
 # packages of its own.
@@ -417,7 +417,7 @@ COPY . /build
 # network backends are compiled out. The features are named here so the image,
 # and only the image, turns them on.
 #
-# Package-qualified (`<pkg>/<feature>`). The qpkg applications and their
+# Package-qualified (`<pkg>/<feature>`). The tapp applications and their
 # versioned shared runtime are built together below: Rust dylib symbol names
 # contain crate hashes, so separate Cargo invocations are not ABI-compatible.
 #
@@ -489,9 +489,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        else \
          DESKTOP_RELEASE_ARGS="-p shell --bin shell -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p ush -p tilo-projector -p pkg-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-app-package-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
-    && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin tilo-pkg --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control" \
+    && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control" \
     && build_phase rust-release \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
@@ -503,7 +503,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in shell tilo-projector fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init tilo tilo-pkg tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime; do \
+    && for b in shell tilo-projector fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper) continue ;; esac; \
          if [ ! -x "target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
@@ -551,7 +551,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-image-trust \
           target/release/tilo-device-key-init \
           target/release/tilo \
-          target/release/tilo-pkg \
+          target/release/app \
+          target/release/tilo-app-package \
           target/release/tilo-install \
           target/release/tilo-cli-shim \
           target/release/tilo-ush \
@@ -559,13 +560,15 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-windows-rail \
           target/release/tilo-windows-runtime \
           /out/ \
+    && ln -s app /out/store \
+    && ln -s tilo /out/system \
     # Files is also a privileged, directly-invoked system recovery surface.
     # In source mode package that standalone binary. With a release collection,
-    # every qpkg already contains its independently built app binary.
+    # every tapp already contains its independently built app binary.
     && build_phase rust-thin-apps \
     && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
          mkdir -p /out/prebuilt-apps /out/browser-app \
-         && cp /build/os/app-artifacts/*.qpkg /out/prebuilt-apps/ \
+         && cp /build/os/app-artifacts/*.tapp /out/prebuilt-apps/ \
          && cp -a /build/os/app-runtime/tilo-runtime /usr/lib/ \
          && cp /build/os/app-runtime/runtime-bundle-publisher.hex /out/ \
          && RUNTIME_DYLIB="$(find /usr/lib/tilo-runtime -name libruntime_dylib.so -print -quit)" \
@@ -669,13 +672,13 @@ RUN if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
 # `tilo-install` records absolute payload paths in registry.toml, so staging it
 # elsewhere and relocating it afterwards would leave every row dangling.
 #
-# Packages take the ordinary route — `tilo-pkg pack` then `tilo-install install`
+# Packages take the ordinary route — `tilo-app-package pack` then `tilo-install install`
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
 RUN BIN_DIR=/out/thin-apps \
-    QPKG_DIR=/out/prebuilt-apps \
+    TAPP_DIR=/out/prebuilt-apps \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
-    PKG_BIN=/out/tilo-pkg \
+    PKG_BIN=/out/tilo-app-package \
     INSTALL_BIN=/out/tilo-install \
     BUNDLE_BIN=/out/tilo-runtime-bundle \
     SHIM_BIN=/out/tilo-cli-shim \
@@ -684,8 +687,8 @@ RUN BIN_DIR=/out/thin-apps \
     && { [ "${TILO_PREBUILT_APPS}" != 1 ] \
          || [ "${TILO_WITH_BROWSER}" = 0 ] \
          || BIN_DIR=/out/browser-app \
-            QPKG_DIR= \
-            PKG_BIN=/out/tilo-pkg \
+            TAPP_DIR= \
+            PKG_BIN=/out/tilo-app-package \
             INSTALL_BIN=/out/tilo-install \
             BUNDLE_BIN=/out/tilo-runtime-bundle \
             SHIM_BIN=/out/tilo-cli-shim \
@@ -709,7 +712,7 @@ COPY --from=builder \
     /out/tilo-model-manager /out/tilo-model-gateway \
     /out/tilo-relay /out/tilo-relay-admin /out/tilo-enroll \
     /out/tilo-greeter /out/tilo-installer /out/tilo-launcher \
-    /out/tilo-runtime-bundle /out/tilo-install /out/tilo-pkg /out/tilo-crypto \
+    /out/tilo-runtime-bundle /out/app /out/store /out/system /out/tilo-install /out/tilo-app-package /out/tilo-crypto \
     /out/tilo-image-trust /out/tilo-device-key-init \
     /usr/bin/
 COPY --from=builder /out/optional/ /usr/bin/
@@ -1023,10 +1026,35 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # C2 time sync (chrony), C3 zram swap (zram-generator), C4 locale data,
 # C5 firewall (firewalld), C7 bluetooth (bluez), C8 power (power-profiles-daemon).
 # Audio (C6) reuses the pipewire stack installed above.
+# The Imager exposes a multilingual locale catalog. Ship every corresponding
+# glibc language pack so each accepted profile remains functional after first
+# boot; advertising languages backed by only glibc-langpack-en would silently
+# apply an unusable LANG value and fall back to English. Keep this curated set
+# in lock-step with os/usr/share/tilo/installer-locales.txt rather than pulling
+# the much larger all-locales archive into every download.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     chrony \
     zram-generator \
+    glibc-langpack-ar \
+    glibc-langpack-cs \
+    glibc-langpack-da \
+    glibc-langpack-de \
     glibc-langpack-en \
+    glibc-langpack-es \
+    glibc-langpack-fi \
+    glibc-langpack-fr \
+    glibc-langpack-it \
+    glibc-langpack-ja \
+    glibc-langpack-ko \
+    glibc-langpack-nb \
+    glibc-langpack-nl \
+    glibc-langpack-pl \
+    glibc-langpack-pt \
+    glibc-langpack-ru \
+    glibc-langpack-sv \
+    glibc-langpack-tr \
+    glibc-langpack-uk \
+    glibc-langpack-zh \
     firewalld \
     bluez \
     power-profiles-daemon \
@@ -1158,7 +1186,7 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
 # the baked bundle at image-build time — shipping it lets operators
 # `verify` or extend the bundle from a running system.
 # Package management on the running system: `tilo-install` installs, lists and
-# removes `.qpkg`s into the user's own store, `tilo-pkg` packs and verifies
+# removes `.tapp`s into the user's own store, `tilo-app-package` packs and verifies
 # them, and `tilo-cli-shim` is what `tilo-install` drops on $PATH for a package
 # that declares CLI commands. Without these in the image the only apps a user
 # could ever have are the ones the image shipped.
@@ -1192,7 +1220,7 @@ COPY \
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/tilo-greeter \
               /usr/bin/tilo-installer /usr/bin/tilo-launcher /usr/bin/tilo-runtime-bundle \
-              /usr/bin/tilo-install /usr/bin/tilo-pkg /usr/libexec/tilo-cli-shim \
+              /usr/bin/tilo-install /usr/bin/tilo-app-package /usr/libexec/tilo-cli-shim \
               /usr/libexec/tilo-unlock-helper /usr/libexec/tilo-ush \
               /usr/libexec/tilo-projector /usr/libexec/tilo-doubletake \
               /usr/libexec/tilo-doubletake-test-receiver \
@@ -1276,7 +1304,7 @@ RUN mkdir -p /etc/tilo \
         > /etc/tilo/runtime-bundle-trusted-publishers.txt
 
 # ---- Preinstalled application store -----------------------------------------
-# The registry + unpacked payloads the builder produced with `tilo-pkg pack` and
+# The registry + unpacked payloads the builder produced with `tilo-app-package pack` and
 # `tilo-install install`. The launcher reads this store alongside the per-user
 # one (crates/packaging/launcher/src/registry.rs), so the command palette lists
 # these apps on a first boot with nobody having installed anything, and a user
@@ -1420,6 +1448,7 @@ COPY os/usr/lib/systemd/user/shell-peer-sync.service /usr/lib/systemd/user/shell
 COPY os/etc/systemd/zram-generator.conf /etc/systemd/zram-generator.conf
 COPY os/etc/locale.conf /etc/locale.conf
 COPY os/etc/chrony.conf /etc/chrony.conf
+COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt
 
 # Bundled documentation (the README in the OS submodule, plus the
 # peer-sync trade-off doc users are pointed at from the .desktop
@@ -2039,7 +2068,7 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # we mount it alongside the frozen repo, write a two-repo dnf config on
 # the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
 # in-house RPMs aren't signed by Fedora's key; provenance for the whole
-# image is verified via cosign against the existing code.sandbox.example/qos/qos-kernel repository
+# image is verified via cosign against the existing code.sandbox.example/qos/tilo-kernel repository
 # (see os/etc/containers/policy.json).
 #
 # An initramfs is mandatory, and the static drivers do not remove the need

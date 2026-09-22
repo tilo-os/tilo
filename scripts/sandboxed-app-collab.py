@@ -43,7 +43,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # starts with collaboration silently off. Keep these short.
 RUNTIME_BASE = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 
-PACKAGE_ID = "dev.tilo.collab-probe"
+PACKAGE_ID = "so.tilo.collab-probe"
 
 MANIFEST = """
 [package]

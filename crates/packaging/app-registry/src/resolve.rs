@@ -1,4 +1,4 @@
-//! Resolution + fetch: turn an app-id into verified `.qpkg` bytes.
+//! Resolution + fetch: turn an app-id into verified `.tapp` bytes.
 //!
 //! The flow, across the configured registries in priority order:
 //!
@@ -8,11 +8,11 @@
 //!    this registry's data and move on.
 //! 3. Pick the best entry for the host (arch + ISA + runtime), highest
 //!    semver; verify the entry's publisher signature.
-//! 4. Download the qpkg blob over iroh-blobs, keyed by the entry's
+//! 4. Download the tapp blob over iroh-blobs, keyed by the entry's
 //!    blake3 hash.
 //! 5. Verify the downloaded bytes fail-closed: blake3 matches, and the
 //!    embedded publisher signature validates against the entry's
-//!    publisher (via [`pkg::verify`]).
+//!    publisher (via [`tilo_app_package::verify`]).
 //!
 //! A hash/signature mismatch on downloaded bytes aborts the whole
 //! fetch — those bytes are never returned for install. A registry that
@@ -22,11 +22,11 @@
 use anyhow::{Context, Result, anyhow, bail};
 use semver::VersionReq;
 
-use pkg::PackageId;
+use tilo_app_package::PackageId;
 
 use crate::config::{RegistriesConfig, RegistryRef, RegistryTrust};
 use crate::index::{HostProfile, RegistryIndex};
-use crate::qpkg;
+use crate::tapp;
 use crate::transport::{self, fetch_blob};
 use iroh::Endpoint;
 use iroh_blobs::ticket::BlobTicket;
@@ -82,7 +82,7 @@ pub async fn fetch_index_bytes(registry: &RegistryRef) -> Result<Vec<u8>> {
 /// Returns an error if a trusted registry's entry fails to download
 /// or verify (fail-closed), or if no configured registry offers
 /// `app_id` for `host`.
-pub async fn fetch_qpkg(
+pub async fn fetch_tapp(
     config: &RegistriesConfig,
     app_id: &str,
     req: Option<&VersionReq>,
@@ -150,7 +150,7 @@ async fn try_registry(
         .ticket
         .parse()
         .with_context(|| format!("entry {app_id}@{} has an unparseable ticket", entry.version))?;
-    let expected = entry.qpkg_hash_bytes()?;
+    let expected = entry.tapp_hash_bytes()?;
     let bytes = fetch_blob(client, &ticket, expected)
         .await
         .with_context(|| format!("download {app_id}@{}", entry.version))?;
@@ -158,7 +158,7 @@ async fn try_registry(
     let package_id = entry.parse_package_id()?;
     let publisher = entry.publisher_key()?;
     // Fail closed: verify signature + hashes of the actual bytes.
-    qpkg::verify_bytes(&bytes, package_id, publisher)
+    tapp::verify_bytes(&bytes, package_id, publisher)
         .with_context(|| format!("verify {app_id}@{}", entry.version))?;
 
     Ok(Some(FetchOutcome {
@@ -179,7 +179,7 @@ async fn try_registry(
 /// # Errors
 ///
 /// Returns an error if the config fails to load, `version` isn't a
-/// valid semver requirement, or [`fetch_qpkg`] fails.
+/// valid semver requirement, or [`fetch_tapp`] fails.
 pub async fn resolve_and_fetch(
     workspace_root: Option<&std::path::Path>,
     host: &HostProfile,
@@ -191,5 +191,5 @@ pub async fn resolve_and_fetch(
         Some(v) => Some(VersionReq::parse(v).with_context(|| format!("bad version req {v:?}"))?),
         None => None,
     };
-    fetch_qpkg(&config, app_id, req.as_ref(), host).await
+    fetch_tapp(&config, app_id, req.as_ref(), host).await
 }

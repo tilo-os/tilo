@@ -84,7 +84,7 @@ elif a[0] == 'verify':
 else:
     raise SystemExit('unexpected runtime fixture invocation')
 """)
-        self.write("target/release/tilo-pkg", """#!/usr/bin/env python3
+        self.write("target/release/tilo-app-package", """#!/usr/bin/env python3
 import pathlib, sys, os, tomllib
 a = sys.argv[1:]
 if a[0] == 'pack':
@@ -96,14 +96,14 @@ if a[0] == 'pack':
 elif a[0] == 'verify':
     assert len(pathlib.Path(a[-1]).read_bytes()) == 64
 else:
-    raise SystemExit('unexpected qpkg fixture invocation')
+    raise SystemExit('unexpected tapp fixture invocation')
 """)
         self.env = dict(os.environ, PATH=str(self.root / "bin") + os.pathsep + os.environ["PATH"],
                         FIXTURE_CARGO_LOG=str(self.root / "cargo.log"),
                         FIXTURE_STDLIB=str(self.root / "stdlib"), TILO_RELEASE_APPS="calculator",
                         SOURCE_DATE_EPOCH="123", GITHUB_SHA="1" * 40)
-        for name in ("CARGO_TARGET_DIR", "TILO_APP_RELEASE_OUT", "QPKG_PUBLISHER_IDENTITY_FILE",
-                     "RUNTIME_BUNDLE_IDENTITY_FILE", "TRUST_LIST", "MAX_QPKG_BYTES",
+        for name in ("CARGO_TARGET_DIR", "TILO_APP_RELEASE_OUT", "TAPP_PUBLISHER_IDENTITY_FILE",
+                     "RUNTIME_BUNDLE_IDENTITY_FILE", "TRUST_LIST", "MAX_TAPP_BYTES",
                      "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET"):
             self.env.pop(name, None)
 
@@ -121,9 +121,9 @@ else:
 
     def test_pack_failure_preserves_status_and_names_the_app(self):
         self.env["FIXTURE_ARCH"] = "x86_64"
-        self.write("target/release/tilo-pkg", """#!/bin/sh
+        self.write("target/release/tilo-app-package", """#!/bin/sh
 if [ "$1" = pack ]; then
-    echo 'application qpkg is too large' >&2
+    echo 'application tapp is too large' >&2
     exit 37
 fi
 echo 'verify must not run' >&2
@@ -134,9 +134,9 @@ exit 99
                                 capture_output=True, timeout=60)
         self.assertEqual(result.returncode, 37, result.stdout + result.stderr)
         self.assertIn("packing app=calculator binary=", result.stdout)
-        self.assertIn("application qpkg is too large", result.stderr)
+        self.assertIn("application tapp is too large", result.stderr)
         self.assertIn("pack failed: app=calculator output=", result.stderr)
-        self.assertIn("calculator-0.1.0-x86_64.qpkg", result.stderr)
+        self.assertIn("calculator-0.1.0-x86_64.tapp", result.stderr)
         self.assertIn("exit_status=37 binary_bytes=64 limit=5242880", result.stderr)
         self.assertNotIn("verify must not run", result.stderr)
         self.assertNotIn("packed app=", result.stdout)
@@ -158,7 +158,7 @@ exit 99
                                 env=self.env, text=True, capture_output=True, timeout=60)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("expected a 64-bit little-endian aarch64 ELF", result.stderr)
-        self.assertFalse(list((self.root / "dist/app-release/qpkg").glob("*.qpkg")))
+        self.assertFalse(list((self.root / "dist/app-release/tapp").glob("*.tapp")))
 
     def test_unrecorded_compiler_override_fails_before_build(self):
         for key, value in (("RUSTFLAGS", "-C target-cpu=native"),
@@ -209,7 +209,7 @@ exit 99
                 self.assertIn("packing app=calculator binary=", result.stdout)
                 self.assertIn("binary_bytes=64", result.stdout)
                 self.assertIn("packed app=calculator output=", result.stdout)
-                self.assertIn("qpkg_bytes=64 limit=5242880", result.stdout)
+                self.assertIn("tapp_bytes=64 limit=5242880", result.stdout)
                 calls = [json.loads(line) for line in (self.root / "cargo.log").read_text().splitlines()]
                 self.assertTrue(any("--release" in call["args"] for call in calls))
                 self.assertTrue(any("thin-app" in call["args"] for call in calls))
@@ -239,7 +239,7 @@ exit 99
                         self.assertNotIn(b"PRIVATE_TEST_IDENTITY", file.read_bytes())
                 collection = self.root / "dist" / f"collection-{architecture}"
                 env = dict(self.env, TILO_APP_COLLECTION_PLAN=str(out / "plan.json"),
-                           TILO_APP_ARCH=architecture, TILO_APP_QPKG_DIR=str(artifact / "qpkg"),
+                           TILO_APP_ARCH=architecture, TILO_APP_TAPP_DIR=str(artifact / "tapp"),
                            TILO_APP_RUNTIME_DIR=str(artifact / "runtime"),
                            TILO_APP_COLLECTION_OUT=str(collection))
                 calls_before = (self.root / "cargo.log").read_text()

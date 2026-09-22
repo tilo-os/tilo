@@ -46,7 +46,7 @@
 "tilo-agent" = 11   # 9.4 MB
 "tilo-app-host" = 4   # 3.1 MB
 "tilo-app-mount" = 1   # 0.8 MB
-"tilo-catalogue" = 5   # 4.1 MB
+"app" = 5   # 4.1 MB
 "tilo-cli-shim" = 1   # 0.5 MB
 "tilo-collab-link" = 1   # 0.4 MB
 "tilo-collab-probe" = 3   # 2.4 MB
@@ -59,7 +59,7 @@
 "tilo-installer" = 22   # 18.7 MB
 "tilo-launcher" = 4   # 2.8 MB
 "tilo-loadclient" = 1   # 0.7 MB
-"tilo-pkg" = 14   # 12.1 MB
+"tilo-app-package" = 14   # 12.1 MB
 "tilo-registry-server" = 4   # 2.8 MB
 "tilo-relay" = 16   # 13.8 MB
 "tilo-relay-admin" = 2   # 1.0 MB
