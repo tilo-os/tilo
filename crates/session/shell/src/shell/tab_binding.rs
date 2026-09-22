@@ -192,6 +192,10 @@ pub fn open_hosted_app(
 /// a fresh drop. This is the deduplicated-document path: dragging a document
 /// which is already open moves its one live window instead of launching a
 /// duplicate or merely focusing the old location.
+#[allow(
+    clippy::too_many_lines,
+    reason = "relocation validates and applies every shared placement variant as one atomic topology update"
+)]
 pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placement) -> bool {
     let source = tree.workspaces.iter().find_map(|workspace| {
         workspace.strips.iter().find_map(|strip| {
@@ -268,7 +272,10 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
         .iter()
         .position(|group| group.id == source_group)
         .unwrap_or(0);
-    let source_group_len = strip.window_groups[source_group_index].tabs.len();
+    let Some(source_group_state) = strip.window_groups.get(source_group_index) else {
+        return false;
+    };
+    let source_group_len = source_group_state.tabs.len();
     match &mut target {
         ui::widget::TabDropTarget::ExistingGroup {
             group_id,
@@ -297,15 +304,21 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
     else {
         return false;
     };
-    topology[source_group_index].tab_ids.remove(source_index);
-    if topology[source_group_index].active_tab == tab_id {
-        topology[source_group_index].active_tab = topology[source_group_index]
-            .tab_ids
-            .first()
-            .copied()
-            .unwrap_or(0);
-    }
-    if topology[source_group_index].tab_ids.is_empty() {
+    let remove_source_group = {
+        let Some(source_group_state) = topology.get_mut(source_group_index) else {
+            return false;
+        };
+        if source_index >= source_group_state.tab_ids.len() {
+            return false;
+        }
+        source_group_state.tab_ids.remove(source_index);
+        if source_group_state.active_tab == tab_id {
+            source_group_state.active_tab =
+                source_group_state.tab_ids.first().copied().unwrap_or(0);
+        }
+        source_group_state.tab_ids.is_empty()
+    };
+    if remove_source_group {
         topology.remove(source_group_index);
     }
     match target {

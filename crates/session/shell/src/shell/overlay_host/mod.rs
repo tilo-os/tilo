@@ -5575,6 +5575,10 @@ impl ShellOverlayHost {
     /// tree, the host outlives the content, and each row is only ever
     /// touched by one reconcile sweep at a time — the frame loop runs
     /// them sequentially, never re-entrantly.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "cross-strip detach dispatch keeps source draining, hover preview, and release commit in one sequential pointer-safety scope"
+    )]
     fn dispatch_cross_strip_detaches(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -5606,7 +5610,7 @@ impl ShellOverlayHost {
                 strip_rects
                     .iter()
                     .find(|(strip_id, rect)| {
-                        *strip_id != source && cursor.y >= rect.y0 && cursor.y <= rect.y1
+                        *strip_id != source && (cursor.y >= rect.y0 && cursor.y <= rect.y1)
                     })
                     .map(|(strip_id, _)| (*strip_id, cursor))
             });

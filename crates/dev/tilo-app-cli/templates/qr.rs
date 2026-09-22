@@ -8,6 +8,11 @@ fn set_payload(payload: &LocalState<String>, value: String) {
 }
 
 /// A complete IME input → typed state → generated visual output loop.
+///
+/// # Panics
+///
+/// Panics if a generated input binding no longer matches the resource action
+/// declared by this template.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"

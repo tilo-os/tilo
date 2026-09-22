@@ -154,6 +154,11 @@ impl ListModel for ActivityModel {
 /// Rows have stable keys and measured variable heights. Each delegate is an
 /// ordinary widget subtree, so its button remains independently focusable and
 /// accessible without turning a button press into a row-selection gesture.
+///
+/// # Panics
+///
+/// Panics if a generated row binding no longer matches the resource action
+/// declared by this template.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"

@@ -55,7 +55,8 @@ pub fn register_actions(registry: &mut ActionRegistry) {
 /// Panics only if serializing the generated `DocumentAction` enum fails.
 #[expect(
     clippy::expect_used,
-    reason = "the generated action enum contains only serializable strings and unit variants"
+    clippy::too_many_lines,
+    reason = "the generated action enum is serializable; keeping this complete document example together makes its action and field bindings auditable"
 )]
 pub fn app_root() -> Box<dyn Widget> {
     crate::install_catalog();

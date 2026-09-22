@@ -1254,6 +1254,10 @@ fn route_keyboard_input(
 /// Called every tick: once the chrome's in-process drag gesture has the
 /// pointer over a foreign tile, the compositor claims it, starts smithay's
 /// server-side drag offering the file, and delivers the enter. From then on `current_pointer_target` hit-tests normally so the client under the pointer receives `wl_data_device` enter/motion/drop; the release is the drop — Files does not act on the release itself.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the hand-off is one ordered drag state-machine transition"
+)]
 pub fn pump_chrome_drag(state: &mut State, fb: &mut FrameBuilder) {
     if state.selection.chrome_drag.is_some() || state.selection.dnd_active {
         return;
@@ -1376,7 +1380,7 @@ pub fn pump_chrome_drag(state: &mut State, fb: &mut FrameBuilder) {
 /// This runs before the release is dispatched back into Files. Claiming the
 /// process-global drag first makes Files cancel its own folder move, while the
 /// paths are opened through the exact same retained-geometry resolver used by
-/// client DnD and `WindowEvent::DroppedFile`.
+/// client `DnD` and `WindowEvent::DroppedFile`.
 pub fn finish_chrome_drag_into_shell(
     state: &mut State,
     fb: &mut FrameBuilder,

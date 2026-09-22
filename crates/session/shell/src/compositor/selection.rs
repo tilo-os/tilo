@@ -1516,8 +1516,9 @@ fn request_dragged_name(
     let _ = std::thread::Builder::new()
         .name("tilo-drag-name".into())
         .spawn(move || {
+            use std::io::Read as _;
+
             let _completion = completion;
-            use std::io::Read;
             let mut reader = reader;
             let mut body = Vec::new();
             // Bounded: a URI list is small, and a source that streams forever must not
@@ -1577,18 +1578,23 @@ fn percent_decode_uri_path(path: &str) -> String {
     let mut out = Vec::with_capacity(path.len());
     let bytes = path.as_bytes();
     let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%'
-            && index + 2 < bytes.len()
-            && let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3])
+    while let Some(&byte) = bytes.get(index) {
+        if byte == b'%'
+            && let Some(hex_start) = index.checked_add(1)
+            && let Some(next_index) = index.checked_add(3)
+            && let Some(hex_bytes) = bytes.get(hex_start..next_index)
+            && let Ok(hex) = std::str::from_utf8(hex_bytes)
             && let Ok(value) = u8::from_str_radix(hex, 16)
         {
             out.push(value);
-            index += 3;
-        } else {
-            out.push(bytes[index]);
-            index += 1;
+            index = next_index;
+            continue;
         }
+        out.push(byte);
+        let Some(next_index) = index.checked_add(1) else {
+            break;
+        };
+        index = next_index;
     }
     String::from_utf8_lossy(&out).into_owned()
 }
@@ -1628,12 +1634,11 @@ fn drag_content_suffix(mime: &str) -> &'static str {
         "audio/ogg" => ".ogg",
         "application/pdf" => ".pdf",
         "application/json" => ".json",
-        "application/javascript" => ".js",
+        "application/javascript" | "text/javascript" => ".js",
         "application/xml" => ".xml",
         "text/html" => ".html",
         "text/markdown" | "text/x-markdown" => ".md",
         "text/css" => ".css",
-        "text/javascript" => ".js",
         mime if mime.starts_with("text/") => ".txt",
         _ => ".bin",
     }
@@ -1683,9 +1688,10 @@ fn request_dragged_content(
     let _ = std::thread::Builder::new()
         .name("tilo-drag-content".into())
         .spawn(move || {
-            let _completion = completion;
             use std::io::{Read as _, Write as _};
             use std::os::unix::fs::PermissionsExt as _;
+
+            let _completion = completion;
             // This transfer begins speculatively so a shell drop can survive
             // Wayland cancelling its source. Keep it modest: ordinary file
             // drags also offer a URI, and merely crossing the desktop must not
@@ -1720,7 +1726,7 @@ fn request_dragged_content(
             else {
                 return;
             };
-            let mut bounded = reader.take(max_content_bytes + 1);
+            let mut bounded = reader.take(max_content_bytes.saturating_add(1));
             let Ok(written) = std::io::copy(&mut bounded, output.as_file_mut()) else {
                 return;
             };
@@ -1879,7 +1885,9 @@ impl ClientDndGrabHandler for State {
         self.selection.dnd_active = false;
         self.selection.dnd_label.set(None);
         if let Some(capture) = self.selection.client_drag_capture.take() {
-            if target.is_none() && self.selection.shell_drop_placement.is_some() {
+            if target.is_none()
+                && let Some(placement) = self.selection.shell_drop_placement.take()
+            {
                 capture
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1889,7 +1897,7 @@ impl ClientDndGrabHandler for State {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .wait_timeout;
                 self.selection.pending_shell_drop = Some(PendingShellDrop {
-                    placement: self.selection.shell_drop_placement.take().unwrap(),
+                    placement,
                     wait_timeout,
                     capture,
                     queued_at: std::time::Instant::now(),
@@ -1953,7 +1961,9 @@ pub fn pump_pending_shell_drop(
         let _ = std::fs::remove_file(path);
     }
     if !paths.is_empty() {
-        let pending = state.selection.pending_shell_drop.take().unwrap();
+        let Some(pending) = state.selection.pending_shell_drop.take() else {
+            return false;
+        };
         let mut changed = false;
         for (offset, path) in paths.iter().enumerate() {
             let placement = advance_drop_placement(pending.placement, offset);
@@ -1982,7 +1992,9 @@ pub fn pump_pending_shell_drop(
         capture.uri_transfer_complete && capture.raw_transfer_complete
     };
     if transfers_complete || pending.queued_at.elapsed() > pending.wait_timeout {
-        let pending = state.selection.pending_shell_drop.take().unwrap();
+        let Some(pending) = state.selection.pending_shell_drop.take() else {
+            return false;
+        };
         let raw = {
             let mut capture = pending
                 .capture
