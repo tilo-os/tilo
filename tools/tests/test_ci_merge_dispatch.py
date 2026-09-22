@@ -195,7 +195,7 @@ class DispatchTests(unittest.TestCase):
         ]) as git:
             self.assertTrue(dispatch_merge.fetch_candidate(self.root, 7, HEAD_7))
         self.assertEqual(git.call_args_list, [
-            mock.call(self.root, "rev-parse", "--verify", "refs/qos-integration/candidates/7"),
+            mock.call(self.root, "rev-parse", "--verify", "refs/tilo-integration/candidates/7"),
             mock.call(self.root, "cat-file", "-e", HEAD_7 + "^{commit}"),
         ])
 

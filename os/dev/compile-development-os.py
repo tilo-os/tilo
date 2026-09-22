@@ -550,7 +550,7 @@ def pinned_inputs(architecture='x86_64', kernel_candidate='', *, include_kernel=
 
 def immutable_candidate(reference):
     if not re.fullmatch(r'code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64}', reference):
-        raise ValueError('candidate must be an immutable qos registry digest')
+        raise ValueError('candidate must be an immutable tilo registry digest')
     return reference
 
 

@@ -10,7 +10,7 @@ use serde::Deserialize;
 pub struct ProviderEntry {
     /// MIME type the provider claims (e.g. `text/markdown`).
     pub mime: String,
-    /// Package identifier (e.g. `dev.tilo.qdoc-md`). Also the provider id used
+    /// Package identifier (e.g. `so.tilo.qdoc-md`). Also the provider id used
     /// by clients in `importAs`/`exportAs`.
     pub package: String,
     /// Path to the WASM Component Model binary.
@@ -120,7 +120,7 @@ mod tests {
         let toml = r#"
 [[provider]]
 mime     = "text/markdown"
-package  = "dev.tilo.qdoc-md"
+package  = "so.tilo.qdoc-md"
 wasm     = "/path/to/component.wasm"
 version  = "1.0.0"
 priority = "builtin"
@@ -130,7 +130,7 @@ trust    = ["tilo-curated/2025"]
         assert_eq!(r.providers.len(), 1);
         let p = &r.providers[0];
         assert_eq!(p.mime, "text/markdown");
-        assert_eq!(p.package, "dev.tilo.qdoc-md");
+        assert_eq!(p.package, "so.tilo.qdoc-md");
         assert_eq!(p.tier, Tier::Builtin);
         assert_eq!(p.trust, vec!["tilo-curated/2025".to_string()]);
     }
@@ -146,7 +146,7 @@ trust    = ["tilo-curated/2025"]
         let toml = r#"
 [[provider]]
 mime     = "text/markdown"
-package  = "dev.tilo.qdoc-md"
+package  = "so.tilo.qdoc-md"
 wasm     = "/x.wasm"
 version  = "1.0.0"
 priority = "weird"

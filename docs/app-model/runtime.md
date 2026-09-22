@@ -222,7 +222,7 @@ running it under `tilo-install run` outside a Tilo session (no services)
 prints — every call returns cleanly:
 
 ```
-$ tilo-install run dev.tilo.hello --no-services
+$ tilo-install run so.tilo.hello --no-services
 tilo-hello: a Tilo-native app, running.
 
 == environment ==

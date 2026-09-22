@@ -5,7 +5,7 @@ WPEBackend-fdo 1.16.1, and WPE WebKit 2.52.6 from verified cached sources.
 The ARM build completed all 9,423 WebKit compilation/link steps with two jobs
 and no network access during the engine build.
 
-The local ARM engine image is `localhost/qos-wpe:arm64-dev`, image ID
+The local ARM engine image is `localhost/tilo-wpe:arm64-dev`, image ID
 `22e6e2e9b40a6676b36cb55a9e6b85b15b1205a368b34af6b634f54da345015b`.
 This local image ID is build evidence, not a published or signed release pin.
 The staged MiniBrowser, WPEWebProcess, WPENetworkProcess, and WPEGPUProcess are
@@ -15,7 +15,7 @@ build environment.
 ## Existing local buildroot identity
 
 The retained native buildroot resolves as
-`localhost/qos-wpe-buildroot@sha256:1c17950cbd3d6a31c8fab1a9f3880abc91f7b656ba7a0ed54eaafc452b9bfb59`.
+`localhost/tilo-wpe-buildroot@sha256:1c17950cbd3d6a31c8fab1a9f3880abc91f7b656ba7a0ed54eaafc452b9bfb59`.
 Its image ID is
 `5c42be1f7edfd10e1c6f26144cf812ed585f2576ae864a69cba01c72d4b2059a`.
 A read-only, network-disabled verification container confirmed all 1,126
@@ -57,5 +57,5 @@ screenshot. All checks passed on the native ARM build. The run reported a
 missing accessibility bus; accessibility integration is not covered here.
 
 This establishes software-rendered engine operation in its test environment.
-It does not establish physical GPU acceleration, the qOS browser application
+It does not establish physical GPU acceleration, the Tilo browser application
 integration, the final frozen RPM runtime, or signed release acceptance.

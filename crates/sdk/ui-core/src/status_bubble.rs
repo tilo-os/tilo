@@ -134,6 +134,11 @@ pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64
     (w, h)
 }
 
+/// Height shared by layout reservations and the rendered status pill.
+pub fn pill_height(text_size: f32, text_scale: f32) -> f64 {
+    (f64::from(text_size) * f64::from(text_scale) + 16.0).max(30.0)
+}
+
 /// The caller sets opacity by wrapping this in a `scene.push_layer(...
 /// alpha ...)` using [`StatusBubble::alpha`]. `text_size` follows the
 /// [`pill_size`] contract: renderer-relative, scaled once by the renderer.

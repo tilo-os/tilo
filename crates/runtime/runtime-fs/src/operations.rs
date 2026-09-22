@@ -1357,7 +1357,10 @@ struct VerifiedRemoval {
     content: Option<Fingerprint>,
     children: Vec<(EntryName, Self)>,
 }
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "source removal needs the verified grant, destination and rollback context together"
+)]
 fn remove_source_object(
     ctx: &Context<'_>,
     entry: &GrantedEntry,
@@ -1860,7 +1863,7 @@ pub(super) mod tests {
     fn owner() -> FsOwner {
         FsOwner {
             workspace: "test-room".into(),
-            app_id: "dev.tilo.file-explorer".into(),
+            app_id: "so.tilo.file-explorer".into(),
         }
     }
     fn rights() -> Vec<FsRight> {

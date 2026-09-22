@@ -54,7 +54,7 @@ pub fn main() {
         std::process::exit(1);
     }
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.feeds", feeds::app_root)
+        &LaunchSpec::new("so.tilo.feeds", feeds::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "sidebar-open",

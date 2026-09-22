@@ -318,7 +318,7 @@ mod view_key_tests {
     fn a_pointer_key_carries_its_space_across_the_wire_encoding() {
         for key in [
             PresenceKey::desktop_pointer("room-7"),
-            PresenceKey::surface_pointer("dev.tilo.word-processor"),
+            PresenceKey::surface_pointer("so.tilo.word-processor"),
         ] {
             let bytes = postcard::to_stdvec(&key).expect("a pointer key encodes");
             let back: PresenceKey =
@@ -336,8 +336,8 @@ mod view_key_tests {
     /// decided — before anything has been drawn, from the key alone.
     #[test]
     fn two_surfaces_are_two_spaces() {
-        let wp = PresenceKey::surface_pointer("dev.tilo.word-processor");
-        let fm = PresenceKey::surface_pointer("dev.tilo.files");
+        let wp = PresenceKey::surface_pointer("so.tilo.word-processor");
+        let fm = PresenceKey::surface_pointer("so.tilo.files");
         assert_ne!(wp.pointer_space(), fm.pointer_space());
         assert!(!wp.scopes_a_desktop_pointer());
         assert!(!fm.scopes_a_desktop_pointer());

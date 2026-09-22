@@ -15,7 +15,7 @@
 //! Landlock ruleset against the *sandbox-side* paths, calls
 //! `restrict_self()`, then `execvp`s the target app.
 //!
-//! qpkg applications require this layer.  An unsupported kernel, a partial
+//! tapp applications require this layer.  An unsupported kernel, a partial
 //! ABI, or ruleset construction failure refuses the launch instead of quietly
 //! running an untrusted package with a weaker boundary than the UI promises.
 //! Bubblewrap, seccomp and the network namespace remain independent layers;
@@ -390,14 +390,14 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
 
     if !parsed.no_landlock && outcome != LandlockOutcome::FullyEnforced {
         eprintln!(
-            "tilo-sandbox-exec: refusing qpkg launch because the complete Landlock v5 policy is not enforced"
+            "tilo-sandbox-exec: refusing tapp launch because the complete Landlock v5 policy is not enforced"
         );
         std::process::exit(126);
     }
 
     if let Err(error) = close_ambient_fds(&parsed.keep_fds) {
         eprintln!(
-            "tilo-sandbox-exec: refusing qpkg launch: could not close ambient descriptors: {error}"
+            "tilo-sandbox-exec: refusing tapp launch: could not close ambient descriptors: {error}"
         );
         std::process::exit(126);
     }

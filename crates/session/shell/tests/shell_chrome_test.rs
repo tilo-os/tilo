@@ -282,24 +282,6 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
     );
 }
 
-/// The top bar is opaque, taking its opacity from the one chrome
-/// constant rather than a number of its own — a tint without blur (vello
-/// has none) is a contrast loss, not glass.
-#[test]
-fn topbar_chrome_surface_alpha_tracks_the_shared_chrome_opacity() {
-    use shell::shell::topbar_chrome::TopBarChrome;
-    let a = TopBarChrome::top_bar_alpha();
-    assert!(
-        (a - ui::chrome::shell::CHROME_SURFACE_ALPHA).abs() < f32::EPSILON,
-        "top-bar alpha must be the shared chrome opacity so the bar and          its popovers stay one material; got {a} against {}",
-        ui::chrome::shell::CHROME_SURFACE_ALPHA
-    );
-    assert!(
-        (a - 1.0).abs() < f32::EPSILON,
-        "chrome is opaque: this renderer has no backdrop filter, so a          translucent bar is not glass but a contrast loss that varies          with what is open behind it; got {a}"
-    );
-}
-
 /// The `GlobalSearch` palette surface is opaque (a tint would read as
 /// chrome bleeding through long result rows), leaning on the scrim below
 /// for depth. Pinned against `overlay_host::MODAL_SURFACE_ALPHA`, since

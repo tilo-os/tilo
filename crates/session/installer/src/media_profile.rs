@@ -286,7 +286,9 @@ mod tests {
             (
                 "locale",
                 MediaProfileField::Locale,
-                serde_json::json!("../../etc"),
+                // Syntactically plausible is not enough: the installed image
+                // must actually carry the selected locale data.
+                serde_json::json!("zz_ZZ.UTF-8"),
             ),
             (
                 "keyboard",

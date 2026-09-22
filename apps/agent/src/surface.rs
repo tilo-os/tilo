@@ -396,7 +396,7 @@ fn photos_document(doc: &AutoCommit) -> bool {
 /// where no peer snapshot exists to attribute — never has to index into
 /// [`CONTRACTS`] to get it.
 pub const WORD_PROCESSOR: AppContract = AppContract {
-    app_id: "dev.tilo.word-processor",
+    app_id: "so.tilo.word-processor",
     title: "the word processor",
     namespace: "word-processor",
     recognises: |doc| qdoc::model::open(doc, &automerge::ROOT).is_ok(),
@@ -420,7 +420,7 @@ pub const WORD_PROCESSOR: AppContract = AppContract {
 pub static CONTRACTS: &[AppContract] = &[
     WORD_PROCESSOR,
     AppContract {
-        app_id: "dev.tilo.chat",
+        app_id: "so.tilo.chat",
         title: "the conversation",
         namespace: "chat",
         recognises: chat::doc::ChatDoc::is_seeded,
@@ -430,7 +430,7 @@ pub static CONTRACTS: &[AppContract] = &[
         product: nothing,
     },
     AppContract {
-        app_id: "dev.tilo.photos",
+        app_id: "so.tilo.photos",
         title: "the photo editor",
         namespace: "photos",
         recognises: photos_document,
@@ -1646,7 +1646,7 @@ mod tests {
     fn duplicate_addresses_from_two_live_publishers_remain_distinct() {
         let surface = |peer_id| ui::collaboration::BrokerActionSurface {
             peer_id,
-            app_id: "dev.tilo.calculator".into(),
+            app_id: "so.tilo.calculator".into(),
             cluster_id: "room".into(),
             record_id: format!("window-{peer_id}"),
             live: true,
@@ -1683,9 +1683,9 @@ mod tests {
 
     #[test]
     fn broker_prefixed_shell_launch_is_still_recognised_as_an_open() {
-        let address = ActionAddress::new("app.dev.tilo.diffmerge", OPEN_ACTION);
+        let address = ActionAddress::new("app.so.tilo.diffmerge", OPEN_ACTION);
         let offer = Offer {
-            app: "dev.tilo.diffmerge".into(),
+            app: "so.tilo.diffmerge".into(),
             broker_peer_id: Some(0),
             descriptor: ActionDescriptor {
                 address,
@@ -1701,6 +1701,6 @@ mod tests {
             },
         };
         let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");
-        assert_eq!(opens(&decoded), Some("dev.tilo.diffmerge"));
+        assert_eq!(opens(&decoded), Some("so.tilo.diffmerge"));
     }
 }
