@@ -22,7 +22,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Str};
 
 #[cfg(target_os = "linux")]
@@ -253,7 +253,7 @@ impl PermissionStoreBackend {
 
     async fn set(
         &self,
-        #[zbus(signal_context)] signal: SignalContext<'_>,
+        #[zbus(signal_emitter)] signal: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         table: String,
         create: bool,
@@ -292,7 +292,7 @@ impl PermissionStoreBackend {
 
     async fn delete(
         &self,
-        #[zbus(signal_context)] signal: SignalContext<'_>,
+        #[zbus(signal_emitter)] signal: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         table: String,
         id: String,
@@ -321,7 +321,7 @@ impl PermissionStoreBackend {
 
     async fn set_value(
         &self,
-        #[zbus(signal_context)] signal: SignalContext<'_>,
+        #[zbus(signal_emitter)] signal: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         table: String,
         create: bool,
@@ -365,7 +365,7 @@ impl PermissionStoreBackend {
 
     async fn set_permission(
         &self,
-        #[zbus(signal_context)] signal: SignalContext<'_>,
+        #[zbus(signal_emitter)] signal: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         table: String,
         create: bool,
@@ -409,7 +409,7 @@ impl PermissionStoreBackend {
 
     async fn delete_permission(
         &self,
-        #[zbus(signal_context)] signal: SignalContext<'_>,
+        #[zbus(signal_emitter)] signal: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         table: String,
         id: String,
@@ -485,7 +485,7 @@ impl PermissionStoreBackend {
 
     #[zbus(signal)]
     async fn changed(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         table: String,
         id: String,
         deleted: bool,

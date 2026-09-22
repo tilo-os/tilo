@@ -60,9 +60,10 @@ fn capture_blocking(request: ScreenCaptureRequest) -> ScreenCaptureOutcome {
 #[cfg(all(feature = "portal", unix))]
 async fn capture(request: ScreenCaptureRequest) -> ScreenCaptureOutcome {
     use crate::capture::{CaptureStream, ScreenCaptureGrant};
-    use ashpd::WindowIdentifier;
-    use ashpd::desktop::PersistMode;
-    use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
+    use ashpd::desktop::screencast::{
+        CursorMode, Screencast, SelectSourcesOptions, SourceType, StartCastOptions,
+    };
+    use ashpd::desktop::{CreateSessionOptions, PersistMode};
 
     let failed = |error: ashpd::Error| match error {
         ashpd::Error::Response(_) => ScreenCaptureOutcome::Cancelled,
@@ -76,7 +77,7 @@ async fn capture(request: ScreenCaptureRequest) -> ScreenCaptureOutcome {
             ));
         }
     };
-    let session = match proxy.create_session().await {
+    let session = match proxy.create_session(CreateSessionOptions::default()).await {
         Ok(session) => session,
         Err(error) => return failed(error),
     };
@@ -93,15 +94,22 @@ async fn capture(request: ScreenCaptureRequest) -> ScreenCaptureOutcome {
         CursorMode::Hidden
     };
     if let Err(error) = proxy
-        .select_sources(&session, cursor, sources, false, None, PersistMode::DoNot)
+        .select_sources(
+            &session,
+            SelectSourcesOptions::default()
+                .set_cursor_mode(cursor)
+                .set_sources(sources)
+                .set_multiple(false)
+                .set_persist_mode(PersistMode::DoNot),
+        )
         .await
     {
         return failed(error);
     }
-    // No parent window handle from this surface: pass the default (empty)
-    // identifier, letting the portal parent the chooser.
+    // No parent window handle from this surface: pass no identifier, letting
+    // the portal parent the chooser.
     let response = match proxy
-        .start(&session, &WindowIdentifier::default())
+        .start(&session, None, StartCastOptions::default())
         .await
         .and_then(|request| request.response())
     {

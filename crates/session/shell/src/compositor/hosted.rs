@@ -580,7 +580,7 @@ fn bring_up_portal(
     };
     let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
         rt_handle.block_on(async move {
-            let conn = zbus::ConnectionBuilder::session()?.build().await?;
+            let conn = zbus::connection::Builder::session()?.build().await?;
             crate::portal::serve(conn, ctx).await
         });
     let handle = match serve_result {

@@ -256,7 +256,7 @@ smithay-client-toolkit = { version = "0.20.0", features = ["calloop"], optional 
 # Shared MPRIS media control needs a Unix session bus. Keep zbus out of native
 # Windows builds even when an app enables `mpris`; p2p supports hermetic tests.
 zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
-ashpd = { workspace = true, optional = true }
+ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "location", "screencast"] }
 # Drives the location portal's update stream (`native::location`).
 futures-util = { workspace = true, optional = true }
 
