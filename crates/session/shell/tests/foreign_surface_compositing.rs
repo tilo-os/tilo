@@ -136,11 +136,17 @@ fn settle(fb: &mut FrameBuilder) {
     // the live tree and lays them out, so it must run even when nothing
     // is animating yet.
     let _ = frame(fb);
-    let deadline = std::time::Instant::now()
+    let started = std::time::Instant::now();
+    let minimum = started
+        .checked_add(std::time::Duration::from_millis(500))
+        .unwrap_or(started);
+    let deadline = started
         .checked_add(std::time::Duration::from_secs(3))
-        .unwrap_or_else(std::time::Instant::now);
+        .unwrap_or(started);
     let settled = |fb: &mut FrameBuilder| !fb.needs_animation_frame() || fb.any_tile_opening();
-    while !settled(fb) && std::time::Instant::now() < deadline {
+    while (std::time::Instant::now() < minimum || !settled(fb))
+        && std::time::Instant::now() < deadline
+    {
         std::thread::sleep(std::time::Duration::from_millis(8));
         let _ = frame(fb);
     }
@@ -301,6 +307,11 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
     quiesce(&mut fb, surface_id);
     let scene = frame(&mut fb);
     let after = shot("foreign-with-client-frame", &mut renderer, &scene);
+    // The focused foreign group can still finish its strip pan while its
+    // opening card is up. Sample the rect painted by this frame, not the
+    // pre-commit position captured above.
+    let rect = tile_rect(&mut fb, surface_id);
+    let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
     let px = OffscreenRenderer::sample(&after, W, cx, cy);
     assert!(
         px.0.abs_diff(0xE0) <= 4 && px.1.abs_diff(0x18) <= 4 && px.2.abs_diff(0xA0) <= 4,
