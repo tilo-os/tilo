@@ -767,14 +767,7 @@ pub fn draw_markers(
             // would be sliced at the drawer/panel edge into an unreadable
             // fragment. The pin still shows; the drawer already names the place.
             if rect.x0 >= clip.x0 && rect.x1 <= clip.x1 {
-                draw::card(
-                    scene,
-                    t,
-                    rect,
-                    6.0,
-                    theme.tokens.colors.surfaces.raised,
-                    theme.tokens.colors.border_standard,
-                );
+                draw::card(scene, t, rect, 6.0, theme.tokens.colors.surfaces.raised);
                 draw::text_w(
                     scene,
                     tr,
@@ -801,7 +794,10 @@ pub fn draw_markers(
 /// a larger disc bearing a white category pictogram and (past the label
 /// threshold) a name plate. The selected POI is enlarged with an accent halo and
 /// always labelled.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "POI painting combines render context, map projection, visible records, selection, palette and clipping bounds"
+)]
 pub fn draw_pois(
     scene: &mut Scene,
     t: Affine,
@@ -859,7 +855,10 @@ pub fn draw_pois(
     scene.pop_layer();
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "POI marker painting needs render context, projected position, record, palette, display flags and clipping bounds"
+)]
 fn draw_poi_dot(
     scene: &mut Scene,
     t: Affine,

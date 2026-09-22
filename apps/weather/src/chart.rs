@@ -19,6 +19,7 @@ use vello::peniko::{BlendMode, Brush, Color, Fill, Gradient};
 use ui::color_compat::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::spacing::Spacing;
 
 use crate::icon;
 use crate::wxcode::Sky;
@@ -37,22 +38,69 @@ pub struct HourColumn {
     pub is_now: bool,
 }
 
-/// Rendering services shared by every pass over an hourly strip.
-pub(crate) struct ChartPaintCtx<'a> {
-    pub scene: &'a mut Scene,
-    pub transform: Affine,
-    pub theme: &'a Theme,
-    pub text_renderer: &'a mut TextRenderer,
+/// The strip's rows stacked from measured lines with the theme's steps,
+/// relative to the band's top: value line, an `s1` and the now-dot's
+/// radius, the curve band, the dot's radius and an `s1`, the glyph, an `s1`,
+/// the precipitation line, an `s1`, the hour label. One stack for the
+/// painter *and* the body layout (`height`), so the card is always tall
+/// enough for the labels at every text scale — nothing touches (HIG §7).
+#[derive(Clone, Copy, Debug)]
+pub struct StripRows {
+    pub value_y: f64,
+    pub curve_top: f64,
+    pub curve_bottom: f64,
+    pub icon_cy: f64,
+    /// Edge of the condition glyph drawn in each column.
+    pub icon_edge: f64,
+    /// Top of the precipitation read-out's line box.
+    pub precip_y: f64,
+    /// Top of the hour label's line box.
+    pub label_y: f64,
+    /// Bottom of the hour label's line box — the band the strip needs.
+    pub height: f64,
+    /// Radius of the highlighted "now" point on the curve — the widest mark
+    /// the curve band has to clear above and below.
+    pub now_dot_r: f64,
+    /// Renderer-relative sizes of the value row and the small rows.
+    pub value_text: f32,
+    pub small_text: f32,
 }
 
-/// The laid-out data and presentation choices for one hourly strip.
-pub(crate) struct HourlyStrip<'a> {
-    pub band: Rect,
-    pub columns: &'a [HourColumn],
-    pub column_width: f64,
-    pub scroll_x: f64,
-    pub accent: Color,
-    pub temperature_suffix: &'a str,
+/// Solve the strip's row stack for `text_scale`.
+pub fn strip_rows(spacing: &Spacing, text_scale: f32) -> StripRows {
+    // The strip's authored marks: `sm`-sized values, `xs`-sized labels
+    // (11pt sits between the scale's `xs` and `sm`), a 36 px curve band,
+    // a 28 px glyph and the 4.5 px "now" point.
+    let (value_text, small_text) = (13.0_f32, 11.0_f32);
+    let (curve_h, icon_edge, now_dot_r) = (36.0, 28.0, 4.5);
+    let s1 = f64::from(spacing.s1);
+    let value_h = ui::text_metrics::line_height_px(value_text, text_scale);
+    let small_h = ui::text_metrics::line_height_px(small_text, text_scale);
+    let value_y = 0.0;
+    let curve_top = value_y + value_h + s1 + now_dot_r;
+    let curve_bottom = curve_top + curve_h;
+    let icon_top = curve_bottom + now_dot_r + s1;
+    let icon_cy = icon_top + icon_edge / 2.0;
+    let precip_y = icon_top + icon_edge + s1;
+    let label_y = precip_y + small_h + s1;
+    StripRows {
+        value_y,
+        curve_top,
+        curve_bottom,
+        icon_cy,
+        icon_edge,
+        precip_y,
+        label_y,
+        height: label_y + small_h,
+        now_dot_r,
+        value_text,
+        small_text,
+    }
+}
+
+/// The band height the strip needs at `text_scale` (see [`strip_rows`]).
+pub fn strip_height(spacing: &Spacing, text_scale: f32) -> f64 {
+    strip_rows(spacing, text_scale).height
 }
 
 /// Precomputed column layout + the temperature-to-y mapping, shared by
@@ -67,13 +115,25 @@ struct StripGeometry {
     curve_bottom: f64,
     value_y: f64,
     icon_cy: f64,
+    icon_edge: f64,
+    /// Centre line of the precipitation dot; the read-out's line box starts
+    /// 2 px above it.
     precip_y: f64,
     label_y: f64,
-    large_text: bool,
+    now_dot_r: f64,
+    value_text: f32,
+    small_text: f32,
 }
 
 impl StripGeometry {
-    fn new(band: Rect, cols: &[HourColumn], col_w: f64, scroll_x: f64, text_scale: f32) -> Self {
+    fn new(
+        band: Rect,
+        cols: &[HourColumn],
+        col_w: f64,
+        scroll_x: f64,
+        spacing: &Spacing,
+        text_scale: f32,
+    ) -> Self {
         // Temperature range for the curve, with headroom so it never clips.
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         for p in cols {
@@ -84,20 +144,23 @@ impl StripGeometry {
             hi += 1.0;
             lo -= 1.0;
         }
-        let large_text = text_scale >= 1.5;
+        let rows = strip_rows(spacing, text_scale);
         Self {
             band,
             scroll_x,
             col_w,
             lo,
             span: hi - lo,
-            curve_top: band.y0 + if large_text { 42.0 } else { 22.0 },
-            curve_bottom: band.y0 + if large_text { 84.0 } else { 58.0 },
-            value_y: band.y0 + 2.0,
-            icon_cy: band.y0 + if large_text { 126.0 } else { 82.0 },
-            precip_y: band.y0 + if large_text { 152.0 } else { 100.0 },
-            label_y: band.y1 - if large_text { 28.0 } else { 15.0 },
-            large_text,
+            curve_top: band.y0 + rows.curve_top,
+            curve_bottom: band.y0 + rows.curve_bottom,
+            value_y: band.y0 + rows.value_y,
+            icon_cy: band.y0 + rows.icon_cy,
+            icon_edge: rows.icon_edge,
+            precip_y: band.y0 + rows.precip_y + 2.0,
+            label_y: band.y0 + rows.label_y,
+            now_dot_r: rows.now_dot_r,
+            value_text: rows.value_text,
+            small_text: rows.small_text,
         }
     }
 
@@ -113,39 +176,42 @@ impl StripGeometry {
 /// Draw the scrollable hourly strip into `band`. Columns are `col_w` wide and
 /// laid out left-to-right from `band.x0 - scroll_x`; content wider than the
 /// band is clipped to it (the caller supplies the scrollbar).
-pub(crate) fn draw_hourly_strip(ctx: &mut ChartPaintCtx<'_>, strip: &HourlyStrip<'_>) {
-    if strip.columns.is_empty() {
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one strip-drawing entry point taking scene/t/theme/tr (the universal draw-context) plus the strip's own band/cols/col_w/scroll_x/accent/temp_suffix — a context struct would just move the same count into a constructor call at the one call site"
+)]
+pub fn draw_hourly_strip(
+    scene: &mut Scene,
+    t: Affine,
+    band: Rect,
+    cols: &[HourColumn],
+    col_w: f64,
+    scroll_x: f64,
+    accent: Color,
+    theme: &Theme,
+    tr: &mut TextRenderer,
+    temp_suffix: &str,
+) {
+    if cols.is_empty() {
         return;
     }
     let geo = StripGeometry::new(
-        strip.band,
-        strip.columns,
-        strip.column_width,
-        strip.scroll_x,
-        ctx.theme.text_scale,
+        band,
+        cols,
+        col_w,
+        scroll_x,
+        &theme.tokens.spacing,
+        tr.text_scale(),
     );
 
     // Clip everything to the band so scrolled-off columns don't bleed out.
-    ctx.scene.push_layer(
-        Fill::NonZero,
-        BlendMode::default(),
-        1.0,
-        ctx.transform,
-        &strip.band,
-    );
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &band);
 
-    draw_now_highlight(ctx.scene, ctx.transform, strip.columns, &geo, strip.accent);
-    let pts = draw_trend_curve(
-        ctx.scene,
-        ctx.transform,
-        strip.band,
-        strip.columns,
-        &geo,
-        strip.accent,
-    );
-    draw_column_marks(ctx, strip, &pts, &geo);
+    draw_now_highlight(scene, t, cols, &geo, accent);
+    let pts = draw_trend_curve(scene, t, band, cols, &geo, accent);
+    draw_column_marks(scene, t, cols, &pts, &geo, theme, tr, temp_suffix, accent);
 
-    ctx.scene.pop_layer();
+    scene.pop_layer();
 }
 
 /// The "Now" column's highlight pill, painted behind everything else.
@@ -218,19 +284,23 @@ fn draw_trend_curve(
 /// Per-column temperature value, curve dot, weather glyph, precipitation
 /// read-out and hour label. Columns scrolled entirely outside the band are
 /// culled before any of it is painted.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one drawing pass over every per-column mark, needing scene/t/theme/tr (the universal draw-context) plus cols/pts/geo/temp_suffix/accent — splitting further would just thread the same values through more calls"
+)]
 fn draw_column_marks(
-    ctx: &mut ChartPaintCtx<'_>,
-    strip: &HourlyStrip<'_>,
+    scene: &mut Scene,
+    t: Affine,
+    cols: &[HourColumn],
     pts: &[Point],
     geo: &StripGeometry,
+    theme: &Theme,
+    tr: &mut TextRenderer,
+    temp_suffix: &str,
+    accent: Color,
 ) {
-    let scene = &mut *ctx.scene;
-    let t = ctx.transform;
-    let theme = ctx.theme;
-    let tr = &mut *ctx.text_renderer;
-    let accent = strip.accent;
     let c = &theme.tokens.colors;
-    for (i, p) in strip.columns.iter().enumerate() {
+    for (i, p) in cols.iter().enumerate() {
         let cx = geo.x_center(i);
         // Cull columns entirely outside the band.
         if cx + geo.col_w / 2.0 < geo.band.x0 - 1.0 || cx - geo.col_w / 2.0 > geo.band.x1 + 1.0 {
@@ -241,13 +311,12 @@ fn draw_column_marks(
         };
 
         // Temperature value.
-        let val = format!("{}{}", p.temp.round() as i64, strip.temperature_suffix);
-        let value_size = if geo.large_text { 11.0 } else { 13.0 };
-        let (vw, _) = tr.measure_weighted(&val, value_size, None, TextWeight::Semibold);
+        let val = format!("{}{}", p.temp.round() as i64, temp_suffix);
+        let (vw, _) = tr.measure_weighted(&val, geo.value_text, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
             &val,
-            value_size,
+            geo.value_text,
             c.text_primary,
             t * Affine::translate((cx - f64::from(vw) / 2.0, geo.value_y)),
             None,
@@ -256,7 +325,13 @@ fn draw_column_marks(
 
         // Curve dot.
         if p.is_now {
-            scene.fill(Fill::NonZero, t, accent, None, &Circle::new(pt, 4.5));
+            scene.fill(
+                Fill::NonZero,
+                t,
+                accent,
+                None,
+                &Circle::new(pt, geo.now_dot_r),
+            );
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -274,29 +349,40 @@ fn draw_column_marks(
             t,
             Sky::from_code(p.code),
             p.is_day,
-            Rect::new(cx - 14.0, geo.icon_cy - 14.0, cx + 14.0, geo.icon_cy + 14.0),
+            Rect::new(
+                cx - geo.icon_edge / 2.0,
+                geo.icon_cy - geo.icon_edge / 2.0,
+                cx + geo.icon_edge / 2.0,
+                geo.icon_cy + geo.icon_edge / 2.0,
+            ),
             theme,
         );
 
         // Precipitation probability (only when it's worth showing).
         if p.precip >= 5.0 {
-            let drop_c = Point::new(cx - 12.0, geo.precip_y + 4.0);
+            // Dot, an `s1`, then the read-out — one cluster centred on the
+            // column, so a scaled label grows away from the dot instead of
+            // into it.
+            let txt = format!("{}%", p.precip.round() as i64);
+            let (pw, _) = tr.measure(&txt, geo.small_text, None);
+            let dot_r = 2.4;
+            let gap = f64::from(theme.tokens.spacing.s1);
+            let cluster_w = 2.0 * dot_r + gap + f64::from(pw);
+            let cluster_x0 = cx - cluster_w / 2.0;
+            let drop_c = Point::new(cluster_x0 + dot_r, geo.precip_y + 4.0);
             scene.fill(
                 Fill::NonZero,
                 t,
                 c.semantic.info,
                 None,
-                &Circle::new(drop_c, 2.4),
+                &Circle::new(drop_c, dot_r),
             );
-            let txt = format!("{}%", p.precip.round() as i64);
-            let detail_size = if geo.large_text { 9.0 } else { 11.0 };
-            let (pw, _) = tr.measure(&txt, detail_size, None);
             tr.draw_text(
                 scene,
                 &txt,
-                detail_size,
+                geo.small_text,
                 c.semantic.info,
-                t * Affine::translate((cx - f64::from(pw) / 2.0 + 4.0, geo.precip_y - 2.0)),
+                t * Affine::translate((cluster_x0 + 2.0 * dot_r + gap, geo.precip_y - 2.0)),
                 None,
             );
         }
@@ -307,12 +393,11 @@ fn draw_column_marks(
         } else {
             (format!("{}:00", p.hour), TextWeight::Regular, c.text_dim)
         };
-        let label_size = if geo.large_text { 9.0 } else { 11.0 };
-        let (lw, _) = tr.measure_weighted(&label, label_size, None, weight);
+        let (lw, _) = tr.measure_weighted(&label, geo.small_text, None, weight);
         tr.draw_text_weighted(
             scene,
             &label,
-            label_size,
+            geo.small_text,
             color,
             t * Affine::translate((cx - f64::from(lw) / 2.0, geo.label_y)),
             None,
@@ -324,6 +409,45 @@ fn draw_column_marks(
 /// Convert a polyline into a smooth path using Catmull-Rom → cubic Bézier
 /// conversion (tension 0). Endpoints are duplicated so the curve passes
 /// through the first and last points.
+#[cfg(test)]
+mod strip_row_tests {
+    use super::strip_rows;
+    use ui::tokens::spacing::Spacing;
+
+    /// At every text scale the precipitation line box ends an `s1` above the
+    /// hour label's, and the stack's `height` holds the label — the row the
+    /// review found overprinting at 1.5× can no longer reach it.
+    #[test]
+    fn precipitation_and_hour_label_never_touch_at_any_scale() {
+        let sp = Spacing::default();
+        let s1 = f64::from(sp.s1);
+        let mut previous = 0.0;
+        for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+            let rows = strip_rows(&sp, scale);
+            let small_h = ui::text_metrics::line_height_px(rows.small_text, scale);
+            let value_h = ui::text_metrics::line_height_px(rows.value_text, scale);
+            assert!(
+                rows.label_y - (rows.precip_y + small_h) >= s1 - 1e-9,
+                "{scale}×: hour label {} runs into the precipitation line ending at {}",
+                rows.label_y,
+                rows.precip_y + small_h
+            );
+            assert!(rows.curve_top - rows.now_dot_r - (rows.value_y + value_h) >= s1 - 1e-9);
+            assert!(
+                rows.icon_cy - rows.icon_edge / 2.0 - (rows.curve_bottom + rows.now_dot_r)
+                    >= s1 - 1e-9
+            );
+            assert!(rows.precip_y - (rows.icon_cy + rows.icon_edge / 2.0) >= s1 - 1e-9);
+            assert!((rows.height - (rows.label_y + small_h)).abs() < 1e-9);
+            assert!(
+                rows.height > previous,
+                "{scale}×: the stack must grow with the type"
+            );
+            previous = rows.height;
+        }
+    }
+}
+
 fn catmull_rom_path(pts: &[Point]) -> BezPath {
     let mut path = BezPath::new();
     let Some(&first) = pts.first() else {
@@ -355,7 +479,7 @@ fn catmull_rom_path(pts: &[Point]) -> BezPath {
 }
 
 #[cfg(test)]
-mod tests {
+mod incoming_geometry_tests {
     use super::{HourColumn, StripGeometry};
     use vello::kurbo::Rect;
 
@@ -378,6 +502,7 @@ mod tests {
             &columns,
             80.0,
             30.0,
+            &ui::tokens::Spacing::BASE,
             1.0,
         );
 
@@ -388,8 +513,14 @@ mod tests {
     #[test]
     fn flat_temperature_series_still_has_a_finite_curve_range() {
         let columns = [column(12.0), column(12.0)];
-        let geometry =
-            StripGeometry::new(Rect::new(0.0, 0.0, 200.0, 180.0), &columns, 80.0, 0.0, 1.0);
+        let geometry = StripGeometry::new(
+            Rect::new(0.0, 0.0, 200.0, 180.0),
+            &columns,
+            80.0,
+            0.0,
+            &ui::tokens::Spacing::BASE,
+            1.0,
+        );
 
         let y = geometry.y_at(12.0);
         assert!(y.is_finite());
