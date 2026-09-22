@@ -340,9 +340,25 @@ fn validate_backup_passphrase(passphrase: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Argon2id v1.3 cost for backup keys. Backups do not record these, so they
+/// are part of the file format and must not follow the argon2 crate's
+/// defaults (which they matched when the format was introduced).
+const BACKUP_KDF_MEMORY_KIB: u32 = 19 * 1024;
+const BACKUP_KDF_ITERATIONS: u32 = 2;
+const BACKUP_KDF_LANES: u32 = 1;
+
 fn derive_backup_key(passphrase: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
+    use argon2::{Algorithm, Argon2, Params, Version};
+
+    let params = Params::new(
+        BACKUP_KDF_MEMORY_KIB,
+        BACKUP_KDF_ITERATIONS,
+        BACKUP_KDF_LANES,
+        Some(32),
+    )
+    .map_err(|_| "Could not secure the backup password".to_string())?;
     let mut key = Zeroizing::new([0_u8; 32]);
-    argon2::Argon2::default()
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(passphrase.as_bytes(), salt, key.as_mut())
         .map_err(|_| "Could not secure the backup password".to_string())?;
     Ok(key)
@@ -351,6 +367,21 @@ fn derive_backup_key(passphrase: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_key_derivation_is_stable_across_argon2_releases() {
+        // Recorded from the original `Argon2::default()` derivation; existing
+        // backups only open if this never changes.
+        let key = derive_backup_key("correct horse battery", b"0123456789abcdef").unwrap();
+        assert_eq!(
+            *key,
+            [
+                0xeb, 0xd2, 0x3b, 0xa8, 0x28, 0xc3, 0x4e, 0xc4, 0x30, 0x85, 0x0a, 0x85, 0xbe, 0x94,
+                0x09, 0x8a, 0xa1, 0x08, 0xd2, 0x51, 0x90, 0xbf, 0x10, 0xbc, 0xe1, 0xf5, 0xc4, 0xd0,
+                0xab, 0x71, 0x71, 0xae,
+            ]
+        );
+    }
 
     #[test]
     fn parses_chrome_firefox_and_quoted_fields() {
