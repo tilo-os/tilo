@@ -431,8 +431,14 @@ fi
 cycle="$repo/os/dev/test-installer-cycle.sh"
 release_vars="$repo/os/dev/prepare-release-secureboot-vars.sh"
 boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
+image_tools_line="$(grep -nF 'name: Install native image-build and full-cycle VM dependencies' "$workflow" | cut -d: -f1 || true)"
+image_auth_line="$(grep -nF 'name: Authenticate the native image builder' "$workflow" | cut -d: -f1 || true)"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'needs: plan' "$workflow" \
+  && [ -n "$image_tools_line" ] && [ -n "$image_auth_line" ] \
+  && [ "$image_tools_line" -lt "$image_auth_line" ] \
+  && grep -Fq 'ntfs-3g podman' "$workflow" \
+  && grep -Fq 'mtype ntfscp podman qemu-img' "$workflow" \
   && grep -Fq -- '--prepared-alongside' "$workflow" \
   && grep -Fq -- '--guided-alongside' "$workflow" \
   && grep -Fq 'dist/installer-guided-alongside-cycle' "$workflow" \
