@@ -1445,6 +1445,10 @@ impl TopBarChrome {
                 }
             }
             Self::CONTROL_MEDIA => self.media_hit_rect(),
+            target if Self::editor_widget(target).is_some() => Self::editor_widget(target)
+                .map_or(Rect::ZERO, |(widget, present)| {
+                    self.widget_editor_action_rect(widget, present)
+                }),
             _ => Rect::ZERO,
         }
     }
@@ -2127,6 +2131,24 @@ impl TopBarChrome {
         )
     }
 
+    fn widget_editor_action_rect(&self, widget: TopBarWidget, present: bool) -> Rect {
+        if !self.widget_editing {
+            return Rect::ZERO;
+        }
+        if present {
+            if self.widget_config.widgets.len() <= 1 {
+                return Rect::ZERO;
+            }
+            self.widget_config
+                .widgets
+                .iter()
+                .position(|candidate| *candidate == widget)
+                .map_or(Rect::ZERO, |index| self.widget_editor_remove_rect(index))
+        } else {
+            self.widget_editor_add_rect(widget)
+        }
+    }
+
     fn draw_widget_editor(
         &mut self,
         scene: &mut Scene,
@@ -2164,7 +2186,7 @@ impl TopBarChrome {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.border_standard,
+            ui::surface::edge_on(theme.tokens.colors.surfaces.overlay),
             None,
             &rr,
         );
@@ -6140,7 +6162,7 @@ mod tests {
                 Style {
                     size: Size {
                         width: Dimension::length(1600.0),
-                        height: Dimension::length(40.0),
+                        height: Dimension::length(TOPBAR_HEIGHT_PX),
                     },
                     ..Default::default()
                 },
@@ -6152,7 +6174,7 @@ mod tests {
                 vp,
                 Size {
                     width: taffy::AvailableSpace::Definite(1600.0),
-                    height: taffy::AvailableSpace::Definite(40.0),
+                    height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
             )
@@ -6265,7 +6287,7 @@ mod tests {
                 Style {
                     size: Size {
                         width: Dimension::length(800.0),
-                        height: Dimension::length(40.0),
+                        height: Dimension::length(TOPBAR_HEIGHT_PX),
                     },
                     ..Default::default()
                 },
@@ -6277,7 +6299,7 @@ mod tests {
                 vp,
                 Size {
                     width: taffy::AvailableSpace::Definite(800.0),
-                    height: taffy::AvailableSpace::Definite(40.0),
+                    height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
             )
@@ -6293,15 +6315,15 @@ mod tests {
             (bar_bottom - f64::from(TOPBAR_HEIGHT_PX)).abs() < 0.5,
             "topbar y1 ({bar_bottom}) should equal TOPBAR_HEIGHT_PX ({TOPBAR_HEIGHT_PX})",
         );
-        assert_eq!(TOPBAR_HEIGHT_PX, 40.0);
+        assert_eq!(TOPBAR_HEIGHT_PX, 48.0);
         for (label, rect) in [
             ("overview", bar.overview_btn_rect),
             ("workspace", bar.ws_pill_rect),
             ("center", bar.center_rect),
             ("tray", bar.tray_pill_rect),
         ] {
-            assert_eq!(rect.y0 - bar.rect.y0, 4.0, "{label} top inset");
-            assert_eq!(bar.rect.y1 - rect.y1, 4.0, "{label} bottom inset");
+            assert_eq!(rect.y0 - bar.rect.y0, 8.0, "{label} top inset");
+            assert_eq!(bar.rect.y1 - rect.y1, 8.0, "{label} bottom inset");
         }
         assert_eq!(bar.tray_hit_rect.y0, bar.rect.y0);
         assert_eq!(bar.tray_hit_rect.y1, bar.rect.y1);
