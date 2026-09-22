@@ -1646,6 +1646,63 @@ impl App {
         self.invoke_bound_target_with_broker(target, invocation, None)
     }
 
+    fn bound_invocation_needs_broker(
+        kind: tilo_actions::OperationKind,
+        spec: &tilo_actions::ActionSpec,
+        invocation: Option<tilo_actions::InvocationId>,
+        has_delivery: bool,
+        connected: bool,
+    ) -> bool {
+        (kind == tilo_actions::OperationKind::Effect
+            && invocation.is_none()
+            && (has_delivery || connected))
+            || (kind == tilo_actions::OperationKind::Document
+                && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred)
+    }
+
+    fn route_bound_invocation_to_broker(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        resources: &[tilo_actions::Resource],
+        arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+        evidence: Option<&serde_json::Value>,
+        broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.require_bound_broker_route(&target.binding)?;
+        if !crate::bound_dispatch::validate_bound_resources(
+            self.root_widget.as_mut(),
+            &target.binding,
+            resources,
+        )
+        .unwrap_or(false)
+        {
+            return Err(tilo_actions::DoorError::Unknown(
+                target.address.address.clone(),
+            ));
+        }
+        let alias = self
+            .actions
+            .bound_publication
+            .alias(&target.binding, &target.address.address.resource)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        let address =
+            tilo_actions::ActionAddress::new(alias, target.address.address.action.clone());
+        if let Some(send) = broker_delivery {
+            return Self::dispatch_broker_request(
+                &mut self.actions.next_broker_request_id,
+                true,
+                &address,
+                arguments,
+                argument,
+                evidence,
+                send,
+            );
+        }
+        self.publish_action_surface();
+        self.invoke_via_broker(&address, arguments, argument, evidence)
+    }
+
     fn invoke_bound_target_with_broker(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
@@ -1687,46 +1744,21 @@ impl App {
         )?;
         let kind = spec.kind;
         if !broker_admitted
-            && ((kind == tilo_actions::OperationKind::Effect
-                && invocation.is_none()
-                && (broker_delivery.is_some() || self.collaboration.manager.is_connected()))
-                || (kind == tilo_actions::OperationKind::Document
-                    && spec.locus == tilo_actions::ExecutionLocus::ServerPreferred))
-        {
-            self.require_bound_broker_route(&target.binding)?;
-            if !crate::bound_dispatch::validate_bound_resources(
-                self.root_widget.as_mut(),
-                &target.binding,
-                &snapshot.resources,
+            && Self::bound_invocation_needs_broker(
+                kind,
+                spec,
+                invocation,
+                broker_delivery.is_some(),
+                self.collaboration.manager.is_connected(),
             )
-            .unwrap_or(false)
-            {
-                return Err(tilo_actions::DoorError::Unknown(
-                    target.address.address.clone(),
-                ));
-            }
-            let alias = self
-                .actions
-                .bound_publication
-                .alias(&target.binding, &target.address.address.resource)
-                .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
-            if let Some(send) = broker_delivery {
-                return Self::dispatch_broker_request(
-                    &mut self.actions.next_broker_request_id,
-                    true,
-                    &tilo_actions::ActionAddress::new(alias, target.address.address.action.clone()),
-                    arguments.as_ref(),
-                    argument,
-                    evidence,
-                    send,
-                );
-            }
-            self.publish_action_surface();
-            return self.invoke_via_broker(
-                &tilo_actions::ActionAddress::new(alias, target.address.address.action.clone()),
+        {
+            return self.route_bound_invocation_to_broker(
+                target,
+                &snapshot.resources,
                 arguments.as_ref(),
                 argument,
                 evidence,
+                broker_delivery,
             );
         }
         let id = invocation.unwrap_or_default();
