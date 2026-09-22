@@ -33,6 +33,7 @@ case " $* " in *' -fP '*) printf '/dev/loop-test\n';; esac
 EOF
 cat >"$work/bin/mount" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >>"$MOCK_MOUNTS"
 case "${1:-}" in
   /dev/loop-testp2) mkdir -p "$2/state/deploy/test/etc" ;;
 esac
@@ -64,6 +65,7 @@ EOF
 chmod +x "$work/bin/"*
 
 PATH="$work/bin:$PATH" MOCK_OUTPUT="$work/output" MOCK_FAT="$work/fat" \
+  MOCK_MOUNTS="$work/mounts.log" \
   TILO_DISTROBOX= TILO_DISK_FORCE_MTOOLS_ESP=1 \
   "$repo/os/dev/disk-image.sh" "$authoritative" "$work/output" \
   --composefs --sealed-source-imgref "$mirror" --size 20G --raw >/dev/null
@@ -72,5 +74,7 @@ cmp "$work/fat/EFI/Linux/tilo.efi" <(printf 'signed uki payload\n')
 cmp "$work/fat/loader/entries/tilo.conf" <(printf 'title Tilo\n')
 [ -z "$(find "$work/output/.mnt/boot" -mindepth 1 -print -quit)" ]
 cmp "$work/output/.esp-source.sha256" "$work/output/.esp-copied.sha256"
+grep -Fxq -- '-t tmpfs -o size=2048M,mode=0755,nosuid,nodev,noexec tilo-esp-stage '"$work/output/.mnt/boot" \
+  "$work/mounts.log"
 
 printf 'ok: mtools fallback verifies the ESP and removes the root staging copy\n'
