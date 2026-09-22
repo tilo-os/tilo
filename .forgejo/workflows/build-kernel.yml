@@ -21,6 +21,7 @@ on:
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
       - "os/dev/open-kernel-snapshot-pr.py"
+      - "os/dev/login-registry-with-retry.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
   pull_request:
@@ -37,6 +38,7 @@ on:
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
       - "os/dev/open-kernel-snapshot-pr.py"
+      - "os/dev/login-registry-with-retry.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
       - "tools/ci/workflow_applicability.py"
@@ -137,7 +139,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          fetch-tags: false
           token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require the selected native kernel architecture
@@ -147,11 +151,13 @@ jobs:
       # kernel-devel, gcc, ...) and the Fedora kernel SRPM.  Log in on every
       # run — build-only PRs also need registry read.
       - name: Log in to code.podesta.ai
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: code.podesta.ai
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_PASSWORD" | \
+            os/dev/login-registry-with-retry.sh \
+              docker code.podesta.ai "$REGISTRY_USERNAME"
 
       # Same mirrored base as the OS image — the modules have to link against
       # the userspace the image ships (os/base-snapshot.env).
@@ -393,6 +399,10 @@ jobs:
           name: tilo-kernel-${{ matrix.arch }}
           path: refs/${{ matrix.arch }}.env
 
+      - name: Revoke local registry login
+        if: ${{ always() }}
+        run: docker logout code.podesta.ai >/dev/null 2>&1 || true
+
   promote-native-kernels:
     needs: build-and-push-kernel
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
@@ -406,6 +416,7 @@ jobs:
         os/rpms-snapshot.env
         os/dev/assert-native-arch.sh
         os/dev/open-kernel-snapshot-pr.py
+        os/dev/login-registry-with-retry.sh
         .forgejo/workflows/build-kernel.yml
     steps:
       - name: Checkout main for atomic pin promotion
