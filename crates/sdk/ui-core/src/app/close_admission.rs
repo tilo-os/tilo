@@ -1,6 +1,6 @@
 //! Native-host adapter. The persistence/decision path is independent of the
 //! OS event loop; Windows and macOS use this same admission boundary.
-use super::App;
+use super::{App, ResourceInvocation};
 use crate::close_admission::{Choice, Command, OPERATION};
 use crate::widget::Widget;
 
@@ -193,16 +193,7 @@ impl App {
         let actor = self.collaboration.local_author.0.clone();
         // Do not supply an invocation or claim broker admission. This is the
         // ordinary local canonical action door, including permissions/effects.
-        let result = self.invoke_resource_action(
-            &document.save,
-            None,
-            &actor,
-            false,
-            false,
-            None,
-            None,
-            None,
-        );
+        let result = self.invoke_resource_action(ResourceInvocation::new(&document.save, &actor));
         match result {
             Ok(crate::widget::ResourceOperationStart::Completed(_)) => {
                 self.close_admission.save_result = Some(Ok(()));
