@@ -1,7 +1,7 @@
 # Verified Lenovo installer USB handoff
 
 Use this only after a 64 GiB `installer.raw` and its matching accepted ARM VM
-evidence directory exist. It writes one full raw image to a removable device,
+receipt or profile-specific hardware receipt exist. It writes one full raw image to a removable device,
 so a 128 GB USB drive is required. The wrapper does not write anything until it
 has generated a plan for the currently attached device and the operator types
 that plan's exact confirmation phrase.
