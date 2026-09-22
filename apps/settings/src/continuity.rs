@@ -100,7 +100,7 @@ impl AuditEntry {
     }
 }
 
-/// The release policy stored under `qos.continuity` on this device.
+/// The release policy stored under `tilo.continuity` on this device.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 #[allow(

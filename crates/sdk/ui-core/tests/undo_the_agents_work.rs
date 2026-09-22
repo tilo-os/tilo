@@ -35,8 +35,8 @@ use tilo_ui::state::State;
 const AGENT: &str = "Claude";
 const PERSON: &str = "alice";
 
-const WORD_PROCESSOR: &str = "dev.tilo.word-processor";
-const PHOTO_EDITOR: &str = "dev.tilo.photos";
+const WORD_PROCESSOR: &str = "so.tilo.word-processor";
+const PHOTO_EDITOR: &str = "so.tilo.photos";
 
 fn actor_hex(handle: &str) -> String {
     ActorId::from(handle.as_bytes()).to_hex_string()

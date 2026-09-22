@@ -30,8 +30,708 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::theme::Theme;
 use ui::widget::Widget;
+
+#[test]
+fn wrapped_block_caret_stays_on_one_baseline_when_moving_or_typing() {
+    use ui::widget::RichTextLine;
+    for scale in [1.0, 1.5, 2.0] {
+        let theme = Theme::dark().with_text_scale(scale);
+        let mut renderer = crate::component_support::renderer();
+        renderer.set_text_scale(scale);
+        let mut line = RichTextLine::new().with_text("abcdef");
+        line.set_wrap(true);
+        let mut tree = TaffyTree::new();
+        line.build_layout(&mut tree, &theme, &mut HashMap::new());
+        let size = line.measure(
+            Size {
+                width: Some(400.0),
+                height: None,
+            },
+            Size {
+                width: AvailableSpace::Definite(400.0),
+                height: AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        line.apply_layout_external(vello::kurbo::Rect::new(
+            40.0,
+            60.0,
+            440.0,
+            60.0 + f64::from(size.height),
+        ));
+        line.set_focus(true);
+        let mut baseline: Option<f64> = None;
+        for byte in [0, 1, 2, 3, 2, 1, 0, 6] {
+            line.set_cursor_pos(byte);
+            line.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut renderer,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let caret = line.caret_rect(&theme, byte);
+            if let Some(y) = baseline {
+                assert!(
+                    (caret.y0 - y).abs() < 0.01,
+                    "caret moved vertically at byte {byte}: {caret:?}, expected {y}, scale {scale}"
+                );
+            }
+            baseline = Some(caret.y0);
+        }
+    }
+}
+
+#[test]
+fn empty_wrapped_block_reserves_the_same_caret_band_as_first_character() {
+    use ui::widget::RichTextLine;
+    let theme = Theme::dark();
+    let mut renderer = crate::component_support::renderer();
+    let mut heights = Vec::new();
+    let mut carets = Vec::new();
+    for value in ["", "a"] {
+        let mut line = RichTextLine::new().with_text(value);
+        line.set_wrap(true);
+        line.set_focus(true);
+        line.build_layout(&mut TaffyTree::new(), &theme, &mut HashMap::new());
+        let size = line.measure(
+            Size {
+                width: Some(400.0),
+                height: None,
+            },
+            Size {
+                width: AvailableSpace::Definite(400.0),
+                height: AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        heights.push(size.height);
+        line.apply_layout_external(vello::kurbo::Rect::new(
+            40.0,
+            60.0,
+            440.0,
+            60.0 + f64::from(size.height),
+        ));
+        line.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut renderer,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        carets.push(line.caret_rect(&theme, 0));
+    }
+    assert_eq!(
+        heights[0], heights[1],
+        "first character must not resize an empty block"
+    );
+    assert_eq!(
+        carets[0], carets[1],
+        "empty and populated caret origins must agree"
+    );
+}
+
+fn block_gesture_fixture() -> (
+    ui::widget::BlockEditor,
+    TaffyTree<()>,
+    NodeId,
+    ui::TextRenderer,
+) {
+    block_layout_fixture("first\n\nsecond\n\nthird\n\nfourth", 400.0)
+}
+
+fn block_layout_fixture(
+    markdown: &str,
+    width: f32,
+) -> (
+    ui::widget::BlockEditor,
+    TaffyTree<()>,
+    NodeId,
+    ui::TextRenderer,
+) {
+    layout_block_editor(
+        ui::widget::BlockEditor::from_markdown(markdown).with_wrap_lines(true),
+        width,
+    )
+}
+
+fn layout_block_editor(
+    mut editor: ui::widget::BlockEditor,
+    width: f32,
+) -> (
+    ui::widget::BlockEditor,
+    TaffyTree<()>,
+    NodeId,
+    ui::TextRenderer,
+) {
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let node = editor.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+    let mut renderer = crate::component_support::renderer();
+    tree.compute_layout_with_measure(
+        node,
+        Size {
+            width: AvailableSpace::Definite(width),
+            height: AvailableSpace::MaxContent,
+        },
+        |known, available, node, _, _| {
+            nodes.get(&node).map_or(Size::ZERO, |ptr| unsafe {
+                (**ptr).measure(known, available, &mut renderer)
+            })
+        },
+    )
+    .unwrap();
+    editor.apply_layout(&tree, node, Point::new(50.0, 50.0));
+    editor.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut renderer,
+        &Theme::dark(),
+        &PresenceCtx::empty(),
+    );
+    (editor, tree, node, renderer)
+}
+
+#[test]
+fn code_copy_actions_follow_fences_through_reorder_and_first_row_deletion() {
+    use ui::widget::BlockEditor;
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(notes::markdown::specs_to_blocks(&notes::markdown::parse(
+        "```python\nfirst()\nkept()\n```\n\n```python\nother()\n```\n",
+    )));
+    let (mut editor, _, _, _) = layout_block_editor(editor, 600.0);
+    let targets = |editor: &BlockEditor| {
+        editor
+            .accessibility()
+            .unwrap()
+            .children
+            .iter()
+            .filter_map(|node| node.action_target.as_ref())
+            .filter(|target| target.starts_with("notes.code-copy:"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let before = targets(&editor);
+    assert_eq!(before.len(), 2);
+    assert_ne!(before[0], before[1]);
+    let mut state = automerge::AutoCommit::new();
+    let first = editor.blocks()[0].id.clone();
+    assert!(editor.perform_semantic_action(
+        &format!("notes.block-move:{first}:down"),
+        &ui::a11y::Action::Activate,
+        &mut state,
+        &automerge::ROOT,
+    ));
+    let (mut editor, _, _, _) = layout_block_editor(editor, 600.0);
+    assert_eq!(editor.blocks()[0].text(), "other()");
+    assert_eq!(targets(&editor), vec![before[1].clone(), before[0].clone()]);
+    editor.blocks_mut().remove(1);
+    let (mut editor, _, _, _) = layout_block_editor(editor, 600.0);
+    assert_eq!(editor.blocks()[1].text(), "kept()");
+    assert_eq!(targets(&editor), vec![before[1].clone(), before[0].clone()]);
+    editor.blocks_mut().remove(1);
+    let (mut editor, _, _, _) = layout_block_editor(editor, 600.0);
+    assert_eq!(targets(&editor), vec![before[1].clone()]);
+    assert!(
+        !editor.perform_semantic_action(
+            &before[0],
+            &ui::a11y::Action::Activate,
+            &mut state,
+            &automerge::ROOT,
+        ),
+        "a removed fence must never copy another fence at its old position"
+    );
+}
+
+#[test]
+fn nested_table_and_quote_use_the_same_outline_inset_as_prose() {
+    let source = "- Parent\n\n  Explanation\n\n  > Quoted child\n\n  | Key | Value |\n  | --- | --- |\n  | Name | Nested |\n";
+    let mut editor = ui::widget::BlockEditor::new().with_wrap_lines(true);
+    editor.set_blocks(notes::markdown::specs_to_blocks(&notes::markdown::parse(
+        source,
+    )));
+    let (editor, _, _, _) = layout_block_editor(editor, 500.0);
+    let blocks = editor.blocks();
+    assert_eq!(blocks.len(), 4);
+    assert_eq!(
+        blocks
+            .iter()
+            .map(ui::widget::Block::indent)
+            .collect::<Vec<_>>(),
+        [0, 1, 1, 1]
+    );
+    assert!(matches!(
+        blocks[3].kind,
+        ui::widget::BlockKind::Table { visual: true }
+    ));
+    assert!((blocks[3].line.get_rect().x0 - blocks[1].line.get_rect().x0).abs() < 0.01);
+    assert!((blocks[2].line.get_rect().x0 - blocks[1].line.get_rect().x0 - 16.0).abs() < 0.01);
+    let exported = notes::markdown::serialize(&notes::markdown::blocks_to_specs(blocks));
+    assert_eq!(
+        notes::markdown::parse(&exported),
+        notes::markdown::parse(source)
+    );
+}
+
+#[test]
+fn rich_block_drag_and_scroll_extent_include_the_whole_preview() {
+    use ui::widget::{Block, BlockEditor, Mark, MarkSpan};
+    let mut embedded = Block::paragraph("Linked note");
+    embedded.line.set_marks(vec![MarkSpan::new(
+        0..11,
+        Mark::Transclusion(uuid::Uuid::new_v4()),
+    )]);
+    for block in [
+        Block::table("| Key | Value |\n| --- | --- |\n| Name | Test |", true),
+        Block::paragraph("![Diagram](diagram.png)"),
+        embedded,
+    ] {
+        let mut editor = BlockEditor::new().with_wrap_lines(true);
+        editor.set_blocks(vec![block]);
+        let (mut editor, tree, node, mut renderer) = layout_block_editor(editor, 400.0);
+        assert!(
+            (editor.content_bottom() - editor.get_rect().y1).abs() < 0.01,
+            "scroll extent includes complete image/table/embed, not just its source line"
+        );
+        let line = editor.blocks()[0].line.get_rect();
+        let x = line.x0 - 14.0;
+        let y = line.y0 + 12.0;
+        block_event(&mut editor, &tree, node, cursor_moved(x, y));
+        let idle = block_scene(&mut editor, &mut renderer)
+            .encoding()
+            .draw_tags
+            .len();
+        block_event(&mut editor, &tree, node, mouse_press());
+        block_event(&mut editor, &tree, node, cursor_moved(x + 30.0, y + 40.0));
+        let dragged = block_scene(&mut editor, &mut renderer);
+        assert!(
+            dragged.encoding().draw_tags.len() > idle + 4,
+            "floating preview must contain real rich-block content"
+        );
+    }
+}
+
+#[test]
+fn wrapped_paragraph_arrow_navigation_visits_each_visual_row() {
+    let (mut editor, tree, node, mut renderer) = block_layout_fixture(
+        "A paragraph that needs several visual lines at this narrow width and must keep its caret within the paragraph until its final row.\n\nNext paragraph",
+        210.0,
+    );
+    editor.set_focus(true);
+    editor.focus_block(0, ui::widget::CursorPlacement::Start);
+    block_scene(&mut editor, &mut renderer);
+    let initial = editor.blocks()[0].line.caret_rect(&Theme::dark(), 0);
+    block_event(&mut editor, &tree, node, named_key(NamedKey::ArrowDown));
+    block_scene(&mut editor, &mut renderer);
+    assert_eq!(
+        editor.focused_index(),
+        Some(0),
+        "Down must visit wrapped rows before the next block"
+    );
+    let line = &editor.blocks()[0].line;
+    let second = line.caret_rect(&Theme::dark(), line.cursor_pos());
+    assert!(second.y0 > initial.y0);
+    assert_eq!(
+        line.inner().scroll_y(),
+        0.0,
+        "auto-height paragraphs do not scroll internally"
+    );
+    block_event(&mut editor, &tree, node, named_key(NamedKey::ArrowUp));
+    assert_eq!(editor.focused_index(), Some(0));
+    assert_eq!(editor.blocks()[0].line.cursor_pos(), 0);
+    for _ in 0..20 {
+        if editor.focused_index() == Some(1) {
+            break;
+        }
+        block_event(&mut editor, &tree, node, named_key(NamedKey::ArrowDown));
+        block_scene(&mut editor, &mut renderer);
+    }
+    assert_eq!(editor.focused_index(), Some(1));
+    block_event(&mut editor, &tree, node, named_key(NamedKey::ArrowUp));
+    block_scene(&mut editor, &mut renderer);
+    assert_eq!(editor.focused_index(), Some(0));
+    let line = &editor.blocks()[0].line;
+    assert!(
+        line.caret_rect(&Theme::dark(), line.cursor_pos()).y0 > second.y0,
+        "Up enters the preceding paragraph's final visual row"
+    );
+}
+
+#[test]
+fn backward_selection_at_block_start_deletes_text_without_merging_blocks() {
+    let (mut editor, tree, node, mut renderer) = block_gesture_fixture();
+    editor.set_focus(true);
+    editor.focus_block(1, ui::widget::CursorPlacement::Start);
+    editor.blocks_mut()[1].line.inner_mut().set_selection(6, 0);
+    block_scene(&mut editor, &mut renderer);
+    block_event(&mut editor, &tree, node, named_key(NamedKey::Backspace));
+    assert_eq!(editor.blocks().len(), 4);
+    assert_eq!(editor.blocks()[0].text(), "first");
+    assert_eq!(editor.blocks()[1].text(), "");
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "test helper owns each synthetic event for immediate dispatch"
+)]
+fn block_event(
+    editor: &mut ui::widget::BlockEditor,
+    tree: &TaffyTree<()>,
+    node: NodeId,
+    event: WindowEvent,
+) {
+    editor.handle_event(
+        &event,
+        1.0,
+        &Modifiers::default(),
+        &mut automerge::AutoCommit::new(),
+        &automerge::ROOT,
+        &mut false,
+        &mut None,
+        node,
+        tree,
+    );
+}
+
+fn block_scene(editor: &mut ui::widget::BlockEditor, renderer: &mut ui::TextRenderer) -> Scene {
+    let mut scene = Scene::new();
+    editor.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        renderer,
+        &Theme::dark(),
+        &PresenceCtx::empty(),
+    );
+    scene
+}
+
+#[test]
+fn modal_caret_suppression_preserves_editor_state_and_restores_caret() {
+    let (mut editor, _, _, mut renderer) = block_layout_fixture("Editable note", 400.0);
+    editor.focus_block(0, ui::widget::CursorPlacement::End);
+    editor.set_focus(true);
+    let before = (
+        editor.blocks()[0].line.cursor_pos(),
+        editor.blocks()[0].line.selection_range(),
+    );
+    let visible = block_scene(&mut editor, &mut renderer)
+        .encoding()
+        .draw_tags
+        .len();
+    editor.suppress_caret_paint(true);
+    let hidden = block_scene(&mut editor, &mut renderer)
+        .encoding()
+        .draw_tags
+        .len();
+    assert_eq!(
+        visible,
+        hidden + 1,
+        "only the insertion caret disappears beneath the modal"
+    );
+    assert!(editor.is_focused());
+    assert_eq!(
+        (
+            editor.blocks()[0].line.cursor_pos(),
+            editor.blocks()[0].line.selection_range()
+        ),
+        before
+    );
+    editor.suppress_caret_paint(false);
+    assert_eq!(
+        block_scene(&mut editor, &mut renderer)
+            .encoding()
+            .draw_tags
+            .len(),
+        visible
+    );
+}
+
+#[test]
+fn unfocused_block_handles_paint_on_hover_and_clear_on_pointer_exit() {
+    let (mut editor, tree, node, mut renderer) = block_gesture_fixture();
+    let idle = block_scene(&mut editor, &mut renderer)
+        .encoding()
+        .draw_tags
+        .len();
+    let row = editor.blocks()[0].line.get_rect();
+    block_event(
+        &mut editor,
+        &tree,
+        node,
+        cursor_moved(row.center().x, row.center().y),
+    );
+    let hovered = block_scene(&mut editor, &mut renderer)
+        .encoding()
+        .draw_tags
+        .len();
+    assert_eq!(
+        hovered,
+        idle + 6,
+        "only the hovered block gets six handle dots"
+    );
+    block_event(
+        &mut editor,
+        &tree,
+        node,
+        cursor_moved(row.x0 - 14.0, row.center().y),
+    );
+    assert_eq!(
+        block_scene(&mut editor, &mut renderer)
+            .encoding()
+            .draw_tags
+            .len(),
+        hovered + 1,
+        "handle remains reachable and gains one hover background across its gutter"
+    );
+    block_event(
+        &mut editor,
+        &tree,
+        node,
+        WindowEvent::CursorLeft {
+            device_id: unsafe { std::mem::zeroed() },
+        },
+    );
+    assert_eq!(
+        block_scene(&mut editor, &mut renderer)
+            .encoding()
+            .draw_tags
+            .len(),
+        idle
+    );
+}
+
+#[test]
+fn caret_block_handle_stays_visible_after_pointer_exit_and_follows_focus() {
+    let (mut editor, tree, node, mut renderer) = block_gesture_fixture();
+    // Isolate handle paint from the independently tested insertion caret.
+    editor.suppress_caret_paint(true);
+    editor.set_focus(false);
+    let idle = block_scene(&mut editor, &mut renderer)
+        .encoding()
+        .draw_tags
+        .len();
+    editor.focus_block(1, ui::widget::CursorPlacement::End);
+    editor.set_focus(true);
+    block_event(
+        &mut editor,
+        &tree,
+        node,
+        WindowEvent::CursorLeft {
+            device_id: unsafe { std::mem::zeroed() },
+        },
+    );
+    assert_eq!(
+        block_scene(&mut editor, &mut renderer)
+            .encoding()
+            .draw_tags
+            .len(),
+        idle + 6,
+        "the caret block retains its handle away from the pointer"
+    );
+    let first = editor.blocks()[0].line.get_rect().center();
+    block_event(&mut editor, &tree, node, cursor_moved(first.x, first.y));
+    assert_eq!(
+        block_scene(&mut editor, &mut renderer)
+            .encoding()
+            .draw_tags
+            .len(),
+        idle + 12,
+        "a different hovered block also gets a handle"
+    );
+    editor.focus_block(0, ui::widget::CursorPlacement::End);
+    assert_eq!(
+        block_scene(&mut editor, &mut renderer)
+            .encoding()
+            .draw_tags
+            .len(),
+        idle + 6,
+        "moving the caret removes the old block handle without duplicating the hovered handle"
+    );
+    block_event(
+        &mut editor,
+        &tree,
+        node,
+        WindowEvent::CursorLeft {
+            device_id: unsafe { std::mem::zeroed() },
+        },
+    );
+    editor.set_focus(false);
+    assert_eq!(
+        block_scene(&mut editor, &mut renderer)
+            .encoding()
+            .draw_tags
+            .len(),
+        idle,
+        "leaving the editor hides its caret handle"
+    );
+}
+
+#[test]
+fn block_drag_previews_motion_and_drops_in_the_nearby_gap() {
+    let (mut editor, tree, node, mut renderer) = block_gesture_fixture();
+    let first = editor.blocks()[0].line.get_rect();
+    let second = editor.blocks()[1].line.get_rect();
+    let third = editor.blocks()[2].line.get_rect();
+    block_event(
+        &mut editor,
+        &tree,
+        node,
+        cursor_moved(first.x0 - 14.0, first.center().y),
+    );
+    block_event(&mut editor, &tree, node, mouse_press());
+    let before = block_scene(&mut editor, &mut renderer)
+        .encoding()
+        .draw_tags
+        .len();
+    let gap = f64::midpoint(second.y0, first.y1);
+    block_event(&mut editor, &tree, node, cursor_moved(first.x0 - 14.0, gap));
+    let preview = block_scene(&mut editor, &mut renderer);
+    assert!(
+        preview.encoding().draw_tags.len() > before + 2,
+        "drag must paint the source text preview, not just an insertion rule"
+    );
+    let mut marker_brush = Scene::new();
+    marker_brush.fill(
+        vello::peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        Theme::dark().tokens.colors.accent[5],
+        None,
+        &Rect::new(0.0, 0.0, 1.0, 1.0),
+    );
+    assert!(
+        preview.encoding().draw_tags.last() == marker_brush.encoding().draw_tags.last()
+            && preview
+                .encoding()
+                .draw_data
+                .ends_with(&marker_brush.encoding().draw_data),
+        "the insertion marker must remain visible above the opaque drag preview"
+    );
+    let transforms = format!("{:?}", preview.encoding().transforms);
+    block_event(&mut editor, &tree, node, cursor_moved(first.x0 - 10.0, gap));
+    assert_ne!(
+        transforms,
+        format!(
+            "{:?}",
+            block_scene(&mut editor, &mut renderer)
+                .encoding()
+                .transforms
+        ),
+        "preview follows motion within the same target"
+    );
+    assert_eq!(
+        editor.blocks()[0].text(),
+        "first",
+        "preview must not mutate document order"
+    );
+    block_event(
+        &mut editor,
+        &tree,
+        node,
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+    );
+    assert_eq!(
+        editor
+            .blocks()
+            .iter()
+            .map(ui::widget::Block::text)
+            .collect::<Vec<_>>(),
+        ["second", "first", "third", "fourth"]
+    );
+    assert!(third.y0 > second.y1);
+}
+
+#[test]
+fn list_subtree_drop_marker_uses_parent_indentation_after_last_descendant() {
+    use ui::widget::{Block, BlockEditor};
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::numbered(0, "Parent A"),
+        Block::bullet(1, "Child A"),
+        Block::numbered(0, "Parent B"),
+        Block::bullet(1, "Child B"),
+    ]);
+    let (mut editor, tree, node, mut renderer) = layout_block_editor(editor, 400.0);
+    let root_x = editor.get_rect().x0;
+    let first = editor.blocks()[0].line.get_rect();
+    let last = editor.blocks()[3].line.get_rect();
+    block_event(
+        &mut editor,
+        &tree,
+        node,
+        cursor_moved(root_x - 14.0, first.center().y),
+    );
+    block_event(&mut editor, &tree, node, mouse_press());
+    block_event(
+        &mut editor,
+        &tree,
+        node,
+        cursor_moved(root_x - 14.0, last.center().y),
+    );
+    let scene = block_scene(&mut editor, &mut renderer);
+    let mut expected_marker = Scene::new();
+    expected_marker.fill(
+        vello::peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        Theme::dark().tokens.colors.accent[5],
+        None,
+        &Rect::new(root_x - 4.0, last.y1 - 1.0, last.x1, last.y1 + 1.0),
+    );
+    assert!(
+        scene
+            .encoding()
+            .path_data
+            .ends_with(&expected_marker.encoding().path_data),
+        "the final drop marker belongs at root depth, below the destination's child"
+    );
+}
+
+#[test]
+fn block_drag_escape_and_focus_loss_preserve_order() {
+    for cancel in [named_key(NamedKey::Escape), WindowEvent::Focused(false)] {
+        let (mut editor, tree, node, mut renderer) = block_gesture_fixture();
+        let first = editor.blocks()[0].line.get_rect();
+        let last = editor.blocks()[3].line.get_rect();
+        block_event(
+            &mut editor,
+            &tree,
+            node,
+            cursor_moved(first.x0 - 14.0, first.center().y),
+        );
+        block_event(&mut editor, &tree, node, mouse_press());
+        block_event(
+            &mut editor,
+            &tree,
+            node,
+            cursor_moved(first.x0 - 14.0, last.center().y),
+        );
+        block_scene(&mut editor, &mut renderer);
+        block_event(&mut editor, &tree, node, cancel);
+        block_event(
+            &mut editor,
+            &tree,
+            node,
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(
+            editor
+                .blocks()
+                .iter()
+                .map(ui::widget::Block::text)
+                .collect::<Vec<_>>(),
+            ["first", "second", "third", "fourth"]
+        );
+    }
+}
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
@@ -681,7 +1381,7 @@ fn multiline_code_block_renders_as_one_contiguous_unit() {
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.workspace_pages_for_test()[0].id;
     let body = "Intro line.\n\n```rust\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```\n\nAfter.\n";
-    app.main_panel_mut().load_page(id, "T", body.to_string());
+    app.main_panel_mut().load_page(id, "T", body);
 
     let mut state = ui::State::new();
     let _ = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
@@ -1056,7 +1756,7 @@ fn double_click_in_editor_selects_a_word() {
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.workspace_pages_for_test()[0].id;
     app.main_panel_mut()
-        .load_page(id, "T", "the quick brown fox\n".into());
+        .load_page(id, "T", "the quick brown fox\n");
 
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();

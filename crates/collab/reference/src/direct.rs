@@ -20,10 +20,9 @@ use crate::delivery::Id;
 
 /// Domain separation for the room-id derivation. Any change here re-points every
 /// existing conversation at a room nobody is in, hence the version in the string:
-/// a future scheme bumps it instead.
-/// Keep the original protocol namespace across product renames: this value is
-/// persistent identity, not a user-facing product name.
-const ROOM_ID_DOMAIN: &[u8] = b"qos.direct-room.v1";
+/// a future scheme bumps it instead. The Tilo namespace is intentionally a clean
+/// break from the retired product protocol; no legacy room derivation is accepted.
+const ROOM_ID_DOMAIN: &[u8] = b"tilo.direct-room.v1";
 
 /// A room with exactly two members — the room a direct message is held in.
 ///
@@ -123,7 +122,7 @@ mod tests {
         let id = room.room_id();
         assert_eq!(id, DirectRoom::between(ADA, BOB).unwrap().room_id());
         assert_eq!(
-            id, "37046bec-72ae-88dc-a787-2728deaa6095",
+            id, "0b2e5696-17ae-8826-9e6b-13da8e10ab38",
             "the derivation changed; every existing direct room moves with it"
         );
         assert!(

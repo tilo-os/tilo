@@ -585,8 +585,8 @@ mod tests {
     fn report(id: &str, bus_name: &str) -> PlaybackReport {
         PlaybackReport {
             session: PlaybackSession {
-                id: format!("dev.tilo.player:{id}"),
-                app_id: "dev.tilo.player".into(),
+                id: format!("so.tilo.player:{id}"),
+                app_id: "so.tilo.player".into(),
                 title: id.into(),
                 content_id: format!("blake3:{}", "0".repeat(64)),
                 position_ms: 0,
@@ -642,11 +642,11 @@ mod tests {
             audible: true,
             controller_bus_name: Some("org.mpris.MediaPlayer2.tilo-music"),
         });
-        let report = playback_reports("dev.tilo.music", "workspace")
+        let report = playback_reports("so.tilo.music", "workspace")
             .into_iter()
             .find(|report| report.session.title == "A durable song")
             .expect("app-owned playback is reported");
-        assert_eq!(report.session.app_id, "dev.tilo.music");
+        assert_eq!(report.session.app_id, "so.tilo.music");
         assert_eq!(report.workspace_id, "workspace");
         assert!(matches!(
             report.source,

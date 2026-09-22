@@ -69,7 +69,7 @@ mod tests {
     use automerge::{ReadDoc, Value};
 
     fn note(doc: &Doc) -> String {
-        doc.get(&ROOT, "store.report_note.dev.tilo.notes")
+        doc.get(&ROOT, "store.report_note.so.tilo.notes")
             .unwrap()
             .and_then(|(value, id)| matches!(value, Value::Object(ObjType::Text)).then_some(id))
             .and_then(|id| doc.text(&id).ok())
@@ -79,12 +79,12 @@ mod tests {
     fn report_draft_is_a_replayable_document_resource() {
         let mut doc = Doc::new();
         StoreDocumentAction::CreateReportDraft {
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
         }
         .apply(&mut doc)
         .unwrap();
         assert!(
-            doc.get(&ROOT, "store.report_resource.dev.tilo.notes")
+            doc.get(&ROOT, "store.report_resource.so.tilo.notes")
                 .unwrap()
                 .is_some()
         );
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn absolute_report_note_is_bounded_and_replayable() {
         let action = StoreDocumentAction::SetReportNote {
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
             note: "The listing omits a network dependency.".into(),
         };
         let mut doc = Doc::new();
@@ -103,7 +103,7 @@ mod tests {
         assert_eq!(note(&doc), "The listing omits a network dependency.");
         assert!(
             StoreDocumentAction::SetReportNote {
-                app_id: "dev.tilo.notes".into(),
+                app_id: "so.tilo.notes".into(),
                 note: "x".repeat(4_097),
             }
             .apply(&mut Doc::new())
@@ -115,7 +115,7 @@ mod tests {
     fn divergent_absolute_report_notes_converge_without_sentence_interleaving() {
         let mut seed = Doc::new();
         StoreDocumentAction::CreateReportDraft {
-            app_id: "dev.tilo.notes".into(),
+            app_id: "so.tilo.notes".into(),
         }
         .apply(&mut seed)
         .unwrap();
@@ -124,7 +124,7 @@ mod tests {
         let mut right = Doc::load(&bytes).unwrap();
         for (doc, value) in [(&mut left, "left evidence"), (&mut right, "right evidence")] {
             StoreDocumentAction::SetReportNote {
-                app_id: "dev.tilo.notes".into(),
+                app_id: "so.tilo.notes".into(),
                 note: value.into(),
             }
             .apply(doc)

@@ -1,6 +1,6 @@
 # Application resource claims
 
-The signed qpkg manifest is the only source of truth for resources a packaged
+The signed tapp manifest is the only source of truth for resources a packaged
 application can handle:
 
 ```toml
@@ -10,7 +10,7 @@ mime = ["text/html"]
 schemes = ["http", "https"]
 ```
 
-Claims are identifiers, never commands. qpkg normalizes case, leading dots and
+Claims are identifiers, never commands. tapp normalizes case, leading dots and
 trailing scheme colons before signing, rejects malformed concrete MIME types,
 extensions outside the conservative portable alphabet, and malformed or
 reserved URI schemes. `file`, `data`, and `javascript` are not claimable URI

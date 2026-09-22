@@ -28,7 +28,7 @@ attribution. The top bar consumes the aggregate now; per-app icon badges remain
 unclaimed until a dock or launcher consumes the same map.
 
 Priority contacts are sourced from favourites in Contacts. Only a
-launcher-verified `dev.tilo.contacts` caller may replace the shell-owned
+launcher-verified `so.tilo.contacts` caller may replace the shell-owned
 projection. Endpoints are normalized and stored as salted BLAKE3 digests in a
 private, bounded, atomically replaced record; raw endpoints are not persisted
 there. A notification pierces scheduled focus only when its verified app has an

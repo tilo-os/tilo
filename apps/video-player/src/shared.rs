@@ -327,7 +327,7 @@ impl SharedAction {
 }
 
 pub fn history_context(action: &SharedAction) -> ActionContext {
-    let mut context = ActionContext::for_action("dev.tilo.video-player", "Video Player", action);
+    let mut context = ActionContext::for_action("so.tilo.video-player", "Video Player", action);
     let (label, id, kind) = match action {
         SharedAction::CreatePlaylist { id, .. } => (
             "Create playlist",

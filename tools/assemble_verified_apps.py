@@ -44,7 +44,7 @@ def extract_tar(archive, output):
             total += member.size
             channel.require(count <= 4096 and 0 <= member.size and total <= MAX_EXPANDED and name not in names, 'archive resource/duplicate limit')
             names.add(name)
-            channel.require(name in {'qpkg', 'runtime', 'index.json', 'SHA256SUMS'} or name.startswith(('qpkg/', 'runtime/')), 'unexpected collection path')
+            channel.require(name in {'tapp', 'runtime', 'index.json', 'SHA256SUMS'} or name.startswith(('tapp/', 'runtime/')), 'unexpected collection path')
             channel.require(member.isdir() or (member.isfile() and not member.issparse()), 'archive links/sparse/special rejected')
             target = output / name
             if member.isdir():
@@ -143,7 +143,7 @@ def merge(plan, built, baseline, output, architecture, selected_apps):
     # A changed app cannot be replaced by an older same-version signed package.
     # Check the trusted selector output completely before copying any baseline.
     for name in selected:
-        path = built / 'qpkg' / f"{name}-{catalog[name]['version']}-{architecture}.qpkg"
+        path = built / 'tapp' / f"{name}-{catalog[name]['version']}-{architecture}.tapp"
         channel.require(path.is_file() and not path.is_symlink(),
                         f'selected app missing from current build: {name}')
     output.mkdir()
@@ -151,12 +151,12 @@ def merge(plan, built, baseline, output, architecture, selected_apps):
     for app in plan['catalog']:
         name, version = app['name'], app['version']
         channel.require(all(re.fullmatch('[A-Za-z0-9][A-Za-z0-9._+-]*', value) for value in (name, version)), 'unsafe package identity')
-        filename = f'{name}-{version}-{architecture}.qpkg'
-        path = built / 'qpkg' / filename
+        filename = f'{name}-{version}-{architecture}.tapp'
+        path = built / 'tapp' / filename
         if not path.is_file():
             channel.require(name not in selected, f'selected app missing from current build: {name}')
             channel.require(baseline is not None, 'missing package without verified baseline')
-            path = baseline / 'qpkg' / filename
+            path = baseline / 'tapp' / filename
             reused.append(filename)
         channel.require(path.is_file() and not path.is_symlink(), 'missing regular collection package')
         shutil.copyfile(path, output / filename)
@@ -193,7 +193,7 @@ def main():
     selected = args.work / 'selected'
     reused = merge(plan, args.built, baseline, selected, args.architecture, args.selected_apps.split())
     environment = {'PATH': os.defpath, 'TILO_APP_COLLECTION_PLAN': str(args.plan.resolve()),
-        'TILO_APP_ARCH': args.architecture, 'TILO_APP_QPKG_DIR': str(selected.resolve()),
+        'TILO_APP_ARCH': args.architecture, 'TILO_APP_TAPP_DIR': str(selected.resolve()),
         'TILO_APP_RUNTIME_DIR': str((args.built / 'runtime').resolve()),
         'TILO_APP_COLLECTION_OUT': str(args.output.resolve()), 'GITHUB_SHA': args.source_sha,
         'SOURCE_DATE_EPOCH': args.source_epoch}

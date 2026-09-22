@@ -138,6 +138,35 @@ def changed_rust_files(root: Path, revision_range: str) -> list[Path]:
     ]
 
 
+def staged_rust_files(root: Path) -> list[Path]:
+    output = subprocess.check_output(
+        [
+            "git",
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--diff-filter=ACMRTUXB",
+            "--",
+            "*.rs",
+            ":(top,exclude)vendor/**",
+        ],
+        cwd=root,
+    )
+    return [
+        Path(value.decode("utf-8", errors="surrogateescape"))
+        for value in output.split(b"\0")
+        if value
+    ]
+
+
+def staged_source(root: Path, relative: Path) -> str:
+    """Read the exact staged blob, not a possibly corrected working-tree file."""
+    return subprocess.check_output(
+        ["git", "show", f":{relative.as_posix()}"], cwd=root
+    ).decode("utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("base", nargs="?", default="")
@@ -145,16 +174,36 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--comparison-range", action="store_true",
                         help="print the shared PR/push range for the formatter")
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="check the exact Rust blobs in the index (for pre-commit)",
+    )
     args = parser.parse_args(argv)
     root = args.root.resolve()
     try:
-        revision_range = comparison_range(root, args.base, args.before)
+        if args.staged and (args.base or args.before or args.comparison_range):
+            parser.error("--staged cannot be combined with revisions or --comparison-range")
+        revision_range = (
+            "staged index"
+            if args.staged
+            else comparison_range(root, args.base, args.before)
+        )
         if args.comparison_range:
             print(revision_range)
             return 0
         violations: list[tuple[Path, Attribute]] = []
-        for relative in changed_rust_files(root, revision_range):
-            source = (root / relative).read_text(encoding="utf-8")
+        paths = (
+            staged_rust_files(root)
+            if args.staged
+            else changed_rust_files(root, revision_range)
+        )
+        for relative in paths:
+            source = (
+                staged_source(root, relative)
+                if args.staged
+                else (root / relative).read_text(encoding="utf-8")
+            )
             violations.extend(
                 (relative, attribute)
                 for attribute in unexplained_allows(source)
