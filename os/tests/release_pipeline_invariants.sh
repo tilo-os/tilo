@@ -104,6 +104,7 @@ if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'runner: runner-disk-100g-arm64' "$kernel_workflow" \
    && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
    && grep -Fq 'qos-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
+   && grep -Fq 'kernel-repo/tilo-kernel-core-*.rpm' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
    && grep -Fq 'promote-native-kernels:' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_X86_64_REF=$KERNEL_RPMS_X86_64_REF' "$kernel_workflow" \
