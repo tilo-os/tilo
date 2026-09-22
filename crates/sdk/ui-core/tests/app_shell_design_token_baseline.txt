@@ -132,5 +132,5 @@ crates/session/shell/src/shell/editor_app.rs literal_color 1
 crates/session/shell/src/shell/sidebar_wheel_chrome.rs literal_color 0
 crates/session/shell/src/shell/sidebar_wheel_disc.rs literal_color 2
 crates/session/shell/src/shell/sidebar_wheel_disc.rs white_or_black 2
-crates/session/shell/src/shell/topbar_chrome.rs literal_color 2
+crates/session/shell/src/shell/topbar_chrome.rs literal_color 0
 crates/session/shell/src/shell/topbar_chrome.rs white_or_black 1
