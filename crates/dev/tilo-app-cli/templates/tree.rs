@@ -1,5 +1,4 @@
-use ui::tilo_actions;
-use ui::widget::{Button, Text, TreeNode, TreeView, Widget};
+use ui::prelude::{Button, Text, TreeNode, TreeView, Widget, tilo_actions};
 
 fn node_resource() -> tilo_actions::Resource {
     let mut resource = ui::widget::resource_actions::typed_resource(
@@ -30,6 +29,10 @@ fn open_node(id: u64) -> tilo_actions::ActionOutput {
 
 /// A stable-id hierarchy with expansion, keyboard navigation, selection,
 /// accessibility, virtualization, reordering hooks, and structural motion.
+///
+/// # Panics
+///
+/// Panics if a generated node binding no longer matches the exported action.
 #[expect(
     clippy::expect_used,
     reason = "the binding uses the sole action constructed immediately above"
