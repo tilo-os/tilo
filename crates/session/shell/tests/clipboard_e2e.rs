@@ -3473,10 +3473,9 @@ fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
         "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]"
     );
     // The mostly off-screen Files group can sit underneath shell chrome on
-    // the left. Start beside its visible right edge, where the adjacent
-    // client proves the strip is unobscured, while leaving room to latch the
-    // drag inside the row.
-    ((x1 - 20.0).max(x0 + 1.0), y + h / 2.0)
+    // the left. Start just before its visible right edge: outside the resize
+    // seam, but with enough unobscured row to cross the drag threshold leftward.
+    ((x1 - 8.0).max(x0 + 1.0), y + h / 2.0)
 }
 
 /// Press on the file row and carry it over to the client in small steps —
@@ -3499,15 +3498,11 @@ fn drag_file_row_onto_client(
     // Test-control coordinates are physical while the hosted widget applies
     // the output scale factor. Move far enough to clear the 6 logical-pixel
     // threshold even on a 2x output, then interpolate from that latched point.
-    // The row is visible only in the narrow strip between the sidebar and
-    // the adjacent client. Moving left re-enters sidebar chrome before the
-    // file view can cross its drag threshold; move toward the client so the
-    // source can latch and immediately hand the drag off.
-    // Eight pixels clear the file view's 6px threshold while remaining before
-    // the source group's resize seam.
-    // Farther right, either the seam or the adjacent Wayland client owns the
-    // motion before Files can establish the chrome drag.
-    let latched = (row.0 + 8.0, row.1);
+    // The row is visible only in the narrow strip between the sidebar and the
+    // adjacent client. Start just left of the resize seam and move eight pixels
+    // left: this clears the file view's 6px threshold without entering either
+    // competing surface, then the compositor can hand the live drag rightward.
+    let latched = (row.0 - 8.0, row.1);
     compositor.pointer_move(latched.0, latched.1);
     target.pump();
     std::thread::sleep(Duration::from_millis(30));
