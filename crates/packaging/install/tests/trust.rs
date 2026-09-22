@@ -8,7 +8,7 @@
 //! - `install` on a package with a revoked publisher key is
 //!   refused unconditionally.
 //!
-//! The tests build .qpkg files in-process (bypassing tilo-pkg-cli
+//! The tests build .tapp files in-process (bypassing tilo-tilo-app-package-cli
 //! to avoid a circular workspace dep) and drive the built
 //! `tilo-install` binary via `std::process::Command` with
 //! `XDG_CONFIG_HOME` / `XDG_DATA_HOME` pointed at per-test
@@ -28,16 +28,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ed25519_dalek::{Signer, SigningKey};
-use pkg::blobs::{BlobHash, BlobStore};
-use pkg::manifest::TrustAttestation;
-use pkg::signed::SignedRoot;
-use pkg::trust::{
+use rand::rngs::OsRng;
+use serde::Serialize;
+use tilo_app_package::blobs::{BlobHash, BlobStore};
+use tilo_app_package::manifest::TrustAttestation;
+use tilo_app_package::signed::SignedRoot;
+use tilo_app_package::trust::{
     AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
     attestation_preimage,
 };
-use pkg::{Manifest, MemoryBlobStore, SigningIdentity, pack};
-use rand::rngs::OsRng;
-use serde::Serialize;
+use tilo_app_package::{Manifest, MemoryBlobStore, SigningIdentity, pack};
 
 /// Path to the compiled `tilo-install` binary. Cargo sets
 /// CARGO_BIN_EXE_tilo-install when the [[bin]] block is `tilo-install`.
@@ -47,7 +47,7 @@ fn install_bin() -> PathBuf {
 
 const SAMPLE_APP_MANIFEST_TEMPLATE: &str = r#"
 [package]
-id          = "dev.tilo.editor"
+id          = "so.tilo.editor"
 version     = "1.4.2"
 kind        = "app"
 runtime     = "tilo-runtime/2025.06"
@@ -128,15 +128,15 @@ fn attest_and_inject(
     });
 }
 
-/// Build a .qpkg file with the same layout that tilo-pkg-cli writes.
-fn build_qpkg(
-    qpkg_path: &Path,
+/// Build a .tapp file with the same layout that tilo-tilo-app-package-cli writes.
+fn build_tapp(
+    tapp_path: &Path,
     manifest: &Manifest,
     publisher_sk: &SigningKey,
     payload_dir: &Path,
-) -> pkg::PackageId {
+) -> tilo_app_package::PackageId {
     #[derive(Serialize)]
-    struct QpkgHeader {
+    struct TappHeader {
         package_id: String,
         format: u32,
     }
@@ -145,7 +145,7 @@ fn build_qpkg(
     let identity = SigningIdentity::from_signing_key(publisher_sk.clone());
     let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
 
-    let header = QpkgHeader {
+    let header = TappHeader {
         package_id: id.to_string(),
         format: 1,
     };
@@ -156,9 +156,9 @@ fn build_qpkg(
     let manifest_bytes = store.get(&signed.manifest_hash).unwrap().unwrap();
     let collection_bytes = store.get(&signed.payload_root_hash).unwrap().unwrap();
 
-    let file = std::fs::File::create(qpkg_path).unwrap();
+    let file = std::fs::File::create(tapp_path).unwrap();
     let mut tar = tar::Builder::new(file);
-    append(&mut tar, "qpkg.toml", header_toml.as_bytes());
+    append(&mut tar, "tapp.toml", header_toml.as_bytes());
     append(&mut tar, "signed-root", &signed_bytes);
     append(&mut tar, "manifest.toml", &manifest_bytes);
     append(&mut tar, "collection.qcl", &collection_bytes);
@@ -244,8 +244,8 @@ fn install_require_attestor_refuses_self_signed() {
     let payload_dir = tempfile::tempdir().unwrap();
     write_payload(payload_dir.path());
 
-    let qpkg_path = env.home.path().join("app.qpkg");
-    build_qpkg(&qpkg_path, &manifest, &publisher_sk, payload_dir.path());
+    let tapp_path = env.home.path().join("app.tapp");
+    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
     // No attestor registered.
     env.write_trusted_attestors(&TrustedAttestors::default());
@@ -257,7 +257,7 @@ fn install_require_attestor_refuses_self_signed() {
     // would otherwise refuse the install before the trust decision
     // could be observed.
     cmd.arg("install")
-        .arg(&qpkg_path)
+        .arg(&tapp_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-attestor")
         .arg("tilo-curated/2026.07");
@@ -289,8 +289,8 @@ fn install_require_attestor_permits_matching_attestation() {
         &attestor_sk,
     );
 
-    let qpkg_path = env.home.path().join("app.qpkg");
-    build_qpkg(&qpkg_path, &manifest, &publisher_sk, payload_dir.path());
+    let tapp_path = env.home.path().join("app.tapp");
+    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
     env.write_trusted_attestors(&TrustedAttestors {
         attestor: vec![TrustedAttestor {
@@ -307,7 +307,7 @@ fn install_require_attestor_permits_matching_attestation() {
     // would otherwise refuse the install before the trust decision
     // could be observed.
     cmd.arg("install")
-        .arg(&qpkg_path)
+        .arg(&tapp_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-attestor")
         .arg("tilo-curated/2026.07");
@@ -334,8 +334,8 @@ fn install_require_attestor_and_allow_self_signed_takes_attestation_when_present
         &attestor_sk,
     );
 
-    let qpkg_path = env.home.path().join("app.qpkg");
-    build_qpkg(&qpkg_path, &manifest, &publisher_sk, payload_dir.path());
+    let tapp_path = env.home.path().join("app.tapp");
+    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
     env.write_trusted_attestors(&TrustedAttestors {
         attestor: vec![TrustedAttestor {
@@ -352,7 +352,7 @@ fn install_require_attestor_and_allow_self_signed_takes_attestation_when_present
     // would otherwise refuse the install before the trust decision
     // could be observed.
     cmd.arg("install")
-        .arg(&qpkg_path)
+        .arg(&tapp_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-attestor")
         .arg("tilo-curated/2026.07")
@@ -373,8 +373,8 @@ fn install_require_attestor_and_allow_self_signed_falls_back_when_no_match() {
     let payload_dir = tempfile::tempdir().unwrap();
     write_payload(payload_dir.path());
 
-    let qpkg_path = env.home.path().join("app.qpkg");
-    build_qpkg(&qpkg_path, &manifest, &publisher_sk, payload_dir.path());
+    let tapp_path = env.home.path().join("app.tapp");
+    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
     // Registry empty — no attestation on file.
     env.write_trusted_attestors(&TrustedAttestors::default());
@@ -386,7 +386,7 @@ fn install_require_attestor_and_allow_self_signed_falls_back_when_no_match() {
     // would otherwise refuse the install before the trust decision
     // could be observed.
     cmd.arg("install")
-        .arg(&qpkg_path)
+        .arg(&tapp_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-attestor")
         .arg("tilo-curated/2026.07")
@@ -412,8 +412,8 @@ fn install_refuses_revoked_publisher() {
     let payload_dir = tempfile::tempdir().unwrap();
     write_payload(payload_dir.path());
 
-    let qpkg_path = env.home.path().join("app.qpkg");
-    build_qpkg(&qpkg_path, &manifest, &publisher_sk, payload_dir.path());
+    let tapp_path = env.home.path().join("app.tapp");
+    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
     env.write_trusted_attestors(&TrustedAttestors::default());
     env.write_revocation(&RevocationList {
@@ -429,7 +429,7 @@ fn install_refuses_revoked_publisher() {
     // would otherwise refuse the install before the trust decision
     // could be observed.
     cmd.arg("install")
-        .arg(&qpkg_path)
+        .arg(&tapp_path)
         .arg("--ignore-missing-runtime");
     let (ok, _stdout, stderr) = run(cmd);
     assert!(!ok, "expected refusal, stderr: {stderr}");
@@ -450,8 +450,8 @@ fn install_default_warns_but_installs_self_signed() {
     let payload_dir = tempfile::tempdir().unwrap();
     write_payload(payload_dir.path());
 
-    let qpkg_path = env.home.path().join("app.qpkg");
-    build_qpkg(&qpkg_path, &manifest, &publisher_sk, payload_dir.path());
+    let tapp_path = env.home.path().join("app.tapp");
+    build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
 
     env.write_trusted_attestors(&TrustedAttestors::default());
     env.write_revocation(&RevocationList::default());
@@ -462,7 +462,7 @@ fn install_default_warns_but_installs_self_signed() {
     // would otherwise refuse the install before the trust decision
     // could be observed.
     cmd.arg("install")
-        .arg(&qpkg_path)
+        .arg(&tapp_path)
         .arg("--ignore-missing-runtime");
     let (ok, stdout, stderr) = run(cmd);
     assert!(ok, "expected success, stderr: {stderr}");
@@ -480,15 +480,15 @@ fn install_require_publisher_binds_the_package_to_the_registry_key() {
     let manifest = manifest(&publisher_pub_hex);
     let payload_dir = tempfile::tempdir().unwrap();
     write_payload(payload_dir.path());
-    let qpkg_path = env.home.path().join("app.qpkg");
-    let package_root = build_qpkg(&qpkg_path, &manifest, &publisher_sk, payload_dir.path());
+    let tapp_path = env.home.path().join("app.tapp");
+    let package_root = build_tapp(&tapp_path, &manifest, &publisher_sk, payload_dir.path());
     env.write_trusted_attestors(&TrustedAttestors::default());
     env.write_revocation(&RevocationList::default());
 
     let mut mismatched = env.cmd();
     mismatched
         .arg("install")
-        .arg(&qpkg_path)
+        .arg(&tapp_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-publisher")
         .arg("11".repeat(32));
@@ -502,7 +502,7 @@ fn install_require_publisher_binds_the_package_to_the_registry_key() {
     let mut wrong_root = env.cmd();
     wrong_root
         .arg("install")
-        .arg(&qpkg_path)
+        .arg(&tapp_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-publisher")
         .arg(&publisher_pub_hex)
@@ -518,7 +518,7 @@ fn install_require_publisher_binds_the_package_to_the_registry_key() {
     let mut matching = env.cmd();
     matching
         .arg("install")
-        .arg(&qpkg_path)
+        .arg(&tapp_path)
         .arg("--ignore-missing-runtime")
         .arg("--require-publisher")
         .arg(&publisher_pub_hex)

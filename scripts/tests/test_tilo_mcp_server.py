@@ -34,7 +34,7 @@ class FakeCompositor:
                     "title": "Rename",
                     "subtitle": "Rename this shared file",
                     "params": [{"name": "name", "type": "text"}],
-                    "application": "dev.tilo.files",
+                    "application": "so.tilo.files",
                     "room": "room-7",
                     "record": "file:/Brief.md",
                     "resource": "files.entry:/Brief.md",
@@ -47,7 +47,7 @@ class FakeCompositor:
                     "title": "Delete",
                     "subtitle": "Move this shared file to trash",
                     "params": [],
-                    "application": "dev.tilo.files",
+                    "application": "so.tilo.files",
                     "room": "room-7",
                     "record": "file:/Brief.md",
                     "resource": "files.entry:/Brief.md",
@@ -113,7 +113,7 @@ class ResourceProjectionTest(unittest.TestCase):
         )
         roots = response["result"]["resources"]
         self.assertEqual(
-            [root["name"] for root in roots], ["actions", "dev.tilo.files"]
+            [root["name"] for root in roots], ["actions", "so.tilo.files"]
         )
         self.assertTrue(
             all(root["mimeType"] == SERVER.APPLICATION_MIME for root in roots)
@@ -123,7 +123,7 @@ class ResourceProjectionTest(unittest.TestCase):
             "resources/list must not preload action addresses",
         )
 
-        files_root = next(root for root in roots if root["name"] == "dev.tilo.files")
+        files_root = next(root for root in roots if root["name"] == "so.tilo.files")
         application = self._read(compositor, 2, files_root["uri"])
         self.assertEqual(application["type"], "application")
         self.assertEqual(len(application["objects"]), 1)
@@ -176,7 +176,7 @@ class ResourceProjectionTest(unittest.TestCase):
         root = next(
             resource
             for resource in SERVER.list_resources(compositor)["resources"]
-            if resource["name"] == "dev.tilo.files"
+            if resource["name"] == "so.tilo.files"
         )
         application = self._read(compositor, 7, root["uri"])
         self.assertTrue(

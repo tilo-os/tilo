@@ -12,7 +12,7 @@ type WireContact = (String, String, Vec<String>);
 
 static LAST: LazyLock<Mutex<Vec<WireContact>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 static PUBLISHER: LazyLock<Option<mpsc::SyncSender<Vec<WireContact>>>> = LazyLock::new(|| {
-    if std::env::var("TILO_PACKAGE_ID").as_deref() != Ok("dev.tilo.contacts") {
+    if std::env::var("TILO_PACKAGE_ID").as_deref() != Ok("so.tilo.contacts") {
         return None;
     }
     let (sender, receiver) = mpsc::sync_channel::<Vec<WireContact>>(1);

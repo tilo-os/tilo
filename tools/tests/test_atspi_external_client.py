@@ -28,17 +28,17 @@ class ManifestScenarioTests(unittest.TestCase):
 
     def test_reads_complete_certification_data(self) -> None:
         manifest = self.write_manifest(
-            """[package]\nid = "dev.tilo.example"\nname = "Example"\n
+            """[package]\nid = "so.tilo.example"\nname = "Example"\n
             [entrypoint]\nbin = "bin/example"\n
             [accessibility.atspi_acceptance]\nroot = "Example"\nrequired = ["Open"]\naction = "Open"\nafter_action = ["Close"]\n"""
         )
         scenario = CLIENT.scenario_from_manifest(manifest)
-        self.assertEqual(scenario.app_id, "dev.tilo.example")
+        self.assertEqual(scenario.app_id, "so.tilo.example")
         self.assertEqual(scenario.required, ("Open",))
 
     def test_rejects_unverifiable_action_data(self) -> None:
         manifest = self.write_manifest(
-            """[package]\nid = "dev.tilo.example"\nname = "Example"\n
+            """[package]\nid = "so.tilo.example"\nname = "Example"\n
             [entrypoint]\nbin = "bin/example"\n
             [accessibility.atspi_acceptance]\nroot = "Example"\nrequired = ["Open"]\naction = "Open"\nafter_action = []\n"""
         )

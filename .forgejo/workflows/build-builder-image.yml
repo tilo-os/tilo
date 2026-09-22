@@ -530,7 +530,7 @@ jobs:
       - name: Replicate the promoted builder beside Oregon runners
         if: github.ref == 'refs/heads/main'
         env:
-          AWS_REPLICATION_ROLE_ARN: arn:aws:iam::125650147312:role/podesta-burst-usw2-qos-builder-replication
+          AWS_REPLICATION_ROLE_ARN: arn:aws:iam::125650147312:role/podesta-burst-usw2-tilo-builder-replication
         run: |
           python3 os/dev/replicate-builder-index.py \
             --source-file builder-index.txt \

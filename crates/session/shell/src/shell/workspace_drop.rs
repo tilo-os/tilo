@@ -17,6 +17,7 @@ use std::path::Path;
 use crate::shell::state::{
     AppKind, GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
 };
+use crate::shell::tab_binding::Placement;
 
 /// `is_folder` collapses the concept's `'folder' | 'file'` drag data
 /// to a bool, since the shell only branches on that one bit.
@@ -53,7 +54,10 @@ impl DraggedItem {
 }
 
 /// Small and exhaustive; a lookup-table or regex would be overkill.
-pub const EDITOR_EXTENSIONS: &[&str] = &["css", "html", "js", "json", "md", "ts", "tsx"];
+pub const EDITOR_EXTENSIONS: &[&str] = &[
+    "bash", "c", "cpp", "css", "go", "h", "hpp", "html", "java", "js", "json", "kt", "md", "py",
+    "rs", "sh", "toml", "ts", "tsx", "txt", "xml", "yaml", "yml", "zsh",
+];
 
 pub fn decide_app_for_drop(item: &DraggedItem) -> AppKind {
     if item.is_folder {
@@ -153,6 +157,23 @@ pub fn apply_workspace_drop_at_from_path(
 pub fn apply_workspace_drop_from_path(tree: &mut WorkspaceTree, path: &Path) -> Option<u64> {
     let item = DraggedItem::from_path(path)?;
     apply_workspace_drop(tree, &item)
+}
+
+/// Place an unclaimed file/folder through the same exact destination used by
+/// app and tab drags. Claimed document types take `doc_open::open_at`; this is
+/// the Files/placeholder fallback and therefore still has to preserve the
+/// tab-side or group-seam instruction.
+pub fn apply_workspace_drop_at_placement_from_path(
+    tree: &mut WorkspaceTree,
+    path: &Path,
+    placement: Placement,
+) -> Option<u64> {
+    let item = DraggedItem::from_path(path)?;
+    let kind = decide_app_for_drop(&item);
+    let label = tab_label_for(&item, &kind);
+    Some(crate::shell::tab_binding::open_hosted_app(
+        tree, kind, label, placement,
+    ))
 }
 
 /// Pick a tab label for a dropped item: folders get "Files — <name>",

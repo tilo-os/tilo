@@ -1126,9 +1126,20 @@ fn inspected_widget<'a>(
 fn placeholder_key(driver: &ui::headless::Driver) -> String {
     let snapshot = driver.inspection();
     let editor = inspected_widget(&snapshot.root, "block_editor").unwrap();
-    let blocks = &editor.semantics.as_ref().unwrap().children;
-    assert_eq!(blocks.len(), 1);
-    blocks[0].semantic_key.clone().unwrap()
+    let block_nodes = editor
+        .semantics
+        .as_ref()
+        .unwrap()
+        .children
+        .iter()
+        .filter(|node| {
+            node.semantic_key
+                .as_deref()
+                .is_some_and(|key| key.starts_with("notes.block:"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(block_nodes.len(), 1);
+    block_nodes[0].semantic_key.clone().unwrap()
 }
 
 fn has_selected_node(node: &ui::headless::InspectionNode) -> bool {

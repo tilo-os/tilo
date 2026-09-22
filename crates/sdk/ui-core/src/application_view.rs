@@ -128,6 +128,11 @@ pub struct InstanceViewStore {
     directory: PathBuf,
     device_id: String,
     workspace_id: String,
+    #[allow(
+        dead_code,
+        reason = "ownership of the profile resource, rather than access to it, keeps it alive"
+    )]
+    profile_lifetime: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
 pub(crate) fn validate_identity(identity: &str) -> Result<(), ThawError> {
@@ -169,7 +174,15 @@ impl InstanceViewStore {
             directory,
             device_id: device_id.into(),
             workspace_id: workspace_id.into(),
+            profile_lifetime: None,
         })
+    }
+    pub(crate) fn with_profile_lifetime(
+        mut self,
+        lifetime: std::rc::Rc<dyn std::any::Any>,
+    ) -> Self {
+        self.profile_lifetime = Some(lifetime);
+        self
     }
     pub(crate) fn matches_namespace(&self, root: &Path, device: &str, workspace: &str) -> bool {
         self.profile_state_root == root

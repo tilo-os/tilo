@@ -717,6 +717,19 @@ const INSTALLER_KEYBOARDS: &[&str] = &[
     "colemak",
 ];
 
+/// Exact locale catalog supported by both the host customizer and the
+/// installed OS. Keep this in the image source so the host builds, live
+/// installer and privileged backend all consume one reviewed contract.
+pub(crate) const INSTALLER_LOCALE_CATALOG: &str =
+    include_str!("../../../os/usr/share/tilo/installer-locales.txt");
+
+pub(crate) fn installer_locales() -> impl Iterator<Item = &'static str> {
+    INSTALLER_LOCALE_CATALOG
+        .lines()
+        .map(str::trim)
+        .filter(|locale| !locale.is_empty())
+}
+
 impl InstallProfile {
     /// Validate the exact secret-free subset accepted by the live installer.
     ///
@@ -800,13 +813,8 @@ impl InstallProfile {
         }
 
         let locale = self.locale.trim();
-        if locale.is_empty()
-            || locale.len() > 64
-            || !locale
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'@' | b'-'))
-        {
-            return Err("Locale must be a valid locale name such as en_US.UTF-8.".into());
+        if !installer_locales().any(|supported| supported == locale) {
+            return Err("Choose a language and locale supported by Tilo.".into());
         }
 
         if !INSTALLER_KEYBOARDS.contains(&self.keyboard.trim()) {
@@ -1321,7 +1329,7 @@ mod tests {
         profile.user.full_name = "Bad:Name".into();
         cases.push(("full name", profile));
         let mut profile = good.clone();
-        profile.locale = "../../etc".into();
+        profile.locale = "zz_ZZ.UTF-8".into();
         cases.push(("locale", profile));
         let mut profile = good.clone();
         profile.keyboard = "not-a-layout".into();

@@ -1312,7 +1312,7 @@ mod tests {
     fn imports_hyperlink_as_link_mark() {
         use crate::document::MarkValue;
         // A `text:a` becomes an inline `link` mark carrying the href, so it merges with concurrent text edits instead of being atomized.
-        let body = r#"<text:p>see <text:a xlink:href="https://tilo.dev/x">here</text:a>!</text:p>"#;
+        let body = r#"<text:p>see <text:a xlink:href="https://tilo.so/x">here</text:a>!</text:p>"#;
         let odt = minimal_odt(body);
         let mut d = Document::new();
         OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
@@ -1329,7 +1329,7 @@ mod tests {
             "link over 'here': {:?}",
             b.marks
         );
-        assert_eq!(link.value, MarkValue::Str("https://tilo.dev/x".into()));
+        assert_eq!(link.value, MarkValue::Str("https://tilo.so/x".into()));
     }
 
     #[test]

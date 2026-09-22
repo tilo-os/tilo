@@ -22,30 +22,30 @@ class ReceiptProductionPathTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             tree = root / 'collection'
-            (tree / 'qpkg').mkdir(parents=True)
+            (tree / 'tapp').mkdir(parents=True)
             runtime = tree / 'runtime/tilo-runtime/1'
             runtime.mkdir(parents=True)
-            pkg, bundle_tool = root / 'tilo-pkg', root / 'tilo-runtime-bundle'
+            pkg, bundle_tool = root / 'tilo-app-package', root / 'tilo-runtime-bundle'
             pkg.write_bytes(b'package executable fixture')
             bundle_tool.write_bytes(b'runtime executable fixture')
             signers = root / 'signers.json'
             signers.write_text(json.dumps({'app_publisher': '1' * 64, 'runtime_publisher': '2' * 64}))
             manifest = b'[package]\nid="dev.test.app"\nversion="1"\nruntime="tilo-runtime/1"\n[package.isa]\nx86_64="v3"\n'
-            qpkg = tree / 'qpkg/app-1-x86_64.qpkg'
-            with tarfile.open(qpkg, 'w') as tar:
+            tapp = tree / 'tapp/app-1-x86_64.tapp'
+            with tarfile.open(tapp, 'w') as tar:
                 member = tarfile.TarInfo('manifest.toml')
                 member.size = len(manifest)
                 tar.addfile(member, io.BytesIO(manifest))
             (runtime / 'bundle.toml').write_text(f'version="1"\narch="x86_64"\nroot_hash="{"3" * 64}"\npublisher_hex="{"2" * 64}"\nsignature_hex="{"4" * 128}"\n')
             (tree / 'runtime/runtime-bundle-publisher.hex').write_text('2' * 64)
             index = {'format': 1, 'source': 'a' * 40, 'architecture': 'x86_64', 'apps': [
-                {'file': qpkg.name, 'id': 'dev.test.app', 'version': '1', 'runtime': 'tilo-runtime/1', 'sha256': producer.channel.sha(qpkg)}]}
+                {'file': tapp.name, 'id': 'dev.test.app', 'version': '1', 'runtime': 'tilo-runtime/1', 'sha256': producer.channel.sha(tapp)}]}
             (tree / 'index.json').write_text(json.dumps(index))
             paths = sorted(path for path in tree.rglob('*') if path.is_file())
             (tree / 'SHA256SUMS').write_text(''.join(producer.channel.sha(path) + '  ' + path.relative_to(tree).as_posix() + '\n' for path in paths))
             archive = tree / 'tilo-apps-x86_64.tar.gz'
             with tarfile.open(archive, 'w:gz') as tar:
-                for name in ('qpkg', 'runtime', 'index.json', 'SHA256SUMS'):
+                for name in ('tapp', 'runtime', 'index.json', 'SHA256SUMS'):
                     tar.add(tree / name, arcname=name)
             (tree / (archive.name + '.sha256')).write_text(producer.channel.sha(archive) + '  ' + archive.name + '\n')
             seen = []
@@ -62,10 +62,10 @@ class ReceiptProductionPathTests(unittest.TestCase):
                     output = ''
                 elif command[1] == 'verify':
                     self.assertEqual(command[2:4], ['--trusted-key', '1' * 64])
-                    output = 'ok: qpkg:' + '5' * 64 + ' verifies and publisher is trusted\n'
+                    output = 'ok: tapp:' + '5' * 64 + ' verifies and publisher is trusted\n'
                 else:
                     self.assertEqual(command[1], 'inspect')
-                    output = 'package-id: qpkg:' + '5' * 64 + '\npublisher-identity: ed25519:' + '1' * 64 + '\nsigned: yes\n\n--- manifest.toml ---\n'
+                    output = 'package-id: tapp:' + '5' * 64 + '\npublisher-identity: ed25519:' + '1' * 64 + '\nsigned: yes\n\n--- manifest.toml ---\n'
                 return subprocess.CompletedProcess(command, 0, output, '')
 
             with patch.object(subprocess, 'run', side_effect=execute):
@@ -87,13 +87,13 @@ class ReceiptProductionPathTests(unittest.TestCase):
             self.assertEqual(merged['collection'], result['collection'])
             self.assertEqual(merged['publication'], {'status': 'unpublished'})
             # Reused members are covered by fresh verification, not only new app inputs.
-            original = qpkg.read_bytes()
-            qpkg.write_bytes(original + b'tampered reused member')
+            original = tapp.read_bytes()
+            tapp.write_bytes(original + b'tampered reused member')
             with patch.object(subprocess, 'run') as never:
                 with self.assertRaises(ValueError):
                     final.verify(tree, pkg, bundle_tool, policy_path, policy_hash, 'a' * 40, 'x86_64')
                 never.assert_not_called()
-            qpkg.write_bytes(original)
+            tapp.write_bytes(original)
 
             receipt_path = tree / 'final-publication-receipt.json'
             receipt_hash = producer.channel.sha(receipt_path)

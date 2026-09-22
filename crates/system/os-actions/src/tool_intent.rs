@@ -133,10 +133,10 @@ impl ToolIntent {
     /// contextual surface.
     pub fn package_id(&self) -> Option<&'static str> {
         match self {
-            Self::Vpn { .. } => Some("dev.tilo.vpn"),
-            Self::Firewall { .. } => Some("dev.tilo.firewall"),
-            Self::Disks { .. } => Some("dev.tilo.disks"),
-            Self::Backups { .. } => Some("dev.tilo.backups"),
+            Self::Vpn { .. } => Some("so.tilo.vpn"),
+            Self::Firewall { .. } => Some("so.tilo.firewall"),
+            Self::Disks { .. } => Some("so.tilo.disks"),
+            Self::Backups { .. } => Some("so.tilo.backups"),
             Self::WorkspaceSettings { .. } | Self::IdentityBackup => None,
         }
     }
@@ -261,7 +261,7 @@ mod tests {
         let intent = ToolIntent::Firewall {
             route: FirewallRoute::Rules,
         };
-        assert_eq!(intent.package_id(), Some("dev.tilo.firewall"));
+        assert_eq!(intent.package_id(), Some("so.tilo.firewall"));
         let json = serde_json::to_value(intent).unwrap();
         assert_eq!(json["tool"], "firewall");
         assert_eq!(json["route"], "rules");

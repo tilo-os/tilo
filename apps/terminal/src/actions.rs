@@ -655,7 +655,7 @@ mod tests {
             &ROOT,
             b"\x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\local\x1b]8;;\x1b\\ \
               \x1b]8;;https://token@example.test/private\x1b\\credential\x1b]8;;\x1b\\ \
-              \x1b]8;;https://tilo.example/docs\x1b\\public\x1b]8;;\x1b\\",
+              \x1b]8;;https://example.test/docs\x1b\\public\x1b]8;;\x1b\\",
         );
         widget.sync(&mut doc, &ROOT);
 
@@ -672,11 +672,11 @@ mod tests {
             1,
             "local and credential-bearing process links are not agent resources"
         );
-        assert_eq!(transcript.children[0].label, "https://tilo.example/docs");
+        assert_eq!(transcript.children[0].label, "https://example.test/docs");
         assert!(
             !crate::inner::is_public_web_link("file:///home/me/.ssh/id_ed25519")
                 && !crate::inner::is_public_web_link("https://token@example.test/private")
-                && !crate::inner::is_public_web_link("https://tilo.example/?access_token=no"),
+                && !crate::inner::is_public_web_link("https://example.test/?access_token=no"),
             "the directory rejects local paths, credentials, and query-bearing targets"
         );
     }

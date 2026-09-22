@@ -29,7 +29,7 @@
 # /usr reverts. /var does not — the workspace tree, every app's documents, the
 # identity keys and the blob store are all on the stateroot and are shared by
 # every deployment. Neither do user-installed packages: the runtime bundle under
-# /usr/lib/tilo-runtime reverts with /usr, and a .qpkg installed against a newer
+# /usr/lib/tilo-runtime reverts with /usr, and a .tapp installed against a newer
 # one stays installed and can stop launching. Both are printed before anything is
 # changed, because finding out afterwards is the failure this is meant to prevent.
 set -uo pipefail
@@ -195,7 +195,7 @@ What rolling back does and does not undo
                       shared by all deployments. A rollback does not restore
                       them, and anything a newer version wrote to them stays
                       written.
-  packages do NOT     a .qpkg you installed yourself is under /var and survives.
+  packages do NOT     a .tapp you installed yourself is under /var and survives.
                       If it was built against a newer runtime bundle than the
                       deployment you are going back to, it can stop launching.
                       Reinstall it, or roll forward again.

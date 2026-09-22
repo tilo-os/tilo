@@ -29,7 +29,7 @@ extern crate runtime_dylib;
 
 fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.passwords", passwords::app_root)
+        &LaunchSpec::new("so.tilo.passwords", passwords::app_root)
             .shot_root(shot)
             .allowed_options(&["--screen"])
             .configure_app(|app| app.set_window_title(Some("Passwords".into()))),

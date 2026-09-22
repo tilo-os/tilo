@@ -44,24 +44,28 @@ class EnabledImagerPlatforms(unittest.TestCase):
     def setUp(self):
         self.workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
 
-    def test_no_event_can_allocate_macos_or_require_it_for_publication(self):
-        self.assertIn("    if: ${{ false }}", section(self.workflow, "macos", 2))
+    def test_full_native_and_tags_require_both_macos_architectures(self):
+        macos = section(self.workflow, "macos", 2)
+        self.assertIn(
+            "    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'",
+            macos,
+        )
+        for arch in ("x86_64", "aarch64"):
+            self.assertIn(f"runner: imager-macos-{arch}", macos)
         publish = section(self.workflow, "publish", 2)
-        self.assertIn("    needs: [linux, windows]", publish)
-        self.assertNotIn("macos", publish)
-        for job in ("homebrew", "homebrew-install-test"):
-            block = section(self.workflow, job, 2)
-            self.assertNotIn("imager-macos", block)
+        self.assertIn("    needs: [linux, windows, macos]", publish)
         install = section(self.workflow, "homebrew-install-test", 2)
         self.assertNotIn("package_kind: cask", install)
         for arch in ("x86_64", "aarch64"):
             self.assertIn(f"runner: imager-linux-{arch}", install)
-        deferred = section(self.workflow, "homebrew-macos-install-test", 2)
-        self.assertIn("    if: ${{ false }}", deferred)
+        native_casks = section(self.workflow, "homebrew-macos-install-test", 2)
+        self.assertIn("    if: startsWith(github.ref, 'refs/tags/imager-v')", native_casks)
         for arch in ("x86_64", "aarch64"):
-            self.assertIn(f"runner: imager-macos-{arch}", deferred)
+            self.assertIn(f"runner: imager-macos-{arch}", native_casks)
         homebrew = section(self.workflow, "homebrew", 2)
-        self.assertIn('TILO_IMAGER_MACOS_ENABLED: "0"', homebrew)
+        self.assertIn('TILO_IMAGER_MACOS_ENABLED: "1"', homebrew)
+        site = section(self.workflow, "site-downloads", 2)
+        self.assertIn("    needs: [homebrew-install-test, homebrew-macos-install-test, winget]", site)
 
     def test_real_release_gate_accepts_linux_windows_and_rejects_missing_or_corrupt(self):
         script = step_script(self.workflow, "enabled-assets")
@@ -73,6 +77,7 @@ class EnabledImagerPlatforms(unittest.TestCase):
                 names += [f"tilo-imager-linux-{arch}.{ext}" for ext in ("AppImage", "tar.gz", "flatpak")]
                 names += [f"tilo-imager-windows-{arch}.{ext}" for ext in ("exe", "zip")]
                 names += [f"tilo-imager-setup-windows-{arch}.exe"]
+                names += [f"tilo-imager-macos-{arch}.{ext}" for ext in ("dmg", "zip")]
                 for name in names:
                     (assets / name).write_bytes(b"fixture")
                     digest = hashlib.sha256(b"fixture").hexdigest()
@@ -95,6 +100,12 @@ class EnabledImagerPlatforms(unittest.TestCase):
             corrupt = run()
             self.assertNotEqual(0, corrupt.returncode)
             self.assertIn("invalid release digest", corrupt.stderr)
+
+    def test_release_gate_explicitly_requires_every_macos_artifact(self):
+        script = step_script(self.workflow, "enabled-assets")
+        for arch in ("x86_64", "aarch64"):
+            for ext in ("dmg", "zip"):
+                self.assertIn(f"tilo-imager-macos-{arch}.{ext}", script)
 
 
 if __name__ == "__main__":

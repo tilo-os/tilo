@@ -12,6 +12,9 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
 
+/// Shared fractional ordering for projections whose storage objects stay fixed.
+pub use qdoc::order as fractional_order;
+
 /// The splice [`splice_text_diffed`] applied, in *characters* — Automerge `Text`
 /// is char-addressed, not byte-addressed. A no-op reports `{pos:0, del:0, ins:0}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
