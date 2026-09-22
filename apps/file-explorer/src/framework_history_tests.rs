@@ -500,7 +500,17 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
     use std::os::unix::fs::MetadataExt;
     let before_retry = std::fs::metadata(&a).unwrap();
     let before_retry_ctime = (before_retry.ctime(), before_retry.ctime_nsec());
-    driver.click_named("history-files-retry").unwrap();
+    // This case exercises exact session routing across descriptor swaps, not
+    // button hit-testing. Activate the semantic control directly so the
+    // controller's two-second background poll cannot rebuild the toolbar
+    // between `click_named` resolving its rect and dispatching the pointer.
+    driver
+        .perform_semantic_named(
+            "history-files-retry",
+            None,
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
     assert!(
         driver.wait_until(std::time::Duration::from_secs(5), |_| {
             let metadata = std::fs::metadata(&a).unwrap();
