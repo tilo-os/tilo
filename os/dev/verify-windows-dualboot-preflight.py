@@ -142,10 +142,27 @@ def load_receipt(path):
     return receipt
 
 
-def bitlocker_off(bitlocker):
+def bitlocker_ready_for_planned_boot_change(bitlocker):
+    """Accept a fully decrypted volume or an encrypted, explicitly suspended one.
+
+    Tilo never writes the Windows volume or its ESP.  Decrypting C: just to
+    create adjacent Tilo partitions is therefore needless exposure and a very
+    slow recovery path.  Windows exposes a bounded BitLocker suspension as
+    ``ProtectionStatus: Off`` while preserving full encryption.  Rejecting
+    partially encrypted/decrypted and locked volumes keeps this receipt useful
+    for the short installation/boot-chain-change window.
+    """
     volume = str(bitlocker.get("volume_status") or "").strip().casefold()
     protection = str(bitlocker.get("protection_status") or "").strip().casefold()
-    return volume in {"fullydecrypted", "0"} and protection in {"off", "0"}
+    lock_status = str(bitlocker.get("lock_status") or "").strip().casefold()
+    percentage = bitlocker.get("encryption_percentage")
+    if protection not in {"off", "0"} or lock_status not in {"unlocked", "0"}:
+        return False
+    if volume in {"fullyencrypted", "1"}:
+        return percentage in {100, "100", 100.0}
+    if volume in {"fullydecrypted", "0"}:
+        return percentage in {0, "0", 0.0}
+    return False
 
 
 def same_windows_esp(before, current):
@@ -165,8 +182,8 @@ def valid_external_media(media):
 
 def verify_receipt(current, baseline, required_unallocated_bytes):
     failures = []
-    if not bitlocker_off(current["bitlocker"]):
-        failures.append("BitLocker on C: is not fully decrypted with protection off")
+    if not bitlocker_ready_for_planned_boot_change(current["bitlocker"]):
+        failures.append("BitLocker on C: must be fully encrypted with protection suspended, or fully decrypted, and unlocked")
     free_extent = int(current["windows_disk"].get("largest_free_extent_bytes", -1))
     if free_extent < required_unallocated_bytes:
         failures.append(f"largest Windows-disk unallocated extent is {free_extent} bytes; need at least {required_unallocated_bytes}")
