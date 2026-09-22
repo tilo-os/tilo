@@ -27,18 +27,18 @@ struct Shared {
 impl Shared {
     fn wake(&self) {
         let waker = self.waker.lock().ok().and_then(|slot| slot.clone());
-        if let Some(waker) = waker {
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker())).is_err() {
-                tracing::error!("Chromium UI wake callback panicked");
-            }
+        if let Some(waker) = waker
+            && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| waker())).is_err()
+        {
+            tracing::error!("Chromium UI wake callback panicked");
         }
     }
 
     fn event(&self, event: WebViewEvent) {
-        if let WebViewEvent::UriChanged(uri) = &event {
-            if let Ok(mut current) = self.uri.lock() {
-                current.clone_from(uri);
-            }
+        if let WebViewEvent::UriChanged(uri) = &event
+            && let Ok(mut current) = self.uri.lock()
+        {
+            current.clone_from(uri);
         }
         if let Ok(mut events) = self.events.lock() {
             // State updates supersede older values without evicting load outcomes.
@@ -72,17 +72,17 @@ impl Shared {
                     )
                 });
             }
-            if events.len() >= 512 {
-                if let Some(index) = events.iter().position(|old| {
+            if events.len() >= 512
+                && let Some(index) = events.iter().position(|old| {
                     !matches!(
                         old,
                         WebViewEvent::LoadFinished
                             | WebViewEvent::LoadFinishedAt { .. }
                             | WebViewEvent::LoadFailed { .. }
                     )
-                }) {
-                    events.remove(index);
-                }
+                })
+            {
+                events.remove(index);
             }
             events.push_back(event);
         }
@@ -838,10 +838,10 @@ impl WebViewEngine for ChromiumEngine {
                         error: format!("Navigation was not queued: {error}"),
                     });
                 }
-            } else if let Some(uri) = navigation {
-                if let Ok(mut current) = self.shared.uri.lock() {
-                    *current = uri;
-                }
+            } else if let Some(uri) = navigation
+                && let Ok(mut current) = self.shared.uri.lock()
+            {
+                *current = uri;
             }
         }
     }
@@ -953,24 +953,24 @@ fn route_native_event(
         }
     };
     if let Some(shared) = endpoint {
-        if event_name == "open_tab" {
-            if let Some(url) = value.get("url").and_then(Value::as_str) {
-                let mut requests = shared
-                    .open_tabs
-                    .lock()
-                    .map_err(|_| "New tab requests unavailable")?;
-                if requests.len() < 32 {
-                    requests.push_back((
-                        url.into(),
-                        value
-                            .get("background")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                    ));
-                }
-                drop(requests);
-                shared.wake();
+        if event_name == "open_tab"
+            && let Some(url) = value.get("url").and_then(Value::as_str)
+        {
+            let mut requests = shared
+                .open_tabs
+                .lock()
+                .map_err(|_| "New tab requests unavailable")?;
+            if requests.len() < 32 {
+                requests.push_back((
+                    url.into(),
+                    value
+                        .get("background")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                ));
             }
+            drop(requests);
+            shared.wake();
         }
         if let Some(event) = decode_event(value) {
             shared.event(event);
@@ -1308,18 +1308,17 @@ impl CommandQueue {
         let op = value.get("op").and_then(Value::as_str).unwrap_or("");
         // These operations are explicitly replaceable. Keep ordering barriers:
         // mouse motion before a click and resize before navigation stay ordered.
-        if matches!(op, "mouse_move" | "resize" | "focus") {
-            if state.0.back().is_some_and(|(last, _)| {
+        if matches!(op, "mouse_move" | "resize" | "focus")
+            && state.0.back().is_some_and(|(last, _)| {
                 last.get("op").and_then(Value::as_str) == Some(op)
                     && last.get("tab") == value.get("tab")
-            }) {
-                if let Some((_, bytes)) = state.0.pop_back() {
-                    state.1 = state
-                        .1
-                        .checked_sub(bytes)
-                        .ok_or("invalid command byte count")?;
-                }
-            }
+            })
+            && let Some((_, bytes)) = state.0.pop_back()
+        {
+            state.1 = state
+                .1
+                .checked_sub(bytes)
+                .ok_or("invalid command byte count")?;
         }
         let input = matches!(
             op,

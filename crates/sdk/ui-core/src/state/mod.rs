@@ -775,7 +775,7 @@ impl UndoLog {
 
 /// The unified state object that holds our CRDT document.
 pub struct State {
-    /// Compatibility cursor surface; modern collaboration uses PresenceCtx.
+    /// Compatibility cursor surface; modern collaboration uses `PresenceCtx`.
     pub collab: CollaborationState,
     /// Process-local document lifetime, distinct from a persistent record name
     /// or committed frontier. Captured readers must not survive replacement.

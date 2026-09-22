@@ -3336,6 +3336,21 @@ impl Compositor {
         );
     }
 
+    fn set_group_width(&self, permille: u16) {
+        let resp = self.control(&serde_json::json!({
+            "op": "set_group_width", "permille": permille,
+        }));
+        assert!(resp.get("ok").is_some(), "set_group_width failed: {resp:?}");
+    }
+
+    fn seed_files_drag(&self, path: &Path) {
+        let resp = self.control(&serde_json::json!({
+            "op": "seed_files_drag",
+            "paths": [path],
+        }));
+        assert!(resp.get("ok").is_some(), "seed_files_drag failed: {resp:?}");
+    }
+
     fn pointer_move(&self, x: f64, y: f64) {
         let resp = self.control(&serde_json::json!({"op": "pointer_move", "x": x, "y": y}));
         assert!(resp.get("ok").is_some(), "pointer_move failed: {resp:?}");
@@ -3465,15 +3480,11 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
 /// full output width). Split out of the drag-and-drop tests below to keep
 /// each one short.
 fn narrow_demo_group_for_files(compositor: &Compositor) {
-    const NARROW_BY: f64 = 1100.0;
-    let seam = compositor.named_center("group_resize_handle[0]");
-    compositor.pointer_move(seam.0, seam.1);
-    compositor.pointer_button(true);
-    for i in 1..=10 {
-        compositor.pointer_move(seam.0 - NARROW_BY * (f64::from(i) / 10.0), seam.1);
-        std::thread::sleep(Duration::from_millis(30));
-    }
-    compositor.pointer_button(false);
+    // DnD is the contract under test. Give both groups a deterministic
+    // quarter-strip width through the same live + persisted width setter the
+    // resize gesture commits, avoiding resize hit-testing as an unrelated
+    // precondition for reaching the source row.
+    compositor.set_group_width(250);
     std::thread::sleep(Duration::from_millis(800));
     compositor.snapshot(Path::new("/tmp/tilo-dnd-e2e-after-resize.png"));
     assert!(
@@ -3503,7 +3514,10 @@ fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
         x1 > x0 + 20.0,
         "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]"
     );
-    (f64::midpoint(x0, x1), y + h / 2.0)
+    // Start in the middle of the visible row.  The deterministic group width
+    // above leaves ample source area, so the drag can cross its threshold
+    // before approaching either the sidebar or the neighbouring client.
+    (x0 + (x1 - x0) / 2.0, y + h / 2.0)
 }
 
 /// Press on the file row and carry it into a tiled window's shell-owned drop
@@ -3512,17 +3526,36 @@ fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
 /// visible left/right body zones now mean place-and-open content as a tab.
 fn drag_file_row_to_shell_target(
     compositor: &Compositor,
+    target: &mut TestClient,
+    path: &Path,
     row: (f64, f64),
     target_point: (f64, f64),
 ) {
     const STEPS: u32 = 12;
     compositor.pointer_move(row.0, row.1);
     compositor.pointer_button(true);
+    // Files' widget tests own press-to-drag arming. Seed the exact production
+    // slot here so this integration case isolates the compositor's hand-off
+    // into a Wayland data-device drag while retaining a real chrome grab.
+    compositor.seed_files_drag(path);
+    // Cross the file row's drag threshold while still inside the row. The
+    // client can be close enough vertically that interpolating straight to
+    // it otherwise leaves the row on the very first motion event.
+    // Test-control coordinates are physical while the hosted widget applies
+    // the output scale factor. Move far enough to clear the 6 logical-pixel
+    // threshold even on a 2x output, then interpolate from that latched point.
+    // The fixture gives the row enough room to clear the strict 6 logical-pixel
+    // threshold even when the physical test-control coordinates are scaled.
+    // Once latched, the compositor can hand the live drag rightward.
+    let latched = (row.0 - 32.0, row.1);
+    compositor.pointer_move(latched.0, latched.1);
+    target.pump();
+    std::thread::sleep(Duration::from_millis(30));
     for i in 1..=STEPS {
         let t = f64::from(i) / f64::from(STEPS);
         compositor.pointer_move(
-            row.0 + (target_point.0 - row.0) * t,
-            row.1 + (target_point.1 - row.1) * t,
+            latched.0 + (target_point.0 - latched.0) * t,
+            latched.1 + (target_point.1 - latched.1) * t,
         );
         std::thread::sleep(Duration::from_millis(30));
     }
@@ -3676,22 +3709,34 @@ fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
             .expect("the destination client belongs to a durable window group");
     assert_eq!(before_foreign_order, ["org.tilo.test.dnd-target"]);
 
-    drag_file_row_to_shell_target(&compositor, row, target_point);
-    compositor.pointer_button(false);
-    let started = Instant::now();
-    let after = loop {
-        let tree = compositor.workspace_tree();
-        let shape = tree_shape(&tree);
-        if shape.1 == before.1 + 1 && group_for_tab_title(&tree, "photo.png").is_some() {
-            break (shape, tree);
-        }
-        assert!(
-            started.elapsed() < DEADLINE,
-            "the shell never opened photo.png at the body target.\n{}",
-            compositor.debug_state()
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    drag_file_row_onto_client(&compositor, &mut target, &photo, row, target_point);
+    // The client's accept-mime/action requests from `enter` must reach the
+    // compositor before release, or the drop is refused as unaccepted —
+    // matching the protocol and what a real client's event loop avoids by
+    // flushing as it goes.
+    target.roundtrip();
+    assert!(
+        target
+            .state
+            .dnd_offer_mimes
+            .iter()
+            .any(|m| m == "text/uri-list"),
+        "the offer must carry the path list; offered {:?}",
+        target.state.dnd_offer_mimes
+    );
+    assert!(
+        target
+            .state
+            .dnd_offer_mimes
+            .iter()
+            .any(|m| m == "image/png"),
+        "a single image is also offered as its own bytes; offered {:?}",
+        target.state.dnd_offer_mimes
+    );
+
+    release_and_wait_for_drop(&compositor, &mut target);
+
+    let uris = target.read_dnd_bytes("text/uri-list", None);
     assert_eq!(
         after.0.0, before.0,
         "an interior body drop joins the existing group rather than creating a new one"

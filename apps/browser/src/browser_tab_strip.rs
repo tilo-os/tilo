@@ -254,6 +254,7 @@ impl BrowserTabStrip {
     #[cfg(any(test, debug_assertions))]
     pub fn debug_layout(&mut self, w: f64) {
         self.set_viewport_width(w);
+        self.rect = Rect::new(0.0, 0.0, w, 44.0);
     }
     pub fn set_viewport_width(&mut self, w: f64) {
         self.viewport_width = w;
@@ -473,7 +474,7 @@ impl Widget for BrowserTabStrip {
             t,
             Style {
                 size: Size {
-                    width: Dimension::length(48.0),
+                    width: Dimension::length(2.0 * OVERFLOW_WIDTH as f32),
                     height: Dimension::length(44.0),
                 },
                 flex_grow: 0.0,
@@ -858,7 +859,7 @@ mod interaction_tests {
         );
         strip.set_viewport_width(684.0);
         let (tree, node) = layout(&mut strip);
-        assert_eq!(strip.visible_ids(), &[6, 7, 8, 9, 10]);
+        assert_eq!(strip.visible_ids(), &[7, 8, 9, 10]);
         let start = strip.tab_rects()[0].center();
         let device_id = winit::event::DeviceId::dummy();
         dispatch(
@@ -880,8 +881,8 @@ mod interaction_tests {
                 button: MouseButton::Left,
             },
         );
-        assert_eq!(strip.active_id(), 6);
-        strip.set_active(6);
+        assert_eq!(strip.active_id(), 7);
+        strip.set_active(7);
         let (tree, node) = layout(&mut strip);
         let destination = strip.tab_rects()[2].center();
         dispatch(
@@ -903,7 +904,7 @@ mod interaction_tests {
                 button: MouseButton::Left,
             },
         );
-        assert_eq!(strip.take_reorder(), Some((5, 7)));
+        assert_eq!(strip.take_reorder(), Some((6, 8)));
     }
     #[test]
     fn mixed_partition_activation_preserves_dragged_tab() {

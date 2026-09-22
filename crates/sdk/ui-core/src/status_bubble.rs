@@ -122,15 +122,13 @@ impl StatusBubble {
 /// through [`crate::text_metrics::renderer_type_size`] — never a raw
 /// `theme.tokens.typography.scale.*` value, which paints 4× at 200 %.
 pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64) -> (f64, f64) {
-    let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
+    let (tw, _th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let pad_x = 14.0;
     let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
-    // The 1× design height, lifted when the measured line box (which the
-    // renderer scales) needs more room than 30 px leaves: a 12 px label
-    // shapes a ~15 px line at 1× and stays 30; at 2× the 30 px line gets 42.
-    let h = (f64::from(text_size) + 16.0)
-        .max(30.0)
-        .max(f64::from(th) + 12.0);
+    // `TextRenderer` applies the user's text scale to metrics, so the pill
+    // geometry must use the same effective font size.  Otherwise at 200% the
+    // glyphs extend through the lower edge of a 30px bubble.
+    let h = pill_height(text_size, tr.text_scale());
     (w, h)
 }
 
@@ -211,7 +209,7 @@ mod tests {
         tr.set_text_scale(2.0);
         let (_, enlarged_h) = pill_size("Compiled", &mut tr, 12.0, 0.0);
         assert_eq!(normal_h, 30.0);
-        assert_eq!(enlarged_h, 42.0);
+        assert_eq!(enlarged_h, 40.0);
     }
 
     #[test]

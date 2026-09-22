@@ -10457,7 +10457,7 @@ pub(crate) mod tests {
             .expect("directory fixture requires an active workspace")
             .room
             .to_string();
-        let route = CrdtRoute::record("dev.tilo.atlas", cluster_id.clone(), "atlas");
+        let route = CrdtRoute::record("so.tilo.atlas", cluster_id.clone(), "atlas");
         let fanout = Arc::new(FanoutState::new());
         let (state, bridge_rx) = CapnpBrokerState::new(
             &fanout,

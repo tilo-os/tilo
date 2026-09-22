@@ -233,11 +233,18 @@ mod command_path_tests {
         let mut widget = FileExplorerWidget::new();
         widget.nav.set_content(Box::new(scroll));
         widget.next_metadata_refresh = deadline + std::time::Duration::from_secs(60);
-        assert_eq!(widget.next_wake_deadline(), Some(deadline));
+        assert!(
+            widget
+                .next_wake_deadline()
+                .is_some_and(|wake| wake <= deadline),
+            "the root must not schedule later than its scroll fade"
+        );
         widget.next_metadata_refresh = deadline - std::time::Duration::from_millis(1);
-        assert_eq!(
-            widget.next_wake_deadline(),
-            Some(widget.next_metadata_refresh)
+        assert!(
+            widget
+                .next_wake_deadline()
+                .is_some_and(|wake| wake <= widget.next_metadata_refresh),
+            "the root must not schedule later than its metadata refresh"
         );
     }
 

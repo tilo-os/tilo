@@ -55,6 +55,9 @@ static int sandbox(void) {
       ALLOW(mprotect), ALLOW(madvise), ALLOW(mremap), ALLOW(rt_sigreturn),
       ALLOW(rt_sigprocmask), ALLOW(rt_sigaction), ALLOW(futex),
       ALLOW(clock_gettime), ALLOW(sched_yield), ALLOW(close),
+      /* Rust/serde may lazily seed a per-process map after fork. Random bytes
+         cannot expose the source image or widen the descriptor boundary. */
+      ALLOW(getrandom),
       BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS)};
   struct sock_fprog program = {
       (unsigned short)(sizeof filter / sizeof filter[0]), filter};

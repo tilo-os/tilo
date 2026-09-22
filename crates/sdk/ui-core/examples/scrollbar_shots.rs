@@ -1,3 +1,8 @@
+#![allow(
+    clippy::exit,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Offscreen renders of the [`Scrollable`] overlay scrollbar in a long list,
 //! in **both** light and dark, for self-inspection without opening a window.
 //! Drives the real five-pass pipeline (`sync` → `build_layout` →

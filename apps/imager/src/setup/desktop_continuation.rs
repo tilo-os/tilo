@@ -651,7 +651,7 @@ mod tests {
     use std::fs;
 
     fn fixture() -> (tempfile::TempDir, MigrationStore, Vec<FolderChoice>) {
-        let temp = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+        let temp = tempfile::tempdir().unwrap();
         let base = temp.path().canonicalize().unwrap();
         let source = base.join("Documents");
         fs::create_dir(&source).unwrap();
@@ -704,10 +704,15 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn readiness_connection_refuses_a_full_backlog_without_hanging() {
+        use std::os::fd::AsRawFd;
         use std::os::unix::net::UnixListener;
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("gate");
         let _server = UnixListener::bind(&path).unwrap();
+        // Pin the fixture backlog instead of inheriting the kernel's changing
+        // SOMAXCONN default. The production client remains non-blocking either
+        // way; this test only needs to reach a known full queue promptly.
+        assert_eq!(unsafe { libc::listen(_server.as_raw_fd(), 1) }, 0);
         let mut held = Vec::new();
         let started = std::time::Instant::now();
         loop {
@@ -794,6 +799,10 @@ mod tests {
         op.approve();
         let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
         let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        // Some CI overlay filesystems expose coarse ctime resolution. Cross a
+        // full timestamp tick so the metadata-preserving rewrite below still
+        // has a distinct change-time fact for the reviewed inventory.
+        std::thread::sleep(std::time::Duration::from_secs(1));
         fs::write(&file, b"edited").unwrap();
         fs::File::options()
             .write(true)

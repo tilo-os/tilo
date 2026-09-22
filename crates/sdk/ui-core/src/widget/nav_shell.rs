@@ -1115,15 +1115,15 @@ impl Widget for NavShell {
         if self.host_interactive_panels[0] {
             children.push(self.overview.build_layout(taffy, theme, node_map));
         }
-        if self.host_interactive_panels[1] {
-            if let Some(detail) = self.detail.as_mut() {
-                children.push(detail.build_layout(taffy, theme, node_map));
-            }
+        if self.host_interactive_panels[1]
+            && let Some(detail) = self.detail.as_mut()
+        {
+            children.push(detail.build_layout(taffy, theme, node_map));
         }
-        if self.host_interactive_panels[2] {
-            if let Some(sidebar) = self.sidebar.as_mut() {
-                children.push(sidebar.build_layout(taffy, theme, node_map));
-            }
+        if self.host_interactive_panels[2]
+            && let Some(sidebar) = self.sidebar.as_mut()
+        {
+            children.push(sidebar.build_layout(taffy, theme, node_map));
         }
         for child in &children {
             if let Ok(style) = taffy.style(*child) {

@@ -39,7 +39,7 @@ use super::driver::ShellDriver;
 #[derive(Debug, Clone)]
 #[allow(
     dead_code,
-    reason = "the scenario DSL retains implemented actions that the current catalogue does not construct"
+    reason = "the screenshot scenario DSL intentionally keeps actions available before every variant has a catalogue caller"
 )]
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).

@@ -38,45 +38,12 @@ use ui::tokens::Metrics;
 use ui::widget::{Button, ButtonFace, Dropdown, TextInput, Widget};
 
 use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
-use crate::model::{Filesystem, InstallProfile};
+use crate::model::{Filesystem, InstallProfile, installer_locales};
 use crate::rhythm::{GROUP, LABEL, RELATED, SECTION, SIBLING};
 
-// The panel's rhythm (HIG §7b) is the crate's (`crate::rhythm`): a caption
-// and its field `LABEL`; a section caption and its first field caption
-// `RELATED`; the input glyphs' inset in a field box `SIBLING`; between the
-// fields of one section and the two columns `SECTION`; before the next
-// section and before the Preview action `GROUP`.
-/// Form fields are the toolkit's 40 px control (the setup views' buttons).
 const FIELD_H: f64 = Metrics::BASE.bar_height as f64;
-/// The Preview button is a small secondary action: the minimum pointer target.
 const BUTTON_H: f64 = Metrics::BASE.min_pointer_target as f64;
 const EXPORT_LABEL: &str = "Preview embedded setup";
-
-const LOCALES: &[&str] = &[
-    "ar_SA.UTF-8",
-    "cs_CZ.UTF-8",
-    "da_DK.UTF-8",
-    "de_DE.UTF-8",
-    "en_GB.UTF-8",
-    "en_US.UTF-8",
-    "es_ES.UTF-8",
-    "fi_FI.UTF-8",
-    "fr_FR.UTF-8",
-    "it_IT.UTF-8",
-    "ja_JP.UTF-8",
-    "ko_KR.UTF-8",
-    "nb_NO.UTF-8",
-    "nl_NL.UTF-8",
-    "pl_PL.UTF-8",
-    "pt_BR.UTF-8",
-    "pt_PT.UTF-8",
-    "ru_RU.UTF-8",
-    "sv_SE.UTF-8",
-    "tr_TR.UTF-8",
-    "uk_UA.UTF-8",
-    "zh_CN.UTF-8",
-    "zh_TW.UTF-8",
-];
 
 const KEYBOARDS: &[(&str, &str)] = &[
     ("English (US)", "us"),
@@ -631,7 +598,7 @@ impl CustomizePanel {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "Text painting passes scene and renderer plus content, size, color, origin, wrapping width, and weight."
+        reason = "text drawing keeps the renderer, scene, style, position, width, and weight explicit at each call site"
     )]
     fn txt(
         tr: &mut TextRenderer,
@@ -699,7 +666,7 @@ impl CustomizePanel {
     /// Draw + hit-forward one text field (box + label + the shared input glyphs).
     #[allow(
         clippy::too_many_arguments,
-        reason = "Field painting combines render context and presence with field identity, bounds, and its caption."
+        reason = "one field draw forwards the shared render context plus its field identity and geometry"
     )]
     fn draw_field(
         &mut self,
@@ -774,7 +741,7 @@ impl CustomizePanel {
     /// Render the whole panel into `content` for the given profile snapshot.
     #[allow(
         clippy::too_many_arguments,
-        reason = "Panel painting combines render context and presence with content bounds, the profile snapshot, and target kind."
+        reason = "the embedded panel receives the host render context and reviewed profile without owning duplicate state"
     )]
     pub fn draw(
         &mut self,
@@ -818,7 +785,7 @@ impl CustomizePanel {
     /// The IDENTITY section: hostname, name, username and time zone.
     #[allow(
         clippy::too_many_arguments,
-        reason = "Identity fields share render context and presence while their captions and input bounds come from panel geometry."
+        reason = "the section renderer forwards one shared render context to each identity field"
     )]
     fn draw_identity_fields(
         &mut self,
@@ -887,7 +854,7 @@ impl CustomizePanel {
     /// storage target and destructive choices are completed on the device.
     #[allow(
         clippy::too_many_arguments,
-        reason = "Region fields share render context and presence with the label origin and keyboard/filesystem geometry."
+        reason = "the section renderer forwards one shared render context plus reviewed install context"
     )]
     fn draw_region_and_options(
         &mut self,
@@ -967,7 +934,7 @@ impl CustomizePanel {
     /// the host whether the event was consumed and whether export was asked for.
     #[allow(
         clippy::too_many_arguments,
-        reason = "Panel event routing carries widget input/state/layout, action dispatch, profile data, and target/content context."
+        reason = "widget event dispatch must forward the toolkit event context and the authoritative action host"
     )]
     pub fn handle_event(
         &mut self,
@@ -1023,7 +990,7 @@ impl CustomizePanel {
     /// tracks along.
     #[allow(
         clippy::too_many_arguments,
-        reason = "Pointer routing needs physical coordinates and scale plus the focused field geometry and Widget event context."
+        reason = "pointer routing keeps toolkit event state and action dispatch explicit"
     )]
     fn handle_cursor_moved(
         &mut self,
@@ -1070,7 +1037,7 @@ impl CustomizePanel {
     /// dispatch a toggle, request export, or (on empty space) drop focus.
     #[allow(
         clippy::too_many_arguments,
-        reason = "Click routing combines Widget event context with field geometry, the profile snapshot, and action dispatch."
+        reason = "click routing keeps geometry, toolkit event state, and action dispatch explicit"
     )]
     fn handle_left_click(
         &mut self,
@@ -1159,7 +1126,7 @@ impl CustomizePanel {
     /// else routes to the input and dispatches its fresh value.
     #[allow(
         clippy::too_many_arguments,
-        reason = "Key routing uses the key and Widget event context, focused-field geometry, and action host to publish edited values."
+        reason = "keyboard routing keeps modifiers, toolkit event state, and action dispatch explicit"
     )]
     fn handle_key_event(
         &mut self,
@@ -1264,7 +1231,7 @@ impl CustomizePanel {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "Field focus forwards the triggering event with field identity/bounds and Widget CRDT/layout context for caret placement."
+        reason = "focus transfer synchronizes the chosen field with toolkit state and the authoritative profile action"
     )]
     fn focus_field(
         &mut self,
@@ -1560,7 +1527,8 @@ mod tests {
                         .abs()
                         < 1e-6
                 );
-                assert!((g.export.y0 - (g.keyboard.y1 + GROUP)).abs() < 1e-6);
+                let option_bottom = g.keyboard.y1.max(g.filesystem.y1);
+                assert!((g.export.y0 - (option_bottom + GROUP)).abs() < 1e-6);
                 // Independent of the formula: fields are the toolkit's bar
                 // control, the Preview action a pointer target, a caption band
                 // plus an `s1` step separates every field from the caption

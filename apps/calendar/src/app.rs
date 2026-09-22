@@ -3608,7 +3608,12 @@ impl CalendarApp {
         // those rows in the same breakpoint domain as the painter so NOTES
         // never collides with a wrapped reminder/colour/timezone control.
         let chip_rows = if w < 440.0 {
-            if large_text { 4.0 } else { 3.0 }
+            // At 200% each of the six metadata controls can require its own
+            // row. Reserve the worst case; the detail pane scrolls when the
+            // resulting form is taller than the phone viewport.
+            if large_text { 6.0 } else { 3.0 }
+        } else if large_text {
+            3.0
         } else {
             2.0
         };
@@ -5879,7 +5884,8 @@ impl CalendarApp {
             } else {
                 ChipLead::None
             };
-            let width = Chip::natural_width_at(&label, height, lead, theme, tr);
+            let width = Chip::natural_width_at(&label, height, lead, theme, tr)
+                .min((max_x - label_x).max(1.0));
             if x > label_x && x + width > max_x {
                 x = label_x;
                 y += event_form_chip_row_pitch(theme.text_scale);
@@ -8607,7 +8613,7 @@ mod local_layout_tests {
         let dir = std::env::temp_dir().join(format!("cal-import-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: single-threaded test process for this env var.
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
         let today = chrono::Local::now().date_naive();
         std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today)).unwrap();
 
@@ -8627,7 +8633,7 @@ mod local_layout_tests {
                 .any(|e| e.title == "Quarterly all-hands"),
             "the .ics file's event parsed in"
         );
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -8638,7 +8644,7 @@ mod local_layout_tests {
             std::env::temp_dir().join(format!("cal-resource-import-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temporary transfer directory");
         // SAFETY: `serial` prevents this process-global test seam from racing.
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
         let today = chrono::Local::now().date_naive();
         std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today))
             .expect("write fixture");
@@ -8716,7 +8722,7 @@ mod local_layout_tests {
         );
 
         // SAFETY: see the setup above.
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -9411,7 +9417,7 @@ mod local_layout_tests {
         app.set_selected_task_project(Some(project), &mut state);
         assert_eq!(
             app.last_dispatched().unwrap().payload,
-            prompted(project_spec, &project.to_string()).payload
+            prompted(project_spec, &crate::actions::project_resource_id(project)).payload
         );
     }
 
@@ -10765,7 +10771,7 @@ mod local_layout_tests {
         let dir = std::env::temp_dir().join(format!("cal-export-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: `#[serial]` keeps env-var tests off each other's toes.
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
 
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
@@ -10784,7 +10790,7 @@ mod local_layout_tests {
             "the status pill confirms the export"
         );
 
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -10798,7 +10804,7 @@ mod local_layout_tests {
         // it to a temp dir first.
         let dir = std::env::temp_dir().join(format!("cal-keys-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
 
         let mut h = Harness::new(1280, 800);
         // Close the demo's detail so the notes editor doesn't own keystrokes.
@@ -10850,7 +10856,7 @@ mod local_layout_tests {
             "'e' exported an .ics through the key path"
         );
 
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -11007,7 +11013,9 @@ mod local_layout_tests {
             "location is editable"
         );
         h.press_named(winit::keyboard::NamedKey::Tab);
-        assert!(h.app.notes_editor.is_focused(), "Tab: location → notes");
+        assert!(h.app.invite_input.is_focused(), "Tab: location → invite");
+        h.press_named(winit::keyboard::NamedKey::Tab);
+        assert!(h.app.notes_editor.is_focused(), "Tab: invite → notes");
         h.press_named(winit::keyboard::NamedKey::Tab);
         assert!(h.app.title_input.is_focused(), "Tab wraps notes → title");
     }
@@ -11027,9 +11035,11 @@ mod local_layout_tests {
             "Shift+Tab: title → notes (wrap)"
         );
         h.app.cycle_form_focus(true);
+        assert!(h.app.invite_input.is_focused(), "Shift+Tab: notes → invite");
+        h.app.cycle_form_focus(true);
         assert!(
             h.app.location_input.is_focused(),
-            "Shift+Tab: notes → location"
+            "Shift+Tab: invite → location"
         );
         h.app.cycle_form_focus(true);
         assert!(

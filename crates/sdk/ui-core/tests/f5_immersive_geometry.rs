@@ -1,3 +1,10 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::manual_midpoint,
+    clippy::needless_borrows_for_generic_args,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! F5 (timeline / media / capture widgets) geometry evidence and contracts.
 //!
 //! Renders the immersive, hand-laid-out widgets through the real

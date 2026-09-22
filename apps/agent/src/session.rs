@@ -56,7 +56,7 @@ impl StepOutcome {
                 return Err("the previous action must produce exactly one content resource".into());
             }
             return tilo_actions::content_hash(&self.output.resources[0]).ok_or_else(|| {
-                "the previous action produced a resource that is not qos.content".into()
+                "the previous action produced a resource that is not tilo.content".into()
             });
         }
         if let Some(surface::Product::Content { hash }) = &self.product {
@@ -2387,8 +2387,8 @@ mod tests {
         };
         use tilo_actions::{ActionOutput, ResourceProvider, ResultSpec};
 
-        const PHOTOS: &str = "dev.tilo.photos";
-        const WRITER: &str = "dev.tilo.word-processor";
+        const PHOTOS: &str = "so.tilo.photos";
+        const WRITER: &str = "so.tilo.word-processor";
         const PRODUCE: &str = "export-edited-content";
         const RECORD: &str = "file:/handoff-sequence.docx";
         static SERIAL: Mutex<()> = Mutex::new(());
@@ -2414,13 +2414,16 @@ mod tests {
             let hash = qdoc::blobstore::put(&bytes).unwrap();
             ActionOutput {
                 value: None,
-                resources: vec![format!("qos.content:{hash}")],
+                resources: vec![
+                    tilo_actions::content_resource(&hash)
+                        .expect("the producer returned a valid content hash"),
+                ],
             }
         }
 
         fn content_result() -> ResultSpec {
             ResultSpec::Resource {
-                resource_kind: "qos.content".into(),
+                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.into(),
             }
         }
 
@@ -2803,9 +2806,10 @@ mod tests {
         #[test]
         fn run_plan_refuses_ambiguous_broker_content() {
             let mut output = produced();
-            output
-                .resources
-                .push(format!("qos.content:{}", "a".repeat(64)));
+            output.resources.push(
+                tilo_actions::content_resource(&"a".repeat(64))
+                    .expect("the duplicate has a valid content hash"),
+            );
             let observed = run_sequence(output, content_result(), Between::Nothing, false);
             assert_no_consumer(&observed, &[PRODUCE]);
         }
@@ -2846,7 +2850,10 @@ mod tests {
             let observed = run_sequence(
                 ActionOutput {
                     value: None,
-                    resources: vec![format!("qos.content:{missing}")],
+                    resources: vec![
+                        tilo_actions::content_resource(&missing)
+                            .expect("the missing blob still has a valid content hash"),
+                    ],
                 },
                 content_result(),
                 Between::Nothing,

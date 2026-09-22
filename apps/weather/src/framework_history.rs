@@ -18,7 +18,7 @@ use vello::{
 };
 
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.weather",
+    app_id: "so.tilo.weather",
     scopes: &[HistoryScopeDefinition {
         key: "saved-places",
         title: "Saved places (forecasts are not recorded)",

@@ -280,7 +280,7 @@ impl RichTextLayout {
     /// (1.0 = default spacing).
     #[allow(
         clippy::too_many_arguments,
-        reason = "Rich-text shaping accepts spans, block typography, width and alignment, decoration ranges, and line spacing beside the font system."
+        reason = "the shaping contract keeps every text-style input explicit"
     )]
     pub fn shape(
         fs: &mut FontSystem,
@@ -316,7 +316,10 @@ impl RichTextLayout {
     /// plain application text. This is the preferred entry point for editors
     /// and custom widgets: font family, weight, size, and leading remain one
     /// value from measurement through painting.
-
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the attributed shaping contract keeps geometry and decoration inputs explicit"
+    )]
     pub fn shape_styled(
         fs: &mut FontSystem,
         spans: &[RichSpan],

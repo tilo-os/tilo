@@ -32,7 +32,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
 
-const PAD: f64 = 8.0; // card inner padding
+const PAD: f64 = crate::tokens::Spacing::BASE.s2 as f64; // card inner padding
 const ROW_INSET: f64 = 8.0; // rows inset from the card edge
 const HEADER_H: f64 = 26.0;
 const ROW_H_ONE_LINE: f64 = 38.0;
@@ -41,9 +41,7 @@ const ROW_TEXT_X: f64 = 12.0; // text/icon inset within a row
 const ICON_D: f64 = 18.0;
 const ICON_COL: f64 = 30.0; // icon box + gap when a row has an icon
 const EMPTY_H: f64 = 92.0;
-/// A lifted row (selection, hover) is inset this much top and bottom, so a
-/// selected row and its hovered neighbour keep one `s1` between them
-/// instead of fusing into one block (HIG §7 "nothing touches").
+const PREVIEW_H: f64 = 68.0;
 const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 
 /// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64` matrix
@@ -502,12 +500,14 @@ impl SearchResultsView {
             self.rect.x1 - ROW_INSET,
             self.rect.y1 - PAD,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
+        crate::surface::separator(
+            scene,
             transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &vello::kurbo::Line::new((rect.x0, rect.y0), (rect.x1, rect.y0)),
+            rect.x0,
+            rect.x1,
+            rect.y0,
+            0.0,
+            theme.tokens.colors.surfaces.base,
         );
         let title_size = theme.tokens.typography.scale.xs.max(10.0);
         let body_size = theme.tokens.typography.scale.sm.max(11.0);

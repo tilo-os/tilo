@@ -12,7 +12,7 @@ use vello::{
     kurbo::{Affine, Rect},
 };
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
-    app_id: "dev.tilo.typst-editor",
+    app_id: "so.tilo.typst-editor",
     scopes: &[HistoryScopeDefinition {
         key: "source",
         title: "Typst source",

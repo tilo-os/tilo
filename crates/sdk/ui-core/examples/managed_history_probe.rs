@@ -1,10 +1,28 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::drop_non_drop,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::unreadable_literal,
+    clippy::unwrap_used,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Real native shared History qualification fixture. --plan emits measured
-//! FrameHarness coordinates for the same retained tile at an800x600 viewport.
+//! `FrameHarness` coordinates for the same retained tile at an800x600 viewport.
 //! Native mode uses the ordinary scoped factory and shared scheduled input.
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::{cell::RefCell, collections::HashMap};
 use taffy::{NodeId, TaffyTree};
-use tilo_ui::{State, history_mode::*, widget::*};
+use tilo_ui::{
+    State,
+    history_mode::{
+        HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
+        PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView, restore,
+    },
+    widget::{AppKind, AppWidget, Column, IconDescriptor, Text, TileContent, TileHost, Widget},
+};
 use vello::{
     Scene,
     kurbo::{Affine, Point, Rect},
@@ -108,7 +126,7 @@ impl AppWidget for Note {
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }
-    fn app_title(&self) -> &str {
+    fn app_title(&self) -> &'static str {
         "History probe"
     }
     fn app_icon(&self) -> IconDescriptor {
@@ -119,7 +137,7 @@ impl AppWidget for Note {
     }
 }
 impl Widget for Note {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Native notebook"
     }
     fn children(&self) -> Vec<&dyn Widget> {

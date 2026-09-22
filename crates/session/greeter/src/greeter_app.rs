@@ -1175,7 +1175,16 @@ impl GreeterApp {
             )));
         }
 
-        let card: Box<dyn Widget> = Box::new(VStack::card(CARD_GAP, children));
+        // At the maximum accessibility scale the groups already gain height
+        // from their text metrics. Tighten only the inter-group rhythm so the
+        // two authentication actions remain above the persistent power footer
+        // even when the Caps-Lock hint is present.
+        let card_gap = if theme.text_scale >= 1.75 {
+            8.0
+        } else {
+            CARD_GAP
+        };
+        let card: Box<dyn Widget> = Box::new(VStack::card(card_gap, children));
         let card_view: Box<dyn Widget> = Box::new(
             Scrollable::new_vertical()
                 .fill_parent_height()

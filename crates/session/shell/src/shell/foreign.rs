@@ -1394,7 +1394,12 @@ impl ForeignSurfaceWidget {
     /// Pull a fresh frame out of the store if one has landed since the last call; returns `true` when the cache changed.
     fn refresh_cache(&mut self) -> bool {
         let seq = store().frame_seq(self.surface_id);
-        if seq == self.cached_seq {
+        // A cache can be empty at a non-zero sequence when an earlier paint
+        // observed the sequence edge before its snapshot became available.
+        // Retry that state instead of permanently pinning the fallback card;
+        // steady clients with a real cached image retain the zero-copy fast
+        // path below.
+        if seq == self.cached_seq && (seq == 0 || self.cached.is_some()) {
             return false;
         }
         self.cached_seq = seq;
@@ -1707,6 +1712,10 @@ impl Widget for ForeignSurfaceWidget {
 }
 
 impl AppWidget for ForeignSurfaceWidget {
+    fn uses_host_record(&self) -> bool {
+        false
+    }
+
     fn app_kind(&self) -> AppKind {
         // No `AppKind` describes "arbitrary external client"; `Settings` is the catch-all `to_ui_kind` already uses for unknown kinds.
         AppKind::Settings
@@ -2464,6 +2473,26 @@ mod tests {
 
         // A non-draining read: a second snapshot still sees the frame.
         assert!(store().snapshot(id).is_some());
+        store().forget(id);
+    }
+
+    #[test]
+    fn an_empty_widget_cache_retries_the_current_nonzero_sequence() {
+        let id = sid(23);
+        store().forget(id);
+        store().publish_rgba(id, &[0xE0, 0x18, 0xA0, 0xFF], 1, 1);
+
+        let mut widget = ForeignSurfaceWidget::new(id, "org.example.retry".into());
+        // Model the interrupted observation that previously pinned the
+        // fallback card: the sequence was recorded but no image survived.
+        widget.cached_seq = store().frame_seq(id);
+        widget.cached = None;
+        assert!(widget.refresh_cache(), "the empty cache must retry");
+        assert!(
+            widget.cached.is_some(),
+            "the current frame must be restored"
+        );
+
         store().forget(id);
     }
 

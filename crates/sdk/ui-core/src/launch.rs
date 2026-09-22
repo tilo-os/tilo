@@ -30,7 +30,7 @@ type ArgsRootFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
 type LegacyPreparer = fn(&LaunchArgs) -> Result<LegacyLaunchInputs, LaunchError>;
 
 /// Transitional inputs for existing state/widget apps. Canonical applications
-/// should use ApplicationDefinition + PreparedComponentInputs instead. This
+/// should use `ApplicationDefinition` + `PreparedComponentInputs` instead. This
 /// bridge preserves the SAME state, writer, record policy and registry in native
 /// and headless execution; it is not a second application framework.
 pub struct LegacyLaunchInputs {
@@ -406,7 +406,7 @@ impl LaunchSpec {
     /// Fallible shared preparation for legacy apps needing a coordinated
     /// state/root, explicit record policy, or action registry. Runs under the
     /// host's wake scope before either runner is constructed. Prepared component
-    /// definitions reject this legacy override. It replaces open_state/root
+    /// definitions reject this legacy override. It replaces `open_state/root`
     /// callbacks, which are not invoked a second time.
     #[must_use]
     pub fn prepare_legacy_with_args(mut self, prepare: LegacyPreparer) -> Self {
@@ -1063,11 +1063,22 @@ fn dispatch_definition_with_native(
     }
     if args.shots.is_some() || args.responsive_matrix.is_some() || args.native_audit {
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(args));
-        let driver = Box::new(FrameHarness::from_component(
+        let mut driver = Box::new(FrameHarness::from_component(
             component,
             viewport,
             prepared.runner_inputs,
         )?);
+        if !args.native_audit
+            && let Some(scenario) = spec.component_capture_scenario
+            && let Err(source) = scenario(&mut driver, args)
+        {
+            driver.close_components();
+            return Err(LaunchError::ComponentCapture {
+                source: Box::new(source),
+                reports: driver.take_component_close_reports(),
+            });
+        }
+        driver.enable_document_history_chrome();
         return Ok(if args.native_audit {
             DefinitionDispatch::Audit(driver)
         } else {
@@ -1161,7 +1172,7 @@ fn prepare_legacy_launch(
     Ok(PreparedLegacyLaunch { scope, inputs })
 }
 
-/// Exact production branch, testable without process::exit or a native window.
+/// Exact production branch, testable without `process::exit` or a native window.
 fn dispatch_legacy_headless(
     spec: &LaunchSpec,
     args: &LaunchArgs,
@@ -1322,18 +1333,22 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
 /// `QOS_SHOTS_TEXT_SCALE` environment variable.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .or_else(|_| std::env::var("QOS_SHOTS_THEME"))
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark);
-    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
-        .or_else(|_| std::env::var("QOS_SHOTS_TEXT_SCALE"))
-        .ok();
-    let theme = theme.with_text_scale(shot_text_scale(
-        args.text_scale,
-        environment_scale.as_deref(),
-    ));
+    capture_theme(args.text_scale)
+}
+
+/// The same capture presentation for app-specific fixture drivers.
+#[must_use]
+pub fn capture_theme(text_scale: Option<f32>) -> Theme {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    let theme = if let Some(scale) = text_scale {
+        theme.with_text_scale(scale)
+    } else {
+        theme
+    };
     // Screenshot review must use the same motion policy as a real app.  The
     // headless harness does not construct `tilo_ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.

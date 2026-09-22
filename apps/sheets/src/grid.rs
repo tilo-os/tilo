@@ -238,6 +238,8 @@ struct CellTextStyle {
 /// classic 26 px row / 28 px header / 56 px row-header density exactly.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridMetrics {
+    /// Accessibility text scale used to grow authored interaction floors.
+    pub scale: f64,
     /// Renderer-input size for cell text (theme `base` ÷ renderer scale).
     pub cell_size: f32,
     /// Renderer-input size for header labels (theme `sm` ÷ renderer scale).
@@ -263,6 +265,7 @@ impl GridMetrics {
         let (_, cell_line_h) = tr.measure_style("Ag", None, &cell);
         let (row_label_w, header_line_h) = tr.measure_style("9999", None, &header);
         Self {
+            scale: f64::from(theme.text_scale),
             cell_size: cell.size,
             header_size: header.size,
             cell_line_h: f64::from(cell_line_h),
@@ -278,6 +281,7 @@ impl GridMetrics {
     #[must_use]
     pub fn fallback() -> Self {
         Self {
+            scale: 1.0,
             cell_size: 14.0,
             header_size: 12.0,
             cell_line_h: 17.5,
@@ -292,21 +296,21 @@ impl GridMetrics {
     /// never below the classic 26 px.
     #[must_use]
     pub fn default_row_h(&self) -> f64 {
-        (self.cell_line_h + self.pad).max(DEFAULT_ROW_H)
+        (self.cell_line_h + self.pad).max(DEFAULT_ROW_H * self.scale)
     }
 
     /// Height of the column-header strip: the header line box plus `s3`,
     /// never below the classic 28 px.
     #[must_use]
     pub fn col_header_h(&self) -> f64 {
-        (self.header_line_h + self.header_pad).max(COL_HEADER_H)
+        (self.header_line_h + self.header_pad).max(COL_HEADER_H * self.scale)
     }
 
     /// Width of the row-header strip: a four-digit label plus `s2` each side,
     /// never below the classic 56 px.
     #[must_use]
     pub fn row_header_w(&self) -> f64 {
-        (self.row_label_w + 2.0 * self.pad).max(ROW_HEADER_W)
+        (self.row_label_w + 2.0 * self.pad).max(ROW_HEADER_W * self.scale)
     }
 }
 

@@ -3505,7 +3505,7 @@ impl Widget for CodeApp {
         let (offset_x, offset_y) = self.editor.native_scroll_offsets();
         let (caret_line, caret_column) = self.editor.primary_caret();
         Some(serde_json::json!({
-            "app": "dev.tilo.code-editor",
+            "app": "so.tilo.code-editor",
             "editor_id": "editor_view",
             "hash_algorithm": "sha256",
             "buffer_id": buffer_id,

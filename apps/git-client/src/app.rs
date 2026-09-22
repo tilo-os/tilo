@@ -1230,7 +1230,7 @@ impl GitClientApp {
             .iter()
             .map(|(_, label)| {
                 f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0)
-                    + if compact { 20.0 } else { 28.0 }
+                    + if compact { 16.0 } else { 28.0 }
             })
             .collect();
         let total = widths.iter().sum::<f64>() + (TABS.len() as f64 - 1.0) * 6.0;

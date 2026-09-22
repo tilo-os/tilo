@@ -353,8 +353,7 @@ mod tests {
 
     #[test]
     fn canonical_app_grant_authorizes_but_invented_app_id_does_not() {
-        for (granted_app, should_allow) in [("org.nirios.Editor", true), ("org.qos.Editor", false)]
-        {
+        for (granted_app, should_allow) in [("org.tilo.Editor", true), ("org.qos.Editor", false)] {
             let (chrome, store) = chrome_focused_on("Editor");
             let user = {
                 let state = chrome.borrow();

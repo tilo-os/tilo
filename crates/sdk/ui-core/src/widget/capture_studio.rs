@@ -65,7 +65,7 @@ const TOP_BUTTON_W: f64 = TOP_BAR_H;
 /// Neighbouring buttons in a group keep one `s1`: the smallest token step,
 /// so two lifted faces never read as one bar (HIG §7 "nothing touches").
 const TOP_BUTTON_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
-const MIN_REGION: f64 = 12.0;
+const MIN_REGION: f64 = crate::tokens::Spacing::BASE.s3 as f64;
 
 /// Height of one line of `size`-px text exactly as the renderer paints it.
 /// The line box is `line_height × size` (1.25 by default) and carries the
@@ -1274,9 +1274,9 @@ impl CaptureStudio {
         bounds: Rect,
         occupied: &[Rect],
     ) -> RegionChrome {
-        const HEIGHT: f64 = 24.0;
-        const GAP: f64 = 6.0;
-        const REMOVE_WIDTH: f64 = 24.0;
+        const HEIGHT: f64 = crate::tokens::Spacing::BASE.s6 as f64;
+        const GAP: f64 = crate::tokens::Metrics::BASE.icon_label_gap as f64;
+        const REMOVE_WIDTH: f64 = crate::tokens::Spacing::BASE.s6 as f64;
         let total_width = metadata_width + GAP + REMOVE_WIDTH;
         let clamp_x = |x: f64| x.clamp(bounds.x0, (bounds.x1 - total_width).max(bounds.x0));
         let clamp_y = |y: f64| y.clamp(bounds.y0, (bounds.y1 - HEIGHT).max(bounds.y0));
@@ -2493,37 +2493,15 @@ impl CaptureStudio {
         hovered: bool,
         icon: Icon,
     ) {
-        let c = &theme.tokens.colors;
-        let fill = if on {
-            c.accent[5]
-        } else if hovered {
-            c.lift(0.72)
+        let face = if on {
+            ButtonFace::new(r, "").primary()
         } else {
-            c.lift(0.35)
-        };
-        if on {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                fill,
-                None,
-                &RoundedRect::from_rect(r, 10.0),
-            );
-        } else {
-            surface::card(scene, t, r, 10.0, fill);
+            ButtonFace::new(r, "")
         }
-        icons::draw_icon(
-            scene,
-            t,
-            r.inset(-9.0),
-            icon,
-            if on || hovered {
-                c.text_primary
-            } else {
-                c.text_dim
-            },
-            icons::LUCIDE_DEFAULT_STROKE_PX,
-        )
+        .icon(icon)
+        .radius(10.0)
+        .hovered(hovered);
+        Button::paint(scene, t, tr, theme, &face);
     }
 
     fn target_badge(
@@ -2887,60 +2865,14 @@ impl CaptureStudio {
         let face = if active {
             ButtonFace::new(rect, label).primary()
         } else {
-            c.text_dim
-        };
-        let fill = if active {
-            c.accent[5]
-        } else if hovered {
-            c.lift(0.72)
-        } else {
-            c.lift(0.35)
-        };
-        if active {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                fill,
-                None,
-                &RoundedRect::from_rect(rect, 9.0),
-            );
-        } else {
-            surface::card(scene, t, rect, 9.0, fill);
+            ButtonFace::new(rect, label)
         }
-        let font_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
-        let (text_w, text_h) = tr.measure_weighted(label, font_size, None, TextWeight::Medium);
-        let icon_size = 15.0;
-        let gap = 6.0;
-        let group_w = icon_size + gap + f64::from(text_w);
-        let x = rect.center().x - group_w / 2.0;
-        icons::draw_icon(
-            scene,
-            t,
-            Rect::new(
-                x,
-                rect.center().y - icon_size / 2.0,
-                x + icon_size,
-                rect.center().y + icon_size / 2.0,
-            ),
-            icon,
-            color,
-            1.4,
-        );
-        tr.draw_text_weighted(
-            scene,
-            label,
-            font_size,
-            color,
-            t.pre_translate(
-                (
-                    x + icon_size + gap,
-                    rect.center().y - f64::from(text_h) / 2.0,
-                )
-                    .into(),
-            ),
-            None,
-            TextWeight::Medium,
-        );
+        .icon(icon)
+        .radius(9.0)
+        .text_size(theme.tokens.typography.scale.sm)
+        .weight(TextWeight::Medium)
+        .hovered(hovered);
+        Button::paint(scene, t, tr, theme, &face);
     }
 
     fn scrim_path(&self, regions: &[Rect]) -> BezPath {
@@ -4058,62 +3990,46 @@ impl CaptureStudio {
 
         let label_x = preview.x1 + 9.0;
         let action_limit = if receipt.copied { dismiss.x0 } else { pin.x0 };
-        let label = if compact {
-            format!(
-                "{} · {}×{}",
-                if receipt.copied { "Copied" } else { "Saved" },
-                receipt.width,
-                receipt.height
-            )
-        } else if receipt.copied {
-            "Copied".to_string()
-        } else {
-            "Saved".to_string()
-        };
-        // Compact pills carry one centred line; wide pills stack the label
-        // over the dimensions, the pair centred as a block on the pill.
-        let line_h = line_height(
-            text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
-        );
-        let label_top = if compact {
-            pill.center().y - line_h / 2.0
-        } else {
-            pill.center().y - line_h
-        };
-        let label_budget = (action_limit - label_x - 5.0).max(20.0);
-        let shown = fit_label(
-            text_renderer,
-            &label,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
-            label_budget,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            &shown,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            colors.text_primary.with_alpha_factor(content_alpha),
-            transform.pre_translate((label_x, label_top).into()),
+        let status = if receipt.copied { "Copied" } else { "Saved" };
+        let dimensions = format!("{} × {}", receipt.width, receipt.height);
+        let (status_width, status_height) = text_renderer.measure_weighted(
+            status,
+            theme.tokens.typography.scale.xs,
             None,
             TextWeight::Semibold,
         );
-        if !compact {
-            let dims = fit_label(
-                text_renderer,
-                &format!("{} × {}", receipt.width, receipt.height),
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
+        text_renderer.draw_text_weighted(
+            scene,
+            status,
+            theme.tokens.typography.scale.xs,
+            colors.text_primary.with_alpha_factor(content_alpha),
+            transform
+                .pre_translate((label_x, pill.center().y - f64::from(status_height) / 2.0).into()),
+            None,
+            TextWeight::Semibold,
+        );
+        let dimensions_x = label_x + f64::from(status_width) + 8.0;
+        let dimensions_width = (action_limit - dimensions_x - 5.0).max(0.0);
+        if dimensions_width >= 24.0 {
+            let (_, dimensions_height) = text_renderer.measure_weighted(
+                &dimensions,
+                theme.tokens.typography.scale.xs,
+                Some(dimensions_width as f32),
                 TextWeight::Regular,
-                label_budget,
             );
             text_renderer.draw_text_weighted(
                 scene,
-                &dims,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
+                &dimensions,
+                theme.tokens.typography.scale.xs,
                 colors.text_dim.with_alpha_factor(content_alpha),
-                transform.pre_translate((label_x, pill.center().y).into()),
-                None,
+                transform.pre_translate(
+                    (
+                        dimensions_x,
+                        pill.center().y - f64::from(dimensions_height) / 2.0,
+                    )
+                        .into(),
+                ),
+                Some(dimensions_width as f32),
                 TextWeight::Regular,
             );
         }
@@ -4665,80 +4581,23 @@ impl Widget for CaptureStudio {
                     }
                 }
                 Self::draw_selection_handles(s, t, theme, r, self.cursor);
-                let badge_width = if self.mode == CaptureMode::Pip {
-                    54.0
-                } else {
-                    24.0
-                };
-                let b = Rect::new(
-                    r.x0 + 8.0,
-                    r.y0 + 8.0,
-                    r.x0 + 8.0 + badge_width,
-                    r.y0 + 32.0,
-                );
-                s.fill(
-                    Fill::NonZero,
-                    t,
-                    selection_color,
-                    None,
-                    &RoundedRect::from_rect(b, 12.0),
-                );
-                // The index badge and the dimensions beside it share one
-                // centre line, so they read as a single caption.
-                let badge_top = centered_text_top(
-                    tr,
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    TextWeight::Semibold,
-                    b.center().y,
-                );
-                tr.draw_text_weighted(
-                    s,
-                    &if self.mode == CaptureMode::Pip {
-                        format!("LIVE {}", i + 1)
-                    } else {
-                        (i + 1).to_string()
-                    },
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    c.text_primary,
-                    t.pre_translate(
-                        (
-                            b.x0 + if self.mode == CaptureMode::Pip {
-                                7.0
-                            } else {
-                                8.0
-                            },
-                            badge_top,
-                        )
-                            .into(),
-                    ),
-                    None,
-                    TextWeight::Semibold,
-                );
-                tr.draw_text(
-                    s,
-                    &format!(
-                        "{} × {}",
-                        r.width().round() as i64,
-                        r.height().round() as i64
-                    ),
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    c.text_primary,
-                    t.pre_translate((b.x1 + 8.0, badge_top).into()),
-                    None,
-                );
-                if self.source == SourceMode::Multi && r.width() >= 80.0 {
-                    let remove = Self::region_remove_rect(r);
-                    let hovered = remove.contains(self.cursor);
-                    s.fill(
-                        Fill::NonZero,
-                        t,
-                        if hovered {
-                            c.semantic.danger.with_alpha_factor(0.28)
-                        } else {
-                            c.surfaces.raised.with_alpha_factor(0.92)
-                        },
-                        None,
-                        &RoundedRect::from_rect(remove, 12.0),
+                let (live, ordinal, dimensions, chrome) =
+                    self.region_chrome(r, i, &regions, theme, tr);
+                let mut metadata_x = chrome.metadata.x0;
+                for label in [
+                    live.as_deref(),
+                    ordinal.as_deref(),
+                    Some(dimensions.as_str()),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    let width = Chip::natural_width_at(
+                        label,
+                        chrome.metadata.height(),
+                        ChipLead::None,
+                        theme,
+                        tr,
                     );
                     let rect = Rect::new(
                         metadata_x,
@@ -5125,41 +4984,23 @@ impl Widget for CaptureStudio {
             };
             let danger_action = self.mode == CaptureMode::Recording && i == 2;
             let labeled = emphasized || (self.mode == CaptureMode::Recording && i == 1);
-            let icon_rect = if labeled {
-                // Icon and label sit on the button's centre line together.
-                Rect::from_center_size(Point::new(r.x0 + 18.0, r.center().y), (16.0, 16.0))
-            } else {
-                Rect::new(
-                    r.center().x - 9.0,
-                    r.center().y - 9.0,
-                    r.center().x + 9.0,
-                    r.center().y + 9.0,
-                )
-            };
-            icons::draw_icon(s, bottom_t, icon_rect, icon, foreground, 1.5);
-            if labeled {
-                let label = match (self.mode, i) {
+            let label = if labeled {
+                match (self.mode, i) {
                     (CaptureMode::Recording, 1) => "Last 30s",
                     (CaptureMode::Screenshot, _) => "Save",
                     (CaptureMode::Recording, _) if self.recording_active => "Stop",
                     (CaptureMode::Recording, _) => "Record",
                     (CaptureMode::Pip, _) => "Create PiP",
-                };
-                let label_top = centered_text_top(
-                    tr,
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    TextWeight::Semibold,
-                    r.center().y,
-                );
-                tr.draw_text_weighted(
-                    s,
-                    label,
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    foreground,
-                    bottom_t.pre_translate((r.x0 + 32.0, label_top).into()),
-                    None,
-                    TextWeight::Semibold,
-                );
+                }
+            } else {
+                ""
+            };
+            let face = if danger_action && emphasized {
+                ButtonFace::new(r, label).danger()
+            } else if emphasized {
+                ButtonFace::new(r, label).primary()
+            } else {
+                ButtonFace::new(r, label)
             }
             .icon(icon)
             .radius(10.0)

@@ -243,7 +243,43 @@ impl WebView {
     }
 }
 
+impl crate::widget::NativeViewLifecycle for WebView {
+    fn mount_native_view(&mut self, host: &crate::widget::NativeViewHost<'_>) {
+        let first_mount = !self.native_mounted;
+        self.native_mounted = true;
+        let host_scale = to_f32(host.scale_factor());
+        // A freshly rebuilt Browser WebView is seeded from the device-scale
+        // draw that requested the rebuild. Some macOS startup windows still
+        // report 1 here until their first visible frame. Preserve the larger
+        // preseed only on that first mount; later mounts (including an actual
+        // ScaleFactorChanged event) take the host value in either direction.
+        let scale_factor = if first_mount {
+            self.scale_factor.max(host_scale)
+        } else {
+            host_scale
+        };
+        if scale_factor.is_finite()
+            && scale_factor > 0.0
+            && (first_mount || scale_factor.to_bits() != self.scale_factor.to_bits())
+        {
+            self.scale_factor = scale_factor;
+            self.last_sent_size = (0, 0);
+            self.send_resize_if_needed();
+        }
+    }
+
+    fn unmount_native_view(&mut self) {
+        self.native_mounted = false;
+    }
+
+    fn native_view_frame_start(&mut self) {}
+}
+
 impl Widget for WebView {
+    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn crate::widget::NativeViewLifecycle> {
+        Some(self)
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(
@@ -273,30 +309,6 @@ impl Widget for WebView {
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.send_resize_if_needed();
-    }
-
-    fn mount_native_views(&mut self, host: &crate::widget::NativeViewHost<'_>) {
-        let first_mount = !self.native_mounted;
-        self.native_mounted = true;
-        let host_scale = to_f32(host.scale_factor());
-        // A freshly rebuilt Browser WebView is seeded from the device-scale
-        // draw that requested the rebuild. Some macOS startup windows still
-        // report 1 here until their first visible frame. Preserve the larger
-        // preseed only on that first mount; later mounts (including an actual
-        // ScaleFactorChanged event) take the host value in either direction.
-        let scale_factor = if first_mount {
-            self.scale_factor.max(host_scale)
-        } else {
-            host_scale
-        };
-        if scale_factor.is_finite()
-            && scale_factor > 0.0
-            && (first_mount || scale_factor.to_bits() != self.scale_factor.to_bits())
-        {
-            self.scale_factor = scale_factor;
-            self.last_sent_size = (0, 0);
-            self.send_resize_if_needed();
-        }
     }
 
     fn draw(
@@ -698,10 +710,13 @@ mod tests {
     fn mounting_in_a_retina_window_sets_dpi_before_input() {
         let engine = TestEngine::new();
         let (mut view, _, _) = laid_out(engine.clone());
-        view.mount_native_views(&crate::widget::NativeViewHost::headless(
-            crate::platform::PlatformConventions::default(),
-            2.0,
-        ));
+        crate::widget::mount_native_views(
+            &mut view,
+            &crate::widget::NativeViewHost::headless(
+                crate::platform::PlatformConventions::default(),
+                2.0,
+            ),
+        );
         assert_eq!(
             engine.commands().last(),
             Some(&WebViewCommand::Resize {
@@ -730,10 +745,13 @@ mod tests {
             .unwrap();
         view.apply_layout(&taffy, node, Point::ORIGIN);
         let before_mount = engine.commands().len();
-        view.mount_native_views(&crate::widget::NativeViewHost::headless(
-            crate::platform::PlatformConventions::default(),
-            2.0,
-        ));
+        crate::widget::mount_native_views(
+            &mut view,
+            &crate::widget::NativeViewHost::headless(
+                crate::platform::PlatformConventions::default(),
+                2.0,
+            ),
+        );
         assert_eq!(
             engine.commands().len(),
             before_mount + 1,
@@ -747,10 +765,13 @@ mod tests {
                 scale_factor: 2.0,
             })
         );
-        view.mount_native_views(&crate::widget::NativeViewHost::headless(
-            crate::platform::PlatformConventions::default(),
-            2.0,
-        ));
+        crate::widget::mount_native_views(
+            &mut view,
+            &crate::widget::NativeViewHost::headless(
+                crate::platform::PlatformConventions::default(),
+                2.0,
+            ),
+        );
         assert_eq!(
             engine.commands().len(),
             before_mount + 1,
@@ -775,10 +796,13 @@ mod tests {
             )
             .unwrap();
         view.apply_layout(&taffy, node, Point::ORIGIN);
-        view.mount_native_views(&crate::widget::NativeViewHost::headless(
-            crate::platform::PlatformConventions::default(),
-            1.0,
-        ));
+        crate::widget::mount_native_views(
+            &mut view,
+            &crate::widget::NativeViewHost::headless(
+                crate::platform::PlatformConventions::default(),
+                1.0,
+            ),
+        );
         assert_eq!(
             engine.commands().last(),
             Some(&WebViewCommand::Resize {

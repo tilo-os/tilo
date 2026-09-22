@@ -375,7 +375,7 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn both_tabs_come_back_with_their_own_content_after_a_restart() {
-        const PACKAGE: &str = "so.tilo.test-tab-documents";
+        const PACKAGE: &str = crate::shell::SHELL_RECORDS_PACKAGE;
 
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`; no other thread reads
@@ -387,6 +387,8 @@ mod tests {
 
         {
             let store = RecordStore::open(PACKAGE);
+            store.create_record(&scratch_tab_record(TAB_A)).unwrap();
+            store.create_record(&scratch_tab_record(TAB_B)).unwrap();
             let mut shared = AutoCommit::new();
             let mut a = Tile::notes(TAB_A, &store);
             let mut b = Tile::notes(TAB_B, &store);

@@ -62,7 +62,7 @@ const NEW_BTN_MARGIN: f64 = 8.0;
 /// little smaller than the row preserves label space without making the hit
 /// targets fiddly.
 const ROW_ACTION_SIZE: f64 = 26.0;
-const ROW_ACTION_GAP: f64 = 2.0;
+const ROW_ACTION_GAP: f64 = ui::tokens::Spacing::BASE.s1 as f64 / 2.0;
 /// Left content inset: rows, the header label and the selection pill all
 /// start this far in from the sidebar's left edge so nothing is jammed
 /// against the window frame.
@@ -80,7 +80,7 @@ const GLYPH_WIDTH: f64 = 16.0;
 const DOUBLE_CLICK_INTERVAL_MS: u128 = 400;
 /// Pixels of cursor jitter still tolerated between the two clicks of
 /// a double-click.
-const DOUBLE_CLICK_RADIUS_PX: f64 = 4.0;
+const DOUBLE_CLICK_RADIUS_PX: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 /// Default text size for tree row labels.
 const ROW_TEXT_SIZE: f32 = 14.0;
 /// Deliberate dwell before a collapsed branch springs open during a drag.
@@ -293,9 +293,16 @@ impl NoteTreeView {
         ROW_HEIGHT * self.text_scale
     }
 
-    /// The selected row's pill: inset `margin` from the pane's sides and
-    /// half an `s1` from the row's top and bottom, so two neighbouring rows'
-    /// pills sit one `s1` apart (HIG §7: nothing touches).
+    fn row_action_rects(&self, row_rect: Rect) -> (Rect, Rect) {
+        let size = self.scaled(ROW_ACTION_SIZE);
+        let gap = self.scaled(ROW_ACTION_GAP);
+        let right = row_rect.x1 - self.scaled(ROW_PILL_MARGIN + 2.0);
+        let top = row_rect.y0 + (row_rect.height() - size) / 2.0;
+        let more = Rect::new(right - size, top, right, top + size);
+        let child = Rect::new(more.x0 - gap - size, top, more.x0 - gap, top + size);
+        (child, more)
+    }
+
     fn selection_pill(row: Rect, margin: f64, tokens: &ui::tokens::Tokens) -> Rect {
         let half_gap = f64::from(tokens.spacing.s1) / 2.0;
         Rect::new(
@@ -1233,8 +1240,7 @@ impl Widget for NoteTreeView {
         }
         Some(
             AccessNode::new(Role::Tree)
-                .with_semantic_key("notes.page-tree")
-                .with_name("Pages")
+                .with_name(ui::i18n!("notes-title"))
                 .with_state(AccessState::new().focusable(true).focused(self.is_focused))
                 .with_children(children),
         )
@@ -1516,11 +1522,12 @@ impl NoteTreeView {
         row_rect: Rect,
     ) {
         let tokens = &theme.tokens;
-        // Nesting guides: a faint vertical rail at each ancestor depth
-        // so the tree structure reads at a glance — this is what makes
-        // an indented child obviously nested under its parent. Painted
-        // before the selection pill, which is opaque, so a rail never runs
-        // through the chosen row's lifted surface.
+        let hovered = !self.drag.is_pending()
+            && !self.menu.is_open()
+            && self.rename.is_none()
+            && self
+                .last_cursor
+                .is_some_and(|point| row_rect.contains(point));
         for level in 0..row.depth {
             let gx = row_rect.x0
                 + self.scaled(ROW_INSET_X)
