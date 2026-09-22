@@ -92,7 +92,7 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true
 tilo-power-mgmt = { path = "../power", default-features = false, optional = true }
 runtime-fs = { path = "../../runtime/runtime-fs", optional = true }
 libc = { workspace = true, optional = true }
-moka = { version = "0.12.15", features = ["sync"] }
+moka.workspace = true
 serde.workspace = true
 serde_bytes = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
