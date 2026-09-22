@@ -49,25 +49,11 @@ pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &rect);
 }
 
-pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, color: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, r),
-    );
-}
-
-pub fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, w: f64, color: Color) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, r),
-    );
-}
+// Rounded fills and edged surfaces go through the toolkit — `ui::surface::pill`
+// for a plain rounded fill (or one with a semantic border such as focus) and
+// `ui::surface::card` for a surface with its derived rest edge — so every
+// pane's chips, rows and buttons share the toolkit's edge rule (HIG §9.5)
+// instead of a private `fill_round` + `stroke_round(border_standard)` pair.
 
 /// Truncate `text` with a trailing ellipsis so it fits within `max_w` pixels
 /// at the given size/weight.
@@ -361,4 +347,24 @@ mod tests {
         let u = gravatar_url("  MyEmailAddress@example.com ");
         assert!(u.contains("0bc83cb571cd1c50ba6f3e8a78ef1346"), "{u}");
     }
+}
+
+pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, color: Color) {
+    scene.fill(
+        Fill::NonZero,
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, r),
+    );
+}
+
+pub fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, w: f64, color: Color) {
+    scene.stroke(
+        &Stroke::new(w),
+        t,
+        color,
+        None,
+        &RoundedRect::from_rect(rect, r),
+    );
 }

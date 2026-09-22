@@ -1000,7 +1000,7 @@ struct CellState {
 /// Draw a rounded "button" cell (used for both keys and toolbar items).
 #[allow(
     clippy::too_many_arguments,
-    reason = "the cell painter keeps renderer, geometry, label, theme and interaction state explicit"
+    reason = "Keyboard cells combine render context with bounds, optional icon, label, interaction state, and key-specific font scaling."
 )]
 fn draw_cell(
     scene: &mut Scene,
@@ -1079,9 +1079,13 @@ fn draw_cell(
         return;
     }
     let font = (cell.height() * font_scale).clamp(11.0, 30.0) as f32;
-    let (tw, _th) = text_renderer.measure(label, font, None);
+    // Centre on the line the renderer paints (accessibility scale included),
+    // not on the nominal font size: at 2× the glyphs are twice as tall and a
+    // size-based offset sat them below the key centre and across the cell
+    // boundary.
+    let (tw, th) = text_renderer.measure(label, font, None);
     let tx = cell.center().x - f64::from(tw) / 2.0;
-    let ty = cell.y0 + (cell.height() - f64::from(font)) / 2.0;
+    let ty = cell.y0 + (cell.height() - f64::from(th)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -1097,7 +1101,7 @@ fn draw_cell(
 /// come from theme tokens.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the suggestion painter keeps renderer, geometry, word and chip state explicit"
+    reason = "Suggestion chips combine render context with bounds and word plus independent hover, press, and best-suggestion states."
 )]
 fn draw_suggestion_chip(
     scene: &mut Scene,
@@ -1150,9 +1154,10 @@ fn draw_suggestion_chip(
         return;
     }
     let font = (chip.height() * 0.5).clamp(12.0, 22.0) as f32;
-    let (tw, _th) = text_renderer.measure(word, font, None);
+    // Measured line height, so the word stays inside the pill at every scale.
+    let (tw, th) = text_renderer.measure(word, font, None);
     let tx = chip.center().x - f64::from(tw) / 2.0;
-    let ty = chip.y0 + (chip.height() - f64::from(font)) / 2.0;
+    let ty = chip.y0 + (chip.height() - f64::from(th)) / 2.0;
     text_renderer.draw_text(
         scene,
         word,
@@ -1481,10 +1486,13 @@ impl Widget for OskWidget {
                     "Suggestions are off"
                 };
                 let font = (self.suggestion_area.height() * 0.38).clamp(12.0, 18.0) as f32;
-                let (width, _) = text_renderer.measure(hint, font, None);
+                // Centre on the measured line, as the key labels and chips
+                // do: the nominal size under-reads the line at 1× and by
+                // half a line at 2×, sinking the hint below the bar's centre.
+                let (width, height) = text_renderer.measure(hint, font, None);
                 let x = self.suggestion_area.center().x - f64::from(width) * 0.5;
                 let y = self.suggestion_area.y0
-                    + (self.suggestion_area.height() - f64::from(font)) * 0.5;
+                    + (self.suggestion_area.height() - f64::from(height)) * 0.5;
                 text_renderer.draw_text(
                     scene,
                     hint,
