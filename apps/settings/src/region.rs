@@ -52,8 +52,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::accounts::config_root;
-
 /// World currency, by ISO-4217 code. The serde repr is the bare variant
 /// name, which equals the ISO code — matching Sheets' `Currency`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,7 +300,7 @@ impl RegionSettings {
     /// `$XDG_CONFIG_HOME/tilo/settings.json`, falling back to
     /// `~/.config/tilo/settings.json`. `None` only if no home dir exists.
     pub fn store_path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("settings.json"))
+        settings_store::settings_path()
     }
 
     /// Parse from a JSON string, falling back to defaults for anything
