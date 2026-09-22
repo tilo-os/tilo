@@ -110,7 +110,7 @@ impl Bookmarks {
     }
 
     fn path() -> Option<PathBuf> {
-        dirs::data_dir().map(|dir| dir.join("tilo-browser").join("bookmarks.json"))
+        crate::storage::data_dir().map(|dir| dir.join("bookmarks.json"))
     }
 
     fn save_to(&self, path: &Path) -> std::io::Result<()> {
