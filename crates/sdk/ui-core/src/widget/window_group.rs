@@ -472,6 +472,10 @@ impl WindowGroup {
     /// one tab has drawn even if a tab behind it is still starting (and
     /// still needs animation frames).
     pub fn any_tile_opening(&self) -> bool {
+        // `presented()` is also the latch that retires a newly arrived
+        // client's opening state. Evaluate every host before asking which are
+        // still opening, just as the group's ordinary presentation path does.
+        let _ = Widget::presented(self);
         self.hosts.iter().any(|(_, h)| Widget::opening(h))
     }
 
