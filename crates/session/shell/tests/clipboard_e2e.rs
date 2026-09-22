@@ -3315,6 +3315,13 @@ impl Compositor {
         );
     }
 
+    fn set_group_width(&self, permille: u16) {
+        let resp = self.control(&serde_json::json!({
+            "op": "set_group_width", "permille": permille,
+        }));
+        assert!(resp.get("ok").is_some(), "set_group_width failed: {resp:?}");
+    }
+
     fn pointer_move(&self, x: f64, y: f64) {
         let resp = self.control(&serde_json::json!({"op": "pointer_move", "x": x, "y": y}));
         assert!(resp.get("ok").is_some(), "pointer_move failed: {resp:?}");
@@ -3432,21 +3439,11 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
 /// full output width). Split out of the drag-and-drop tests below to keep
 /// each one short.
 fn narrow_demo_group_for_files(compositor: &Compositor) {
-    // Leave enough of Files visible to cross its drag threshold before the
-    // resize seam, while still exposing a substantial client target beside it.
-    // The demo group starts wider than the usable strip. A 900px reduction
-    // still leaves it oversized, so focus reframes it with only the six
-    // pixels between the sidebar and resize chrome visible. Drive the real
-    // handle to the group's supported minimum instead.
-    const NARROW_BY: f64 = 1_800.0;
-    let seam = compositor.named_center("group_resize_handle[0]");
-    compositor.pointer_move(seam.0, seam.1);
-    compositor.pointer_button(true);
-    for i in 1..=10 {
-        compositor.pointer_move(seam.0 - NARROW_BY * (f64::from(i) / 10.0), seam.1);
-        std::thread::sleep(Duration::from_millis(30));
-    }
-    compositor.pointer_button(false);
+    // DnD is the contract under test. Give both groups a deterministic
+    // quarter-strip width through the same live + persisted width setter the
+    // resize gesture commits, avoiding resize hit-testing as an unrelated
+    // precondition for reaching the source row.
+    compositor.set_group_width(250);
     std::thread::sleep(Duration::from_millis(800));
     compositor.snapshot(Path::new("/tmp/tilo-dnd-e2e-after-resize.png"));
     assert!(
