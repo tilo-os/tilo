@@ -3,6 +3,63 @@
 // Kept as an `App` implementation so custom widgets and built-in controls
 // share one authoritative action/resource route.
 
+#[derive(Clone, Copy)]
+struct ResourceInvocation<'a> {
+    address: &'a tilo_actions::ActionAddress,
+    actor: &'a str,
+    argument: Option<&'a str>,
+    confirmation_satisfied: bool,
+    broker_admitted: bool,
+    confirmation_evidence: Option<&'a serde_json::Value>,
+    invocation: Option<tilo_actions::InvocationId>,
+    ambient_context: Option<&'a tilo_actions::ActionContext>,
+}
+
+impl<'a> ResourceInvocation<'a> {
+    fn new(address: &'a tilo_actions::ActionAddress, actor: &'a str) -> Self {
+        Self {
+            address,
+            actor,
+            argument: None,
+            confirmation_satisfied: false,
+            broker_admitted: false,
+            confirmation_evidence: None,
+            invocation: None,
+            ambient_context: None,
+        }
+    }
+
+    fn argument(mut self, argument: Option<&'a str>) -> Self {
+        self.argument = argument;
+        self
+    }
+
+    fn confirmed(mut self, confirmed: bool) -> Self {
+        self.confirmation_satisfied = confirmed;
+        self
+    }
+
+    fn broker_admitted(mut self, admitted: bool) -> Self {
+        self.broker_admitted = admitted;
+        self
+    }
+
+    fn evidence(mut self, evidence: Option<&'a serde_json::Value>) -> Self {
+        self.confirmation_evidence = evidence;
+        self
+    }
+
+    fn invocation(mut self, invocation: Option<tilo_actions::InvocationId>) -> Self {
+        self.invocation = invocation;
+        self
+    }
+
+    fn ambient_context(mut self, context: Option<&'a tilo_actions::ActionContext>) -> Self {
+        self.ambient_context = context;
+        self
+    }
+}
+
 impl App {
     /// Lets the hosted app register its action types, e.g.
     /// `app.action_registry_mut().register::<TubeAction>("tube.action")`.
@@ -1354,14 +1411,12 @@ impl App {
         // permission and one-use confirmation-token checks.
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let result = self.invoke_resource_action(
-            &address,
-            argument,
-            actor,
-            true,
-            true,
-            None,
-            Some(invocation),
-            ambient_context,
+            ResourceInvocation::new(&address, actor)
+                .argument(argument)
+                .confirmed(true)
+                .broker_admitted(true)
+                .invocation(Some(invocation))
+                .ambient_context(ambient_context),
         );
         let update = match result {
             Ok(crate::widget::ResourceOperationStart::Completed(output)) => {
@@ -1518,30 +1573,30 @@ impl App {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "document dispatch needs the resolved action, arguments, actor, and ambient provenance"
-    )]
     fn invoke_document_resource_action(
         &mut self,
+        invocation: &ResourceInvocation<'_>,
         resources: &[tilo_actions::Resource],
-        address: &tilo_actions::ActionAddress,
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
-        argument: Option<&str>,
-        actor: &str,
         resource: &tilo_actions::Resource,
         spec: &tilo_actions::ActionSpec,
-        ambient_context: Option<&tilo_actions::ActionContext>,
-        confirmed_by_broker: bool,
-        confirmation_evidence: Option<&serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let ResourceInvocation {
+            address,
+            actor,
+            argument,
+            broker_admitted,
+            confirmation_evidence,
+            ambient_context,
+            ..
+        } = *invocation;
         let encoded = Self::encode_resource_action(resources, address, typed_arguments, argument)?;
         let action = self
             .actions
             .action_registry
             .decode(&encoded)
             .map_err(|_| tilo_actions::DoorError::UnregisteredType(encoded.type_id.clone()))?;
-        if action.locus() == tilo_actions::ExecutionLocus::ServerPreferred && !confirmed_by_broker {
+        if action.locus() == tilo_actions::ExecutionLocus::ServerPreferred && !broker_admitted {
             return self.invoke_via_broker(
                 address,
                 typed_arguments,
@@ -1565,7 +1620,7 @@ impl App {
             encoded,
             actor,
             &self.collaboration.local_author.0,
-            confirmed_by_broker,
+            broker_admitted,
             tilo_actions::InvocationId::new(),
             ambient_context,
         )?;
@@ -1583,55 +1638,30 @@ impl App {
         Ok(started)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "the authority door deliberately keeps address, actor, confirmation, broker admission, evidence, invocation, and provenance explicit in one auditable boundary"
-    )]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "host broker admission retains exact origin and supplied evidence"
-    )]
     fn invoke_bound_target(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
-        argument: Option<&str>,
-        actor: &str,
-        confirmed: bool,
-        broker_admitted: bool,
-        evidence: Option<&serde_json::Value>,
-        invocation: Option<tilo_actions::InvocationId>,
-        ambient: Option<&tilo_actions::ActionContext>,
+        invocation: &ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        self.invoke_bound_target_with_broker(
-            target,
-            argument,
-            actor,
-            confirmed,
-            broker_admitted,
-            evidence,
-            invocation,
-            ambient,
-            None,
-        )
+        self.invoke_bound_target_with_broker(target, invocation, None)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "host admission and optional synchronous broker delivery remain explicit"
-    )]
     fn invoke_bound_target_with_broker(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
-        argument: Option<&str>,
-        actor: &str,
-        confirmed: bool,
-        broker_admitted: bool,
-        evidence: Option<&serde_json::Value>,
-        invocation: Option<tilo_actions::InvocationId>,
-        ambient: Option<&tilo_actions::ActionContext>,
+        invocation: &ResourceInvocation<'_>,
         broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let ResourceInvocation {
+            actor,
+            argument,
+            confirmation_satisfied: confirmed,
+            broker_admitted,
+            confirmation_evidence: evidence,
+            invocation,
+            ambient_context: ambient,
+            ..
+        } = *invocation;
         let _entry = target.binding.enter().map_err(|error| {
             crate::bound_dispatch::BoundActionError::Dispatch(error).into_door()
         })?;
@@ -1731,21 +1761,11 @@ impl App {
         Ok(started)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "existing external action door inputs"
-    )]
     fn invoke_resource_action(
         &mut self,
-        address: &tilo_actions::ActionAddress,
-        argument: Option<&str>,
-        actor: &str,
-        confirmation_satisfied: bool,
-        broker_admitted: bool,
-        confirmation_evidence: Option<&serde_json::Value>,
-        invocation: Option<tilo_actions::InvocationId>,
-        ambient_context: Option<&tilo_actions::ActionContext>,
+        invocation: ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let address = invocation.address;
         if let Some(target) = self
             .actions
             .bound_publication
@@ -1753,16 +1773,7 @@ impl App {
             .map_err(crate::bound_dispatch::BoundActionError::into_door)?
         {
             self.require_bound_broker_route(&target.binding)?;
-            return self.invoke_bound_target(
-                &target,
-                argument,
-                actor,
-                confirmation_satisfied,
-                broker_admitted,
-                confirmation_evidence,
-                invocation,
-                ambient_context,
-            );
+            return self.invoke_bound_target(&target, &invocation);
         }
         let snapshots = crate::bound_dispatch::discover_bound_resources(
             self.root_widget.as_ref(),
@@ -1773,45 +1784,29 @@ impl App {
         let target = crate::bound_dispatch::select_bound_target(&snapshots, address, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
         if let Some(target) = target {
-            return self.invoke_bound_target(
-                &target,
-                argument,
-                actor,
-                confirmation_satisfied,
-                broker_admitted,
-                confirmation_evidence,
-                invocation,
-                ambient_context,
-            );
+            return self.invoke_bound_target(&target, &invocation);
         }
-        self.invoke_unbound_resource_action(
+        self.invoke_unbound_resource_action(&invocation)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "legacy broker and semantic orchestration remains an auditable lifecycle"
+    )]
+    fn invoke_unbound_resource_action(
+        &mut self,
+        request: &ResourceInvocation<'_>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let ResourceInvocation {
             address,
-            argument,
             actor,
+            argument,
             confirmation_satisfied,
             broker_admitted,
             confirmation_evidence,
             invocation,
             ambient_context,
-        )
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "legacy broker and semantic orchestration retains the existing explicit door inputs"
-    )]
-    fn invoke_unbound_resource_action(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        argument: Option<&str>,
-        actor: &str,
-        confirmation_satisfied: bool,
-        broker_admitted: bool,
-        confirmation_evidence: Option<&serde_json::Value>,
-        invocation: Option<tilo_actions::InvocationId>,
-        ambient_context: Option<&tilo_actions::ActionContext>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        } = *request;
         let mut resources = if actor == self.collaboration.local_author.0 {
             self.collect_local_resources()
         } else {
@@ -1865,16 +1860,11 @@ impl App {
         }
         if kind == tilo_actions::OperationKind::Document {
             return self.invoke_document_resource_action(
+                request,
                 &resources,
-                address,
                 typed_arguments.as_ref(),
-                argument,
-                actor,
                 resource,
                 resolved,
-                ambient_context,
-                broker_admitted,
-                confirmation_evidence,
             );
         }
         let encoded =
@@ -2067,13 +2057,7 @@ impl App {
         let actor = self.collaboration.local_author.0.clone();
         let result = self.invoke_bound_target(
             target,
-            Some(&argument),
-            &actor,
-            false,
-            false,
-            None,
-            None,
-            None,
+            &ResourceInvocation::new(&target.address.address, &actor).argument(Some(&argument)),
         );
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
             self.root_widget.as_mut(),
@@ -2158,14 +2142,7 @@ impl App {
             );
             let actor = self.collaboration.local_author.0.clone();
             let result = self.invoke_resource_action(
-                &intent.address,
-                Some(&json),
-                &actor,
-                false,
-                false,
-                None,
-                None,
-                None,
+                ResourceInvocation::new(&intent.address, &actor).argument(Some(&json)),
             );
             self.root_widget
                 .on_control_invocation_result(&intent.address, &result);
@@ -2566,24 +2543,19 @@ impl App {
             } else if let Some(target) = pending.bound.as_ref() {
                 self.invoke_bound_target(
                     target,
-                    argument.as_deref(),
-                    &actor,
-                    true,
-                    false,
-                    Some(pending.confirmation_evidence()),
-                    None,
-                    Some(&pending.context),
+                    &ResourceInvocation::new(&pending.address, &actor)
+                        .argument(argument.as_deref())
+                        .confirmed(true)
+                        .evidence(Some(pending.confirmation_evidence()))
+                        .ambient_context(Some(&pending.context)),
                 )
             } else {
                 self.invoke_resource_action(
-                    &pending.address,
-                    argument.as_deref(),
-                    &actor,
-                    true,
-                    false,
-                    Some(pending.confirmation_evidence()),
-                    None,
-                    Some(&pending.context),
+                    ResourceInvocation::new(&pending.address, &actor)
+                        .argument(argument.as_deref())
+                        .confirmed(true)
+                        .evidence(Some(pending.confirmation_evidence()))
+                        .ambient_context(Some(&pending.context)),
                 )
             };
             if let Err(error) = result {
