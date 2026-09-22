@@ -28,12 +28,15 @@ class TiloInstallDiskTests(unittest.TestCase):
             script, seed, digest = self.fixture(base)
             output = base / "new-output"
             receipt = base / "receipt.json"
+            helper = base / "bootc"
+            helper.write_bytes(b"reviewed ARM64 helper fixture")
             args = tilo_install_disk.parser().parse_args([
                 "--image", f"code.example/tilo@{digest}",
                 "--mirror", f"127.0.0.1:5000/tilo@{digest}",
                 "--output", str(output),
                 "--firstboot-seed", str(seed),
                 "--disk-image", str(script),
+                "--bootc-helper", str(helper),
                 "--receipt", str(receipt),
                 "--dry-run",
             ])
@@ -44,6 +47,8 @@ class TiloInstallDiskTests(unittest.TestCase):
             record = json.loads(receipt.read_text(encoding="utf-8"))
             self.assertEqual(record["status"], "preflight-passed")
             self.assertEqual(record["inputs"]["image_digest"], digest)
+            self.assertEqual(record["inputs"]["bootc_helper"]["bytes"], helper.stat().st_size)
+            self.assertIn("--bootc-helper", record["command"])
             self.assertNotIn("$6$salt", json.dumps(record))
 
     def test_refuses_digest_mismatch_and_existing_output(self):

@@ -20,6 +20,8 @@
 #                            install without first importing IMAGE locally
 #     --firstboot-seed FILE   install an installer-format NAME:SHA512_CRYPT seed;
 #                            create the account on first boot, never in this step
+#     --bootc-helper FILE     execute this verified ARM64 bootc inside the image
+#                            instead of the image's /usr/bin/bootc
 #     --raw                   leave the raw image, skip the qcow2 conversion
 #
 # Why not bib: bib has no composefs, UKI or backend-selection surface anywhere
@@ -73,6 +75,7 @@ COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=12G; ESP_SIZE=2G
 RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
 KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
+BOOTC_HELPER=""
 KEEP_RAW=0; DEFAULT_KARGS=yes
 
 while [ $# -gt 0 ]; do
@@ -91,6 +94,7 @@ while [ $# -gt 0 ]; do
     --target-imgref) TARGET_IMGREF="$2"; shift ;;
     --sealed-source-imgref) SEALED_SOURCE_IMGREF="$2"; shift ;;
     --firstboot-seed) FIRSTBOOT_SEED="$2"; shift ;;
+    --bootc-helper) BOOTC_HELPER="$2"; shift ;;
     --raw) KEEP_RAW=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*) die "unknown option: $1" ;;
@@ -116,6 +120,25 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
   source "$(dirname "${BASH_SOURCE[0]}")/../usr/libexec/tilo-firstboot-user"
   valid_sha512_crypt "$firstboot_hash" \
     || die "--firstboot-seed must contain a complete SHA-512 crypt hash"
+fi
+
+if [ -n "$BOOTC_HELPER" ]; then
+  [ -f "$BOOTC_HELPER" ] && [ ! -L "$BOOTC_HELPER" ] && [ -x "$BOOTC_HELPER" ] \
+    || die "--bootc-helper must name an executable regular, non-symlink file"
+  python3 - "$BOOTC_HELPER" <<'PY' \
+    || die "--bootc-helper must be an ARM64 ELF executable"
+import struct
+import sys
+
+with open(sys.argv[1], "rb") as source:
+    header = source.read(20)
+if len(header) != 20 or header[:4] != b"\x7fELF" or header[5] not in (1, 2):
+    raise SystemExit(1)
+byteorder = "<" if header[5] == 1 else ">"
+if struct.unpack_from(byteorder + "H", header, 18)[0] != 183:  # EM_AARCH64
+    raise SystemExit(1)
+PY
+  BOOTC_HELPER="$(readlink -f "$BOOTC_HELPER")"
 fi
 
 if [ -z "$SEALED_SOURCE_IMGREF" ]; then
@@ -531,6 +554,13 @@ if [ -d "$host_udev_dir/data" ]; then
   host_udev_dir="$(readlink -f "$host_udev_dir")"
   run_args+=(-v "$host_udev_dir:/run/udev:ro")
 fi
+bootc_argv=(bootc)
+if [ -n "$BOOTC_HELPER" ]; then
+  run_args+=(-v "$BOOTC_HELPER:/run/tilo-installer-bootc:ro"
+    --entrypoint /run/tilo-installer-bootc)
+  bootc_argv=()
+  msg "using explicit ARM64 bootc helper $BOOTC_HELPER"
+fi
 if [ -n "$SRC_REF" ]; then
   run_args+=(--network host
     -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
@@ -541,7 +571,7 @@ fi
 
 msg "3/4 bootc install ${install_args[*]}"
 if ! sudo -n podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
-       "$RUNREF" bootc install "${install_args[@]}" 2>&1 | tee "$LOG"; then
+       "$RUNREF" "${bootc_argv[@]}" install "${install_args[@]}" 2>&1 | tee "$LOG"; then
   # The two failures that are specific to dropping bib get named, because
   # neither message says what to do about it.
   if grep -q 'Invalid splitstream content type' "$LOG"; then
