@@ -36,7 +36,7 @@ app-host = { path = "../../crates/packaging/app-host" }
 registry-types = { path = "../../crates/packaging/registry-types" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 blake3.workspace = true
-getrandom.workspace = true
+rand_core = { workspace = true, features = ["getrandom"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
