@@ -13682,6 +13682,7 @@ dependencies = [
  "tilo-app",
  "uuid",
  "vello",
+ "vello_encoding",
  "winit",
  "zip 4.6.1",
 ]

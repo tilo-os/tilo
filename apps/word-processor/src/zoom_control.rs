@@ -1,10 +1,12 @@
 //! Toolbar zoom control and page-scale transform.
 
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Color;
 
 use crate::num;
 use crate::paint_context::PaintContext;
+use ui::text_render::TextRenderer;
 
 pub(crate) const MIN: f64 = 0.4;
 pub(crate) const MAX: f64 = 3.0;
@@ -17,23 +19,42 @@ enum Action {
     In,
 }
 
-#[derive(Clone, Copy)]
-struct ButtonStyle {
-    center_y: f64,
-    scale: f64,
-    chip: Color,
-    text: Color,
-}
-
 /// Owns the local zoom preference, transform geometry and toolbar interaction.
 pub(crate) struct ZoomControl {
     factor: f64,
     anchor: Point,
     hits: Vec<(Action, Rect)>,
+    metrics: Metrics,
+}
+
+#[derive(Clone, Copy)]
+struct Metrics {
+    button_width: f64,
+    value_width: f64,
+    height: f64,
+    gap: f64,
+    out_size: (f64, f64),
+    value_size: (f64, f64),
+    in_size: (f64, f64),
+    radius: f64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            button_width: 18.0,
+            value_width: 44.0,
+            height: 18.0,
+            gap: 4.0,
+            out_size: (0.0, 0.0),
+            value_size: (0.0, 0.0),
+            in_size: (0.0, 0.0),
+            radius: 4.0,
+        }
+    }
 }
 
 impl ZoomControl {
-    pub(crate) const WIDTH: f64 = 88.0;
     /// Stable semantic targets for the three controls painted by this component.
     /// Keeping these beside the hit-testing means assistive technology and the
     /// pointer path cannot grow different zoom behaviours.
@@ -41,16 +62,52 @@ impl ZoomControl {
     pub(crate) const TARGET_RESET: &'static str = "word-processor.zoom:reset";
     pub(crate) const TARGET_IN: &'static str = "word-processor.zoom:in";
 
-    pub(crate) fn width(text_scale: f64) -> f64 {
-        Self::WIDTH * text_scale
-    }
-
     pub(crate) fn new() -> Self {
         Self {
             factor: 1.0,
             anchor: Point::ZERO,
             hits: Vec::new(),
+            metrics: Metrics::default(),
         }
+    }
+
+    /// Refresh the toolbar reservation before its owner packs rows. The same
+    /// measured geometry is used for painting and hit testing below.
+    pub(crate) fn measure(&mut self, text: &mut TextRenderer) {
+        let scale = f64::from(text.text_scale());
+        let percent = self.percent();
+        let dimensions = |size: (f32, f32)| (f64::from(size.0), f64::from(size.1));
+        let out_size = dimensions(text.measure("−", 13.0, None));
+        let in_size = dimensions(text.measure("+", 13.0, None));
+        let value_size = dimensions(text.measure(&percent, 12.5, None));
+        // Reserve a full three-digit percentage even at low zoom, preventing
+        // ordinary zoom clicks from repacking the toolbar around the control.
+        let widest_percent = ["100%", "200%", "300%"]
+            .into_iter()
+            .map(|label| f64::from(text.measure(label, 12.5, None).0))
+            .fold(value_size.0, f64::max);
+        self.metrics = Metrics {
+            button_width: (18.0 * scale).max(out_size.0.max(in_size.0) + 4.0 * scale),
+            value_width: (44.0 * scale).max(widest_percent + 8.0 * scale),
+            height: (18.0 * scale).max(out_size.1.max(in_size.1).max(value_size.1)),
+            gap: 4.0 * scale,
+            out_size,
+            value_size,
+            in_size,
+            radius: 4.0 * scale,
+        };
+    }
+
+    pub(crate) fn width(&self) -> f64 {
+        self.metrics.button_width * 2.0 + self.metrics.value_width + self.metrics.gap * 2.0
+    }
+
+    pub(crate) fn height(&self) -> f64 {
+        self.metrics.height
+    }
+
+    fn percent(&self) -> String {
+        format!("{}%", num::i32_of_f64((self.factor * 100.0).round()))
     }
 
     pub(crate) fn factor(&self) -> f64 {
@@ -155,44 +212,57 @@ impl ZoomControl {
         chip: Color,
         text_color: Color,
     ) {
+        let scene = &mut *context.scene;
+        let transform = context.transform;
+        let text = &mut *context.text;
         self.hits.clear();
-        let scale = f64::from(context.text.text_scale());
+        self.measure(text);
+        let metrics = self.metrics;
         let center_y = f64::midpoint(row.y0, row.y1);
-        let style = ButtonStyle {
-            center_y,
-            scale,
+        let y = center_y - metrics.height / 2.0;
+        let mut x = row.x1 - 14.0 - self.width();
+        let out = Rect::new(x, y, x + metrics.button_width, y + metrics.height);
+        draw_button(
+            scene,
+            transform,
+            text,
+            out,
             chip,
-            text: text_color,
-        };
-        let button_width = 18.0 * scale;
-        let button_height = 18.0 * scale;
-        let y = center_y - button_height / 2.0;
-        let percent = format!("{}%", num::i32_of_f64((self.factor * 100.0).round()));
-        let value_width = 44.0 * scale;
-        let total = button_width * 2.0 + value_width + 8.0 * scale;
-        let mut x = row.x1 - 14.0 * scale - total;
-
-        self.hits
-            .push((Action::Out, draw_button(context, x, y, style, "−")));
-        x += button_width + 4.0 * scale;
-        let value = Rect::new(x, y, x + value_width, y + button_height);
-        let percent_width = num::f64_of_usize(percent.chars().count()) * 6.8 * scale;
-        context.text.draw_text(
-            context.scene,
-            &percent,
+            text_color,
+            "−",
+            metrics.out_size,
+            metrics.radius,
+        );
+        self.hits.push((Action::Out, out));
+        x += metrics.button_width + metrics.gap;
+        let value = Rect::new(x, y, x + metrics.value_width, y + metrics.height);
+        text.draw_text(
+            scene,
+            &self.percent(),
             12.5,
             text_color,
-            context.transform
+            transform
                 * Affine::translate((
-                    x + (value_width - percent_width) / 2.0,
-                    center_y - 8.0 * scale,
+                    value.center().x - metrics.value_size.0 / 2.0,
+                    center_y - metrics.value_size.1 / 2.0,
                 )),
             None,
         );
         self.hits.push((Action::Reset, value));
-        x += value_width + 4.0 * scale;
-        self.hits
-            .push((Action::In, draw_button(context, x, y, style, "+")));
+        x += metrics.value_width + metrics.gap;
+        let increase = Rect::new(x, y, x + metrics.button_width, y + metrics.height);
+        draw_button(
+            scene,
+            transform,
+            text,
+            increase,
+            chip,
+            text_color,
+            "+",
+            metrics.in_size,
+            metrics.radius,
+        );
+        self.hits.push((Action::In, increase));
     }
 
     #[cfg(test)]
@@ -202,40 +272,102 @@ impl ZoomControl {
 }
 
 fn draw_button(
-    context: &mut PaintContext<'_>,
-    x: f64,
-    y: f64,
-    style: ButtonStyle,
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    rect: Rect,
+    chip: Color,
+    text_color: Color,
     label: &str,
-) -> Rect {
-    let width = 18.0 * style.scale;
-    let rect = Rect::new(x, y, x + width, y + 18.0 * style.scale);
-    context.scene.fill(
-        Fill::NonZero,
-        context.transform,
-        style.chip,
-        None,
-        &RoundedRect::from_rect(rect, 4.0 * style.scale),
-    );
-    let label_width = num::f64_of_usize(label.chars().count()) * 6.5 * style.scale;
-    context.text.draw_text(
-        context.scene,
+    label_size: (f64, f64),
+    radius: f64,
+) {
+    // The chip face with its derived rest edge (HIG §9.5): the fill alone is
+    // the bar's own tone and disappeared on the dark preset.
+    ui::surface::card(scene, transform, rect, radius, chip);
+    text.draw_text(
+        scene,
         label,
         13.0,
-        style.text,
-        context.transform
+        text_color,
+        transform
             * Affine::translate((
-                rect.x0 + (width - label_width).max(2.0 * style.scale) / 2.0,
-                style.center_y - 8.0 * style.scale,
+                rect.center().x - label_size.0 / 2.0,
+                rect.center().y - label_size.1 / 2.0,
             )),
         None,
     );
-    rect
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scaled_zoom_labels_fit_their_measured_hit_targets() {
+        for scale in [1.0, 2.0] {
+            for factor in [0.55, 1.0, 3.0] {
+                let mut zoom = ZoomControl::new();
+                zoom.set(factor);
+                let mut text = TextRenderer::new();
+                text.set_text_scale(scale);
+                let row = Rect::new(0.0, 0.0, 480.0, 64.0);
+                zoom.draw(
+                    &mut PaintContext::new(&mut Scene::new(), Affine::IDENTITY, &mut text),
+                    row,
+                    Color::BLACK,
+                    Color::WHITE,
+                );
+                let percent = format!("{}%", num::i32_of_f64((factor * 100.0).round()));
+                for ((_, rect), (label, size)) in
+                    zoom.hits
+                        .iter()
+                        .zip([("−", 13.0), (percent.as_str(), 12.5), ("+", 13.0)])
+                {
+                    let (width, height) = text.measure(label, size, None);
+                    assert!(
+                        rect.width() >= f64::from(width),
+                        "{label} at {scale}× needs width {width}, got {rect:?}"
+                    );
+                    assert!(
+                        rect.height() >= f64::from(height),
+                        "{label} at {scale}× needs height {height}, got {rect:?}"
+                    );
+                    assert_eq!(rect.intersect(row), *rect);
+                }
+                for pair in zoom.hits.windows(2) {
+                    assert!(
+                        pair[0].1.x1 < pair[1].1.x0,
+                        "adjacent targets must not overlap"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scaled_zoom_targets_keep_out_reset_in_behavior() {
+        for scale in [1.0, 2.0] {
+            let mut zoom = ZoomControl::new();
+            zoom.set(1.2);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(scale);
+            zoom.draw(
+                &mut PaintContext::new(&mut Scene::new(), Affine::IDENTITY, &mut text),
+                Rect::new(0.0, 0.0, 480.0, 64.0),
+                Color::BLACK,
+                Color::WHITE,
+            );
+            let hits = zoom.hit_rects();
+            assert!(zoom.click(hits[0].center()));
+            assert!((zoom.factor() - 1.1).abs() < 1e-9);
+            assert!(zoom.click(hits[2].center()));
+            assert!((zoom.factor() - 1.2).abs() < 1e-9);
+            assert!(zoom.click(hits[1].center()));
+            assert_eq!(zoom.factor(), 1.0);
+            assert!(!zoom.click(Point::new(0.0, 0.0)));
+        }
+    }
 
     #[test]
     fn scale_is_clamped_and_anchor_is_fixed() {
