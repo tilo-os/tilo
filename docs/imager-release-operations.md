@@ -14,10 +14,12 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 
 Manual installer-only rehearsals do not need those release labels: dispatch
 `release-imager.yml` with `installer_only=true` and `full_native=true`. The
-workflow uses the native `runner-disk-100g` and `runner-disk-100g-arm64` KVM
-lanes for erase, prepared-alongside, and guided-alongside cycles, while skipping
-host packaging and every publication job. Tagged releases still require the
-dedicated six-platform fleet above.
+workflow uses the native `runner-disk-100g` and `runner-disk-100g-arm64`
+large-disk lanes for erase, prepared-alongside, and guided-alongside cycles. Their isolated
+job containers use QEMU's slower TCG accelerator and capturable software
+framebuffer because host KVM/DRI devices are intentionally not exposed. Tagged
+releases still require hardware KVM/DRI and the dedicated six-platform fleet
+above; installer-only rehearsals skip host packaging and every publication job.
 
 Use Forgejo 15 or newer and Forgejo Runner 12.5 or newer. Register every host at
 **repository scope** (`qos/qos`), select ephemeral mode, expose exactly one of

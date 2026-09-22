@@ -68,9 +68,10 @@ jobs:
 
   medium:
     timeout-minutes: 240
-    # Build and boot-test install media only on dedicated, native hosts. The
-    # generic `runner` label executes in a container without Podman, KVM, or
-    # DRI and must never be eligible for this job.
+    # Build and boot-test install media only on architecture-matched native
+    # hosts. Tags use the dedicated KVM/DRI fleet; manual rehearsals may use
+    # the isolated large-disk fleet with Podman plus software QEMU installed
+    # inside the job. The small generic `runner` label is never eligible.
     needs: plan
     strategy:
       matrix: ${{ fromJSON(needs.plan.outputs.medium-matrix) }}
@@ -126,10 +127,12 @@ jobs:
               native_packages='ovmf python3-virt-firmware qemu-system-x86 swtpm'
               qemu_binary=qemu-system-x86_64
               display_device=virtio-vga-gl
+              software_display_device=virtio-vga
             else
               native_packages='qemu-efi-aarch64 qemu-system-arm'
               qemu_binary=qemu-system-aarch64
               display_device=virtio-gpu-gl-pci
+              software_display_device=virtio-gpu-pci
             fi
             sudo -n apt-get install -y --no-install-recommends \
               clang dosfstools e2fsprogs fdisk imagemagick lld mtools ntfs-3g podman fuse-overlayfs \
@@ -139,10 +142,12 @@ jobs:
               native_packages='edk2-ovmf python3-virt-firmware qemu-device-display-virtio-vga-gl qemu-system-x86-core swtpm'
               qemu_binary=qemu-system-x86_64
               display_device=virtio-vga-gl
+              software_display_device=virtio-vga
             else
               native_packages='edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core'
               qemu_binary=qemu-system-aarch64
               display_device=virtio-gpu-gl-pci
+              software_display_device=virtio-gpu-pci
             fi
             sudo -n dnf install -y clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux podman fuse-overlayfs slirp4netns \
               qemu-img qemu-ui-egl-headless qemu-ui-opengl socat tesseract $native_packages
@@ -156,10 +161,15 @@ jobs:
           if [ "${{ matrix.arch }}" = x86_64 ]; then
             command -v swtpm virt-fw-vars >/dev/null
           fi
-          "$qemu_binary" -display help | grep -Fq egl-headless
-          "$qemu_binary" -device help | grep -Fq "$display_device"
-          test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
-          compgen -G '/dev/dri/renderD*' >/dev/null
+          "$qemu_binary" -device help | grep -Fq "$software_display_device"
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            "$qemu_binary" -display help | grep -Fq egl-headless
+            "$qemu_binary" -device help | grep -Fq "$display_device"
+            test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
+            compgen -G '/dev/dri/renderD*' >/dev/null
+          else
+            echo '::notice::manual rehearsal uses QEMU TCG plus the capturable software framebuffer'
+          fi
       - name: Authenticate the native image builder
         env:
           TILO_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
@@ -235,17 +245,27 @@ jobs:
           TILO_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
         run: |
           set -euo pipefail
+          cycle_graphics=()
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            export TILO_ACCEL=kvm
+          else
+            export TILO_ACCEL=tcg
+            cycle_graphics=(--graphics software)
+          fi
           ./os/dev/test-installer-cycle.sh \
             os/output/installer/qcow2/disk.qcow2 \
+            "${cycle_graphics[@]}" \
             --out dist/installer-cycle
           TILO_VM_CYCLE="${TILO_VM_CYCLE}-alongside" \
             ./os/dev/test-installer-cycle.sh \
               os/output/installer/qcow2/disk.qcow2 \
+              "${cycle_graphics[@]}" \
               --prepared-alongside \
               --out dist/installer-alongside-cycle
           TILO_VM_CYCLE="${TILO_VM_CYCLE}-guided-alongside" \
             ./os/dev/test-installer-cycle.sh \
               os/output/installer/qcow2/disk.qcow2 \
+              "${cycle_graphics[@]}" \
               --guided-alongside \
               --out dist/installer-guided-alongside-cycle
           if [[ "$GITHUB_REF" == refs/tags/imager-v* && "${{ matrix.arch }}" == x86_64 ]]; then
