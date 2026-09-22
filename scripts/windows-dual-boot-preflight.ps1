@@ -143,6 +143,7 @@ function Get-ReadinessReport {
         FastStartupPreference = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -ErrorAction SilentlyContinue).HiberbootEnabled
         LatestShrinkAnalysis = if ($null -ne $latestShrinkEvent) { [ordered]@{ TimeCreated = $latestShrinkEvent.TimeCreated.ToUniversalTime().ToString('o'); RecordId = $latestShrinkEvent.RecordId; Message = $latestShrinkEvent.Message } } else { $null }
         BitLocker = Invoke-NativeCapturedCommand -FilePath 'manage-bde.exe' -Arguments @('-status', 'C:')
+        BitLockerProtectors = Invoke-NativeCapturedCommand -FilePath 'manage-bde.exe' -Arguments @('-protectors', '-get', 'C:')
         SecureBoot = Invoke-CapturedCommand { Confirm-SecureBootUEFI }
         WinRE = Invoke-NativeCapturedCommand -FilePath 'reagentc.exe' -Arguments @('/info')
         ShadowStorage = Invoke-NativeCapturedCommand -FilePath 'vssadmin.exe' -Arguments @('list', 'shadowstorage', '/for=C:')
