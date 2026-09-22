@@ -15,20 +15,18 @@ use chrono::Local;
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
+use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
+use crate::shell::chrome_state::Chrome;
+use crate::shell::state::WorkspaceTree;
+use settings_store::hardware::{TopBarWidget, TopBarWidgetsConfig};
 use ui::color_compat::ColorCompat;
 use ui::presence::{PresenceCtx, user_color};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use ui::widget::drag::{DragController, ListMetrics};
-use vello::peniko::Color;
-
-use crate::shell::chrome_state::Chrome;
-use crate::shell::state::WorkspaceTree;
-use settings_store::hardware::{TopBarWidget, TopBarWidgetsConfig};
 
 /// Persistent chrome is deliberately a little taller than the original
 /// concept's 40 px sketch.  Forty pixels forced the navigation and status
@@ -1703,71 +1701,6 @@ impl TopBarChrome {
     // The following `draw_*` helpers exist only to keep `Widget::draw`
     // under the line budget; none is meaningful on its own.
 
-    /// Bar surface fill, bottom border hairline, and the soft drop-shadow
-    /// band beneath the bar.
-    fn draw_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &self.rect,
-        );
-
-        // Bar role (HIG §9.1/§9.5): the one bottom hairline is derived
-        // against the overlay ground it sits on, never a declared border
-        // that vanishes three shades off the surface on the dark preset.
-        let border_rect = Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::chrome_hairline(theme),
-            None,
-            &border_rect,
-        );
-
-        // A Bar is elevated `e1`, downward only (HIG §9.1): a one-sided
-        // fade below the bar rather than a blurred outline, so nothing
-        // leaks above the screen edge. The token supplies hue *and*
-        // strength — its alpha is honoured — so a light or high-contrast
-        // palette gets its own answer instead of a fixed black wash; the
-        // fade's reach is the `s6` spacing step.
-        let shadow_h = f64::from(tokens.spacing.s6);
-        let shadow_hue = tokens.elevation.e1.color;
-        let shadow_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y1,
-            self.rect.x1,
-            self.rect.y1 + shadow_h,
-        );
-        let shadow_grad = Gradient::new_linear(
-            Point::new(0.0, self.rect.y1),
-            Point::new(0.0, self.rect.y1 + shadow_h),
-        )
-        .with_extend(Extend::Pad)
-        .with_stops(
-            &[
-                ColorStop {
-                    offset: 0.0,
-                    color: shadow_hue.into(),
-                },
-                ColorStop {
-                    offset: 1.0,
-                    color: shadow_hue.with_alpha_factor(0.0).into(),
-                },
-            ][..],
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            &Brush::Gradient(shadow_grad),
-            None,
-            &shadow_rect,
-        );
-    }
-
     /// Overview icon, divider, and up/down workspace chevrons. Returns
     /// the x cursor position immediately after the down chevron, where
     /// the workspace name pill begins.
@@ -2116,17 +2049,28 @@ impl TopBarChrome {
             );
         }
 
-        let dot_x = band.x0 + CENTER_DOT_PITCH_PX / 2.0;
-        let dot_gap = CENTER_DOT_PITCH_PX;
-        let active_dot = self.center_widget.index();
-        for (i, slot) in self.center_dot_rects.iter_mut().enumerate() {
-            let cx = dot_x + small_count_to_f64(i) * dot_gap;
+        let widgets = self.widget_config.widgets.clone();
+        if !widgets.contains(&TopBarWidget::from(self.center_widget)) {
+            self.center_widget = widgets
+                .first()
+                .copied()
+                .unwrap_or(TopBarWidget::Clock)
+                .into();
+        }
+        let active_dot = widgets
+            .iter()
+            .position(|widget| *widget == TopBarWidget::from(self.center_widget))
+            .unwrap_or(0);
+        let dots = Self::center_dot_layout(band, self.rect, active_dot, widgets.len());
+        self.center_dot_rects = [Rect::ZERO; 3];
+        for (i, (slot, dot)) in self
+            .center_dot_rects
+            .iter_mut()
+            .zip(dots.iter())
+            .take(widgets.len())
+            .enumerate()
+        {
             let active = active_dot == i;
-            let r = if active {
-                Self::DOT_ACTIVE_RADIUS
-            } else {
-                Self::DOT_INACTIVE_RADIUS
-            };
             // An inactive page dot is dim ink from the semantic tier, never
             // a ramp slot (HIG §9.2).
             let color = if active {
@@ -2134,15 +2078,14 @@ impl TopBarChrome {
             } else {
                 colors.text_dim
             };
-            // One pitch wide and the full control height: a 32×32 target
-            // (HIG §9.6) that never shares a pixel with its neighbour.
+            let target_x0 = band.x0 + small_count_to_f64(i) * CENTER_DOT_PITCH_PX;
             *slot = Rect::new(
-                cx - CENTER_DOT_PITCH_PX / 2.0,
-                center_y - BAR_CONTROL_PX / 2.0,
-                cx + CENTER_DOT_PITCH_PX / 2.0,
-                center_y + BAR_CONTROL_PX / 2.0,
+                target_x0,
+                self.rect.center().y - BAR_CONTROL_PX / 2.0,
+                target_x0 + CENTER_DOT_PITCH_PX,
+                self.rect.center().y + BAR_CONTROL_PX / 2.0,
             );
-            let c = vello::kurbo::Circle::new(Point::new(cx, center_y), r);
+            let c = vello::kurbo::Circle::new(dot.center, dot.radius);
             scene.fill(Fill::NonZero, transform, color, None, &c);
         }
 
@@ -2150,6 +2093,192 @@ impl TopBarChrome {
         let (content_x0, content_x1) = Self::center_content_lane(band, theme);
         let content_cx = f64::midpoint(content_x0, content_x1);
         (content_x0, content_x1, content_cx)
+    }
+
+    fn widget_editor_row(&self, index: usize) -> Rect {
+        let top = self.widget_editor_rect.y0 + 62.0 + small_count_to_f64(index) * 50.0;
+        Rect::new(
+            self.widget_editor_rect.x0 + 14.0,
+            top,
+            self.widget_editor_rect.x1 - 14.0,
+            top + 42.0,
+        )
+    }
+
+    fn widget_editor_remove_rect(&self, index: usize) -> Rect {
+        let row = self.widget_editor_row(index);
+        Rect::new(row.x1 - 76.0, row.y0 + 5.0, row.x1 - 5.0, row.y1 - 5.0)
+    }
+
+    fn widget_editor_add_rect(&self, widget: TopBarWidget) -> Rect {
+        let Some(index) = TopBarWidget::ALL
+            .into_iter()
+            .filter(|candidate| !self.widget_config.widgets.contains(candidate))
+            .position(|candidate| candidate == widget)
+        else {
+            return Rect::ZERO;
+        };
+        let x = self.widget_editor_rect.x0 + 16.0 + small_count_to_f64(index) * 82.0;
+        Rect::new(
+            x,
+            self.widget_editor_rect.y1 - 48.0,
+            x + 78.0,
+            self.widget_editor_rect.y1 - 8.0,
+        )
+    }
+
+    fn draw_widget_editor(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.widget_editing {
+            self.widget_editor_rect = Rect::ZERO;
+            return;
+        }
+        let width = 286.0;
+        let available = TopBarWidget::ALL
+            .iter()
+            .filter(|widget| !self.widget_config.widgets.contains(widget))
+            .count();
+        let height = 86.0
+            + small_count_to_f64(self.widget_config.widgets.len()) * 50.0
+            + if available > 0 { 54.0 } else { 0.0 };
+        let panel = Rect::new(
+            self.center_rect.center().x - width / 2.0,
+            self.rect.y1 + 8.0,
+            self.center_rect.center().x + width / 2.0,
+            self.rect.y1 + 8.0 + height,
+        );
+        self.widget_editor_rect = panel;
+        let rr = RoundedRect::from_rect(panel, 16.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.overlay,
+            None,
+            &rr,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &rr,
+        );
+        text.draw_text_weighted(
+            scene,
+            "Edit top bar",
+            theme.tokens.typography.scale.base,
+            theme.tokens.colors.text_primary,
+            at(transform, (panel.x0 + 16.0, panel.y0 + 15.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        text.draw_text(
+            scene,
+            "Drag to reorder · click Remove",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            at(transform, (panel.x0 + 16.0, panel.y0 + 38.0)),
+            None,
+        );
+        let metrics =
+            ListMetrics::uniform(panel.y0 + 62.0, 42.0, 8.0, self.widget_config.widgets.len());
+        self.widget_edit_drag.sync_insertion(&metrics);
+        for (index, widget) in self
+            .widget_config
+            .widgets
+            .clone()
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            if self.widget_edit_drag.from_index() == Some(index) {
+                continue;
+            }
+            let mut row = self.widget_editor_row(index);
+            row = row.with_origin((
+                row.x0,
+                row.y0 + self.widget_edit_drag.item_shift(index, &metrics),
+            ));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(row, 10.0),
+            );
+            let label = match widget {
+                TopBarWidget::Clock => "Clock",
+                TopBarWidget::SystemMonitor => "System monitor",
+                TopBarWidget::Calendar => "Calendar",
+            };
+            text.draw_text(
+                scene,
+                "⠿",
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_dim,
+                at(transform, (row.x0 + 12.0, row.y0 + 11.0)),
+                None,
+            );
+            text.draw_text(
+                scene,
+                label,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                at(transform, (row.x0 + 40.0, row.y0 + 12.0)),
+                None,
+            );
+            text.draw_text(
+                scene,
+                "Remove",
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.semantic.danger,
+                at(transform, (row.x1 - 60.0, row.y0 + 13.0)),
+                None,
+            );
+        }
+        if let Some(ghost) =
+            self.widget_edit_drag
+                .ghost_rect(panel.x0 + 14.0, panel.x1 - 14.0, &metrics)
+        {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[5].with_alpha(0.22),
+                None,
+                &RoundedRect::from_rect(
+                    Rect::new(panel.x0 + 14.0, ghost.y0, panel.x1 - 14.0, ghost.y1),
+                    10.0,
+                ),
+            );
+        }
+        if available > 0 {
+            let y = panel.y1 - 40.0;
+            let mut x = panel.x0 + 16.0;
+            for widget in TopBarWidget::ALL {
+                if self.widget_config.widgets.contains(&widget) {
+                    continue;
+                }
+                let label = match widget {
+                    TopBarWidget::Clock => "+ Clock",
+                    TopBarWidget::SystemMonitor => "+ Monitor",
+                    TopBarWidget::Calendar => "+ Calendar",
+                };
+                text.draw_text(
+                    scene,
+                    label,
+                    theme.tokens.typography.scale.xs,
+                    theme.tokens.colors.accent[5],
+                    at(transform, (x, y)),
+                    None,
+                );
+                x += 82.0;
+            }
+        }
     }
 
     /// The lane the active centre widget draws into: after the three dot

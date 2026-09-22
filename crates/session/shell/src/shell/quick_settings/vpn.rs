@@ -6,6 +6,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
+use winit::keyboard::{Key, NamedKey};
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -36,13 +37,6 @@ fn f64_to_f32_lossy(value: f64) -> f32 {
 pub struct QuickSettingsVpnPane {
     list: DrillInList,
     keyboard_focus: Option<usize>,
-}
-
-struct VpnRowPaint<'a> {
-    index: usize,
-    rect: Rect,
-    profile: &'a os_actions::VpnConnectionInfo,
-    hovered: bool,
 }
 
 impl QuickSettingsVpnPane {
@@ -290,6 +284,7 @@ impl QuickSettingsVpnPane {
         profiles: &[os_actions::VpnConnectionInfo],
     ) {
         self.list.layout(panel, profiles.len());
+        let colors = &theme.tokens.colors;
         self.list
             .draw_header(scene, transform, text, theme, panel, cursor, "VPN");
         if self.keyboard_focus == Some(Self::BACK_FOCUS) {
@@ -317,7 +312,10 @@ impl QuickSettingsVpnPane {
             return;
         }
 
-        for (profile, row) in profiles.iter().zip(self.list.rows()) {
+        for (index, row) in self.list.visible_indices().zip(self.list.rows().iter()) {
+            let Some(profile) = profiles.get(index) else {
+                continue;
+            };
             let hovered = cursor.is_some_and(|point| row.contains(point));
             // A discovery row is not a selected tab. Wi-Fi and Bluetooth
             // stay quiet and reserve blue for an actual live state; VPN is
@@ -326,6 +324,18 @@ impl QuickSettingsVpnPane {
             // shared Control role (HIG §9.1/§9.5): a quiet lift with a
             // derived edge, never a ramp-slot wash.
             paint_control(scene, transform, theme, *row, hovered, false);
+            if self.keyboard_focus == Some(Self::PROFILE_FOCUS_START.saturating_add(index)) {
+                Button::paint(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    &ButtonFace::new(*row, "")
+                        .ghost()
+                        .focused(true)
+                        .accessible_name(&profile.name),
+                );
+            }
             let glyph = leading_glyph(*row, CONTROL_INSET, GLYPH);
             ui::icons::draw_icon(
                 scene,
@@ -339,7 +349,6 @@ impl QuickSettingsVpnPane {
             Toggle::paint(
                 scene,
                 transform,
-                text,
                 theme,
                 &ToggleFace::new(toggle, profile.active).hovered(hovered),
             );
@@ -380,87 +389,6 @@ impl QuickSettingsVpnPane {
                 Some(f64_to_f32_lossy(text_width)),
             );
         }
-    }
-
-    fn draw_profile_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        row: &VpnRowPaint<'_>,
-    ) {
-        let colors = &theme.tokens.colors;
-        // A discovery row is a shared control surface, not a selected tab.
-        paint_control(scene, transform, theme, row.rect, row.hovered, false);
-        if self.keyboard_focus == Some(Self::PROFILE_FOCUS_START.saturating_add(row.index)) {
-            Button::paint(
-                scene,
-                transform,
-                text,
-                theme,
-                &ButtonFace::new(row.rect, "")
-                    .ghost()
-                    .focused(true)
-                    .accessible_name(&row.profile.name),
-            );
-        }
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(
-                row.rect.x0 + 12.0,
-                row.rect.y0 + 16.0,
-                row.rect.x0 + 32.0,
-                row.rect.y0 + 36.0,
-            ),
-            ui::icons::Icon::Shield,
-            colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let toggle = Rect::new(
-            row.rect.x1 - 56.0,
-            row.rect.center().y - 12.0,
-            row.rect.x1 - 12.0,
-            row.rect.center().y + 12.0,
-        );
-        Toggle::paint(
-            scene,
-            transform,
-            theme,
-            &ToggleFace::new(toggle, row.profile.active).hovered(row.hovered),
-        );
-        let text_width = (toggle.x0 - 12.0 - (row.rect.x0 + 44.0)).max(1.0);
-        let name = text.elide_to_width(
-            &row.profile.name,
-            theme.tokens.typography.scale.sm,
-            f64_to_f32_lossy(text_width),
-        );
-        text.draw_text_weighted(
-            scene,
-            &name,
-            theme.tokens.typography.scale.sm,
-            colors.text_primary,
-            transform.pre_translate((row.rect.x0 + 44.0, row.rect.y0 + 9.0).into()),
-            None,
-            TextWeight::Medium,
-        );
-        text.draw_text(
-            scene,
-            if row.profile.active {
-                "Connected"
-            } else {
-                "Disconnected"
-            },
-            theme.tokens.typography.scale.xs,
-            if row.profile.active {
-                colors.accent[5]
-            } else {
-                colors.text_dim
-            },
-            transform.pre_translate((row.rect.x0 + 44.0, row.rect.y0 + 29.0).into()),
-            Some(f64_to_f32_lossy(text_width)),
-        );
     }
 }
 
