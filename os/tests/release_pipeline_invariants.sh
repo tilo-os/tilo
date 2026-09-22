@@ -100,6 +100,15 @@ else
 fi
 
 kernel_workflow="$workflows/build-kernel.yml"
+if grep -Fq -- '- name: Verify the signed RPM snapshot input' "$kernel_workflow" \
+   && grep -Fq 'cosign verify --key keys/cosign.pub "$RPMS_REF"' "$kernel_workflow" \
+   && grep -Fq './os/dev/derive-rpm-package-set.py --arch x86_64' "$kernel_workflow" \
+   && grep -Fq './os/dev/derive-rpm-package-set.py --arch aarch64' "$kernel_workflow" \
+   && grep -Fq '.buildDefinition.externalParameters.packageSetSha256ByArchitecture' "$kernel_workflow"; then
+  ok 'kernel compilation authenticates the exact multiarch RPM snapshot input'
+else
+  bad 'kernel compilation can start from an unauthenticated RPM snapshot input'
+fi
 if grep -Fq 'apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio zstd "$apt_qemu"' "$kernel_workflow" \
    && grep -Fq 'dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm zstd "$fedora_qemu"' "$kernel_workflow" \
    && grep -Fq 'export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"' "$repo/os/kernel/tests/test-rpm.sh" \
