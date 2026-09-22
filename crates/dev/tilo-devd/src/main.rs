@@ -28,6 +28,9 @@ enum Command {
         /// What the VM's base image was built with, for layer ABI checks.
         #[arg(long, default_value = "/usr/share/tilo-dev/base.json")]
         base: PathBuf,
+        /// `SELinux` domain of a greetd session; slot sessions must match it.
+        #[arg(long, default_value = tilo_devd::daemon::DEFAULT_DOMAIN)]
+        expect_domain: String,
         /// `record` performs no side effects; for protocol tests only.
         #[arg(long, value_enum, default_value_t = Backend::Systemd)]
         apply: Backend,
@@ -45,6 +48,7 @@ fn main() -> ExitCode {
         root,
         manifest,
         base,
+        expect_domain,
         apply,
     } = Cli::parse().command;
     let base = std::fs::read(&base)
@@ -62,7 +66,8 @@ fn main() -> ExitCode {
         Backend::Systemd => Box::new(SystemdApply::new(&root)),
         Backend::Record => Box::new(RecordingApply::default()),
     };
-    let mut daemon = Daemon::new(&root, backend, manifest, base);
+    let mut daemon =
+        Daemon::new(&root, backend, manifest, base).with_expected_domain(expect_domain);
     match server::serve(
         &mut daemon,
         std::io::stdin().lock(),

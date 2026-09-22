@@ -517,6 +517,10 @@ pub struct SlotInfo {
     /// `systemctl is-active` of the session unit (`vm` reports `n/a`).
     pub session: String,
     pub seat: Option<String>,
+    /// How the running session differs from a greetd session (capabilities,
+    /// `SELinux` domain); `None` when it matches or is not running.
+    #[serde(default)]
+    pub parity: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
