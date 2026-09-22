@@ -493,10 +493,16 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
         crate::framework_history::target(&a, record_a, "A again".into()).unwrap(),
     ));
     wait(&mut driver, "history-files-result");
+    use std::os::unix::fs::MetadataExt;
+    let before_retry = std::fs::metadata(&a).unwrap();
+    let before_retry_ctime = (before_retry.ctime(), before_retry.ctime_nsec());
     driver.click_named("history-files-retry").unwrap();
-    wait(
-        &mut driver,
-        "Restore is pending. Check result or retry the same intent",
+    assert!(
+        driver.wait_until(std::time::Duration::from_secs(5), |_| {
+            let metadata = std::fs::metadata(&a).unwrap();
+            (metadata.ctime(), metadata.ctime_nsec()) != before_retry_ctime
+        }),
+        "retry did not rewrite the checked restore request",
     );
     let retry: CheckedHistoryRequestV1 = serde_json::from_slice(
         &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
