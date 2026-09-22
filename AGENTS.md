@@ -88,6 +88,19 @@ see [focused native tests](DEVELOPMENT.md#fast-checks-before-assembly).
 Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration
 targets, which is how test files have silently stopped building for days at a time.
 
+Before pushing:
+
+1. Stage only the intended paths, then run `.githooks/pre-commit`; it checks changed-file
+   formatting, exact staged Rust blobs for unexplained `allow`s, repository contracts and secrets.
+2. Run the narrow tests that prove the change, plus the relevant all-target compile check
+   (for shell work, `cargo check -p shell --tests`).
+3. Commit the candidate, then inspect the affected plan with
+   `python3 tools/ci/affected_packages.py --base origin/main --shards 2`; unexpected full-workspace
+   selection is a bug to understand before pushing.
+4. Push a task branch and use a PR. Do not probe `main` with a direct push. After pushing, let
+   the Codex CI hook report completion; inspect a failure once with
+   `fgj actions run view <run> --log-failed` and rerun only the failed job when it is transient.
+
 Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `tester` /
 `tilo`.
 
@@ -245,7 +258,7 @@ provenance checks, but require no review. Follow `DEVELOPMENT.md` and the
 controller's scope decision. Explicitly authorized emergency CI/infra fixes may
 be integrated directly.
 
-Keep check/lint results for every main commit. Affected qOS/Linux apps package
+Keep check/lint results for every main commit. Affected Tilo/Linux apps package
 after relevant main changes; unchanged collection members are reused. Full OS
 and desktop distribution builds remain explicit or scheduled; do not restore
 broad per-push full builds to obtain a development artifact. Use the existing workflow's

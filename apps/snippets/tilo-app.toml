@@ -6,7 +6,7 @@
 
 
 [package]
-id       = "dev.tilo.snippets"
+id       = "so.tilo.snippets"
 name     = "Snippets"
 category = "Development"
 version  = "0.1.0"

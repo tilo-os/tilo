@@ -1125,7 +1125,7 @@ mod tests {
 
     #[test]
     fn link_becomes_mark() {
-        let snap = import(r#"<p>See <a href="https://tilo.dev/">the docs</a> now</p>"#);
+        let snap = import(r#"<p>See <a href="https://tilo.so/">the docs</a> now</p>"#);
         let p = &snap.blocks[0];
         assert_eq!(p.text, "See the docs now");
         let link = p
@@ -1135,7 +1135,7 @@ mod tests {
             .expect("link mark");
         assert_eq!(
             link.value,
-            crate::document::MarkValue::Str("https://tilo.dev/".into())
+            crate::document::MarkValue::Str("https://tilo.so/".into())
         );
         assert_eq!(p.text.get(link.start..link.end), Some("the docs"));
     }

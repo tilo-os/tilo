@@ -108,7 +108,7 @@ for m in "${manifests[@]}"; do
 done
 [ "$no_bin" = 1 ] || ok "every manifest entrypoint names a binary its crate builds"
 
-# Thin qpkg binaries must all opt into the same shared-runtime edge. Merely
+# Thin tapp binaries must all opt into the same shared-runtime edge. Merely
 # building runtime-dylib is not enough: one forgotten app silently returns to a
 # 20–30 MB static archive, and building apps separately creates incompatible
 # Rust crate hashes even when every individual link succeeds.
@@ -138,21 +138,21 @@ else
   bad "thin app packaging can still sign a runtime/app pair with incompatible Rust crate hashes"
 fi
 
-if grep -q '^POLICY_MAX_QPKG_BYTES=5242880$' "$PACK" \
-   && grep -q 'MAX_QPKG_BYTES cannot exceed the 5 MiB application policy' "$PACK" \
-   && ! grep -q 'RECOVERY_MAX_QPKG_BYTES' "$PACK"; then
+if grep -q '^POLICY_MAX_TAPP_BYTES=5242880$' "$PACK" \
+   && grep -q 'MAX_TAPP_BYTES cannot exceed the 5 MiB application policy' "$PACK" \
+   && ! grep -q 'RECOVERY_MAX_TAPP_BYTES' "$PACK"; then
   ok "pack-apps enforces the canonical 5 MiB ceiling without app exceptions"
 else
-  bad "pack-apps does not enforce the canonical 5 MiB qpkg ceiling uniformly"
+  bad "pack-apps does not enforce the canonical 5 MiB tapp ceiling uniformly"
 fi
 
-weakening_output=$(MAX_QPKG_BYTES=5242881 "$PACK" 2>&1)
+weakening_output=$(MAX_TAPP_BYTES=5242881 "$PACK" 2>&1)
 weakening_status=$?
 if [ "$weakening_status" -ne 0 ] \
    && grep -q 'cannot exceed the 5 MiB application policy' <<<"$weakening_output"; then
   ok "pack-apps refuses an environment override that weakens the size policy"
 else
-  bad "MAX_QPKG_BYTES can weaken the canonical application size policy"
+  bad "MAX_TAPP_BYTES can weaken the canonical application size policy"
 fi
 
 if grep -q -- '--include /out/libruntime_dylib.so' "$CONTAINERFILE" \

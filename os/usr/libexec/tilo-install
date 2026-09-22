@@ -87,6 +87,7 @@ DISK_ENCRYPT="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
 GUIDED_PARTITION="${TILO_GUIDED_PARTITION:-/usr/libexec/tilo-guided-partition}"
 EFI_ARTIFACTS="${TILO_INSTALL_EFI_ARTIFACTS:-/usr/libexec/tilo-install-efi-artifacts}"
 BOOT_MENU="${TILO_INSTALL_BOOT_MENU:-/usr/libexec/tilo-install-boot-menu}"
+LOCALE_CATALOG=/usr/share/tilo/installer-locales.txt
 
 # Alongside installs share a firmware-visible FAT ESP with Tilo's retained,
 # staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
@@ -418,6 +419,9 @@ fi
 case "$LOCALE_VAL" in
   *[!A-Za-z0-9_.@-]*) die "invalid --locale '$LOCALE_VAL'" ;;
 esac
+[ -f "$LOCALE_CATALOG" ] || die "installer locale catalog is missing"
+grep -Fxq -- "$LOCALE_VAL" "$LOCALE_CATALOG" \
+  || die "unsupported --locale '$LOCALE_VAL'"
 
 # Validate timezone shape if provided (defends the symlink target below).
 if [ -n "$TIMEZONE_VAL" ]; then

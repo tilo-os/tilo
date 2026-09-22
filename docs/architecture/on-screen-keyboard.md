@@ -23,11 +23,11 @@ the compositor/session group, and the connecting process must both be in that
 group and have the launcher as an ancestor in `/proc`. A same-user sibling
 cannot obtain authority by discovering the socket or joining/spoofing a group;
 the path name is not treated as a secret capability. The compositor launches
-the installed, signed `dev.tilo.osk` service through the ordinary Tilo sandbox
+the installed, signed `so.tilo.osk` service through the ordinary Tilo sandbox
 launcher and binds that socket as its Wayland display.
 
 An app-id is display metadata, not authentication. Tilo additionally requires
-the exact `dev.tilo.osk` app-id before promoting its toplevel into the OSK
+the exact `so.tilo.osk` app-id before promoting its toplevel into the OSK
 overlay, but app-id alone never reveals an input global. A public-display
 client which copies the id remains an ordinary tiled application.
 

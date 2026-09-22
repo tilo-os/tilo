@@ -38,7 +38,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.diffmerge", diffmerge::app_root)
+        &LaunchSpec::new("so.tilo.diffmerge", diffmerge::app_root)
             .shot_root(shot_root)
             .scenarios(&["empty", "diff", "merge", "error", "status"])
             .configure_app(|app| diffmerge::actions::register(app.action_registry_mut())),
