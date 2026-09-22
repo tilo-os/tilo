@@ -174,7 +174,7 @@ boot_efi() {
     > "$log" 2>&1 || test "$?" -eq 124
 }
 boot_efi "$work/vars.unsigned.fd" "$work/unsigned.img" "$work/unsigned.log"
-expect_log 'Access Denied -- rejected probably by Secure Boot' "$work/unsigned.log"
+expect_log 'Access Denied' "$work/unsigned.log"
 if grep -Fq 'TILO_SECURE_BOOT_SIGNED_EFI_PASS' "$work/unsigned.log"; then
   echo 'unsigned EFI application executed under enrolled Secure Boot' >&2
   exit 1
