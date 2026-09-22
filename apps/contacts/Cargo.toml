@@ -64,7 +64,7 @@ tempfile.workspace = true
 # Schema-validate the app manifest (`tilo-app.toml`) in a test so the vCard
 # file-type association it declares is checked against the packaging schema.
 # Already resolved in the workspace lockfile.
-pkg = { path = "../../crates/packaging/pkg" }
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 
 [[test]]
 name = "it"

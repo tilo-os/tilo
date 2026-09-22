@@ -1,5 +1,5 @@
 //! tilo-install — the user-facing CLI to install, run, and manage Tilo
-//! packages (.qpkg) locally, verifying the package signature and trust
+//! packages (.tapp) locally, verifying the package signature and trust
 //! chain before installing.
 
 #![cfg_attr(
@@ -22,13 +22,13 @@ use std::process::Command;
 
 use clap::{Args, Parser, Subcommand};
 use install::shim;
-use pkg::blobs::BlobStore;
-use pkg::trust::{
+use serde::{Deserialize, Serialize};
+use tilo_app_package::blobs::BlobStore;
+use tilo_app_package::trust::{
     AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
     default_revoked_keys_path, default_trusted_attestors_path,
 };
-use pkg::{MemoryBlobStore, PackageId, Verification, unpack, verify_with_trust};
-use serde::{Deserialize, Serialize};
+use tilo_app_package::{MemoryBlobStore, PackageId, Verification, unpack, verify_with_trust};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -43,10 +43,10 @@ struct Cli {
 /// Trust-related flags shared by `install` and `run`.
 #[derive(Debug, Args, Clone, Default)]
 struct TrustFlags {
-    /// Require the parsed qpkg package-id/root to equal this 64-character hex hash.
+    /// Require the parsed tapp package-id/root to equal this 64-character hex hash.
     #[arg(long)]
     require_package_root: Option<String>,
-    /// Require the qpkg's embedded publisher to equal this 64-character hex key.
+    /// Require the tapp's embedded publisher to equal this 64-character hex key.
     #[arg(long)]
     require_publisher: Option<String>,
     /// Refuse to proceed unless signed by this trusted attestor id.
@@ -61,11 +61,11 @@ struct TrustFlags {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
-    /// Install a .qpkg into the local store. Verifies signature first.
+    /// Install a .tapp into the local store. Verifies signature first.
     #[command(alias = "add")]
     Install {
-        /// Path to the .qpkg file.
-        qpkg: PathBuf,
+        /// Path to the .tapp file.
+        tapp: PathBuf,
         /// Mark the package pinned (exempt from future GC eviction).
         #[arg(long)]
         pinned: bool,
@@ -85,7 +85,7 @@ enum Cmd {
     Update {
         /// Package id (as printed by `tilo-install list`); omit to update all.
         pkg_id: Option<String>,
-        /// Update from a local .qpkg instead of a configured registry
+        /// Update from a local .tapp instead of a configured registry
         /// (requires an explicit package id).
         #[arg(long)]
         from: Option<PathBuf>,
@@ -288,7 +288,7 @@ enum Error {
     NoDataDir,
     #[error("config-dir resolution failed (XDG_CONFIG_HOME / HOME unset?)")]
     NoConfigDir,
-    #[error("qpkg verification failed: {0}")]
+    #[error("tapp verification failed: {0}")]
     Verify(String),
     #[error("publisher key is revoked ({reason})")]
     Revoked { reason: String },
@@ -310,7 +310,7 @@ enum Error {
         "policy refused: package root {found} does not match --require-package-root {required}"
     )]
     PackageRootMismatch { required: String, found: String },
-    #[error("qpkg parse: {0}")]
+    #[error("tapp parse: {0}")]
     Parse(String),
     #[error("refusing to install: {0}")]
     Policy(String),
@@ -361,7 +361,7 @@ enum Error {
         installed: String,
         candidate: String,
     },
-    #[error("the .qpkg is for {found}, but {wanted} was asked for")]
+    #[error("the .tapp is for {found}, but {wanted} was asked for")]
     WrongPackage { wanted: String, found: String },
     #[error(
         "local update for {package} changed publisher from ed25519:{installed} to ed25519:{candidate}; \
@@ -391,7 +391,7 @@ struct RegistryEntry {
     id: String,
     /// Semver from manifest.
     version: String,
-    /// Content-addressed root hash (hex, no `qpkg:` prefix).
+    /// Content-addressed root hash (hex, no `tapp:` prefix).
     package_id_hex: String,
     /// Absolute path to the payload directory.
     payload_root: PathBuf,
@@ -546,7 +546,7 @@ fn verify_and_gate(
     pkg_id: PackageId,
     store: &MemoryBlobStore,
     trust: &TrustFlags,
-) -> Result<(pkg::Manifest, String, String), Error> {
+) -> Result<(tilo_app_package::Manifest, String, String), Error> {
     let attestors = load_trusted_attestors()?;
     let revocation = load_revocation_list()?;
     let required_publishers = validate_registry_constraints(pkg_id, store, trust)?;
@@ -619,14 +619,14 @@ fn verify_and_gate(
     }
 }
 
-/// Everything a verified `.qpkg` yields, before any file is written.
+/// Everything a verified `.tapp` yields, before any file is written.
 /// Reading/verifying is kept separate from placing files so `--dry-run`
 /// is truthful and `update` can decide on a swap before touching a
 /// working install.
 struct Ingested {
     pkg_id: PackageId,
     store: MemoryBlobStore,
-    manifest: pkg::Manifest,
+    manifest: tilo_app_package::Manifest,
     publisher_key_hex: String,
     attested_by: String,
     /// The three blobs the publisher's signature covers, taken from the
@@ -649,43 +649,46 @@ impl Ingested {
     }
 }
 
-/// Read, verify and gate a `.qpkg`'s bytes, before any file is written.
+/// Read, verify and gate a `.tapp`'s bytes, before any file is written.
 ///
 /// Signature verification is not optional and no flag turns it off;
 /// `--allow-self-signed` decides *whose* signature is acceptable, never
 /// whether one is required.
 fn ingest(bytes: &[u8], trust: &TrustFlags) -> Result<Ingested, Error> {
-    let app_registry::qpkg::QpkgMeta {
+    let app_registry::tapp::TappMeta {
         package_id: pkg_id,
         store,
         ..
-    } = app_registry::qpkg::load(bytes).map_err(|error| Error::Parse(error.to_string()))?;
+    } = app_registry::tapp::load(bytes).map_err(|error| Error::Parse(error.to_string()))?;
     let (manifest, publisher_key_hex, attested_by) = verify_and_gate(pkg_id, &store, trust)?;
 
-    if !pkg::qpkg_size_allowed(
+    if !tilo_app_package::tapp_size_allowed(
         manifest.package.kind,
         u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     ) {
         return Err(Error::Policy(format!(
-            "application .qpkg is {} bytes; the {}-byte limit keeps apps instant and moves shared dependencies into runtime bundles",
+            "application .tapp is {} bytes; the {}-byte limit keeps apps instant and moves shared dependencies into runtime bundles",
             bytes.len(),
-            pkg::MAX_APP_QPKG_BYTES
+            tilo_app_package::MAX_APP_TAPP_BYTES
         )));
     }
 
     // A signature says who wrote the manifest, not that its contents are
     // reasonable — a package naming its own filesystem paths is refused
     // here regardless of signature.
-    pkg::validate_manifest(&manifest).map_err(|e| Error::Policy(e.to_string()))?;
+    tilo_app_package::validate_manifest(&manifest).map_err(|e| Error::Policy(e.to_string()))?;
 
-    let blob = |hash: &pkg::BlobHash, what: &str| -> Result<Vec<u8>, Error> {
+    let blob = |hash: &tilo_app_package::BlobHash, what: &str| -> Result<Vec<u8>, Error> {
         store
             .get(hash)
             .map_err(|e| Error::Parse(e.to_string()))?
-            .ok_or_else(|| Error::Parse(format!(".qpkg is missing its {what}")))
+            .ok_or_else(|| Error::Parse(format!(".tapp is missing its {what}")))
     };
-    let signed_root = blob(&pkg::BlobHash(*pkg_id.as_bytes()), "signed root")?;
-    let root = pkg::SignedRoot::decode(&signed_root)
+    let signed_root = blob(
+        &tilo_app_package::BlobHash(*pkg_id.as_bytes()),
+        "signed root",
+    )?;
+    let root = tilo_app_package::SignedRoot::decode(&signed_root)
         .map_err(|e| Error::Parse(format!("signed root: {e}")))?;
     let manifest_bytes = blob(&root.manifest_hash, "manifest")?;
     let collection_bytes = blob(&root.payload_root_hash, "payload collection")?;
@@ -704,7 +707,7 @@ fn ingest(bytes: &[u8], trust: &TrustFlags) -> Result<Ingested, Error> {
 
 /// Unpack a verified package into `dest` (replacing what's there) and
 /// write its manifest alongside, so the launcher can read it without
-/// reopening the .qpkg.
+/// reopening the .tapp.
 fn place_payload(ingested: &Ingested, dest: &Path) -> Result<PathBuf, Error> {
     if dest.exists() {
         fs::remove_dir_all(dest)?;
@@ -782,7 +785,10 @@ fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Erro
 
 /// Write the PATH shims a [cli] package publishes; returns the command
 /// names recorded on the registry entry.
-fn write_cli_shims(manifest: &pkg::Manifest, id_field: &str) -> Result<Vec<String>, Error> {
+fn write_cli_shims(
+    manifest: &tilo_app_package::Manifest,
+    id_field: &str,
+) -> Result<Vec<String>, Error> {
     let cli_commands: Vec<String> = manifest
         .cli
         .as_ref()
@@ -824,7 +830,7 @@ fn write_cli_shims(manifest: &pkg::Manifest, id_field: &str) -> Result<Vec<Strin
 }
 
 fn install(
-    qpkg: &Path,
+    tapp: &Path,
     pinned: bool,
     force: bool,
     trust: &TrustFlags,
@@ -833,7 +839,7 @@ fn install(
 ) -> Result<(), Error> {
     // 1. Read + verify, before the registry check, so a --dry-run plan
     //    describes a package we've actually seen and checked.
-    let bytes = fs::read(qpkg)?;
+    let bytes = fs::read(tapp)?;
     let ingested = ingest(&bytes, trust)?;
     let id_field = ingested.id().to_string();
     let version_field = ingested.version().to_string();
@@ -847,7 +853,7 @@ fn install(
 
     let dest = payloads_root()?.join(&id_field);
     if dry_run {
-        print_install_plan(&ingested, existing.as_ref(), &dest, pinned, qpkg)?;
+        print_install_plan(&ingested, existing.as_ref(), &dest, pinned, tapp)?;
         return Ok(());
     }
 
@@ -885,7 +891,7 @@ fn install(
         attested_by: ingested.attested_by.clone(),
         cli_commands,
         runtime: ingested.runtime_ref().unwrap_or_default().to_string(),
-        source: qpkg.display().to_string(),
+        source: tapp.display().to_string(),
     });
     save_registry(&reg)?;
 
@@ -982,7 +988,7 @@ fn update(
     } else {
         if from.is_some() {
             return Err(Error::Policy(
-                "--from names one .qpkg, so it needs one package id".into(),
+                "--from names one .tapp, so it needs one package id".into(),
             ));
         }
         reg.entry
@@ -1648,7 +1654,7 @@ fn compare_versions(installed: &str, candidate: &str) -> Option<std::cmp::Orderi
 }
 
 /// Resolve `app_id` through the configured registries; returns the
-/// verified `.qpkg` bytes plus the registry that served them.
+/// verified `.tapp` bytes plus the registry that served them.
 ///
 /// This verifies the registry protocol (signed index, signed entry,
 /// blake3 of the blob) — separately from `ingest`'s later check of the
@@ -2101,7 +2107,7 @@ fn print_path() -> Result<(), Error> {
     println!("{}", bin_dir.display());
     println!();
     println!("# Prepend the above to your shell's PATH so CLI commands");
-    println!("# installed via `tilo-install install <pkg.qpkg>` are picked up.");
+    println!("# installed via `tilo-install install <pkg.tapp>` are picked up.");
     println!("#");
     println!("# bash / zsh (~/.bashrc, ~/.zshrc):");
     println!("export PATH=\"{}:$PATH\"", bin_dir.display());
@@ -2120,7 +2126,7 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))?;
     println!("id            : {}", entry.id);
     println!("version       : {}", entry.version);
-    println!("package-id    : qpkg:{}", entry.package_id_hex);
+    println!("package-id    : tapp:{}", entry.package_id_hex);
     println!("publisher     : ed25519:{}", entry.publisher_key_hex);
     println!("payload-root  : {}", entry.payload_root.display());
     println!("manifest      : {}", entry.manifest_path.display());
@@ -2377,13 +2383,13 @@ fn main() {
     let cli = Cli::parse();
     let result = recover_interrupted_updates().and_then(|()| match cli.cmd {
         Cmd::Install {
-            qpkg,
+            tapp,
             pinned,
             force,
             trust,
             runtime,
             dry_run,
-        } => install(&qpkg, pinned, force, &trust, &runtime, dry_run),
+        } => install(&tapp, pinned, force, &trust, &runtime, dry_run),
         Cmd::Update {
             pkg_id,
             from,
@@ -2469,10 +2475,10 @@ fn main() {
 /// `PackageId` and decodes the 32-byte `publisher_identity`.
 fn extract_publisher_key(id: &PackageId, store: &MemoryBlobStore) -> Option<[u8; 32]> {
     let blob = store
-        .get(&pkg::blobs::BlobHash(*id.as_bytes()))
+        .get(&tilo_app_package::blobs::BlobHash(*id.as_bytes()))
         .ok()
         .flatten()?;
-    let signed = pkg::signed::SignedRoot::decode(&blob).ok()?;
+    let signed = tilo_app_package::signed::SignedRoot::decode(&blob).ok()?;
     Some(signed.publisher_identity)
 }
 
@@ -2536,14 +2542,14 @@ mod installer_tests {
         let payload_root = root.join("payloads");
         let integrity_root = root.join("data/integrity");
         let intent = UpdateIntent {
-            package_id: "dev.tilo.Test".to_string(),
+            package_id: "so.tilo.Test".to_string(),
             owner_pid: 0,
             new_package_id_hex: "ab".repeat(32),
-            payload_live: payload_root.join("dev.tilo.Test"),
-            payload_staging: payload_root.join(".staging-dev.tilo.Test-1"),
-            payload_retired: payload_root.join(".retiring-dev.tilo.Test-1"),
-            integrity_live: integrity_root.join("dev.tilo.Test"),
-            integrity_retired: integrity_root.join(".retiring-dev.tilo.Test-1"),
+            payload_live: payload_root.join("so.tilo.Test"),
+            payload_staging: payload_root.join(".staging-so.tilo.Test-1"),
+            payload_retired: payload_root.join(".retiring-so.tilo.Test-1"),
+            integrity_live: integrity_root.join("so.tilo.Test"),
+            integrity_retired: integrity_root.join(".retiring-so.tilo.Test-1"),
             old_commands: Vec::new(),
             new_commands: Vec::new(),
         };
@@ -2552,13 +2558,13 @@ mod installer_tests {
 
     #[test]
     fn local_install_uses_the_shared_thin_app_limit() {
-        assert!(pkg::qpkg_size_allowed(
-            pkg::Kind::App,
-            pkg::MAX_APP_QPKG_BYTES
+        assert!(tilo_app_package::tapp_size_allowed(
+            tilo_app_package::Kind::App,
+            tilo_app_package::MAX_APP_TAPP_BYTES
         ));
-        assert!(!pkg::qpkg_size_allowed(
-            pkg::Kind::App,
-            pkg::MAX_APP_QPKG_BYTES + 1
+        assert!(!tilo_app_package::tapp_size_allowed(
+            tilo_app_package::Kind::App,
+            tilo_app_package::MAX_APP_TAPP_BYTES + 1
         ));
     }
 

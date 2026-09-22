@@ -25,11 +25,11 @@ separate build graph. Original thin LTO/codegen settings and normal remote
 sccache configuration remain required. Dependency compilation/linking may still
 be needed; a compiler cache is not proof of zero rebuild work.
 
-After release binaries, the unchanged frozen recipe builds every qpkg thin app
+After release binaries, the unchanged frozen recipe builds every tapp thin app
 and libruntime_dylib together in one graph, verifies ELF hardening, constructs
 the runtime bundle, and installs the app collection. Source4583 requires these
 phases for a complete payload. It is incorrect to package the saved standalone
-browser/settings ELF as a substitute for its thin qpkg target.
+browser/settings ELF as a substitute for its thin tapp target.
 
 ## Producer contract
 

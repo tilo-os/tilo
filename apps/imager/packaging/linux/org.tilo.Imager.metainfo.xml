@@ -5,7 +5,7 @@
   <summary>Create and verify customised Tilo installation media</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-only</project_license>
-  <developer id="dev.tilo">
+  <developer id="so.tilo">
     <name>Tilo Project</name>
   </developer>
   <description>
@@ -16,7 +16,7 @@
     </p>
   </description>
   <launchable type="desktop-id">org.tilo.Imager.desktop</launchable>
-  <url type="homepage">https://code.sandbox.example/qos/releases</url>
+  <url type="homepage">https://github.com/tilo-os/releases</url>
   <provides>
     <binary>tilo-imager</binary>
   </provides>

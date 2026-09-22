@@ -1,4 +1,4 @@
-//! Install a real signed ~1 MiB qpkg repeatedly and report wall-clock samples.
+//! Install a real signed ~1 MiB tapp repeatedly and report wall-clock samples.
 //!
 //! Run with:
 //!
@@ -17,7 +17,7 @@
 #[path = "../tests/common/mod.rs"]
 mod common;
 
-use app_host::install::install_qpkg;
+use app_host::install::install_tapp;
 use app_host::registry::Pinning;
 use app_host::store::Store;
 
@@ -26,15 +26,15 @@ fn main() {
 
     // Build once: this benchmark measures installation rather than package
     // construction or signing.
-    let (bytes, _id) = common::build_qpkg(1024);
-    println!("qpkg size: {} bytes", bytes.len());
+    let (bytes, _id) = common::build_tapp(1024);
+    println!("tapp size: {} bytes", bytes.len());
 
     let mut samples = Vec::with_capacity(ITERATIONS as usize);
     for _ in 0..ITERATIONS {
         let dir = tempfile::tempdir().expect("create benchmark store");
         let store = Store::open(dir.path()).expect("open benchmark store");
         let started = std::time::Instant::now();
-        install_qpkg(&store, &bytes, Pinning::Tried).expect("install benchmark package");
+        install_tapp(&store, &bytes, Pinning::Tried).expect("install benchmark package");
         samples.push(started.elapsed());
     }
 

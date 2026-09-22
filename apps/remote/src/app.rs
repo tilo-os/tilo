@@ -2298,7 +2298,7 @@ struct StatusActionsSpec<'a> {
 // Widget impl
 // ===========================================================================
 
-impl Widget for RemoteApp {
+impl Collaborative for RemoteApp {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         std::mem::take(&mut self.collab_outbox)
     }
@@ -2345,6 +2345,12 @@ impl Widget for RemoteApp {
             }
         }
         self.dirty = true;
+    }
+}
+
+impl Widget for RemoteApp {
+    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+        Some(self)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {

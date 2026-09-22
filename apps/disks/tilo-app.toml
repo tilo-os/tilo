@@ -10,7 +10,7 @@
 
 
 [package]
-id       = "dev.tilo.disks"
+id       = "so.tilo.disks"
 name     = "Disks"
 category = "System"
 version  = "0.1.0"

@@ -12,15 +12,15 @@ the manifest's `[publisher]` block and into the signed root:
 ```toml
 [publisher]
 identity  = "ed25519:c4c627b57a518bc318c2854662b44f741345f6d55a45eb059d3b384048789e39"
-signature = ""                    # empty at author time; filled by tilo-pkg pack / sign
+signature = ""                    # empty at author time; filled by tilo-app-package pack / sign
 ```
 
-The 32-byte hex is the raw public key. `tilo-pkg pack` without
+The 32-byte hex is the raw public key. `tilo-app-package pack` without
 `--identity` **generates a fresh keypair each pack** and overwrites the
 manifest's `identity` field with the fresh public key — that is the
 "self-signed" flow every walkthrough here demonstrates.
 
-For repeatable publishing, use `tilo-pkg pack --identity <file.json>`.
+For repeatable publishing, use `tilo-app-package pack --identity <file.json>`.
 The identity file is:
 
 ```json
@@ -29,14 +29,14 @@ The identity file is:
 
 Store it out-of-band; treat it as a signing secret. The corresponding
 public key comes out of Ed25519's key derivation and lands in the
-`.qpkg` on every pack.
+`.tapp` on every pack.
 
 ## Threshold signing
 
 Under the hood, `SigningIdentity` wraps EITHER a plain `SigningKey` or a
 1-of-1 `ThresholdIdentity`. FROST-based threshold Ed25519 signatures
 verify identically to plain Ed25519 signatures at the wire, so a
-k-of-n aggregated signature just IS the signature in the `.qpkg`. The
+k-of-n aggregated signature just IS the signature in the `.tapp`. The
 aggregation flow itself is driven outside the `pkg` crate; call
 `pack_with_signature` with the aggregated bytes if you have your own
 signing service.
@@ -51,7 +51,7 @@ manifest_hash[32] || payload_root_hash[32] || publisher_identity[32]
 
 96 bytes → Ed25519 signature → 64-byte signature. The result plus the
 three inputs is the 173-byte `signed-root` blob. Its BLAKE3 hash IS the
-`PackageId` — the `qpkg:<hex>` URL you see in `tilo-pkg inspect`.
+`PackageId` — the `tapp:<hex>` URL you see in `tilo-app-package inspect`.
 
 Consequences:
 
@@ -122,11 +122,11 @@ signature = ""                        # 64-byte Ed25519 signature over the preim
 The attestor's signature covers a domain-separated preimage:
 
 ```text
-b"tilo-pkg-attest-v1\0" || payload_root_hash[32] || publisher_pubkey[32]
+b"tilo-app-package-attest-v1\0" || payload_root_hash[32] || publisher_pubkey[32]
 ```
 
 (82 bytes total.) `payload_root_hash` is the BLAKE3 of the payload
-Collection blob — the same one you can pull out of `tilo-pkg inspect`.
+Collection blob — the same one you can pull out of `tilo-app-package inspect`.
 `publisher_pubkey` is the raw 32 bytes from `[publisher].identity`.
 
 Note: the signature is NOT over the `PackageId`. The `PackageId`
@@ -147,9 +147,9 @@ By default `tilo-install install` warns on self-signed packages and
 proceeds:
 
 ```
-$ tilo-install install /tmp/tilo-hello-demo/tilo-hello.qpkg
+$ tilo-install install /tmp/tilo-hello-demo/tilo-hello.tapp
 tilo-install: WARN — package self-signed by ed25519:c4c627b57… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
-installed: dev.tilo.hello 0.1.0
+installed: so.tilo.hello 0.1.0
 ```
 
 Two flags tighten this:
@@ -163,19 +163,19 @@ Two flags tighten this:
 Combined behaviour, verified end-to-end:
 
 ```
-$ tilo-install install --require-attestor "test-attestor/2026" /tmp/tilo-hello-demo/tilo-hello.qpkg --force
+$ tilo-install install --require-attestor "test-attestor/2026" /tmp/tilo-hello-demo/tilo-hello.tapp --force
 tilo-install: policy refused: --require-attestor "test-attestor/2026" and package is self-signed (use --allow-self-signed to override)
 
-$ tilo-install install --require-attestor "test-attestor/2026" --allow-self-signed /tmp/tilo-hello-demo/tilo-hello.qpkg --force
+$ tilo-install install --require-attestor "test-attestor/2026" --allow-self-signed /tmp/tilo-hello-demo/tilo-hello.tapp --force
 tilo-install: --require-attestor "test-attestor/2026" unmatched; --allow-self-signed permits self-signed publisher ed25519:c4c627b57…
-installed: dev.tilo.hello 0.1.0
+installed: so.tilo.hello 0.1.0
 ```
 
 Use in a system-management context:
 
 ```bash
 # strict policy for a fleet: every install must be signed by our attestor
-tilo-install install --require-attestor "acme-corp/prod" acme-app.qpkg
+tilo-install install --require-attestor "acme-corp/prod" acme-app.tapp
 ```
 
 Or, in a locked-down environment, drop the `--allow-self-signed`
@@ -225,13 +225,13 @@ first-run script, Ansible, systemd-tmpfiles, etc. There is no
 mutable-network component in the model today; every machine reads its
 own on-disk trust config.
 
-## `tilo-pkg verify` and trust
+## `tilo-app-package verify` and trust
 
 Standalone verification (without touching the install-time registry):
 
 ```
-$ tilo-pkg verify /tmp/tilo-hello-demo/tilo-hello.qpkg
-ok: qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 verifies and publisher is trusted
+$ tilo-app-package verify /tmp/tilo-hello-demo/tilo-hello.tapp
+ok: tapp:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 verifies and publisher is trusted
 ```
 
 By default the embedded publisher key is auto-trusted (self-signed
@@ -239,8 +239,8 @@ convenience). Pass `--trusted-key <hex>` (repeatable) to demand a
 specific publisher:
 
 ```
-$ tilo-pkg verify --trusted-key <some-key> /tmp/tilo-hello-demo/tilo-hello.qpkg
-signature-ok-but-untrusted: qpkg:… (publisher ed25519:c4c627b5…)
+$ tilo-app-package verify --trusted-key <some-key> /tmp/tilo-hello-demo/tilo-hello.tapp
+signature-ok-but-untrusted: tapp:… (publisher ed25519:c4c627b5…)
 ```
 
 Exit code:
@@ -254,4 +254,4 @@ Use `verify --trusted-key` in CI pipelines that gate `tilo-install`
 without maintaining a persistent trust registry.
 
 Next: [`cross-target.md`](./cross-target.md) — shipping the same source
-to `.qpkg` AND Flatpak.
+to `.tapp` AND Flatpak.

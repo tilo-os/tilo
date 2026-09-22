@@ -3,7 +3,7 @@
 # needed by this GUI app and claims the vCard file types in [providers].
 
 [package]
-id       = "dev.tilo.contacts"
+id       = "so.tilo.contacts"
 name     = "Contacts"
 category = "Office"
 version = "0.1.0"
