@@ -533,7 +533,7 @@ integrity rests on the pin being real rather than aspirational: a pin that relia
 "just point it at whatever resolves today" away from becoming an unpinned build under deadline
 pressure, and the frozen RPM set would then be resolved against an unrecorded base.
 
-**Fix direction:** mirror the base into `code.sandbox.example/tilo/fedora-bootc` and pin against the
+**Fix direction:** mirror the base into `code.sandbox.example/qos/fedora-bootc` and pin against the
 mirror — the same shape `os/Containerfile.rpms` + `snapshot-rpms` already use for packages, since
 our registry collects nothing. Copy with the multi-arch index intact. Fixed on this branch: the
 `mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
@@ -709,7 +709,7 @@ Held by `os/tests/kernel_hardening_invariants.sh`.
 
 ## P2-6 — `insecureAcceptAnything` is the container policy default
 
-`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.sandbox.example/tilo/tilo`
+`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.sandbox.example/qos/tilo`
 only; every other image reference is unverified.
 
 ---

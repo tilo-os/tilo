@@ -1,19 +1,19 @@
 //! Wire types for the Tilo app registry.
 //!
-//! A registry advertises signed metadata for `.qpkg` packages —
+//! A registry advertises signed metadata for `.tapp` packages —
 //! `id`, `versions`, `publisher pubkey`, `name`, `description`,
 //! icon / source / homepage URLs, and a BLAKE3 root hash so
 //! downloaders can verify the bytes match what the registry
 //! signed for. Multiple registries can coexist: Tilo ships one
 //! hosted instance whose source is public and any user or org
-//! can host their own. The registry client is itself a `.qpkg`
+//! can host their own. The registry client is itself a `.tapp`
 //! app distributed via any registry.
 //!
 //! ## Trust model
 //!
 //! Entries in a registry are signed by the *publisher* using
 //! their Ed25519 identity — the same key that appears on the
-//! `.qpkg`'s `pkg::Manifest.publisher.identity` field. The
+//! `.tapp`'s `tilo_app_package::Manifest.publisher.identity` field. The
 //! registry itself is signed by its *owner*: clients pin
 //! registry-owner pubkeys, then verify each entry against the
 //! set of publisher pubkeys the owner has allowlisted.
@@ -32,7 +32,7 @@
 //! `blake3(b"tilo-registry-index-v1\0" || postcard(index_manifest))`.
 //!
 //! This mirrors the domain-separation pattern used by
-//! `crates/packaging/pkg::trust::attestation_preimage`.
+//! `crates/packaging/tilo-app-package::trust::attestation_preimage`.
 //!
 //! ## Why postcard?
 //!
@@ -68,8 +68,9 @@ pub mod verify;
 
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
 pub use entry::{
-    ENTRY_DOMAIN, INDEX_DOMAIN, RegistryEntry, RegistryTarget, RegistryVersion,
-    entry_signing_message, index_signing_message, sign_entry,
+    ENTRY_DOMAIN, EntryValidationError, INDEX_DOMAIN, LocalizedImages, LocalizedText,
+    RegistryEntry, RegistryImage, RegistryImageKind, RegistryTarget, RegistryVersion,
+    TILO_OS_PLATFORM, entry_signing_message, index_signing_message, sign_entry, valid_language_tag,
 };
 pub use handshake::{PROTOCOL_VERSION, RegistryHandshake};
 pub use moderation::{

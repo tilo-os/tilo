@@ -16,7 +16,7 @@ use ui::collaboration::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
 };
 
-const APP_ID: &str = "dev.tilo.file-explorer";
+const APP_ID: &str = "so.tilo.file-explorer";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_VISIBLE_HISTORY: usize = 32;
 

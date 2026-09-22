@@ -59,7 +59,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.api-tester", api_tester::app_root)
+        &LaunchSpec::new("so.tilo.api-tester", api_tester::app_root)
             .shot_root(shot_root)
             .allowed_flags(&["--rail-open", "--empty", "--error", "--focus-url"])
             .allowed_options(&["--form"])

@@ -128,7 +128,7 @@ Alternatives and failure modes:
 ## Permissions are Tilo's
 
 `perm trust-dir ~/src` mints a `collab_types::caps::CapOverride` —
-`Subject::App("dev.tilo.ush")`, `Scope::FsPath`, `Effect::Grant`, `Verb::Write` —
+`Subject::App("so.tilo.ush")`, `Scope::FsPath`, `Effect::Grant`, `Verb::Write` —
 and every question is `decide_capability`. That is the same record the
 compositor stores on a workspace, renders in its permissions panel and can
 revoke, and the same deny-biased function `tilo-launcher` and the FUSE mount

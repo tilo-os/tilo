@@ -903,7 +903,7 @@ impl MapsApp {
         if stage == "returned"
             && let Some(id) = self.active_navigation_request().map(|request| request.id)
         {
-            <Self as Widget>::on_floating_surface_host_message(
+            <Self as FloatingSurfaceProvider>::on_floating_surface_host_message(
                 self,
                 &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
             );
@@ -5048,7 +5048,129 @@ impl MapsApp {
 // ===========================================================================
 // Widget impl
 // ===========================================================================
+impl FloatingSurfaceProvider for MapsApp {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.pending_floating.take()
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _: &PresenceCtx,
+    ) {
+        if self.model.route.is_some()
+            && matches!(
+                self.navigation_placement.attachment(),
+                ui::floating_surface::Attachment::Desktop { .. }
+            )
+        {
+            self.draw_navigation_surface(scene, transform, text_renderer, theme);
+        }
+    }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {
+        let Some(id) = self.active_navigation_request().map(|request| request.id) else {
+            return Vec::new();
+        };
+        let returning_to_app = self.navigation_placement.is_return_pending();
+        if !returning_to_app
+            && !matches!(
+                self.navigation_placement.attachment(),
+                ui::floating_surface::Attachment::Desktop { .. }
+            )
+        {
+            return Vec::new();
+        }
+        vec![ui::floating_surface::FloatingSurfacePresentation {
+            id,
+            content_rect: self.navigation_rect(),
+            window_rect: self.navigation_rect().inflate(8.0, 8.0),
+            returning_to_app,
+        }]
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.active_navigation_request()
+            .map(|request| request.id)
+            .into_iter()
+            .collect()
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        self.floating_surface_bounds = bounds;
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &ui::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        let Some(id) = self.active_navigation_request().map(|request| request.id) else {
+            return;
+        };
+        if let ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+            id: request_id,
+            content_rect,
+            transfer_covered,
+            coordinate_offset,
+            ..
+        } = message
+            && request_id == &id
+            && let Ok(rect) = ui::floating_surface::protocol_rect(*content_rect)
+        {
+            self.navigation_placement.prepare_desktop_rect_with_offset(
+                rect,
+                vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
+            );
+            self.navigation_placement
+                .set_desktop_transfer_covered(*transfer_covered);
+            return;
+        }
+        if let ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+            id: request_id,
+            rect,
+        } = message
+            && request_id == &id
+            && ui::floating_surface::protocol_rect(*rect).is_ok()
+        {
+            self.navigation_placement.confirm_desktop_adoption();
+            return;
+        }
+        if matches!(
+            message,
+            ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request_id }
+                | ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: request_id }
+                if request_id == &id
+        ) {
+            let app = self.rect;
+            let desktop = self.desktop_floating_bounds();
+            self.navigation_placement.reattach_to_app(app, desktop);
+            return;
+        }
+        if matches!(
+            message,
+            ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id }
+                if request_id == &id
+        ) {
+            self.navigation_placement.confirm_app_adoption(self.rect);
+        }
+    }
+}
+
 impl Widget for MapsApp {
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
+
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "maps.locate",
@@ -5669,119 +5791,6 @@ impl Widget for MapsApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.pending_floating.take()
-    }
-
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _: &PresenceCtx,
-    ) {
-        if self.model.route.is_some()
-            && matches!(
-                self.navigation_placement.attachment(),
-                ui::floating_surface::Attachment::Desktop { .. }
-            )
-        {
-            self.draw_navigation_surface(scene, transform, text_renderer, theme);
-        }
-    }
-
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {
-        let Some(id) = self.active_navigation_request().map(|request| request.id) else {
-            return Vec::new();
-        };
-        let returning_to_app = self.navigation_placement.is_return_pending();
-        if !returning_to_app
-            && !matches!(
-                self.navigation_placement.attachment(),
-                ui::floating_surface::Attachment::Desktop { .. }
-            )
-        {
-            return Vec::new();
-        }
-        vec![ui::floating_surface::FloatingSurfacePresentation {
-            id,
-            content_rect: self.navigation_rect(),
-            window_rect: self.navigation_rect().inflate(8.0, 8.0),
-            returning_to_app,
-        }]
-    }
-
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.active_navigation_request()
-            .map(|request| request.id)
-            .into_iter()
-            .collect()
-    }
-
-    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
-        self.floating_surface_bounds = bounds;
-    }
-
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &ui::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        let Some(id) = self.active_navigation_request().map(|request| request.id) else {
-            return;
-        };
-        if let ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
-            id: request_id,
-            content_rect,
-            transfer_covered,
-            coordinate_offset,
-            ..
-        } = message
-            && request_id == &id
-            && let Ok(rect) = ui::floating_surface::protocol_rect(*content_rect)
-        {
-            self.navigation_placement.prepare_desktop_rect_with_offset(
-                rect,
-                vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
-            );
-            self.navigation_placement
-                .set_desktop_transfer_covered(*transfer_covered);
-            return;
-        }
-        if let ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
-            id: request_id,
-            rect,
-        } = message
-            && request_id == &id
-            && ui::floating_surface::protocol_rect(*rect).is_ok()
-        {
-            self.navigation_placement.confirm_desktop_adoption();
-            return;
-        }
-        if matches!(
-            message,
-            ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request_id }
-                | ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: request_id }
-                if request_id == &id
-        ) {
-            let app = self.rect;
-            let desktop = self.desktop_floating_bounds();
-            self.navigation_placement.reattach_to_app(app, desktop);
-            return;
-        }
-        if matches!(
-            message,
-            ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id }
-                if request_id == &id
-        ) {
-            self.navigation_placement.confirm_app_adoption(self.rect);
-        }
     }
 
     fn wants_pointer_capture(&self) -> bool {

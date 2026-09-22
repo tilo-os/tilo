@@ -4,7 +4,7 @@ use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, run_or_exit};
 use ui::persist::Autosave;
 use ui::{State, Theme, UiGraphEditor, UiGraphHandle, Widget};
 
-const APP_ID: &str = "dev.tilo.ui-builder";
+const APP_ID: &str = "so.tilo.ui-builder";
 
 fn main() {
     run_or_exit(

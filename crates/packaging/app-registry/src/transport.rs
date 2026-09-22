@@ -1,8 +1,8 @@
-//! Content transport for qpkg bytes — iroh-blobs, keyed by blake3.
+//! Content transport for tapp bytes — iroh-blobs, keyed by blake3.
 //!
 //! This is the same content-addressed transport the FUSE filesystem
-//! uses. A `.qpkg` is a single raw blob; its blake3 hash is both the
-//! registry-index `qpkg_hash` and the iroh-blobs key, so the shared
+//! uses. A `.tapp` is a single raw blob; its blake3 hash is both the
+//! registry-index `tapp_hash` and the iroh-blobs key, so the shared
 //! runtime bundle and every thin app blob are downloaded exactly once
 //! and deduped across all apps on the node.
 //!
@@ -156,7 +156,7 @@ pub async fn client_endpoint() -> Result<Endpoint> {
 }
 
 /// Fetch the blob named by `ticket` from its node, requiring the
-/// content to hash to `expected` (the registry-index `qpkg_hash`).
+/// content to hash to `expected` (the registry-index `tapp_hash`).
 ///
 /// Fail-closed on every axis:
 /// - the ticket's advertised hash must equal `expected` (a registry
@@ -179,7 +179,7 @@ pub async fn fetch_blob(
     let want = Hash::from(expected);
     if ticket.hash() != want {
         bail!(
-            "ticket hash {} does not match the index qpkg_hash {}",
+            "ticket hash {} does not match the index tapp_hash {}",
             ticket.hash(),
             want
         );
@@ -211,7 +211,7 @@ mod tests {
     /// blob, node B fetches it by ticket and verifies the hash.
     #[tokio::test]
     async fn two_node_fetch_roundtrip() {
-        let payload = Bytes::from_static(b"a qpkg's worth of bytes");
+        let payload = Bytes::from_static(b"a tapp's worth of bytes");
         let expected = *blake3::hash(&payload).as_bytes();
 
         let node = BlobNode::memory().await.unwrap();

@@ -2,7 +2,7 @@
 
 This directory preserves the reviewed first-qualification inputs and procedure.
 Its generator, tests, 29-file workflow policy and 12-file controller inventory
-belong to qOS commit `774a6886b01fbc219ff55cc1a80713e88c492d09`; reproduce them
+belong to Tilo commit `774a6886b01fbc219ff55cc1a80713e88c492d09`; reproduce them
 from a separate checkout of that exact commit, not from current main. Do not use
 the installation sequence below to overwrite a live policy or rerun a dispatch.
 It records the original empty-state procedure, not the current platform state.
@@ -113,7 +113,7 @@ workflow contract tests cover the newly landed metadata and PR-plan changes.
    allowed; changed trusted workflow/tool/config bytes require renewed review and
    policy generation. Record the actual observed source and selected app set.
 3. Install the reviewed staged immutable source ConfigMap, create a protected
-   **immutable** `qos-packaging-controller-policy` ConfigMap containing reviewed
+   **immutable** `tilo-packaging-controller-policy` ConfigMap containing reviewed
    `coordinator.json` and exact `final-policy.json`, and install the staged CronJob
    manifest with `spec.suspend: true`. Use its existing manifest template and source
    reference patch; do not substitute another coordinator. Read back the installed
@@ -171,7 +171,7 @@ fail closed if they are insufficient. No app payloads are executed by this
 canonical artifact acceptance, so interactive/install testing remains separate.
 
 This single x86 gate is an initial qualification, not a reduction of the requested
-release matrix. Preserve continuous dependency-based Linux/qOS app packaging,
+release matrix. Preserve continuous dependency-based Linux/Tilo app packaging,
 ARM apps, desktop/Linux-distribution packages, Linux/Windows setup, Windows apps
 subject to toolkit qualification, and device/architecture OS outputs. OS release
 remains manual; macOS definitions remain retained and disabled. Expansion needs
