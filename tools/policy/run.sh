@@ -35,5 +35,6 @@ run 'Application text-stack contract' python3 tools/policy/check_app_text_contra
 run 'Application resource/action contract' \
   python3 tools/policy/check_app_resource_action_contract.py
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
+run 'OS component manifest' python3 tools/policy/check_component_manifest.py
 
 printf '\nRepository policy suite OK\n'
