@@ -5,6 +5,7 @@ set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflow="$repo/.forgejo/workflows/snapshot-rpms.yml"
+development_workflow="$repo/.forgejo/workflows/development-rpms-arm64.yml"
 snapshot="$repo/os/Containerfile.rpms"
 image_workflow="$repo/.forgejo/workflows/build-image.yml"
 relay_workflow="$repo/.forgejo/workflows/tilo-relay.yaml"
@@ -79,6 +80,30 @@ else
 fi
 has "$workflow" "--arch '\${{ matrix.arch }}'" \
   'snapshot package selection uses the explicit native matrix architecture'
+has "$development_workflow" "workflow_dispatch:" \
+  'development RPM candidate runs only by explicit dispatch'
+has "$development_workflow" "startsWith(github.ref, 'refs/heads/codex/')" \
+  'development RPM candidate accepts reviewed codex branches'
+has "$development_workflow" "github.ref == 'refs/heads/main'" \
+  'development RPM candidate accepts main'
+has "$development_workflow" 'runs-on: runner-arm64' \
+  'development RPM candidate uses only a native ARM64 runner'
+has "$development_workflow" './os/dev/assert-native-arch.sh aarch64' \
+  'development RPM candidate requires native ARM64 execution'
+has "$development_workflow" './os/dev/derive-rpm-package-set.py --arch aarch64' \
+  'development RPM candidate derives the ARM64 package set'
+has "$development_workflow" 'platforms: linux/arm64' \
+  'development RPM candidate publishes only an ARM64 OCI image'
+has "$development_workflow" 'os/Containerfile.rpms' \
+  'development RPM candidate reuses the frozen-repository offline closure build'
+has "$development_workflow" 'production_signed' \
+  'development RPM candidate receipt declares that it is not production-signed'
+if grep -Ev '^[[:space:]]*#' "$development_workflow" \
+  | grep -Eq 'cosign|promote-native-index|rpms-snapshot\.env|build-image\.yml/dispatches'; then
+  bad 'development RPM candidate neither signs nor promotes or dispatches production work'
+else
+  ok 'development RPM candidate remains separate from production publication'
+fi
 
 has "$workflow" './os/dev/derive-rpm-package-set.py' \
   'snapshot workflow uses the invariant-tested package parser'
