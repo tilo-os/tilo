@@ -482,6 +482,10 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
             .unwrap(),
     )
     .unwrap();
+    // Model the projection consuming the request. A retry must republish the
+    // controller's retained exact intent even when the transport no longer
+    // exposes the earlier write.
+    xattr::remove(&a, CHECKED_HISTORY_RESTORE_XATTR).unwrap();
     source.set_target(Some(
         crate::framework_history::target(&b, record_b, "B".into()).unwrap(),
     ));
@@ -497,9 +501,6 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
     // before the retry command is produced; commands from the superseded B
     // presentation are deliberately discarded by the host.
     wait(&mut driver, &select);
-    use std::os::unix::fs::MetadataExt;
-    let before_retry = std::fs::metadata(&a).unwrap();
-    let before_retry_ctime = (before_retry.ctime(), before_retry.ctime_nsec());
     // This case exercises exact session routing across descriptor swaps, not
     // button hit-testing. Activate the semantic control directly so the
     // controller's two-second background poll cannot rebuild the toolbar
@@ -509,8 +510,9 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
         .unwrap();
     assert!(
         driver.wait_until(std::time::Duration::from_secs(5), |_| {
-            let metadata = std::fs::metadata(&a).unwrap();
-            (metadata.ctime(), metadata.ctime_nsec()) != before_retry_ctime
+            xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
+                .unwrap()
+                .is_some()
         }),
         "retry did not rewrite the checked restore request",
     );
