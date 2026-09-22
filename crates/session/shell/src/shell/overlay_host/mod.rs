@@ -2721,6 +2721,9 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::NativeApplicationsProvider,
+        ));
         // Applications Tilo did not package: unconfined, separate chip
         // from the one above.
         search_registry.register(std::rc::Rc::new(
@@ -5564,16 +5567,18 @@ impl ShellOverlayHost {
         state.set_viewport_size((self.rect.width(), self.rect.height()));
     }
 
-    /// Routes a cross-strip tab drop: hit-tests the release point against
-    /// other strips' rects and delivers via
-    /// [`GroupRow::accept_cross_strip_drop`], or returns the tab to its
-    /// source strip when none matches — returning to source avoids
-    /// mutating the persisted tree outside the explicit strip-creation UI.
+    /// Preview and commit cross-strip tab drops with one retained
+    /// [`TabDropTarget`]. A release outside every sibling strip restores the
+    /// source exactly; it never invents a same-strip fallback group.
     ///
     /// SAFETY: each pointer addresses a `GroupRow` owned by the content
     /// tree, the host outlives the content, and each row is only ever
     /// touched by one reconcile sweep at a time — the frame loop runs
     /// them sequentially, never re-entrantly.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "cross-strip detach dispatch keeps source draining, hover preview, and release commit in one sequential pointer-safety scope"
+    )]
     fn dispatch_cross_strip_detaches(&self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -5595,10 +5600,33 @@ impl ShellOverlayHost {
             }
         }
         if detaches.is_empty() {
+            let source = self.group_row_ptrs.iter().find_map(|(&strip_id, &ptr)| {
+                // SAFETY: read-only use under the stable row-pointer contract
+                // documented above.
+                unsafe { (&*ptr).tab_drag_active() }.then_some(strip_id)
+            });
+            let destination = source.and_then(|source| {
+                let cursor = self.last_cursor?;
+                strip_rects
+                    .iter()
+                    .find(|(strip_id, rect)| {
+                        *strip_id != source && (cursor.y >= rect.y0 && cursor.y <= rect.y1)
+                    })
+                    .map(|(strip_id, _)| (*strip_id, cursor))
+            });
+            for (&strip_id, &ptr) in &self.group_row_ptrs {
+                // SAFETY: each distinct row is visited once, sequentially.
+                let row: &mut GroupRow = unsafe { &mut *ptr };
+                row.set_cross_strip_tab_drag_hover(
+                    destination
+                        .filter(|(destination, _)| *destination == strip_id)
+                        .map(|(_, cursor)| cursor),
+                );
+            }
             return;
         }
-        // Hit-test release.y only: strips span the full content width, so
-        // the destination row resolves the gap by x itself.
+        // The destination row already resolved and painted the complete
+        // target while the pointer moved. Release consumes that enum verbatim.
         for (src_strip_id, payload) in detaches {
             let release = payload.release_point;
             // Not a mismatched-field typo: `release.y` is deliberately
@@ -5616,7 +5644,14 @@ impl ShellOverlayHost {
                 .find(|(sid, rect)| {
                     *sid != src_strip_id && release.y >= rect.y0 && release.y <= rect.y1
                 })
-                .map_or(src_strip_id, |(sid, _)| *sid);
+                .map(|(sid, _)| *sid);
+            let Some(dest_strip_id) = dest_strip_id else {
+                if let Some(&source_ptr) = self.group_row_ptrs.get(&src_strip_id) {
+                    // SAFETY: source and destination routing is sequential.
+                    unsafe { &mut *source_ptr }.restore_cross_strip_detach(payload);
+                }
+                continue;
+            };
             // SAFETY: same contract as the drain above. We're mutating a
             // single row at a time and never aliasing across rows.
             let Some(&dest_ptr) = self.group_row_ptrs.get(&dest_strip_id) else {
@@ -5627,43 +5662,56 @@ impl ShellOverlayHost {
             // independently inside each strip made a later resync unable to
             // identify the group the person had just moved.
             let new_group_id = crate::shell::state::next_id();
-            let destination = {
+            let target = {
                 let dest_row: &GroupRow = unsafe { &*dest_ptr };
                 dest_row
-                    .gap_index_for(release)
-                    .unwrap_or(dest_row.groups.len())
-                    .min(dest_row.groups.len())
+                    .cross_strip_drop_target()
+                    // Synthetic/headless tests can stage a detach without a
+                    // preceding motion frame; production uses the retained
+                    // preview above.
+                    .or_else(|| dest_row.tab_drop_target_at(release))
+            };
+            let Some(target) = target else {
+                if let Some(&source_ptr) = self.group_row_ptrs.get(&src_strip_id) {
+                    unsafe { &mut *source_ptr }.restore_cross_strip_detach(payload);
+                }
+                continue;
             };
             // Commit the cache + replicated document before moving the live
             // host. If the destination or document is stale, returning the
             // payload to its source avoids a visual-only layout that a later
             // resync would appear to resurrect.
-            let committed = dest_strip_id == src_strip_id
-                || self.chrome.clone().is_some_and(|chrome| {
-                    let st = chrome.borrow_mut();
-                    st.tree_mut().move_tab_across_strips(
-                        src_strip_id,
-                        dest_strip_id,
-                        payload.tab_id,
-                        new_group_id,
-                        destination,
-                    )
-                });
+            let committed = self.chrome.clone().is_some_and(|chrome| {
+                let st = chrome.borrow_mut();
+                st.tree_mut().move_tab_across_strips(
+                    src_strip_id,
+                    dest_strip_id,
+                    payload.tab_id,
+                    new_group_id,
+                    target,
+                )
+            });
             if committed {
                 let Some(&target_ptr) = self.group_row_ptrs.get(&dest_strip_id) else {
                     continue;
                 };
                 let target_row: &mut GroupRow = unsafe { &mut *target_ptr };
-                target_row.accept_cross_strip_drop(
+                let accepted = target_row.accept_cross_strip_drop(
                     new_group_id,
                     payload.desc,
                     payload.host,
-                    release,
+                    target,
                 );
+                debug_assert!(accepted, "durable target must remain live through dispatch");
             } else if let Some(&source_ptr) = self.group_row_ptrs.get(&src_strip_id) {
                 let source_row: &mut GroupRow = unsafe { &mut *source_ptr };
                 source_row.restore_cross_strip_detach(payload);
             }
+        }
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: dispatch is complete; retire the one-frame preview from
+            // every row without touching content-drag state.
+            unsafe { &mut *ptr }.set_cross_strip_tab_drag_hover(None);
         }
     }
 
@@ -7234,11 +7282,114 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The window group directly under `p`, via the click-focus
-    /// hit-test, so a file drop lands on exactly the group a click there
-    /// would focus. `None` over empty strip/desktop space.
-    fn resolve_drop_target(&self, p: Point) -> Option<(StripId, GroupId)> {
-        pick_group_at(&self.group_hit_candidates(), p)
+    /// Resolve external content through the same spatial grammar a tab drag
+    /// uses. This is intentionally an adapter over `GroupRow`'s resolver: a
+    /// file, clipboard payload, and an existing app must never disagree about
+    /// whether a point means a tab gap or an inter-window seam.
+    pub fn content_drop_placement(&self, p: Point) -> Option<crate::shell::tab_binding::Placement> {
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: read-only use under the same stable Box<GroupRow>
+            // contract as every other `group_row_ptrs` accessor.
+            let row: &GroupRow = unsafe { &*ptr };
+            let row_rect = row.get_rect();
+            if p.y < row_rect.y0 || p.y > row_rect.y1 {
+                continue;
+            }
+            // A live hover target is hysteretic and is exactly what the
+            // person can see. Fall back to pure geometry for one-shot OS
+            // drops which do not provide hover events.
+            match row.tab_drop_target().or_else(|| row.tab_drop_target_at(p)) {
+                Some(ui::widget::TabDropTarget::ExistingGroup {
+                    group_id,
+                    tab_index,
+                }) => {
+                    return Some(crate::shell::tab_binding::Placement::TabAt(
+                        group_id, tab_index,
+                    ));
+                }
+                Some(ui::widget::TabDropTarget::GroupGap { gap_index }) => {
+                    return Some(crate::shell::tab_binding::Placement::GroupAt(
+                        strip_id, gap_index,
+                    ));
+                }
+                None => {}
+            }
+        }
+        None
+    }
+
+    /// Open one path at the same target an in-shell tab drag would use.
+    /// Public for the Wayland data-device bridge, whose release arrives in a
+    /// protocol callback rather than as winit's `DroppedFile` event.
+    pub fn open_dropped_path_at(&self, path: &std::path::Path, p: Point) -> bool {
+        let Some(placement) = self.content_drop_placement(p) else {
+            return false;
+        };
+        self.open_dropped_path_with_placement(path, placement)
+    }
+
+    /// Open content using a placement captured while its indicator was on
+    /// screen. Asynchronous data transfer must not re-resolve against a layout
+    /// which may have moved after button-up.
+    pub fn open_dropped_path_with_placement(
+        &self,
+        path: &std::path::Path,
+        placement: crate::shell::tab_binding::Placement,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        self.harvest_widget_only_groups_into_tree();
+        let owned = matches!(
+            crate::shell::doc_open::resolve(path),
+            crate::shell::doc_open::DocumentTarget::App { .. }
+        );
+        if owned {
+            match crate::shell::doc_open::open_at(path, &chrome, placement) {
+                Ok(_) => true,
+                Err(error) => {
+                    crate::shell::doc_open::report_open_failure(
+                        &chrome,
+                        path,
+                        &error.user_message(),
+                        None,
+                    );
+                    false
+                }
+            }
+        } else {
+            chrome
+                .borrow_mut()
+                .handle_file_drop_at_placement(path, placement)
+                .is_some()
+        }
+    }
+
+    pub fn has_content_drop_target(&self, p: Point) -> bool {
+        self.content_drop_placement(p).is_some()
+    }
+
+    /// Paint (or retire) the content-drop preview using the same resolver
+    /// whose result will be committed on release.
+    pub fn set_content_drop_hover(&mut self, p: Option<Point>) {
+        let selected_strip = p.and_then(|point| {
+            self.group_row_ptrs.iter().find_map(|(&strip_id, &ptr)| {
+                // SAFETY: read-only use under the stable row pointer contract.
+                let row: &GroupRow = unsafe { &*ptr };
+                let rect = row.get_rect();
+                (point.y >= rect.y0 && point.y <= rect.y1).then_some(strip_id)
+            })
+        });
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: same stable Box<GroupRow> contract as the other
+            // `group_row_ptrs` accessors; the frame loop owns mutation here.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            let hover = (selected_strip == Some(strip_id))
+                .then_some(p)
+                .flatten()
+                .filter(|point| row.tab_drop_target_at(*point).is_some());
+            row.set_external_content_drag_hover(hover);
+        }
     }
 
     fn stamp_active_group_from_click(&mut self, p: Point) {
@@ -9946,38 +10097,21 @@ impl ShellOverlayHost {
     /// `DroppedFile` carries no coordinate, so route by `last_cursor`
     /// through the same hit-test click-focus uses. A drop over empty
     /// space is a no-op, not dumped into an arbitrary window.
-    fn route_dropped_file_event(&self, event: &WindowEvent, handled: &mut bool) -> bool {
-        let WindowEvent::DroppedFile(path) = event else {
-            return false;
-        };
-        if let Some(chrome) = self.chrome.clone()
-            && let Some(p) = self.last_cursor
-            && let Some((strip_id, group_id)) = self.resolve_drop_target(p)
-        {
-            // Mirrors `stamp_active_group_from_click`: fold a
-            // widget-only group into the tree before splicing.
-            self.harvest_widget_only_groups_into_tree();
-            // A file an app declares opens in that app with
-            // its read grant; a folder or unclaimed type
-            // takes the placeholder-tab drop below.
-            let owned = matches!(
-                crate::shell::doc_open::resolve(path),
-                crate::shell::doc_open::DocumentTarget::App { .. }
-            );
-            if owned {
-                if let Err(e) = crate::shell::doc_open::open_in_group(path, &chrome, group_id) {
-                    crate::shell::doc_open::report_open_failure(
-                        &chrome,
-                        path,
-                        &e.user_message(),
-                        None,
-                    );
-                }
-            } else {
-                chrome
-                    .borrow_mut()
-                    .handle_file_drop_at(path, strip_id, group_id);
+    fn route_dropped_file_event(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+        match event {
+            WindowEvent::HoveredFile(_) => {
+                self.set_content_drop_hover(self.last_cursor);
             }
+            WindowEvent::HoveredFileCancelled => {
+                self.set_content_drop_hover(None);
+            }
+            WindowEvent::DroppedFile(path) => {
+                if let Some(p) = self.last_cursor {
+                    let _ = self.open_dropped_path_at(path, p);
+                }
+                self.set_content_drop_hover(None);
+            }
+            _ => return false,
         }
         *handled = true;
         true

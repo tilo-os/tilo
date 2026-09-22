@@ -945,7 +945,8 @@ fn try_to_ui_tile_for_tab(
             // File-explorer — `new` is infallible; the widget surfaces any
             // directory-read errors via its own in-pane status bar.
             ShellKind::FileExplorer => {
-                let widget = if let Some(files) = &inputs.files {
+                let tab_files = tab.and_then(|tab| inputs.files_for_tab(tab));
+                let widget = if let Some(files) = tab_files.as_ref().or(inputs.files.as_ref()) {
                     if let Some(services) = inputs.file_services() {
                         FileExplorerWidget::with_startup_inputs_and_services(
                             files.clone(),
