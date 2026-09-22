@@ -554,6 +554,11 @@ disk_args=(--user "$TILO_ACCOUNT")
 if [ -n "${TILO_TARGET_IMGREF:-}" ]; then
   disk_args+=(--target-imgref "$TILO_TARGET_IMGREF")
 fi
+# Whole-disk virtual size (disk-image.sh --size). The qcow2 stays sparse, so a
+# dev VM disk with room for builds and slot layers costs nothing until written.
+if [ -n "${TILO_DISK_SIZE:-}" ]; then
+  disk_args+=(--size "$TILO_DISK_SIZE")
+fi
 
 # Pass 1. A sealed image is expected to be refused here: `bootc container ukify`
 # and `bootc install` compute different composefs digests for the same image
