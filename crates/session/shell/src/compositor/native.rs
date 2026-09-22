@@ -199,6 +199,11 @@ impl NativeRedrawReasons {
 
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
+const SLOW_PREPAINT_PHASE: Duration = Duration::from_millis(50);
+
+fn slow_prepaint_phase(elapsed: Duration) -> bool {
+    elapsed >= SLOW_PREPAINT_PHASE
+}
 
 /// Select how long calloop may sleep. Presentation cadence is a deadline only
 /// while visual work is pending; a static desktop instead sleeps until the
@@ -5676,8 +5681,7 @@ pub fn run() {
         // to paint; doing this after painting strands the newly committed
         // frame until an unrelated event, and a continuously committing client
         // can deadlock behind its first transaction barrier.
-        let foreign_capture_changed =
-            state.pump_foreign_capture_barriers(&display_handle_for_outputs);
+        state.pump_foreign_capture_barriers(&display_handle_for_outputs);
         // Logout is requested from an off-thread power-menu action. Exit the
         // compositor through this normal cleanup path; its package wrapper
         // then stops Tilo's graphical targets and clears the shared user-manager
@@ -6981,8 +6985,8 @@ pub fn run() {
         pump_checkpoint!("peer-presence");
         let pump_presence_done = Instant::now();
         let pump_apps_started = pump_presence_done;
-        let mut apps_changed = foreign_capture_changed
-            | frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        let mut apps_changed =
+            frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         if desktop_continuation
             .as_mut()
             .is_some_and(|continuation| continuation.pump(frame_builder.host().onboarding_active()))
