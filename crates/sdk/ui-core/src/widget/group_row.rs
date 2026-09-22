@@ -2173,7 +2173,12 @@ impl GroupRow {
         let preferred = matches!(event, WindowEvent::MouseInput { .. }).then(|| {
             self.groups
                 .iter()
-                .position(|group| group.wants_pointer_capture())
+                .position(|group| group.new_tab_hit(self.last_cursor))
+                .or_else(|| {
+                    self.groups
+                        .iter()
+                        .position(|group| group.wants_pointer_capture())
+                })
                 .or_else(|| {
                     self.groups
                         .iter()
