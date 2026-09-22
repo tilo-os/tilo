@@ -1,0 +1,15 @@
+[package]
+name = "tilo-net"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Tilo's network client defaults: one TLS crypto provider and one trust source."
+
+[dependencies]
+rustls.workspace = true
+# Resolves to `crates/system/tilo-native-certs` through the workspace patch.
+rustls-native-certs.workspace = true
+
+[lints]
+workspace = true
