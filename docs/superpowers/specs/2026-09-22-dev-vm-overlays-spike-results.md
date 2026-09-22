@@ -234,15 +234,15 @@ ExtensionDirectories=/var/lib/tilo-dev/layers/<l1> /var/lib/tilo-dev/layers/<l2>
 == tdo-b session / user units / bwrap: No such file or directory
 ```
 
-**bwrap under the session process.** pam_systemd (v258+) gives sessions on a local seat the
-ambient capability `CAP_WAKE_ALARM` (`CapAmb=0000000800000000`). An unprivileged bwrap refuses to
-run with any capability. The user manager has that capability only in its permitted set, not the
-ambient set, so user units are clean. This behaviour **is the same in production**: a greetd seat0
-session gets the same capability. So a dev/prod difference is not the issue. The launcher just
-has to keep spawning bwrap from a user unit (`tilo-app-host.service`), never directly from the
-compositor. If direct spawning is ever needed, `CapabilityBoundingSet=~CAP_WAKE_ALARM` on the
-unit clears it (verified, and bwrap then runs). The production equivalent would be
-`default-capability-ambient-set=` on `pam_systemd` in `os/etc/pam.d/greetd`.
+**bwrap under the session process.** pam_systemd (since v254) gives sessions on a local seat
+the ambient capability `CAP_WAKE_ALARM` (`CapAmb=0000000800000000`), and an unprivileged bwrap
+refuses to run with any capability. **This differs from production.** greetd's worker calls
+`setuid()` after `pam_open_session`, and the kernel clears the ambient set on a root-to-user
+uid switch (`cap_emulate_setxuid`). A systemd unit with `PAMName=` re-raises PAM's ambient
+capabilities after the switch (`exec-invoke.c`). A real greetd session therefore has
+`CapAmb=0`, and the shell spawns `tilo-launcher` directly without trouble. The dev session unit
+must match it with `CapabilityBoundingSet=~CAP_WAKE_ALARM`, which is verified to let bwrap run,
+and tilo-devd checks `CapAmb`/`CapEff` of the slot's shell against that expectation.
 
 ### Changing layers
 
@@ -286,9 +286,9 @@ the namespace was built.
 8. **VM-wide swaps restart every overlay:** after `systemd-sysext refresh`, restart all overlay
    session units and overlay `user@` units, not just "the affected system unit". Otherwise
    overlays keep the old VM-wide components.
-9. **Launcher constraint:** bwrap must be spawned from the user manager (as `tilo-app-host`
-   already is), because seat sessions carry ambient `CAP_WAKE_ALARM`. This holds in production
-   too.
+9. **Capability parity:** the session unit sets `CapabilityBoundingSet=~CAP_WAKE_ALARM` so
+   that, like a greetd session, it has no ambient capabilities. tilo-devd verifies this for each
+   slot's shell.
 10. The first-listed layer in `ExtensionDirectories=` is the bottom of the stack, and the last
     wins. Generation files should record layers in that order.
 
