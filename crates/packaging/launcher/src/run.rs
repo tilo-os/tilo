@@ -108,72 +108,13 @@ pub enum RunError {
     InvalidCapturePlan,
 }
 
-/// Strict resource envelope for a short-lived captured sandbox worker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CapturedResourcePlan {
-    pub cpu_seconds: u64,
-    pub memory_bytes: u64,
-    pub output_bytes: usize,
-    pub wall_time: Duration,
-}
-
-impl CapturedResourcePlan {
-    pub const MAX_CPU_SECONDS: u64 = 300;
-    pub const MAX_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-    pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
-    pub const MAX_WALL_TIME: Duration = Duration::from_secs(10 * 60);
-
-    /// Reject absent or excessively broad limits before a process exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RunError::InvalidCapturePlan`] when any limit is zero,
-    /// below the safe memory floor, or above the launcher's hard ceiling.
-    pub fn validate(self) -> Result<Self, RunError> {
-        if self.cpu_seconds == 0
-            || self.cpu_seconds > Self::MAX_CPU_SECONDS
-            || self.memory_bytes < 16 * 1024 * 1024
-            || self.memory_bytes > Self::MAX_MEMORY_BYTES
-            || self.output_bytes == 0
-            || self.output_bytes > Self::MAX_OUTPUT_BYTES
-            || self.wall_time.is_zero()
-            || self.wall_time > Self::MAX_WALL_TIME
-        {
-            return Err(RunError::InvalidCapturePlan);
-        }
-        Ok(self)
+pub use crate::capture::{
+    CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination,
+};
+impl From<crate::capture::InvalidCapturePlan> for RunError {
+    fn from(_: crate::capture::InvalidCapturePlan) -> Self {
+        Self::InvalidCapturePlan
     }
-}
-
-/// Cooperative cancellation shared with the trusted worker scheduler. The
-/// sandbox receives no token or descriptor and cannot cancel another job.
-#[derive(Clone, Debug, Default)]
-pub struct CaptureCancellation(Arc<AtomicBool>);
-
-impl CaptureCancellation {
-    pub fn cancel(&self) {
-        self.0.store(true, AtomicOrdering::Release);
-    }
-
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(AtomicOrdering::Acquire)
-    }
-}
-
-#[derive(Debug)]
-pub enum CapturedTermination {
-    Exited(ExitStatus),
-    Cancelled,
-    TimedOut,
-    OutputLimit,
-}
-
-#[derive(Debug)]
-pub struct CapturedRunOutput {
-    pub termination: CapturedTermination,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
 }
 
 impl RunError {
@@ -1447,7 +1388,7 @@ fn splice_sandbox_shim(
 /// records intent).
 #[allow(
     clippy::too_many_arguments,
-    reason = "process launch keeps argv, confinement descriptors and observability inputs explicit"
+    reason = "Sandbox launch combines argv/options, scheduling policy, seccomp and service descriptors, egress policy, net gate, and broker lifetime."
 )]
 fn spawn_and_wait(
     mut argv: Vec<String>,
@@ -2036,7 +1977,7 @@ mod captured_resource_tests {
         ] {
             assert!(matches!(
                 invalid.validate(),
-                Err(RunError::InvalidCapturePlan)
+                Err(crate::capture::InvalidCapturePlan)
             ));
         }
     }
