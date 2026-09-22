@@ -27,7 +27,9 @@ class DevImageContractTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         for name in ("os/Containerfile", "os/Containerfile.dev", "os/rpms-snapshot.env", "os/components.toml",
-                     "os/scripts/install-components.py", "os/etc/containers/policy.json"):
+                     "os/scripts/install-components.py", "os/etc/containers/policy.json",
+                     "os/scripts/builder-packages.py", "os/scripts/builder-packages.txt",
+                     "os/dev/derive-rpm-package-set.py"):
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(REPO / name, root / name)
         (root / ".forgejo/workflows").mkdir(parents=True)
@@ -105,11 +107,19 @@ class DevImageContractTests(unittest.TestCase):
                   "RPMS_REF=code.sandbox.example/qos/rpms@sha256:0")
         self.assertIn("but os/rpms-snapshot.env pins", "\n".join(self.findings(root)))
 
+    def test_builder_package_drift_fails(self):
+        root = self.fixture()
+        self.edit(root / "os/Containerfile", "        nasm \\\n", "        nasm mold \\\n")
+        errors = "\n".join(self.findings(root))
+        self.assertIn("os/scripts/builder-packages.txt: differs from the packages", errors)
+        self.assertIn("missing: mold", errors)
+        self.assertIn("builder-packages.py --write", errors)
+
     def test_dev_image_must_label_and_unseal(self):
         root = self.fixture()
         dev = root / "os/Containerfile.dev"
         self.edit(dev, 'LABEL sh.tilo.image.flavour="dev"', "LABEL sh.tilo.image.other=x")
-        self.edit(dev, "python3 /run/tilo-dev/unseal-rootfs.py /", "true")
+        self.edit(dev, "python3 /run/tilo-dev/os/scripts/unseal-rootfs.py /", "true")
         errors = "\n".join(self.findings(root))
         self.assertIn('does not label the image sh.tilo.image.flavour="dev"', errors)
         self.assertIn("never runs os/scripts/unseal-rootfs.py", errors)

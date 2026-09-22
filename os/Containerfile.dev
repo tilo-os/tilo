@@ -20,9 +20,11 @@
 #     os/scripts/install-components.py --dev, so this file names no binary.
 #   * The production builder's toolchain, installed into the image. The binaries
 #     above are compiled with it, and so are in-VM builds. The package list is
-#     read out of os/Containerfile's `builder` stage (os/scripts/builder-packages.py)
-#     and installed from the same frozen RPM snapshot, so the compiler and
-#     -devel libraries cannot drift from the production builder's.
+#     generated from os/Containerfile's `builder` stage into
+#     os/scripts/builder-packages.txt (os/Containerfile is not in the build
+#     context), checked against it by the dev image contract, and installed from
+#     the same frozen RPM snapshot, so the compiler and -devel libraries cannot
+#     drift from the production builder's.
 #   * sshd (enabled), rsync, systemd-sysext, and tilo-devd's session unit
 #     template, udev seat rules and vkms modprobe option, shipped from
 #     crates/dev/tilo-devd/data. vkms and uinput load at boot.
@@ -54,6 +56,15 @@ ARG RPMS_REF=code.sandbox.example/qos/rpms@sha256:2caf1fe6010a981f7465754029ffdb
 
 FROM ${RPMS_REF} AS rpms
 
+# The build scripts and inputs the stages below run, staged through a scratch
+# stage and bind-mounted from it, so no stage mounts the build context itself
+# (which SELinux hosts would refuse without relabelling the checkout).
+FROM scratch AS dev-inputs
+COPY os/components.toml /tilo/os/
+COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/builder-packages.txt \
+     os/scripts/install-components.py os/scripts/finalize-dev-image.py /tilo/os/scripts/
+COPY Cargo.lock /tilo/
+
 # ---- The base, unsealed, with the builder's toolchain -------------------------
 FROM ${BASE_IMAGE} AS dev-toolchain
 
@@ -65,20 +76,20 @@ RUN test -s /usr/lib/tilo/generation \
        fi
 
 # Unseal first: everything below changes the rootfs the UKI's digest describes.
-RUN --mount=type=bind,source=os/scripts/unseal-rootfs.py,target=/run/tilo-dev/unseal-rootfs.py,ro \
-    python3 /run/tilo-dev/unseal-rootfs.py /
+RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    python3 /run/tilo-dev/os/scripts/unseal-rootfs.py /
 
 # Fail now, not at the first slot, when this kernel cannot give a slot a seat.
-RUN --mount=type=bind,source=os/scripts/check-dev-kernel.sh,target=/run/tilo-dev/check-dev-kernel.sh,ro \
-    bash /run/tilo-dev/check-dev-kernel.sh /
+RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    bash /run/tilo-dev/os/scripts/check-dev-kernel.sh /
 
 # sshd for `tilo-dev`, rsync for worktree sync, and the production builder's
 # packages. openssh-server is the one package the production image removes on
 # purpose (the runtime crypto policy forbids an SSH server there).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    --mount=type=bind,source=os,target=/run/tilo-dev/os,ro \
-    python3 /run/tilo-dev/os/scripts/builder-packages.py \
-      --containerfile /run/tilo-dev/os/Containerfile > /run/tilo-dev-builder-packages \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    grep -v '^#' /run/tilo-dev/os/scripts/builder-packages.txt > /run/tilo-dev-builder-packages \
+    && [ -s /run/tilo-dev-builder-packages ] \
     && dnf install -y --setopt=reposdir=/repo openssh-server rsync \
     && xargs -r -a /run/tilo-dev-builder-packages dnf install -y --setopt=reposdir=/repo \
     && rm -f /run/tilo-dev-builder-packages \
@@ -130,7 +141,7 @@ RUN /build/os/scripts/verify-elf-hardening.sh /out \
 # ---- Dev components, placed by the manifest ---------------------------------
 FROM dev-toolchain AS dev-component-files
 RUN --network=none \
-    --mount=type=bind,source=os,target=/run/tilo-dev/os,ro \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     --mount=type=bind,from=dev-builder,source=/out,target=/out,ro \
     python3 /run/tilo-dev/os/scripts/install-components.py \
       --manifest /run/tilo-dev/os/components.toml \
@@ -149,9 +160,8 @@ COPY os/dev-image/ /
 # flavour marker; then proof that every piece above is really in place.
 ARG BASE_IMAGE
 ARG TILO_BASE_DIGEST=
-RUN --mount=type=bind,source=os/scripts/finalize-dev-image.py,target=/run/tilo-dev/finalize-dev-image.py,ro \
-    --mount=type=bind,source=Cargo.lock,target=/run/tilo-dev/Cargo.lock,ro \
-    python3 /run/tilo-dev/finalize-dev-image.py \
+RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    python3 /run/tilo-dev/os/scripts/finalize-dev-image.py \
       --base-image "$BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
       --cargo-lock /run/tilo-dev/Cargo.lock \
     && systemctl enable sshd.service systemd-sysext.service \
