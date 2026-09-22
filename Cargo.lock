@@ -3827,16 +3827,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "email-encoding"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9298e6504d9b9e780ed3f7dfd43a61be8cd0e09eb07f7706a945b0072b6670b6"
-dependencies = [
- "base64 0.22.1",
- "memchr",
-]
-
-[[package]]
 name = "email_address"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5090,7 +5080,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "git2",
- "rcgen 0.14.7",
+ "rcgen",
  "reqwest 0.12.28",
  "runtime-dylib",
  "russh",
@@ -6113,7 +6103,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.6",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -7226,7 +7216,7 @@ dependencies = [
  "tokio-websockets",
  "tracing",
  "url",
- "webpki-roots 1.0.6",
+ "webpki-roots",
  "ws_stream_wasm",
 ]
 
@@ -7676,23 +7666,18 @@ checksum = "0da65617f6cb926332d039cb578aad56178da86e128db6a1b09f4c94fa5b3349"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
- "email-encoding",
  "email_address",
- "fastrand",
  "futures-io",
  "futures-util",
- "httpdate",
  "idna",
- "mime",
  "nom 8.0.0",
  "percent-encoding",
- "quoted_printable",
  "rustls",
+ "rustls-native-certs",
  "socket2 0.6.3",
  "tokio",
  "tokio-rustls",
  "url",
- "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -8333,7 +8318,7 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "qdoc",
- "rcgen 0.13.2",
+ "rcgen",
  "reqwest 0.12.28",
  "runtime-dylib",
  "rustls",
@@ -8343,12 +8328,12 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-net",
  "tokio",
  "tokio-rustls",
  "tracing",
  "uuid",
  "vello",
- "webpki-roots 0.26.11",
  "winit",
 ]
 
@@ -11600,12 +11585,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quoted_printable"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "478e0585659a122aa407eb7e3c0e1fa51b1d8a870038bd29f0cf4a8551eea972"
-
-[[package]]
 name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11786,19 +11765,6 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
-]
-
-[[package]]
-name = "rcgen"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
-dependencies = [
- "pem",
- "ring",
- "rustls-pki-types",
- "time",
- "yasna",
 ]
 
 [[package]]
@@ -12114,7 +12080,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots 1.0.6",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -13268,7 +13234,7 @@ dependencies = [
  "media",
  "os-actions",
  "quick-xml 0.41.0",
- "rcgen 0.14.7",
+ "rcgen",
  "reqwest 0.12.28",
  "runtime-dylib",
  "runtime-fs",
@@ -13285,12 +13251,12 @@ dependencies = [
  "tilo-bluez",
  "tilo-desktop-entry",
  "tilo-model-gateway",
+ "tilo-net",
  "tilo-relay",
  "tilo-user-identity",
  "tracing",
  "uuid",
  "vello",
- "webpki-roots 0.26.11",
  "winit",
  "zeroize",
 ]
@@ -13502,7 +13468,7 @@ dependencies = [
  "rand 0.8.8",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
- "rcgen 0.14.7",
+ "rcgen",
  "reis",
  "runtime-collab",
  "runtime-identity",
@@ -14949,7 +14915,7 @@ dependencies = [
  "picky-asn1-x509",
  "rand 0.10.1",
  "rand 0.8.8",
- "rcgen 0.14.7",
+ "rcgen",
  "ring",
  "rsa",
  "sha-crypt",
@@ -14993,6 +14959,14 @@ dependencies = [
  "thiserror 2.0.18",
  "url",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-net"
+version = "0.1.0"
+dependencies = [
+ "rustls",
+ "rustls-native-certs",
 ]
 
 [[package]]
@@ -17547,15 +17521,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca"
 dependencies = [
  "rustls-pki-types",
-]
-
-[[package]]
-name = "webpki-roots"
-version = "0.26.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
-dependencies = [
- "webpki-roots 1.0.6",
 ]
 
 [[package]]

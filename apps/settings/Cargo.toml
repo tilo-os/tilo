@@ -77,7 +77,7 @@ taffy.workspace = true
 tracing.workspace = true
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 rustls = { workspace = true, features = ["std", "tls12"] }
-webpki-roots = "0.26"
+tilo-net = { path = "../../crates/system/tilo-net" }
 zeroize.workspace = true
 # The shared account + region/format stores Settings owns are plain
 # serde-serialisable JSON documents that other apps (Mail, Calendar,
