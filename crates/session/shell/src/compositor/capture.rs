@@ -2324,7 +2324,22 @@ mod tests {
             .expect("live strip row")
             .scroll_group_into_view(target_group);
         frame_builder.relayout();
-        let _ = frame_builder.paint();
+        {
+            let target_host = frame_builder
+                .host_mut()
+                .group_at_for_tests(strip_id, 0)
+                .and_then(|group| group.active_host_mut())
+                .expect("target Notes host");
+            let mut scene = Scene::new();
+            let mut text = ui::text_render::TextRenderer::new();
+            target_host.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &ui::theme::Theme::dark(),
+                &ui::presence::PresenceCtx::default(),
+            );
+        }
         assert!(
             frame_builder
                 .host_mut()
