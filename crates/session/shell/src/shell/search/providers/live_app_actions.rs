@@ -2495,7 +2495,7 @@ mod tests {
         let scope = LiveAppActionsProvider::surface_scope(&ctx);
         let root = ActionDirectoryRoot {
             peer_id: 7,
-            app_id: "dev.tilo.fixture".into(),
+            app_id: "so.tilo.fixture".into(),
             cluster_id: "room".into(),
             record_id: "record".into(),
         };
@@ -2578,7 +2578,7 @@ mod tests {
         let actor = chrome.local_user_for_room(&chrome.tree().workspaces[0].room);
         let root = ActionDirectoryRoot {
             peer_id: 9,
-            app_id: "dev.tilo.remote".into(),
+            app_id: "so.tilo.remote".into(),
             cluster_id,
             record_id: "root".into(),
         };
@@ -2646,8 +2646,8 @@ mod tests {
         let ctx = context("tailtoken", &chrome, &doc);
         let surface = PublishedSurface {
             peer_id: 1,
-            app_id: "dev.tilo.fixture".into(),
-            route: CrdtRoute::app("dev.tilo.fixture", "room"),
+            app_id: "so.tilo.fixture".into(),
+            route: CrdtRoute::app("so.tilo.fixture", "room"),
             actions: Vec::new(),
             live: true,
         };
@@ -2718,8 +2718,8 @@ mod tests {
         let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
         broker.replace_published_surfaces_for_test(vec![PublishedSurface {
             peer_id: 1,
-            app_id: "dev.tilo.fixture".into(),
-            route: CrdtRoute::app("dev.tilo.fixture", "room"),
+            app_id: "so.tilo.fixture".into(),
+            route: CrdtRoute::app("so.tilo.fixture", "room"),
             actions: (0..100_001)
                 .map(|index| {
                     local_action(
@@ -2809,7 +2809,7 @@ mod tests {
     fn auxiliary_cursor_is_self_contained_for_more_than_128_pages() {
         let root = ActionDirectoryRoot {
             peer_id: 42,
-            app_id: "dev.tilo.remote".into(),
+            app_id: "so.tilo.remote".into(),
             cluster_id: "room\u{1f}with-separator".into(),
             record_id: "record".into(),
         };
@@ -2838,7 +2838,7 @@ mod tests {
     #[test]
     fn hierarchy_decodes_the_address_shape_minted_by_the_provider() {
         let id = [
-            "dev.tilo.files",
+            "so.tilo.files",
             "write",
             "room-7",
             "file:/Brief.md",
@@ -2850,7 +2850,7 @@ mod tests {
         assert_eq!(
             LiveAppActionsProvider::hierarchy(&id),
             Some((
-                "dev.tilo.files",
+                "so.tilo.files",
                 "room-7",
                 "file:/Brief.md",
                 "files.entry:/Brief.md",
@@ -2871,7 +2871,7 @@ mod tests {
             kind: ResourceKind::Action,
             provider_id: PROVIDER_ID.into(),
             id: [
-                "dev.tilo.files",
+                "so.tilo.files",
                 "write",
                 cluster,
                 "file:/Brief.md",
@@ -2915,7 +2915,7 @@ mod tests {
             .local_user_for_room(&chrome.borrow().tree().workspaces[0].room);
         let root = ActionDirectoryRoot {
             peer_id: 9,
-            app_id: "dev.tilo.reader".into(),
+            app_id: "so.tilo.reader".into(),
             cluster_id: cluster_id.clone(),
             record_id: "library".into(),
         };
@@ -2968,7 +2968,7 @@ mod tests {
         assert_eq!(page.results[0].title, "Book of Tilo");
         assert_eq!(
             page.results[0].subtitle.as_deref(),
-            Some("dev.tilo.reader · Chapter 7")
+            Some("so.tilo.reader · Chapter 7")
         );
         assert_eq!(page.results[0].badge.as_deref(), Some("2 collaborators"));
         (page.results[0].on_open)(
@@ -2983,7 +2983,7 @@ mod tests {
             Some(crate::shell::chrome_state::SearchResourceScope {
                 peer_id: 9,
                 cluster_id,
-                app_id: "dev.tilo.reader".into(),
+                app_id: "so.tilo.reader".into(),
                 resource: "book:42".into(),
                 label: "Book of Tilo".into(),
             })

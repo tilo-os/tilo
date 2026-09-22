@@ -63,9 +63,9 @@ def verify(download, output):
     require((ROOT / 'tools/canonical_app_verifier.py').read_bytes() == frozen, 'local repackager adapter differs')
     installed = bundle.materialize(output / 'x86_64.tar.gz', descriptor, output / 'materialized', BUILDER, 'x86_64')
     require((installed / 'canonical_app_verifier.py').read_bytes() == frozen, 'materialized adapter differs')
-    repeated = bundle.produce(installed / 'tilo-pkg', installed / 'tilo-runtime-bundle',
+    repeated = bundle.produce(installed / 'tilo-app-package', installed / 'tilo-runtime-bundle',
                               output / 'repacked.tar.gz', BUILDER, SOURCE, 'x86_64')
-    again = bundle.produce(installed / 'tilo-pkg', installed / 'tilo-runtime-bundle',
+    again = bundle.produce(installed / 'tilo-app-package', installed / 'tilo-runtime-bundle',
                            output / 'repacked-again.tar.gz', BUILDER, SOURCE, 'x86_64')
     repacked = (output / 'repacked.tar.gz').read_bytes()
     original = (output / 'x86_64.tar.gz').read_bytes()

@@ -6,8 +6,8 @@
 # future App Tray UI call list/resolve/pin/unpin/install/etc. against
 # this interface.
 #
-# All `id` fields carry the raw 32-byte BLAKE3 package id (`pkg::PackageId`).
-# The host echoes these unchanged; presentation (`qpkg:<hex>`) is the
+# All `id` fields carry the raw 32-byte BLAKE3 package id (`tilo_app_package::PackageId`).
+# The host echoes these unchanged; presentation (`tapp:<hex>`) is the
 # caller's concern.
 
 enum Pinning {
@@ -27,7 +27,7 @@ enum RemoteAction {
 }
 
 struct PackageEntry {
-    # 32-byte PackageId (raw, not `qpkg:` prefixed).
+    # 32-byte PackageId (raw, not `tapp:` prefixed).
     id            @0 :Data;
     pinning       @1 :Pinning;
     # Absolute path of the eagerly-extracted payload directory the
@@ -63,13 +63,13 @@ interface AppHost {
     remove     @4 (id :Data) -> ();
     # LRU touch — updates `lastUsedUnix` to now.
     markUsed   @5 (id :Data) -> ();
-    # Parse + ingest a `.qpkg`-shaped byte blob (a tar archive
+    # Parse + ingest a `.tapp`-shaped byte blob (a tar archive
     # containing signed-root/manifest/collection/blobs — see the
     # `install.rs` handler for the accepted layout).
     # Returns the resolved 32-byte PackageId.
     # Install only when the bytes match the registry-authenticated identity
     # supplied by the Store capability. None of these fields are advisory.
-    install    @6 (qpkgBytes :Data, pinning :Pinning,
+    install    @6 (tappBytes :Data, pinning :Pinning,
                    expectedRoot :Data, expectedPublisher :Data,
                    expectedAppId :Text, expectedVersion :Text,
                    expectedSizeBytes :UInt64) -> (id :Data);

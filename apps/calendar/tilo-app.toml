@@ -10,7 +10,7 @@
 
 
 [package]
-id       = "dev.tilo.calendar"
+id       = "so.tilo.calendar"
 name     = "Calendar"
 category = "Office"
 version  = "0.1.0"

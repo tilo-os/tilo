@@ -42,7 +42,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.hex-editor", hex_editor::app_root)
+        &LaunchSpec::new("so.tilo.hex-editor", hex_editor::app_root)
             .max_positionals(1)
             .shot_root(shot_root)
             .configure_app(|app| hex_editor::actions::register(app.action_registry_mut())),

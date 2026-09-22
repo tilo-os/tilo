@@ -42,7 +42,7 @@ RUNTIME_BASE = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 APPS = {
     "word-processor": {
         "bin": "word-processor",
-        "package": "dev.tilo.word-processor",
+        "package": "so.tilo.word-processor",
         # The document both windows open. Its path is its record id, which
         # is the collaboration address, so both sides must name it
         # identically.
@@ -50,7 +50,7 @@ APPS = {
     },
     "file-explorer": {
         "bin": "file-explorer",
-        "package": "dev.tilo.file-explorer",
+        "package": "so.tilo.file-explorer",
         "needs_doc": False,
     },
 }

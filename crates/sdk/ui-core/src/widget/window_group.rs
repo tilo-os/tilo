@@ -76,6 +76,13 @@ const SPAWN_ANIM_INITIAL_SCALE: f64 = 0.92;
 /// Matches the tab-pill `CLOSE_FADE_MS` in `tabs.rs` so the group's
 /// shrink chains onto the final pill fade.
 const GROUP_CLOSE_FADE_MS: u64 = 180;
+/// The lifted handle remains readable while exposing the drop target; the app
+/// pixels beneath it recede further so the target never disappears.
+const DRAG_CONTENT_ALPHA: f32 = 0.42;
+const DRAG_SOURCE_CONTENT_ALPHA: f32 = 0.18;
+/// End scale of the fast lift curve. The content tucks under the full-size tab
+/// handle instead of turning into a second opaque window under the pointer.
+const DRAG_CONTENT_SCALE_END: f64 = 0.96;
 
 /// [`SPAWN_ANIM_MS`] in seconds, as an `f64` divisor for the eased-progress
 /// calculation.
@@ -241,6 +248,55 @@ struct ChromePillLayout {
 }
 
 impl WindowGroup {
+    /// Paint a whole group while its window handle is being reordered. The
+    /// handle remains half-transparent and the app pixels recede further,
+    /// matching the tab-drag visual without duplicating layout state.
+    pub(crate) fn draw_group_drag_visual(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        crate::surface::shadow(
+            scene,
+            transform,
+            self.rect,
+            f64::from(theme.tokens.radii.xl),
+            &theme.tokens.elevation.e4,
+        );
+        if !self.maximized {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                TabBar::GHOST_PILL_ALPHA,
+                transform,
+                &self.bar_rect().inflate(32.0, 32.0),
+            );
+            self.bar.draw(scene, transform, tr, theme, presence);
+            scene.pop_layer();
+        }
+        if let Some((_, host)) = self
+            .hosts
+            .iter_mut()
+            .find(|(id, _)| *id == self.bar.active_id())
+        {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                DRAG_CONTENT_ALPHA,
+                transform,
+                &host.get_rect().inflate(160.0, 160.0),
+            );
+            let was_focused = host.focused;
+            host.set_focused(false);
+            host.draw(scene, transform, tr, theme, presence);
+            host.set_focused(was_focused);
+            scene.pop_layer();
+        }
+    }
+
     pub fn new(
         id: u64,
         tabs_with_content: Vec<(TabDescriptor, TileContent)>,
@@ -252,9 +308,11 @@ impl WindowGroup {
             .into_iter()
             .map(|(d, c)| (d.id, TileHost::new(c)))
             .collect();
+        let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
+        bar.set_drag_overlay_owned_by_parent(true);
         Self {
             id,
-            bar: TabBar::new(&format!("g{id}"), descs, active_id),
+            bar,
             hosts,
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
@@ -583,9 +641,11 @@ impl WindowGroup {
     pub fn from_detached(id: u64, desc: TabDescriptor, host: TileHost, width: WindowWidth) -> Self {
         let active_id = desc.id;
         let tab_id = desc.id;
+        let mut bar = TabBar::new(&format!("g{id}"), vec![desc], active_id);
+        bar.set_drag_overlay_owned_by_parent(true);
         Self {
             id,
-            bar: TabBar::new(&format!("g{id}"), vec![desc], active_id),
+            bar,
             hosts: vec![(tab_id, host)],
             width,
             strip_usable_px: DEFAULT_STRIP_USABLE_PX,
@@ -794,6 +854,16 @@ impl WindowGroup {
             .iter_mut()
             .find(|(id, _)| *id == tab_id)
             .map(|(_, h)| h)
+    }
+
+    /// Laid-out content bounds for a tab. Shell-owned system windows use
+    /// this as their ordinary tile viewport instead of inventing separate
+    /// floating geometry.
+    pub fn content_rect_for_tab(&self, tab_id: u64) -> Option<Rect> {
+        self.hosts
+            .iter()
+            .find(|(id, _)| *id == tab_id)
+            .map(|(_, host)| host.get_rect())
     }
 
     #[cfg(test)]
@@ -1381,6 +1451,71 @@ impl WindowGroup {
             1.5,
         );
     }
+
+    /// Paint the app being carried as one lifted object: real app pixels tucked
+    /// under the translucent tab handle. This runs in the floating-surface pass
+    /// so the preview can cross group and strip clips without changing hit-test
+    /// geometry or client configure sizes.
+    fn draw_tab_drag_visual(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let Some(visual) = self.bar.drag_visual(theme) else {
+            return;
+        };
+        let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == visual.tab_id) else {
+            return;
+        };
+        let source = host.get_rect();
+        if source.width() <= 0.0 || source.height() <= 0.0 {
+            return;
+        }
+
+        let scale = 1.0 - (1.0 - DRAG_CONTENT_SCALE_END) * visual.lift_progress.clamp(0.0, 1.0);
+        let destination_top_center = Point::new(
+            visual.lifted_handle.center().x,
+            visual.lifted_handle.y1 + f64::from(theme.tokens.spacing.s1),
+        );
+        let source_top_center = Point::new(source.center().x, source.y0);
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine multiplication composes finite floating-point transforms and cannot integer-overflow"
+        )]
+        let preview_transform = transform
+            * Affine::translate((destination_top_center.x, destination_top_center.y))
+            * Affine::scale(scale)
+            * Affine::translate((-source_top_center.x, -source_top_center.y));
+
+        // Dragging is elevation, not selection: use the Object role's e4 lift
+        // before the deliberately translucent content layer.
+        crate::surface::shadow(
+            scene,
+            preview_transform,
+            source,
+            f64::from(theme.tokens.radii.xl),
+            &theme.tokens.elevation.e4,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            DRAG_CONTENT_ALPHA,
+            preview_transform,
+            &source.inflate(160.0, 160.0),
+        );
+        let was_focused = host.focused;
+        host.set_focused(false);
+        host.draw(scene, preview_transform, tr, theme, presence);
+        host.set_focused(was_focused);
+        scene.pop_layer();
+
+        // The handle stays full-size while the content settles beneath it.
+        self.bar
+            .draw_drag_ghost(scene, transform, tr, theme, presence);
+    }
 }
 
 impl FloatingSurfaceProvider for WindowGroup {
@@ -1423,6 +1558,7 @@ impl FloatingSurfaceProvider for WindowGroup {
                 presence,
             );
         }
+        self.draw_tab_drag_visual(scene, transform, text_renderer, theme, presence);
     }
 
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {
@@ -1625,12 +1761,26 @@ impl Widget for WindowGroup {
         // Scoping search *is* aiming the keyboard at this group, so it
         // lights the same edge/shadow signal as keyboard focus.
         let focused = self.focused || self.search_active;
+        let dragged_tab = self.bar.drag_visual(theme).map(|visual| visual.tab_id);
         if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             if let Some(name) = &opening_name {
                 h.set_opening_name(name);
             }
             h.set_focused(focused);
+            let source_is_lifted = dragged_tab == Some(active_id);
+            if source_is_lifted {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    DRAG_SOURCE_CONTENT_ALPHA,
+                    transform,
+                    &h.get_rect().inflate(160.0, 160.0),
+                );
+            }
             h.draw(scene, transform, tr, theme, presence);
+            if source_is_lifted {
+                scene.pop_layer();
+            }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
         if !self.maximized {
@@ -1870,17 +2020,10 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
             _event: &winit::event::WindowEvent,
-            _scale: f64,
-            _m: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -1987,7 +2130,7 @@ mod tests {
         );
     }
 
-    /// A card reading `dev.tilo.file-explorer` is the failure this guards:
+    /// A card reading `so.tilo.file-explorer` is the failure this guards:
     /// the person asked for Files, and a package id is not an answer.
     #[test]
     fn the_card_takes_the_apps_name_from_its_tab() {
@@ -2082,17 +2225,10 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
             _event: &winit::event::WindowEvent,
-            _scale: f64,
-            _m: &winit::event::Modifiers,
-            _state: &mut automerge::AutoCommit,
-            _path: &automerge::ObjId,
-            _handled: &mut bool,
-            _focus: &mut Option<NodeId>,
-            _node: NodeId,
-            _taffy: &TaffyTree<()>,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {

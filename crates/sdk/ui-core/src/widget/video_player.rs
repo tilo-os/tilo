@@ -27,7 +27,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
-use crate::widget::Widget;
+use crate::widget::{FullscreenProvider, Widget};
 
 const CONTROLS_AUTO_HIDE: Duration = Duration::from_secs(3);
 const CONTROLS_BAR_HEIGHT: f64 = 44.0;
@@ -228,7 +228,7 @@ pub struct VideoPlayer {
     muted: bool,
     transport_enabled: bool,
     /// So a fresh player expresses no opinion until asked — see
-    /// [`Widget::fullscreen_intent`].
+    /// [`FullscreenProvider::fullscreen_intent`].
     fullscreen: bool,
     fullscreen_touched: bool,
     /// Push-mode consumers that own their own clock.
@@ -761,7 +761,7 @@ impl VideoPlayer {
         self.dirty = true;
     }
 
-    /// Reflected through [`Widget::fullscreen_params`].
+    /// Reflected through [`FullscreenProvider::fullscreen_params`].
     pub fn set_fullscreen_target(&mut self, target: crate::fullscreen::FullscreenTarget) {
         self.fullscreen_target = target;
     }
@@ -2246,7 +2246,38 @@ impl Default for VideoPlayer {
     }
 }
 
+impl FullscreenProvider for VideoPlayer {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        if self.fullscreen_touched {
+            Some(self.fullscreen)
+        } else {
+            None
+        }
+    }
+
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        crate::fullscreen::FullscreenRequest::mirror(self.fullscreen_target)
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        // A compositor may grant or exit fullscreen independently; keep the
+        // control and level-triggered intent aligned with the actual state.
+        if self.fullscreen != active {
+            self.fullscreen = active;
+            self.fullscreen_touched = true;
+            self.dirty = true;
+        }
+    }
+}
+
 impl Widget for VideoPlayer {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
         self.pump_engine();
     }
@@ -2408,28 +2439,6 @@ impl Widget for VideoPlayer {
         // Owns the pointer mid-drag so the seek tracks the cursor even after it
         // leaves the thin track band.
         self.scrubbing
-    }
-
-    fn fullscreen_intent(&self) -> Option<bool> {
-        if self.fullscreen_touched {
-            Some(self.fullscreen)
-        } else {
-            None
-        }
-    }
-
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        crate::fullscreen::FullscreenRequest::mirror(self.fullscreen_target)
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        // The compositor may grant/exit fullscreen on its own (e.g. a global
-        // keybind); reflect it so our button + intent stay truthful.
-        if self.fullscreen != active {
-            self.fullscreen = active;
-            self.fullscreen_touched = true;
-            self.dirty = true;
-        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3336,32 +3345,32 @@ mod tests {
         let mut vp = VideoPlayer::new();
         vp.set_focus(true);
         assert_eq!(
-            Widget::fullscreen_intent(&vp),
+            FullscreenProvider::fullscreen_intent(&vp),
             None,
             "no opinion until asked"
         );
         assert!(vp.handle_key_input(&Key::Character("f".into()), ElementState::Pressed));
-        assert_eq!(Widget::fullscreen_intent(&vp), Some(true));
+        assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(true));
         assert!(vp.handle_key_input(&Key::Character("F".into()), ElementState::Pressed));
-        assert_eq!(Widget::fullscreen_intent(&vp), Some(false));
+        assert_eq!(FullscreenProvider::fullscreen_intent(&vp), Some(false));
     }
 
     #[test]
     fn fullscreen_toggle_drives_a_largest_output_mirror_request() {
         use crate::fullscreen::{FullscreenTarget, FullscreenView};
         let mut vp = VideoPlayer::new();
-        assert_eq!(Widget::fullscreen_intent(&vp), None);
+        assert_eq!(FullscreenProvider::fullscreen_intent(&vp), None);
         assert_eq!(
-            Widget::fullscreen_params(&vp).target,
+            FullscreenProvider::fullscreen_params(&vp).target,
             FullscreenTarget::Largest
         );
         vp.toggle_fullscreen();
         assert_eq!(
-            Widget::fullscreen_intent(&vp),
+            FullscreenProvider::fullscreen_intent(&vp),
             Some(true),
             "toggle asks the App to fullscreen"
         );
-        let params = Widget::fullscreen_params(&vp);
+        let params = FullscreenProvider::fullscreen_params(&vp);
         assert_eq!(
             params.target,
             FullscreenTarget::Largest,
@@ -3374,7 +3383,7 @@ mod tests {
         );
         vp.set_fullscreen_target(FullscreenTarget::Primary);
         assert_eq!(
-            Widget::fullscreen_params(&vp).target,
+            FullscreenProvider::fullscreen_params(&vp).target,
             FullscreenTarget::Primary
         );
     }

@@ -387,11 +387,11 @@ mod tests {
     fn accounting_is_per_app_and_does_not_follow_symlinks() {
         let tmp = tempfile::tempdir().unwrap();
         let payloads = tmp.path().join("payloads");
-        std::fs::create_dir_all(payloads.join("dev.tilo.notes")).unwrap();
-        std::fs::write(payloads.join("dev.tilo.notes/app"), vec![0u8; 20]).unwrap();
+        std::fs::create_dir_all(payloads.join("so.tilo.notes")).unwrap();
+        std::fs::write(payloads.join("so.tilo.notes/app"), vec![0u8; 20]).unwrap();
         let outside = tmp.path().join("outside");
         std::fs::write(&outside, vec![0u8; 50_000]).unwrap();
-        std::os::unix::fs::symlink(&outside, payloads.join("dev.tilo.notes/link")).unwrap();
+        std::os::unix::fs::symlink(&outside, payloads.join("so.tilo.notes/link")).unwrap();
         let snap = scan_storage(&StorageRoots {
             app_payloads: Some(payloads),
             room_data: None,
@@ -404,18 +404,18 @@ mod tests {
             .find(|e| e.category == StorageCategory::InstalledApps)
             .unwrap();
         assert!(app.bytes < 1_000, "symlink target must not be counted");
-        assert_eq!(app.owner, "dev.tilo.notes");
+        assert_eq!(app.owner, "so.tilo.notes");
     }
 
     #[test]
     fn cleanup_requires_preview_and_rejects_replaced_target() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
-        std::fs::create_dir_all(cache.join("dev.tilo.notes")).unwrap();
-        std::fs::write(cache.join("dev.tilo.notes/a"), b"cache").unwrap();
+        std::fs::create_dir_all(cache.join("so.tilo.notes")).unwrap();
+        std::fs::write(cache.join("so.tilo.notes/a"), b"cache").unwrap();
         let preview = preview_cache_cleanup(&cache).unwrap();
-        std::fs::remove_dir_all(cache.join("dev.tilo.notes")).unwrap();
-        std::fs::create_dir(cache.join("dev.tilo.notes")).unwrap();
+        std::fs::remove_dir_all(cache.join("so.tilo.notes")).unwrap();
+        std::fs::create_dir(cache.join("so.tilo.notes")).unwrap();
         assert!(matches!(
             apply_cleanup(&preview, &[0]),
             Err(CleanupError::Changed(_))
@@ -426,7 +426,7 @@ mod tests {
     fn cleanup_rejects_directory_payload_changed_after_preview() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
-        let target = cache.join("dev.tilo.notes");
+        let target = cache.join("so.tilo.notes");
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(target.join("a"), b"cache").unwrap();
         let preview = preview_cache_cleanup(&cache).unwrap();
@@ -444,7 +444,7 @@ mod tests {
     fn cleanup_rejects_directory_file_count_changed_after_preview() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = tmp.path().join("cache");
-        let target = cache.join("dev.tilo.notes");
+        let target = cache.join("so.tilo.notes");
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(target.join("a"), b"cache").unwrap();
         let preview = preview_cache_cleanup(&cache).unwrap();

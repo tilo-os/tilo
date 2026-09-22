@@ -35,11 +35,11 @@ fn main() {
     // dependency was already declared for this — the call was not there, so every
     // https registry and every Flathub request failed at the TLS
     // handshake rather than anywhere a reader would look. Same line the
-    // maps app and `tilo-catalogue` run.
+    // maps app and `app` run.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.store", live_root)
+        &LaunchSpec::new_with_args("so.tilo.store", live_root)
             .max_positionals(1)
             .scenarios(&[
                 "wide",
@@ -139,13 +139,13 @@ mod tests {
     #[test]
     fn store_deep_link_accepts_only_a_stable_app_identity() {
         assert_eq!(
-            parse_store_uri("tilo-store:app/dev.tilo.notes").unwrap(),
-            "dev.tilo.notes"
+            parse_store_uri("tilo-store:app/so.tilo.notes").unwrap(),
+            "so.tilo.notes"
         );
         for invalid in [
             "tilo-store:app/",
-            "tilo-store:app/dev.tilo.notes?install=true",
-            "tilo-store:remote/dev.tilo.notes",
+            "tilo-store:app/so.tilo.notes?install=true",
+            "tilo-store:remote/so.tilo.notes",
         ] {
             assert!(parse_store_uri(invalid).is_err(), "{invalid}");
         }

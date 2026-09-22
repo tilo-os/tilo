@@ -27,7 +27,7 @@ use crate::shell::state::RoomId;
 /// Package id the compositor stores its own room indexes under — not an
 /// installed package, just the same directory shape so the same store
 /// (atomic writes, single-writer lock) can be reused.
-pub const SHELL_PACKAGE_ID: &str = "dev.tilo.shell";
+pub const SHELL_PACKAGE_ID: &str = "so.tilo.shell";
 
 /// Ceiling on a record document the scan will read. Automerge can't read
 /// a document in part, so anything larger is skipped — losing a search
@@ -497,7 +497,10 @@ impl RoomRecords {
     // The B-tree range borrows the scan mutex guard, so the guard must be a
     // named value for exactly the iterator's lexical block. Clippy's proposed
     // temporary merge would not live long enough.
-    #[allow(clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the B-tree range borrows the scan guard for the iterator's full lexical scope"
+    )]
     pub(crate) fn search_records(&self, after: Option<&str>, max_work: usize) -> SearchRecordPage {
         let after = match after {
             Some(token) => match RecordSearchKey::decode(token) {
@@ -1079,7 +1082,7 @@ mod tests {
             id: scanned.clone(),
             kind: RecordKind::new("document"),
             home: Some(home),
-            package_id: "dev.tilo.word-processor".into(),
+            package_id: "so.tilo.word-processor".into(),
         }]);
         rr.reference(other, &scanned, &RecordKind::new("document"));
 
@@ -1097,7 +1100,7 @@ mod tests {
         assert!(observed.held_by.is_empty());
         assert_eq!(
             observed.package_id.as_deref(),
-            Some("dev.tilo.word-processor")
+            Some("so.tilo.word-processor")
         );
         let referenced = known
             .iter()
@@ -1163,7 +1166,7 @@ mod tests {
             id: RecordId::for_file("/work/other.odt"),
             kind: RecordKind::new("document"),
             home: Some(a),
-            package_id: "dev.tilo.word-processor".into(),
+            package_id: "so.tilo.word-processor".into(),
         }]);
         assert_eq!(
             rr.known().len(),
@@ -1217,7 +1220,7 @@ mod tests {
             id: old.clone(),
             kind: kind.clone(),
             home: Some(room),
-            package_id: "dev.tilo.word-processor".into(),
+            package_id: "so.tilo.word-processor".into(),
         }]);
         assert!(rr.known().is_empty());
         assert_eq!(rr.search_generation(), generation);
@@ -1227,7 +1230,7 @@ mod tests {
             id: old.clone(),
             kind: kind.clone(),
             home: Some(room),
-            package_id: "dev.tilo.word-processor".into(),
+            package_id: "so.tilo.word-processor".into(),
         }]);
         let scan = Arc::clone(rr.scan.as_ref().unwrap());
         scan.lock().unwrap().revision = u64::MAX;
@@ -1235,7 +1238,7 @@ mod tests {
             id: new,
             kind,
             home: Some(room),
-            package_id: "dev.tilo.word-processor".into(),
+            package_id: "so.tilo.word-processor".into(),
         }]);
         let scan = scan.lock().unwrap();
         assert_eq!(scan.records.len(), 1);

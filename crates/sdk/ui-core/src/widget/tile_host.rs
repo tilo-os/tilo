@@ -6,8 +6,9 @@ use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
 use crate::widget::{
-    AudiencePresentationProvider, AudiencePresentationWidgetExt, Continuable,
-    FloatingSurfaceProvider, FloatingSurfaceWidgetExt, Widget,
+    AudiencePresentationProvider, AudiencePresentationWidgetExt, CompleteContentWidgetExt as _,
+    Continuable, FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider,
+    FullscreenWidgetExt, Widget,
 };
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;
@@ -828,7 +829,39 @@ impl AudiencePresentationProvider for TileHost {
     }
 }
 
+impl FullscreenProvider for TileHost {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        match &self.content {
+            TileContent::App(app) => app.fullscreen_intent(),
+            _ => None,
+        }
+    }
+
+    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+        match &self.content {
+            TileContent::App(app) => app.fullscreen_params(),
+            _ => crate::fullscreen::FullscreenRequest::mirror(
+                crate::fullscreen::FullscreenTarget::Largest,
+            ),
+        }
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        if let TileContent::App(app) = &mut self.content {
+            app.on_fullscreen_changed(active);
+        }
+    }
+}
+
 impl Widget for TileHost {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
+
     fn continuable(&self) -> Option<&dyn Continuable> {
         Some(self)
     }
@@ -846,25 +879,6 @@ impl Widget for TileHost {
         match &mut self.content {
             TileContent::App(app) => app.take_focus_reset(),
             _ => false,
-        }
-    }
-    fn fullscreen_intent(&self) -> Option<bool> {
-        match &self.content {
-            TileContent::App(app) => app.fullscreen_intent(),
-            _ => None,
-        }
-    }
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        match &self.content {
-            TileContent::App(app) => app.fullscreen_params(),
-            _ => crate::fullscreen::FullscreenRequest::mirror(
-                crate::fullscreen::FullscreenTarget::Largest,
-            ),
-        }
-    }
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        if let TileContent::App(app) = &mut self.content {
-            app.on_fullscreen_changed(active);
         }
     }
     fn view_state(&self) -> Option<crate::view::ViewContribution> {
@@ -1991,7 +2005,7 @@ mod tests {
 
     fn canonical_store(root: &std::path::Path) -> RecordStore {
         let mut owners = crate::record::RecordOwners::new(root.to_path_buf());
-        owners.open("dev.tilo.tile-host-test", "room").unwrap()
+        owners.open("so.tilo.tile-host-test", "room").unwrap()
     }
 
     fn inspection_has_semantic(node: &crate::headless::InspectionNode, name: &str) -> bool {

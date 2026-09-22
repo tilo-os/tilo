@@ -5,7 +5,7 @@
 -->
 <network>
   <name>tilo-windows-egress</name>
-  <metadata><tilo:windows-egress xmlns:tilo="https://tilo.dev/vm/1"/></metadata>
+  <metadata><tilo:windows-egress xmlns:tilo="https://tilo.sh/vm/1"/></metadata>
   <forward mode="nat"/>
   <bridge name="virbr-tilowin-egress" stp="on" delay="0"/>
   <ip address="192.168.252.1" netmask="255.255.255.0">

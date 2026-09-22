@@ -1620,7 +1620,7 @@ mod tests {
     fn managed_vm() -> ManagedApplication {
         ManagedApplication {
             id: "windows-editor".into(),
-            app_id: "dev.tilo.windows.editor".into(),
+            app_id: "so.tilo.windows.editor".into(),
             display_name: "Editor".into(),
             publisher: "Vendor".into(),
             capsule_id: None,

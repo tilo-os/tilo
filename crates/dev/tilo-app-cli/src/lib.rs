@@ -4108,9 +4108,14 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     let code = rust_code_only(&source);
     let toolkit_host = code.contains("ui::widget::resource_actions::immediate(")
         || code.contains("ui::widget::resource_actions::background(")
-        || code.contains("ui::widget::resource_actions::form(");
+        || code.contains("ui::widget::resource_actions::form(")
+        || code.contains("resource_actions::immediate(")
+        || code.contains("resource_actions::background(")
+        || code.contains("resource_actions::form(");
     let toolkit_descriptor = code.contains("ui::widget::resource_actions::resource(")
         || code.contains("ui::widget::resource_actions::typed_resource(")
+        || code.contains("resource_actions::resource(")
+        || code.contains("resource_actions::typed_resource(")
         || code.contains("ActionForm::new(")
         || code.contains("ui::widget::resource_actions::ActionForm::new(");
     let custom_catalogue = code.contains("fn resources(") && code.contains("ActionSpec::");
@@ -4615,7 +4620,7 @@ struct AppPackageSpec {
 }
 
 /// Build an app's declared entrypoints, assemble its payload, sign it through
-/// `tilo-pkg`, verify the result, and publish the completed `.qpkg` atomically.
+/// `tilo-app-package`, verify the result, and publish the completed `.tapp` atomically.
 ///
 /// An app-local `payload/` directory is copied into the package before the
 /// freshly built binaries are placed at their manifest paths. Relative output
@@ -4637,7 +4642,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         || {
             spec.app_dir
                 .join("dist")
-                .join(format!("{}.qpkg", spec.cargo_package))
+                .join(format!("{}.tapp", spec.cargo_package))
         },
         |path| absolute_from(&spec.app_dir, path),
     );
@@ -4689,7 +4694,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         std::fs::set_permissions(&destination, permissions)?;
     }
 
-    let staged_package = staging.path().join("package.qpkg");
+    let staged_package = staging.path().join("package.tapp");
     let identity = request
         .identity
         .as_ref()
@@ -4722,7 +4727,7 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
     let manifest_path = app_dir.join("tilo-app.toml");
     let manifest_source = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?;
-    let manifest = pkg::Manifest::from_toml_str(&manifest_source)
+    let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_source)
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
     let entrypoint = manifest
         .entrypoint
@@ -4873,7 +4878,8 @@ fn run_tilo_pkg_pack(
     output: &Path,
     identity: Option<&Path>,
 ) -> Result<()> {
-    let program = std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-pkg"));
+    let program =
+        std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-app-package"));
     let mut command = ProcessCommand::new(&program);
     command
         .arg("pack")
@@ -4888,14 +4894,15 @@ fn run_tilo_pkg_pack(
         command.arg("--identity").arg(identity);
     } else {
         eprintln!(
-            "[tilo-app] no --identity supplied; tilo-pkg will use an ephemeral self-signing key"
+            "[tilo-app] no --identity supplied; tilo-app-package will use an ephemeral self-signing key"
         );
     }
     run_package_command(&mut command, &program, "pack")
 }
 
 fn run_tilo_pkg_verify(app_dir: &Path, package: &Path) -> Result<()> {
-    let program = std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-pkg"));
+    let program =
+        std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-app-package"));
     let mut command = ProcessCommand::new(&program);
     command.arg("verify").arg(package).current_dir(app_dir);
     run_package_command(&mut command, &program, "verify")
@@ -4908,7 +4915,7 @@ fn run_package_command(
 ) -> Result<()> {
     let status = command.status().with_context(|| {
         format!(
-            "starting {} {operation}; install/build tilo-pkg or set TILO_PKG",
+            "starting {} {operation}; install/build tilo-app-package or set TILO_PKG",
             program.to_string_lossy()
         )
     })?;
@@ -5597,7 +5604,7 @@ fn check_package_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Opti
             return None;
         }
     };
-    let manifest = match pkg::Manifest::from_toml_str(&source) {
+    let manifest = match tilo_app_package::Manifest::from_toml_str(&source) {
         Ok(manifest) => manifest,
         Err(error) => {
             checks.push(DoctorCheck {
@@ -5608,7 +5615,7 @@ fn check_package_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Opti
             return None;
         }
     };
-    if let Err(error) = pkg::validate_manifest(&manifest) {
+    if let Err(error) = tilo_app_package::validate_manifest(&manifest) {
         checks.push(DoctorCheck {
             status: DoctorStatus::Fail,
             label: "Tilo manifest",
@@ -6486,7 +6493,7 @@ fn create_app_interactive_from(
         request.title = Some(prompt(input, output, "App title", Some(&default_title))?);
     }
     if request.app_id.is_none() && full_wizard {
-        let default_id = format!("dev.tilo.{}", name.replace('-', "."));
+        let default_id = format!("so.tilo.{}", name.replace('-', "."));
         request.app_id = Some(prompt_validated(
             input,
             output,
@@ -6575,7 +6582,7 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
 
     let app_id = request
         .app_id
-        .unwrap_or_else(|| format!("dev.tilo.{}", package_name.replace('-', ".")));
+        .unwrap_or_else(|| format!("so.tilo.{}", package_name.replace('-', ".")));
     validate_app_id(&app_id)?;
     let title = request
         .title

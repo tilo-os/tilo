@@ -1,6 +1,6 @@
 [Unit]
 Description=Tilo received collaborative files service
-Documentation=https://github.com/tilo/tilo
+Documentation=https://github.com/qos/qos
 After=tilo-identity.service
 Requires=tilo-identity.service
 PartOf=graphical-session.target

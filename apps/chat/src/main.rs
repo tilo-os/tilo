@@ -92,7 +92,7 @@ pub fn main() {
         qdoc::blobstore::FsBlobStore::default_root(),
     )));
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.chat", chat::app_root)
+        &LaunchSpec::new("so.tilo.chat", chat::app_root)
             .shot_handler(shot_handler)
             .scenarios(&[
                 "narrow",

@@ -51,7 +51,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue};
 use zbus::{Connection, Proxy};
 
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
-const APP: &str = "dev.tilo.camera";
+const APP: &str = "so.tilo.camera";
 
 fn host_with_portal(
     prompts: PromptQueueHandle,

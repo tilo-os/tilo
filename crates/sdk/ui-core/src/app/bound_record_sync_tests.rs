@@ -308,7 +308,7 @@ fn native_bound_sync_requires_live_matching_route_and_resends_after_reconnection
     assert!(fixture.app.primary_document_snapshot().is_err());
     assert!(fixture.app.pending_primary_document_delta().is_err());
     let mut wrong = route.clone();
-    wrong.route.app_id = "dev.tilo.foreign".into();
+    wrong.route.app_id = "com.example.foreign".into();
     fixture.app.actions.bound_broker_route_for_test = Some(wrong);
     assert!(fixture.app.primary_document_snapshot().is_err());
     fixture.app.actions.bound_broker_route_for_test = Some(route);

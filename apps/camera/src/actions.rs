@@ -361,9 +361,9 @@ fn item_label(it: &CaptureItem) -> String {
 /// handoff, palette action, and automation target use the same boundary.
 pub(crate) const fn capture_destination(is_video: bool) -> (&'static str, &'static str) {
     if is_video {
-        ("dev.tilo.video-player", "Video Player")
+        ("so.tilo.video-player", "Video Player")
     } else {
-        ("dev.tilo.photos", "Photos")
+        ("so.tilo.photos", "Photos")
     }
 }
 
@@ -384,7 +384,7 @@ pub fn open_photos_action() -> ActionSpec {
         |_| {
             EncodedAction::encode_operation(
                 APPLICATION_LAUNCH_TYPE,
-                &serde_json::json!({ "app_id": "dev.tilo.photos" }),
+                &serde_json::json!({ "app_id": "so.tilo.photos" }),
             )
             .unwrap_or_else(|_| EncodedAction {
                 type_id: APPLICATION_LAUNCH_TYPE.into(),
@@ -895,7 +895,7 @@ mod tests {
         };
         let browse_payload: serde_json::Value =
             serde_json::from_slice(&encoded.payload).expect("Photos handoff payload JSON");
-        assert_eq!(browse_payload["app_id"].as_str(), Some("dev.tilo.photos"));
+        assert_eq!(browse_payload["app_id"].as_str(), Some("so.tilo.photos"));
         assert!(browse_payload.get("content_hash").is_none());
         assert!(captures.children.len() <= 1);
         for resource in &captures.children {
@@ -921,7 +921,7 @@ mod tests {
                 serde_json::from_slice(&encoded.payload).expect("handoff payload JSON");
             assert!(matches!(
                 payload["app_id"].as_str(),
-                Some("dev.tilo.photos" | "dev.tilo.video-player")
+                Some("so.tilo.photos" | "so.tilo.video-player")
             ));
             assert!(
                 payload["content_hash"]
@@ -938,7 +938,7 @@ mod tests {
         assert!(ids.contains(&"camera.settings"));
         assert!(
             !ids.iter()
-                .any(|id| { matches!(*id, "dev.tilo.photos.app" | "dev.tilo.video-player.app") }),
+                .any(|id| { matches!(*id, "so.tilo.photos.app" | "so.tilo.video-player.app") }),
             "handoff applications are destinations on the current capture, never Camera roots"
         );
         assert!(
@@ -949,10 +949,10 @@ mod tests {
 
     #[test]
     fn capture_handoff_destination_is_typed_and_kind_specific() {
-        assert_eq!(capture_destination(false), ("dev.tilo.photos", "Photos"));
+        assert_eq!(capture_destination(false), ("so.tilo.photos", "Photos"));
         assert_eq!(
             capture_destination(true),
-            ("dev.tilo.video-player", "Video Player")
+            ("so.tilo.video-player", "Video Player")
         );
     }
 
@@ -971,7 +971,7 @@ mod tests {
             "precondition: same base state"
         );
 
-        let action = record_scan_action("https://tilo.example/hello", 1234);
+        let action = record_scan_action("https://example.test/hello", 1234);
         let encoded = encode(&action).unwrap();
         let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
         tilo_actions::replay(&mut b, &env, &registry()).unwrap();
@@ -980,7 +980,7 @@ mod tests {
         let scans = doc::read_scans(&b, &ROOT);
         assert_eq!(
             scans.first().map(|s| s.raw.as_str()),
-            Some("https://tilo.example/hello"),
+            Some("https://example.test/hello"),
             "the scan landed at the front of the peer's history"
         );
     }

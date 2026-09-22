@@ -72,7 +72,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_clicks_bench(shots_viewport(), n);
     }
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.calculator", calculator::app_root)
+        &LaunchSpec::new("so.tilo.calculator", calculator::app_root)
             .shot_handler(render_shot)
             .configure_app(configure_app),
     )?;
