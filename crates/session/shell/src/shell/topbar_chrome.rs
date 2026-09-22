@@ -3189,7 +3189,7 @@ impl TopBarChrome {
         scene.stroke(
             &Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(colors.surfaces.raised),
             None,
             &chip,
         );

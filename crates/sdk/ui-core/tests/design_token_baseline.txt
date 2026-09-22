@@ -28,7 +28,7 @@
 #                      take the measurement.
 #
 # Format: <path relative to crates/sdk/ui-core/> <pattern> <count>
-src/app.rs literal_color 1
+src/app.rs literal_color 0
 src/chrome/shell.rs literal_color 1
 src/overlay/scrim.rs literal_color 2
 src/profiling.rs literal_color 4
