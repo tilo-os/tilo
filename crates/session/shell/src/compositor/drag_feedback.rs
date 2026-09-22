@@ -24,6 +24,8 @@
 use std::io::Cursor;
 use std::sync::Arc;
 use vello::Scene;
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
+use vello::peniko::Fill;
 
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
 use vello::peniko::{
@@ -34,8 +36,9 @@ use ui::color_compat::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-/// Height of the chip that names what is being carried.
-const CHIP_H: f64 = 30.0;
+/// Height of the chip that names what is being carried — the Selector
+/// height from HIG §9.6, so it matches every other pill the shell paints.
+const CHIP_H: f64 = 28.0;
 /// Padding inside the chip, left and right of the label.
 const CHIP_PAD: f64 = 12.0;
 /// The chip sits below-right of the hotspot so the cursor stays legible.
@@ -92,16 +95,27 @@ pub fn draw(
     theme: &Theme,
     text: &mut TextRenderer,
 ) {
-    if let Some(preview) = visual.preview.as_ref() {
-        draw_preview(scene, cursor, preview, theme, text);
-    }
-    if let Some(label) = visual.label.as_deref() {
+    if let Some(label) = label {
+        // Theme type tokens already carry the user's text scale; the chip
+        // paints with those resolved sizes, so the renderer must not scale
+        // them again (HIG §7a) — reset for this pass, as the shell's
+        // immediate-mode chrome passes do, and restore afterwards.
+        let renderer_scale = text.text_scale();
+        text.set_text_scale(1.0);
         draw_chip(scene, cursor, label, theme, text);
+        text.set_text_scale(renderer_scale);
     }
     draw_cursor(scene, cursor, theme);
 }
 
 /// The carried-item chip: a rounded card with the item's name in it.
+///
+/// Deliberately not [`ui::widget::Chip::draw_at`]: a chip is a Selector
+/// that sits *inside* a Panel and paints a veneer fill (`surface_white_5`),
+/// which over arbitrary app content would let whatever is being dragged
+/// across show through the label. The carried item is an Object off the
+/// surface — it needs an opaque ground, an elevation shadow and the Control
+/// radius, none of which the chip painter offers. Nothing hit-tests it.
 fn draw_chip(
     scene: &mut Scene,
     cursor: Point,
@@ -109,21 +123,21 @@ fn draw_chip(
     theme: &Theme,
     text: &mut TextRenderer,
 ) {
-    let size = 13.0_f32;
-    let (tw, _) = text.measure(label, size, None);
+    // Control label scale (HIG §9.6), measured with the style it is drawn
+    // in so the label is centred on its real line box rather than on a
+    // `size * 1.3` guess. The caller has reset the renderer for this pass.
+    let size = theme.tokens.typography.scale.sm;
+    let (tw, th) = text.measure(label, size, None);
     let w = f64::from(tw) + CHIP_PAD * 2.0;
     let x = cursor.x + CHIP_DX;
     let y = cursor.y + CHIP_DY;
-    let rect = RoundedRect::new(x, y, x + w, y + CHIP_H, 8.0);
-    // A shadow under the chip, so it reads as lifted off whatever window
-    // it happens to be over rather than as part of it.
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        Color::from_rgba8(0, 0, 0, 90),
-        None,
-        &RoundedRect::new(x + 1.0, y + 2.0, x + w + 1.0, y + CHIP_H + 3.0, 8.0),
-    );
+    let bounds = Rect::new(x, y, x + w, y + CHIP_H);
+    // Control role: a pressable-looking chip takes `radii.lg`, and a carried
+    // object is genuinely lifted, so its shadow comes from the elevation
+    // token rather than a literal black offset copy (HIG §9.3).
+    let radius = ui::chrome::ChromeRole::Control.radius(theme, CHIP_H);
+    let rect = RoundedRect::from_rect(bounds, radius);
+    ui::chrome::shell::panel_shadow(scene, Affine::IDENTITY, bounds, radius, theme, 1.0);
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
@@ -143,7 +157,7 @@ fn draw_chip(
         label,
         size,
         theme.text_primary,
-        Affine::translate((x + CHIP_PAD, y + (CHIP_H - f64::from(size) * 1.3) / 2.0)),
+        Affine::translate((x + CHIP_PAD, y + (CHIP_H - f64::from(th)) / 2.0)),
         None,
     );
 }

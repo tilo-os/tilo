@@ -1700,6 +1700,7 @@ mod tests {
             caller: crate::portal::PortalCaller::new(workspace, "so.tilo.tests"),
             title: "Insert image".into(),
             save: false,
+            directory: false,
             multiple: false,
             accept_label: None,
             current_name: None,

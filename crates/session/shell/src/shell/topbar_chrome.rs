@@ -30,19 +30,48 @@ use crate::shell::chrome_state::Chrome;
 use crate::shell::state::WorkspaceTree;
 use settings_store::hardware::{TopBarWidget, TopBarWidgetsConfig};
 
-/// The top bar reserves a compact strip, while its edge targets can still use
-/// the full allocation independently of the smaller floating control bodies.
-pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
-
-/// Every floating top-bar surface shares this height, leaving exactly four
-/// logical pixels above and below it in the 40 px bar.
-const TOPBAR_CONTROL_HEIGHT_PX: f64 = 32.0;
+/// Persistent chrome is deliberately a little taller than the original
+/// concept's 40 px sketch.  Forty pixels forced the navigation and status
+/// controls down to 18--22 px targets; 48 px leaves a consistent 32 px target
+/// while retaining substantially more room for content than a conventional
+/// desktop panel.
+///
+/// Derived, not typed: every bar control is the §9.6 pointer floor
+/// (`metrics.min_pointer_target`, 32) and the bar gives it `s2` of air above
+/// and below. `metrics.bar_height` (40) describes an *app* toolbar whose
+/// controls are `bar_control_height` (28); the shell's bar hosts pointer-
+/// floor controls, which is why it is 48 and not 40 — the centre-lane tests
+/// (`large_text_activity_stays_single_line_inside_center_content_lane`,
+/// `compact_large_text_preserves_the_full_activity_sentence_and_detail_route`)
+/// are tuned to this height and pin the decision. Unscaled `BASE` values
+/// because the bar is laid out in logical pixels before any theme is in
+/// hand (`build_layout` sizes its node from this constant).
+pub const TOPBAR_HEIGHT_PX: f32 =
+    ui::tokens::Metrics::BASE.min_pointer_target + 2.0 * ui::tokens::Spacing::BASE.s2;
 
 const CLOCK_OVERLAY_HEIGHT: f64 = 150.0;
 
 /// Low enough that the sparkline reads as backdrop, not a fourth element
 /// competing with the three metric labels.
 const SPARKLINE_FILL_ALPHA: f32 = 0.30;
+
+/// Height of every pressable control in the bar — the nav cluster, the
+/// workspace pill, the centre selector, the tray pill and the media
+/// indicator's hit rect — so they share one top and bottom edge. HIG §9.6's
+/// minimum pointer target (`metrics.min_pointer_target`, 32×32), read from
+/// the density tokens rather than typed; `bar_density_sits_on_the_spacing_scale`
+/// pins that it also lands on `spacing.s8`.
+const BAR_CONTROL_PX: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
+
+/// Pitch between the centre selector's three position dots. Each dot's hit
+/// rect is one pitch wide and [`BAR_CONTROL_PX`] tall, so a 3–5 px glyph
+/// still meets the §9.6 32×32 floor and neighbouring dots never share a
+/// pixel. The content lane starts after the third pitch.
+const CENTER_DOT_PITCH_PX: f64 = 32.0;
+
+/// Diameter of the small Lucide glyph beside the workspace name (the
+/// settings gear) and inside the up/down switches (the chevrons).
+const SMALL_GLYPH_PX: f64 = 14.0;
 
 /// Scroll-wheel over the center band cycles between these; a three-dot
 /// indicator shows the current position.
@@ -467,6 +496,9 @@ pub struct TopBarChrome {
     up_btn_rect: Rect,
     down_btn_rect: Rect,
     ws_pill_rect: Rect,
+    /// The settings gear inside the workspace pill, kept so a test can
+    /// prove the pill's trailing padding equals its leading padding.
+    ws_gear_rect: Rect,
     tray_pill_rect: Rect,
     /// Interaction geometry is deliberately larger than the painted pill:
     /// the screen's top-right edge must remain an easy Quick Settings target.
@@ -533,6 +565,65 @@ fn bar_selector_body(
     ui::chrome::selection_tier(theme, state)
 }
 
+/// Measured advances of the system monitor's six runs, at the weight and
+/// size each is drawn with, so the column layout can be computed — and
+/// tested — without a renderer in hand.
+struct MetricWidths {
+    cpu_label: f64,
+    cpu_value: f64,
+    ram_label: f64,
+    ram_value: f64,
+    tmp_label: f64,
+    tmp_value: f64,
+}
+
+/// Where the system monitor's columns land in the centre lane. The CPU
+/// pair grows rightward from the lane's start; RAM and TMP are anchored to
+/// its end, so a wider value moves its label left rather than off the
+/// lane. A pair is `None` when the lane has no room for it: they drop from
+/// the inside out (RAM first, then TMP) so nothing is ever painted over
+/// its neighbour, and what remains still sits on the lane's edges.
+struct MonitorColumns {
+    cpu_label_x: f64,
+    cpu_value_x: f64,
+    /// `(label_x, value_x)` of the RAM pair, if it fits.
+    ram: Option<(f64, f64)>,
+    /// `(label_x, value_x)` of the TMP pair, if it fits.
+    tmp: Option<(f64, f64)>,
+    /// The sparkline's span: `s3` clear of the CPU value and of whatever
+    /// pair (or lane edge) follows. May be empty; the painter skips it.
+    spark: (f64, f64),
+}
+
+/// Lay the system monitor out in `lane` from measured `widths`, with `s1`
+/// between a label and its value and `s3` between pairs.
+fn monitor_columns(lane: (f64, f64), widths: &MetricWidths, s1: f64, s3: f64) -> MonitorColumns {
+    let (x0, x1) = lane;
+    let cpu_label_x = x0;
+    let cpu_value_x = cpu_label_x + widths.cpu_label + s1;
+    let cpu_end = cpu_value_x + widths.cpu_value;
+    let tmp_value_x = x1 - widths.tmp_value;
+    let tmp_label_x = tmp_value_x - s1 - widths.tmp_label;
+    let ram_value_x = tmp_label_x - s3 - widths.ram_value;
+    let ram_label_x = ram_value_x - s1 - widths.ram_label;
+    let tmp_fits = tmp_label_x >= cpu_end + s3;
+    let ram_fits = tmp_fits && ram_label_x >= cpu_end + s3;
+    let next_after_spark = if ram_fits {
+        ram_label_x
+    } else if tmp_fits {
+        tmp_label_x
+    } else {
+        x1
+    };
+    MonitorColumns {
+        cpu_label_x,
+        cpu_value_x,
+        ram: ram_fits.then_some((ram_label_x, ram_value_x)),
+        tmp: tmp_fits.then_some((tmp_label_x, tmp_value_x)),
+        spark: (cpu_end + s3, next_after_spark - s3),
+    }
+}
+
 /// Parameter object for [`TopBarChrome::draw_metric_label`] — bundled
 /// so the call keeps under clippy's argument-count budget.
 struct MetricLabelSpec<'a> {
@@ -555,6 +646,8 @@ struct TrayLayout {
     icon_px: f64,
     pct_size: f32,
     pct_label: Option<String>,
+    /// Width reserved for the unread-count badge, zero without one.
+    badge_w: f64,
     slots: usize,
     center_y: f64,
     dim: Color,
@@ -708,6 +801,7 @@ impl TopBarChrome {
             up_btn_rect: Rect::ZERO,
             down_btn_rect: Rect::ZERO,
             ws_pill_rect: Rect::ZERO,
+            ws_gear_rect: Rect::ZERO,
             tray_pill_rect: Rect::ZERO,
             tray_hit_rect: Rect::ZERO,
             media_indicator_rect: Rect::ZERO,
@@ -1021,6 +1115,7 @@ impl TopBarChrome {
     const CONTROL_OVERVIEW: &'static str = "topbar:overview";
     const CONTROL_WORKSPACE_UP: &'static str = "topbar:workspace-up";
     const CONTROL_WORKSPACE_DOWN: &'static str = "topbar:workspace-down";
+    const WORKSPACE_SETTINGS_ICON: ui::icons::Icon = ui::icons::Icon::Pencil;
     const CONTROL_WORKSPACE_SETTINGS: &'static str = "topbar:workspace-settings";
     const CONTROL_CENTER_CLOCK: &'static str = "topbar:center:clock";
     const CONTROL_CENTER_MONITOR: &'static str = "topbar:center:system-monitor";
@@ -1351,13 +1446,27 @@ impl TopBarChrome {
                     self.avatar_stack_rect.union(self.sharing_indicator_rect)
                 }
             }
-            Self::CONTROL_MEDIA => self.media_indicator_rect,
-            target if Self::editor_widget(target).is_some() => Self::editor_widget(target)
-                .map_or(Rect::ZERO, |(widget, present)| {
-                    self.widget_editor_action_rect(widget, present)
-                }),
+            Self::CONTROL_MEDIA => self.media_hit_rect(),
             _ => Rect::ZERO,
         }
+    }
+
+    /// Pointer/semantic target of the media indicator. The painted pill is
+    /// a quiet 22 px status mark, which is deliberately smaller than a
+    /// control; the target it answers to is still the bar's full control
+    /// height (HIG §9.6: a small glyph gets a 32 px hit rect). Zero while
+    /// nothing is capturing, so the control disappears with the mark.
+    fn media_hit_rect(&self) -> Rect {
+        if self.media_indicator_rect.is_zero_area() {
+            return Rect::ZERO;
+        }
+        let cy = self.media_indicator_rect.center().y;
+        Rect::new(
+            self.media_indicator_rect.x0,
+            cy - BAR_CONTROL_PX / 2.0,
+            self.media_indicator_rect.x1,
+            cy + BAR_CONTROL_PX / 2.0,
+        )
     }
 
     fn control_name(&self, target: &str) -> String {
@@ -1594,6 +1703,71 @@ impl TopBarChrome {
     // The following `draw_*` helpers exist only to keep `Widget::draw`
     // under the line budget; none is meaningful on its own.
 
+    /// Bar surface fill, bottom border hairline, and the soft drop-shadow
+    /// band beneath the bar.
+    fn draw_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.overlay,
+            None,
+            &self.rect,
+        );
+
+        // Bar role (HIG §9.1/§9.5): the one bottom hairline is derived
+        // against the overlay ground it sits on, never a declared border
+        // that vanishes three shades off the surface on the dark preset.
+        let border_rect = Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ui::chrome::chrome_hairline(theme),
+            None,
+            &border_rect,
+        );
+
+        // A Bar is elevated `e1`, downward only (HIG §9.1): a one-sided
+        // fade below the bar rather than a blurred outline, so nothing
+        // leaks above the screen edge. The token supplies hue *and*
+        // strength — its alpha is honoured — so a light or high-contrast
+        // palette gets its own answer instead of a fixed black wash; the
+        // fade's reach is the `s6` spacing step.
+        let shadow_h = f64::from(tokens.spacing.s6);
+        let shadow_hue = tokens.elevation.e1.color;
+        let shadow_rect = Rect::new(
+            self.rect.x0,
+            self.rect.y1,
+            self.rect.x1,
+            self.rect.y1 + shadow_h,
+        );
+        let shadow_grad = Gradient::new_linear(
+            Point::new(0.0, self.rect.y1),
+            Point::new(0.0, self.rect.y1 + shadow_h),
+        )
+        .with_extend(Extend::Pad)
+        .with_stops(
+            &[
+                ColorStop {
+                    offset: 0.0,
+                    color: shadow_hue.into(),
+                },
+                ColorStop {
+                    offset: 1.0,
+                    color: shadow_hue.with_alpha_factor(0.0).into(),
+                },
+            ][..],
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            &Brush::Gradient(shadow_grad),
+            None,
+            &shadow_rect,
+        );
+    }
+
     /// Overview icon, divider, and up/down workspace chevrons. Returns
     /// the x cursor position immediately after the down chevron, where
     /// the workspace name pill begins.
@@ -1612,10 +1786,11 @@ impl TopBarChrome {
         let colors = &tokens.colors;
         let pad_x = f64::from(tokens.spacing.s3);
         let icon_size = 18.0_f64;
-        let control = TOPBAR_CONTROL_HEIGHT_PX;
+        let control = BAR_CONTROL_PX;
 
         let mut x = self.rect.x0 + pad_x;
-        let switch_w = 32.0_f64;
+        // The switches are square targets of the shared control height.
+        let switch_w = BAR_CONTROL_PX;
         let nav_width = control
             + f64::from(tokens.spacing.s2)
             + 1.0
@@ -1676,18 +1851,19 @@ impl TopBarChrome {
         );
         x += control + f64::from(tokens.spacing.s2);
 
-        // Vertical divider
+        // Vertical divider: a separator on the Bar is the Bar's hairline
+        // (HIG §9.5), so it reads on every preset the way the bottom edge does.
         let divider = Rect::new(x, center_y - 8.0, x + 1.0, center_y + 8.0);
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.border_standard,
+            ui::chrome::chrome_hairline(theme),
             None,
             &divider,
         );
         x += 1.0 + f64::from(tokens.spacing.s2);
 
-        let chev = 14.0_f64;
+        let chev = SMALL_GLYPH_PX;
         self.up_btn_rect = Rect::new(
             x,
             center_y - control / 2.0,
@@ -1708,7 +1884,11 @@ impl TopBarChrome {
             if self.can_switch_up() {
                 colors.text_dim
             } else {
-                colors.border_standard
+                // Disabled ink is the rest ink under the toolkit's disabled
+                // alpha (HIG §9.5), not a border token borrowed as a colour.
+                colors
+                    .text_dim
+                    .with_alpha_factor(ui::widget::DISABLED_ALPHA)
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
@@ -1734,11 +1914,49 @@ impl TopBarChrome {
             if self.can_switch_down() {
                 colors.text_dim
             } else {
-                colors.border_standard
+                colors
+                    .text_dim
+                    .with_alpha_factor(ui::widget::DISABLED_ALPHA)
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
+        // Where the workspace pill's label starts: `s3` past the down
+        // switch, which the pill's own `s2` leading pad turns into an `s1`
+        // gutter between the cluster and the pill. The label's x is a
+        // published fact — `navigation-layout.json`'s authored contrast
+        // probes sample its glyphs — so the padding fix moved the capsule,
+        // not the text.
         x + switch_w + f64::from(tokens.spacing.s3)
+    }
+
+    fn workspace_label(
+        &self,
+        text_renderer: &mut TextRenderer,
+        ws_text_size: f32,
+        label_budget: f32,
+    ) -> String {
+        // Workspace identity has priority over a redundant single-workspace count.
+        let position_suffix = if self.workspace_total <= 1 {
+            String::new()
+        } else {
+            format!(
+                "  {}/{}",
+                self.workspace_index.saturating_add(1),
+                self.workspace_total
+            )
+        };
+        let ws_weight = self.workspace_name_text_weight();
+        let suffix_width = text_renderer
+            .measure_weighted(&position_suffix, ws_text_size, None, ws_weight)
+            .0;
+        let name_budget = (label_budget - suffix_width).max(0.0);
+        let visible_name = text_renderer.elide_to_width_weighted(
+            &self.workspace_name,
+            ws_text_size,
+            name_budget,
+            ws_weight,
+        );
+        format!("{visible_name}{position_suffix}")
     }
 
     /// Workspace-name pill (click toggles workspace settings) and its
@@ -1755,11 +1973,6 @@ impl TopBarChrome {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let ws_text_size = tokens.typography.scale.sm;
-        let position_suffix = format!(
-            "  {}/{}",
-            self.workspace_index.saturating_add(1),
-            self.workspace_total
-        );
         // Measured at the same weight it's drawn at (Semibold), so the
         // pill width tracks the glyph advance, not the narrower Regular.
         let ws_weight = self.workspace_name_text_weight();
@@ -1770,25 +1983,25 @@ impl TopBarChrome {
         // the current workspace sits.
         let center_left =
             f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
-        let label_budget = ui::num::f32_of_f64((center_left - x - 54.0).clamp(32.0, 260.0));
-        let suffix_width = text_renderer
-            .measure_weighted(&position_suffix, ws_text_size, None, ws_weight)
-            .0;
-        let name_budget = (label_budget - suffix_width).max(0.0);
-        let visible_name = text_renderer.elide_to_width_weighted(
-            &self.workspace_name,
-            ws_text_size,
-            name_budget,
-            ws_weight,
-        );
-        let ws_label = format!("{visible_name}{position_suffix}");
+        // Capsule chrome around the label: a leading pad, the gap to the
+        // gear, the gear itself and a trailing pad of the same size — so
+        // the pill reads centred on its contents. The `s4` beyond that is
+        // the breathing room `long_workspace_name_yields_to_the_center_lane`
+        // keeps between the pill and the centre selector.
+        let pad = f64::from(tokens.spacing.s2);
+        let gear = SMALL_GLYPH_PX;
+        let pill_chrome = pad * 3.0 + gear;
+        let breathing = f64::from(tokens.spacing.s4);
+        let label_budget =
+            ui::num::f32_of_f64((center_left - x - pill_chrome - breathing).clamp(32.0, 260.0));
+        let ws_label = self.workspace_label(text_renderer, ws_text_size, label_budget);
         let (ws_w, ws_h) = text_renderer.measure_weighted(&ws_label, ws_text_size, None, ws_weight);
         let ws_y = center_y - f64::from(ws_h) / 2.0;
         let ws_pill_outer = Rect::new(
-            x - 6.0,
-            center_y - TOPBAR_CONTROL_HEIGHT_PX / 2.0,
-            x + f64::from(ws_w) + 28.0,
-            center_y + TOPBAR_CONTROL_HEIGHT_PX / 2.0,
+            x - pad,
+            center_y - BAR_CONTROL_PX / 2.0,
+            x + f64::from(ws_w) + pill_chrome - pad,
+            center_y + BAR_CONTROL_PX / 2.0,
         );
         self.ws_pill_rect = ws_pill_outer;
         if let Some(chrome) = self.chrome.as_ref() {
@@ -1817,9 +2030,9 @@ impl TopBarChrome {
         if workspace_lens_open {
             let context_rule = RoundedRect::from_rect(
                 Rect::new(
-                    ws_pill_outer.x0 + 8.0,
+                    ws_pill_outer.x0 + pad,
                     ws_pill_outer.y1 - 2.5,
-                    ws_pill_outer.x1 - 8.0,
+                    ws_pill_outer.x1 - pad,
                     ws_pill_outer.y1 - 0.5,
                 ),
                 1.0,
@@ -1841,13 +2054,19 @@ impl TopBarChrome {
             None,
             ws_weight,
         );
-        let gear_x = x + f64::from(ws_w) + 6.0;
-        let gear_rect = Rect::new(gear_x - 2.0, center_y - 7.0, gear_x + 12.0, center_y + 7.0);
+        let gear_x = x + f64::from(ws_w) + pad;
+        let gear_rect = Rect::new(
+            gear_x,
+            center_y - gear / 2.0,
+            gear_x + gear,
+            center_y + gear / 2.0,
+        );
+        self.ws_gear_rect = gear_rect;
         ui::icons::draw_icon(
             scene,
             transform,
             gear_rect,
-            ui::icons::Icon::Settings2,
+            Self::WORKSPACE_SETTINGS_ICON,
             if workspace_lens_open {
                 colors.accent[5]
             } else {
@@ -1869,7 +2088,9 @@ impl TopBarChrome {
     ) -> (f64, f64, f64) {
         let colors = &theme.tokens.colors;
         let band_w = self.center_band_width(theme);
-        let band_h = TOPBAR_CONTROL_HEIGHT_PX;
+        // The same height as every other bar control, so the band's top
+        // and bottom edges line up with the pills either side of it.
+        let band_h = BAR_CONTROL_PX;
         let band_cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let band = Rect::new(
             band_cx - band_w / 2.0,
@@ -1895,266 +2116,50 @@ impl TopBarChrome {
             );
         }
 
-        let widgets = self.widget_config.widgets.clone();
-        if !widgets.contains(&TopBarWidget::from(self.center_widget)) {
-            self.center_widget = widgets
-                .first()
-                .copied()
-                .unwrap_or(TopBarWidget::Clock)
-                .into();
-        }
-        let active_dot = widgets
-            .iter()
-            .position(|widget| *widget == TopBarWidget::from(self.center_widget))
-            .unwrap_or(0);
-        let dots = Self::center_dot_layout(band, self.rect, active_dot, widgets.len());
-        self.center_dot_rects = [Rect::ZERO; 3];
-        for (i, (rect, dot)) in self
-            .center_dot_rects
-            .iter_mut()
-            .zip(dots.iter())
-            .take(widgets.len())
-            .enumerate()
-        {
+        let dot_x = band.x0 + CENTER_DOT_PITCH_PX / 2.0;
+        let dot_gap = CENTER_DOT_PITCH_PX;
+        let active_dot = self.center_widget.index();
+        for (i, slot) in self.center_dot_rects.iter_mut().enumerate() {
+            let cx = dot_x + small_count_to_f64(i) * dot_gap;
             let active = active_dot == i;
+            let r = if active {
+                Self::DOT_ACTIVE_RADIUS
+            } else {
+                Self::DOT_INACTIVE_RADIUS
+            };
+            // An inactive page dot is dim ink from the semantic tier, never
+            // a ramp slot (HIG §9.2).
             let color = if active {
                 colors.accent[5]
             } else {
-                colors.neutral[7]
+                colors.text_dim
             };
-            *rect = dot.slot;
-            let c = vello::kurbo::Circle::new(dot.center, dot.radius);
+            // One pitch wide and the full control height: a 32×32 target
+            // (HIG §9.6) that never shares a pixel with its neighbour.
+            *slot = Rect::new(
+                cx - CENTER_DOT_PITCH_PX / 2.0,
+                center_y - BAR_CONTROL_PX / 2.0,
+                cx + CENTER_DOT_PITCH_PX / 2.0,
+                center_y + BAR_CONTROL_PX / 2.0,
+            );
+            let c = vello::kurbo::Circle::new(Point::new(cx, center_y), r);
             scene.fill(Fill::NonZero, transform, color, None, &c);
         }
 
         // Widget content fills the band to the right of the dots.
-        let content_x0 = Self::dot_column_x(band) + 24.0;
-        let content_x1 = band.x1 - 12.0;
+        let (content_x0, content_x1) = Self::center_content_lane(band, theme);
         let content_cx = f64::midpoint(content_x0, content_x1);
         (content_x0, content_x1, content_cx)
     }
 
-    fn widget_editor_row(&self, index: usize) -> Rect {
-        let top = self.widget_editor_rect.y0 + 62.0 + small_count_to_f64(index) * 50.0;
-        Rect::new(
-            self.widget_editor_rect.x0 + 14.0,
-            top,
-            self.widget_editor_rect.x1 - 14.0,
-            top + 42.0,
-        )
-    }
-
-    fn widget_editor_remove_rect(&self, index: usize) -> Rect {
-        let row = self.widget_editor_row(index);
-        Rect::new(row.x1 - 76.0, row.y0 + 5.0, row.x1 - 5.0, row.y1 - 5.0)
-    }
-
-    fn widget_editor_add_rect(&self, widget: TopBarWidget) -> Rect {
-        let Some(index) = TopBarWidget::ALL
-            .into_iter()
-            .filter(|candidate| !self.widget_config.widgets.contains(candidate))
-            .position(|candidate| candidate == widget)
-        else {
-            return Rect::ZERO;
-        };
-        let x = self.widget_editor_rect.x0 + 16.0 + small_count_to_f64(index) * 82.0;
-        Rect::new(
-            x,
-            self.widget_editor_rect.y1 - 48.0,
-            x + 78.0,
-            self.widget_editor_rect.y1 - 8.0,
-        )
-    }
-
-    fn widget_editor_action_rect(&self, widget: TopBarWidget, present: bool) -> Rect {
-        if !self.widget_editing {
-            return Rect::ZERO;
-        }
-        if present {
-            if self.widget_config.widgets.len() <= 1 {
-                return Rect::ZERO;
-            }
-            self.widget_config
-                .widgets
-                .iter()
-                .position(|candidate| *candidate == widget)
-                .map_or(Rect::ZERO, |index| self.widget_editor_remove_rect(index))
-        } else {
-            self.widget_editor_add_rect(widget)
-        }
-    }
-
-    fn draw_widget_editor_rows(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        metrics: &ListMetrics,
-    ) {
-        for (index, widget) in self.widget_config.widgets.iter().copied().enumerate() {
-            if self.widget_edit_drag.from_index() == Some(index) {
-                continue;
-            }
-            let mut row = self.widget_editor_row(index);
-            row = row.with_origin((
-                row.x0,
-                row.y0 + self.widget_edit_drag.item_shift(index, metrics),
-            ));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &RoundedRect::from_rect(row, 10.0),
-            );
-            let label = match widget {
-                TopBarWidget::Clock => "Clock",
-                TopBarWidget::SystemMonitor => "System monitor",
-                TopBarWidget::Calendar => "Calendar",
-            };
-            text.draw_text(
-                scene,
-                "⠿",
-                theme.tokens.typography.scale.base,
-                theme.tokens.colors.text_dim,
-                at(transform, (row.x0 + 12.0, row.y0 + 11.0)),
-                None,
-            );
-            text.draw_text(
-                scene,
-                label,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_primary,
-                at(transform, (row.x0 + 40.0, row.y0 + 12.0)),
-                None,
-            );
-            if self.widget_config.widgets.len() > 1 {
-                let remove = self.widget_editor_remove_rect(index);
-                ui::widget::Button::paint(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    &ui::widget::ButtonFace::new(remove, "Remove")
-                        .danger()
-                        .hovered(self.last_cursor.is_some_and(|point| remove.contains(point)))
-                        .text_size(theme.tokens.typography.scale.xs),
-                );
-            }
-        }
-    }
-
-    fn draw_widget_editor_add_buttons(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        for widget in TopBarWidget::ALL {
-            if self.widget_config.widgets.contains(&widget) {
-                continue;
-            }
-            let label = match widget {
-                TopBarWidget::Clock => "+ Clock",
-                TopBarWidget::SystemMonitor => "+ Monitor",
-                TopBarWidget::Calendar => "+ Calendar",
-            };
-            let add = self.widget_editor_add_rect(widget);
-            ui::widget::Button::paint(
-                scene,
-                transform,
-                text,
-                theme,
-                &ui::widget::ButtonFace::new(add, label)
-                    .ghost()
-                    .hovered(self.last_cursor.is_some_and(|point| add.contains(point)))
-                    .text_size(theme.tokens.typography.scale.xs),
-            );
-        }
-    }
-
-    fn draw_widget_editor(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if !self.widget_editing {
-            self.widget_editor_rect = Rect::ZERO;
-            return;
-        }
-        let width = 286.0;
-        let available = TopBarWidget::ALL
-            .iter()
-            .filter(|widget| !self.widget_config.widgets.contains(widget))
-            .count();
-        let height = 86.0
-            + small_count_to_f64(self.widget_config.widgets.len()) * 50.0
-            + if available > 0 { 54.0 } else { 0.0 };
-        let panel = Rect::new(
-            self.center_rect.center().x - width / 2.0,
-            self.rect.y1 + 8.0,
-            self.center_rect.center().x + width / 2.0,
-            self.rect.y1 + 8.0 + height,
-        );
-        self.widget_editor_rect = panel;
-        let rr = RoundedRect::from_rect(panel, 16.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.overlay,
-            None,
-            &rr,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &rr,
-        );
-        text.draw_text_weighted(
-            scene,
-            "Edit top bar",
-            theme.tokens.typography.scale.base,
-            theme.tokens.colors.text_primary,
-            at(transform, (panel.x0 + 16.0, panel.y0 + 15.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        text.draw_text(
-            scene,
-            "Drag to reorder · click Remove",
-            theme.tokens.typography.scale.xs,
-            theme.tokens.colors.text_dim,
-            at(transform, (panel.x0 + 16.0, panel.y0 + 38.0)),
-            None,
-        );
-        let metrics =
-            ListMetrics::uniform(panel.y0 + 62.0, 42.0, 8.0, self.widget_config.widgets.len());
-        self.widget_edit_drag.sync_insertion(&metrics);
-        self.draw_widget_editor_rows(scene, transform, text, theme, &metrics);
-        if let Some(ghost) =
-            self.widget_edit_drag
-                .ghost_rect(panel.x0 + 14.0, panel.x1 - 14.0, &metrics)
-        {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.accent[5].with_alpha(0.22),
-                None,
-                &RoundedRect::from_rect(
-                    Rect::new(panel.x0 + 14.0, ghost.y0, panel.x1 - 14.0, ghost.y1),
-                    10.0,
-                ),
-            );
-        }
-        if available > 0 {
-            self.draw_widget_editor_add_buttons(scene, transform, text, theme);
-        }
+    /// The lane the active centre widget draws into: after the three dot
+    /// targets, inset `s3` from the band's trailing edge. One function so
+    /// [`Self::draw_center_band`] and [`Self::activity_content_width`]
+    /// cannot disagree about how much room the activity headline has.
+    fn center_content_lane(band: Rect, theme: &Theme) -> (f64, f64) {
+        let x0 = band.x0 + 3.0 * CENTER_DOT_PITCH_PX;
+        let x1 = band.x1 - f64::from(theme.tokens.spacing.s3);
+        (x0, x1)
     }
 
     fn draw_clock_widget(
@@ -2213,41 +2218,60 @@ impl TopBarChrome {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
+        let label_size = tokens.typography.scale.xs;
+        let value_size = tokens.typography.scale.sm;
+        // Each run sits on the bar's centre line by its own measured line
+        // height: the label and the value are set at different sizes, so a
+        // shared fixed offset would seat one of them off-centre — and
+        // drift further the moment the text scale changes.
+        let (_, label_h) =
+            text_renderer.measure_weighted(spec.label, label_size, None, TextWeight::Semibold);
+        let (_, value_h) =
+            text_renderer.measure_weighted(spec.value_str, value_size, None, TextWeight::Bold);
         text_renderer.draw_text_weighted(
             scene,
             spec.label,
-            tokens.typography.scale.xs,
+            label_size,
             self.metric_label_color(theme, spec.kind),
-            at(transform, (spec.label_x, spec.center_y - 6.0)),
+            at(
+                transform,
+                (spec.label_x, spec.center_y - f64::from(label_h) / 2.0),
+            ),
             None,
             TextWeight::Semibold,
         );
         text_renderer.draw_text_weighted(
             scene,
             spec.value_str,
-            tokens.typography.scale.sm,
+            value_size,
             colors.text_primary,
-            at(transform, (spec.value_x, spec.center_y - 7.0)),
+            at(
+                transform,
+                (spec.value_x, spec.center_y - f64::from(value_h) / 2.0),
+            ),
             None,
             TextWeight::Bold,
         );
     }
 
-    /// The deterministic-but-varied CPU sparkline bars between
-    /// `content_x0 + 70` and `content_x1 - 100`.
+    /// The deterministic-but-varied CPU sparkline bars across `spark_x`,
+    /// the room left between the CPU readout and the RAM label. Skipped
+    /// when that room is narrower than `s12`: bars painted under a label
+    /// would say less than no bars.
     fn draw_cpu_sparkline(
         &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
         center_y: f64,
-        content_x: (f64, f64),
+        spark_x: (f64, f64),
         secs: u32,
     ) {
-        let (content_x0, content_x1) = content_x;
-        let spark_x0 = content_x0 + 70.0;
-        let spark_x1 = content_x1 - 100.0;
-        let spark_w = (spark_x1 - spark_x0).max(40.0);
+        let (spark_x0, spark_x1) = spark_x;
+        let spark_w = spark_x1 - spark_x0;
+        if spark_w < f64::from(theme.tokens.spacing.s12) {
+            return;
+        }
         let bars = 20usize;
         let bar_gap = 1.0;
         let bar_w =
@@ -2288,6 +2312,35 @@ impl TopBarChrome {
         let cpu_str = format!("{cpu}%");
         let ram_str = format!("{ram}%");
         let tmp_str = format!("{tmp}°");
+
+        // Positions come from the measured advance of each run at the
+        // weight and size it is drawn with, not from fixed offsets: a
+        // three-digit value or a larger text scale then pushes its
+        // neighbours instead of painting over them.
+        let tokens = &theme.tokens;
+        let s1 = f64::from(tokens.spacing.s1);
+        let s3 = f64::from(tokens.spacing.s3);
+        let label_size = tokens.typography.scale.xs;
+        let value_size = tokens.typography.scale.sm;
+        let label_w = |tr: &mut TextRenderer, t: &str| {
+            f64::from(
+                tr.measure_weighted(t, label_size, None, TextWeight::Semibold)
+                    .0,
+            )
+        };
+        let value_w = |tr: &mut TextRenderer, t: &str| {
+            f64::from(tr.measure_weighted(t, value_size, None, TextWeight::Bold).0)
+        };
+        let widths = MetricWidths {
+            cpu_label: label_w(text_renderer, "CPU"),
+            cpu_value: value_w(text_renderer, &cpu_str),
+            ram_label: label_w(text_renderer, "RAM"),
+            ram_value: value_w(text_renderer, &ram_str),
+            tmp_label: label_w(text_renderer, "TMP"),
+            tmp_value: value_w(text_renderer, &tmp_str),
+        };
+        let columns = monitor_columns((content_x0, content_x1), &widths, s1, s3);
+
         self.draw_metric_label(
             scene,
             transform,
@@ -2295,42 +2348,46 @@ impl TopBarChrome {
             text_renderer,
             &MetricLabelSpec {
                 center_y,
-                label_x: content_x0,
-                value_x: content_x0 + 26.0,
+                label_x: columns.cpu_label_x,
+                value_x: columns.cpu_value_x,
                 label: "CPU",
                 value_str: &cpu_str,
                 kind: MetricKind::Cpu,
             },
         );
-        self.draw_cpu_sparkline(scene, transform, theme, center_y, content_x, secs);
-        self.draw_metric_label(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            &MetricLabelSpec {
-                center_y,
-                label_x: content_x1 - 96.0,
-                value_x: content_x1 - 70.0,
-                label: "RAM",
-                value_str: &ram_str,
-                kind: MetricKind::Ram,
-            },
-        );
-        self.draw_metric_label(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            &MetricLabelSpec {
-                center_y,
-                label_x: content_x1 - 40.0,
-                value_x: content_x1 - 18.0,
-                label: "TMP",
-                value_str: &tmp_str,
-                kind: MetricKind::Tmp,
-            },
-        );
+        self.draw_cpu_sparkline(scene, transform, theme, center_y, columns.spark, secs);
+        if let Some((label_x, value_x)) = columns.ram {
+            self.draw_metric_label(
+                scene,
+                transform,
+                theme,
+                text_renderer,
+                &MetricLabelSpec {
+                    center_y,
+                    label_x,
+                    value_x,
+                    label: "RAM",
+                    value_str: &ram_str,
+                    kind: MetricKind::Ram,
+                },
+            );
+        }
+        if let Some((label_x, value_x)) = columns.tmp {
+            self.draw_metric_label(
+                scene,
+                transform,
+                theme,
+                text_renderer,
+                &MetricLabelSpec {
+                    center_y,
+                    label_x,
+                    value_x,
+                    label: "TMP",
+                    value_str: &tmp_str,
+                    kind: MetricKind::Tmp,
+                },
+            );
+        }
     }
 
     fn draw_calendar_widget(
@@ -2354,12 +2411,15 @@ impl TopBarChrome {
         let time_weight = TextWeight::Medium;
         let (pw, ph) = text_renderer.measure_weighted(prefix, size, None, prefix_weight);
         let (ew, _) = text_renderer.measure_weighted(event, size, None, event_weight);
-        let (tw, _) =
+        let (tw, th) =
             text_renderer.measure_weighted(time, tokens.typography.scale.xs, None, time_weight);
-        let gap = 8.0;
+        let gap = f64::from(tokens.spacing.s2);
         let total = f64::from(pw) + gap + f64::from(ew) + gap + f64::from(tw);
         let mut tx = content_cx - total / 2.0;
         let ty = center_y - f64::from(ph) / 2.0;
+        // The smaller note is centred on its own line height rather than
+        // nudged off the prefix's baseline by a fixed pixel.
+        let time_y = center_y - f64::from(th) / 2.0;
         text_renderer.draw_text_weighted(
             scene,
             prefix,
@@ -2385,7 +2445,7 @@ impl TopBarChrome {
             time,
             tokens.typography.scale.xs,
             colors.text_dim,
-            at(transform, (tx, ty + 1.0)),
+            at(transform, (tx, time_y)),
             None,
             time_weight,
         );
@@ -2408,12 +2468,21 @@ impl TopBarChrome {
 
         // Sizes itself to what's actually knowable; an unarrived
         // reading contributes nothing rather than a plausible default.
-        let tray_h = TOPBAR_CONTROL_HEIGHT_PX;
-        let tray_slot = 24.0_f64;
-        let tray_pad = 8.0_f64;
-        let tray_gap = 4.0_f64;
+        let tray_h = BAR_CONTROL_PX;
+        let tray_slot = f64::from(tokens.spacing.s6);
+        let tray_pad = f64::from(tokens.spacing.s2);
+        let tray_gap = f64::from(tokens.spacing.s1);
         let icon_px = 17.0_f64;
         let pct_size = tokens.typography.scale.xs;
+        // The unread count rides beside the bell; its width is measured
+        // here so the pill is sized for it before anything is painted.
+        let badge_w = (self.notification_badge > 0)
+            .then(|| {
+                let label = Self::notification_badge_label(self.notification_badge);
+                let (w, h) = text_renderer.measure(&label, pct_size, None);
+                Self::notification_badge_size(w, h, theme).0
+            })
+            .unwrap_or(0.0);
 
         let has_volume = self.status.volume.is_some();
         let has_link = self.status.link.is_some();
@@ -2454,7 +2523,7 @@ impl TopBarChrome {
         if self.notification_badge > 0 {
             // Bell plus a compact exact count (`99+` once the number no longer
             // fits); the base slot calculation already paid for the bell.
-            tray_w += 20.0;
+            tray_w += badge_w + tray_gap;
         }
 
         self.tray_pill_rect = Rect::new(
@@ -2495,6 +2564,7 @@ impl TopBarChrome {
             icon_px,
             pct_size,
             pct_label,
+            badge_w,
             slots,
             center_y,
             dim: colors.text_dim,
@@ -2523,6 +2593,7 @@ impl TopBarChrome {
         &self,
         scene: &mut Scene,
         transform: Affine,
+        theme: &Theme,
         text_renderer: &mut TextRenderer,
         layout: &TrayLayout,
         sx: f64,
@@ -2538,31 +2609,43 @@ impl TopBarChrome {
             layout.bright,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let label = if self.notification_badge > 99 {
-            "99+".to_string()
-        } else {
-            self.notification_badge.to_string()
-        };
-        let label_size = 9.0;
+        let label = Self::notification_badge_label(self.notification_badge);
+        // The count is set at the chrome's numeric-readout size, so it
+        // follows the person's text scale like every other bar label.
+        let label_size = layout.pct_size;
         let (label_w, label_h) = text_renderer.measure(&label, label_size, None);
+        // The width was reserved in `draw_tray_pill_body` from the same
+        // label; reading it back keeps the pill and the badge in agreement.
+        let (_, badge_h) = Self::notification_badge_size(label_w, label_h, theme);
+        let badge_w = layout.badge_w;
         let badge = Rect::new(
-            sx + layout.tray_slot - 1.0,
-            layout.center_y - 8.0,
-            sx + layout.tray_slot + f64::from(label_w) + 9.0,
-            layout.center_y + 8.0,
+            sx + layout.tray_slot,
+            layout.center_y - badge_h / 2.0,
+            sx + layout.tray_slot + badge_w,
+            layout.center_y + badge_h / 2.0,
         );
+        // A count badge is a capsule (Selector radius) in the danger hue;
+        // its ink is whichever text tone stays legible on that fill, so a
+        // light or high-contrast palette is not handed a fixed white.
         scene.fill(
             Fill::NonZero,
             transform,
             layout.danger,
             None,
-            &RoundedRect::from_rect(badge, 8.0),
+            &RoundedRect::from_rect(
+                badge,
+                ui::chrome::ChromeRole::Selector.radius(theme, badge.height()),
+            ),
         );
+        let ink = theme
+            .tokens
+            .colors
+            .ink_on(layout.danger, layout.bright, 4.5);
         text_renderer.draw_text(
             scene,
             &label,
             label_size,
-            Color::WHITE,
+            ink,
             at(
                 transform,
                 (
@@ -2572,7 +2655,28 @@ impl TopBarChrome {
             ),
             None,
         );
-        sx + layout.tray_slot + 20.0 + layout.tray_gap
+        sx + layout.tray_slot + badge_w + layout.tray_gap
+    }
+
+    /// `99+` once the exact number no longer fits the compact badge.
+    fn notification_badge_label(count: u32) -> String {
+        if count > 99 {
+            "99+".to_string()
+        } else {
+            count.to_string()
+        }
+    }
+
+    /// Badge size for a measured count label: `s1` of padding above and
+    /// below the line, `s1` either side, never shorter than `s4` nor
+    /// narrower than it is tall (so a single digit is a round dot rather
+    /// than a sliver). Whole pixels, so the capsule's edges stay crisp.
+    fn notification_badge_size(label_w: f32, label_h: f32, theme: &Theme) -> (f64, f64) {
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let s4 = f64::from(theme.tokens.spacing.s4);
+        let h = (f64::from(label_h) + s1).max(s4).round();
+        let w = (f64::from(label_w) + 2.0 * s1).max(h).round();
+        (w, h)
     }
 
     /// Draws the volume glyph if the status has a reading. Returns the
@@ -2744,7 +2848,7 @@ impl TopBarChrome {
         if layout.slots == 0 {
             Self::draw_tray_settings_icon(scene, transform, layout, sx);
         }
-        sx = self.draw_tray_notification_badge(scene, transform, text_renderer, layout, sx);
+        sx = self.draw_tray_notification_badge(scene, transform, theme, text_renderer, layout, sx);
         sx = Self::draw_tray_volume_icon(scene, transform, &self.status, layout, sx);
         sx = Self::draw_tray_network_icon(scene, transform, &self.status, layout, sx);
         Self::draw_tray_battery_icon(
@@ -3164,7 +3268,7 @@ impl TopBarChrome {
             *handled = true;
             return;
         }
-        if self.media_indicator_rect.contains(p) {
+        if self.media_hit_rect().contains(p) {
             state.open_quick_settings();
             *handled = true;
             return;
@@ -3268,7 +3372,7 @@ impl TopBarChrome {
         }
         let media_hovered = self
             .last_cursor
-            .is_some_and(|p| self.media_indicator_rect.contains(p));
+            .is_some_and(|p| self.media_hit_rect().contains(p));
         self.media_expanded = !self.media_signature.is_empty()
             && (media_hovered
                 || self
@@ -3350,11 +3454,11 @@ impl TopBarChrome {
         let size = theme.tokens.typography.scale.sm;
         // Keep activity in one line. `measure(..., Some(width))` wraps at
         // word boundaries, which made a large-text notification grow to two
-        // lines inside the fixed 34px selector and clip into the bar edge.
-        // The dots reserve the first 80px of the band; the trailing inset
-        // reserves the right breathing room. Elision preserves that geometry
-        // at every text scale and viewport width.
-        let max_width = self.activity_content_width();
+        // lines inside the fixed-height selector and clip into the bar edge.
+        // The dots reserve the first three pitches of the band; the trailing
+        // inset reserves the right breathing room. Elision preserves that
+        // geometry at every text scale and viewport width.
+        let max_width = self.activity_content_width(theme);
         let label = self.activity_display_label(text_renderer, size, max_width);
         let (w, h) = text_renderer.measure_weighted(&label, size, None, TextWeight::Medium);
         text_renderer.draw_text_weighted(
@@ -3371,10 +3475,12 @@ impl TopBarChrome {
         );
     }
 
-    fn activity_content_width(&self) -> f32 {
-        // The dots reserve the first 80px of the band; the trailing inset
-        // reserves the right breathing room.
-        ui::num::f32_of_f64((self.center_rect.width() - 92.0).max(48.0))
+    /// Width of the centre lane the activity headline may occupy — the
+    /// band minus the dot targets and the trailing inset, exactly as
+    /// [`Self::draw_center_band`] lays it out.
+    fn activity_content_width(&self, theme: &Theme) -> f32 {
+        let (x0, x1) = Self::center_content_lane(self.center_rect, theme);
+        ui::num::f32_of_f64((x1 - x0).max(f64::from(theme.tokens.spacing.s12)))
     }
 
     fn activity_display_label(
@@ -4704,6 +4810,25 @@ mod tests {
     };
 
     #[test]
+    fn compact_workspace_identity_outranks_redundant_position() {
+        let mut bar = sample_chrome();
+        bar.workspace_name = "Home".into();
+        bar.workspace_total = 1;
+        bar.workspace_index = 0;
+        let mut tr = TextRenderer::new();
+        let label = bar.workspace_label(&mut tr, 28.0, 112.0);
+        assert!(label.contains("Home"), "{label}");
+    }
+
+    #[test]
+    fn workspace_settings_affordance_is_distinct_from_global_controls() {
+        assert_ne!(
+            TopBarChrome::WORKSPACE_SETTINGS_ICON,
+            ui::icons::Icon::Settings2
+        );
+    }
+
+    #[test]
     fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {
         let theme = Theme::dark().with_text_scale(2.0);
         let mut bar = sample_chrome();
@@ -4873,6 +4998,171 @@ mod tests {
         assert!(bar.center_rect.height() >= 32.0);
     }
 
+    /// HIG §9.6: every pressable thing in the bar shares one height, so
+    /// the pills and buttons sit on one top edge and one bottom edge,
+    /// centred on the bar; and each dot of the centre selector owns a
+    /// 32×32 target that never overlaps its neighbour.
+    #[test]
+    fn bar_controls_share_one_height_and_centre_line() {
+        let mut bar = sample_chrome();
+        lay_out_and_draw(&mut bar, 1280.0);
+        let reference = bar.overview_btn_rect;
+        let controls = [
+            ("overview", bar.overview_btn_rect),
+            ("workspace up", bar.up_btn_rect),
+            ("workspace down", bar.down_btn_rect),
+            ("workspace pill", bar.ws_pill_rect),
+            ("centre band", bar.center_rect),
+            ("tray pill", bar.tray_pill_rect),
+        ];
+        for (name, r) in controls {
+            assert!(
+                (r.height() - BAR_CONTROL_PX).abs() < 0.01,
+                "{name} is {} px tall, not the shared {BAR_CONTROL_PX}",
+                r.height()
+            );
+            assert!(
+                (r.y0 - reference.y0).abs() < 0.01 && (r.y1 - reference.y1).abs() < 0.01,
+                "{name} {r:?} does not share the nav cluster's edges {reference:?}"
+            );
+        }
+        let bar_centre = f64::midpoint(bar.rect.y0, bar.rect.y1);
+        assert!(
+            (reference.center().y - bar_centre).abs() < 0.01,
+            "controls centre at {} in a bar centred on {bar_centre}",
+            reference.center().y
+        );
+        for (i, dot) in bar.center_dot_rects.iter().enumerate() {
+            assert!(
+                dot.width() >= 32.0 && dot.height() >= 32.0,
+                "dot {i} target {dot:?} is under the 32×32 pointer floor"
+            );
+            assert!(
+                dot.x0 >= bar.center_rect.x0 - 0.01 && dot.x1 <= bar.center_rect.x1 + 0.01,
+                "dot {i} target {dot:?} leaves the band {:?}",
+                bar.center_rect
+            );
+            if let Some(next) = bar.center_dot_rects.get(i.saturating_add(1)) {
+                assert!(
+                    next.x0 >= dot.x1 - 0.01,
+                    "dot targets {dot:?} and {next:?} overlap"
+                );
+            }
+        }
+    }
+
+    /// The workspace capsule pads its label on the left exactly as much
+    /// as it pads the gear on the right, and the gear sits on the pill's
+    /// centre line — so the pill reads centred on its contents.
+    #[test]
+    fn workspace_pill_pads_its_label_and_gear_symmetrically() {
+        let mut bar = sample_chrome();
+        let theme = Theme::default();
+        lay_out_and_draw_with_theme(&mut bar, 1280.0, &theme);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        // `draw_workspace_nav` hands the pill an x one `s3` past the
+        // down switch; the label starts there, one `s2` inside the pill,
+        // which leaves an `s1` gutter between the cluster and the capsule.
+        let text_x = bar.down_btn_rect.x1 + f64::from(theme.tokens.spacing.s3);
+        assert!(
+            (text_x - bar.ws_pill_rect.x0 - pad).abs() < 0.01,
+            "leading pad is {} not {pad}",
+            text_x - bar.ws_pill_rect.x0
+        );
+        let gutter = f64::from(theme.tokens.spacing.s1);
+        assert!(
+            (bar.ws_pill_rect.x0 - bar.down_btn_rect.x1 - gutter).abs() < 0.01,
+            "the gutter between the nav cluster and the pill is {} not {gutter}",
+            bar.ws_pill_rect.x0 - bar.down_btn_rect.x1
+        );
+        assert!(
+            (bar.ws_pill_rect.x1 - bar.ws_gear_rect.x1 - pad).abs() < 0.01,
+            "trailing pad is {} not {pad}",
+            bar.ws_pill_rect.x1 - bar.ws_gear_rect.x1
+        );
+        assert!(
+            (bar.ws_gear_rect.center().y - bar.ws_pill_rect.center().y).abs() < 0.01,
+            "gear {:?} is off the pill's centre line {:?}",
+            bar.ws_gear_rect,
+            bar.ws_pill_rect
+        );
+    }
+
+    /// In a narrow lane the monitor's pairs drop from the inside out
+    /// rather than painting over the CPU readout: RAM goes first, then
+    /// TMP; whatever remains keeps `s3` clear of its neighbour.
+    #[test]
+    fn monitor_columns_drop_pairs_from_the_inside_out_in_a_narrow_lane() {
+        let widths = MetricWidths {
+            cpu_label: 20.0,
+            cpu_value: 24.0,
+            ram_label: 22.0,
+            ram_value: 24.0,
+            tmp_label: 22.0,
+            tmp_value: 20.0,
+        };
+        let (s1, s3) = (4.0, 12.0);
+        let cpu_end = 20.0 + s1 + 24.0;
+
+        let wide = monitor_columns((0.0, 400.0), &widths, s1, s3);
+        let (ram_label_x, _) = wide.ram.expect("a 400 px lane holds every pair");
+        let (tmp_label_x, tmp_value_x) = wide.tmp.expect("a 400 px lane holds every pair");
+        assert!(
+            ram_label_x >= cpu_end + s3,
+            "RAM keeps s3 clear of the CPU value"
+        );
+        assert!(
+            (tmp_value_x + 20.0 - 400.0).abs() < 1e-9,
+            "TMP's value ends on the lane's edge"
+        );
+        assert!(tmp_label_x > ram_label_x);
+        assert!(wide.spark.0 >= cpu_end + s3 && wide.spark.1 <= ram_label_x - s3);
+
+        // 112 px is the lane a 220 px band leaves at an 800 px viewport.
+        let compact = monitor_columns((0.0, 112.0), &widths, s1, s3);
+        assert!(compact.ram.is_none(), "RAM is the first pair to yield");
+        let (tmp_label_x, _) = compact.tmp.expect("TMP still fits a 112 px lane");
+        assert!(
+            tmp_label_x >= cpu_end + s3,
+            "TMP {tmp_label_x} keeps s3 clear of the CPU value ending at {cpu_end}"
+        );
+        assert!(compact.spark.1 <= tmp_label_x - s3);
+
+        let tiny = monitor_columns((0.0, 70.0), &widths, s1, s3);
+        assert!(
+            tiny.ram.is_none() && tiny.tmp.is_none(),
+            "nothing overlaps the CPU pair"
+        );
+        assert_eq!(tiny.cpu_label_x, 0.0);
+        assert_eq!(tiny.cpu_value_x, 20.0 + s1);
+    }
+
+    /// The bar's density constants are the spacing scale under other
+    /// names; this pins them so they cannot drift off it unnoticed.
+    #[test]
+    fn bar_density_sits_on_the_spacing_scale() {
+        let tokens = Theme::default().tokens;
+        let spacing = tokens.spacing;
+        assert_eq!(BAR_CONTROL_PX, f64::from(spacing.s8));
+        assert_eq!(CENTER_DOT_PITCH_PX, f64::from(spacing.s8));
+        assert_eq!(TOPBAR_HEIGHT_PX, spacing.s12);
+        // The bar's density is the §9.6 pointer floor plus `s2` of air each
+        // side — derived from `tokens.metrics`, not restated. A bar of
+        // `metrics.bar_height` (40) would hold `bar_control_height` (28)
+        // controls, which the shell's bar deliberately does not: its
+        // controls are pointer targets. Recorded 2026-09-17 (S1 round two).
+        assert_eq!(BAR_CONTROL_PX, f64::from(tokens.metrics.min_pointer_target));
+        assert_eq!(
+            TOPBAR_HEIGHT_PX,
+            tokens.metrics.min_pointer_target + 2.0 * spacing.s2
+        );
+        assert!(
+            TOPBAR_HEIGHT_PX > tokens.metrics.bar_height,
+            "a 32 px control cannot sit in a {} px bar with any air",
+            tokens.metrics.bar_height
+        );
+    }
+
     #[test]
     fn large_text_activity_stays_single_line_inside_center_content_lane() {
         let mut bar = sample_chrome();
@@ -4882,7 +5172,7 @@ mod tests {
         let mut renderer = TextRenderer::new();
         let theme = Theme::default().with_text_scale(1.5);
         let size = theme.tokens.typography.scale.sm;
-        let max_width = bar.activity_content_width();
+        let max_width = bar.activity_content_width(&theme);
         let label = bar.activity_display_label(&mut renderer, size, max_width);
         let (_, height) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
         let (width, _) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
@@ -4925,7 +5215,7 @@ mod tests {
         let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
         let theme = Theme::default().with_text_scale(1.3);
         let size = theme.tokens.typography.scale.sm;
-        let max_width = bar.activity_content_width();
+        let max_width = bar.activity_content_width(&theme);
         let label = bar.activity_display_label(&mut renderer, size, max_width);
         let (width, _) = renderer.measure_weighted(&label, size, None, TextWeight::Medium);
         assert_eq!(label, "ada · 2 permission changes  ›");

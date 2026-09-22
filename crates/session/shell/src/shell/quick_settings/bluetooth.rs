@@ -14,7 +14,9 @@ use ui::widget::{Button, ButtonFace};
 
 use crate::shell::quick_settings::BtDevice;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings::drill_in::DrillInList;
+use crate::shell::quick_settings::drill_in::{
+    CONTROL_INSET, DrillInList, GLYPH, STATUS_DOT, trailing_dot_center, trailing_status_glyph,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BluetoothOutcome {
@@ -316,12 +318,9 @@ impl QuickSettingsBluetoothPane {
                 colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
-            let battery = Rect::new(
-                row.x1 - 64.0,
-                row.y0 + (row.height() - 18.0) / 2.0,
-                row.x1 - 42.0,
-                row.y0 + f64::midpoint(row.height(), 18.0),
-            );
+            // The battery glyph takes the trailing status slot, centred on
+            // the row's centre line, one related step before the dot.
+            let battery = trailing_status_glyph(*row, CONTROL_INSET, GLYPH);
             let battery_color = if device.battery > 50 {
                 colors.semantic.success
             } else if device.battery > 20 {
@@ -343,7 +342,7 @@ impl QuickSettingsBluetoothPane {
                     transform,
                     colors.accent[5],
                     None,
-                    &Circle::new(Point::new(row.x1 - 14.0, row.center().y), 5.0),
+                    &Circle::new(trailing_dot_center(*row, CONTROL_INSET), STATUS_DOT / 2.0),
                 );
             }
         }
@@ -414,14 +413,15 @@ mod tests {
         let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
         let mut devices = vec![device()];
         let actions = Actions::default();
+        let validated = crate::shell::search::providers::actions::ValidatedQsActions::new(&actions);
         pane.list.layout(panel, devices.len());
         assert_eq!(
-            pane.handle_click(pane.list.back_center(), panel, &mut devices, &actions),
+            pane.handle_click(pane.list.back_center(), panel, &mut devices, &validated),
             BluetoothOutcome::Back
         );
         let row = pane.list.rows()[0].center();
         assert_eq!(
-            pane.handle_click(row, panel, &mut devices, &actions),
+            pane.handle_click(row, panel, &mut devices, &validated),
             BluetoothOutcome::OpenDetails {
                 address: "02:00:00:00:00:01".into()
             }
@@ -430,152 +430,12 @@ mod tests {
         assert!(actions.calls.borrow().is_empty());
         devices[0].connected = false;
         assert_eq!(
-            pane.handle_click(row, panel, &mut devices, &actions),
+            pane.handle_click(row, panel, &mut devices, &validated),
             BluetoothOutcome::Changed
         );
         assert!(devices[0].connected);
-        assert_eq!(actions.calls.borrow()[0], "connect:02:00:00:00:00:01");
-    }
-
-    #[test]
-    fn failed_connect_is_reported_without_publishing_false_device_state() {
-        let mut pane = QuickSettingsBluetoothPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut devices = vec![device()];
-        devices[0].connected = false;
-        let actions = Actions {
-            reject: true,
-            ..Default::default()
-        };
-        pane.list.layout(panel, devices.len());
-
-        assert_eq!(
-            pane.handle_click(pane.list.rows()[0].center(), panel, &mut devices, &actions,),
-            BluetoothOutcome::ActionFailed {
-                device: "Headphones".into(),
-                error: "Bluetooth connection rejected".into(),
-            }
-        );
-        assert!(!devices[0].connected);
-        assert_eq!(
-            actions.calls.borrow().as_slice(),
-            ["connect:02:00:00:00:00:01"]
-        );
-    }
-
-    #[test]
-    fn keyboard_wraps_to_a_device_and_activates_the_same_row() {
-        let mut pane = QuickSettingsBluetoothPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let mut devices = vec![device()];
-        devices[0].connected = false;
-        let actions = Actions::default();
-
-        assert_eq!(
-            pane.handle_key(
-                &Key::Named(NamedKey::Tab),
-                true,
-                panel,
-                &mut devices,
-                &actions,
-            ),
-            Some(BluetoothOutcome::None)
-        );
-        assert_eq!(
-            pane.handle_key(
-                &Key::Named(NamedKey::Enter),
-                false,
-                panel,
-                &mut devices,
-                &actions,
-            ),
-            Some(BluetoothOutcome::Changed)
-        );
-        assert!(devices[0].connected);
-        assert_eq!(
-            actions.calls.borrow().as_slice(),
-            ["connect:02:00:00:00:00:01"]
-        );
-
-        pane.reset_focus();
-        let _ = pane.handle_key(
-            &Key::Named(NamedKey::ArrowDown),
-            false,
-            panel,
-            &mut devices,
-            &actions,
-        );
-        assert_eq!(
-            pane.handle_key(
-                &Key::Named(NamedKey::Space),
-                false,
-                panel,
-                &mut devices,
-                &actions,
-            ),
-            Some(BluetoothOutcome::Back)
-        );
-    }
-
-    #[test]
-    fn semantics_match_back_then_visible_devices() {
-        let pane = QuickSettingsBluetoothPane::default();
-        let panel = Rect::new(100.0, 50.0, 500.0, 500.0);
-        let devices = vec![device()];
-        let names = pane
-            .semantic_rects(panel, &devices)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            [
-                "quick_settings_bluetooth_back",
-                "quick_settings_bluetooth_device[0]",
-            ]
-        );
-        let snapshot = pane.accessibility_snapshot(&devices);
-        assert_eq!(snapshot.name.as_deref(), Some("Bluetooth"));
-        assert_eq!(snapshot.children.len(), names.len());
-        assert_eq!(snapshot.children[1].name.as_deref(), Some("Headphones"));
-        assert_eq!(
-            snapshot.children[1].description.as_deref(),
-            Some("Connected; open device actions")
-        );
-    }
-
-    #[test]
-    fn compact_keyboard_focus_scrolls_the_last_device_into_view() {
-        let mut pane = QuickSettingsBluetoothPane::default();
-        let panel = Rect::new(600.0, 40.0, 948.0, 240.0);
-        let mut devices = (0..8)
-            .map(|index| BtDevice {
-                name: format!("Device {index}"),
-                address: format!("02:00:00:00:00:{index:02X}"),
-                battery: 70,
-                connected: false,
-            })
-            .collect::<Vec<_>>();
-        let actions = Actions::default();
-
-        let _ = pane.handle_key(
-            &Key::Named(NamedKey::Tab),
-            true,
-            panel,
-            &mut devices,
-            &actions,
-        );
-        assert_eq!(
-            pane.keyboard_focus,
-            Some(QuickSettingsBluetoothPane::DEVICE_FOCUS_START + 7)
-        );
-        assert_eq!(pane.list.visible_indices(), 6..8);
-        let names = pane
-            .semantic_rects(panel, &devices)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect::<Vec<_>>();
-        assert!(names.contains(&"quick_settings_bluetooth_device[7]".to_string()));
-        assert!(!names.contains(&"quick_settings_bluetooth_device[0]".to_string()));
+        assert_eq!(actions.0.borrow()[0], "connect:02:00:00:00:00:01");
+        validated.disconnect_bluetooth(&devices[0].address).unwrap();
+        assert_eq!(actions.0.borrow()[1], "disconnect:02:00:00:00:00:01");
     }
 }

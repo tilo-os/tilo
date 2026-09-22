@@ -39,7 +39,7 @@ use super::driver::ShellDriver;
 #[derive(Debug, Clone)]
 #[allow(
     dead_code,
-    reason = "the screenshot scenario DSL intentionally keeps actions available before every variant has a catalogue caller"
+    reason = "the scenario DSL retains implemented actions that the current catalogue does not construct"
 )]
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
@@ -1128,6 +1128,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 caller: opts.caller,
                 title: opts.title,
                 save: opts.save,
+                directory: opts.directory,
                 multiple: opts.multiple,
                 accept_label: opts.accept_label,
                 current_name: opts.current_name,
