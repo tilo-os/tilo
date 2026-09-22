@@ -4,6 +4,7 @@
 //! pipes and prevents general-purpose OpenSSL parsing from becoming part of an
 //! application's privilege boundary.
 
+use rand::{RngCore, rngs::OsRng};
 use sha_crypt::{PasswordHasher, ShaCrypt};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -85,10 +86,17 @@ pub fn hash_account_password(password: &mut [u8]) -> Result<String, String> {
         return Err("password must contain 10–1024 bytes and no newline".into());
     }
 
+    // `PasswordHasher::hash_password` generates 16 random bytes, which this
+    // crate serializes as a 22-character salt. Linux crypt(5) limits SHA-crypt
+    // salts to 16 characters. Twelve random bytes encode to exactly that limit
+    // while retaining 96 bits of entropy.
+    let mut salt = [0_u8; 12];
+    OsRng.fill_bytes(&mut salt);
     let result = ShaCrypt::default()
-        .hash_password(password)
+        .hash_password_with_salt(password, &salt)
         .map(|hash| hash.to_string())
         .map_err(|error| format!("cannot hash account password: {error}"));
+    salt.zeroize();
     password.zeroize();
     result
 }
@@ -1245,6 +1253,11 @@ mod tests {
 
         assert!(hash.starts_with("$6$"));
         assert!(password.iter().all(|byte| *byte == 0));
+        let fields: Vec<_> = hash.split('$').collect();
+        assert_eq!(fields.len(), 5);
+        assert_eq!(fields[2], "rounds=5000");
+        assert_eq!(fields[3].len(), 16);
+        assert_eq!(fields[4].len(), 86);
         let parsed = PasswordHashRef::new(&hash).expect("parse generated hash");
         ShaCrypt::default()
             .verify_password(original, parsed)
