@@ -232,11 +232,11 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}
           cache-from: type=registry,ref=code.podesta.ai/qos/tilo-kernel-buildcache:${{ matrix.arch }}
-          # The kernel builder's intermediate source tree is tens of GiB.
-          # Export only final-stage dependencies: mode=max duplicated that
-          # tree during export and exhausted the runner after a successful
-          # compile.
-          cache-to: type=registry,ref=code.podesta.ai/qos/tilo-kernel-buildcache:${{ matrix.arch }},mode=min
+          # PRs consume the shared cache but do not update it: exporting cache
+          # work can outlive a successful compile and exhaust the runner's
+          # hard deadline. Main/tag/dispatch builds refresh final-stage
+          # dependencies only; mode=max duplicates the multi-GiB source tree.
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=code.podesta.ai/qos/tilo-kernel-buildcache:{0},mode=min', matrix.arch) || '' }}
           provenance: false
 
       - name: Install native kernel acceptance tools
