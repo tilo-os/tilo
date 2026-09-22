@@ -4,7 +4,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/bin" "$work/out"
+mkdir -p "$work/bin" "$work/out" "$work/udev/data"
 
 digest="sha256:$(printf 'a%.0s' {1..64})"
 authoritative="code.sandbox.example/qos/tilo-development@$digest"
@@ -50,7 +50,7 @@ EOF
 chmod +x "$work/bin/"*
 
 set +e
-PATH="$work/bin:$PATH" TILO_DISTROBOX= \
+PATH="$work/bin:$PATH" TILO_DISTROBOX= TILO_DISK_HOST_UDEV_DIR="$work/udev" \
   "$repo/os/dev/disk-image.sh" "$authoritative" "$work/out" \
   --composefs --sealed-source-imgref "$mirror_repository:local" --raw \
   >"$work/stdout" 2>"$work/stderr"
@@ -80,6 +80,7 @@ grep -Fxq -- "docker://$mirror_repository@$digest" "$work/podman-argv"
 grep -Fxq -- "$authoritative" "$work/podman-argv"
 grep -Fxq -- "$work/out/.source-policy.json:/etc/containers/policy.json:ro" \
   "$work/podman-argv"
+grep -Fxq -- "$work/udev:/run/udev:ro" "$work/podman-argv"
 ! grep -Fxq -- "$mirror_repository:local" "$work/podman-argv"
 [ ! -e "$work/out/.source-policy.json" ]
 
