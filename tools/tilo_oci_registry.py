@@ -67,29 +67,42 @@ class Layout:
     def descriptors(self) -> list[dict[str, Any]]:
         return [value for value in self.index["manifests"] if isinstance(value, dict)]
 
-    def tags(self) -> dict[str, str]:
-        result: dict[str, str] = {}
+    @staticmethod
+    def _annotation_tag(value: object, repository: str) -> str | None:
+        if not isinstance(value, str):
+            return None
+        if TAG.fullmatch(value):
+            return value
+        prefix = repository + ":"
+        if value.startswith(prefix) and TAG.fullmatch(value.removeprefix(prefix)):
+            return value.removeprefix(prefix)
+        return None
+
+    def tagged_descriptors(self, repository: str) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
         for descriptor in self.descriptors():
-            name = descriptor.get("annotations", {}).get("org.opencontainers.image.ref.name")
+            annotations = descriptor.get("annotations", {})
+            name = annotations.get("org.opencontainers.image.ref.name") if isinstance(annotations, dict) else None
+            tag = self._annotation_tag(name, repository)
             digest = descriptor.get("digest")
-            if isinstance(name, str) and TAG.fullmatch(name) and isinstance(digest, str) and DIGEST.fullmatch(digest):
-                result[name] = digest
+            if tag is None or not isinstance(digest, str) or not DIGEST.fullmatch(digest):
+                continue
+            previous = result.get(tag)
+            if previous is not None and previous.get("digest") != digest:
+                raise ValueError(f"ambiguous OCI tag {tag!r} for repository {repository!r}")
+            result[tag] = descriptor
         return result
 
-    def resolve(self, reference: str) -> tuple[str, str]:
+    def tags(self, repository: str) -> dict[str, str]:
+        return {tag: descriptor["digest"] for tag, descriptor in self.tagged_descriptors(repository).items()}
+
+    def resolve(self, reference: str, repository: str) -> tuple[str, str]:
         if DIGEST.fullmatch(reference):
             digest = reference
             descriptor = next((item for item in self.descriptors() if item.get("digest") == digest), None)
             media_type = descriptor.get("mediaType") if descriptor else None
         elif TAG.fullmatch(reference):
-            descriptor = next(
-                (
-                    item
-                    for item in self.descriptors()
-                    if item.get("annotations", {}).get("org.opencontainers.image.ref.name") == reference
-                ),
-                None,
-            )
+            descriptor = self.tagged_descriptors(repository).get(reference)
             if descriptor is None:
                 raise FileNotFoundError(reference)
             digest = descriptor.get("digest")
@@ -178,7 +191,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         suffix = path[len(prefix):]
         if suffix == "tags/list":
-            body = json_bytes({"name": self.server.repository, "tags": sorted(self.server.layout.tags())})
+            try:
+                tags = sorted(self.server.layout.tags(self.server.repository))
+            except ValueError:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "UNKNOWN", "ambiguous tag metadata", head=head)
+                return
+            body = json_bytes({"name": self.server.repository, "tags": tags})
             self._headers(HTTPStatus.OK, len(body), "application/json")
             self.end_headers()
             if not head:
@@ -187,7 +205,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if suffix.startswith("manifests/"):
             reference = suffix.removeprefix("manifests/")
             try:
-                digest, media_type = self.server.layout.resolve(reference)
+                digest, media_type = self.server.layout.resolve(reference, self.server.repository)
                 manifest = self.server.layout.blob_path(digest)
             except (FileNotFoundError, ValueError, json.JSONDecodeError):
                 self._error(HTTPStatus.NOT_FOUND, "MANIFEST_UNKNOWN", "manifest not found", head=head)
@@ -257,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
         if not 0 <= args.port <= 65535:
             raise ValueError("port must be between 0 and 65535")
         layout = Layout(args.layout)
-        digest, _ = layout.resolve(args.reference)
+        digest, _ = layout.resolve(args.reference, args.repository)
         print(digest, flush=True)
         if args.resolve_only:
             return 0
