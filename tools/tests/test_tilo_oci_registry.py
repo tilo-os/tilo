@@ -110,12 +110,37 @@ class RegistryTests(unittest.TestCase):
             self.layout.blob_path("sha256:../index.json")
 
     def test_resolution_verifies_manifest_content(self):
-        digest, media_type = self.layout.resolve("latest")
+        digest, media_type = self.layout.resolve("latest", "qos/tilo")
         self.assertEqual(digest, self.fixture.manifest_digest)
         self.assertEqual(media_type, registry.OCI_MANIFEST)
         self.layout.blob_path(digest).write_bytes(b"tampered")
         with self.assertRaisesRegex(ValueError, "does not match"):
-            self.layout.resolve("latest")
+            self.layout.resolve("latest", "qos/tilo")
+
+    def test_repository_qualified_tag_is_normalized_safely(self):
+        index_path = self.root / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["manifests"][0]["annotations"]["org.opencontainers.image.ref.name"] = "qos/tilo:pr192"
+        index_path.write_text(json.dumps(index), encoding="utf-8")
+        layout = registry.Layout(self.root)
+        self.assertEqual(layout.tags("qos/tilo"), {"pr192": self.fixture.manifest_digest})
+        self.assertEqual(layout.resolve("pr192", "qos/tilo")[0], self.fixture.manifest_digest)
+        self.assertEqual(layout.tags("other/tilo"), {})
+        with self.assertRaises(FileNotFoundError):
+            layout.resolve("pr192", "other/tilo")
+
+    def test_ambiguous_normalized_tags_are_rejected(self):
+        index_path = self.root / "index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["manifests"][0]["annotations"]["org.opencontainers.image.ref.name"] = "qos/tilo:pr192"
+        conflicting = dict(index["manifests"][0])
+        conflicting["digest"] = self.fixture.layer_digest
+        conflicting["annotations"] = {"org.opencontainers.image.ref.name": "pr192"}
+        index["manifests"].append(conflicting)
+        index_path.write_text(json.dumps(index), encoding="utf-8")
+        layout = registry.Layout(self.root)
+        with self.assertRaisesRegex(ValueError, "ambiguous OCI tag"):
+            layout.resolve("pr192", "qos/tilo")
 
     def test_resolve_only_prints_digest_and_default_is_loopback(self):
         arguments = registry.parser().parse_args(["--layout", str(self.root), "--resolve-only"])
