@@ -21,6 +21,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::chrome::{SelectionState, selection_tier};
 use ui::format::bytes as format_bytes;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -31,8 +32,11 @@ use ui::tilo_actions::{
     ExecutionMode, InvocationId, InvocationUpdate, OperationKind, PermissionRequirement, Resource,
     ResultSpec, RetryPolicy,
 };
-use ui::widget::{ContextMenu, MenuItem};
-use ui::widget::{FloatingSurfaceProvider, ResourceOperationStart, Widget};
+use ui::tokens::Metrics;
+use ui::tokens::spacing::Spacing;
+use ui::tokens::typography::TypeScale;
+use ui::widget::{Button, ButtonFace, ContextMenu, MenuItem};
+use ui::widget::{ResourceOperationStart, Widget};
 
 use crate::actions::{MAPS_ACTION_TYPE, MapsAction};
 use crate::canvas::{self, MapPalette};
@@ -54,23 +58,35 @@ use crate::tiles::{GeoBounds, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
 
 mod interaction;
-mod navigation_surface;
+
 mod resource_surface;
 
 // --- Layout metrics (logical px) -------------------------------------------
-const MARGIN: f64 = 16.0;
-const SEARCH_H: f64 = 48.0;
-const GAP: f64 = 10.0;
-/// Height of the side panel's header bar (back / title / collapse toggle).
-const PANEL_HEADER_H: f64 = 40.0;
+// The window margin is the theme's `s4`, the search bar an `s12` strip, the
+// panel header the theme's bar height and the docked/drawer breakpoint its
+// compact breakpoint — read through `MapsApp::margin` & co. from the cached
+// theme tokens. The values below are the deliberately authored ones.
+/// Gap between adjacent floating elements — the theme's `s3`, the sibling
+/// step every floating map surface keeps from its neighbour (HIG §7b), so
+/// the search bar, panel, controls and cards share one rhythm.
+const GAP: f64 = Spacing::BASE.s3 as f64;
 const CTRL_SIZE: f64 = crate::map_controls::SIZE;
 const ROW_H: f64 = 56.0;
-/// Below this window width the side panel stops being docked and becomes a
-/// closed overlay drawer that the user opens over the map (Adwaita flap).
-const NAV_OVERLAY_BELOW: f64 = 720.0;
 /// Widest the panel is ever drawn (docked, or as an overlay drawer).
 const PANEL_MAX_W: f64 = 384.0;
 const PANEL_MIN_W: f64 = 300.0;
+/// Authored 1× height of the floating navigation card; its width is the
+/// theme's list-panel width. The card stacks a title (`sm`), the next
+/// instruction, its distance (`sm`) and the summary row (`lg`); the card's
+/// intrinsic size grows from these, see [`navigation_card_size`].
+const NAV_CARD_H: f64 = 156.0;
+/// Base size of the next-instruction line (15pt sits between the type
+/// scale's `base` and `lg`).
+const NAV_INSTR_TEXT: f32 = 15.0;
+/// Authored 1× width of the card's End pill and its label size (11pt sits
+/// between `xs` and `sm`); the pill is an `s6` tall.
+const NAV_END_W: f64 = 50.0;
+const NAV_END_TEXT: f32 = 11.0;
 /// One semantic live-activity identity for the current turn-by-turn session.
 /// Rerouting changes its content, not the surface the user positioned.
 const NAVIGATION_FLOAT_ID: &str = "maps.active-navigation";
@@ -178,6 +194,18 @@ pub struct MapsApp {
     drag_last: Point,
     drag_moved: bool,
     click_targets: Vec<(Rect, Hit)>,
+    /// The renderer's text scale, captured at the top of each paint so the
+    /// panel's hand-laid rows size and centre their text from the same lines
+    /// the renderer draws.
+    text_scale: f32,
+    /// The theme's spacing and density metrics, cached in `build_layout` so
+    /// the renderer-less geometry reads the same tokens the painters do.
+    spacing: Spacing,
+    metrics: Metrics,
+    /// How much wider the End pill's label measures at the last seen text
+    /// scale than at 1× — `(scale, growth)`, re-measured only when the scale
+    /// changes rather than every frame.
+    nav_end_growth: (f32, f64),
     scroll: f64,
     content_h: f64,
     content_view_h: f64,
@@ -272,6 +300,379 @@ impl Default for MapsApp {
 }
 
 impl MapsApp {
+    /// Compact live-navigation surface for the shell floating host. The source
+    /// stays app-owned so route changes immediately update an already-detached
+    /// overlay instead of snapshotting stale directions.
+    pub fn active_navigation_request(
+        &self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.active_navigation_request_from(self.navigation_rect())
+    }
+
+    fn active_navigation_request_from(
+        &self,
+        source_region: Rect,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.model
+            .route
+            .as_ref()
+            .map(|_route| ui::floating_surface::FloatingSurfaceRequest {
+                id: NAVIGATION_FLOAT_ID.into(),
+                title: "Active navigation".into(),
+                role: ui::floating_surface::FloatingRole::Navigation,
+                source: ui::floating_surface::FloatingSource::AppElement {
+                    app_id: "dev.tilo.maps".into(),
+                    element_id: "active-navigation".into(),
+                    region: source_region,
+                },
+                preferred_size: navigation_card_size(&self.metrics, self.text_scale),
+                aspect_ratio: None,
+                initial_rect: Some(self.navigation_rect()),
+                presentation_rect: Some(self.navigation_rect().inflate(8.0, 8.0)),
+                tracking_source: None,
+            })
+    }
+
+    fn navigation_rect(&self) -> Rect {
+        self.navigation_placement
+            .rect(self.rect, self.desktop_floating_bounds())
+    }
+
+    /// The area the floating map controls (zoom, locate, traffic) lay
+    /// themselves out in. Normally the whole window; while the navigation
+    /// card floats over the top-right corner, the cluster starts beneath it
+    /// so the controls stay visible and reachable rather than being covered.
+    /// Paint, pointer hit-testing and the accessibility rects all read the
+    /// controls' geometry from this one viewport.
+    /// Top of a `size`-pt line centred in a band, at the captured text scale.
+    fn vmid(&self, y: f64, h: f64, size: f32) -> f64 {
+        text_vmid(y, h, size, self.text_scale)
+    }
+
+    /// The window margin every floating element keeps — the theme's `s4`.
+    fn margin(&self) -> f64 {
+        f64::from(self.spacing.s4)
+    }
+
+    /// The search bar's height — the theme's `s12` strip.
+    fn search_h(&self) -> f64 {
+        f64::from(self.spacing.s12)
+    }
+
+    /// The side panel's header bar (back / title / collapse toggle) — the
+    /// theme's bar height.
+    fn panel_header_h(&self) -> f64 {
+        f64::from(self.metrics.bar_height)
+    }
+
+    /// How much wider the End pill's label measures at the renderer's scale
+    /// than at 1×, re-measured only when the scale changes.
+    fn nav_end_label_growth(&mut self, tr: &mut TextRenderer) -> f64 {
+        let scale = tr.text_scale();
+        if self.nav_end_growth.0.to_bits() != scale.to_bits() {
+            let growth = if scale > 1.0 {
+                let scaled = tr
+                    .measure_weighted("End", NAV_END_TEXT, None, TextWeight::Medium)
+                    .0;
+                // Measuring at `size / scale` yields the 1× width on the same
+                // renderer, which multiplies every size by its scale.
+                let one_x = tr
+                    .measure_weighted("End", NAV_END_TEXT / scale, None, TextWeight::Medium)
+                    .0;
+                f64::from(scaled - one_x).max(0.0)
+            } else {
+                0.0
+            };
+            self.nav_end_growth = (scale, growth);
+        }
+        self.nav_end_growth.1
+    }
+
+    fn map_controls_viewport(&self) -> Rect {
+        let viewport = self.rect;
+        if !self.navigation_surface_visible_in_app() {
+            return viewport;
+        }
+        let margin = self.margin();
+        let nav = self.navigation_rect();
+        let column_h = margin + crate::map_controls::column_height();
+        let column = Rect::new(
+            self.rect.x1 - margin - CTRL_SIZE,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + column_h,
+        );
+        if nav.intersect(column).area() <= 0.0 {
+            return viewport;
+        }
+        // Beneath the card when the whole column still clears the ⋯ overflow
+        // button at the bottom; otherwise beside the card's leading edge when
+        // that clears the docked side panel; otherwise the corner stays as it
+        // was (the card covers it) rather than laying the cluster out off the
+        // bottom of a short window or under the overflow button.
+        let floor = self.overflow_rect().y0 - GAP;
+        if nav.y1 < self.rect.y1 && nav.y1 + column_h <= floor {
+            return Rect::new(viewport.x0, nav.y1, viewport.x1, viewport.y1);
+        }
+        let panel_right = if self.panel_docked_expanded() {
+            self.panel_rect().x1 + GAP
+        } else {
+            self.rect.x0 + margin
+        };
+        if nav.x0 - GAP - CTRL_SIZE >= panel_right {
+            return Rect::new(viewport.x0, viewport.y0, nav.x0 - GAP + margin, viewport.y1);
+        }
+        viewport
+    }
+
+    /// The route card is useful over the map, but duplicates the route summary
+    /// and next steps inside the narrow navigation drawer. Hiding it while that
+    /// drawer is open avoids covering the fields the user is actively editing.
+    fn navigation_surface_visible_in_app(&self) -> bool {
+        self.model.route.is_some()
+            && !self.navigation_placement.is_return_pending()
+            && matches!(
+                self.navigation_placement.attachment(),
+                ui::floating_surface::Attachment::App { .. }
+            )
+            && !(self.overlay_mode() && self.nav_open)
+    }
+
+    fn desktop_floating_bounds(&self) -> Rect {
+        if self.floating_surface_bounds.area() > 0.0 {
+            self.floating_surface_bounds
+        } else {
+            self.rect
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the navigation card is one cohesive painted surface with shared geometry for its drag and end-navigation targets"
+    )]
+    fn draw_navigation_surface(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(route) = self.model.route.clone() else {
+            self.navigation_drag_handle = Rect::ZERO;
+            self.navigation_end_rect = Rect::ZERO;
+            self.navigation_end_hovered = false;
+            return;
+        };
+        let rect = self.navigation_rect();
+        let visual =
+            self.navigation_placement
+                .presentation_transform(transform, rect, theme.reduce_motion);
+        let c = &theme.tokens.colors;
+        let shadow =
+            ui::surface::soft_outline(rect.inflate(5.0, 5.0) + vello::kurbo::Vec2::new(0.0, 2.0));
+        scene.fill(
+            Fill::NonZero,
+            visual,
+            draw::alpha(c.neutral[0], 0.30),
+            None,
+            &shadow,
+        );
+        let body = ui::surface::soft_outline(rect);
+        scene.fill(Fill::NonZero, visual, c.surfaces.raised, None, &body);
+        // The card's rest edge derives from its own surface (HIG §9.5): a
+        // declared `border_standard` is three shades off dark `raised` and
+        // vanished against the map.
+        scene.stroke(
+            &Stroke::new(1.0),
+            visual,
+            ui::surface::edge_on(c.surfaces.raised),
+            None,
+            &body,
+        );
+        let pad = self.margin();
+        // The End pill is its authored 50px wide and an `s6` tall at 1×,
+        // grown by the label's measured extra width (cached per scale) and
+        // its line plus an `s1` above and below once scaled type needs more,
+        // so "End" never spills out of its own face.
+        let end_scale = tr.text_scale();
+        let end_label_growth = self.nav_end_label_growth(tr);
+        let end_w = (NAV_END_W + end_label_growth).ceil();
+        let end_h = (line_h(NAV_END_TEXT, end_scale) + 2.0 * f64::from(self.spacing.s1))
+            .ceil()
+            .max(f64::from(self.spacing.s6));
+        let end = Rect::new(
+            rect.x1 - 8.0 - end_w,
+            rect.y0 + 6.0,
+            rect.x1 - 8.0,
+            rect.y0 + 6.0 + end_h,
+        );
+        self.navigation_end_rect = end;
+        let handle = Rect::new(rect.x0, rect.y0, end.x0 - 4.0, rect.y0 + 34.0);
+        self.navigation_drag_handle = handle;
+        draw::text_w(
+            scene,
+            tr,
+            visual,
+            "Navigation",
+            rect.x0 + pad,
+            rect.y0 + 10.0,
+            text_sm(),
+            theme.text_dim,
+            TextWeight::Medium,
+        );
+        ui::surface::floating_drag_grip(scene, visual, rect, theme.text_dim);
+
+        // Ending a live activity is intentionally explicit. At rest this reads
+        // as quiet chrome; hover adds a soft danger wash without changing the
+        // button's geometry (and therefore without making the title jump).
+        let end_text = if self.navigation_end_hovered {
+            c.semantic.danger
+        } else {
+            theme.text_dim
+        };
+        if self.navigation_end_hovered {
+            draw::fill_rrect(
+                scene,
+                visual,
+                end,
+                10.0,
+                draw::alpha(c.semantic.danger, 0.16),
+            );
+            draw::stroke_rrect(
+                scene,
+                visual,
+                end,
+                10.0,
+                1.0,
+                draw::alpha(c.semantic.danger, 0.58),
+            );
+        } else {
+            // Quiet chrome at rest: the base tier seated in the raised card
+            // (a contrast step on both themes) with its derived edge.
+            draw::edged(scene, visual, end, 10.0, c.surfaces.base);
+        }
+        draw::fill_rrect(
+            scene,
+            visual,
+            Rect::new(
+                end.x0 + 9.0,
+                end.center().y - 2.5,
+                end.x0 + 14.0,
+                end.center().y + 2.5,
+            ),
+            1.5,
+            end_text,
+        );
+        draw::text_w(
+            scene,
+            tr,
+            visual,
+            "End",
+            end.x0 + 19.0,
+            text_vmid(end.y0, end.height(), NAV_END_TEXT, end_scale),
+            NAV_END_TEXT,
+            end_text,
+            TextWeight::Medium,
+        );
+
+        let instruction = route.steps.first();
+        let glyph = instruction.map_or("↑", |step| step.maneuver.glyph());
+        let text = instruction.map_or("Continue on the route", |step| step.instruction.as_str());
+        // The instruction row starts where the design put it plus the growth
+        // of the title line above it, so a scaled "Navigation" never runs
+        // into the badge and instruction beneath.
+        let title_growth = line_growth(text_sm(), tr.text_scale());
+        let badge = Rect::new(
+            rect.x0 + pad,
+            rect.y0 + 48.0 + title_growth,
+            rect.x0 + pad + 36.0,
+            rect.y0 + 84.0 + title_growth,
+        );
+        draw::fill_circle(
+            scene,
+            visual,
+            badge.center(),
+            18.0,
+            draw::alpha(theme.accent_primary, 0.18),
+        );
+        draw::text_center(
+            scene,
+            tr,
+            visual,
+            glyph,
+            badge.x0,
+            badge.x1,
+            badge.y0 + 8.0,
+            17.0,
+            theme.accent_primary,
+        );
+        // Instruction, then its distance directly beneath on the measured
+        // line; the rule and summary row follow the stack instead of sitting
+        // at fixed offsets a scaled instruction runs into. (The card's own
+        // height is fixed by the floating-surface placement — see the review
+        // notes — so at large scales the stack can still exceed the card.)
+        let instr_y = rect.y0 + 47.0 + title_growth;
+        let instr_h = f64::from(tr.measure("Ag", NAV_INSTR_TEXT, None).1);
+        let dist_h = f64::from(tr.measure("Ag", text_sm(), None).1);
+        let dist_y = instr_y + instr_h + 2.0;
+        let rule_y = (dist_y + dist_h + 12.0).max(rect.y0 + 98.0 + title_growth);
+        let shift = rule_y - (rect.y0 + 98.0);
+        draw::text_clip(
+            scene,
+            tr,
+            visual,
+            text,
+            rect.x0 + 64.0,
+            instr_y,
+            15.0,
+            theme.text_primary,
+            rect.width() - 82.0,
+        );
+        let next_distance = instruction.map_or(route.distance_m, |step| step.distance_m);
+        draw::text(
+            scene,
+            tr,
+            visual,
+            &geo::fmt_distance(next_distance),
+            rect.x0 + 64.0,
+            dist_y,
+            12.0,
+            theme.text_dim,
+        );
+        // The rule between the next step and the summary derives against the
+        // card and stops at the content gutter, never running into the
+        // corner radius.
+        draw::separator(
+            scene,
+            visual,
+            rect.x0 + pad,
+            rect.x1 - pad,
+            rule_y,
+            c.surfaces.raised,
+        );
+        draw::text_w(
+            scene,
+            tr,
+            visual,
+            &geo::fmt_duration(route.duration_s),
+            rect.x0 + pad,
+            rect.y0 + 114.0 + shift,
+            16.0,
+            theme.accent_primary,
+            TextWeight::Bold,
+        );
+        draw::text_right(
+            scene,
+            tr,
+            visual,
+            &format!("{} remaining", geo::fmt_distance(route.distance_m)),
+            rect.x1 - pad,
+            rect.y0 + 116.0 + shift,
+            12.0,
+            theme.text_dim,
+        );
+    }
+
     /// Live app: spawns the background tile worker (network + decode off the
     /// UI thread) and starts from an empty model — real OSM imagery, no
     /// fabricated places. The user's own searches, routes and saved pins are
@@ -328,6 +729,10 @@ impl MapsApp {
             drag_last: Point::ZERO,
             drag_moved: false,
             click_targets: Vec::new(),
+            text_scale: 1.0,
+            spacing: Spacing::default(),
+            metrics: Metrics::BASE,
+            nav_end_growth: (1.0, 0.0),
             scroll: 0.0,
             content_h: 0.0,
             content_view_h: 0.0,
@@ -362,7 +767,7 @@ impl MapsApp {
             traffic: TrafficData::default(),
             pending_floating: None,
             navigation_placement: ui::floating_surface::FloatingPlacement::attached(
-                vello::kurbo::Size::new(360.0, 156.0),
+                navigation_card_size(&Metrics::BASE, 1.0),
             ),
             navigation_drag_handle: Rect::ZERO,
             navigation_end_rect: Rect::ZERO,
@@ -659,7 +1064,10 @@ impl MapsApp {
     /// drawer. Derived from the *current* allocated width every call, so a
     /// resize between breakpoints reflows immediately — never cached.
     fn overlay_mode(&self) -> bool {
-        self.rect.width() < NAV_OVERLAY_BELOW
+        // The theme's compact breakpoint; scaling breakpoints with the text
+        // is the shell family's policy (NavShell / SidebarDrawer), not an
+        // app's — this hand-rolled drawer reads the token and leaves it.
+        self.rect.width() < f64::from(self.metrics.compact_breakpoint)
     }
 
     /// Is the side panel currently on screen? Always in docked layouts; only
@@ -678,10 +1086,27 @@ impl MapsApp {
     /// Panel width for the current window: a docked column proportional to the
     /// window when wide, or a near-full-width drawer when narrow.
     fn panel_w(&self) -> f64 {
+        // The panel carries text, so its authored bounds grow with the text
+        // scale (never shrink): a 2× row keeps the character budget a 1× row
+        // has instead of eliding inside a 1× column. Bounds are combined with
+        // `max`/`min` rather than `clamp`: a degenerate rect can put them out
+        // of order, and `clamp` panics where these just pick the finite one.
+        let grow = f64::from(self.text_scale.clamp(1.0, 4.0));
+        let avail = (self.rect.width() - 2.0 * self.margin()).max(1.0);
         if self.overlay_mode() {
-            (self.rect.width() - 2.0 * MARGIN).min(PANEL_MAX_W)
+            // The 1× drawer is exactly what it was; only the *extra* width a
+            // scaled drawer gains stops short of the trailing zoom/locate
+            // column (as the search bar does), so growth never slides the
+            // drawer under the map controls.
+            let one_x = avail.min(PANEL_MAX_W);
+            let scaled = (PANEL_MAX_W * grow).min((avail - CTRL_SIZE - GAP).max(1.0));
+            scaled.max(one_x)
         } else {
-            (self.rect.width() * 0.42).clamp(PANEL_MIN_W, PANEL_MAX_W)
+            // Docked: 42 % of the window inside the scaled authored bounds,
+            // and never more than 60 % so the map keeps room beside it.
+            let max_w = (PANEL_MAX_W * grow).min(avail).min(self.rect.width() * 0.6);
+            let min_w = (PANEL_MIN_W * grow).min(max_w);
+            (self.rect.width() * 0.42).max(min_w).min(max_w)
         }
     }
 
@@ -690,36 +1115,36 @@ impl MapsApp {
         if !self.overlay_mode() {
             return None;
         }
-        let x0 = self.rect.x0 + MARGIN;
-        let y0 = self.rect.y0 + MARGIN;
-        Some(Rect::new(x0, y0, x0 + CTRL_SIZE, y0 + SEARCH_H))
+        let x0 = self.rect.x0 + self.margin();
+        let y0 = self.rect.y0 + self.margin();
+        Some(Rect::new(x0, y0, x0 + CTRL_SIZE, y0 + self.search_h()))
     }
 
     fn search_rect(&self) -> Rect {
-        let y0 = self.rect.y0 + MARGIN;
+        let y0 = self.rect.y0 + self.margin();
         if self.overlay_mode() {
             // Sits between the leading menu button and the trailing zoom column
             // so the bar spans the full top edge without colliding.
-            let x0 = self.rect.x0 + MARGIN + CTRL_SIZE + GAP;
-            let x1 = self.rect.x1 - MARGIN - CTRL_SIZE - GAP;
-            Rect::new(x0, y0, x1.max(x0 + 120.0), y0 + SEARCH_H)
+            let x0 = self.rect.x0 + self.margin() + CTRL_SIZE + GAP;
+            let x1 = self.rect.x1 - self.margin() - CTRL_SIZE - GAP;
+            Rect::new(x0, y0, x1.max(x0 + 120.0), y0 + self.search_h())
         } else {
-            let x0 = self.rect.x0 + MARGIN;
-            Rect::new(x0, y0, x0 + self.panel_w(), y0 + SEARCH_H)
+            let x0 = self.rect.x0 + self.margin();
+            Rect::new(x0, y0, x0 + self.panel_w(), y0 + self.search_h())
         }
     }
 
     fn panel_rect(&self) -> Rect {
-        let x0 = self.rect.x0 + MARGIN;
-        let top = self.rect.y0 + MARGIN + SEARCH_H + GAP;
-        Rect::new(x0, top, x0 + self.panel_w(), self.rect.y1 - MARGIN)
+        let x0 = self.rect.x0 + self.margin();
+        let top = self.rect.y0 + self.margin() + self.search_h() + GAP;
+        Rect::new(x0, top, x0 + self.panel_w(), self.rect.y1 - self.margin())
     }
 
     /// The bottom-right ⋯ overflow button (attribution / offline maps / licenses).
     /// Downloads and the credit line moved off the map into this menu.
     fn overflow_rect(&self) -> Rect {
-        let x1 = self.rect.x1 - MARGIN;
-        let y1 = self.rect.y1 - MARGIN;
+        let x1 = self.rect.x1 - self.margin();
+        let y1 = self.rect.y1 - self.margin();
         Rect::new(x1 - 40.0, y1 - 30.0, x1, y1)
     }
 
@@ -1424,9 +1849,9 @@ impl MapsApp {
         // In the docked layout the map shares the width with the panel; in the
         // overlay layout the drawer floats over a full-width map.
         let w = if self.overlay_mode() {
-            self.rect.width() - MARGIN * 2.0
+            self.rect.width() - self.margin() * 2.0
         } else {
-            self.rect.width() - (self.panel_w() + MARGIN * 2.0 + GAP)
+            self.rect.width() - (self.panel_w() + self.margin() * 2.0 + GAP)
         };
         let h = self.rect.height();
         if let Some((c, z)) = geo::fit_bounds(pts, w.max(200.0), h, 70.0) {
@@ -2104,8 +2529,60 @@ fn keyword_match(needle: &str, cat: Category) -> bool {
         .any(|s| s.contains(needle) || needle.contains(*s))
 }
 
-fn vmid(y: f64, h: f64, size: f32) -> f64 {
-    y + (h - f64::from(size) * 1.25) / 2.0
+/// Top of a `size`-pt line vertically centred in a band of height `h` at `y`,
+/// at the renderer's `text_scale`: the renderer draws one line as
+/// `size × text_scale × 1.25`, so centring on the unscaled size would drop the
+/// text below centre at every scale above 1×.
+fn text_vmid(y: f64, h: f64, size: f32, text_scale: f32) -> f64 {
+    y + (h - line_h(size, text_scale)) / 2.0
+}
+
+/// Height of one line of `size`-pt text at `text_scale` — what the renderer
+/// measures for a single line. The crate's one copy of the line formula;
+/// `text_vmid` and the authored row heights below all read it.
+fn line_h(size: f32, text_scale: f32) -> f64 {
+    ui::text_metrics::line_height_px(size, text_scale)
+}
+
+/// How much taller one line of `size`-pt text is at `text_scale` than at 1×;
+/// zero at or below 1×.
+fn line_growth(size: f32, text_scale: f32) -> f64 {
+    ui::text_metrics::line_growth(size, text_scale)
+}
+
+/// Base (unscaled) text sizes handed to the legacy renderer, read from the
+/// default type scale so the app states no sizes of its own; the renderer
+/// applies the accessibility scale. Sizes off the scale are named beside the
+/// surfaces that use them.
+fn text_sm() -> f32 {
+    TypeScale::default().sm
+}
+fn text_lg() -> f32 {
+    TypeScale::default().lg
+}
+
+/// An authored 1× height grown by exactly the extra room its text lines need
+/// at `text_scale`, snapped up to a whole pixel — the design exactly at 1×
+/// (a 28px row stays 28, not `16.25 + 12 = 28.25`), and never a fraction.
+fn authored_h(authored: f64, sizes: &[f32], text_scale: f32) -> f64 {
+    ui::text_metrics::authored_h(authored, sizes, text_scale)
+}
+
+/// Intrinsic size of the floating navigation card at `text_scale`: the
+/// authored 360×156 at 1×; the height grows by the title, instruction,
+/// distance and summary lines it stacks, the width with the scale so the
+/// instruction keeps its 1× character budget instead of eliding at 2×. The
+/// placement clamps it to the window it floats in.
+fn navigation_card_size(metrics: &Metrics, text_scale: f32) -> vello::kurbo::Size {
+    let grow = f64::from(text_scale.clamp(1.0, 4.0));
+    vello::kurbo::Size::new(
+        (f64::from(metrics.panel_width_list) * grow).ceil(),
+        authored_h(
+            NAV_CARD_H,
+            &[text_sm(), NAV_INSTR_TEXT, text_sm(), text_lg()],
+            text_scale,
+        ),
+    )
 }
 
 // ===========================================================================
@@ -2114,7 +2591,8 @@ fn vmid(y: f64, h: f64, size: f32) -> f64 {
 impl MapsApp {
     fn draw_app(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.click_targets.clear();
-        self.map_controls.set_viewport(self.rect);
+        self.text_scale = tr.text_scale();
+        self.map_controls.set_viewport(self.map_controls_viewport());
         // Point the raster layer at the basemap style for the active theme (dark
         // tiles under a dark theme, light under light) before any tile is drawn,
         // so imagery and the drawn cartography never mix tones. A no-op on the
@@ -2345,18 +2823,24 @@ impl MapsApp {
         &mut self,
         scene: &mut Scene,
         t: Affine,
-        _tr: &mut TextRenderer,
+        tr: &mut TextRenderer,
         theme: &Theme,
     ) {
         let r = self.overflow_rect();
-        let c = &theme.tokens.colors;
         let active = self.overflow.is_open() || self.tiles.progress().is_active();
-        let border = if active {
-            theme.accent_primary
-        } else {
-            c.border_standard
-        };
-        draw::card(scene, t, r, 10.0, c.surfaces.raised, border);
+        // The same Neutral face as the map controls column; the ⋯ glyph
+        // paints on top. An open menu or a running download is live state,
+        // so it wears an accent ring over the rest edge (HIG §9.4).
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(r, "").radius(10.0).accessible_name("More"),
+        );
+        if active {
+            draw::stroke_rrect(scene, t, r, 10.0, 1.0, theme.accent_primary);
+        }
         let ctr = r.center();
         let col = if self.overflow.is_open() {
             theme.accent_primary
@@ -2371,15 +2855,17 @@ impl MapsApp {
 
     /// The leading menu button in the narrow overlay layout: toggles the panel
     /// drawer. Renders nothing when the panel is docked.
-    fn draw_menu(&mut self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_menu(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let Some(r) = self.menu_rect() else { return };
-        let c = &theme.tokens.colors;
-        let border = if self.nav_open {
-            theme.border_focus
-        } else {
-            c.border_standard
-        };
-        draw::card(scene, t, r, 12.0, c.surfaces.raised, border);
+        // Same Neutral face as every floating map button; the open state is
+        // carried by the accent glyph below, not a second border colour.
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(r, "").radius(12.0).accessible_name("Menu"),
+        );
         // Three-line hamburger, or a back-chevron feel when open (rotate hint
         // via colour). Kept as clean strokes — no icon font dependency.
         let cx = r.center().x;
@@ -2509,18 +2995,32 @@ impl MapsApp {
         let area_x0 = if self.panel_docked_expanded() {
             self.panel_rect().x1 + GAP
         } else {
-            self.rect.x0 + MARGIN
+            self.rect.x0 + self.margin()
         };
-        let area_x1 = self.rect.x1 - MARGIN;
+        let area_x1 = self.rect.x1 - self.margin();
         let w = 360.0_f64.min((area_x1 - area_x0).max(200.0));
-        let row_h = 24.0;
-        let card_h = 118.0 + rows.len() as f64 * row_h;
+        // One rhythm from the theme: `s4` card gutter, `s1` between the
+        // title and its category line, `s2` between detail rows, `s3`
+        // before the action; every line sits on its measured box.
+        let ts = self.text_scale;
+        let line = |size: f32| line_h(size, ts);
+        let (s1, s2, s3, pad) = (
+            f64::from(self.spacing.s1),
+            f64::from(self.spacing.s2),
+            f64::from(self.spacing.s3),
+            f64::from(self.spacing.s4),
+        );
+        let (title_h, cat_h, row_line) = (line(18.0), line(12.0), line(12.0));
+        let bh = 36.0;
+        let card_h =
+            (pad + title_h + s1 + cat_h + rows.len() as f64 * (s2 + row_line) + s3 + bh + pad)
+                .ceil();
         let cx = f64::midpoint(area_x0, area_x1);
         let x0 = (cx - w / 2.0).max(area_x0);
         let y1 = self.rect.y1 - 54.0; // above the scale bar + attribution
         let y0 = y1 - card_h;
         let card = Rect::new(x0, y0, x0 + w, y1);
-        draw::card(scene, t, card, 16.0, c.surfaces.raised, c.border_standard);
+        draw::card(scene, t, card, 16.0, c.surfaces.raised);
         self.click_targets.push((card, Hit::Consume));
 
         // Category colour bar down the leading edge.
@@ -2532,12 +3032,18 @@ impl MapsApp {
             canvas::category_color(theme, poi.category),
         );
 
-        let pad = 16.0;
         let x = card.x0 + pad;
         let right = card.x1 - pad;
-        let mut y = card.y0 + 14.0;
-        // Close (×).
-        let close = Rect::new(right - 20.0, card.y0 + 12.0, right + 6.0, card.y0 + 38.0);
+        let mut y = card.y0 + pad;
+        // Close (×): a 26 px target seated `s2` inside the corner, its glyph
+        // centred on the title line; the title elides before it.
+        let close_edge = 26.0;
+        let close = Rect::new(
+            card.x1 - s2 - close_edge,
+            card.y0 + s2,
+            card.x1 - s2,
+            card.y0 + s2 + close_edge,
+        );
         draw::text_center(
             scene,
             tr,
@@ -2545,23 +3051,24 @@ impl MapsApp {
             "✕",
             close.x0,
             close.x1,
-            y,
+            self.vmid(close.y0, close_edge, 14.0),
             14.0,
             theme.text_dim,
         );
         self.click_targets.push((close, Hit::ClosePoi));
+        let name = draw::ellipsize(tr, &poi.name, 18.0, close.x0 - s2 - x);
         draw::text_w(
             scene,
             tr,
             t,
-            &poi.name,
+            &name,
             x,
             y,
             18.0,
             theme.text_primary,
             TextWeight::Bold,
         );
-        y += 26.0;
+        y += title_h + s1;
         draw::text(
             scene,
             tr,
@@ -2586,8 +3093,9 @@ impl MapsApp {
                 right - x - cw - 10.0,
             );
         }
-        y += 24.0;
+        y += cat_h;
         for (glyph, text, link) in &rows {
+            y += s2;
             draw::text(scene, tr, t, glyph, x, y, 12.0, theme.text_dim);
             let col = if *link {
                 theme.accent_primary
@@ -2595,23 +3103,20 @@ impl MapsApp {
                 theme.text_primary
             };
             draw::text_clip(scene, tr, t, text, x + 20.0, y, 12.0, col, right - x - 20.0);
-            y += row_h;
+            y += row_line;
         }
-        y += 6.0;
-        // Directions (primary action).
-        let bh = 36.0;
+        y += s3;
+        // Directions (primary action): the shared button face.
         let btn = Rect::new(x, y, right, y + bh);
-        draw::fill_rrect(scene, t, btn, 9.0, theme.accent_primary);
-        draw::text_center(
+        Button::paint(
             scene,
-            tr,
             t,
-            "Directions",
-            btn.x0,
-            btn.x1,
-            vmid(btn.y0, bh, 13.0),
-            13.0,
-            Color::WHITE,
+            tr,
+            theme,
+            &ButtonFace::new(btn, "Directions")
+                .primary()
+                .radius(9.0)
+                .text_size(13.0),
         );
         self.click_targets.push((btn, Hit::PoiDirections));
     }
@@ -2651,9 +3156,9 @@ impl MapsApp {
         let map_left = if self.panel_docked_expanded() {
             self.panel_rect().x1 + GAP
         } else {
-            self.rect.x0 + MARGIN
+            self.rect.x0 + self.margin()
         };
-        let bottom = self.rect.y1 - MARGIN;
+        let bottom = self.rect.y1 - self.margin();
 
         if self.traffic.is_empty() {
             // Honest empty state — no fabricated congestion.
@@ -2668,7 +3173,6 @@ impl MapsApp {
                 pill,
                 h / 2.0,
                 draw::alpha(c.surfaces.raised, 0.96),
-                c.border_standard,
             );
             draw::fill_circle(
                 scene,
@@ -2683,7 +3187,7 @@ impl MapsApp {
                 t,
                 label,
                 pill.x0 + 27.0,
-                vmid(pill.y0, h, fs),
+                self.vmid(pill.y0, h, fs),
                 fs,
                 c.text_primary,
             );
@@ -2700,14 +3204,7 @@ impl MapsApp {
         let w = 180.0_f64;
         let h = pad + header_h + Congestion::ALL.len() as f64 * row_h + pad - 4.0;
         let card = Rect::new(map_left, bottom - h, map_left + w, bottom);
-        draw::card(
-            scene,
-            t,
-            card,
-            12.0,
-            draw::alpha(c.surfaces.raised, 0.96),
-            c.border_standard,
-        );
+        draw::card(scene, t, card, 12.0, draw::alpha(c.surfaces.raised, 0.96));
 
         let x = card.x0 + pad;
         let mut y = card.y0 + pad;
@@ -2785,16 +3282,9 @@ impl MapsApp {
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         // Sit below the top search row so it never overlaps the search field
         // (which spans most of the top edge in the narrow layout).
-        let top = self.rect.y0 + MARGIN + SEARCH_H + GAP;
+        let top = self.rect.y0 + self.margin() + self.search_h() + GAP;
         let r = Rect::new(cx - w / 2.0, top, cx + w / 2.0, top + 30.0);
-        draw::card(
-            scene,
-            t,
-            r,
-            15.0,
-            theme.tokens.colors.surfaces.raised,
-            theme.tokens.colors.border_standard,
-        );
+        draw::card(scene, t, r, 15.0, theme.tokens.colors.surfaces.raised);
         // Small spinner dot.
         let dot = Point::new(r.x0 + 16.0, r.center().y);
         draw::fill_circle(
@@ -2814,7 +3304,7 @@ impl MapsApp {
             t,
             label,
             r.x0 + 28.0,
-            vmid(r.y0, r.height(), size),
+            self.vmid(r.y0, r.height(), size),
             size,
             theme.text_primary,
         );
@@ -2848,7 +3338,7 @@ impl MapsApp {
         let w = draw::measure_w(tr, msg, size) + 44.0;
         let r = Rect::new(cx - w / 2.0, cy - 17.0, cx + w / 2.0, cy + 17.0);
         let c = &theme.tokens.colors;
-        draw::card(scene, t, r, 17.0, c.surfaces.raised, c.border_standard);
+        draw::card(scene, t, r, 17.0, c.surfaces.raised);
         let dot = Point::new(r.x0 + 18.0, r.center().y);
         let dot_col = if offline {
             c.semantic.warning
@@ -2862,7 +3352,7 @@ impl MapsApp {
             t,
             msg,
             r.x0 + 30.0,
-            vmid(r.y0, r.height(), size),
+            self.vmid(r.y0, r.height(), size),
             size,
             theme.text_primary,
         );
@@ -2879,7 +3369,9 @@ impl MapsApp {
             return;
         }
         let c = &theme.tokens.colors;
-        let inset = 10.0;
+        // The panel's one inset — `s3` between its edge and every child.
+        let inset = f64::from(self.spacing.s3);
+        let s1 = f64::from(self.spacing.s1);
         let docked = !self.overlay_mode();
         let directions = matches!(self.model.panel, Panel::Directions);
 
@@ -2887,38 +3379,40 @@ impl MapsApp {
         // affordance so the map reclaims the column. A plain collapse/expand
         // toggle — not a mode/tab.
         if self.panel_collapsed && docked {
-            let bar = Rect::new(pr.x0, pr.y0, pr.x1, pr.y0 + PANEL_HEADER_H + 2.0 * inset);
-            draw::card(scene, t, bar, 14.0, c.surfaces.raised, c.border_standard);
+            let bar = Rect::new(
+                pr.x0,
+                pr.y0,
+                pr.x1,
+                pr.y0 + self.panel_header_h() + 2.0 * inset,
+            );
+            draw::card(scene, t, bar, 14.0, c.surfaces.raised);
             self.click_targets.push((bar, Hit::Consume));
-            let by = vmid(bar.y0 + inset, PANEL_HEADER_H, 15.0);
+            let by = self.vmid(bar.y0 + inset, self.panel_header_h(), 15.0);
             draw::text_w(
                 scene,
                 tr,
                 t,
                 "Places",
-                bar.x0 + inset + 4.0,
+                bar.x0 + inset + s1,
                 by,
                 15.0,
                 theme.text_primary,
                 TextWeight::Semibold,
             );
             let btn = Rect::new(
-                bar.x1 - inset - PANEL_HEADER_H,
+                bar.x1 - inset - self.panel_header_h(),
                 bar.y0 + inset,
                 bar.x1 - inset,
                 bar.y1 - inset,
             );
-            draw::fill_rrect(scene, t, btn, 8.0, c.surfaces.base);
-            draw::text_center(
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "»",
-                btn.x0,
-                btn.x1,
-                vmid(btn.y0, btn.height(), 16.0),
-                16.0,
-                theme.text_primary,
+                tr,
+                theme,
+                &ButtonFace::new(btn, "»")
+                    .text_size(16.0)
+                    .accessible_name("Expand panel"),
             );
             self.click_targets.push((btn, Hit::ToggleCollapse));
             self.content_view_h = 0.0;
@@ -2926,7 +3420,7 @@ impl MapsApp {
             return;
         }
 
-        draw::card(scene, t, pr, 14.0, c.surfaces.raised, c.border_standard);
+        draw::card(scene, t, pr, 14.0, c.surfaces.raised);
         // Swallow background clicks.
         self.click_targets.push((pr, Hit::Consume));
 
@@ -2939,25 +3433,27 @@ impl MapsApp {
             pr.x0 + inset,
             pr.y0 + inset,
             pr.x1 - inset,
-            pr.y0 + inset + PANEL_HEADER_H,
+            pr.y0 + inset + self.panel_header_h(),
         );
-        let mut hx = header.x0;
+        let mut hx = header.x0 + s1;
         if directions {
-            let back = Rect::new(hx, header.y0, hx + PANEL_HEADER_H, header.y1);
-            draw::fill_rrect(scene, t, back, 8.0, c.surfaces.base);
-            draw::text_center(
+            let back = Rect::new(
+                header.x0,
+                header.y0,
+                header.x0 + self.panel_header_h(),
+                header.y1,
+            );
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "‹",
-                back.x0,
-                back.x1,
-                vmid(back.y0, back.height(), 18.0),
-                18.0,
-                theme.text_primary,
+                tr,
+                theme,
+                &ButtonFace::new(back, "‹")
+                    .text_size(18.0)
+                    .accessible_name("Back"),
             );
             self.click_targets.push((back, Hit::PanelBack));
-            hx = back.x1 + 8.0;
+            hx = back.x1 + f64::from(self.spacing.s2);
         }
         let title = if directions { "Directions" } else { "Places" };
         draw::text_w(
@@ -2965,31 +3461,38 @@ impl MapsApp {
             tr,
             t,
             title,
-            hx + 2.0,
-            vmid(header.y0, header.height(), 16.0),
+            hx,
+            self.vmid(header.y0, header.height(), 16.0),
             16.0,
             theme.text_primary,
             TextWeight::Bold,
         );
         if docked {
-            let btn = Rect::new(header.x1 - PANEL_HEADER_H, header.y0, header.x1, header.y1);
-            draw::fill_rrect(scene, t, btn, 8.0, c.surfaces.base);
-            draw::text_center(
+            let btn = Rect::new(
+                header.x1 - self.panel_header_h(),
+                header.y0,
+                header.x1,
+                header.y1,
+            );
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "«",
-                btn.x0,
-                btn.x1,
-                vmid(btn.y0, btn.height(), 16.0),
-                16.0,
-                theme.text_dim,
+                tr,
+                theme,
+                &ButtonFace::new(btn, "«")
+                    .text_size(16.0)
+                    .accessible_name("Collapse panel"),
             );
             self.click_targets.push((btn, Hit::ToggleCollapse));
         }
 
         // Content region (below the header), clipped + scrolled.
-        let content = Rect::new(pr.x0 + inset, header.y1 + 10.0, pr.x1 - inset, pr.y1 - 10.0);
+        let content = Rect::new(
+            pr.x0 + inset,
+            header.y1 + inset,
+            pr.x1 - inset,
+            pr.y1 - inset,
+        );
         self.content_view_h = content.height();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &content);
         let cy = content.y0 - self.scroll;
@@ -3019,6 +3522,18 @@ impl MapsApp {
         let c = &theme.tokens.colors;
         let x = content.x0;
         let right = content.x1;
+        // The panel's rhythm: `s1` under a title, `s2` between related rows
+        // and after a section label, `s3` between siblings, `s4` between
+        // sections — every line on its measured box.
+        let ts = self.text_scale;
+        let line = |size: f32| line_h(size, ts);
+        let (s1, s2, s3, s4) = (
+            f64::from(self.spacing.s1),
+            f64::from(self.spacing.s2),
+            f64::from(self.spacing.s3),
+            f64::from(self.spacing.s4),
+        );
+        let label_advance = line(11.0) + s2;
 
         // First-run empty state: nothing selected, searched, saved, recent, or
         // fetched for the viewport. An honest hint toward the primary action
@@ -3029,6 +3544,7 @@ impl MapsApp {
             && self.model.recents.is_empty()
             && self.pois.is_empty();
         if empty {
+            let (title_h, body_h) = (line(16.0), line(13.0));
             draw::text_w(
                 scene,
                 tr,
@@ -3040,13 +3556,14 @@ impl MapsApp {
                 theme.text_primary,
                 TextWeight::Bold,
             );
+            let body_y = y + title_h + s2;
             draw::text(
                 scene,
                 tr,
                 t,
                 "Search for a place or address",
                 x,
-                y + 28.0,
+                body_y,
                 13.0,
                 theme.text_dim,
             );
@@ -3056,18 +3573,26 @@ impl MapsApp {
                 t,
                 "to route and plan transit.",
                 x,
-                y + 46.0,
+                body_y + body_h,
                 13.0,
                 theme.text_dim,
             );
-            return y + 78.0;
+            return body_y + 2.0 * body_h + s4;
         }
 
         // Selected place card.
         if let Some(sel) = self.model.selected_place().cloned() {
-            let card_h = 132.0;
+            let (name_h, meta_h) = (line(18.0), line(12.0));
+            let bh = 34.0;
+            let name_y = y + s3;
+            let cat_y = name_y + name_h + s1;
+            let addr_y = cat_y + meta_h;
+            let by = addr_y + meta_h + s3;
+            let card_h = (by + bh + s3 - y).ceil();
             let cr = Rect::new(x, y, right, y + card_h);
-            draw::fill_rrect(scene, t, cr, 12.0, c.surfaces.base);
+            // The base tier seated in the raised panel, with its derived
+            // edge — a contrast step on both themes, never a bare fill.
+            draw::edged(scene, t, cr, 12.0, c.surfaces.base);
             // Accent identifies the current selection. Category is written
             // directly below, so it does not need a competing colour stripe.
             draw::fill_rrect(
@@ -3077,13 +3602,14 @@ impl MapsApp {
                 12.0,
                 theme.accent_primary,
             );
+            let name = draw::ellipsize(tr, &sel.name, 18.0, right - x - 2.0 * s4);
             draw::text_w(
                 scene,
                 tr,
                 t,
-                &sel.name,
-                x + 16.0,
-                y + 12.0,
+                &name,
+                x + s4,
+                name_y,
                 18.0,
                 theme.text_primary,
                 TextWeight::Bold,
@@ -3093,8 +3619,8 @@ impl MapsApp {
                 tr,
                 t,
                 sel.category.label(),
-                x + 16.0,
-                y + 38.0,
+                x + s4,
+                cat_y,
                 12.0,
                 theme.accent_primary,
             );
@@ -3103,17 +3629,16 @@ impl MapsApp {
                 tr,
                 t,
                 &sel.address,
-                x + 16.0,
-                y + 58.0,
+                x + s4,
+                addr_y,
                 12.0,
                 theme.text_dim,
-                right - x - 28.0,
+                right - x - 2.0 * s4,
             );
 
-            // Action buttons row.
-            let by = y + 86.0;
-            let bw = (right - x - 16.0 - 16.0) / 3.0;
-            let bh = 34.0;
+            // Action buttons row: the shared button face, three siblings an
+            // `s3` apart on the card's `s4` gutter (aligned with the text).
+            let bw = (right - x - 2.0 * s4 - 2.0 * s3) / 3.0;
             let saved = sel.saved;
             let actions: [(&str, Hit, bool); 3] = [
                 ("Directions", Hit::Directions, true),
@@ -3125,36 +3650,36 @@ impl MapsApp {
                 ),
             ];
             for (i, (label, hit, primary)) in actions.into_iter().enumerate() {
-                let bx = x + 8.0 + i as f64 * (bw + 4.0);
+                let bx = x + s4 + i as f64 * (bw + s3);
                 let br = Rect::new(bx, by, bx + bw, by + bh);
-                let (fill, fg) = if primary {
-                    (theme.accent_primary, Color::WHITE)
-                } else if matches!(hit, Hit::ToggleSave) && saved {
-                    (
-                        draw::alpha(theme.accent_primary, 0.18),
-                        theme.accent_primary,
-                    )
-                } else {
-                    (c.surfaces.raised, theme.text_primary)
-                };
-                draw::fill_rrect(scene, t, br, 8.0, fill);
-                if !primary {
-                    draw::stroke_rrect(scene, t, br, 8.0, 1.0, c.border_standard);
+                let mut face = ButtonFace::new(br, label).text_size(12.0);
+                if primary {
+                    face = face.primary();
                 }
-                draw::text_center(
-                    scene,
-                    tr,
-                    t,
-                    label,
-                    br.x0,
-                    br.x1,
-                    vmid(br.y0, bh, 12.0),
-                    12.0,
-                    fg,
-                );
+                Button::paint(scene, t, tr, theme, &face);
+                if matches!(hit, Hit::ToggleSave) && saved {
+                    // Chosen state is a lift with a derived edge, not an
+                    // accent wash (HIG §9.3).
+                    let tier = selection_tier(theme, SelectionState::active(true));
+                    draw::fill_rrect(scene, t, br, 8.0, tier.fill);
+                    if let Some(border) = tier.border {
+                        draw::stroke_rrect(scene, t, br, 8.0, 1.0, border);
+                    }
+                    draw::text_center(
+                        scene,
+                        tr,
+                        t,
+                        label,
+                        br.x0,
+                        br.x1,
+                        self.vmid(br.y0, bh, 12.0),
+                        12.0,
+                        theme.text_primary,
+                    );
+                }
                 self.click_targets.push((br, hit));
             }
-            y += card_h + 14.0;
+            y += card_h + s4;
         }
 
         // Results / recents / saved sections.
@@ -3171,11 +3696,11 @@ impl MapsApp {
                 theme.text_dim,
                 TextWeight::Semibold,
             );
-            y += 20.0;
+            y += label_advance;
             for p in &results {
                 y = self.draw_place_row(scene, t, tr, theme, content, y, p);
             }
-            y += 8.0;
+            y += s2;
         }
 
         // Nearby POIs fetched for the current viewport (Overpass), nearest-first
@@ -3194,12 +3719,12 @@ impl MapsApp {
                 theme.text_dim,
                 TextWeight::Semibold,
             );
-            y += 20.0;
+            y += label_advance;
             let anchor = self.search_anchor();
             for poi in &nearby {
                 y = self.draw_poi_row(scene, t, tr, theme, content, y, poi, anchor);
             }
-            y += 8.0;
+            y += s2;
         }
 
         let saved = self
@@ -3220,11 +3745,11 @@ impl MapsApp {
                 theme.text_dim,
                 TextWeight::Semibold,
             );
-            y += 20.0;
+            y += label_advance;
             for p in &saved {
                 y = self.draw_place_row(scene, t, tr, theme, content, y, p);
             }
-            y += 8.0;
+            y += s2;
         }
 
         if !self.model.recents.is_empty() {
@@ -3253,10 +3778,11 @@ impl MapsApp {
                 theme.accent_primary,
             );
             self.click_targets.push((clear, Hit::ClearRecents));
-            y += 20.0;
+            y += label_advance;
             let recents = self.model.recents.clone();
+            let recent_h = f64::from(self.spacing.s8);
             for q in &recents {
-                let rr = Rect::new(x, y, right, y + 30.0);
+                let rr = Rect::new(x, y, right, y + recent_h);
                 draw::stroke_circle(
                     scene,
                     t,
@@ -3271,12 +3797,12 @@ impl MapsApp {
                     t,
                     q,
                     x + 26.0,
-                    vmid(rr.y0, 30.0, 12.0),
+                    self.vmid(rr.y0, recent_h, 12.0),
                     12.0,
                     theme.text_primary,
                 );
                 self.click_targets.push((rr, Hit::Recent(q.clone())));
-                y += 32.0;
+                y += recent_h + s1;
             }
         }
         y
@@ -3305,10 +3831,11 @@ impl MapsApp {
         p: &crate::model::Place,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let r = Rect::new(content.x0, y, content.x1, y + ROW_H - 8.0);
+        let s2 = f64::from(self.spacing.s2);
+        let r = Rect::new(content.x0, y, content.x1, y + ROW_H - s2);
         let selected = self.model.selected.as_deref() == Some(p.id.as_str());
         if selected {
-            draw::fill_rrect(scene, t, r, 8.0, draw::alpha(theme.accent_primary, 0.14));
+            draw::selected_row(scene, t, r, 8.0, theme);
         }
         // Lists use one quiet marker treatment; the category label carries the
         // information without turning saved places into a rainbow of competing
@@ -3323,6 +3850,10 @@ impl MapsApp {
             3.2,
             theme.accent_primary,
         );
+        // Name and subtitle stack on their measured lines, the block centred
+        // on the row like the marker beside it.
+        let (name_h, sub_h) = (line_h(13.0, self.text_scale), line_h(11.0, self.text_scale));
+        let name_y = r.y0 + (r.height() - name_h - sub_h) / 2.0;
         let tx = r.x0 + 36.0;
         draw::text_clip(
             scene,
@@ -3330,7 +3861,7 @@ impl MapsApp {
             t,
             &p.name,
             tx,
-            r.y0 + 6.0,
+            name_y,
             13.0,
             theme.text_primary,
             r.x1 - tx - 50.0,
@@ -3342,7 +3873,7 @@ impl MapsApp {
             t,
             &sub,
             tx,
-            r.y0 + 24.0,
+            name_y + name_h,
             11.0,
             theme.text_dim,
             r.x1 - tx - 50.0,
@@ -3353,8 +3884,8 @@ impl MapsApp {
                 tr,
                 t,
                 "♥",
-                r.x1 - 8.0,
-                r.y0 + 24.0,
+                r.x1 - s2,
+                self.vmid(r.y0, r.height(), 12.0),
                 12.0,
                 theme.tokens.colors.semantic.danger,
             );
@@ -3369,7 +3900,7 @@ impl MapsApp {
     /// and highlights while its marker is the open one.
     #[allow(
         clippy::too_many_arguments,
-        reason = "POI row painting needs the shared render inputs plus row and map geometry"
+        reason = "POI rows combine paint context and list geometry with POI data and the geographic anchor used for distance"
     )]
     fn draw_poi_row(
         &mut self,
@@ -3383,10 +3914,11 @@ impl MapsApp {
         anchor: LatLon,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let r = Rect::new(content.x0, y, content.x1, y + ROW_H - 8.0);
+        let s2 = f64::from(self.spacing.s2);
+        let r = Rect::new(content.x0, y, content.x1, y + ROW_H - s2);
         let selected = self.selected_poi.as_deref() == Some(poi.id.as_str());
         if selected {
-            draw::fill_rrect(scene, t, r, 8.0, draw::alpha(theme.accent_primary, 0.14));
+            draw::selected_row(scene, t, r, 8.0, theme);
         }
         // The pictogram, category label and map marker already identify this
         // POI. Keeping list decoration neutral makes distance and selection
@@ -3398,6 +3930,8 @@ impl MapsApp {
 
         let dist = geo::fmt_distance(geo::haversine_m(poi.pos, anchor));
         let dw = draw::measure_w(tr, &dist, 11.0) + 10.0;
+        let (name_h, sub_h) = (line_h(13.0, self.text_scale), line_h(11.0, self.text_scale));
+        let name_y = r.y0 + (r.height() - name_h - sub_h) / 2.0;
         let tx = r.x0 + 38.0;
         draw::text_clip(
             scene,
@@ -3405,7 +3939,7 @@ impl MapsApp {
             t,
             &poi.name,
             tx,
-            r.y0 + 6.0,
+            name_y,
             13.0,
             theme.text_primary,
             r.x1 - tx - dw,
@@ -3423,18 +3957,19 @@ impl MapsApp {
             t,
             &sub,
             tx,
-            r.y0 + 24.0,
+            name_y + name_h,
             11.0,
             theme.text_dim,
             r.x1 - tx - dw,
         );
+        // The distance chip sits on the name line's centre.
         draw::text_right(
             scene,
             tr,
             t,
             &dist,
-            r.x1 - 8.0,
-            r.y0 + 8.0,
+            r.x1 - s2,
+            name_y + (name_h - sub_h) / 2.0,
             11.0,
             theme.accent_primary,
         );
@@ -3477,7 +4012,13 @@ impl MapsApp {
         // compact, content-sized chip (not a full-width bar): it is a secondary
         // helper, so it stays quiet and lets the fields + mode read as the
         // primary controls.
-        let loc_h = 30.0;
+        // Row heights in this panel are the authored 1× values or the measured
+        // label line plus its padding, whichever is taller, so scaled type
+        // never spills out of a chip, a segment or a step band.
+        let line = |tr: &mut TextRenderer, size: f32| f64::from(tr.measure("Ag", size, None).1);
+        // Authored 1× rows grown by their line's extra height (whole pixels;
+        // see `authored_h`), never `line + pad` floored at the design.
+        let loc_h = authored_h(30.0, &[13.0], tr.text_scale());
         let loc_label = if self.locating {
             "Locating…"
         } else {
@@ -3485,16 +4026,28 @@ impl MapsApp {
         };
         let loc_w = draw::measure_w(tr, loc_label, 13.0) + 44.0;
         let loc_r = Rect::new(x, y, x + loc_w, y + loc_h);
-        let (loc_fill, loc_fg) = if self.locating {
-            (
+        let loc_fg = theme.accent_primary;
+        if self.locating {
+            // A translucent accent wash: the surface the eye sees is the
+            // panel beneath it, so the edge derives from that ground, not
+            // from the wash's accent RGB (which would vanish on light).
+            draw::fill_rrect(
+                scene,
+                t,
+                loc_r,
+                8.0,
                 draw::alpha(theme.accent_primary, 0.16),
-                theme.accent_primary,
-            )
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                t,
+                ui::surface::edge_on(c.surfaces.raised),
+                None,
+                &ui::surface::edge_outline(loc_r, 8.0),
+            );
         } else {
-            (c.surfaces.base, theme.accent_primary)
-        };
-        draw::fill_rrect(scene, t, loc_r, 8.0, loc_fill);
-        draw::stroke_rrect(scene, t, loc_r, 8.0, 1.0, c.border_standard);
+            draw::edged(scene, t, loc_r, 8.0, c.surfaces.base);
+        }
         let gx = loc_r.x0 + 18.0;
         let gy = loc_r.center().y;
         draw::stroke_circle(scene, t, Point::new(gx, gy), 5.0, 1.6, loc_fg);
@@ -3515,7 +4068,7 @@ impl MapsApp {
             t,
             loc_label,
             gx + 16.0,
-            vmid(loc_r.y0, loc_h, 13.0),
+            self.vmid(loc_r.y0, loc_h, 13.0),
             13.0,
             loc_fg,
         );
@@ -3527,7 +4080,7 @@ impl MapsApp {
                 Hit::UseMyLocation
             },
         ));
-        y += loc_h + 14.0;
+        y += loc_h + f64::from(self.spacing.s4);
 
         // NOTE: the geocoded results for the focused endpoint are NOT drawn
         // inline here — that reflowed the mode control and route below every
@@ -3538,17 +4091,33 @@ impl MapsApp {
         // Mode segmented control — Drive / Transit / Cycle / Walk. Transit is
         // a mode here, not a separate tab: selecting it swaps the route summary
         // below for the public-transport departures.
-        let mode_rect = Rect::new(x, y, right, y + 40.0);
-        draw::fill_rrect(scene, t, mode_rect, 9.0, c.surfaces.base);
+        let mode_h = authored_h(40.0, &[12.0], tr.text_scale());
+        let mode_rect = Rect::new(x, y, right, y + mode_h);
+        // The track is the base tier seated in the panel with its derived
+        // edge; the active segment sits an `s1` inside it.
+        let track_radius = 9.0;
+        let seg_inset = f64::from(self.spacing.s1);
+        draw::edged(scene, t, mode_rect, track_radius, c.surfaces.base);
         let seg_w = mode_rect.width() / TravelMode::ALL.len() as f64;
+        let active_fg = c.ink_on(
+            theme.accent_primary,
+            Color::WHITE,
+            ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+        );
         for (i, m) in TravelMode::ALL.iter().enumerate() {
             let sx = mode_rect.x0 + i as f64 * seg_w;
             let seg = Rect::new(sx, mode_rect.y0, sx + seg_w, mode_rect.y1);
             let active = self.model.mode == *m;
             if active {
-                draw::fill_rrect(scene, t, seg.inflate(-3.0, -3.0), 7.0, theme.accent_primary);
+                draw::fill_rrect(
+                    scene,
+                    t,
+                    seg.inflate(-seg_inset, -seg_inset),
+                    track_radius - seg_inset,
+                    theme.accent_primary,
+                );
             }
-            let fg = if active { Color::WHITE } else { theme.text_dim };
+            let fg = if active { active_fg } else { theme.text_dim };
             draw::text_center(
                 scene,
                 tr,
@@ -3556,13 +4125,13 @@ impl MapsApp {
                 m.label(),
                 seg.x0,
                 seg.x1,
-                vmid(seg.y0, seg.height(), 12.0),
+                self.vmid(seg.y0, seg.height(), 12.0),
                 12.0,
                 fg,
             );
             self.click_targets.push((seg, Hit::Mode(*m)));
         }
-        y += 52.0;
+        y += mode_h + f64::from(self.spacing.s3);
 
         // Depart / arrive time control — offered for EVERY travel mode. It is
         // most meaningful for Transit (it anchors the planner query) but the
@@ -3590,6 +4159,10 @@ impl MapsApp {
                 theme.accent_primary,
                 TextWeight::Bold,
             );
+            // The distance and the Clear link sit on the duration's line box,
+            // each centred from its own measured height; the row then advances
+            // by that measured line so the arrival clock never overprints it.
+            let big_h = line(tr, 26.0);
             let dist = geo::fmt_distance(route.distance_m);
             let bw = draw::measure_w(tr, &big, 26.0);
             draw::text(
@@ -3598,24 +4171,25 @@ impl MapsApp {
                 t,
                 &format!("· {dist}"),
                 x + bw + 12.0,
-                y + 8.0,
+                self.vmid(y, big_h, 14.0),
                 14.0,
                 theme.text_dim,
             );
             // Clear route link.
-            let clr = Rect::new(right - 64.0, y + 2.0, right, y + 28.0);
+            let clr_w = draw::measure_w(tr, "Clear", 12.0) + 24.0;
+            let clr = Rect::new(right - clr_w, y, right, y + big_h);
             draw::text_right(
                 scene,
                 tr,
                 t,
                 "Clear",
                 right - 4.0,
-                y + 8.0,
+                self.vmid(y, big_h, 12.0),
                 12.0,
                 theme.tokens.colors.semantic.danger,
             );
             self.click_targets.push((clr, Hit::ClearRoute));
-            y += 40.0;
+            y += big_h + f64::from(self.spacing.s2);
 
             // Planned departure → arrival clock, derived from the time picker.
             // Leaving now, a single ETA reads cleaner than "Leave x → Arrive y";
@@ -3659,22 +4233,20 @@ impl MapsApp {
                     TextWeight::Medium,
                 );
             }
-            y += 28.0;
+            y += authored_h(28.0, &[13.0], tr.text_scale());
 
-            draw::line(
-                scene,
-                t,
-                Point::new(x, y),
-                Point::new(right, y),
-                1.0,
-                c.border_standard,
-            );
-            y += 14.0;
+            // Summary and steps are two groups: a derived rule, then `s4`.
+            draw::separator(scene, t, x, right, y, c.surfaces.raised);
+            y += f64::from(self.spacing.s4);
 
+            // Each step band holds an instruction line and a distance line on
+            // its own measured row beneath it — at 1× the authored 46px band,
+            // taller once the type grows so the two never overprint.
+            let instr_h = line(tr, 13.0);
+            let rh = authored_h(46.0, &[13.0, 11.0], tr.text_scale());
             for (i, step) in route.steps.iter().enumerate() {
-                let rh = 46.0;
-                // Glyph badge.
-                let bc = Point::new(x + 16.0, y + rh / 2.0 - 4.0);
+                // Glyph badge, centred on the instruction line.
+                let bc = Point::new(x + 16.0, y + instr_h / 2.0 + 2.0);
                 draw::fill_circle(scene, t, bc, 13.0, draw::alpha(theme.accent_primary, 0.16));
                 draw::text_center(
                     scene,
@@ -3683,7 +4255,7 @@ impl MapsApp {
                     step.maneuver.glyph(),
                     bc.x - 13.0,
                     bc.x + 13.0,
-                    bc.y - 9.0,
+                    self.vmid(bc.y - 13.0, 26.0, 15.0),
                     15.0,
                     theme.accent_primary,
                 );
@@ -3696,27 +4268,30 @@ impl MapsApp {
                     y,
                     13.0,
                     theme.text_primary,
-                    right - x - 80.0,
+                    right - x - 38.0,
                 );
                 if step.distance_m >= 1.0 {
+                    // The distance line sits on its own measured box directly
+                    // under the instruction's.
                     draw::text_right(
                         scene,
                         tr,
                         t,
                         &geo::fmt_distance(step.distance_m),
-                        right - 4.0,
-                        y + 18.0,
+                        right - f64::from(self.spacing.s1),
+                        y + instr_h,
                         11.0,
                         theme.text_dim,
                     );
                 }
                 // Connector line between steps.
                 if i + 1 < route.steps.len() {
+                    // Down to the top of the next step's badge.
                     draw::line(
                         scene,
                         t,
                         Point::new(bc.x, bc.y + 13.0),
-                        Point::new(bc.x, y + rh + 9.0),
+                        Point::new(bc.x, y + rh + instr_h / 2.0 + 2.0 - 13.0),
                         1.5,
                         draw::alpha(theme.accent_primary, 0.4),
                     );
@@ -3734,7 +4309,7 @@ impl MapsApp {
                 13.0,
                 theme.text_dim,
             );
-            y += 24.0;
+            y += line(tr, 13.0) + f64::from(self.spacing.s2);
         }
         y
     }
@@ -3786,14 +4361,18 @@ impl MapsApp {
         // on the right. The old picker stacked two full-width segmented controls
         // plus a separate reset chip and a hairline — a lot of chrome for a
         // control that stays at "Leave now" most of the time.
-        let row_h = 36.0;
-        let toggle_w = 150.0_f64.min((right - x - 8.0) * 0.5);
+        // The authored 36px row, or the tallest label it carries (the 18pt
+        // stepper glyphs) plus padding once the type has grown.
+        let row_h = authored_h(36.0, &[18.0], tr.text_scale());
+        let (s1, s2) = (f64::from(self.spacing.s1), f64::from(self.spacing.s2));
+        let toggle_w = 150.0_f64.min((right - x - s2) * 0.5);
 
         // Travel mode above is the person's first decision. Timing is a
         // refinement, so its selector is deliberately quieter: a soft active
         // state with a focused edge rather than a second full-accent control.
         let seg_rect = Rect::new(x, y, x + toggle_w, y + row_h);
-        draw::fill_rrect(scene, t, seg_rect, 9.0, c.surfaces.base);
+        let track_radius = 9.0;
+        draw::edged(scene, t, seg_rect, track_radius, c.surfaces.base);
         let modes = [
             (TransitTimeMode::Depart, "Leave"),
             (TransitTimeMode::Arrive, "Arrive"),
@@ -3804,15 +4383,22 @@ impl MapsApp {
             let seg = Rect::new(sx, seg_rect.y0, sx + seg_w, seg_rect.y1);
             let active = tt.mode == *m;
             if active {
-                let active_rect = seg.inflate(-3.0, -3.0);
+                let active_rect = seg.inflate(-s1, -s1);
                 draw::fill_rrect(
                     scene,
                     t,
                     active_rect,
-                    7.0,
+                    track_radius - s1,
                     draw::alpha(theme.accent_primary, 0.14),
                 );
-                draw::stroke_rrect(scene, t, active_rect, 7.0, 1.0, theme.accent_primary);
+                draw::stroke_rrect(
+                    scene,
+                    t,
+                    active_rect,
+                    track_radius - s1,
+                    1.0,
+                    theme.accent_primary,
+                );
             }
             let fg = if active {
                 theme.accent_primary
@@ -3826,7 +4412,7 @@ impl MapsApp {
                 label,
                 seg.x0,
                 seg.x1,
-                vmid(seg.y0, seg.height(), 12.0),
+                self.vmid(seg.y0, seg.height(), 12.0),
                 12.0,
                 fg,
             );
@@ -3835,32 +4421,19 @@ impl MapsApp {
 
         // Stepper: [–] <clock> [+], sharing the row with the toggle.
         let btn_w = 38.0;
-        let minus = Rect::new(seg_rect.x1 + 8.0, y, seg_rect.x1 + 8.0 + btn_w, y + row_h);
+        let minus = Rect::new(seg_rect.x1 + s2, y, seg_rect.x1 + s2 + btn_w, y + row_h);
         let plus = Rect::new(right - btn_w, y, right, y + row_h);
-        draw::fill_rrect(scene, t, minus, 8.0, c.surfaces.base);
-        draw::fill_rrect(scene, t, plus, 8.0, c.surfaces.base);
-        draw::text_center(
-            scene,
-            tr,
-            t,
-            "–",
-            minus.x0,
-            minus.x1,
-            vmid(minus.y0, row_h, 18.0),
-            18.0,
-            theme.text_primary,
-        );
-        draw::text_center(
-            scene,
-            tr,
-            t,
-            "+",
-            plus.x0,
-            plus.x1,
-            vmid(plus.y0, row_h, 18.0),
-            18.0,
-            theme.text_primary,
-        );
+        for (rect, label, name) in [(minus, "–", "Earlier"), (plus, "+", "Later")] {
+            Button::paint(
+                scene,
+                t,
+                tr,
+                theme,
+                &ButtonFace::new(rect, label)
+                    .text_size(18.0)
+                    .accessible_name(name),
+            );
+        }
         let target = self.clock_anchor() + chrono::Duration::minutes(i64::from(tt.offset_min));
         let label = if tt.is_now() {
             "Now".to_string()
@@ -3874,7 +4447,7 @@ impl MapsApp {
             &label,
             minus.x1,
             plus.x0,
-            vmid(y, row_h, 15.0),
+            self.vmid(y, row_h, 15.0),
             15.0,
             theme.accent_primary,
         );
@@ -3885,29 +4458,25 @@ impl MapsApp {
         // A compact "Reset to now" appears only when the anchor is off default —
         // the common leave-now case stays a single, quiet row.
         if !tt.is_now() {
-            y += 8.0;
-            let reset_w = draw::measure_w(tr, "Reset to now", 12.0) + 20.0;
-            let reset = Rect::new(x, y, x + reset_w, y + 26.0);
-            draw::fill_rrect(scene, t, reset, 8.0, c.surfaces.raised);
-            draw::stroke_rrect(scene, t, reset, 8.0, 1.0, c.border_standard);
-            draw::text_center(
+            y += s2;
+            let reset_h = authored_h(26.0, &[12.0], tr.text_scale());
+            let reset_w =
+                draw::measure_w(tr, "Reset to now", 12.0) + 2.0 * f64::from(self.spacing.s3);
+            let reset = Rect::new(x, y, x + reset_w, y + reset_h);
+            Button::paint(
                 scene,
-                tr,
                 t,
-                "Reset to now",
-                reset.x0,
-                reset.x1,
-                vmid(reset.y0, 26.0, 12.0),
-                12.0,
-                theme.text_primary,
+                tr,
+                theme,
+                &ButtonFace::new(reset, "Reset to now").text_size(12.0),
             );
             self.click_targets.push((reset, Hit::TransitTimeNow));
-            y += 26.0;
+            y += reset_h;
         }
 
         // Breathing space rather than a hairline — groups separate by space, not
-        // boxes-within-boxes (HIG §7).
-        y + 18.0
+        // boxes-within-boxes (HIG §7): `s4` before the next group.
+        y + f64::from(self.spacing.s4)
     }
 
     /// The public-transport departures list for Transit mode. The depart/arrive
@@ -3943,6 +4512,11 @@ impl MapsApp {
         } else {
             self.model.dest_name.clone()
         };
+        let (s1, s2, s3) = (
+            f64::from(self.spacing.s1),
+            f64::from(self.spacing.s2),
+            f64::from(self.spacing.s3),
+        );
         draw::text_w(
             scene,
             tr,
@@ -3954,7 +4528,7 @@ impl MapsApp {
             theme.text_primary,
             TextWeight::Semibold,
         );
-        y += 26.0;
+        y += line_h(14.0, self.text_scale) + s2;
 
         if self.model.transit.is_empty() {
             let has_target = self.model.dest.is_some() || self.model.selected_place().is_some();
@@ -3966,7 +4540,7 @@ impl MapsApp {
                 "No public-transport itineraries found."
             };
             draw::text(scene, tr, t, msg, x, y, 13.0, theme.text_dim);
-            return y + 24.0;
+            return y + line_h(13.0, self.text_scale) + s2;
         }
 
         let journeys = self.model.transit.clone();
@@ -3974,19 +4548,22 @@ impl MapsApp {
             let selected = self.model.transit_choice == i;
             let base_h = 86.0;
             let jr = Rect::new(x, y, right, y + base_h);
-            draw::fill_rrect(
-                scene,
-                t,
-                jr,
-                10.0,
-                if selected {
-                    draw::alpha(theme.accent_primary, 0.12)
-                } else {
-                    c.surfaces.base
-                },
-            );
+            // Each itinerary is the base tier in the panel with its derived
+            // edge; the chosen one is a translucent accent wash whose edge
+            // derives from the panel it sits on (the surface actually seen),
+            // then the accent ring.
             if selected {
+                draw::fill_rrect(scene, t, jr, 10.0, draw::alpha(theme.accent_primary, 0.12));
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    t,
+                    ui::surface::edge_on(c.surfaces.raised),
+                    None,
+                    &ui::surface::edge_outline(jr, 10.0),
+                );
                 draw::stroke_rrect(scene, t, jr, 10.0, 1.5, theme.accent_primary);
+            } else {
+                draw::edged(scene, t, jr, 10.0, c.surfaces.base);
             }
             // Header: dep–arr  ·  duration  ·  transfers.
             draw::text_w(
@@ -4066,7 +4643,7 @@ impl MapsApp {
                         &lbl,
                         pill.x0,
                         pill.x1,
-                        vmid(pill.y0, 22.0, 12.0),
+                        self.vmid(pill.y0, 22.0, 12.0),
                         12.0,
                         fg,
                     );
@@ -4077,7 +4654,7 @@ impl MapsApp {
                 }
             }
             self.click_targets.push((jr, Hit::Journey(i)));
-            y += base_h + 10.0;
+            y += base_h + s3;
 
             // Expanded leg detail for the selected journey.
             if selected {
@@ -4161,9 +4738,9 @@ impl MapsApp {
                         11.0,
                         theme.text_dim,
                     );
-                    y += lh + 2.0;
+                    y += lh + s1;
                 }
-                y += 6.0;
+                y += s2;
             }
         }
 
@@ -4191,17 +4768,10 @@ impl MapsApp {
             Some(a) => format!("{freshness} · via Transitous (MOTIS) · {a}"),
             None => format!("{freshness} · via Transitous (MOTIS)"),
         };
-        draw::line(
-            scene,
-            t,
-            Point::new(x, y),
-            Point::new(right, y),
-            1.0,
-            c.border_standard,
-        );
-        y += 10.0;
+        draw::separator(scene, t, x, right, y, c.surfaces.raised);
+        y += s3;
         draw::text_clip(scene, tr, t, &src, x, y, 10.0, theme.text_dim, right - x);
-        y += 18.0;
+        y += line_h(10.0, self.text_scale) + s2;
         y
     }
 
@@ -4671,9 +5241,17 @@ impl Widget for MapsApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The text scale is read here, in the layout pass, so the panel
+        // width, the navigation card's intrinsic size and every row solved
+        // before the first paint already follow the type they will carry.
+        self.text_scale = theme.text_scale;
+        self.spacing = theme.tokens.spacing;
+        self.metrics = theme.tokens.metrics;
+        self.navigation_placement
+            .set_preferred_size(navigation_card_size(&self.metrics, theme.text_scale));
         #[allow(
             clippy::unwrap_used,
             reason = "a fresh leaf on a live taffy tree cannot fail short of OOM, and \
@@ -5382,6 +5960,3245 @@ impl Widget for MapsApp {
     ) {
         // Root fills the window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+#[cfg(test)]
+mod local_layout_tests {
+    use super::*;
+
+    /// The floating zoom / locate / traffic cluster shares the top-right
+    /// corner with the navigation card. While the card is showing, the
+    /// cluster must start beneath it — and the painted rects are the hit
+    /// rects, so pointer and accessibility geometry move with it.
+    #[test]
+    fn map_controls_clear_a_visible_navigation_card() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(
+            a.navigation_surface_visible_in_app(),
+            "the offline demo starts with an active route and its card"
+        );
+        let nav = a.navigation_rect();
+        let zoom_in = a.map_controls.rect(MapControlAction::ZoomIn);
+        let traffic = a.map_controls.rect(MapControlAction::ToggleTraffic);
+        assert!(
+            zoom_in.y0 >= nav.y1,
+            "zoom-in {zoom_in:?} must start below the navigation card {nav:?}"
+        );
+        for action in [
+            MapControlAction::ZoomIn,
+            MapControlAction::ZoomOut,
+            MapControlAction::Locate,
+            MapControlAction::ToggleTraffic,
+        ] {
+            let rect = a.map_controls.rect(action);
+            assert!(
+                rect.intersect(nav).area() <= 0.0,
+                "{action:?} {rect:?} overlaps the navigation card {nav:?}"
+            );
+            assert_eq!(
+                a.map_controls.hit_test(rect.center()),
+                Some(action),
+                "hit rect must equal the painted rect"
+            );
+        }
+        assert!(traffic.y1 <= a.rect.y1, "the whole cluster stays on screen");
+
+        // Without a card the cluster returns to the window's top margin.
+        let mut plain = MapsApp::offline_empty();
+        plain.rect = a.rect;
+        plain.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(!plain.navigation_surface_visible_in_app());
+        assert!(
+            plain.map_controls.rect(MapControlAction::ZoomIn).y0 < nav.y1,
+            "with no card the cluster sits at the top-right corner"
+        );
+    }
+
+    /// One rhythm for the floating chrome (HIG §7b): the search bar, the
+    /// panel beneath it and the ⋯ overflow button all keep the theme's `s3`
+    /// from their neighbours and the `s4` window margin — nothing touches.
+    #[test]
+    fn floating_chrome_keeps_one_sibling_gap() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let sp = theme.tokens.spacing;
+        assert_eq!(GAP, f64::from(sp.s3));
+        let search = a.search_rect();
+        let panel = a.panel_rect();
+        assert_eq!(
+            panel.y0 - search.y1,
+            GAP,
+            "panel sits an s3 under the search bar"
+        );
+        assert_eq!(
+            search.y0,
+            f64::from(sp.s4),
+            "search bar keeps the window margin"
+        );
+        assert_eq!(search.x0, f64::from(sp.s4));
+        let overflow = a.overflow_rect();
+        assert_eq!(a.rect.x1 - overflow.x1, f64::from(sp.s4));
+        assert_eq!(a.rect.y1 - overflow.y1, f64::from(sp.s4));
+        assert!(
+            overflow.y0 - panel.y1 >= 0.0 || overflow.x0 - panel.x1 >= GAP,
+            "the overflow button clears the panel by a sibling gap"
+        );
+    }
+
+    /// The rows of the Explore panel pitch at `ROW_H` with an `s2` between
+    /// neighbouring hit rects, so no two rows share an edge.
+    #[test]
+    fn explore_rows_keep_a_related_row_gap() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        a.set_active_panel(Panel::Explore);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let mut rows: Vec<Rect> = a
+            .click_targets
+            .iter()
+            .filter(|(_, hit)| matches!(hit, Hit::SelectPlace(_) | Hit::SelectPoi(_)))
+            .map(|(rect, _)| *rect)
+            .collect();
+        assert!(rows.len() >= 2, "the offline demo lists several places");
+        rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        for pair in rows.windows(2) {
+            let gap = pair[1].y0 - pair[0].y1;
+            assert!(
+                gap >= f64::from(theme.tokens.spacing.s2) - 1e-6,
+                "rows {:?} and {:?} are only {gap}px apart",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn text_vmid_centres_the_scaled_line() {
+        // At 1× a 12pt line (15px) centred in a 40px band starts at 12.5.
+        assert!((text_vmid(0.0, 40.0, 12.0, 1.0) - 12.5).abs() < 1e-9);
+        // At 2× the same line is 30px tall, so it starts at 5 — not at 12.5,
+        // which would push half the glyphs out of the band.
+        assert!((text_vmid(0.0, 40.0, 12.0, 2.0) - 5.0).abs() < 1e-9);
+    }
+
+    /// Authored rows and the navigation card are the 1× design exactly and
+    /// grow to whole pixels that hold their scaled lines.
+    #[test]
+    fn authored_rows_and_navigation_card_are_exact_at_one_x_and_whole_at_two_x() {
+        assert_eq!(
+            authored_h(28.0, &[13.0], 1.0),
+            28.0,
+            "not 16.25 + 12 = 28.25"
+        );
+        assert_eq!(authored_h(46.0, &[13.0, 11.0], 1.0), 46.0);
+        for (authored, sizes) in [(30.0, &[13.0][..]), (40.0, &[12.0]), (36.0, &[18.0])] {
+            assert_eq!(authored_h(authored, sizes, 1.0), authored);
+            let two = authored_h(authored, sizes, 2.0);
+            assert_eq!(two.fract(), 0.0);
+            assert!(two >= sizes.iter().map(|&s| line_h(s, 2.0)).sum::<f64>());
+        }
+        let mx = Metrics::BASE;
+        let one = navigation_card_size(&mx, 1.0);
+        assert_eq!(
+            (one.width, one.height),
+            (f64::from(mx.panel_width_list), NAV_CARD_H)
+        );
+        let two = navigation_card_size(&mx, 2.0);
+        assert_eq!(two.height.fract(), 0.0);
+        assert!(two.height > one.height && two.width > one.width);
+        // The stack the card paints (title, instruction, distance, summary)
+        // fits inside the scaled card with the design's own padding.
+        let stack: f64 = [text_sm(), NAV_INSTR_TEXT, text_sm(), text_lg()]
+            .iter()
+            .map(|&s| line_h(s, 2.0))
+            .sum();
+        assert!(two.height >= stack);
+    }
+
+    /// In a short window the lowered cluster would run off the bottom and
+    /// under the ⋯ overflow button; it moves beside the card instead, and
+    /// every control stays on screen, clear of both, with hit == paint.
+    #[test]
+    fn map_controls_fit_a_short_window_beside_the_navigation_card() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 360.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(a.navigation_surface_visible_in_app());
+        let nav = a.navigation_rect();
+        let overflow = a.overflow_rect();
+        for action in [
+            MapControlAction::ZoomIn,
+            MapControlAction::ZoomOut,
+            MapControlAction::Locate,
+            MapControlAction::ToggleTraffic,
+        ] {
+            let rect = a.map_controls.rect(action);
+            assert!(
+                rect.y0 >= a.rect.y0 && rect.y1 <= a.rect.y1 && rect.x0 >= a.rect.x0,
+                "{action:?} {rect:?} must stay inside the window {:?}",
+                a.rect
+            );
+            assert!(
+                rect.intersect(nav).area() <= 0.0,
+                "{action:?} {rect:?} overlaps the navigation card {nav:?}"
+            );
+            assert!(
+                rect.intersect(overflow).area() <= 0.0,
+                "{action:?} {rect:?} overlaps the overflow button {overflow:?}"
+            );
+            assert_eq!(a.map_controls.hit_test(rect.center()), Some(action));
+        }
+        assert!(
+            a.map_controls.rect(MapControlAction::ZoomIn).x1 <= nav.x0,
+            "the cluster sits beside the card when it cannot fit beneath it"
+        );
+    }
+
+    /// When the cluster fits neither beneath the card nor beside it — a
+    /// short docked window whose panel reaches the card, or a tiny overlay
+    /// window — the corner keeps HEAD's placement (the card covers it) and
+    /// the controls never land under the docked panel, off the bottom, or
+    /// under the overflow button.
+    #[test]
+    fn map_controls_never_land_under_the_panel_or_off_screen() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let controls = [
+            MapControlAction::ZoomIn,
+            MapControlAction::ZoomOut,
+            MapControlAction::Locate,
+            MapControlAction::ToggleTraffic,
+        ];
+
+        // Docked, 720×400: beside would overlap the panel, below would run
+        // past the overflow button.
+        let mut docked = app_at(720.0, 400.0);
+        let mut scene = Scene::new();
+        docked.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(docked.navigation_surface_visible_in_app() && !docked.overlay_mode());
+        let panel = docked.panel_rect();
+        let overflow = docked.overflow_rect();
+        for action in controls {
+            let rect = docked.map_controls.rect(action);
+            assert!(
+                rect.intersect(panel).area() <= 0.0,
+                "{action:?} {rect:?} must not cover the docked panel {panel:?}"
+            );
+            assert!(
+                rect.intersect(overflow).area() <= 0.0,
+                "{action:?} {rect:?} must not cover the overflow button {overflow:?}"
+            );
+            assert!(rect.x0 >= docked.rect.x0 && rect.x1 <= docked.rect.x1);
+        }
+        assert_eq!(
+            docked.map_controls_viewport(),
+            docked.rect,
+            "with no fitting placement the corner keeps HEAD's layout"
+        );
+
+        // Overlay, 380×330, drawer closed so the card shows: neither fits.
+        let mut tiny = app_at(380.0, 330.0);
+        tiny.nav_open = false;
+        tiny.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(tiny.overlay_mode());
+        if tiny.navigation_surface_visible_in_app() {
+            let overflow = tiny.overflow_rect();
+            for action in controls {
+                let rect = tiny.map_controls.rect(action);
+                assert!(rect.y0 >= tiny.rect.y0 && rect.x1 <= tiny.rect.x1);
+                assert!(
+                    rect.intersect(overflow).area() <= 0.0,
+                    "{action:?} {rect:?} must not cover the overflow button {overflow:?}"
+                );
+            }
+            assert_eq!(tiny.map_controls_viewport(), tiny.rect);
+        }
+    }
+
+    /// The panel's authored width bounds scale with the text (never below
+    /// 1×) so a 2× panel keeps its 1× character budget; the breakpoint is the
+    /// theme's compact breakpoint and is not scaled by the app; and the 1×
+    /// drawer is exactly what it was — only a scaled drawer's extra width
+    /// stops short of the trailing controls column.
+    #[test]
+    fn panel_width_follows_the_text_scale_and_the_drawer_keeps_its_one_x_width() {
+        let mut a = app_at(1600.0, 900.0);
+        a.text_scale = 1.0;
+        assert!(!a.overlay_mode());
+        assert_eq!(
+            a.panel_w(),
+            PANEL_MAX_W,
+            "1600 × 0.42 clamps to the authored 384"
+        );
+        a.text_scale = 2.0;
+        assert!(!a.overlay_mode(), "the breakpoint is the theme's, unscaled");
+        let two = a.panel_w();
+        assert!(two > PANEL_MAX_W, "a 2× panel is wider than the 1× column");
+        assert!(
+            two <= 1600.0 * 0.6,
+            "the map keeps at least 40 % of a docked window"
+        );
+        assert_eq!(
+            two,
+            (1600.0_f64 * 0.42)
+                .max(PANEL_MIN_W * 2.0)
+                .min(PANEL_MAX_W * 2.0)
+        );
+
+        // The breakpoint is the theme token at every scale.
+        let mut mid = app_at(800.0, 900.0);
+        mid.text_scale = 2.0;
+        assert!(!mid.overlay_mode());
+        assert_eq!(f64::from(mid.metrics.compact_breakpoint), 720.0);
+
+        // A 400px drawer at 1× is the authored 368 (window − 2·s4), under the
+        // controls column exactly as before; at 2× it does not shrink below
+        // that, and a drawer that *would* grow past the controls stops short
+        // of them.
+        let mut narrow = app_at(400.0, 800.0);
+        narrow.text_scale = 1.0;
+        assert!(narrow.overlay_mode());
+        let one_x = 400.0 - 2.0 * narrow.margin();
+        assert_eq!(narrow.panel_w(), one_x);
+        narrow.text_scale = 2.0;
+        assert_eq!(narrow.panel_w(), one_x, "the 1× drawer width is the floor");
+        let mut wide_drawer = app_at(700.0, 800.0);
+        wide_drawer.text_scale = 2.0;
+        assert!(wide_drawer.overlay_mode());
+        assert_eq!(
+            wide_drawer.panel_w(),
+            700.0 - 2.0 * wide_drawer.margin() - CTRL_SIZE - GAP,
+            "a scaled drawer stops short of the controls column"
+        );
+        assert!(wide_drawer.panel_w() >= (700.0 - 2.0 * wide_drawer.margin()).min(PANEL_MAX_W));
+
+        // A degenerate rect never panics the docked bounds.
+        let mut degenerate = app_at(0.0, 0.0);
+        degenerate.text_scale = 1.0;
+        let _ = degenerate.panel_w();
+    }
+
+    #[test]
+    fn location_action_reports_the_real_portal_terminal_result() {
+        let mut app = MapsApp::offline();
+        app.online = true;
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let locate = app
+            .resources(&state.doc)
+            .into_iter()
+            .flat_map(|resource| resource.actions)
+            .find(|action| action.id == "locate")
+            .expect("location action");
+        assert_eq!(
+            locate.contract.execution,
+            ExecutionMode::Background { cancellable: false }
+        );
+        assert_eq!(locate.contract.result, ResultSpec::Job);
+
+        let invocation = InvocationId::default();
+        app.location_invocation = Some(invocation);
+        app.location_rx = Some(crate::location::inject_for_test(
+            LocationOutcome::Unavailable("permission denied".into()),
+        ));
+        app.drain_location();
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &state.doc, &state.root),
+            Some(InvocationUpdate::Failed { error, .. }) if error.code == "location_unavailable"
+        ));
+        assert_eq!(app.location_invocation, None);
+    }
+
+    #[test]
+    fn resource_place_open_is_window_local() {
+        let mut app = MapsApp::offline();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let id = app
+            .model
+            .places
+            .iter()
+            .find(|place| place.saved)
+            .expect("sample has a saved place")
+            .id
+            .clone();
+        let payload = serde_json::to_vec(&id).unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                OperationKind::View,
+                "maps.open-place",
+                &payload,
+                &state.doc,
+                &state.root,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.model.selected.as_deref(), Some(id.as_str()));
+        assert!(
+            MapsDoc::load(&state.doc).is_some_and(|model| model.selected.is_none()),
+            "opening a resource never changes another window's selection"
+        );
+    }
+
+    #[test]
+    fn resource_search_is_a_local_brokered_operation() {
+        let mut app = MapsApp::offline();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let recents_before = MapsDoc::load(&state.doc).unwrap().recents;
+        let payload = serde_json::to_vec("Marienplatz").unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                OperationKind::View,
+                "maps.search",
+                &payload,
+                &state.doc,
+                &state.root,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.model.query, "Marienplatz");
+        assert!(!app.model.results.is_empty());
+        assert_eq!(MapsDoc::load(&state.doc).unwrap().recents, recents_before);
+    }
+
+    fn app_at(w: f64, h: f64) -> MapsApp {
+        // Offline variant: no tile worker thread, no network — tests stay
+        // hermetic and never touch the wire.
+        let mut a = MapsApp::offline();
+        a.rect = Rect::new(0.0, 0.0, w, h);
+        a.map_controls.set_viewport(a.rect);
+        a
+    }
+
+    /// Drive a click `Hit` through the real `dispatch` path with a throwaway
+    /// document, for the tests that assert on the resulting in-memory view state.
+    /// Doc-mutating hits still flow through the action host (`perform` re-seeds the
+    /// throwaway doc from the live model each call, so state carries across taps);
+    /// the collaborative doc + undo + replay guarantees are proven separately in
+    /// [`crate::actions`] and by [`delete_region_affordance_matches_action_spec`].
+    fn tap(a: &mut MapsApp, hit: &Hit) {
+        let mut doc = AutoCommit::new();
+        a.dispatch(hit, &mut doc);
+    }
+
+    fn tap_offline(a: &mut MapsApp, action: OfflineAction) {
+        let mut doc = AutoCommit::new();
+        a.dispatch_offline(action, &mut doc);
+    }
+
+    fn tap_control(a: &mut MapsApp, action: MapControlAction) {
+        a.dispatch_map_control(action);
+    }
+
+    #[test]
+    fn pan_changes_center() {
+        let mut a = app_at(1280.0, 800.0);
+        let before = a.model.center;
+        a.pan_by(120.0, 0.0);
+        assert!((a.model.center.lon - before.lon).abs() > 1e-6);
+    }
+
+    /// Profiling-driven perf guard for the zoom/scroll path — the interaction
+    /// the user flagged as stuttery. Drives the real five passes headless over a
+    /// *loaded* raster viewport (seeded tiles + live POI markers) and asserts the
+    /// p95 frame stays inside the 60 fps budget. Prints the full per-pass table
+    /// with `--nocapture` so a regression is diagnosable, not just red.
+    #[test]
+    fn perf_zoom_scroll_stays_under_budget() {
+        use ui::profiling::{PerfScenario, PerfStep, run_scenario_on};
+        let mut app = MapsApp::offline();
+        app.set_demo_pois();
+        app.seed_perf_tiles(1280.0, 800.0);
+        let scenario = PerfScenario {
+            name: "maps-zoom-scroll".into(),
+            viewport: (1280, 800),
+            warmup: 8,
+            // Gentle zoom-out sweep (dy·0.35 per notch) across several z levels,
+            // the way a touchpad pinch traverses the tile pyramid.
+            steps: vec![PerfStep::Scroll {
+                dy: -0.4,
+                count: 70,
+            }],
+        };
+        let report = run_scenario_on(ui::State::new(), Box::new(app), &scenario);
+        eprintln!("{report}");
+        // Frame cost is only meaningful for the optimised build (unoptimised
+        // vello/text shaping inflates a debug frame far past budget), so the
+        // hard guard runs in release; debug still prints the table.
+        if !cfg!(debug_assertions) {
+            assert!(
+                report.total.p95_us < ui::profiling::FRAME_BUDGET_US,
+                "zoom p95 {}us over the {}us budget",
+                report.total.p95_us,
+                ui::profiling::FRAME_BUDGET_US
+            );
+        }
+    }
+
+    #[test]
+    fn local_pan_cannot_overwrite_a_peer_bookmark() {
+        let mut app = app_at(1280.0, 800.0);
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let bytes = state.doc.save();
+        let mut peer = AutoCommit::load(&bytes).expect("peer replica");
+        let id = app.model.places[0].id.clone();
+        MapsDoc::set_place_saved(&mut peer, &id, true);
+        app.pan_by(96.0, 0.0);
+        app.sync(&mut state.doc, &state.root);
+        state.doc.merge(&mut peer).expect("merge peer action");
+        app.sync(&mut state.doc, &state.root);
+        assert!(
+            MapsDoc::load(&state.doc)
+                .and_then(|model| model.place(&id).map(|place| place.saved))
+                .unwrap_or(false),
+            "a local camera update must not write stale place data over a peer bookmark"
+        );
+    }
+
+    #[test]
+    fn loaded_endpoint_queries_do_not_replace_an_in_progress_local_draft() {
+        let mut a = app_at(1280.0, 800.0);
+        a.endpoints.begin_edit(Endpoint::Origin);
+        a.endpoints.sync_queries("Local draft", "");
+
+        let mut state = ui::State::new();
+        let mut loaded = a.model.clone();
+        loaded.origin_query = "Peer origin".to_string();
+        loaded.dest_query = "Peer destination".to_string();
+        MapsDoc::save(&mut state.doc, &loaded);
+
+        a.sync(&mut state.doc, &state.root);
+
+        assert_ne!(a.model.origin_query, "Peer origin");
+        assert_eq!(a.endpoints.test_query(Endpoint::Origin), "");
+        assert_eq!(a.endpoints.test_query(Endpoint::Destination), "");
+    }
+
+    /// The ⋯ overflow menu carries map utilities plus the shared live-navigation
+    /// handoff, opens from the bottom-right button, and routes every row.
+    #[test]
+    fn overflow_menu_opens_and_routes_to_its_options() {
+        let mut a = app_at(1280.0, 800.0);
+        let labels: Vec<&str> = a
+            .overflow
+            .items()
+            .iter()
+            .filter_map(|i| i.label())
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Attribution",
+                "Offline maps",
+                "Licenses",
+                "Float navigation"
+            ]
+        );
+
+        assert!(!a.overflow.is_open());
+        tap(&mut a, &Hit::ToggleOverflow);
+        assert!(a.overflow.is_open(), "the ⋯ button opens the overflow menu");
+        // It expands upward from the bottom-right button (never off the bottom).
+        assert!(
+            a.overflow.get_rect().y1 <= a.overflow_rect().y0 + 1.0,
+            "the menu sits above its button"
+        );
+
+        // Row 0 -> attribution sheet; row 1 -> offline dialog; row 2 -> licenses.
+        a.overflow_select(0);
+        assert_eq!(a.info_sheet.current(), Some(MapInfo::Attribution));
+        a.info_sheet.close();
+        a.overflow_select(1);
+        assert!(
+            a.offline_panel.is_open(),
+            "‘Offline maps’ opens the download dialog"
+        );
+        a.offline_panel.close();
+        a.overflow_select(2);
+        assert_eq!(a.info_sheet.current(), Some(MapInfo::Licenses));
+        a.info_sheet.close();
+        a.overflow_select(3);
+        let request = Widget::take_floating_surface_request(&mut a)
+            .expect("sample route produces a live navigation float");
+        assert_eq!(request.role, ui::floating_surface::FloatingRole::Navigation);
+
+        // Toggling again closes it.
+        tap(&mut a, &Hit::ToggleOverflow);
+        assert!(
+            !a.overflow.is_open(),
+            "the ⋯ button toggles the menu closed"
+        );
+    }
+
+    /// Downloading offline maps targets the *searched place's real bounding box*
+    /// (from the shared city-search), not the visible screen rectangle — the
+    /// core of the offline-UX redesign — and records a region named after it.
+    #[test]
+    fn download_by_city_targets_the_picked_place_bounds() {
+        let mut a = app_at(1280.0, 800.0);
+        let dir = region_test_cache("citydl");
+        a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+
+        // Open the dialog and pick "Munich" from the (sample) geocoded results.
+        a.offline_panel.open(a.tiles.cache_bytes());
+        assert!(
+            a.offline_panel.is_open() && a.offline_panel.is_editing(),
+            "the city field is focused on open"
+        );
+        a.offline_panel
+            .set_demo(a.tiles.cache_bytes(), "Mun", sample::download_regions());
+        let munich = a.offline_panel.select_result(0).unwrap();
+
+        let before = a.model.regions.len();
+        tap_offline(&mut a, OfflineAction::Download);
+
+        // The picked city's footprint was queued (offline layer marks it done)…
+        assert!(
+            a.tiles.progress().total > 0,
+            "the picked city's tiles were queued"
+        );
+        // …and recorded as a region named after the place, with the place's
+        // bounding box — NOT the viewport.
+        assert_eq!(a.model.regions.len(), before + 1);
+        let region = a.model.regions.last().unwrap();
+        assert_eq!(
+            region.name, "Munich",
+            "the region is named after the searched place"
+        );
+        assert!(
+            (region.min.lat - munich.sw.lat).abs() < 1e-6
+                && (region.max.lon - munich.ne.lon).abs() < 1e-6,
+            "the download footprint is the place's bounding box, not the screen rect"
+        );
+        // A bigger place downloads at a coarser base zoom than a tiny one.
+        let city_z = a
+            .offline_panel
+            .download_request(
+                a.viewport_bounds(),
+                TileLayer::tile_zoom(a.model.zoom),
+                a.rect,
+            )
+            .z0;
+        a.offline_panel.select_result(2).unwrap();
+        let plaza_z = a
+            .offline_panel
+            .download_request(
+                a.viewport_bounds(),
+                TileLayer::tile_zoom(a.model.zoom),
+                a.rect,
+            )
+            .z0;
+        assert!(
+            plaza_z > city_z,
+            "a small place fits at a deeper zoom than a whole city"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Perf guard for typing into the shared search field — the other
+    /// interaction flagged as stuttery. Focuses search, then types a query and
+    /// asserts the per-keystroke p95 frame stays inside budget.
+    #[test]
+    fn perf_search_typing_stays_under_budget() {
+        use ui::profiling::{PerfScenario, PerfStep, run_scenario_on};
+        let mut app = MapsApp::offline();
+        app.seed_perf_tiles(1280.0, 800.0);
+        app.search.set_focused(true);
+        let scenario = PerfScenario {
+            name: "maps-search-typing".into(),
+            viewport: (1280, 800),
+            warmup: 8,
+            steps: vec![PerfStep::Type("Marienplatz coffee".into())],
+        };
+        let report = run_scenario_on(ui::State::new(), Box::new(app), &scenario);
+        eprintln!("{report}");
+        if !cfg!(debug_assertions) {
+            assert!(
+                report.total.p95_us < ui::profiling::FRAME_BUDGET_US,
+                "typing p95 {}us over the {}us budget",
+                report.total.p95_us,
+                ui::profiling::FRAME_BUDGET_US
+            );
+        }
+    }
+
+    #[test]
+    fn traffic_toggle_populates_from_sample_cartography() {
+        // The offline app carries the sample vector basemap, so toggling traffic
+        // on colours its arterials — the demonstrable overlay.
+        let mut a = app_at(1280.0, 800.0);
+        assert!(
+            !a.map_controls.traffic_enabled() && a.traffic.is_empty(),
+            "off + empty at start"
+        );
+        tap_control(&mut a, MapControlAction::ToggleTraffic);
+        assert!(
+            a.map_controls.traffic_enabled(),
+            "the control toggles the overlay on"
+        );
+        assert!(
+            !a.traffic.is_empty(),
+            "sample cartography yields congestion segments"
+        );
+        assert_eq!(
+            a.traffic.source.as_deref(),
+            Some("sample data"),
+            "provenance is honest"
+        );
+        // Toggling again turns it off.
+        tap_control(&mut a, MapControlAction::ToggleTraffic);
+        assert!(
+            !a.map_controls.traffic_enabled(),
+            "the control toggles the overlay back off"
+        );
+    }
+
+    #[test]
+    fn traffic_on_a_live_empty_basemap_stays_honestly_empty() {
+        // An empty vector basemap is the LIVE state (real tiles, no bundled
+        // cartography). With no peer reports and no provider, turning traffic on
+        // must NOT fabricate congestion — the overlay stays empty and the UI
+        // shows "No traffic data".
+        let mut a = MapsApp::offline_empty();
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        assert!(a.basemap.is_empty(), "live/empty cartography");
+        a.set_traffic(true);
+        assert!(a.map_controls.traffic_enabled(), "overlay is on");
+        assert!(a.traffic.is_empty(), "no data is invented on the live path");
+        assert!(
+            a.traffic.source.is_none(),
+            "no provenance when there is nothing to show"
+        );
+    }
+
+    #[test]
+    fn traffic_legend_only_draws_when_the_overlay_is_on() {
+        // With the overlay off the legend/empty pill is absent; turning it on
+        // (with sample data) draws the colour key — a visible affordance.
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        // (No panic; the status pass is a no-op when off.)
+        a.set_traffic(true);
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        assert!(
+            a.map_controls.traffic_enabled() && !a.traffic.is_empty(),
+            "overlay on with data → legend drawn"
+        );
+    }
+
+    #[test]
+    fn zoom_clamps() {
+        let mut a = app_at(1280.0, 800.0);
+        for _ in 0..50 {
+            a.zoom_by(1.0, a.view_center());
+        }
+        assert!(a.model.zoom <= 19.0);
+        for _ in 0..80 {
+            a.zoom_by(-1.0, a.view_center());
+        }
+        assert!(a.model.zoom >= 3.0);
+    }
+
+    #[test]
+    fn local_search_selects_match() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.query = "viktualien".to_string();
+        a.run_search(None);
+        assert_eq!(a.model.selected.as_deref(), Some("viktualienmarkt"));
+        assert!(
+            a.model
+                .recents
+                .iter()
+                .any(|r| r.eq_ignore_ascii_case("viktualien"))
+        );
+    }
+
+    #[test]
+    fn keyword_search_finds_cafe() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.query = "coffee".to_string();
+        a.run_search(None);
+        assert!(a.model.results.iter().any(|p| p.category == Category::Cafe));
+    }
+
+    // --- Search-as-you-type + overlay + ranking ----------------------------
+
+    /// Search results are ordered by proximity to the search anchor (map centre
+    /// or the user's location), nearest first.
+    #[test]
+    fn search_results_ordered_by_proximity() {
+        let mut a = app_at(1280.0, 720.0);
+        a.model.origin = None;
+        a.model.center = LatLon::new(48.10, 11.50);
+        a.model.places = vec![
+            crate::model::Place::new(
+                "far",
+                "Far Cafe",
+                Category::Cafe,
+                "",
+                LatLon::new(48.30, 11.90),
+            ),
+            crate::model::Place::new(
+                "near",
+                "Near Cafe",
+                Category::Cafe,
+                "",
+                LatLon::new(48.101, 11.501),
+            ),
+            crate::model::Place::new(
+                "mid",
+                "Mid Cafe",
+                Category::Cafe,
+                "",
+                LatLon::new(48.15, 11.60),
+            ),
+        ];
+        let ranked = a.ranked_matches("cafe");
+        let ids: Vec<_> = ranked.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["near", "mid", "far"],
+            "results ordered nearest-first"
+        );
+    }
+
+    /// Picking a result from the overlay puts the proper human place-name in the
+    /// search field (not a bare house number), selects it, and dismisses the
+    /// overlay. Guards the label bug where the field showed "18".
+    #[test]
+    fn picking_search_result_sets_place_name_label() {
+        let mut a = app_at(1280.0, 720.0);
+        a.search.set_focused(true);
+        a.search.replace_results(vec![crate::model::Place::new(
+            "osm-w-1",
+            "Theatinerstraße 18",
+            Category::Shop,
+            "18, Theatinerstraße, München",
+            LatLon::new(48.141, 11.577),
+        )]);
+        a.model.query = "theat".to_string();
+        tap(&mut a, &Hit::Search(SearchHit::Result(0)));
+        assert_eq!(
+            a.model.query, "Theatinerstraße 18",
+            "field shows the human place-name"
+        );
+        assert_ne!(a.model.query, "18", "never the bare house number");
+        assert_eq!(
+            a.model.selected.as_deref(),
+            Some("osm-w-1"),
+            "the pick is selected"
+        );
+        assert!(!a.search.is_focused(), "picking dismisses the overlay");
+        assert!(a.search.results().is_empty(), "overlay clears after a pick");
+        assert!(
+            (a.model.center.lat - 48.141).abs() < 1e-9,
+            "map navigated to the pick"
+        );
+    }
+
+    /// The overlay draws as a floating dropdown UNDER the search field, records
+    /// clickable pick targets, and never reflows the side panel to make room.
+    #[test]
+    fn search_overlay_floats_and_does_not_reflow_panel() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        let panel_before = a.panel_rect();
+        a.set_demo_search();
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        // Overlay records clickable pick rows.
+        let row = a
+            .click_targets
+            .iter()
+            .rev()
+            .find(|(_, h)| matches!(h, Hit::Search(SearchHit::Result(_))))
+            .map(|(r, _)| *r)
+            .expect("overlay records PickSearch hot-regions");
+        // Anchored below the search field (a dropdown, not a reflow).
+        assert!(
+            row.y0 >= a.search_rect().y1,
+            "overlay sits under the search field"
+        );
+        // The side panel geometry is unchanged — the overlay floats over it.
+        assert_eq!(
+            a.panel_rect(),
+            panel_before,
+            "overlay must not reflow the panel"
+        );
+        // The pick row wins the hit-test over the panel it overlays.
+        let topmost = a
+            .click_targets
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(row.center()))
+            .map(|(_, h)| h.clone());
+        assert!(
+            matches!(topmost, Some(Hit::Search(SearchHit::Result(_)))),
+            "overlay row is the topmost target"
+        );
+    }
+
+    /// While the floating results overlay is up it is the ONLY place list: the
+    /// panel's own rows behind it are suppressed so the same place never appears
+    /// in both. Dismissing the results brings the panel back.
+    #[test]
+    fn search_overlay_suppresses_panel_list_behind_it() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        a.set_demo_search();
+        assert!(
+            a.search_overlay_active(),
+            "the demo raises the results overlay"
+        );
+        assert!(
+            !a.model.results.is_empty(),
+            "the panel would otherwise list places"
+        );
+
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let has_pick = a
+            .click_targets
+            .iter()
+            .any(|(_, h)| matches!(h, Hit::Search(SearchHit::Result(_))));
+        let has_panel_rows = a
+            .click_targets
+            .iter()
+            .any(|(_, h)| matches!(h, Hit::SelectPlace(_) | Hit::Recent(_)));
+        assert!(has_pick, "the results overlay is drawn");
+        assert!(
+            !has_panel_rows,
+            "the panel list behind the results is suppressed"
+        );
+
+        // Dismiss the transient results → the panel list returns, without
+        // retaining stale suggestions for the next focus.
+        a.search.dismiss();
+        assert!(!a.search_overlay_active());
+        assert!(a.search.results().is_empty());
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        let panel_rows_back = a
+            .click_targets
+            .iter()
+            .any(|(_, h)| matches!(h, Hit::SelectPlace(_) | Hit::Recent(_)));
+        assert!(
+            panel_rows_back,
+            "the panel list returns once the results dismiss"
+        );
+    }
+
+    /// The offline demo Drive and Transit clocks share one coherent base time:
+    /// the Drive summary is anchored to the fixed 09:00 demo base (not a
+    /// nondeterministic wall clock), matching the bundled Transit departures.
+    #[test]
+    fn demo_drive_and_transit_share_base_clock() {
+        let a = app_at(1280.0, 800.0);
+        let route = a.model.route.clone().expect("demo has a road route");
+        let (dep, arr) = a.road_trip_clock(route.duration_s);
+        assert!(
+            dep.starts_with("Leave 09:"),
+            "demo Drive leaves at the demo base hour: {dep}"
+        );
+        assert!(
+            arr.starts_with("Arrive 09:") || arr.starts_with("Arrive 10:"),
+            "arrival derived from the base + trip duration: {arr}"
+        );
+        let first = a.model.transit.first().expect("demo has departures");
+        assert_eq!(
+            first.dep.get(..2).unwrap_or_default(),
+            "09",
+            "Transit departs the same base hour: {}",
+            first.dep
+        );
+        assert_eq!(
+            dep.get("Leave ".len()..)
+                .and_then(|s| s.get(..2))
+                .unwrap_or_default(),
+            "09",
+            "Drive and Transit agree on the base hour"
+        );
+    }
+
+    // --- POI layer (Overpass) ----------------------------------------------
+
+    fn demo_poi(id: &str, lat: f64, lon: f64) -> crate::model::Poi {
+        crate::model::Poi {
+            id: id.to_string(),
+            name: format!("POI {id}"),
+            category: Category::Cafe,
+            pos: LatLon::new(lat, lon),
+            address: "Some Street 1".to_string(),
+            opening_hours: Some("09:00–17:00".to_string()),
+            website: None,
+            phone: None,
+            kind: None,
+        }
+    }
+
+    /// A pan arms the POI refetch; it fires exactly once after the debounce,
+    /// versions the query, and a subsequent tick over the same viewport reuses
+    /// the cache instead of refetching.
+    #[test]
+    fn poi_fetch_debounces_caches_and_versions() {
+        let mut a = app_at(1280.0, 720.0);
+        a.model.zoom = 15.0;
+        a.pan_by(24.0, 0.0);
+        assert!(a.poi_debounce.is_some(), "a pan arms a POI refetch");
+        let gen0 = a.poi_generation;
+
+        a.tick_poi_debounce(Instant::now());
+        assert_eq!(
+            a.poi_generation, gen0,
+            "no fetch before the debounce elapses"
+        );
+        assert!(a.poi_debounce.is_some());
+
+        let past = Instant::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1);
+        a.tick_poi_debounce(past);
+        assert_eq!(a.poi_generation, gen0 + 1, "the debounce issues one fetch");
+        assert!(
+            a.poi_fetched_bounds.is_some(),
+            "the fetched bbox is recorded for caching"
+        );
+        assert!(a.poi_debounce.is_none());
+
+        // Re-arm without moving the viewport → the cache is reused, no new fetch.
+        a.schedule_pois();
+        a.tick_poi_debounce(Instant::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1));
+        assert_eq!(
+            a.poi_generation,
+            gen0 + 1,
+            "same viewport reuses the cached POIs"
+        );
+    }
+
+    /// Zooming out past the useful range drops the POI layer rather than leaving
+    /// a stale, too-sparse scatter from a closer view.
+    #[test]
+    fn poi_fetch_clears_when_zoomed_out() {
+        let mut a = app_at(1280.0, 720.0);
+        a.pois = vec![demo_poi("a", 48.1, 11.5)];
+        a.poi_fetched_bounds = Some(a.padded_viewport_bounds());
+        a.model.zoom = 10.0;
+        a.schedule_pois();
+        a.tick_poi_debounce(Instant::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1));
+        assert!(a.pois.is_empty(), "zoom-out clears the POI markers");
+        assert!(a.poi_fetched_bounds.is_none());
+    }
+
+    /// A fresh Overpass reply populates the POI layer via the real drain path; a
+    /// stale reply for a superseded viewport is ignored (not drawn over current).
+    #[test]
+    fn overpass_results_populate_and_stale_is_ignored() {
+        let mut a = app_at(1280.0, 720.0);
+        a.poi_generation = 5;
+        a.net_tx
+            .send(NetMsg::Pois {
+                generation: 5,
+                pois: Ok(vec![demo_poi("p1", 48.1, 11.5)]),
+            })
+            .unwrap();
+        a.drain_net(None);
+        assert_eq!(a.pois.len(), 1, "a current reply populates the layer");
+
+        a.net_tx
+            .send(NetMsg::Pois {
+                generation: 4,
+                pois: Ok(vec![]),
+            })
+            .unwrap();
+        a.drain_net(None);
+        assert_eq!(
+            a.pois.len(),
+            1,
+            "a stale reply must not clear the current POIs"
+        );
+    }
+
+    /// Pressing a POI marker on the map opens its info card, and the card records
+    /// its Close and Directions action targets — the real draw → hit-test path.
+    #[test]
+    fn press_on_poi_opens_info_card_via_handle_event() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        a.model.places.clear(); // no place pins to intercept the press
+        let anchor = Point::new(900.0, 380.0);
+        let pos = a.projection().unproject(anchor);
+        a.pois = vec![demo_poi("p1", pos.lat, pos.lon)];
+        a.selected_poi = None;
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        move_to(&mut a, anchor.x, anchor.y);
+        let handled = press_left(&mut a);
+        assert!(handled, "a press on a POI is handled");
+        assert_eq!(
+            a.selected_poi.as_deref(),
+            Some("p1"),
+            "pressing a POI opens its card"
+        );
+
+        // Redraw: the open card records its action hot-regions.
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        assert!(
+            a.click_targets
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::ClosePoi)),
+            "card has a close target"
+        );
+        assert!(
+            a.click_targets
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::PoiDirections)),
+            "card has a Directions target"
+        );
+    }
+
+    /// The card's Directions action routes to the POI: it becomes the
+    /// destination, is upserted as a Place (so its pin shows), Directions opens,
+    /// a route is computed, and the card closes.
+    #[test]
+    fn poi_directions_routes_to_the_poi() {
+        let mut a = app_at(1280.0, 720.0);
+        a.pois = vec![demo_poi("pd", 48.16, 11.60)];
+        a.selected_poi = Some("pd".to_string());
+        a.model.mode = TravelMode::Car;
+        tap(&mut a, &Hit::PoiDirections);
+        assert_eq!(a.model.panel, Panel::Directions);
+        assert_eq!(
+            a.model.dest,
+            Some(LatLon::new(48.16, 11.60)),
+            "POI becomes the destination"
+        );
+        assert_eq!(a.model.dest_name, "POI pd");
+        assert!(a.model.route.is_some(), "a route to the POI is computed");
+        assert!(
+            a.selected_poi.is_none(),
+            "the card closes when directions start"
+        );
+        assert!(
+            a.model.place("pd").is_some(),
+            "the POI is upserted as a Place so its pin shows"
+        );
+    }
+
+    /// The Explore panel lists the viewport POIs nearest-first, each row is a
+    /// real click target, and choosing one centres the map on it and opens its
+    /// info card — the list → map-selection link. Exercises the actual
+    /// draw → hit-test → dispatch path.
+    #[test]
+    fn nearby_list_lists_pois_and_links_to_map() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        a.model.panel = Panel::Explore;
+        a.model.origin = None; // rank against the map centre, deterministically
+        let c = a.model.center;
+        let sel_before = a.model.selected.clone();
+        // A near POI and a far POI, supplied out of nearest order.
+        let near = LatLon::new(c.lat + 0.0008, c.lon);
+        let far = LatLon::new(c.lat + 0.02, c.lon);
+        a.pois = vec![
+            demo_poi("far", far.lat, far.lon),
+            demo_poi("near", near.lat, near.lon),
+        ];
+        a.selected_poi = None;
+
+        // Nearest-first ordering off the real proximity sort.
+        let listed = a.nearby_pois();
+        assert_eq!(
+            listed.first().map(|p| p.id.as_str()),
+            Some("near"),
+            "closest POI leads the list"
+        );
+
+        // The draw pass records a SelectPoi target for each listed POI.
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let has = |id: &str| {
+            a.click_targets
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::SelectPoi(s) if s == id))
+        };
+        assert!(
+            has("near") && has("far"),
+            "every nearby row is a click target"
+        );
+
+        // Dispatching the row selects the POI: opens its card AND centres the map
+        // on it (the list → map link), without disturbing the place selection.
+        tap(&mut a, &Hit::SelectPoi("far".to_string()));
+        assert_eq!(
+            a.selected_poi.as_deref(),
+            Some("far"),
+            "the row opens the POI card"
+        );
+        assert_eq!(a.model.center, far, "the map re-centres on the chosen POI");
+        assert_eq!(
+            a.model.selected, sel_before,
+            "selecting a POI never disturbs the place selection"
+        );
+    }
+
+    /// A selected POI beyond the list cap is still listed (so its row can be the
+    /// highlighted one), and clicking its marker on the map opens the same card —
+    /// the map → list link, the mirror of the list → map one above.
+    #[test]
+    fn selected_poi_is_always_listed_and_marker_click_selects_it() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.panel = Panel::Explore;
+        a.model.origin = None; // rank against the map centre, deterministically
+        a.model.zoom = 16.5;
+        let c = a.model.center;
+        // More POIs than the list cap, all at distinct, well-separated coords.
+        a.pois = (0..(NEARBY_MAX + 4))
+            .map(|i| demo_poi(&format!("p{i}"), c.lat + 0.001 * (i as f64 + 1.0), c.lon))
+            .collect();
+        // Select the farthest one — it would fall past the cap by proximity.
+        let far_id = format!("p{}", NEARBY_MAX + 3);
+        a.selected_poi = Some(far_id.clone());
+        let listed = a.nearby_pois();
+        assert!(
+            listed.iter().any(|p| p.id == far_id),
+            "the open POI is always present in the list even past the cap"
+        );
+        assert_eq!(listed.len(), NEARBY_MAX, "the list stays capped");
+
+        // Clicking that POI's marker (map → selection) resolves to exactly it.
+        let far_poi = a.pois.iter().find(|p| p.id == far_id).unwrap().clone();
+        let hit = a.poi_at(a.projection().project(far_poi.pos));
+        assert_eq!(
+            hit.as_deref(),
+            Some(far_id.as_str()),
+            "a marker click resolves to that POI"
+        );
+    }
+
+    /// The declutter set that the draw pass uses is exactly the set the click
+    /// hit-test walks: a marker dropped for being too dense is not clickable,
+    /// and the kept one at that spot is.
+    #[test]
+    fn poi_hit_test_matches_the_decluttered_draw_set() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.zoom = 17.0;
+        // Two POIs on the same coordinate; declutter keeps the higher-priority
+        // Transit stop over the Shop.
+        let c = a.model.center;
+        a.pois = vec![
+            crate::model::Poi {
+                category: Category::Shop,
+                ..demo_poi("shop", c.lat, c.lon)
+            },
+            crate::model::Poi {
+                category: Category::Transit,
+                ..demo_poi("transit", c.lat, c.lon)
+            },
+        ];
+        let vis = a.visible_poi_indices();
+        assert_eq!(vis.len(), 1, "overlapping markers collapse to one");
+        let kept = a.pois[vis[0]].id.clone();
+        assert_eq!(kept, "transit", "the salient category is the kept marker");
+        // The hit-test at that pixel returns exactly the kept marker.
+        let p = a.projection().project(c);
+        assert_eq!(
+            a.poi_at(p).as_deref(),
+            Some("transit"),
+            "hit-test agrees with the draw set"
+        );
+    }
+
+    /// The search folds the live viewport POIs in, so a name OR category query
+    /// (e.g. "coffee") instantly surfaces what is on the map — the real
+    /// ranked-matches path the overlay and Enter-search both use.
+    #[test]
+    fn search_matches_live_pois_by_name_and_category() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.places.clear(); // isolate: only the live POIs can match
+        let c = a.model.center;
+        a.pois = vec![
+            crate::model::Poi {
+                category: Category::Cafe,
+                kind: Some("coffee".to_string()),
+                ..demo_poi("cafe1", c.lat + 0.001, c.lon)
+            },
+            crate::model::Poi {
+                category: Category::Shop,
+                ..demo_poi("shop1", c.lat, c.lon + 0.001)
+            },
+        ];
+        // Category keyword: "coffee" surfaces the café (not the shop).
+        let by_kw = a.ranked_matches("coffee");
+        assert!(
+            by_kw.iter().any(|p| p.id == "cafe1"),
+            "a category keyword surfaces the live POI"
+        );
+        assert!(
+            !by_kw.iter().any(|p| p.id == "shop1"),
+            "unrelated POIs stay out"
+        );
+        // Category label: "Café" also matches.
+        assert!(a.ranked_matches("café").iter().any(|p| p.id == "cafe1"));
+        // Name substring: the POI's own name matches.
+        assert!(
+            a.ranked_matches("POI cafe1")
+                .iter()
+                .any(|p| p.id == "cafe1")
+        );
+    }
+
+    // --- Time picker for all modes -----------------------------------------
+
+    /// The leave/arrive time picker is offered for EVERY travel mode (not only
+    /// Transit), and the road-trip clock derives departure/arrival from it.
+    #[test]
+    fn time_picker_available_for_all_modes_and_road_clock_derives() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+
+        for mode in [TravelMode::Foot, TravelMode::Bike, TravelMode::Car] {
+            a.set_mode(mode, &mut AutoCommit::new());
+            let mut scene = Scene::new();
+            a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            assert!(
+                a.click_targets
+                    .iter()
+                    .any(|(_, h)| matches!(h, Hit::TransitTimeMode(_))),
+                "{mode:?} must offer the leave/arrive picker"
+            );
+            assert!(
+                a.click_targets
+                    .iter()
+                    .any(|(_, h)| matches!(h, Hit::TransitTimeDelta(_))),
+                "{mode:?} must offer the time stepper"
+            );
+        }
+
+        // Changing the anchor for a road mode re-derives the clock but does NOT
+        // refetch a transit journey (OSRM is not time-dependent).
+        a.set_mode(TravelMode::Car, &mut AutoCommit::new());
+        let route = a.model.route.clone().expect("road route present");
+        a.model.transit_time = crate::model::TransitTime::default();
+        let (dep, arr) = a.road_trip_clock(route.duration_s);
+        assert!(dep.starts_with("Leave "), "leave label, got {dep}");
+        assert!(arr.starts_with("Arrive "), "arrive label, got {arr}");
+        // Arrive-by flips which end is anchored.
+        a.model.transit_time.mode = TransitTimeMode::Arrive;
+        let (dep2, arr2) = a.road_trip_clock(route.duration_s);
+        assert!(dep2.starts_with("Leave ") && arr2.starts_with("Arrive "));
+    }
+
+    #[test]
+    fn mode_switch_recomputes_route() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.selected = Some("marienplatz".to_string());
+        a.set_mode(TravelMode::Foot, &mut AutoCommit::new());
+        let route = a.model.route.expect("route present");
+        assert_eq!(route.mode, TravelMode::Foot);
+    }
+
+    #[test]
+    fn marker_hit_test_selects_when_close() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.selected = None;
+        let proj = a.projection();
+        // Project a known place to where its pin head sits.
+        let place = a.model.place("hofgarten").unwrap().clone();
+        let anchor = proj.project(place.pos);
+        let head = Point::new(anchor.x, anchor.y - 22.0);
+        let hit = a.marker_at(head);
+        assert_eq!(hit.as_deref(), Some("hofgarten"));
+    }
+
+    /// The live app must not invent any content on startup — real imagery only,
+    /// with the user's own searches/pins as the sole data. Sample places belong
+    /// exclusively to the offline `--shots`/test path.
+    #[test]
+    fn live_app_starts_without_fabricated_content() {
+        let a = MapsApp::new();
+        assert!(a.model.places.is_empty(), "no invented places");
+        assert!(a.model.recents.is_empty(), "no invented recent searches");
+        assert!(a.model.results.is_empty());
+        assert!(a.model.selected.is_none());
+        assert!(a.model.route.is_none(), "no invented route");
+        assert!(a.model.transit.is_empty(), "no invented departures");
+        assert!(a.model.query.is_empty());
+        assert!(a.basemap.roads.is_empty(), "no invented street grid");
+    }
+
+    /// The responsive breakpoint must be re-derived from the *current* width on
+    /// every layout pass. Render the SAME instance wide then narrow and confirm
+    /// it reflows: the docked column becomes an overlay drawer and a menu
+    /// toggle appears — proving nothing is cached from the first frame.
+    #[test]
+    fn resize_reflows_between_docked_and_overlay() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = MapsApp::offline();
+
+        // Wide: docked column, no menu button, no drawer toggle target, and the
+        // search bar starts flush at the left margin.
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        assert!(!a.overlay_mode());
+        assert!(a.panel_visible());
+        let docked_w = a.panel_w();
+        assert!((300.0..=384.0).contains(&docked_w));
+        let docked_search_x0 = a.search_rect().x0;
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(a.menu_rect().is_none());
+        assert!(
+            !a.click_targets
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::ToggleNav))
+        );
+
+        // Narrow: SAME instance → overlay drawer, menu button appears, and the
+        // search bar reflows to make room for the leading menu button.
+        a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        assert!(a.overlay_mode());
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        assert!(a.menu_rect().is_some());
+        assert!(
+            a.click_targets
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::ToggleNav))
+        );
+        assert!(
+            a.search_rect().x0 > docked_search_x0 + CTRL_SIZE,
+            "top bar did not reflow: search x0 {} vs docked {docked_search_x0}",
+            a.search_rect().x0
+        );
+
+        // And back to wide reflows again (no one-way latch).
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        assert!(!a.overlay_mode());
+        assert!(a.menu_rect().is_none());
+        assert_eq!(a.search_rect().x0, docked_search_x0);
+    }
+
+    /// In the narrow overlay layout the drawer starts closed and the menu
+    /// button opens/closes it — the panel is only on screen when open.
+    #[test]
+    fn narrow_menu_toggles_drawer() {
+        let mut a = MapsApp::offline();
+        a.set_nav_open(false);
+        a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        assert!(a.overlay_mode());
+        assert!(!a.panel_visible(), "drawer starts closed");
+        tap(&mut a, &Hit::ToggleNav);
+        assert!(a.panel_visible(), "menu opens the drawer");
+        tap(&mut a, &Hit::CloseNav);
+        assert!(!a.panel_visible(), "scrim/Esc closes the drawer");
+    }
+
+    /// With the drawer open the top-bar chrome must stay hittable above the
+    /// dimming scrim: tapping the search field focuses it (does not close the
+    /// drawer), the menu toggles, and the dimmed map closes.
+    #[test]
+    fn drawer_open_hit_layering_is_correct() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = MapsApp::offline();
+        a.set_nav_open(true);
+        a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        assert!(a.overlay_mode());
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        let topmost = |a: &MapsApp, p: Point| -> Option<Hit> {
+            a.click_targets
+                .iter()
+                .rev()
+                .find(|(r, _)| r.contains(p))
+                .map(|(_, h)| h.clone())
+        };
+
+        let sc = a.search_rect().center();
+        assert!(
+            matches!(topmost(&a, sc), Some(Hit::Search(SearchHit::Field))),
+            "search tap must focus, not close the drawer"
+        );
+        let mc = a.menu_rect().unwrap().center();
+        assert!(matches!(topmost(&a, mc), Some(Hit::ToggleNav)));
+        let corner = Point::new(a.rect.x1 - 4.0, a.rect.y1 - 4.0);
+        assert!(matches!(topmost(&a, corner), Some(Hit::CloseNav)));
+    }
+
+    /// Running a search reveals the drawer on narrow layouts so results are
+    /// visible without a second tap.
+    #[test]
+    fn search_opens_drawer_on_narrow() {
+        let mut a = MapsApp::offline();
+        a.set_nav_open(false);
+        a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        a.model.query = "café".to_string();
+        a.run_search(None);
+        assert!(a.panel_visible(), "results should reveal the drawer");
+    }
+
+    /// Swapping endpoints must genuinely reverse origin ↔ destination — both
+    /// the coordinates and the labels — and re-route to a non-degenerate line.
+    /// Guards the prior bug where swap collapsed origin onto the destination
+    /// and produced a 0 m route with a stale "from" label.
+    #[test]
+    fn swap_ends_reverses_origin_and_destination() {
+        let mut a = app_at(1280.0, 800.0);
+        // Establish A → B: origin (Sendling) → Marienplatz.
+        a.select_place("marienplatz");
+        a.enter_directions();
+        let ab = a.model.route.clone().expect("route A→B present");
+        let from0 = a.model.origin_name.clone();
+        let to0 = a.model.dest_name.clone();
+        assert!(ab.distance_m > 1.0, "initial route must be non-degenerate");
+        assert_ne!(from0, to0, "endpoints must start distinct");
+
+        a.endpoints.begin_edit(Endpoint::Origin);
+        let mut scene = Scene::new();
+        a.draw_app(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+        );
+        let swap = a.endpoints.test_swap_rect().expect("swap control drawn");
+        move_to(&mut a, swap.center().x, swap.center().y);
+        assert!(press_left(&mut a), "swap control handles its click");
+        assert!(
+            !a.endpoints.is_focused(),
+            "swap dismisses the endpoint draft and its overlay"
+        );
+        let ba = a.model.route.clone().expect("route B→A present");
+        // Labels swapped.
+        assert_eq!(a.model.origin_name, to0, "from-label must become old to");
+        assert_eq!(a.model.dest_name, from0, "to-label must become old from");
+        // Coordinates genuinely reversed, not collapsed to a single point.
+        assert!(
+            (ba.from.lat - ab.to.lat).abs() < 1e-9 && (ba.from.lon - ab.to.lon).abs() < 1e-9,
+            "new origin must be the old destination"
+        );
+        assert!(
+            (ba.to.lat - ab.from.lat).abs() < 1e-9 && (ba.to.lon - ab.from.lon).abs() < 1e-9,
+            "new destination must be the old origin"
+        );
+        assert!(
+            ba.distance_m > 1.0,
+            "swapped route must not be a degenerate 0 m"
+        );
+    }
+
+    /// Selecting the Transit travel mode for a place must actually start the
+    /// departures lookup, land in the Directions panel (Transit is a mode of
+    /// Directions, not a separate tab), and drop any stale road route — not
+    /// merely flip a view and render a false "no itineraries found".
+    #[test]
+    fn transit_mode_triggers_fetch_and_opens_directions() {
+        let mut a = app_at(1280.0, 800.0);
+        // Select a place other than the sample's default so the stale sample
+        // departures are dropped (destination-specific).
+        a.select_place("hofgarten");
+        assert!(
+            a.model.transit.is_empty(),
+            "selecting a new place drops stale departures"
+        );
+        a.model.panel = Panel::Explore;
+        a.model.mode = TravelMode::Car;
+
+        a.set_mode(TravelMode::Transit, &mut AutoCommit::new());
+        assert_eq!(
+            a.model.panel,
+            Panel::Directions,
+            "transit is a mode of Directions"
+        );
+        assert!(a.model.mode.is_transit());
+        assert!(
+            a.model.route.is_none(),
+            "a transit journey draws no road route"
+        );
+        assert!(
+            a.pending > 0,
+            "transit mode must kick off a departures lookup"
+        );
+        assert!(
+            a.model.status.contains("departures") || a.model.status.contains('…'),
+            "a lookup should surface a loading status, got {:?}",
+            a.model.status
+        );
+    }
+
+    // --- Typeable origin ---------------------------------------------------
+
+    /// Typing into the From field surfaces geocoded matches, and picking one
+    /// sets the origin coord + label and re-routes from there. This is the core
+    /// fix: routing from anywhere, not just the map centre / a prior route.
+    #[test]
+    fn picking_origin_result_sets_origin_and_reroutes() {
+        let mut a = app_at(1280.0, 800.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+        let before = a.model.route.clone().expect("initial route present");
+
+        // Focus the From field, type, and confirm a local match populates.
+        a.endpoints.begin_edit(Endpoint::Origin);
+        a.apply_endpoint_effect(EndpointEffect::Changed {
+            endpoint: Endpoint::Origin,
+            text: "hauptbahnhof".to_string(),
+        });
+        assert!(
+            !a.endpoints.test_results(Endpoint::Origin).is_empty(),
+            "typing surfaces a From match"
+        );
+
+        let picked = a.endpoints.test_results(Endpoint::Origin)[0].clone();
+        a.pick_endpoint(Endpoint::Origin, &picked);
+        assert_eq!(
+            a.model.origin,
+            Some(picked.pos),
+            "origin coord set from the result"
+        );
+        assert_eq!(
+            a.model.origin_name, picked.name,
+            "origin label set from the result"
+        );
+        let after = a.model.route.clone().expect("route present after pick");
+        assert!(
+            (after.from.lat - picked.pos.lat).abs() < 1e-9
+                && (after.from.lon - picked.pos.lon).abs() < 1e-9,
+            "route must start from the newly-typed origin"
+        );
+        assert_ne!(after.from, before.from, "the origin actually changed");
+    }
+
+    /// A geocoded endpoint result delivered by the worker lands in the field's
+    /// dropdown and is upserted so its marker can render — the real drain path.
+    #[test]
+    fn endpoint_geocode_results_land_via_drain() {
+        let mut a = app_at(1280.0, 800.0);
+        a.endpoints.begin_edit(Endpoint::Destination);
+        let p = crate::model::Place::new(
+            "osm-n-1",
+            "Englischer Garten",
+            Category::Park,
+            "München",
+            LatLon::new(48.16, 11.60),
+        );
+        a.net_tx
+            .send(NetMsg::EndpointSearch {
+                origin: false,
+                query: "english garden".into(),
+                results: Ok(vec![p]),
+            })
+            .unwrap();
+        a.drain_net(None);
+        assert!(
+            a.endpoints
+                .test_results(Endpoint::Destination)
+                .iter()
+                .any(|r| r.id == "osm-n-1"),
+            "geocoded result populates the To dropdown"
+        );
+        assert!(
+            a.model.place("osm-n-1").is_some(),
+            "result upserted so its marker shows"
+        );
+    }
+
+    /// The From/To dropdown must rank a near same-named place above a far one.
+    /// Delivered in far-first (importance) order — the shape Nominatim returns —
+    /// and drained through the real production path; the near place must surface
+    /// first. Guards the "511 km above 2.8 km, same name" report.
+    #[test]
+    fn endpoint_results_rank_near_same_name_first() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.origin = None;
+        a.model.center = LatLon::new(48.137, 11.575); // Munich → the search anchor
+        a.endpoints.begin_edit(Endpoint::Destination);
+        let far = crate::model::Place::new(
+            "far",
+            "Hauptbahnhof",
+            Category::Landmark,
+            "Hamburg",
+            LatLon::new(53.553, 10.006), // ~610 km away
+        );
+        let near = crate::model::Place::new(
+            "near",
+            "Hauptbahnhof",
+            Category::Landmark,
+            "München",
+            LatLon::new(48.140, 11.558), // ~2 km away
+        );
+        a.net_tx
+            .send(NetMsg::EndpointSearch {
+                origin: false,
+                query: "hauptbahnhof".into(),
+                results: Ok(vec![far, near]), // far listed first, as importance order would
+            })
+            .unwrap();
+        a.drain_net(None);
+        assert_eq!(
+            a.endpoints
+                .test_results(Endpoint::Destination)
+                .first()
+                .map(|r| r.id.as_str()),
+            Some("near"),
+            "the nearer same-named endpoint ranks first, not the distant namesake"
+        );
+    }
+
+    /// Route-finding never blocks the UI thread: entering Directions shows an
+    /// instant fallback synchronously, then the heavy work (fetch + geometry
+    /// simplification) runs on a worker thread and its result is folded through
+    /// the same channel + `drain_net` idle path the live worker uses. The worker
+    /// here mirrors `net::route`, simplifying dense geometry off the UI thread.
+    #[test]
+    fn route_reply_folds_from_a_worker_thread() {
+        let mut a = app_at(1280.0, 800.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+        // A fallback route is on screen immediately — the UI never waited.
+        let fallback = a
+            .model
+            .route
+            .clone()
+            .expect("instant fallback route shown synchronously");
+        assert!(
+            fallback.distance_m > 0.0,
+            "fallback is a real, non-empty estimate"
+        );
+
+        let origin = a.model.origin.expect("origin set by entering directions");
+        let dest = a.model.dest.expect("destination set from the selection");
+        let tx = a.net_tx.clone();
+        // Worker thread: build dense OSRM-style geometry and simplify it off the
+        // UI thread, exactly as `net::route` does, then deliver over the channel.
+        let worker = std::thread::spawn(move || {
+            let dense: Vec<LatLon> = (0..500)
+                .map(|i| {
+                    let f = f64::from(i) / 499.0;
+                    LatLon::new(
+                        origin.lat + (dest.lat - origin.lat) * f,
+                        origin.lon + (dest.lon - origin.lon) * f,
+                    )
+                })
+                .collect();
+            let geometry = crate::geo::simplify_polyline(&dense, 3.0);
+            let route = crate::model::Route {
+                mode: TravelMode::Car,
+                distance_m: 4200.0,
+                duration_s: 600.0,
+                geometry,
+                steps: Vec::new(),
+                from: origin,
+                to: dest,
+            };
+            tx.send(NetMsg::Route(Ok(route))).unwrap();
+            dense.len()
+        });
+        let dense_len = worker.join().expect("worker thread completes");
+
+        // UI thread folds the worker's reply via the production drain path.
+        a.drain_net(None);
+        let landed = a.model.route.clone().expect("route present after drain");
+        assert_eq!(
+            landed.distance_m, 4200.0,
+            "the worker's route replaced the fallback"
+        );
+        assert!(
+            landed.geometry.len() < dense_len,
+            "geometry simplified on the worker: {} < {dense_len}",
+            landed.geometry.len()
+        );
+        assert!(landed.geometry.len() >= 2, "endpoints retained");
+    }
+
+    // --- Location services -------------------------------------------------
+
+    /// The "use my location" success path: a mocked portal fix becomes the route
+    /// origin and the journey re-plans from it. The real coordinates depend on
+    /// the host location service + user permission (unverifiable headlessly);
+    /// this proves the result *handling* around the portal.
+    #[test]
+    fn use_my_location_success_sets_origin_from_fix() {
+        let mut a = app_at(1280.0, 800.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+
+        a.locating = true;
+        a.location_rx = Some(location::inject_for_test(LocationOutcome::Located {
+            lat: 48.11,
+            lon: 11.53,
+            accuracy_m: 8.0,
+        }));
+        a.drain_location();
+
+        assert!(!a.locating, "a delivered fix clears the locating state");
+        assert_eq!(
+            a.model.origin,
+            Some(LatLon::new(48.11, 11.53)),
+            "origin set from the fix"
+        );
+        let route = a
+            .model
+            .route
+            .clone()
+            .expect("route re-planned from the fix");
+        assert!(
+            (route.from.lat - 48.11).abs() < 1e-9 && (route.from.lon - 11.53).abs() < 1e-9,
+            "route starts at the device location"
+        );
+        assert!(
+            !a.model.status.to_lowercase().contains("unavailable"),
+            "a success must not read as an error, got {:?}",
+            a.model.status
+        );
+    }
+
+    /// A failed/denied fix must be honest and must never fabricate a position.
+    #[test]
+    fn location_unavailable_is_honest_and_fabricates_nothing() {
+        let mut a = app_at(1280.0, 800.0);
+        let before = a.model.origin;
+        a.locating = true;
+        a.location_rx = Some(location::inject_for_test(LocationOutcome::Unavailable(
+            "permission denied".into(),
+        )));
+        a.drain_location();
+
+        assert!(!a.locating, "the locating state clears on failure");
+        assert_eq!(
+            a.model.origin, before,
+            "a failed fix must not fabricate an origin"
+        );
+        assert!(
+            a.model.status.to_lowercase().contains("unavailable"),
+            "the failure must be stated plainly, got {:?}",
+            a.model.status
+        );
+    }
+
+    // --- Transit time picker -----------------------------------------------
+
+    /// The depart/arrive picker feeds the MOTIS query: "leave now" pins no time,
+    /// while an Arrive anchor carries both `arriveBy` and a concrete timestamp.
+    #[test]
+    fn transit_time_picker_feeds_query() {
+        let mut a = app_at(1280.0, 800.0);
+
+        // Default is "leave now".
+        let now_q = a.transit_query();
+        assert!(now_q.time.is_none(), "leave-now sends no explicit time");
+        assert!(!now_q.arrive_by, "leave-now is not arrive-by");
+
+        // Arrive-by, anchored 45 minutes out.
+        a.model.transit_time.mode = TransitTimeMode::Arrive;
+        a.model.transit_time.offset_min = 45;
+        let q = a.transit_query();
+        assert!(q.arrive_by, "arrive mode sets arriveBy");
+        let ts = q.time.clone().expect("a non-now anchor pins a timestamp");
+        assert!(
+            ts.contains('T') && ts.len() >= 19,
+            "rfc3339 timestamp, got {ts}"
+        );
+
+        let url = net::transit_url(LatLon::new(48.10, 11.55), LatLon::new(48.14, 11.58), &q);
+        assert!(url.contains("arriveBy=true"), "{url}");
+        assert!(
+            url.contains("&time="),
+            "picked time must reach the query: {url}"
+        );
+    }
+
+    /// Stepping the time anchor (via the real dispatch path) shifts the offset
+    /// and "Now" resets it — proving the picker controls are wired.
+    #[test]
+    fn transit_time_controls_adjust_the_anchor() {
+        let mut a = app_at(1280.0, 800.0);
+        tap(&mut a, &Hit::TransitTimeDelta(15));
+        tap(&mut a, &Hit::TransitTimeDelta(15));
+        assert_eq!(
+            a.model.transit_time.offset_min, 30,
+            "two +15 steps advance 30 min"
+        );
+        // Never steps below now.
+        for _ in 0..5 {
+            tap(&mut a, &Hit::TransitTimeDelta(-15));
+        }
+        assert_eq!(a.model.transit_time.offset_min, 0, "offset floors at now");
+        tap(&mut a, &Hit::TransitTimeMode(TransitTimeMode::Arrive));
+        tap(&mut a, &Hit::TransitTimeDelta(15));
+        tap(&mut a, &Hit::TransitTimeNow);
+        assert!(a.model.transit_time.is_now(), "\"Now\" resets to leave-now");
+    }
+
+    // --- Real handle_event path --------------------------------------------
+    // The tests above exercise the internal helpers; these drive the *actual*
+    // `Widget::handle_event` entry point with synthesised `WindowEvent`s, so
+    // the hit-testing, drag tracking and dispatch chain a real click travels
+    // through are all covered.
+
+    /// `DeviceId` has no public constructor; a zeroed value is the sentinel
+    /// winit itself uses and the convention across this workspace's widget
+    /// tests (see `ui/src/widget/image_viewer.rs`).
+    fn dummy_device_id() -> winit::event::DeviceId {
+        // SAFETY: `DeviceId` is an opaque platform handle; the dispatch path
+        // under test never dereferences it.
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// Feed one `WindowEvent` through the real `handle_event`, returning
+    /// whether the app marked it handled. Layout params are unused by the maps
+    /// widget (it hit-tests its own recorded rects) so dummies suffice.
+    fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
+        let modifiers = winit::event::Modifiers::default();
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        a.handle_event(
+            ev,
+            1.0,
+            &modifiers,
+            &mut state,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        handled
+    }
+
+    fn move_to(a: &mut MapsApp, x: f64, y: f64) -> bool {
+        feed(
+            a,
+            &WindowEvent::CursorMoved {
+                device_id: dummy_device_id(),
+                position: winit::dpi::PhysicalPosition::new(x, y),
+            },
+        )
+    }
+
+    fn press_left(a: &mut MapsApp) -> bool {
+        feed(
+            a,
+            &WindowEvent::MouseInput {
+                device_id: dummy_device_id(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        )
+    }
+
+    fn release_left(a: &mut MapsApp) -> bool {
+        feed(
+            a,
+            &WindowEvent::MouseInput {
+                device_id: dummy_device_id(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        )
+    }
+
+    #[test]
+    fn live_navigation_drags_across_shell_ownership_without_a_jump() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        Widget::set_floating_surface_bounds(&mut a, Rect::new(0.0, 0.0, 1680.0, 900.0));
+        assert!(
+            a.model.route.is_some(),
+            "offline fixture has an active route"
+        );
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let origin = a.navigation_drag_handle.center();
+        let before = a.navigation_rect();
+        move_to(&mut a, origin.x, origin.y);
+        assert!(press_left(&mut a));
+        assert!(Widget::wants_pointer_capture(&a));
+
+        let outside = Point::new(1400.0, origin.y + 32.0);
+        assert!(move_to(&mut a, outside.x, outside.y));
+        assert!(matches!(
+            a.navigation_placement.attachment(),
+            ui::floating_surface::Attachment::Desktop { .. }
+        ));
+        assert_eq!(
+            a.navigation_rect(),
+            before + (outside - origin),
+            "navigation's transfer frame preserves exact geometry"
+        );
+        let request = Widget::take_floating_surface_request(&mut a)
+            .expect("navigation publishes one native-surface handoff");
+        let prepared_content = a.navigation_rect();
+        Widget::on_floating_surface_host_message(
+            &mut a,
+            &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+                id: request.id.clone(),
+                token: "0123456789abcdef0123456789abcdef".into(),
+                rect: ui::floating_surface::protocol_rect_array(prepared_content.inflate(8.0, 8.0)),
+                content_rect: ui::floating_surface::protocol_rect_array(prepared_content),
+                transfer_covered: true,
+                coordinate_offset: [0.0, 0.0],
+            },
+        );
+        assert!(!a.navigation_placement.is_desktop_adopted());
+        Widget::on_floating_surface_host_message(
+            &mut a,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: request.id,
+                rect: ui::floating_surface::protocol_rect_array(prepared_content),
+            },
+        );
+        assert!(a.navigation_placement.is_desktop_adopted());
+        assert_eq!(a.navigation_rect(), prepared_content);
+        let returned_pointer = Point::new(980.0, 310.0);
+        assert!(move_to(&mut a, returned_pointer.x, returned_pointer.y));
+        assert!(a.navigation_placement.is_return_pending());
+        let final_shell_rect = a.navigation_rect();
+        let presentations = Widget::floating_surface_presentations(&a);
+        assert_eq!(presentations.len(), 1);
+        assert!(presentations[0].returning_to_app);
+        let request_id = a.active_navigation_request().unwrap().id;
+        Widget::on_floating_surface_host_message(
+            &mut a,
+            &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id },
+        );
+        assert!(matches!(
+            a.navigation_placement.attachment(),
+            ui::floating_surface::Attachment::App { .. }
+        ));
+        assert_eq!(
+            a.navigation_rect(),
+            final_shell_rect,
+            "the first app-owned navigation frame exactly covers the final shell frame"
+        );
+        assert!(Widget::wants_pointer_capture(&a));
+
+        let continued_pointer = returned_pointer + vello::kurbo::Vec2::new(-16.0, 9.0);
+        assert!(move_to(&mut a, continued_pointer.x, continued_pointer.y));
+        assert_eq!(
+            a.navigation_rect(),
+            final_shell_rect + (continued_pointer - returned_pointer),
+            "the first primary-window motion continues the same drag"
+        );
+        assert!(release_left(&mut a));
+        assert!(!Widget::wants_pointer_capture(&a));
+    }
+
+    #[test]
+    fn live_navigation_end_action_is_distinct_from_its_drag_handle() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        assert!(a.model.route.is_some(), "fixture starts navigating");
+        assert!(a.navigation_end_rect.area() > 0.0);
+        assert!(
+            a.navigation_drag_handle
+                .intersect(a.navigation_end_rect)
+                .area()
+                == 0.0,
+            "ending navigation must never begin a drag"
+        );
+
+        let end = a.navigation_end_rect.center();
+        assert!(move_to(&mut a, end.x, end.y));
+        assert!(a.navigation_end_hovered);
+        assert!(press_left(&mut a));
+        assert!(
+            a.model.route.is_none(),
+            "the visible End action clears the route"
+        );
+        assert!(!a.navigation_placement.is_dragging());
+        assert_eq!(a.navigation_end_rect, Rect::ZERO);
+    }
+
+    #[test]
+    fn rerouting_preserves_the_positioned_navigation_surface_identity() {
+        let mut a = app_at(1280.0, 720.0);
+        let first = a
+            .active_navigation_request()
+            .expect("offline fixture has active navigation");
+        let route = a.model.route.as_mut().unwrap();
+        route.to.lat += 0.01;
+        route.steps[0].instruction = "Turn right after the reroute".into();
+        let rerouted = a.active_navigation_request().unwrap();
+
+        assert_eq!(first.id, NAVIGATION_FLOAT_ID);
+        assert_eq!(rerouted.id, first.id);
+        assert!(matches!(
+            rerouted.source,
+            ui::floating_surface::FloatingSource::AppElement {
+                ref app_id,
+                ref element_id,
+                ..
+            } if app_id == "dev.tilo.maps" && element_id == "active-navigation"
+        ));
+    }
+
+    #[test]
+    fn map_info_sheet_stays_modal_over_extracted_controls() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut app = app_at(1280.0, 720.0);
+        app.info_sheet.open(MapInfo::Attribution);
+        let mut scene = Scene::new();
+        app.draw_app(&mut scene, Affine::IDENTITY, &mut text, &theme);
+
+        let traffic = app
+            .map_controls
+            .rect(MapControlAction::ToggleTraffic)
+            .center();
+        move_to(&mut app, traffic.x, traffic.y);
+        assert!(press_left(&mut app));
+        assert!(
+            !app.info_sheet.is_open(),
+            "the modal sheet consumed the press"
+        );
+        assert!(
+            !app.map_controls.traffic_enabled(),
+            "the covered traffic control did not activate"
+        );
+    }
+
+    /// A scroll over open map area must zoom the view (not scroll a panel),
+    /// travelling the real `WindowEvent::MouseWheel` handler.
+    #[test]
+    fn wheel_over_map_zooms_via_handle_event() {
+        let mut a = app_at(1280.0, 720.0);
+        let before = a.model.zoom;
+        // Cursor over the right-hand map area, clear of the docked panel.
+        move_to(&mut a, 1100.0, 360.0);
+        let handled = feed(
+            &mut a,
+            &WindowEvent::MouseWheel {
+                device_id: dummy_device_id(),
+                delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+        );
+        assert!(handled, "wheel over the map must be handled");
+        assert!(a.model.zoom > before, "scroll up should zoom in");
+    }
+
+    /// There is no Explore/Directions tab strip: the panel is a plain
+    /// collapsible surface. Directions is reached as an action on a place card
+    /// (not a top-level tab), and clicking that action through the real
+    /// draw → hit-test → dispatch path opens the Directions view.
+    #[test]
+    fn directions_reached_via_card_action_not_a_tab() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        a.model.panel = Panel::Explore;
+        // Select a place so its Explore card (with the Directions action) shows.
+        a.select_place("marienplatz");
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        // The docked panel exposes a collapse/expand toggle — a plain
+        // collapsible panel, never a tab strip.
+        assert!(
+            a.click_targets
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::ToggleCollapse)),
+            "the panel has a collapse toggle"
+        );
+
+        // Directions is a card action, reached by clicking it — not a tab.
+        let dir = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::Directions))
+            .map(|(r, _)| r.center())
+            .expect("the selected place card exposes a Directions action");
+        move_to(&mut a, dir.x, dir.y);
+        let handled = press_left(&mut a);
+        assert!(handled, "the Directions action is handled");
+        assert_eq!(
+            a.model.panel,
+            Panel::Directions,
+            "the card action opens the Directions view (no tab toggle)"
+        );
+
+        // Back returns to the plain list view.
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        let back = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::PanelBack))
+            .map(|(r, _)| r.center())
+            .expect("Directions view has a back button");
+        move_to(&mut a, back.x, back.y);
+        assert!(press_left(&mut a), "back is handled");
+        assert_eq!(
+            a.model.panel,
+            Panel::Explore,
+            "back returns to the list view"
+        );
+    }
+
+    /// Clicking a POI marker on the map opens its info card directly — no tab or
+    /// travel-mode switch. The side panel view is unchanged; the map just gains
+    /// the floating info card. Exercises the real press → hit-test path.
+    #[test]
+    fn poi_click_opens_info_card_without_mode_change() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        a.model.places.clear(); // no place pins to intercept the press
+        let panel_before = a.model.panel;
+        let mode_before = a.model.mode;
+        let anchor = Point::new(900.0, 380.0);
+        let pos = a.projection().unproject(anchor);
+        a.pois = vec![demo_poi("p1", pos.lat, pos.lon)];
+        a.selected_poi = None;
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        move_to(&mut a, anchor.x, anchor.y);
+        assert!(press_left(&mut a), "a POI press is handled");
+        assert_eq!(
+            a.selected_poi.as_deref(),
+            Some("p1"),
+            "clicking a POI opens its info card"
+        );
+        assert_eq!(
+            a.model.panel, panel_before,
+            "no tab/view switch on a POI click"
+        );
+        assert_eq!(
+            a.model.mode, mode_before,
+            "no travel-mode switch on a POI click"
+        );
+
+        // Redraw with the card open: the info card is present.
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        assert!(
+            a.click_targets
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::ClosePoi)),
+            "the POI info card is open"
+        );
+    }
+
+    /// The start/end (From/To) fields search-as-you-type: typing arms a live
+    /// geocode without Enter, results render in a floating dropdown anchored
+    /// under the focused field, and the panel below (the mode control) does NOT
+    /// reflow when the dropdown appears. Drives the real key + draw path.
+    #[test]
+    fn endpoint_search_is_live_and_overlay_floats_without_reflow() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+        assert_eq!(a.model.panel, Panel::Directions);
+
+        // Baseline draw with no endpoint focused: record the mode control's rect.
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let mode_rect_before = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::Mode(TravelMode::Car)))
+            .map(|(r, _)| *r)
+            .expect("mode control recorded");
+
+        // Focus the From field via the real hit-test, then type — no Enter.
+        let from = a
+            .endpoints
+            .test_field_rect(Endpoint::Origin)
+            .map(|rect| rect.center())
+            .expect("From field recorded");
+        move_to(&mut a, from.x, from.y);
+        assert!(press_left(&mut a), "focusing the From field is handled");
+        assert_eq!(
+            a.endpoints.focused_endpoint(),
+            Some(Endpoint::Origin),
+            "the From field is focused"
+        );
+
+        for ch in ["h", "a", "u", "p", "t", "b", "a", "h", "n", "h", "o", "f"] {
+            assert!(
+                key_char(&mut a, ch),
+                "typing into the From field is handled"
+            );
+        }
+        // Live: instant local matches populate WITHOUT any Enter, and a live
+        // geocode is armed to fire once typing settles.
+        assert!(
+            !a.endpoints.test_results(Endpoint::Origin).is_empty(),
+            "typing surfaces matches live (no Enter)"
+        );
+        assert!(
+            a.endpoints.has_pending_query(),
+            "a live geocode is armed on input"
+        );
+
+        // Redraw: the floating overlay records pick targets anchored UNDER the
+        // From field, and the mode control below has NOT moved (no reflow).
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        assert!(
+            a.endpoint_overlay_active(),
+            "the endpoint dropdown is showing"
+        );
+        let pick = a
+            .endpoints
+            .test_pick_rect(Endpoint::Origin)
+            .expect("overlay records PickOrigin hot-regions");
+        let field = a
+            .endpoints
+            .test_field_rect(Endpoint::Origin)
+            .expect("From field rect cached");
+        assert!(
+            pick.y0 >= field.y1,
+            "overlay sits under the From field (a dropdown)"
+        );
+        let mode_rect_after = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::Mode(TravelMode::Car)))
+            .map(|(r, _)| *r)
+            .expect("mode control still recorded");
+        assert_eq!(
+            mode_rect_before, mode_rect_after,
+            "opening the endpoint dropdown must NOT reflow the panel below it"
+        );
+        // The overlay row wins the hit-test over the panel it overlays.
+        assert!(
+            a.endpoints
+                .test_top_hit_is_pick(pick.center(), Endpoint::Origin),
+            "overlay row is topmost"
+        );
+        let expected = a.endpoints.test_results(Endpoint::Origin)[0].clone();
+        move_to(&mut a, pick.center().x, pick.center().y);
+        assert!(
+            press_left(&mut a),
+            "the floating result row handles its click"
+        );
+        assert_eq!(
+            a.model.origin,
+            Some(expected.pos),
+            "the editor emits the selected place to the route model"
+        );
+        assert!(
+            !a.endpoints.is_focused(),
+            "selecting a result closes the editor"
+        );
+    }
+
+    /// Clicking the Transit segment of the Directions mode row (through the real
+    /// draw → hit-test → dispatch path) switches to Transit mode, stays in the
+    /// Directions panel, drops the road route, and kicks off a departures
+    /// lookup — proving Transit is wired as a travel mode, not a dead label.
+    #[test]
+    fn transit_mode_segment_click_via_handle_event() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        a.model.panel = Panel::Directions;
+        a.model.mode = TravelMode::Car;
+        // Draw once so the mode-segment hot-regions are recorded.
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let seg = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::Mode(TravelMode::Transit)))
+            .map(|(r, _)| r.center())
+            .expect("Transit mode segment hot-region recorded");
+
+        move_to(&mut a, seg.x, seg.y);
+        let handled = press_left(&mut a);
+        assert!(handled, "mode-segment click must be handled");
+        assert!(
+            a.model.mode.is_transit(),
+            "clicking Transit selects transit mode"
+        );
+        assert_eq!(a.model.panel, Panel::Directions, "stays in Directions");
+        assert!(a.model.route.is_none(), "transit clears the road route");
+        assert!(a.pending > 0, "transit mode starts a departures lookup");
+    }
+
+    /// A press-then-drag over the map pans the view via the real cursor/mouse
+    /// event handlers (drag state is tracked across two events).
+    #[test]
+    fn drag_pans_map_via_handle_event() {
+        let mut a = app_at(1280.0, 720.0);
+        // Remove markers so the press lands on open map (not a pin), isolating
+        // the pan path deterministically.
+        a.model.places.clear();
+        let before = a.model.center;
+        // Press on open map area (no marker, no panel) to begin a drag.
+        move_to(&mut a, 1000.0, 360.0);
+        assert!(
+            press_left(&mut a),
+            "pressing open map begins a pan and is handled"
+        );
+        // Move the cursor: with the button down this pans, not hovers.
+        let moved_handled = move_to(&mut a, 1040.0, 372.0);
+        assert!(
+            (a.model.center.lon - before.lon).abs() > 1e-6
+                || (a.model.center.lat - before.lat).abs() > 1e-6,
+            "drag should move the map centre"
+        );
+        // The drag-move MUST report handled: the `ui` App only requests a repaint
+        // for a `CursorMoved` when the widget marks it handled (its hover-spam
+        // gate). Without this the centre updates but the frame never repaints —
+        // the exact "drag looks frozen" bug. Assert on the production signal.
+        assert!(
+            moved_handled,
+            "a drag-move must be handled so the map repaints"
+        );
+    }
+
+    /// Press directly on a map pin through the real `handle_event` path (no UI
+    /// click-target under it) and confirm `select_place` fires via `marker_at`.
+    /// The drag test above deliberately clears markers; this covers the pin path.
+    #[test]
+    fn press_on_marker_selects_via_handle_event() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        // A single marker placed in the open right-hand map area (clear of the
+        // docked left panel, the top search bar and the right-edge controls).
+        let anchor = Point::new(900.0, 460.0);
+        let pos = a.projection().unproject(anchor);
+        a.model.places = vec![crate::model::Place::new(
+            "pin",
+            "Pin",
+            Category::Cafe,
+            "",
+            pos,
+        )];
+        a.model.selected = None;
+        // Draw so any UI hot-regions are recorded (there are none over the pin).
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        // Press on the pin head (an unselected pin's head sits 22px above anchor).
+        let head = Point::new(anchor.x, anchor.y - 22.0);
+        move_to(&mut a, head.x, head.y);
+        let handled = press_left(&mut a);
+        assert!(handled, "a press on a pin must be handled");
+        assert_eq!(
+            a.model.selected.as_deref(),
+            Some("pin"),
+            "pressing the pin selects it"
+        );
+    }
+
+    /// A scroll over the side panel must scroll the panel content, not zoom the
+    /// map — the branch the map-zoom wheel test never reaches.
+    #[test]
+    fn wheel_over_panel_scrolls_not_zoom() {
+        let mut a = app_at(1280.0, 720.0);
+        assert!(a.panel_visible(), "docked panel is visible");
+        // Force overflow so there is somewhere to scroll to.
+        a.content_h = 2000.0;
+        a.content_view_h = 400.0;
+        let zoom_before = a.model.zoom;
+        let scroll_before = a.scroll;
+        let pr = a.panel_rect();
+        move_to(&mut a, pr.center().x, pr.y0 + 120.0);
+        let handled = feed(
+            &mut a,
+            &WindowEvent::MouseWheel {
+                device_id: dummy_device_id(),
+                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+        );
+        assert!(handled, "wheel over the panel must be handled");
+        assert!(a.scroll > scroll_before, "panel content should scroll");
+        assert_eq!(
+            a.model.zoom, zoom_before,
+            "scrolling the panel must not zoom the map"
+        );
+    }
+
+    // --- Keyboard shortcuts through the real KeyboardInput path -------------
+    // These drive the actual `WindowEvent::KeyboardInput` → `handle_key`
+    // dispatch. `KeyEvent` has a `pub(crate)` field in winit 0.30, so it is
+    // built via the workspace-standard zeroed-struct workaround (see
+    // `ui/src/widget/slash_menu.rs`); `handle_key` only reads `logical_key`.
+
+    fn feed_key(a: &mut MapsApp, logical: Key) -> bool {
+        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+        // Real winit reports the committed text alongside the logical key for a
+        // printable character; the shared TextInput inserts from that `text`
+        // field, so mirror it here (named keys carry no text).
+        let text = match &logical {
+            Key::Character(s) => Some(s.clone()),
+            Key::Named(NamedKey::Space) => Some(winit::keyboard::SmolStr::new(" ")),
+            _ => None,
+        };
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical;
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = text;
+        feed(
+            a,
+            &WindowEvent::KeyboardInput {
+                device_id: dummy_device_id(),
+                event: ev,
+                is_synthetic: false,
+            },
+        )
+    }
+
+    fn key_char(a: &mut MapsApp, ch: &str) -> bool {
+        feed_key(a, Key::Character(winit::keyboard::SmolStr::new(ch)))
+    }
+
+    fn key_named(a: &mut MapsApp, named: NamedKey) -> bool {
+        feed_key(a, Key::Named(named))
+    }
+
+    /// Ctrl+V pastes the system clipboard into the focused search field via the
+    /// shared `TextInput` — the hand-rolled field had no clipboard at all. Primes
+    /// the real clipboard, checks it round-trips, then drives Ctrl+V through the
+    /// real event path and asserts the pasted text reached `model.query`.
+    #[test]
+    fn ctrl_v_pastes_into_the_search_field() {
+        let mut a = app_at(1280.0, 720.0);
+        a.model.query.clear();
+        a.search.set_focused(false);
+        key_char(&mut a, "/"); // focus the search field
+        assert!(a.search.is_focused());
+
+        let sentinel = "Alexanderplatz";
+        ui::clipboard_copy(sentinel);
+        assert_eq!(
+            ui::clipboard_paste().as_deref(),
+            Some(sentinel),
+            "clipboard round-trips here (precondition for the paste path)"
+        );
+
+        // Ctrl+V through the real KeyboardInput path.
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new("v"));
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None; // Ctrl+V carries no committed text
+        let ctrl = {
+            use winit::keyboard::ModifiersState;
+            winit::event::Modifiers::from(ModifiersState::CONTROL)
+        };
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        a.handle_event(
+            &WindowEvent::KeyboardInput {
+                device_id: dummy_device_id(),
+                event: ev,
+                is_synthetic: false,
+            },
+            1.0,
+            &ctrl,
+            &mut state,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+
+        assert_eq!(
+            a.model.query, sentinel,
+            "Ctrl+V pasted the clipboard into the search query"
+        );
+    }
+
+    /// `/` focuses the search field, characters then type into it, Backspace
+    /// deletes, and Escape unfocuses — the whole edit loop over the real event
+    /// path.
+    #[test]
+    fn slash_and_typing_drive_search_via_key_event() {
+        let mut a = app_at(1280.0, 720.0);
+        a.model.query.clear();
+        a.search.set_focused(false);
+        assert!(key_char(&mut a, "/"), "'/' handled");
+        assert!(a.search.is_focused(), "'/' focuses search");
+        key_char(&mut a, "h");
+        key_char(&mut a, "i");
+        assert_eq!(
+            a.model.query, "hi",
+            "characters type into the focused search"
+        );
+        key_named(&mut a, NamedKey::Backspace);
+        assert_eq!(a.model.query, "h", "Backspace deletes a char");
+        a.search.replace_results(vec![crate::model::Place::new(
+            "suggestion",
+            "Helpful suggestion",
+            Category::Museum,
+            "Example address",
+            LatLon::new(48.14, 11.57),
+        )]);
+        key_named(&mut a, NamedKey::Escape);
+        assert!(!a.search.is_focused(), "Escape unfocuses search");
+        assert_eq!(a.model.query, "h", "Escape preserves the query");
+        assert!(
+            a.search.results().is_empty(),
+            "Escape drops transient suggestions"
+        );
+    }
+
+    /// `+`/`-` zoom the map through the key path.
+    #[test]
+    fn zoom_keys_via_key_event() {
+        let mut a = app_at(1280.0, 720.0);
+        let z0 = a.model.zoom;
+        key_char(&mut a, "+");
+        assert!(a.model.zoom > z0, "'+' zooms in");
+        let z1 = a.model.zoom;
+        key_char(&mut a, "-");
+        assert!(a.model.zoom < z1, "'-' zooms out");
+    }
+
+    /// Arrow keys pan the map through the key path.
+    #[test]
+    fn arrow_keys_pan_via_key_event() {
+        let mut a = app_at(1280.0, 720.0);
+        let before = a.model.center;
+        key_named(&mut a, NamedKey::ArrowRight);
+        assert!(
+            (a.model.center.lon - before.lon).abs() > 1e-9,
+            "ArrowRight pans east"
+        );
+        let mid = a.model.center;
+        key_named(&mut a, NamedKey::ArrowDown);
+        assert!(
+            (a.model.center.lat - mid.lat).abs() > 1e-9,
+            "ArrowDown pans south"
+        );
+    }
+
+    /// `d`/`t` open Directions / Transit for the selected place, and `s` toggles
+    /// its saved flag — all via the key path.
+    #[test]
+    fn directions_transit_save_keys_via_key_event() {
+        let mut a = app_at(1280.0, 720.0);
+        a.select_place("marienplatz");
+        a.model.panel = Panel::Explore;
+        a.model.mode = TravelMode::Car;
+
+        key_char(&mut a, "d");
+        assert_eq!(a.model.panel, Panel::Directions, "'d' opens Directions");
+        assert!(
+            a.model.route.is_some(),
+            "'d' computes a route for the selection"
+        );
+
+        key_char(&mut a, "t");
+        assert!(a.model.mode.is_transit(), "'t' switches to Transit mode");
+        assert!(a.model.route.is_none(), "transit drops the road route");
+
+        let saved_before = a.model.place("marienplatz").unwrap().saved;
+        key_char(&mut a, "s");
+        assert_eq!(
+            a.model.place("marienplatz").unwrap().saved,
+            !saved_before,
+            "'s' toggles the selected place's saved flag"
+        );
+    }
+
+    /// `1`/`2` switch the panel view (list / directions); `m` opens the offline
+    /// overlay (whose focused city field then owns the keyboard); Escape closes
+    /// the overlay and, once closed, deselects the place.
+    #[test]
+    fn panel_offline_escape_keys_via_key_event() {
+        let mut a = app_at(1280.0, 720.0);
+        key_char(&mut a, "1");
+        assert_eq!(a.model.panel, Panel::Explore, "'1' selects the list view");
+        key_char(&mut a, "2");
+        assert_eq!(
+            a.model.panel,
+            Panel::Directions,
+            "'2' selects the directions view"
+        );
+
+        assert!(!a.offline_panel.is_open());
+        key_char(&mut a, "m");
+        assert!(a.offline_panel.is_open(), "'m' opens the offline overlay");
+        assert!(
+            a.offline_panel.is_editing(),
+            "the city search field takes focus on open"
+        );
+        // The dialog's field owns keys now, so Escape (not another 'm') closes it.
+        key_named(&mut a, NamedKey::Escape);
+        assert!(
+            !a.offline_panel.is_open(),
+            "Escape closes the offline overlay"
+        );
+
+        a.select_place("hofgarten");
+        assert!(a.model.selected.is_some());
+        key_named(&mut a, NamedKey::Escape);
+        assert!(a.model.selected.is_none(), "Escape deselects the place");
+    }
+
+    // --- Click-dispatch coverage for previously-untested Hits ---------------
+
+    /// Clearing the search (the × button's `Hit`) empties the query and results.
+    #[test]
+    fn clear_search_dispatch() {
+        let mut a = app_at(1280.0, 720.0);
+        a.model.query = "café".to_string();
+        a.run_search(None);
+        assert!(!a.model.results.is_empty(), "search populated results");
+        tap(&mut a, &Hit::Search(SearchHit::Clear));
+        assert!(a.model.query.is_empty(), "clear empties the query");
+        assert!(a.model.results.is_empty(), "clear empties the results");
+    }
+
+    /// Clearing an active route drops it (the place-card / directions clear-×).
+    #[test]
+    fn clear_route_dispatch() {
+        let mut a = app_at(1280.0, 720.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+        assert!(a.model.route.is_some());
+        tap(&mut a, &Hit::ClearRoute);
+        assert!(a.model.route.is_none(), "clear-route drops the route");
+    }
+
+    /// A recent-search chip re-runs that query.
+    #[test]
+    fn recent_dispatch_runs_search() {
+        let mut a = app_at(1280.0, 720.0);
+        tap(&mut a, &Hit::Recent("Marienplatz".to_string()));
+        assert_eq!(a.model.query, "Marienplatz", "recent sets the query");
+        assert_eq!(a.model.panel, Panel::Explore, "a search lands in Explore");
+        assert!(
+            !a.model.results.is_empty(),
+            "the recent search actually runs"
+        );
+    }
+
+    // --- Offline download / cache management dispatch -----------------------
+
+    /// Opening the overlay then starting a download computes a real tile count
+    /// for the current viewport and surfaces a progress status.
+    #[test]
+    fn offline_open_and_download_dispatch() {
+        let mut a = app_at(1280.0, 720.0);
+        a.offline_panel.open(a.tiles.cache_bytes());
+        assert!(a.offline_panel.is_open(), "opening shows the overlay");
+        tap_offline(&mut a, OfflineAction::Download);
+        assert!(
+            a.model.status.starts_with("Downloading") && a.model.status.contains("tiles"),
+            "download surfaces a tile-count status, got {:?}",
+            a.model.status
+        );
+        // The download covers at least the base zoom plus the extra levels.
+        assert!(
+            a.tiles.progress().total > 0,
+            "a real region of tiles was queued"
+        );
+    }
+
+    /// The offline zoom-depth stepper clamps to 0..=6.
+    #[test]
+    fn offline_zoom_delta_clamps() {
+        let mut a = app_at(1280.0, 720.0);
+        for _ in 0..10 {
+            tap_offline(&mut a, OfflineAction::ZoomDelta(1));
+        }
+        assert_eq!(a.offline_panel.zoom_extra(), 6, "zoom-depth caps at 6");
+        for _ in 0..10 {
+            tap_offline(&mut a, OfflineAction::ZoomDelta(-1));
+        }
+        assert_eq!(a.offline_panel.zoom_extra(), 0, "zoom-depth floors at 0");
+    }
+
+    /// Clearing the cache deletes the on-disk tile tree and zeroes the readout —
+    /// exercised against a disposable temp dir, never the user's real cache.
+    #[test]
+    fn offline_clear_cache_dispatch_removes_dir() {
+        let mut a = app_at(1280.0, 720.0);
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir =
+            std::env::temp_dir().join(format!("qos-maps-cctest-{}-{}", std::process::id(), uniq));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("seed.png"), b"not-a-real-tile").unwrap();
+        a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+        assert!(a.tiles.cache_bytes() > 0, "seeded cache is non-empty");
+
+        tap_offline(&mut a, OfflineAction::ClearCache);
+        assert!(!dir.exists(), "clear-cache removes the on-disk tree");
+        assert_eq!(
+            a.offline_panel.cache_bytes(),
+            0,
+            "the cache-size readout resets to 0"
+        );
+        assert!(
+            a.model.status.starts_with("Cleared"),
+            "a status states what was freed"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Transit itinerary on the map (element: transit geometry was dead) ---
+
+    /// With a transit itinerary selected, the leg geometry is present and the
+    /// `f` key / journey selection frames the map on it — previously `f` was a
+    /// no-op in Transit mode because it only ever fit `model.route` (always None
+    /// for transit), and the geometry was never populated at all.
+    #[test]
+    fn transit_journey_geometry_drives_map_fit() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 720.0);
+        // Sample transit carries real leg geometry; select Transit as the mode
+        // (keeps the sample itineraries, drops the road route).
+        a.set_travel_mode(TravelMode::Transit);
+        assert!(a.model.route.is_none(), "transit has no road route");
+        let geom = a.selected_journey_geometry();
+        assert!(
+            geom.len() >= 2,
+            "the selected itinerary has drawable leg geometry"
+        );
+
+        // Drawing the transit itinerary must not panic (real on-map render path).
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        // The `f` key frames the itinerary even though there is no road route.
+        a.model.center = LatLon::new(0.0, 0.0);
+        a.model.zoom = 3.0;
+        assert!(key_char(&mut a, "f"), "'f' handled in transit mode");
+        assert!(
+            a.model.center.lat.abs() > 1.0 && a.model.center.lon.abs() > 1.0,
+            "'f' reframed the map onto the itinerary, not left at (0,0): {:?}",
+            a.model.center
+        );
+        assert!(a.model.zoom > 3.0, "'f' zoomed in to fit the itinerary");
+    }
+
+    /// Selecting a different journey card re-frames the map onto that itinerary
+    /// (not merely expanding the panel), via the real dispatch path.
+    #[test]
+    fn selecting_journey_reframes_map() {
+        let mut a = app_at(1280.0, 720.0);
+        a.set_travel_mode(TravelMode::Transit);
+        assert!(
+            a.model.transit.len() >= 3,
+            "sample has multiple itineraries"
+        );
+        tap(&mut a, &Hit::Journey(0));
+        let center0 = a.model.center;
+        tap(&mut a, &Hit::Journey(2));
+        assert_eq!(a.model.transit_choice, 2, "the third journey is selected");
+        assert!(
+            (a.model.center.lat - center0.lat).abs() > 1e-6
+                || (a.model.center.lon - center0.lon).abs() > 1e-6,
+            "a different itinerary reframes the map"
+        );
+    }
+
+    /// A fresh, isolated on-disk cache dir so a delete step never touches the
+    /// user's real tile cache.
+    fn region_test_cache(tag: &str) -> std::path::PathBuf {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("qos-maps-{tag}-{}-{}", std::process::id(), n))
+    }
+
+    /// Starting a download records the chosen viewport as a **manageable
+    /// region** (so it shows in the saved-areas list), and deleting it by id
+    /// removes the record. This is the see/manage-downloaded-regions flow.
+    #[test]
+    fn offline_download_records_and_delete_removes_region() {
+        let mut a = app_at(1280.0, 800.0);
+        // Isolate the on-disk cache so the delete step never touches the user's
+        // real tile cache.
+        let dir = region_test_cache("regtest");
+        a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+        a.offline_panel.open(a.tiles.cache_bytes());
+        let before = a.model.regions.len();
+        tap_offline(&mut a, OfflineAction::Download);
+        assert_eq!(
+            a.model.regions.len(),
+            before + 1,
+            "a downloaded area is recorded as a saved region"
+        );
+        let region = a.model.regions.last().unwrap().clone();
+        assert!(region.tiles > 0, "the region covers real tiles");
+        assert!(
+            region.z1 >= region.z0,
+            "the saved zoom range is well-formed"
+        );
+        assert!(!region.name.is_empty(), "the region has a human label");
+
+        // Deleting via its id removes exactly that record.
+        tap_offline(&mut a, OfflineAction::DeleteRegion(region.id.clone()));
+        assert!(
+            !a.model.regions.iter().any(|r| r.id == region.id),
+            "delete removes the region from the managed list"
+        );
+        assert_eq!(
+            a.model.regions.len(),
+            before,
+            "back to the starting region count"
+        );
+        assert!(
+            a.model.status.contains("Removed"),
+            "a status confirms the removal"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Removing one saved area must NOT delete tiles another saved area still
+    /// covers. A nested area's tiles are a subset of the containing area's, so
+    /// deleting the nested one frees nothing; deleting the last owner frees all.
+    #[test]
+    fn delete_region_keeps_tiles_shared_with_another_area() {
+        use crate::model::DownloadedRegion;
+        let dir = region_test_cache("region");
+        let mut a = MapsApp::offline();
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+
+        let big = GeoBounds::new(LatLon::new(48.10, 11.55), LatLon::new(48.18, 11.62));
+        let small = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.14, 11.58));
+        let (z0, z1) = (14u8, 15u8);
+        let big_ids = big.tiles_in_range(z0, z1);
+        let small_ids = small.tiles_in_range(z0, z1);
+        assert!(!small_ids.is_empty());
+        assert!(
+            small_ids.iter().all(|t| big_ids.contains(t)),
+            "the nested area's tiles are a subset of the containing area's"
+        );
+
+        // Seed the on-disk cache with the containing area's tiles.
+        for id in &big_ids {
+            let p = a.tiles.cache_path(*id);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"seed").unwrap();
+        }
+        a.model.regions = vec![
+            DownloadedRegion {
+                id: "big".to_string(),
+                name: "Big".to_string(),
+                min: big.min,
+                max: big.max,
+                z0,
+                z1,
+                tiles: big_ids.len() as u32,
+            },
+            DownloadedRegion {
+                id: "small".to_string(),
+                name: "Small".to_string(),
+                min: small.min,
+                max: small.max,
+                z0,
+                z1,
+                tiles: small_ids.len() as u32,
+            },
+        ];
+
+        // Deleting the nested area removes its record but keeps every tile,
+        // since the containing area still needs them.
+        tap_offline(&mut a, OfflineAction::DeleteRegion("small".to_string()));
+        assert!(!a.model.regions.iter().any(|r| r.id == "small"));
+        for id in &big_ids {
+            assert!(
+                a.tiles.cache_path(*id).exists(),
+                "a shared tile must be kept: {id:?}"
+            );
+        }
+
+        // Deleting the last owner frees all of its tiles.
+        tap_offline(&mut a, OfflineAction::DeleteRegion("big".to_string()));
+        for id in &big_ids {
+            assert!(
+                !a.tiles.cache_path(*id).exists(),
+                "the last owner's tiles are freed: {id:?}"
+            );
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The on-screen trash affordance dispatches the byte-identical
+    /// [`MapsAction`](crate::actions::MapsAction) the Ctrl+K "Delete region" spec
+    /// does — one source of truth. Drives the real `dispatch` path against a live
+    /// document and reads back the action host's `last_dispatched`, then confirms
+    /// the shared document actually changed.
+    #[test]
+    fn delete_region_affordance_matches_action_spec() {
+        use crate::actions::{MapsAction, encode};
+        let mut a = app_at(1280.0, 800.0);
+        a.model.regions = vec![crate::model::DownloadedRegion {
+            id: "r1".to_string(),
+            name: "Altstadt".to_string(),
+            min: LatLon::new(48.10, 11.55),
+            max: LatLon::new(48.18, 11.62),
+            z0: 14,
+            z1: 15,
+            tiles: 8,
+        }];
+
+        let mut doc = AutoCommit::new();
+        a.dispatch_offline(OfflineAction::DeleteRegion("r1".to_string()), &mut doc);
+
+        // The affordance dispatched exactly the DeleteRegion action a palette row
+        // (its `ActionSpec`) would build for the same id.
+        let dispatched = a
+            .actions
+            .last_dispatched()
+            .expect("the trash affordance dispatched an action");
+        let expected = encode(&MapsAction::DeleteRegion {
+            id: "r1".to_string(),
+        });
+        assert_eq!(
+            dispatched, &expected,
+            "affordance == ActionSpec encoded action"
+        );
+
+        // And it really mutated the shared document + the live model.
+        assert!(
+            !a.model.regions.iter().any(|r| r.id == "r1"),
+            "the region row is gone"
+        );
+        assert!(
+            !MapsDoc::load(&doc)
+                .unwrap()
+                .regions
+                .iter()
+                .any(|r| r.id == "r1"),
+            "the document reflects the removal"
+        );
+    }
+
+    #[test]
+    fn map_controls_are_operable_semantic_children_with_matching_geometry() {
+        let a = app_at(1_280.0, 800.0);
+        let node = Widget::accessibility(&a).expect("maps is semantic");
+        assert_eq!(node.children.len(), 4, "only drawn controls are exposed");
+        let expected_targets = [
+            "maps.control:zoom-in",
+            "maps.control:zoom-out",
+            "maps.control:locate",
+            "maps.control:traffic",
+        ];
+        for (index, (child, expected_target)) in
+            node.children.iter().zip(expected_targets).enumerate()
+        {
+            assert_eq!(child.action_target.as_deref(), Some(expected_target));
+            assert_eq!(
+                Widget::synthetic_accessibility_rect(&a, &[index]),
+                child.bounds.map(ui::a11y::AccessBounds::to_rect),
+                "control {index} must activate at its visible bounds"
+            );
+        }
+        let traffic = node
+            .children
+            .iter()
+            .find(|child| child.action_target.as_deref() == Some("maps.control:traffic"))
+            .expect("traffic semantics");
+        assert_eq!(traffic.role, ui::a11y::Role::Switch);
+        assert_eq!(traffic.state.checked, Some(false));
+    }
+
+    #[test]
+    fn semantic_control_targets_are_stable_unique_and_operable() {
+        let mut a = app_at(1_280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        let node = Widget::accessibility(&a).expect("maps is semantic");
+        let mut targets: Vec<_> = node
+            .children
+            .iter()
+            .filter_map(|child| child.action_target.as_deref())
+            .collect();
+        targets.sort_unstable();
+        targets.dedup();
+        assert_eq!(
+            targets.len(),
+            node.children.len(),
+            "no duplicate semantic ids"
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            "maps.control:traffic",
+            &ui::a11y::Action::ToggleCheck,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(a.map_controls.traffic_enabled());
+    }
+
+    #[test]
+    fn narrow_drawer_suppresses_redundant_navigation_card_and_background_semantics() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(520.0, 840.0);
+        a.nav_open = true;
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        assert_eq!(a.navigation_end_rect, Rect::ZERO);
+        let node = Widget::accessibility(&a).expect("drawer remains semantic");
+        assert!(
+            node.children.iter().all(|child| {
+                !child
+                    .action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with("maps.control:"))
+            }),
+            "covered map controls must not remain in the drawer's accessibility tree"
+        );
+        assert!(
+            node.children
+                .iter()
+                .any(|child| { child.action_target.as_deref() == Some("maps.navigation") }),
+            "the visible drawer toggle remains operable"
+        );
+    }
+
+    #[test]
+    fn end_navigation_is_semantic_when_the_route_card_is_visible() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1_280.0, 800.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(a.navigation_end_rect.area() > 0.0);
+        let node = Widget::accessibility(&a).expect("maps is semantic");
+        assert!(node.children.iter().any(|child| {
+            child.action_target.as_deref() == Some("maps.navigation.end")
+                && child.name.as_deref() == Some("End navigation")
+        }));
+
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            "maps.navigation.end",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(a.model.route.is_none());
+    }
+
+    #[test]
+    fn reduced_motion_does_not_pump_floating_handoff_frames() {
+        let mut a = app_at(1_280.0, 800.0);
+        a.navigation_placement
+            .detach_to_desktop(Rect::new(820.0, 120.0, 1_180.0, 276.0));
+        assert!(Widget::needs_animation_frame(&a));
+        Widget::set_motion_reduced(&mut a, true);
+        assert!(!Widget::needs_animation_frame(&a));
+    }
+
+    #[test]
+    fn eager_and_lazy_resources_share_unique_live_operations() {
+        let mut a = app_at(1_280.0, 800.0);
+        let result = a
+            .model
+            .results
+            .first()
+            .expect("sample search result")
+            .clone();
+        let mut saved = result;
+        saved.id = "eager-saved".to_string();
+        saved.saved = true;
+        a.model.places.push(saved.clone());
+        saved.id = "lazy-saved".to_string();
+        a.model.places.push(saved);
+        let mut doc = AutoCommit::new();
+        MapsDoc::save(&mut doc, &a.model);
+
+        let root = Widget::resources(&a, &doc)
+            .into_iter()
+            .next()
+            .expect("maps root");
+        let result_resource_id = "maps.place:eager-saved".to_string();
+        let eager_result = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == result_resource_id)
+            .expect("eager result");
+        let mut ids: Vec<_> = eager_result
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(
+            ids.len(),
+            eager_result.actions.len(),
+            "action ids are unique"
+        );
+        assert!(
+            eager_result
+                .actions
+                .iter()
+                .any(|action| action.id == "open")
+        );
+        assert!(
+            eager_result
+                .actions
+                .iter()
+                .any(|action| action.id == "directions")
+        );
+
+        let lazy = Widget::resource(&a, &doc, "maps.place:lazy-saved")
+            .expect("exact saved-place resolver");
+        assert!(lazy.actions.iter().any(|action| action.id == "open"));
+        assert!(lazy.actions.iter().any(|action| action.id == "directions"));
     }
 }
 

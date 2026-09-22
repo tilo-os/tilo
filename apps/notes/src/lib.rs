@@ -37,6 +37,8 @@ pub mod app;
 mod block_order;
 pub mod capture;
 pub mod component;
+pub mod framework_history;
+pub mod production;
 pub use component::definition;
 pub mod doc;
 pub mod hosting;

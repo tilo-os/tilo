@@ -97,7 +97,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("error") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_error()),
         _ => Box::new(|_: &mut contacts::ContactsApp| {}),
     };
-    render_shot_to_png(app, viewport, args.text_scale.unwrap_or(1.0), out, setup)
+    render_shot_to_png(app, viewport, ui::launch::shot_theme(args), out, setup)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -114,31 +114,7 @@ fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("so.tilo.contacts", contacts::app_root)
-            .shot_handler(shot_handler)
-            .allowed_flags(&["--detail"])
-            .scenarios(&[
-                "new",
-                "edit",
-                "editfocus",
-                "edit-lower",
-                "export",
-                "unsaved",
-                "groups",
-                "context",
-                "confirm",
-                "import-conflict",
-                "duplicate-review",
-                "duplicates",
-                "empty",
-                "search",
-                "loading",
-                "error",
-            ])
-            .open_state(open_state)
-            .configure_app(|app| contacts::actions::register(app.action_registry_mut())),
-    );
+    ui::launch::run_or_exit(&launch_spec());
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
@@ -146,26 +122,11 @@ pub fn main() {
 fn render_shot_to_png(
     mut app: contacts::ContactsApp,
     viewport: (u32, u32),
-    text_scale: f32,
+    theme: Theme,
     out: &std::path::Path,
     setup: Box<dyn FnOnce(&mut contacts::ContactsApp)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    // `TILO_SHOTS_REDUCE_MOTION=1` additionally exercises the same theme policy
-    // the live accessibility setting supplies, without making shot output rely
-    // on a host-global preference.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    }
-    .with_text_scale(text_scale)
-    .with_reduce_motion(matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -192,22 +153,20 @@ fn render_shot_to_png(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget, &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -229,4 +188,114 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("contacts: wrote shot to {}", out.display());
     Ok(())
+}
+
+fn launch_spec() -> LaunchSpec {
+    LaunchSpec::new("dev.tilo.contacts", contacts::app_root)
+        .history(&contacts::framework_history::HISTORY)
+        .shot_handler(shot_handler)
+        .allowed_flags(&["--detail"])
+        .scenarios(&[
+            "new",
+            "edit",
+            "editfocus",
+            "export",
+            "unsaved",
+            "groups",
+            "context",
+            "confirm",
+            "import-conflict",
+            "empty",
+        ])
+        .open_app_global_state(open_state)
+        .configure_app(|app| contacts::actions::register(app.action_registry_mut()))
+}
+
+#[test]
+fn production_launch_registers_history() {
+    launch_spec().validate_history_declaration().unwrap();
+}
+
+#[test]
+fn actual_migrating_opener_keeps_saved_graph() {
+    use automerge::{ReadDoc, transaction::Transactable};
+    const APP: &str = "dev.tilo.contacts";
+    if let Ok(stage) = std::env::var("QOS_CONTACTS_HISTORY_STARTUP") {
+        let legacy = contacts::storage::default_path().unwrap();
+        if stage == "write" {
+            let mut doc = automerge::AutoCommit::new();
+            let mut contact = contacts::model::sample_contacts().remove(0);
+            contact.first = "Historical imported contact".into();
+            contacts::doc::ContactsDoc::upsert_contact(&mut doc, &contact);
+            let historical = doc.get_heads()[0];
+            contact.first = "Current imported contact".into();
+            contacts::doc::ContactsDoc::upsert_contact(&mut doc, &contact);
+            let bytes = doc.save();
+            std::fs::write(&legacy, &bytes).unwrap();
+            let (mut state, mut saver) = open_state(APP);
+            assert!(saver.is_enabled());
+            assert!(state.doc.get_change_by_hash(&historical).is_some());
+            assert_eq!(
+                contacts::doc::ContactsDoc::list_contacts(&state.doc)[0].first,
+                "Current imported contact"
+            );
+            let current = state.doc.get_heads();
+            let prepared = ui::history_mode::restore::prepare_content_restore(
+                &state.doc,
+                &contacts::framework_history::SCHEMA,
+                &current,
+                &[historical],
+            )
+            .unwrap();
+            ui::history_mode::restore::apply_prepared_content_restore(&mut state.doc, &prepared)
+                .unwrap();
+            state.commit_action(None, None);
+            saver.request(&mut state.doc);
+            saver.try_flush().unwrap();
+            assert_eq!(std::fs::read(&legacy).unwrap(), bytes);
+            std::fs::write(legacy.with_extension("heads"), historical.to_string()).unwrap();
+        } else {
+            let (state, saver) = open_state(APP);
+            assert!(saver.is_enabled());
+            assert_eq!(
+                contacts::doc::ContactsDoc::list_contacts(&state.doc)[0].first,
+                "Historical imported contact"
+            );
+            let historical = std::fs::read_to_string(legacy.with_extension("heads"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(state.doc.get_change_by_hash(&historical).is_some());
+            assert_eq!(state.doc.pending_ops(), 0);
+            assert!(
+                state
+                    .doc
+                    .get(automerge::ROOT, "contacts")
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for stage in ["write", "read"] {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "actual_migrating_opener_keeps_saved_graph",
+                "--nocapture",
+            ])
+            .env("QOS_CONTACTS_HISTORY_STARTUP", stage)
+            .env("XDG_DATA_HOME", dir.path())
+            .env("QOS_PACKAGE_ID", APP)
+            .env("QOS_CONTACTS_DATA", dir.path().join("legacy.automerge"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{stage}: {} {}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
 }

@@ -58,7 +58,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe();
     }
     ui::launch::run(
-        &LaunchSpec::new("so.tilo.weather", weather::app_root)
+        &LaunchSpec::new("dev.tilo.weather", weather::app_root)
+            .history(&weather::framework_history::HISTORY)
             .shot_root(shot_root)
             .configure_app(|app| weather::actions::register(app.action_registry_mut()))
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
@@ -103,18 +104,18 @@ fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
     // A saved place (real coordinates) + a free-text geocode — the two live
     // request kinds the app issues.
     let berlin = SavedLocation::new("Berlin", "Berlin", "Germany", "DE", 52.52, 13.41, "auto");
-    svc.request(Request::Forecast {
+    let _ = svc.request(Request::Forecast {
         location_id: berlin.id,
         lat: berlin.latitude,
         lon: berlin.longitude,
         units: Units::METRIC,
     });
-    svc.request(Request::AirQuality {
+    let _ = svc.request(Request::AirQuality {
         location_id: berlin.id,
         lat: berlin.latitude,
         lon: berlin.longitude,
     });
-    svc.request(Request::Geocode {
+    let _ = svc.request(Request::Geocode {
         seq: 1,
         query: "Tokyo".to_string(),
     });
@@ -124,6 +125,7 @@ fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
     while Instant::now() < deadline && !(got_forecast && got_geocode && got_aq) {
         for resp in svc.drain() {
             match resp {
+                Response::Tracked { .. } => {}
                 Response::Forecast(snap) => {
                     got_forecast = true;
                     println!(
