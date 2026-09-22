@@ -31,6 +31,10 @@ cat >"$work/bin/blkid" <<'EOF'
 #!/bin/sh
 printf 'A1B2-C3D4\n'
 EOF
+cat >"$work/bin/findmnt" <<'EOF'
+#!/bin/sh
+printf '11111111-2222-3333-4444-555555555555\n'
+EOF
 cat >"$work/bin/losetup" <<'EOF'
 #!/bin/sh
 case " $* " in *' -fP '*) printf '/dev/loop-test\n';; esac
@@ -74,6 +78,7 @@ chmod +x "$work/bin/"*
 PATH="$work/bin:$PATH" MOCK_OUTPUT="$work/output" MOCK_FAT="$work/fat" \
   MOCK_MOUNTS="$work/mounts.log" MOCK_PODMAN_ARGS="$work/podman-args" \
   TILO_DISTROBOX= TILO_DISK_FORCE_MTOOLS_ESP=1 \
+  TILO_DISK_ESP_STAGE_PARENT="$work" \
   "$repo/os/dev/disk-image.sh" "$authoritative" "$work/output" \
   --composefs --sealed-source-imgref "$mirror" --size 20G --raw >/dev/null
 
@@ -81,10 +86,10 @@ cmp "$work/fat/EFI/Linux/tilo.efi" <(printf 'signed uki payload\n')
 cmp "$work/fat/loader/entries/tilo.conf" <(printf 'title Tilo\n')
 [ -z "$(find "$work/output/.mnt/boot" -mindepth 1 -print -quit)" ]
 cmp "$work/output/.esp-source.sha256" "$work/output/.esp-copied.sha256"
-grep -Fxq -- '--bind '"$work/output/.mnt/.tilo-esp-stage $work/output/.mnt/boot" \
+grep -Eq -- '^--bind '"$work/tilo-esp-stage\.[^ ]+ $work/output/.mnt/boot"'$' \
   "$work/mounts.log"
 grep -Fxq -- '--boot-mount-spec' "$work/podman-args"
 grep -Fxq -- 'UUID=A1B2-C3D4' "$work/podman-args"
-[ ! -e "$work/output/.mnt/.tilo-esp-stage" ]
+[ -z "$(find "$work" -maxdepth 1 -name 'tilo-esp-stage.*' -print -quit)" ]
 
 printf 'ok: mtools fallback verifies the ESP and removes the root staging copy\n'
