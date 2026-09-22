@@ -45,7 +45,7 @@ import time
 from reaper import die_with_parent, track
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-APP = "dev.tilo.word-processor"
+APP = "so.tilo.word-processor"
 APPLICATIONS = "applications"
 
 failures: list[str] = []

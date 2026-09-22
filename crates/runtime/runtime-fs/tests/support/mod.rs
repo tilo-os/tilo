@@ -6,7 +6,7 @@ pub const MOUNT_B: uuid::Uuid = uuid::Uuid::from_u128(0xb22);
 pub fn files_owner() -> FsOwner {
     FsOwner {
         workspace: "test-room".into(),
-        app_id: "dev.tilo.file-explorer".into(),
+        app_id: "so.tilo.file-explorer".into(),
     }
 }
 
@@ -32,7 +32,7 @@ pub fn granted_root() -> (
     let authority = NativeGrantAuthority::new();
     let owner = runtime_fs::FsOwner {
         workspace: "test-room".into(),
-        app_id: "dev.tilo.file-explorer".into(),
+        app_id: "so.tilo.file-explorer".into(),
     };
     let root = authority
         .admit_directory(

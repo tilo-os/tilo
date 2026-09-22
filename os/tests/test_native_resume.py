@@ -14,7 +14,7 @@ spec.loader.exec_module(resume)
 REQUIRED = ('shell fs terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-relay '
  'tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-greeter tilo-installer tilo-runtime-bundle '
  'tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust '
- 'tilo-device-key-init tilo tilo-pkg tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager '
+ 'tilo-device-key-init tilo tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager '
  'tilo-projector tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime').split()
 
 

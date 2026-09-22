@@ -291,7 +291,7 @@ impl CustomizePanel {
             keyboard: field(),
             filesystem: field(),
             locale_choice: Dropdown::from_state(
-                LOCALES.iter().map(|value| (*value).to_string()).collect(),
+                installer_locales().map(str::to_string).collect(),
                 &locale_state,
             )
             .with_id("imager.locale.choice")
@@ -371,7 +371,9 @@ impl CustomizePanel {
                 .into_iter()
                 .find(|filesystem| filesystem.label() == displayed)
                 .map(|filesystem| filesystem.key().to_string()),
-            CzField::Locale => LOCALES.contains(&displayed).then(|| displayed.to_string()),
+            CzField::Locale => installer_locales()
+                .any(|locale| locale == displayed)
+                .then(|| displayed.to_string()),
             CzField::Timezone => Some(displayed.to_string()),
             _ => None,
         }
@@ -382,7 +384,7 @@ impl CustomizePanel {
             return false;
         };
         match f {
-            CzField::Locale => LOCALES.contains(&value),
+            CzField::Locale => installer_locales().any(|locale| locale == value),
             CzField::Timezone => self.timezone_catalog.iter().any(|zone| zone == value),
             CzField::Keyboard => keyboard_id(value).is_some(),
             CzField::Filesystem => Filesystem::all()
@@ -396,7 +398,9 @@ impl CustomizePanel {
     /// visible choosers expose. Free-text identity fields remain unchanged.
     pub(crate) fn canonical_value(&self, f: CzField, value: &str) -> Option<String> {
         match f {
-            CzField::Locale => LOCALES.contains(&value).then(|| value.to_string()),
+            CzField::Locale => installer_locales()
+                .any(|locale| locale == value)
+                .then(|| value.to_string()),
             CzField::Timezone => self
                 .timezone_catalog
                 .iter()

@@ -114,9 +114,9 @@ foreach ($application in $applications) {
         $shortcut.Save()
     }
     if ($application -eq 'clocks') {
-        & $hostHelper register 'dev.tilo.clocks' "Tilo $title" $destination $shortcutPath
+        & $hostHelper register 'so.tilo.clocks' "Tilo $title" $destination $shortcutPath
         if ($LASTEXITCODE -ne 0) { throw 'Could not register Clocks for Windows notifications.' }
-        $notificationKey = 'HKCU:/Software/Classes/AppUserModelId/dev.tilo.clocks'
+        $notificationKey = 'HKCU:/Software/Classes/AppUserModelId/so.tilo.clocks'
         New-Item -Path $notificationKey -Force | Out-Null
         New-ItemProperty -LiteralPath $notificationKey -Name DisplayName -Value "Tilo $title" -PropertyType String -Force | Out-Null
         $activationKey = 'HKCU:/Software/Classes/tilo-clocks'

@@ -1040,12 +1040,17 @@ impl GreeterApp {
                 BRAND_GAP,
                 vec![
                     Box::new(
-                        Text::new("Tilo Desktop")
+                        Text::new("Welcome back to Tilo")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(c.text_dim),
                     ),
                     Box::new(
-                        Text::new(&format!("Welcome back, {}", user.display_name))
+                        // Keep the person's name as one intentional headline.
+                        // Prefixing it with "Welcome back," made an ordinary
+                        // first + last name wrap after the first name in the
+                        // production-width card, which looked like accidental
+                        // clipping rather than a considered lockup.
+                        Text::new(&user.display_name)
                             .with_id("greeter.welcome")
                             .with_size(28.0),
                     ),
@@ -3076,19 +3081,23 @@ mod tests {
 
         let welcome = spoken
             .iter()
-            .position(|text| text == "Welcome back, Quinten Quick")
+            .position(|text| text == "Welcome back to Tilo")
             .expect("personal greeter has a named welcome");
+        let person = spoken
+            .iter()
+            .position(|text| text == "Quinten Quick")
+            .expect("personal greeter gives the known person the headline");
         let passcode = spoken
             .iter()
             .position(|text| text == "Passcode")
             .expect("personal greeter retains its passcode field");
         assert!(
-            welcome < passcode,
+            welcome < person && person < passcode,
             "the welcome should establish context before the form: {spoken:?}"
         );
         assert_eq!(
             accessible_name_for(card.as_ref(), "greeter.welcome").as_deref(),
-            Some("Welcome back, Quinten Quick")
+            Some("Quinten Quick")
         );
         assert_eq!(
             focusables(&app).first().map(String::as_str),

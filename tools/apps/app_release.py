@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan independently buildable qpkg app releases and named collections."""
+"""Plan independently buildable tapp app releases and named collections."""
 
 from __future__ import annotations
 
@@ -68,8 +68,8 @@ FULL_REBUILD_PREFIXES = (
     "tools/apps/",
 )
 # These are explicitly built by package-apps.sh, not ordinary app dependencies.
-# A change reaching their graph affects the shared runtime or every emitted qpkg.
-FLEET_BUILD_PACKAGES = {"runtime-dylib", "pkg-cli", "runtime-bundle"}
+# A change reaching their graph affects the shared runtime or every emitted tapp.
+FLEET_BUILD_PACKAGES = {"runtime-dylib", "tilo-app-package-cli", "runtime-bundle"}
 OS_INTEGRATED_APPS = {"browser"}
 
 
@@ -259,7 +259,7 @@ def input_classification(paths: list[str], metadata: dict | None = None,
             owner = ci_select.owner_for(path, by_dir)
             if owner is not None:
                 affected = ci_select.closure({owner}, reverse)
-                packaging = bool(affected & {"pkg-cli", "runtime-bundle"})
+                packaging = bool(affected & {"tilo-app-package-cli", "runtime-bundle"})
                 if packaging:
                     classified["packaging"].append(path)
                 if not packaging or affected & (app_packages | {"runtime-dylib"}):
@@ -370,7 +370,7 @@ def plan(args: argparse.Namespace) -> dict:
     integrated = set(selected).intersection(OS_INTEGRATED_APPS)
     if integrated:
         raise ValueError(
-            "OS-integrated apps cannot use the generic qpkg builder: "
+            "OS-integrated apps cannot use the generic tapp builder: "
             + ", ".join(sorted(integrated))
         )
     features = cfg.get("features", {})

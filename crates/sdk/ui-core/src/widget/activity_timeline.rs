@@ -3446,7 +3446,10 @@ impl ActivityTimeline {
                 return;
             }
             Key::Named(NamedKey::Escape) => {
-                if self.selection.take().is_some() {
+                if !self.author_query.is_empty() {
+                    self.author_query.clear();
+                    self.rebuild();
+                } else if self.selection.take().is_some() {
                     self.selection_anchor = None;
                     self.rebuild_rows();
                 }
@@ -3493,10 +3496,16 @@ impl ActivityTimeline {
                     *handled = true;
                 }
             }
-            Key::Named(NamedKey::Escape) if self.selection.take().is_some() => {
-                self.selection_anchor = None;
-                self.rebuild_rows();
-                *handled = true;
+            Key::Named(NamedKey::Escape) => {
+                if !self.author_query.is_empty() {
+                    self.author_query.clear();
+                    self.rebuild();
+                    *handled = true;
+                } else if self.selection.take().is_some() {
+                    self.selection_anchor = None;
+                    self.rebuild_rows();
+                    *handled = true;
+                }
             }
             _ => {}
         }
@@ -4439,7 +4448,7 @@ mod tests {
     }
 
     #[test]
-    fn typing_narrows_by_author_and_backspace_widens_again() {
+    fn typing_narrows_by_author_and_escape_or_backspace_widens_again() {
         let entries = vec![
             entry(OpClass::Splice, "Alice", 1, 1),
             entry(OpClass::Splice, "Bob", 2, 2),
@@ -4452,6 +4461,17 @@ mod tests {
         assert_eq!(t.author_query(), "b");
         assert_eq!(t.visible_len(), 1);
         assert_eq!(t.visible_entry(0).unwrap().author.name, "Bob");
+        dispatch(
+            &mut t,
+            &key_press(winit::keyboard::Key::Named(NamedKey::Escape)),
+        );
+        assert_eq!(t.author_query(), "");
+        assert_eq!(t.visible_len(), 2);
+
+        dispatch(
+            &mut t,
+            &key_press(winit::keyboard::Key::Character("b".into())),
+        );
         dispatch(
             &mut t,
             &key_press(winit::keyboard::Key::Named(NamedKey::Backspace)),

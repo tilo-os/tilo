@@ -45,7 +45,7 @@ struct Cli {
     #[arg(long)]
     record: Option<String>,
     /// The app whose document this is (its manifest package id).
-    #[arg(long, default_value = "dev.tilo.word-processor")]
+    #[arg(long, default_value = "so.tilo.word-processor")]
     app: String,
     /// The agent's name: its caret pill, its history author, and the word
     /// an instruction starts with.

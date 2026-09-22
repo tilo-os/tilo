@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Add prefer-dynamic only to the selected application binaries and the shared
 # runtime dylib. App-local code is optimized for size so independently
-# distributed qpkgs stay below the 5 MiB safety ceiling; the shared runtime
+# distributed tapps stay below the 5 MiB safety ceiling; the shared runtime
 # remains speed-optimized.
 # Cargo invokes this as RUSTC_WORKSPACE_WRAPPER, so third-party dependencies and
 # build scripts retain the workspace's ordinary hardening and never become host
@@ -29,7 +29,7 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
         fi
         # Release validation raises the parent profile's codegen-unit count to
         # keep the shared runtime build fast. A thin app inherits that parent
-        # override unless it is reset here, which made Music's qpkg exceed the
+        # override unless it is reset here, which made Music's tapp exceed the
         # 5 MiB wire limit despite the declared thin-app profile using one
         # unit. Keep parallel codegen for the large runtime, but optimize each
         # independently shipped executable as one unit.

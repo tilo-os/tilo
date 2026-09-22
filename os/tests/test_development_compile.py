@@ -62,8 +62,8 @@ class CompileBoundaries(unittest.TestCase):
                     driver.selected_pins('aarch64')
 
     def test_kernel_pin_selects_native_architecture_and_explicit_candidate(self):
-        x86 = 'code.podesta.ai/qos/qos-kernel@sha256:' + '1' * 64
-        arm = 'code.podesta.ai/qos/qos-kernel@sha256:' + '2' * 64
+        x86 = 'code.podesta.ai/qos/tilo-kernel@sha256:' + '1' * 64
+        arm = 'code.podesta.ai/qos/tilo-kernel@sha256:' + '2' * 64
         candidate = 'code.podesta.ai/qos/tilo-development-kernel-aarch64@sha256:' + '3' * 64
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
@@ -135,7 +135,7 @@ class CompileBoundaries(unittest.TestCase):
         driver.validate_firmware_selection('cache-only', 'lenovo-83ed', '', '', True)
         for change in ({'reference': ''}, {'manifest_sha256': ''}, {'manifest_sha256': 'latest'},
                        {'reference': 'code.podesta.ai/qos/tilo-firmware:latest'},
-                       {'reference': reference.replace('/qos/', '/other/')},
+                       {'reference': reference.replace('/tilo/', '/other/')},
                        {'profile': 'generic'}, {'mode': 'cache-only'}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 driver.validate_firmware_selection(**(valid | change))
@@ -330,7 +330,7 @@ class CompileBoundaries(unittest.TestCase):
         driver.validate_inputs(**inputs)
         for field in ('fex_payload_candidate', 'windows_guest_candidate'):
             for invalid in ('', 'code.podesta.ai/qos/example:latest',
-                            'foreign.example/qos/example@sha256:' + '1' * 64,
+                            'foreign.example/tilo/example@sha256:' + '1' * 64,
                             'code.podesta.ai/other/example@sha256:' + '1' * 64,
                             payload + ';false'):
                 with self.subTest(field=field, invalid=invalid), self.assertRaises(ValueError):

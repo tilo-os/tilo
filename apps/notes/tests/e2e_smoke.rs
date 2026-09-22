@@ -87,7 +87,7 @@ fn full_lifecycle_round_trips_through_disk() {
         let panel = app.main_panel_mut();
         // apply_event_for_test creates + selects, so MainPanel is already
         // on the new page; load_page here is a defensive re-load either way.
-        panel.load_page(target_id, "Test Page", String::new());
+        panel.load_page(target_id, "Test Page", "");
         let editor = panel.editor_mut();
         // Block 0: paragraph
         editor.blocks_mut()[0].line.set_text("Hello world.");

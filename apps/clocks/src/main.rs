@@ -8,7 +8,7 @@ extern crate runtime_dylib;
 
 fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.clocks", clocks::app_root)
+        &LaunchSpec::new("so.tilo.clocks", clocks::app_root)
             .shot_root(
                 |args: &LaunchArgs| -> Result<Box<dyn Widget>, LaunchError> {
                     let scenario = args.scenario.as_deref().unwrap_or_default();
