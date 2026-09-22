@@ -396,8 +396,8 @@ mod tests {
         let outputs = [((0, 0), (1920, 1080)), ((1920, 360), (1280, 720))];
         assert_eq!(
             clamp_pointer_to_outputs((2200.0, 100.0), outputs),
-            (1919.0, 100.0),
-            "the empty rectangle above the offset monitor is not addressable"
+            (2200.0, 360.0),
+            "the gap projects onto the nearest addressable output edge"
         );
         assert_eq!(
             clamp_pointer_to_outputs((2200.0, 500.0), outputs),
