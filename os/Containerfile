@@ -270,7 +270,12 @@ FROM wpe-builder-${TILO_WITH_BROWSER} AS wpe-builder
 # copy. Builder and final share BASE_REF, so their glibc matches by
 # construction. Bump deliberately: re-run `mirror-base`, commit the new
 # BASE_REF, re-run `snapshot-rpms`.
-FROM ${BASE_REF} AS builder
+#
+# The toolchain half is its own stage, `builder-toolchain`, so the dev image
+# (os/Containerfile.dev) compiles with exactly this compiler, these -devel
+# libraries and this sccache instead of a copy of the list that could drift.
+# os/dev/build-dev-image.sh builds it with `--target builder-toolchain`.
+FROM ${BASE_REF} AS builder-toolchain
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
@@ -361,6 +366,8 @@ ENV CARGO_HOME=/build/.cargo-home \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     LC_ALL=C.UTF-8 \
     TZ=UTC
+
+FROM builder-toolchain AS builder
 
 # WPE WebKit headers + libs so `browser --features wpe` links against the
 # engine built in the wpe-builder stage. Overlaying /usr in this throwaway
