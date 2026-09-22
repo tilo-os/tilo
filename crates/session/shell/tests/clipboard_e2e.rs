@@ -3493,6 +3493,10 @@ fn drag_file_row_onto_client(
     const STEPS: u32 = 12;
     compositor.pointer_move(row.0, row.1);
     compositor.pointer_button(true);
+    // The row publishes `ArmDrag` through the app command queue. Let the
+    // normal frame pump apply that command before the first synthetic move;
+    // real pointer input naturally has this event-loop gap between edges.
+    std::thread::sleep(Duration::from_millis(100));
     // Cross the file row's drag threshold while still inside the row. The
     // client can be close enough vertically that interpolating straight to
     // it otherwise leaves the row on the very first motion event.
