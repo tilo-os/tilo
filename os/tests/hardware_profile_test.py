@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import struct
 import subprocess
@@ -41,6 +42,9 @@ class HardwareProfileTest(unittest.TestCase):
         self.dtb.parent.mkdir(parents=True)
         self.dtb.write_bytes(struct.pack(">II", 0xD00DFEED, 40) + bytes(32))
         (self.kernel / "config").write_text("CONFIG_ARM64=y\n", encoding="utf-8")
+        self.system_firmware = self.root / "usr/lib/firmware/qcom/a740_sqe.fw.xz"
+        self.system_firmware.parent.mkdir(parents=True)
+        self.system_firmware.write_bytes(b"distro firmware fixture")
         for name in NAMES:
             (self.firmware / name).write_bytes(f"firmware fixture: {name}".encode())
         self.manifest = {
@@ -104,7 +108,7 @@ class HardwareProfileTest(unittest.TestCase):
         install_line = dracut.read_text().splitlines()[1]
         self.assertEqual(install_line, 'install_items+=" ' + " ".join(
             f"/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/{name}" for name in NAMES
-        ) + ' "')
+        ) + ' /usr/lib/firmware/qcom/a740_sqe.fw.xz "')
         outputs = [profile_path, self.root / prepare.DEFINITION_PATH, dracut, *(installed / name for name in NAMES)]
         self.assertEqual(self.ownership.call_count, len(outputs))
         for output in outputs:
@@ -200,6 +204,20 @@ class HardwareProfileTest(unittest.TestCase):
                 self.assertEqual(self.snapshot(), before)
                 self.ownership.assert_not_called()
 
+    def test_version_two_system_firmware_schema_rejects_unsafe_paths(self):
+        definitions, data = self.definition()
+        data["schema_version"] = 2
+        for value in ("qcom/../outside", "/qcom/a740_sqe.fw", "qcom/with space.fw"):
+            with self.subTest(value=value):
+                (definitions / "other-board.json").write_text(json.dumps(data | {"system_firmware": [value]}))
+                with self.assertRaisesRegex(ValueError, "safe relative path"):
+                    prepare.load_definition("other-board", definitions)
+        for value in (["qcom/a.fw", "qcom/a.fw"], ["qcom", "qcom/a.fw"]):
+            with self.subTest(value=value):
+                (definitions / "other-board.json").write_text(json.dumps(data | {"system_firmware": value}))
+                with self.assertRaisesRegex(ValueError, "unique and must not overlap"):
+                    prepare.load_definition("other-board", definitions)
+
     def test_requires_privileged_image_builder(self):
         self.privileged.return_value = 1000
         self.rejected_without_writes("as root")
@@ -232,6 +250,18 @@ class HardwareProfileTest(unittest.TestCase):
     def test_missing_firmware(self):
         (self.firmware / NAMES[-1]).unlink()
         self.rejected_without_writes("input is missing")
+
+    def test_missing_distro_firmware_fails_before_writes(self):
+        self.system_firmware.unlink()
+        self.rejected_without_writes("required system firmware is missing")
+
+    def test_empty_distro_firmware_fails_before_writes(self):
+        self.system_firmware.write_bytes(b"")
+        self.rejected_without_writes("required system firmware is empty")
+
+    def test_ambiguous_distro_firmware_fails_before_writes(self):
+        self.system_firmware.with_suffix("").write_bytes(b"uncompressed duplicate")
+        self.rejected_without_writes("ambiguous installed representations")
 
     def test_firmware_symlink(self):
         firmware = self.firmware / NAMES[-1]
@@ -267,6 +297,7 @@ class HardwareProfileTest(unittest.TestCase):
     def test_destination_directory_symlink(self):
         outside = self.work / "outside-output"
         outside.mkdir()
+        shutil.rmtree(self.root / "usr/lib/firmware")
         (self.root / "usr/lib/firmware").symlink_to(outside, target_is_directory=True)
         self.rejected_without_writes("symlink")
         self.assertEqual(list(outside.iterdir()), [])
