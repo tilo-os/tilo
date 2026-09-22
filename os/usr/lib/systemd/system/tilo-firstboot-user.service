@@ -31,14 +31,17 @@ RestrictSUIDSGID=yes
 RemoveIPC=yes
 KeyringMode=private
 # useradd needs to create and own the home and atomically update the local
-# account databases, but it does not need mount, network, module, raw-I/O,
-# reboot, or audit-control authority.
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID
+# account databases. shadow-utils also reports the account creation through
+# Linux audit, which requires CAP_AUDIT_WRITE and a NETLINK_AUDIT socket. It
+# does not need audit-control, mount, module, raw-I/O, or reboot authority.
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_AUDIT_WRITE CAP_SETGID CAP_SETUID
 AmbientCapabilities=
-RestrictAddressFamilies=AF_UNIX
+# PrivateNetwork and this allowlist keep the audit socket from granting IP
+# network access.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-SystemCallFilter=~@clock @debug @keyring @module @mount @network-io @obsolete @raw-io @reboot @resources @swap
+SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap
 SystemCallErrorNumber=EPERM
 
 [Install]
