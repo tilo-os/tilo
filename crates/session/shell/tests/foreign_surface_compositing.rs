@@ -325,12 +325,13 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
     // The compositor may paint transient collaboration/chrome ink at the
     // exact centre. Prove that the client owns the tile as an area, rather
     // than treating one overlaid pixel as the whole compositing contract.
+    let after_pixels = &after;
     let samples: Vec<_> = [0.25, 0.5, 0.75]
         .into_iter()
         .flat_map(|fx| {
             [0.25, 0.5, 0.75].into_iter().map(move |fy| {
                 OffscreenRenderer::sample(
-                    &after,
+                    after_pixels,
                     W,
                     as_u32(rect.x0 + rect.width() * fx),
                     as_u32(rect.y0 + rect.height() * fy),
