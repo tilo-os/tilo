@@ -18,6 +18,8 @@
 #     --sealed-source-imgref REF
 #                            digest-equivalent registry mirror used for a sealed
 #                            install without first importing IMAGE locally
+#     --firstboot-seed FILE   install an installer-format NAME:SHA512_CRYPT seed;
+#                            create the account on first boot, never in this step
 #     --raw                   leave the raw image, skip the qcow2 conversion
 #
 # Why not bib: bib has no composefs, UKI or backend-selection surface anywhere
@@ -70,6 +72,7 @@ IMAGE=""; OUTDIR=""
 COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=12G; ESP_SIZE=2G
 RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
 KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
+FIRSTBOOT_SEED=""
 KEEP_RAW=0; DEFAULT_KARGS=yes
 
 while [ $# -gt 0 ]; do
@@ -87,6 +90,7 @@ while [ $# -gt 0 ]; do
     --user) USERSPEC="$2"; shift ;;
     --target-imgref) TARGET_IMGREF="$2"; shift ;;
     --sealed-source-imgref) SEALED_SOURCE_IMGREF="$2"; shift ;;
+    --firstboot-seed) FIRSTBOOT_SEED="$2"; shift ;;
     --raw) KEEP_RAW=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*) die "unknown option: $1" ;;
@@ -96,6 +100,23 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$IMAGE" ] && [ -n "$OUTDIR" ] || { sed -n '2,20p' "$0"; exit 1; }
+
+if [ -n "$FIRSTBOOT_SEED" ]; then
+  [ -f "$FIRSTBOOT_SEED" ] && [ ! -L "$FIRSTBOOT_SEED" ] \
+    || die "--firstboot-seed must name a regular, non-symlink file"
+  [ "$(wc -l < "$FIRSTBOOT_SEED")" -eq 1 ] \
+    || die "--firstboot-seed must contain exactly one line"
+  IFS= read -r firstboot_line < "$FIRSTBOOT_SEED" || true
+  firstboot_user="${firstboot_line%%:*}"
+  firstboot_hash="${firstboot_line#*:}"
+  [[ "$firstboot_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
+    || die "--firstboot-seed contains an invalid account name"
+  # Use the production first-boot parser as the authority rather than carrying
+  # a second password-hash grammar in this disk tool.
+  source "$(dirname "${BASH_SOURCE[0]}")/../usr/libexec/tilo-firstboot-user"
+  valid_sha512_crypt "$firstboot_hash" \
+    || die "--firstboot-seed must contain a complete SHA-512 crypt hash"
+fi
 
 if [ -z "$SEALED_SOURCE_IMGREF" ]; then
   podman image exists "$IMAGE" || die "$IMAGE is not in rootless podman storage"
@@ -531,6 +552,21 @@ if [ -n "$USERSPEC" ]; then
       fc=/etc/selinux/targeted/contexts/files/file_contexts
       [ -r \"\$fc\" ] || { echo 'no file_contexts in the image; home left unlabelled' >&2; exit 1; }
       setfiles -F \"\$fc\" /var/home"
+fi
+
+# Exercise the same one-use account handoff as the graphical installer. This
+# deliberately does not call useradd: the baked first-boot service validates
+# and consumes the seed on the installed system, before greetd starts.
+if [ -n "$FIRSTBOOT_SEED" ]; then
+  t_etc="$(sudo -n sh -c "ls -d $MNT/state/deploy/*/etc $MNT/ostree/deploy/*/deploy/*/etc 2>/dev/null | head -1")"
+  [ -n "$t_etc" ] || die "could not find the installed system's /etc under $MNT"
+  sudo -n mount -o remount,rw "$MNT"
+  sudo -n install -d -m 0755 "$t_etc/tilo" \
+    "$t_etc/systemd/system/multi-user.target.wants"
+  sudo -n install -m 0600 "$FIRSTBOOT_SEED" "$t_etc/tilo/install-user.conf"
+  sudo -n ln -sfn /usr/lib/systemd/system/tilo-firstboot-user.service \
+    "$t_etc/systemd/system/multi-user.target.wants/tilo-firstboot-user.service"
+  msg "seeded $firstboot_user for first-boot account creation"
 fi
 
 cleanup
