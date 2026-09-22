@@ -27,6 +27,10 @@ cat >"$work/bin/udevadm" <<'EOF'
 #!/bin/sh
 exit 0
 EOF
+cat >"$work/bin/blkid" <<'EOF'
+#!/bin/sh
+printf 'A1B2-C3D4\n'
+EOF
 cat >"$work/bin/losetup" <<'EOF'
 #!/bin/sh
 case " $* " in *' -fP '*) printf '/dev/loop-test\n';; esac
@@ -45,9 +49,12 @@ exit 0
 EOF
 cat >"$work/bin/podman" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$@" >"$MOCK_PODMAN_ARGS"
 mkdir -p "$MOCK_OUTPUT/.mnt/boot/EFI/Linux" "$MOCK_OUTPUT/.mnt/boot/loader/entries"
 printf 'signed uki payload\n' >"$MOCK_OUTPUT/.mnt/boot/EFI/Linux/tilo.efi"
 printf 'title Tilo\n' >"$MOCK_OUTPUT/.mnt/boot/loader/entries/tilo.conf"
+printf 'UUID=A1B2-C3D4 /boot auto defaults,ro 0 0\n' \
+  >"$MOCK_OUTPUT/.mnt/state/deploy/test/etc/fstab"
 EOF
 cat >"$work/bin/mcopy" <<'EOF'
 #!/bin/bash
@@ -65,7 +72,7 @@ EOF
 chmod +x "$work/bin/"*
 
 PATH="$work/bin:$PATH" MOCK_OUTPUT="$work/output" MOCK_FAT="$work/fat" \
-  MOCK_MOUNTS="$work/mounts.log" \
+  MOCK_MOUNTS="$work/mounts.log" MOCK_PODMAN_ARGS="$work/podman-args" \
   TILO_DISTROBOX= TILO_DISK_FORCE_MTOOLS_ESP=1 \
   "$repo/os/dev/disk-image.sh" "$authoritative" "$work/output" \
   --composefs --sealed-source-imgref "$mirror" --size 20G --raw >/dev/null
@@ -74,7 +81,10 @@ cmp "$work/fat/EFI/Linux/tilo.efi" <(printf 'signed uki payload\n')
 cmp "$work/fat/loader/entries/tilo.conf" <(printf 'title Tilo\n')
 [ -z "$(find "$work/output/.mnt/boot" -mindepth 1 -print -quit)" ]
 cmp "$work/output/.esp-source.sha256" "$work/output/.esp-copied.sha256"
-grep -Fxq -- '-t tmpfs -o size=2048M,mode=0755,nosuid,nodev,noexec tilo-esp-stage '"$work/output/.mnt/boot" \
+grep -Fxq -- '--bind '"$work/output/.mnt/.tilo-esp-stage $work/output/.mnt/boot" \
   "$work/mounts.log"
+grep -Fxq -- '--boot-mount-spec' "$work/podman-args"
+grep -Fxq -- 'UUID=A1B2-C3D4' "$work/podman-args"
+[ ! -e "$work/output/.mnt/.tilo-esp-stage" ]
 
 printf 'ok: mtools fallback verifies the ESP and removes the root staging copy\n'
