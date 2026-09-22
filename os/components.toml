@@ -4,12 +4,18 @@
 # image. It is consumed by:
 #   * os/scripts/install-components.py, which the production Containerfile's
 #     `component-files` stage runs to arrange every binary into /image/<layer>/,
-#     and which assembles development sysext layers (`--dest <layer>/`) from the
-#     same entries, so the image and a dev layer cannot place a file differently;
+#     which os/Containerfile.dev runs with `--dev` to build and install the dev
+#     image's components, and which assembles development sysext layers
+#     (`--dest <layer>/`) from the same entries, so the image, the dev image and
+#     a dev layer cannot place a file differently;
 #   * tools/policy/check_component_manifest.py (part of tools/policy/run.sh),
 #     which fails when the Containerfile builds or copies a Tilo output that is
 #     not declared here, or when an entry names a cargo package, bin, feature or
 #     unit that does not exist;
+#   * tools/policy/check_dev_image_contract.py, which keeps dev-only components
+#     out of the production image and the dev image out of production tags;
+#   * tilo-devd, which reads its copy at /usr/share/tilo/components.toml in the
+#     dev image to learn each component's scope and units;
 #   * os/tests/lib/containerfile.sh, which expands the manifest into the image's
 #     copy contract.
 #
@@ -29,6 +35,9 @@
 #   packages    cargo package(s) built for this component
 #   bins        cargo bins those packages build for the image
 #   features    cargo features, package-qualified ("pkg/feature")
+#   dev_features  cargo features only dev builds enable, package-qualified.
+#               The dev image rebuilds every component that has them, with
+#               them (os/Containerfile.dev); the production image never does.
 #   units       system units whose ExecStart runs these files (restart on swap)
 #   user_units  user units whose ExecStart runs these files (restart on swap)
 #   optional    true when the image may legitimately omit the component
@@ -49,6 +58,9 @@
 #   with (`COPY --from=component-files /image/<layer>/ /`). The layer `direct`
 #   means the Containerfile copies that path itself, straight from the builder
 #   stage, because the build writes it there (the baked runtime and app store).
+#   Layers named `dev-*` exist only in the dev image: a component whose files
+#   are all in such a layer is dev-only. The production image never builds or
+#   copies it, and `install-components.py --all` never selects it.
 #
 # Adding a component:
 #   1. Build it in the Containerfile builder stage (`-p <pkg> --bin <bin>`) and
@@ -71,10 +83,10 @@
 #      `tools/policy/run.sh`) and `python3 os/scripts/install-components.py
 #      --dry-run example` to see the plan.
 #
-# Not listed: `tilo-control` (the `shell` package's control CLI) is run from the
-# source tree and is deliberately not shipped in the image, and
-# /usr/libexec/tilo-local-model-service arrives with the local-model system
-# extension rather than from this image build.
+# Not listed: /usr/libexec/tilo-local-model-service arrives with the
+# local-model system extension rather than from this image build.
+# `tilo-control` is listed, but as a dev-only component: production images do
+# not ship it.
 
 # Units provided by distribution packages rather than os/usr/lib/systemd.
 external_units = ["greetd.service"]
@@ -87,6 +99,7 @@ kind = "userspace"
 scope = "session"
 packages = ["shell"]
 bins = ["shell"]
+dev_features = ["shell/dev-overrides"]
 user_units = ["tilo-identity.service"]
 layer = "desktop-binaries"
 files = [
@@ -417,6 +430,39 @@ files = [
   { from = "tilo-windows-vm-control", to = "/usr/libexec/tilo-windows-vm-control", mode = "0755" },
   { from = "tilo-windows-rail", to = "/usr/libexec/tilo-windows-rail", mode = "0755" },
   { from = "tilo-windows-runtime", to = "/usr/libexec/tilo-windows-runtime", mode = "0755" },
+]
+
+# ---- Dev image only ----------------------------------------------------------
+# The `dev-tools` layer is installed by os/Containerfile.dev alone.
+# tools/policy/check_dev_image_contract.py fails if the production image builds
+# or copies any of it.
+
+# The compositor's control-socket CLI, the one way agents and scripts drive a
+# running desktop (AGENTS.md). tilo-devd's `control` passes through to it.
+[[component]]
+name = "control"
+kind = "userspace"
+scope = "session"
+packages = ["shell"]
+bins = ["tilo-control"]
+dev_features = ["shell/dev-overrides"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-control", to = "/usr/bin/tilo-control", mode = "0755" },
+]
+
+# The dev-VM guest daemon. It is not a service: `tilo-dev` runs
+# `ssh <vm> tilo-devd rpc` per call, hence the PATH link.
+[[component]]
+name = "devd"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-devd"]
+bins = ["tilo-devd"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-devd", to = "/usr/libexec/tilo-devd", mode = "0755" },
+  { link = "../libexec/tilo-devd", to = "/usr/bin/tilo-devd" },
 ]
 
 # ---- Boot: effective only after a cold boot ---------------------------------

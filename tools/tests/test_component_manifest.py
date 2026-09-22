@@ -117,7 +117,7 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(status, 0)
             manifest = installer.load_manifest(REPO / "os/components.toml")
             expected = {f"{e.layer}{e.to}" for e in manifest.files()
-                        if e.layer != "direct" and e.component != "browser"}
+                        if e.layer != "direct" and e.component != "browser" and not e.dev_only}
             installed = {p.relative_to(image).as_posix()
                          for p in image.rglob("*") if p.is_file() or p.is_symlink()}
             self.assertEqual(installed, expected)
@@ -134,6 +134,36 @@ class InstallerTests(unittest.TestCase):
                                         "--dest", str(root / "layer"), "browser")
             self.assertEqual(status, 0)
             self.assertTrue((root / "layer/usr/bin/browser").is_file())
+
+    def test_production_selection_never_includes_dev_only_components(self):
+        manifest = installer.load_manifest(REPO / "os/components.toml")
+        production = {c.name for c in installer.select_components(manifest, [], True)}
+        dev = {c.name for c in installer.select_components(manifest, [], False, True)}
+        self.assertIn("control", dev)
+        self.assertIn("devd", dev)
+        self.assertIn("shell", dev)
+        self.assertNotIn("control", production)
+        self.assertNotIn("devd", production)
+        self.assertIn("shell", production)
+
+    def test_dev_cargo_plan_adds_dev_features(self):
+        manifest = installer.load_manifest(REPO / "os/components.toml")
+        dev = installer.select_components(manifest, [], False, True)
+        packages, bins, features = installer.cargo_plan(dev, True)
+        self.assertIn("shell/dev-overrides", features)
+        self.assertEqual(set(bins), {"shell", "tilo-control", "tilo-devd"})
+        _, _, production_features = installer.cargo_plan(dev, False)
+        self.assertNotIn("shell/dev-overrides", production_features)
+
+    def test_mixed_dev_and_production_layers_are_rejected(self):
+        document = {"component": [{
+            "name": "mixed", "kind": "userspace", "scope": "session", "packages": ["shell"],
+            "files": [
+                {"from": "a", "to": "/usr/bin/a", "mode": "0755", "layer": "dev-tools"},
+                {"from": "b", "to": "/usr/bin/b", "mode": "0755", "layer": "desktop-binaries"},
+            ]}]}
+        with self.assertRaisesRegex(installer.ManifestError, "mixes dev-only layers"):
+            installer.parse_manifest(document, REPO / "os/components.toml")
 
     def test_missing_required_output_fails(self):
         with tempfile.TemporaryDirectory() as temporary:
