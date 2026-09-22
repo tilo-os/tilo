@@ -1,11 +1,15 @@
 //! Standalone History presentation for the existing headless host.
 //! The operational app root and its lifecycle remain owned by `FrameHarness`.
 
-use super::*;
+use super::{
+    ElementState, FrameHarness, HashMap, InspectionSnapshot, Key, NamedKey, NodeId, Point, Rect,
+    Widget, WindowEvent, collect_inspection,
+};
 use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
 use crate::standalone_history_host::HISTORY_OPERATION;
 use crate::widget::layout::CompositionFocus;
 
+#[allow(dead_code, reason = "standalone history methods are feature-gated")]
 impl FrameHarness {
     /// Enable the same standalone chrome used by a native App window. Widget
     /// and embedded-component harnesses retain their original content viewport.
@@ -153,6 +157,7 @@ impl FrameHarness {
         self.try_presentation(|root, _| InspectionSnapshot {
             viewport: [self.viewport.0, self.viewport.1],
             root: collect_inspection(root, "", &mut HashMap::new()),
+            presentation: None,
         })
     }
 
@@ -166,6 +171,7 @@ impl FrameHarness {
         self.presentation(|root, _| InspectionSnapshot {
             viewport: [self.viewport.0, self.viewport.1],
             root: collect_inspection(root, "", &mut HashMap::new()),
+            presentation: None,
         })
     }
 
@@ -189,7 +195,7 @@ impl FrameHarness {
         .map_err(|error| format!("History is unavailable: {error:?}"))
     }
 
-    /// Local host actions are intentionally separate from resources(), the
+    /// Local host actions are intentionally separate from `resources()`, the
     /// application's publishable catalogue. No remote actor is granted this door.
     ///
     /// # Errors
@@ -200,7 +206,9 @@ impl FrameHarness {
         }
         self.remember_history_content();
         let result = self
-            .with_history(|host, context| host.local_resources(context))
+            .with_history(
+                super::super::standalone_history_host::StandaloneHistoryHost::local_resources,
+            )
             .map_err(|error| format!("History is unavailable: {error:?}"));
         self.relayout();
         result?;
@@ -269,9 +277,11 @@ impl FrameHarness {
                 &self.state.root,
             )?
             .ok_or("Unknown local History operation")?;
-            self.with_history(|host, context| host.process_pane_intents(context))
-                .map(|_| ())
-                .map_err(|error| format!("History is unavailable: {error:?}"))
+            self.with_history(
+                super::super::standalone_history_host::StandaloneHistoryHost::process_pane_intents,
+            )
+            .map(|_| ())
+            .map_err(|error| format!("History is unavailable: {error:?}"))
         };
         self.history_focus_pending |= !was_open && self.document_history.is_open();
         result
@@ -317,7 +327,9 @@ impl FrameHarness {
             result.map_err(|error| error.to_string())?;
         }
         let result = self
-            .with_history(|host, context| host.process_pane_intents(context))
+            .with_history(
+                super::super::standalone_history_host::StandaloneHistoryHost::process_pane_intents,
+            )
             .map(|_| ())
             .map_err(|error| format!("History is unavailable: {error:?}"));
         // Keep Accepted app jobs alive while browsing chrome. This existing idle
@@ -332,7 +344,8 @@ impl FrameHarness {
         }
         self.remember_history_content();
         // A revoked session is purged by the shared controller before rebuilding.
-        let _ = self.with_history(|host, context| host.refresh(context));
+        let _ = self
+            .with_history(super::super::standalone_history_host::StandaloneHistoryHost::refresh);
         let resources = self.refresh_history_resources().unwrap_or_default();
         let allowed = resources
             .into_iter()
@@ -384,7 +397,13 @@ impl FrameHarness {
             .document_history
             .presentation_roots(&context)
             .unwrap_or_default();
-        let mut roots: Vec<(&dyn Widget, NodeId)> = vec![(self.root.as_ref(), self.child_node)];
+        let mut roots: Vec<(&dyn Widget, NodeId)> = vec![(
+            self.history.as_ref().map_or_else(
+                || self.root.as_ref(),
+                |history| history.as_ref() as &dyn Widget,
+            ),
+            self.child_node,
+        )];
         roots.extend(
             chrome
                 .into_iter()
@@ -393,8 +412,12 @@ impl FrameHarness {
         // SAFETY: all retained roots use the same fresh arena, admitted independently
         // so app callback authority never propagates into host chrome.
         unsafe {
-            self.bindings
-                .rebuild_roots(&roots, &self.taffy, &self.node_map);
+            self.bindings.rebuild_roots_with_retained(
+                &roots,
+                self.history.as_ref().map(|_| self.root.as_ref()),
+                &self.taffy,
+                &self.node_map,
+            );
         }
         layout.root
     }
@@ -436,9 +459,9 @@ impl FrameHarness {
                         .find(|node| self.is_history_node(*node))
                 });
             self.set_focused(target);
-        } else if let Some(focus) =
-            self.with_history(|host, context| host.take_restore_focus(context))
-        {
+        } else if let Some(focus) = self.with_history(
+            super::super::standalone_history_host::StandaloneHistoryHost::take_restore_focus,
+        ) {
             // SAFETY: the restored tree is admitted and visible targets bound eligibility.
             let target = unsafe { focus.restore(&self.node_map, &self.bindings, Some(&order)) };
             self.set_focused(target);
@@ -450,7 +473,9 @@ impl FrameHarness {
 
     fn close_history_session(&mut self) {
         let resources = self
-            .with_history(|host, context| host.local_resources(context))
+            .with_history(
+                super::super::standalone_history_host::StandaloneHistoryHost::local_resources,
+            )
             .unwrap_or_default();
         if let Some(resource) = resources
             .iter()
@@ -511,7 +536,11 @@ impl FrameHarness {
         );
         if keyboard {
             let Some(node) = self.focused.filter(|node| self.is_history_node(*node)) else {
-                return !layout.app_visible;
+                // A managed History surface owns its modal keyboard routing
+                // even when standalone chrome has hidden the live app. Let
+                // the existing HistoryHost route below receive Enter/Escape;
+                // only a genuinely hidden ordinary app has no recipient.
+                return self.history.is_none() && !layout.app_visible;
             };
             // SAFETY: focused retained chrome is unbound and the admitted tree
             // remains exclusive for the duration of this event.
@@ -533,7 +562,7 @@ impl FrameHarness {
                             focus,
                             node,
                             &self.taffy,
-                        )
+                        );
                     },
                 )
             };
@@ -653,10 +682,13 @@ impl FrameHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::headless::{Spec, write_spec_outputs};
     use crate::widget::{Button, HistoryEntryId};
+    use crate::{PermissionContext, State, Theme};
     use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
     use std::cell::Cell;
     use std::rc::Rc;
+    use taffy::TaffyTree;
 
     fn fixture() -> (FrameHarness, Vec<HistoryEntryId>, Rc<Cell<u32>>) {
         let mut state = State::new();

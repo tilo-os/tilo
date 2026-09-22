@@ -6,7 +6,7 @@
 
 
 [package]
-id       = "dev.tilo.typst-editor"
+id       = "so.tilo.typst-editor"
 name     = "Typst Editor"
 category = "Office"
 version  = "0.1.0"

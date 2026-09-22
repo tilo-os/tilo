@@ -77,6 +77,161 @@ fn comment_thread_layout_keeps_reply_controls_inside_the_panel() {
 }
 
 #[test]
+fn native_input_snapshot_reads_real_caret_text_without_mutation() {
+    let mut state = ui::State::new();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "fixture é");
+    wp.scroll_y = 144.0;
+    wp.max_scroll = 2000.0;
+    let heads = state.doc.get_heads();
+    let caret = wp.model().caret().clone();
+    let dirty = wp.lifecycle.dirty;
+    let snapshot = wp.native_input_snapshot(&state.doc, &state.root).unwrap();
+    assert_eq!(snapshot["offset_y"], 144.0);
+    assert_eq!(snapshot["max_scroll"], 2000.0);
+    assert_eq!(snapshot["caret_text"], "fixture é");
+    assert_eq!(snapshot["caret_offset"], 9);
+    assert_eq!(snapshot["caret_block"], caret.block);
+    assert_eq!(snapshot["caret_region"], "body");
+    assert_eq!(snapshot["has_selection"], false);
+    assert_eq!(state.doc.get_heads(), heads);
+    assert_eq!(wp.model().caret(), &caret);
+    assert_eq!(wp.lifecycle.dirty, dirty);
+    assert_eq!(wp.scroll_y, 144.0);
+    wp.inner.region = Region::Header;
+    let header = wp.native_input_snapshot(&state.doc, &state.root).unwrap();
+    assert_eq!(header["caret_region"], "header");
+    assert!(
+        header["caret_text"].is_null(),
+        "running regions must not materialize text for diagnostics"
+    );
+}
+
+#[test]
+fn plain_body_edits_retain_untouched_views_and_fall_back_for_other_changes() {
+    let mut state = ui::State::new();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    wp.inner.insert_str(&mut state.doc, "Untouched paragraph");
+    wp.inner.enter(&mut state.doc);
+    wp.inner.insert_str(&mut state.doc, "Edited paragraph");
+    wp.refresh_blocks(&mut state.doc);
+    let untouched = wp.blocks[0].text.as_ptr();
+    for (key, text) in [
+        (Key::Character("é".into()), Some("é")),
+        (Key::Named(NamedKey::Backspace), None),
+    ] {
+        let mut handled = false;
+        wp.handle_key_press(&mut state.doc, &key, text, false, false, &mut handled);
+        assert!(handled);
+        assert_eq!(
+            wp.blocks[0].text.as_ptr(),
+            untouched,
+            "text-only edits must retain unrelated block views"
+        );
+        let c = wp.inner.containers.as_ref().unwrap();
+        assert_eq!(wp.blocks, qdoc::model::materialize(&state.doc, c).blocks);
+    }
+    // A mutation outside the known local edit invalidates the optimization.
+    let first = wp.blocks[0].id.clone();
+    let caret = wp.inner.caret().clone();
+    wp.inner.set_caret(Caret {
+        block: first,
+        offset: 0,
+    });
+    wp.inner.insert_str(&mut state.doc, "External ");
+    wp.inner.set_caret(caret);
+    wp.handle_key_press(
+        &mut state.doc,
+        &Key::Character("x".into()),
+        Some("x"),
+        false,
+        false,
+        &mut false,
+    );
+    assert!(wp.blocks[0].text.starts_with("External "));
+    wp.handle_key_press(
+        &mut state.doc,
+        &Key::Named(NamedKey::Enter),
+        None,
+        false,
+        false,
+        &mut false,
+    );
+    let c = wp.inner.containers.as_ref().unwrap();
+    assert_eq!(wp.blocks, qdoc::model::materialize(&state.doc, c).blocks);
+    assert_eq!(wp.blocks.len(), 3);
+    wp.handle_key_press(
+        &mut state.doc,
+        &Key::Named(NamedKey::Backspace),
+        None,
+        false,
+        false,
+        &mut false,
+    );
+    assert_eq!(wp.blocks.len(), 2, "structural backspace merges blocks");
+    wp.inner.set_caret(Caret {
+        block: wp.blocks[0].id.clone(),
+        offset: 0,
+    });
+    wp.inner.set_anchor();
+    wp.inner.set_caret(Caret {
+        block: wp.blocks[1].id.clone(),
+        offset: 2,
+    });
+    wp.handle_key_press(
+        &mut state.doc,
+        &Key::Character("x".into()),
+        Some("x"),
+        false,
+        false,
+        &mut false,
+    );
+    let c = wp.inner.containers.as_ref().unwrap();
+    assert_eq!(wp.blocks, qdoc::model::materialize(&state.doc, c).blocks);
+    assert_eq!(
+        wp.blocks.len(),
+        1,
+        "cross-block replacement uses full refresh"
+    );
+}
+
+#[test]
+fn plain_body_edit_refreshes_a_shifted_virtual_window() {
+    let mut state = ui::State::new();
+    with_doc(&mut state, |dm| {
+        let mut after = None;
+        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+            let id = dm.insert_block(after.as_deref(), "paragraph");
+            dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
+            after = Some(id);
+        }
+    });
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    let old_start = wp.body_window_start;
+    // The caret is still cached, but the requested scroll window has moved.
+    assert!(wp.blocks.iter().any(|b| b.id == wp.inner.caret.block));
+    wp.scroll_y = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 2) * ESTIMATED_BLOCK_EXTENT;
+    wp.handle_key_press(
+        &mut state.doc,
+        &Key::Character("x".into()),
+        Some("x"),
+        false,
+        false,
+        &mut false,
+    );
+    assert_ne!(wp.body_window_start, old_start);
+    let (start, end) = wp.body_window_bounds();
+    let c = wp.inner.containers.as_ref().unwrap();
+    assert_eq!(
+        wp.blocks,
+        qdoc::model::materialize_blocks(&state.doc, c, &wp.body_order[start..end])
+    );
+}
+
+#[test]
 fn native_document_edit_has_writer_provenance() {
     let mut wp = WordProcessorWidget::new();
     wp.lifecycle.needs_commit = true;
@@ -156,7 +311,7 @@ pub(super) fn pipeline_draw(wp: &mut WordProcessorWidget, state: &mut ui::State,
 /// Like [`pipeline_draw`] but renders under an explicit [`Theme`] so tests
 /// can exercise the real five-pass draw path under light/dark/high-contrast
 /// palettes. Returns the widget's resolved chrome palette for inspection.
-fn pipeline_draw_themed(
+pub(super) fn pipeline_draw_themed(
     wp: &mut WordProcessorWidget,
     state: &mut ui::State,
     w: u32,
@@ -244,7 +399,34 @@ fn chrome_colors_are_sourced_from_theme_tokens() {
         let c = &theme.tokens.colors;
         assert_eq!(cc.canvas, c.surfaces.base, "canvas = surfaces.base");
         assert_eq!(cc.bar, c.surfaces.raised, "bar = surfaces.raised");
-        assert_eq!(cc.border, c.border_standard, "border = border_standard");
+        // Edges are derived against the bar they sit on (HIG §9.5), so
+        // they register on every preset — the declared `border_standard`
+        // is three shades from the dark `raised` and vanished there.
+        assert_eq!(
+            cc.border,
+            ui::surface::edge_on(c.surfaces.raised),
+            "border = edge_on(bar)"
+        );
+        assert_eq!(cc.chip, c.surfaces.raised, "chip face = surfaces.raised");
+        for (name, edge, ground) in [
+            ("border", cc.border, cc.bar),
+            ("chip edge", ui::surface::edge_on(cc.chip), cc.chip),
+        ] {
+            let moved = ui::surface::edge_delta(edge, ground);
+            assert!(
+                moved >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                "{name} on {} moved luminance only {moved:.4}",
+                theme.name
+            );
+        }
+        // The scrollbar thumb is a control, not a hairline: it clears the
+        // non-text contrast floor against the desk on every preset.
+        let thumb_contrast = ui::a11y::contrast_ratio(cc.scrollbar, cc.canvas);
+        assert!(
+            thumb_contrast >= ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            "scrollbar thumb on {} measures {thumb_contrast:.2}:1",
+            theme.name
+        );
         assert_eq!(cc.text, c.text_primary, "text = text_primary");
         assert_eq!(cc.text_dim, c.text_dim, "text_dim = text_dim");
         assert_eq!(cc.accent, theme.accent_primary, "accent = accent_primary");
@@ -352,6 +534,202 @@ fn large_body_uses_a_bounded_viewport_cache_while_find_remains_complete() {
     assert!(wp.body_window_start > 0, "scrolling loads a later window");
     assert!(wp.blocks.len() <= VIEWPORT_BLOCK_WINDOW);
     assert!(wp.layout_cache.len() <= VIEWPORT_BLOCK_WINDOW);
+}
+
+#[test]
+fn deep_scrolling_keeps_visible_text_loaded() {
+    let mut state = ui::State::new();
+    with_doc(&mut state, |dm| {
+        let mut after = None;
+        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+            let id = dm.insert_block(after.as_deref(), "paragraph");
+            dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
+            after = Some(id);
+        }
+    });
+    let mut wp = WordProcessorWidget::new();
+    wp.view.auto_fit_page = false;
+    for zoom in [0.5, 1.0, 2.0] {
+        wp.zoom.set(zoom);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        for fraction in [0.75, 0.5, 0.25, 0.0] {
+            wp.scroll_y = wp.max_scroll * fraction;
+            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            assert!(
+                wp.laid.iter().any(|l| {
+                    let top =
+                        wp.zoom.anchor().y + (l.y_top - wp.zoom.anchor().y) * wp.zoom.factor();
+                    top + l.height * wp.zoom.factor() > wp.zoom_viewport.y0
+                        && top < wp.zoom_viewport.y1
+                }),
+                "zoom {zoom}, scroll fraction {fraction} must retain visible text (window {}, scroll {})",
+                wp.body_window_start,
+                wp.scroll_y
+            );
+        }
+    }
+}
+
+#[test]
+fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
+    let mut state = ui::State::new();
+    with_doc(&mut state, |dm| {
+        let mut after = None;
+        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+            let id = dm.insert_block(after.as_deref(), "paragraph");
+            dm.splice_text(&id, 0, 0, &format!("Paragraph {i} with words to render"));
+            after = Some(id);
+        }
+    });
+    let mut wp = WordProcessorWidget::new();
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let first = wp.body_order[0].clone();
+    let cold_shapes = wp.dbg_layout_misses;
+    assert!(cold_shapes >= VIEWPORT_BLOCK_WINDOW);
+    let distant_scroll = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 3) * ESTIMATED_BLOCK_EXTENT;
+    wp.scroll_y = distant_scroll;
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    wp.scroll_y = 0.0;
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    assert_eq!(
+        wp.dbg_layout_misses, 0,
+        "returning to the previous viewport should reuse its text shaping"
+    );
+    assert!(wp.dbg_layout_hits >= cold_shapes);
+    assert!(wp.layout_cache.len() <= VIEWPORT_BLOCK_WINDOW);
+    assert!(wp.recent_layout_cache.len() <= VIEWPORT_BLOCK_WINDOW);
+    wp.scroll_y = distant_scroll;
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    with_doc(&mut state, |dm| {
+        dm.splice_text(&first, 0, 0, "Updated ");
+    });
+    wp.scroll_y = 0.0;
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    assert_eq!(
+        wp.dbg_layout_misses, 1,
+        "changed offscreen text must be reshaped"
+    );
+    assert!(wp.blocks.first().unwrap().text.starts_with("Updated "));
+    assert!(
+        wp.laid
+            .iter()
+            .any(|l| l.id == first && l.text.starts_with("Updated "))
+    );
+    // A third distinct viewport must not evict the immediately previous one.
+    for position in [distant_scroll / 2.0, distant_scroll, distant_scroll / 2.0] {
+        wp.scroll_y = position;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert!(wp.layout_cache.len() + wp.recent_layout_cache.len() <= 2 * VIEWPORT_BLOCK_WINDOW);
+    }
+    assert_eq!(wp.dbg_layout_misses, 0);
+}
+
+#[test]
+fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
+    let mut state = ui::State::new();
+    with_doc(&mut state, |dm| {
+        let mut after = None;
+        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+            let id = dm.insert_block(after.as_deref(), "paragraph");
+            dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
+            after = Some(id);
+        }
+    });
+    let mut wp = WordProcessorWidget::new();
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let first = wp.body_order[0].clone();
+    let deep = wp.body_order[VIEWPORT_BLOCK_WINDOW * 3].clone();
+    wp.inner.set_caret(Caret {
+        block: deep.clone(),
+        offset: 0,
+    });
+    wp.scroll_y = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 3) * ESTIMATED_BLOCK_EXTENT;
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let mut handled = false;
+    wp.handle_mouse_wheel(
+        &MouseScrollDelta::LineDelta(0.0, 100000.0),
+        1.0,
+        false,
+        &mut handled,
+    );
+    assert!(handled);
+    assert_eq!(wp.scroll_y, 0.0);
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    assert_eq!(
+        wp.inner.caret.block, deep,
+        "scrolling must not relocate the insertion point"
+    );
+    assert_eq!(
+        wp.body_window_start, 0,
+        "top viewport must load the beginning, not the distant caret"
+    );
+    assert_eq!(
+        wp.blocks.first().map(|b| b.id.as_str()),
+        Some(first.as_str())
+    );
+    assert!(
+        wp.laid
+            .iter()
+            .any(|l| l.id == first && l.y_top >= 0.0 && l.y_top < 700.0)
+    );
+}
+
+#[test]
+fn scrolling_retains_overlap_but_discards_transient_block_previews() {
+    let mut state = ui::State::new();
+    with_doc(&mut state, |dm| {
+        let mut after = None;
+        for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+            let id = dm.insert_block(after.as_deref(), "paragraph");
+            dm.splice_text(&id, 0, 0, &format!("Paragraph {i}"));
+            after = Some(id);
+        }
+    });
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    let retained_id = wp.blocks[100].id.clone();
+    let retained_text = wp.blocks[100].text.as_ptr();
+    for focus in [60, 80, 70, 48] {
+        wp.scroll_y = num::f64_of_usize(focus) * ESTIMATED_BLOCK_EXTENT;
+        wp.refresh_blocks(&mut state.doc);
+        assert_eq!(
+            wp.blocks
+                .iter()
+                .find(|b| b.id == retained_id)
+                .unwrap()
+                .text
+                .as_ptr(),
+            retained_text,
+            "overlapping unchanged views should be moved, not rebuilt"
+        );
+        let (start, end) = wp.body_window_bounds();
+        assert_eq!(
+            wp.blocks,
+            qdoc::model::materialize_blocks(
+                &state.doc,
+                wp.inner.containers.as_ref().unwrap(),
+                &wp.body_order[start..end]
+            )
+        );
+    }
+    wp.inner.set_caret(Caret {
+        block: retained_id,
+        offset: 0,
+    });
+    wp.set_caret_block_indent_view(123.0);
+    wp.set_caret_block_first_line_view(42.0);
+    wp.scroll_y = 70.0 * ESTIMATED_BLOCK_EXTENT;
+    wp.refresh_blocks(&mut state.doc);
+    let (start, end) = wp.body_window_bounds();
+    assert_eq!(
+        wp.blocks,
+        qdoc::model::materialize_blocks(
+            &state.doc,
+            wp.inner.containers.as_ref().unwrap(),
+            &wp.body_order[start..end]
+        ),
+        "scrolling must discard uncommitted previews even without a live drag"
+    );
 }
 
 /// Select `[start, end)` chars of the (single) caret block.
@@ -1502,7 +1880,8 @@ fn single_paragraph_splits_at_line_boundary_across_pages() {
     wp.sync(&mut state.doc, &state.root);
     // ONE paragraph with enough words to wrap to well over a page of lines.
     let mut para = String::new();
-    for i in 0..400 {
+    // 400 words can fit within the page with the host font metrics.
+    for i in 0..800 {
         write!(para, "word{i} ").unwrap();
     }
     let para = para.trim_end().to_string();
@@ -1520,8 +1899,10 @@ fn single_paragraph_splits_at_line_boundary_across_pages() {
     let slices: Vec<&Laid> = wp.laid.iter().filter(|l| l.id == bid).collect();
     assert!(
         slices.len() >= 2,
-        "a too-tall paragraph splits into >=2 page slices (got {})",
-        slices.len()
+        "a too-tall paragraph splits into >=2 page slices (got {}, shaped height {}, page content height {})",
+        slices.len(),
+        wp.layout_cache[&bid].1.height(),
+        letter_h - 2.0 * mar
     );
     // One logical block, one layout cache entry — only the rendering is split.
     assert_eq!(
@@ -1581,7 +1962,8 @@ fn caret_hit_on_a_carried_line_returns_the_right_offset() {
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
     let mut para = String::new();
-    for i in 0..400 {
+    // 400 words can fit within the page with the host font metrics.
+    for i in 0..800 {
         write!(para, "word{i} ").unwrap();
     }
     let para = para.trim_end().to_string();
@@ -1736,10 +2118,18 @@ fn body_text(wp: &WordProcessorWidget, state: &ui::State) -> Vec<String> {
 
 /// Drive a real named-key press (e.g. Escape) through `handle_event`.
 fn press_named(wp: &mut WordProcessorWidget, state: &mut ui::State, key: NamedKey) {
+    press_named_with_modifiers(wp, state, key, Modifiers::default());
+}
+
+fn press_named_with_modifiers(
+    wp: &mut WordProcessorWidget,
+    state: &mut ui::State,
+    key: NamedKey,
+    mods: Modifiers,
+) {
     use winit::keyboard::{NativeKeyCode, PhysicalKey};
     let taffy: TaffyTree<()> = TaffyTree::new();
     let node = NodeId::new(0);
-    let mods = Modifiers::default();
     let mut handled = false;
     let mut focus: Option<NodeId> = None;
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
@@ -1764,6 +2154,266 @@ fn press_named(wp: &mut WordProcessorWidget, state: &mut ui::State, key: NamedKe
         node,
         &taffy,
     );
+}
+
+fn pinch(
+    wp: &mut WordProcessorWidget,
+    state: &mut ui::State,
+    delta: f64,
+    phase: winit::event::TouchPhase,
+) -> bool {
+    let mut handled = false;
+    wp.handle_event(
+        &WindowEvent::PinchGesture {
+            device_id: unsafe { std::mem::zeroed() },
+            delta,
+            phase,
+        },
+        1.0,
+        &Modifiers::default(),
+        &mut state.doc,
+        &state.root,
+        &mut handled,
+        &mut None,
+        NodeId::new(0),
+        &TaffyTree::new(),
+    );
+    handled
+}
+
+#[test]
+fn mouse_selection_across_wrapped_line_boundaries_keeps_its_column() {
+    let (mut state, mut wp) = bound();
+    wp.inner.insert_str(
+        &mut state.doc,
+        &"A paragraph with several words across visual lines. ".repeat(12),
+    );
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let laid = wp.laid[0].clone();
+    let bands = wp.layout_cache[&laid.id].1.logical_line_bands(0);
+    assert!(bands.len() > 2);
+    for (top, _) in bands.iter().skip(1).take(3) {
+        for delta in [-0.1, 0.1] {
+            wp.caret_from_pointer(
+                Point::new(laid.text_x + 100.0, laid.layout_y + f64::from(*top) + delta),
+                true,
+            );
+            assert_eq!(wp.inner.caret.block, laid.id);
+            let byte = char_to_byte(&laid.text, wp.inner.caret.offset);
+            let (x, _, _) = wp.layout_cache[&laid.id].1.caret_geometry(byte);
+            assert!(
+                (f64::from(x) - 100.0).abs() < 15.0,
+                "crossing a visual line boundary must retain the pointed column, got {x}"
+            );
+        }
+    }
+}
+
+#[test]
+fn mouse_selection_between_paragraphs_stays_near_the_pointer() {
+    let (mut state, mut wp) = bound();
+    for i in 0..3 {
+        if i != 0 {
+            wp.inner.enter(&mut state.doc);
+        }
+        wp.inner.insert_str(&mut state.doc, "abcdefghijk");
+    }
+    for zoom in [0.5, 1.0, 2.0] {
+        wp.set_zoom(zoom);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let first = wp.laid[0].clone();
+        let second = wp.laid[1].clone();
+        let gap_start = first.y_top + first.height;
+        assert!(
+            second.y_top > gap_start,
+            "fixture needs real paragraph spacing"
+        );
+        let x = first.text_x + f64::from(wp.layout_cache[&first.id].1.caret_geometry(4).0);
+        for (fraction, block) in [(0.25, &first.id), (0.75, &second.id)] {
+            wp.inner.set_caret(Caret {
+                block: first.id.clone(),
+                offset: 1,
+            });
+            wp.inner.clear_anchor();
+            let point = Point::new(x, gap_start + (second.y_top - gap_start) * fraction);
+            // Exercise the same screen/content transform as mouse dragging.
+            let screen = wp.content_transform(Affine::IDENTITY) * point;
+            wp.drag.press(screen, false);
+            let mut handled = false;
+            wp.handle_cursor_moved(
+                screen.x,
+                screen.y,
+                1.0,
+                wp.toolbar_height(1000.0),
+                &mut handled,
+            );
+            wp.drag.release();
+            assert!(handled);
+            assert_eq!(
+                &wp.inner.caret.block, block,
+                "gap hit must choose a neighbouring paragraph at {zoom}x"
+            );
+            assert_eq!(
+                wp.inner.caret.offset, 4,
+                "gap hit must preserve horizontal position"
+            );
+            assert_eq!(wp.inner.selection_anchor.as_ref().unwrap().offset, 1);
+        }
+    }
+}
+
+#[test]
+fn trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position() {
+    use winit::event::TouchPhase;
+    let (mut state, mut wp) = populated();
+    wp.set_zoom(1.0);
+    wp.scroll_y = 100.0;
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    wp.pointer = Point::new(500.0, 300.0);
+    let before = wp.scroll_y + (wp.pointer.y - wp.zoom.anchor().y) / wp.zoom.factor();
+    let heads = state.doc.get_heads();
+    assert!(pinch(&mut wp, &mut state, 0.025, TouchPhase::Moved));
+    assert!((wp.zoom.factor() - 1.025).abs() < 1e-9);
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let after = wp.scroll_y + (wp.pointer.y - wp.zoom.anchor().y) / wp.zoom.factor();
+    assert!((before - after).abs() < 1e-6);
+    assert!(!wp.view.auto_fit_page);
+    assert_eq!(state.doc.get_heads(), heads);
+    assert!(!(wp.save_status == DocumentSaveStatus::Modified));
+    assert!(pinch(&mut wp, &mut state, -0.05, TouchPhase::Moved));
+    assert!(wp.zoom.factor() < 1.025);
+}
+
+#[test]
+fn trackpad_pinch_respects_overlays_bounds_and_invalid_deltas() {
+    use winit::event::TouchPhase;
+    let (mut state, mut wp) = populated();
+    wp.set_zoom(1.0);
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    wp.pointer = Point::new(500.0, 300.0);
+    for delta in [f64::NAN, f64::INFINITY] {
+        pinch(&mut wp, &mut state, delta, TouchPhase::Moved);
+        assert_eq!(wp.zoom.factor(), 1.0);
+    }
+    pinch(&mut wp, &mut state, 0.5, TouchPhase::Cancelled);
+    assert_eq!(wp.zoom.factor(), 1.0);
+    wp.open_template_picker();
+    assert!(pinch(&mut wp, &mut state, 0.5, TouchPhase::Moved));
+    assert_eq!(wp.zoom.factor(), 1.0);
+    wp.template_picker.close();
+    wp.pointer = Point::new(20.0, 20.0);
+    assert!(!pinch(&mut wp, &mut state, 0.5, TouchPhase::Moved));
+    assert_eq!(wp.zoom.factor(), 1.0);
+    wp.pointer = Point::new(500.0, 300.0);
+    pinch(&mut wp, &mut state, 20.0, TouchPhase::Moved);
+    assert_eq!(wp.zoom.factor(), ZOOM_MAX);
+    pinch(&mut wp, &mut state, -2.0, TouchPhase::Moved);
+    assert_eq!(wp.zoom.factor(), ZOOM_MIN);
+}
+
+#[test]
+fn native_text_shortcuts_select_words_and_lines_after_menu_dismissal() {
+    use winit::keyboard::ModifiersState;
+    for (mods, expected) in [
+        (ModifiersState::ALT | ModifiersState::SHIFT, "café"),
+        (ModifiersState::SUPER | ModifiersState::SHIFT, "Hello café"),
+        (ModifiersState::CONTROL | ModifiersState::SHIFT, "café"),
+    ] {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, "Hello café");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.lifecycle.focused = true;
+        wp.open_template_picker();
+        press_named(&mut wp, &mut state, NamedKey::Escape);
+        press_named_with_modifiers(&mut wp, &mut state, NamedKey::ArrowLeft, mods.into());
+        assert_eq!(wp.inner.selection_text(&state.doc), expected);
+        assert_eq!(wp.inner.current_text(&state.doc), "Hello café");
+        assert!(
+            !(wp.save_status == DocumentSaveStatus::Modified),
+            "selection must not modify the document"
+        );
+    }
+}
+
+#[test]
+fn native_text_shortcuts_option_right_crosses_trailing_spaces_forward() {
+    use winit::keyboard::ModifiersState;
+    for (text, selected) in [("hello   ", "  "), ("hello!!!", "!!")] {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, text);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.inner.caret.offset = 6;
+        wp.lifecycle.focused = true;
+        press_named_with_modifiers(
+            &mut wp,
+            &mut state,
+            NamedKey::ArrowRight,
+            (ModifiersState::ALT | ModifiersState::SHIFT).into(),
+        );
+        assert_eq!(wp.inner.caret.offset, 8);
+        assert_eq!(wp.inner.selection_text(&state.doc), selected);
+    }
+}
+
+#[test]
+fn native_text_shortcuts_option_right_keeps_adjacent_unicode_words() {
+    use winit::keyboard::ModifiersState;
+    let (mut state, mut wp) = bound();
+    wp.inner.insert_str(&mut state.doc, "東京京都大阪");
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    wp.inner.caret.offset = 2;
+    wp.lifecycle.focused = true;
+    press_named_with_modifiers(
+        &mut wp,
+        &mut state,
+        NamedKey::ArrowRight,
+        (ModifiersState::ALT | ModifiersState::SHIFT).into(),
+    );
+    assert_eq!(wp.inner.selection_text(&state.doc), "京都");
+}
+
+#[test]
+fn native_text_shortcuts_select_then_delete_through_the_host() {
+    for (modifier, expected) in [("alt", "Hello "), ("super", "")] {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, "Hello café");
+        let containers = wp.inner.containers.clone().unwrap();
+        wp.lifecycle.focused = true;
+        let mut driver = ui::headless::Driver::new(state, Box::new(wp), (1000, 700));
+        driver.set_modifiers(&[modifier.into(), "shift".into()]);
+        driver.key("ArrowLeft");
+        driver.set_modifiers(&[]);
+        driver.key("Backspace");
+        assert_eq!(
+            qdoc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
+            expected
+        );
+    }
+}
+
+#[test]
+fn native_text_shortcuts_command_right_stops_at_the_visual_line_in_every_region() {
+    use winit::keyboard::ModifiersState;
+    for region in [Region::Body, Region::Header, Region::Footer] {
+        let (mut state, mut wp) = bound();
+        wp.inner.focus_region(&mut state.doc, region);
+        let text = "A long line of text with several words. ".repeat(20);
+        wp.inner.insert_str(&mut state.doc, &text);
+        wp.inner.caret.offset = 2;
+        wp.lifecycle.focused = true;
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        press_named_with_modifiers(
+            &mut wp,
+            &mut state,
+            NamedKey::ArrowRight,
+            (ModifiersState::SUPER | ModifiersState::SHIFT).into(),
+        );
+        assert!(
+            wp.inner.caret.offset > 2 && wp.inner.caret.offset < text.chars().count(),
+            "Command+Right must stop at a wrapped visual line, not the entire paragraph: {region:?}"
+        );
+        assert!(wp.inner.has_selection());
+    }
 }
 
 /// End-to-end through the **production** event path: click into the header
@@ -2535,12 +3185,11 @@ fn toolbar_wraps_to_more_than_one_row_when_items_exceed_width() {
         assert_eq!(w[0].1, w[1].0, "row ranges are contiguous");
     }
     // No row's packed width exceeds the usable width (mirrors `draw`).
-    let metrics = ui::chrome::toolbar::metrics(1.0);
-    let usable = 400.0 - metrics.left_padding - TOOLBAR_RIGHT_PAD;
+    let usable = 400.0 - TOOLBAR_MODEL.pad - TOOLBAR_MODEL.right_pad;
     for (s, e) in &rows {
         let mut x = 0.0;
         for i in *s..*e {
-            x += widths[i] + metrics.item_gap + if starts[i] { metrics.group_gap } else { 0.0 };
+            x += widths[i] + TOOLBAR_MODEL.gap + if starts[i] { TOOLBAR_MODEL.sep } else { 0.0 };
         }
         // A row is allowed to overflow only if it holds a single over-wide item.
         assert!(
@@ -2585,6 +3234,57 @@ fn real_toolbar_wraps_on_a_narrow_window_and_sets_canvas_offset() {
 }
 
 #[test]
+fn enlarged_toolbar_controls_fit_their_labels() {
+    let (mut state, mut wp) = populated();
+    let mut theme = Theme::dark();
+    theme.text_scale = 2.0;
+    pipeline_draw_themed(&mut wp, &mut state, 480, 600, &theme);
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(2.0);
+    let specs = wp.toolbar_button_specs(true);
+    for ((_, rect), (_, item)) in wp.toolbar.iter().zip(specs) {
+        let (width, height) = tr.measure(&item.label, 15.0, None);
+        assert!(
+            rect.width() >= f64::from(width) + 12.0,
+            "{} needs {width}, got {rect:?}",
+            item.label
+        );
+        assert!(
+            rect.height() >= f64::from(height),
+            "{} needs {height}, got {rect:?}",
+            item.label
+        );
+        assert_eq!(rect.intersect(wp.rect), *rect);
+    }
+}
+
+#[test]
+fn enlarged_layout_controls_fit_their_labels() {
+    let (mut state, mut wp) = populated();
+    let mut theme = Theme::dark();
+    theme.text_scale = 2.0;
+    pipeline_draw_themed(&mut wp, &mut state, 480, 600, &theme);
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(2.0);
+    for ((_, rect), label) in wp
+        .layout_chips
+        .iter()
+        .zip([t("layout-margins"), t("layout-spacing")])
+    {
+        let (width, height) = tr.measure(&label, 13.0, None);
+        assert!(
+            rect.width() >= f64::from(width) + 16.0,
+            "label needs {width}, got {rect:?}"
+        );
+        assert!(
+            rect.height() >= f64::from(height),
+            "label needs {height}, got {rect:?}"
+        );
+        assert_eq!(rect.intersect(wp.rect), *rect);
+    }
+}
+
+#[test]
 fn two_x_phone_keeps_toolbar_to_two_rows_and_document_readable() {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
@@ -2600,6 +3300,26 @@ fn two_x_phone_keeps_toolbar_to_two_rows_and_document_readable() {
         row_height * 2.0,
         "phone-sized 200% text reserves exactly one action row plus zoom"
     );
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(theme.text_scale);
+    let specs = wp.responsive_toolbar_specs(390.0);
+    assert_eq!(wp.toolbar.len(), specs.len());
+    for ((action, rect), (expected_action, item)) in wp.toolbar.iter().zip(specs) {
+        assert_eq!(*action, expected_action);
+        let (width, height) = tr.measure_weighted(
+            &item.label,
+            15.0,
+            None,
+            ui::chrome::toolbar::ToolbarMetrics::label_weight(item.cue),
+        );
+        assert!(rect.width() >= f64::from(width) + 12.0);
+        assert!(rect.height() >= f64::from(height));
+        assert_eq!(rect.intersect(wp.rect), *rect);
+        assert!(
+            rect.y1 <= row_height,
+            "actions stay in their reserved first row"
+        );
+    }
     assert_eq!(
         wp.zoom.factor(),
         2.0,
@@ -2629,8 +3349,13 @@ fn document_status_stays_in_bottom_chrome_at_narrow_and_wide_zoomed_widths() {
         pipeline_draw(&mut wp, &mut state, width, 900);
         let bar = Rect::new(0.0, 868.0, f64::from(width), 900.0);
         let label = wp.status_count_label();
-        let rect = WordProcessorWidget::layout_bar_status_rect(bar, 210.0, &label, 1.0)
-            .expect("the count fits after the layout controls");
+        let rect = WordProcessorWidget::layout_bar_status_rect(
+            bar,
+            210.0,
+            f64::from(TextRenderer::new().measure(&label, 12.5, None).0),
+            12.0,
+        )
+        .expect("the count fits after the layout controls");
         assert!(
             rect.y0 >= bar.y0 && rect.y1 <= bar.y1 && rect.x1 <= bar.x1,
             "{width}px status is entirely inside the bottom chrome: {rect:?}"
@@ -2921,6 +3646,141 @@ fn shared_clipboard_preserves_rich_paste_and_plain_paste_semantics() {
 fn first_block_start_point(wp: &WordProcessorWidget) -> Point {
     let l = wp.laid.first().expect("at least one laid block");
     Point::new(l.text_x + 1.0, l.y_top + l.height / 2.0)
+}
+
+#[test]
+fn menu_ux_right_click_preserves_selected_text_and_clipboard_actions() {
+    let (mut state, mut wp) = bound();
+    wp.model_mut().insert_str(&mut state.doc, "Hello world");
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    wp.inner.select_all(&state.doc);
+    let selected = wp.inner.selection_text(&state.doc);
+    let caret = wp.inner.caret.clone();
+    let anchor = wp.inner.selection_anchor.clone();
+    let point = first_block_start_point(&wp);
+    wp.open_context_menu(&state.doc, point, [300.0, 300.0]);
+    assert_eq!(wp.inner.selection_text(&state.doc), selected);
+    assert_eq!(wp.inner.caret, caret);
+    assert_eq!(wp.inner.selection_anchor, anchor);
+    assert!(wp.context_actions.contains(&Some(CtxAction::Copy)));
+    assert!(wp.context_actions.contains(&Some(CtxAction::Cut)));
+}
+
+#[test]
+fn menu_ux_open_menus_capture_editing_keys_and_keyboard_activation() {
+    for style_menu in [false, true] {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "Keep my draft");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        wp.lifecycle.focused = true;
+        wp.inner.select_all(&state.doc);
+        let style_count = wp.sheet.order().len();
+        if style_menu {
+            wp.style_menu.open("body", Point::new(300.0, 300.0));
+        } else {
+            wp.open_toolbar_overflow();
+        }
+        press_named(&mut wp, &mut state, NamedKey::Backspace);
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Keep my draft".into())
+        );
+        press_named(&mut wp, &mut state, NamedKey::ArrowDown);
+        press_named(&mut wp, &mut state, NamedKey::Enter);
+        assert!(!wp.context_menu.is_open());
+        assert!(!wp.style_menu.is_open());
+        if style_menu {
+            assert_eq!(
+                wp.sheet.order().len(),
+                style_count + 1,
+                "Enter duplicates the style"
+            );
+        } else {
+            assert!(
+                wp.mark_active_in_selection("strike"),
+                "Enter applies the chosen formatting"
+            );
+        }
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Keep my draft".into())
+        );
+    }
+}
+
+#[test]
+fn menu_ux_context_actions_stay_in_the_viewport() {
+    let (mut state, mut wp) = bound();
+    wp.model_mut().insert_str(&mut state.doc, "Hello world");
+    pipeline_draw(&mut wp, &mut state, 600, 400);
+    let point = first_block_start_point(&wp);
+    wp.open_context_menu(&state.doc, point, [598.0, 398.0]);
+    let mut scene = Scene::new();
+    wp.draw_overlay(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &Theme::dark().with_text_scale(2.0),
+        &PresenceCtx::empty(),
+    );
+    for (index, action) in wp.context_actions.iter().enumerate() {
+        if action.is_some() {
+            let row = wp
+                .context_menu
+                .item_rect(index)
+                .expect("menu row remains reachable");
+            assert!(
+                row.x0 >= 0.0 && row.y0 >= 0.0 && row.x1 <= 600.0 && row.y1 <= 400.0,
+                "row outside viewport: {row:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn menu_ux_host_undo_cannot_edit_behind_an_open_menu() {
+    for menu_kind in 0..3 {
+        let (mut state, mut wp) = bound();
+        state.commit_action(None, None);
+        wp.inner.insert_str(&mut state.doc, "Keep this edit");
+        state.commit_action(None, None);
+        let containers = wp.inner.containers.clone().unwrap();
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        match menu_kind {
+            0 => wp.open_template_picker(),
+            1 => wp.open_toolbar_overflow(),
+            _ => wp.style_menu.open("body", Point::new(300.0, 300.0)),
+        }
+        let mut driver = ui::headless::Driver::new(state, Box::new(wp), (1000, 700));
+        driver.set_modifiers(&["ctrl".into()]);
+        driver.key("z");
+        assert_eq!(
+            qdoc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
+            "Keep this edit",
+            "host undo must be captured while a menu is open"
+        );
+        driver.set_modifiers(&[]);
+        driver.key("Escape");
+        driver.set_modifiers(&["ctrl".into()]);
+        driver.key("z");
+        assert_eq!(
+            qdoc::model::materialize(&driver.state_mut().doc, &containers).blocks[0].text,
+            "",
+            "ordinary undo resumes after dismissal"
+        );
+    }
+}
+
+#[test]
+fn menu_ux_right_click_at_the_selection_end_keeps_the_selection() {
+    let (mut state, mut wp) = bound();
+    wp.inner.insert_str(&mut state.doc, "Hello world");
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    wp.inner.select_all(&state.doc);
+    let mut point = first_block_start_point(&wp);
+    point.x += 400.0; // hit testing clamps the text's right edge to its end offset
+    wp.open_context_menu(&state.doc, point, [500.0, 300.0]);
+    assert_eq!(wp.inner.selection_text(&state.doc), "Hello world");
 }
 
 #[test]
@@ -4003,6 +4863,155 @@ fn new_menu_button_is_in_the_toolbar() {
     );
 }
 
+#[test]
+fn template_menu_hover_paints_feedback_in_both_themes() {
+    for theme in [Theme::dark(), Theme::light()] {
+        let (mut state, mut wp) = bound();
+        pipeline_draw_themed(&mut wp, &mut state, 1200, 700, &theme);
+        wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+        let mut tr = TextRenderer::new();
+        let mut before = Scene::new();
+        wp.draw_overlay(
+            &mut before,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let point = Point::new(
+            wp.toolbar.first().unwrap().1.x0 + 10.0,
+            wp.rect.y0 + wp.toolbar_height(wp.rect.width()) + 6.0 + 28.0 * 2.0 + 10.0,
+        );
+        let mut handled = false;
+        wp.lifecycle.dirty = false;
+        wp.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: (point.x * 2.0, point.y * 2.0).into(),
+            },
+            2.0,
+            &Modifiers::default(),
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut None,
+            NodeId::new(0),
+            &TaffyTree::new(),
+        );
+        let mut after = Scene::new();
+        wp.draw_overlay(
+            &mut after,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        assert!(
+            after.encoding().path_tags.len() > before.encoding().path_tags.len(),
+            "hovering a template must paint a row highlight"
+        );
+        assert!(wp.lifecycle.dirty, "hover must request a repaint");
+        if let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") {
+            render_review_png(
+                &mut wp,
+                &mut state,
+                1200,
+                700,
+                std::path::Path::new(&dir),
+                "template-hover-dark",
+            );
+        }
+    }
+}
+
+#[test]
+fn template_menu_keyboard_selects_without_editing_the_document() {
+    let (mut state, mut wp) = bound();
+    wp.model_mut().insert_str(&mut state.doc, "Draft");
+    wp.refresh_blocks(&mut state.doc);
+    pipeline_draw(&mut wp, &mut state, 1200, 700);
+    wp.lifecycle.focused = true;
+    wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+    press_named(&mut wp, &mut state, NamedKey::Backspace);
+    assert_eq!(
+        first_block(&wp, &state).map(|b| b.text),
+        Some("Draft".into())
+    );
+    for _ in 0..3 {
+        press_named(&mut wp, &mut state, NamedKey::ArrowDown);
+    }
+    press_named(&mut wp, &mut state, NamedKey::Enter);
+    assert!(
+        !wp.template_picker.is_open(),
+        "Enter chooses and closes the menu"
+    );
+    assert_eq!(
+        first_block(&wp, &state).map(|b| b.text),
+        Some("Report Title".into())
+    );
+}
+
+#[test]
+fn template_menu_pointer_selection_and_dismissal_use_the_overlay() {
+    let (mut state, mut wp) = bound();
+    pipeline_draw(&mut wp, &mut state, 1200, 700);
+    wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+    let report = wp
+        .template_picker
+        .item_center(crate::Template::Report)
+        .expect("Report has a live menu row");
+    left_click(&mut wp, &mut state, report);
+    assert!(!wp.template_picker.is_open());
+    assert_eq!(
+        first_block(&wp, &state).map(|b| b.text),
+        Some("Report Title".into())
+    );
+
+    wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+    assert_eq!(
+        wp.template_picker.menu_mut().hovered(),
+        None,
+        "reopening clears the old highlight"
+    );
+    wp.lifecycle.focused = false;
+    press_named(&mut wp, &mut state, NamedKey::Escape);
+    assert!(
+        !wp.template_picker.is_open(),
+        "Escape works even without editor focus"
+    );
+
+    wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
+    let caret = wp.inner.caret.clone();
+    left_click(&mut wp, &mut state, Point::new(900.0, 500.0));
+    assert!(!wp.template_picker.is_open());
+    assert_eq!(
+        wp.inner.caret, caret,
+        "dismissal must not click the document beneath"
+    );
+}
+
+#[test]
+fn file_ux_new_template_starts_untitled_without_overwriting_the_old_file() {
+    let (mut state, mut wp) = bound();
+    let old_path =
+        std::env::temp_dir().join(format!("wp-template-original-{}.md", std::process::id()));
+    std::fs::write(&old_path, "Original document").unwrap();
+    wp.try_open_document_in_place(&mut state.doc, &old_path)
+        .unwrap();
+    wp.apply_template(&mut state.doc, crate::Template::Report);
+    assert!(
+        wp.path.is_none(),
+        "New must ask for a destination on its first Save"
+    );
+    assert_eq!(wp.format, Some(WpFormat::Markdown));
+    assert!((wp.save_status == DocumentSaveStatus::Modified));
+    assert_eq!(
+        std::fs::read_to_string(&old_path).unwrap(),
+        "Original document"
+    );
+    let _ = std::fs::remove_file(old_path);
+}
+
 /// Selecting from the "New ▾" picker replaces the document content with that
 /// template's first heading through the production pointer-routing path.
 #[test]
@@ -4232,6 +5241,52 @@ fn the_document_canvas_is_wider_than_the_styles_panel_at_every_tile_width() {
     }
 }
 
+#[test]
+fn recovery_reuses_fresh_complete_views_and_falls_back_for_stale_or_partial_views() {
+    for case in ["fresh", "stale", "partial"] {
+        let dir = temp_dir(&format!("recovery-views-{case}"));
+        let (mut state, mut wp) = bound();
+        wp.set_recovery_dir(dir.clone());
+        wp.inner.insert_str(&mut state.doc, "Unicode café recovery");
+        wp.refresh_blocks(&mut state.doc);
+        if case == "stale" {
+            wp.inner.insert_str(&mut state.doc, " latest pending edit");
+        } else if case == "partial" {
+            with_doc(&mut state, |dm| {
+                let mut after = None;
+                for i in 0..(VIEWPORT_BLOCK_WINDOW * 4) {
+                    let id = dm.insert_block(after.as_deref(), "paragraph");
+                    dm.splice_text(&id, 0, 0, &format!("Recovery paragraph {i}"));
+                    after = Some(id);
+                }
+            });
+            wp.refresh_blocks(&mut state.doc);
+            assert!(wp.blocks.len() < wp.body_order.len());
+        }
+        let c = wp.inner.containers.as_ref().unwrap();
+        let expected = WpFormat::Markdown
+            .export(qdoc::DocRef { doc: &state.doc, c })
+            .unwrap();
+        let scans = qdoc::model::ordered_keys_scan_count();
+        for _ in 0..AUTOSAVE_EDIT_THRESHOLD {
+            wp.note_edit_for_autosave(&mut state.doc);
+        }
+        assert_eq!(
+            std::fs::read(wp.recovery_path()).unwrap(),
+            expected,
+            "{case}"
+        );
+        if case == "fresh" {
+            assert_eq!(
+                qdoc::model::ordered_keys_scan_count(),
+                scans,
+                "fresh complete views must avoid full document materialization"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 /// Autosave: typing past the edit threshold (through the production keyboard
 /// path) writes a recovery copy to the widget's recovery dir. A real save then
 /// clears it. Asserts on file existence (the production path), not pixels.
@@ -4249,7 +5304,18 @@ fn autosave_writes_recovery_then_save_clears_it() {
     assert!(!recovery_path.exists(), "no recovery file before any edits");
 
     // Type more than AUTOSAVE_EDIT_THRESHOLD characters through `handle_event`.
-    for _ in 0..(AUTOSAVE_EDIT_THRESHOLD as usize + 2) {
+    for _ in 0..AUTOSAVE_EDIT_THRESHOLD {
+        type_char(&mut wp, &mut state, 'x');
+    }
+    let c = wp.inner.containers.as_ref().unwrap();
+    assert_eq!(
+        std::fs::read(&recovery_path).unwrap(),
+        WpFormat::Markdown
+            .export(qdoc::DocRef { doc: &state.doc, c })
+            .unwrap(),
+        "the snapshot includes the edit that reached the threshold"
+    );
+    for _ in 0..2 {
         type_char(&mut wp, &mut state, 'x');
     }
     assert!(
@@ -5467,6 +6533,217 @@ fn save_as_writes_a_real_docx_that_round_trips() {
 }
 
 #[test]
+fn file_ux_failed_save_as_keeps_the_original_destination() {
+    let (mut state, mut wp) = bound();
+    wp.model_mut().insert_str(&mut state.doc, "My draft");
+    let dir = std::env::temp_dir().join(format!("wp-save-as-failure-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let original = dir.join("original.md");
+    std::fs::write(&original, "Original on disk").unwrap();
+    wp.set_file(original.clone(), WpFormat::Markdown);
+    wp.save_status = DocumentSaveStatus::Modified;
+    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+        dir.join("missing-parent").join("new.docx"),
+    )));
+    wp.portal_purpose = Some(PortalPurpose::SaveAs);
+    wp.sync(&mut state.doc, &state.root);
+    assert_eq!(wp.path, Some(original.clone()));
+    assert_eq!(wp.format, Some(WpFormat::Markdown));
+    assert!((wp.save_status == DocumentSaveStatus::Modified));
+    assert_eq!(
+        std::fs::read_to_string(&original).unwrap(),
+        "Original on disk"
+    );
+    assert!(matches!(wp.toast, Some((_, ToastKind::Error))));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn file_ux_failed_open_reports_an_error_without_changing_the_draft() {
+    let (mut state, mut wp) = bound();
+    wp.model_mut().insert_str(&mut state.doc, "My draft");
+    let missing = std::env::temp_dir().join(format!("wp-missing-{}.docx", std::process::id()));
+    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+        missing,
+    )));
+    wp.portal_purpose = Some(PortalPurpose::OpenDocument);
+    wp.sync(&mut state.doc, &state.root);
+    assert_eq!(
+        first_block(&wp, &state).map(|b| b.text),
+        Some("My draft".into())
+    );
+    assert!(
+        matches!(wp.toast, Some((_, ToastKind::Error))),
+        "failed Open needs visible feedback"
+    );
+}
+
+#[test]
+fn file_ux_new_does_not_replace_a_modified_draft_without_a_decision() {
+    let (mut state, mut wp) = bound();
+    wp.inner.insert_str(&mut state.doc, "Unsaved work");
+    wp.save_status = DocumentSaveStatus::Modified;
+    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    wp.open_template_picker();
+    press_named(&mut wp, &mut state, NamedKey::ArrowDown);
+    press_named(&mut wp, &mut state, NamedKey::Enter);
+    assert_eq!(
+        first_block(&wp, &state).map(|b| b.text),
+        Some("Unsaved work".into())
+    );
+    press_named(&mut wp, &mut state, NamedKey::Escape);
+    assert_eq!(
+        first_block(&wp, &state).map(|b| b.text),
+        Some("Unsaved work".into())
+    );
+    assert!((wp.save_status == DocumentSaveStatus::Modified));
+}
+
+#[test]
+fn file_ux_open_does_not_replace_a_modified_draft_without_a_decision() {
+    let (mut state, mut wp) = bound();
+    wp.inner.insert_str(&mut state.doc, "Unsaved work");
+    wp.save_status = DocumentSaveStatus::Modified;
+    let picked = std::env::temp_dir().join(format!("wp-guard-open-{}.md", std::process::id()));
+    std::fs::write(&picked, "Other file").unwrap();
+    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+        picked.clone(),
+    )));
+    wp.portal_purpose = Some(PortalPurpose::OpenDocument);
+    wp.sync(&mut state.doc, &state.root);
+    assert_eq!(
+        first_block(&wp, &state).map(|b| b.text),
+        Some("Unsaved work".into())
+    );
+    assert!(wp.path.is_none());
+    let _ = std::fs::remove_file(picked);
+}
+
+#[test]
+fn file_ux_cancelled_or_failed_save_keeps_the_pending_open_and_draft() {
+    for failure in 0..3 {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, "Unsaved draft");
+        wp.save_status = DocumentSaveStatus::Modified;
+        let invocation = tilo_actions::InvocationId::new();
+        wp.resource_file_invocation = Some(invocation);
+        wp.stage_replacement(PendingReplacement::Open(PathBuf::from(
+            "never-open-this.md",
+        )));
+        wp.portal_purpose = Some(PortalPurpose::SaveAs);
+        wp.portal_rx = Some(match failure {
+            0 => portal::inject_for_test(portal::PortalOutcome::Cancelled),
+            1 => portal::inject_for_test(portal::PortalOutcome::Failed("test failure".into())),
+            _ => {
+                let (sender, receiver) = std::sync::mpsc::channel();
+                drop(sender);
+                receiver
+            }
+        });
+        wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Save);
+        wp.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some("Unsaved draft".into())
+        );
+        assert!((wp.save_status == DocumentSaveStatus::Modified) && wp.path.is_none());
+        assert!(wp.unsaved_changes.is_open() && wp.pending_replacement.is_some());
+        assert!(
+            wp.poll_resource_operation(invocation, false, &state.doc, &state.root)
+                .is_none()
+        );
+        wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Cancel);
+        assert!(matches!(
+            wp.poll_resource_operation(invocation, false, &state.doc, &state.root),
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+        ));
+    }
+}
+
+#[test]
+fn file_ux_cancelling_a_resource_open_closes_its_unsaved_prompt() {
+    let (mut state, mut wp) = bound();
+    wp.inner.insert_str(&mut state.doc, "Keep this draft");
+    wp.save_status = DocumentSaveStatus::Modified;
+    let invocation = tilo_actions::InvocationId::new();
+    wp.pending_resource_open = Some((invocation, PathBuf::from("never-open.md")));
+    wp.sync(&mut state.doc, &state.root);
+    assert!(wp.unsaved_changes.is_open());
+    assert!(matches!(
+        wp.poll_resource_operation(invocation, true, &state.doc, &state.root),
+        Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+    ));
+    assert!(!wp.unsaved_changes.is_open() && wp.pending_replacement.is_none());
+    assert_eq!(
+        first_block(&wp, &state).map(|b| b.text),
+        Some("Keep this draft".into())
+    );
+    assert!((wp.save_status == DocumentSaveStatus::Modified));
+}
+
+#[test]
+fn file_ux_save_then_open_writes_the_draft_before_replacing_it() {
+    for corrupt in [false, true] {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, "Unsaved draft");
+        wp.save_status = DocumentSaveStatus::Modified;
+        let dir = std::env::temp_dir().join(format!(
+            "wp-save-before-open-{}-{corrupt}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join(if corrupt { "target.docx" } else { "target.md" });
+        std::fs::write(&target, "Other document").unwrap();
+        let saved = dir.join("saved-draft.md");
+        let invocation = tilo_actions::InvocationId::new();
+        wp.resource_file_invocation = Some(invocation);
+        wp.stage_replacement(PendingReplacement::Open(target.clone()));
+        wp.portal_purpose = Some(PortalPurpose::SaveAs);
+        wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(
+            saved.clone(),
+        )));
+        wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Save);
+        wp.sync(&mut state.doc, &state.root);
+        assert!(
+            std::fs::read_to_string(&saved)
+                .unwrap()
+                .contains("Unsaved draft")
+        );
+        assert_eq!(wp.path, Some(if corrupt { saved } else { target }));
+        assert_eq!(
+            first_block(&wp, &state).map(|b| b.text),
+            Some(
+                if corrupt {
+                    "Unsaved draft"
+                } else {
+                    "Other document"
+                }
+                .into()
+            )
+        );
+        let result = wp.poll_resource_operation(invocation, false, &state.doc, &state.root);
+        if corrupt {
+            assert!(matches!(
+                result,
+                Some(tilo_actions::InvocationUpdate::Failed { .. })
+            ));
+            assert!(matches!(wp.toast, Some((_, ToastKind::Error))));
+        } else {
+            assert!(matches!(
+                result,
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+            ));
+        }
+        assert!(
+            wp.poll_resource_operation(invocation, false, &state.doc, &state.root)
+                .is_none()
+        );
+        assert!(!wp.unsaved_changes.is_open() && wp.pending_replacement.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[test]
 fn failed_save_is_visible_and_keeps_the_document_modified() {
     let (mut state, mut wp) = bound();
     wp.model_mut().insert_str(&mut state.doc, "unsaved work");
@@ -6266,6 +7543,146 @@ fn color_picker_popover_dismisses_on_outside_click() {
     );
 }
 
+#[test]
+#[ignore = "GPU pixel equivalence; run explicitly when changing text clipping"]
+fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
+    let body = format!(
+        "Annotated text {}",
+        "wrapped words for pagination ".repeat(220)
+    );
+    let (mut wp, mut state, c, mut ids, first) = doc_with_paragraph(&body);
+    {
+        let mut dm = qdoc::DocMut {
+            doc: &mut state.doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        let note = dm.insert_footnote(&first, 10);
+        let note_block = dm.insert_note_block(&note, None, "paragraph").unwrap();
+        dm.splice_note_text(
+            &note,
+            &note_block,
+            0,
+            0,
+            "Footnote remains associated with its page.",
+        );
+        dm.add_comment(&first, 0, 9, "Reviewer", "Keep this comment.");
+        let change = dm.insert_change(qdoc::ChangeKind::Ins, "Reviewer", "");
+        dm.add_change_mark(qdoc::ChangeKind::Ins, &first, 12, 20, &change);
+        let mut after = first;
+        for i in 0..24 {
+            let id = dm.insert_block(Some(&after), "paragraph");
+            dm.splice_text(
+                &id,
+                0,
+                0,
+                &format!("Paragraph {i}. {}", "Café text with wrapping. ".repeat(30)),
+            );
+            after = id;
+        }
+    }
+    let (w, h) = (900, 1100);
+    pipeline_draw(&mut wp, &mut state, w, h);
+    wp.view.auto_fit_page = false;
+    let mut tr = TextRenderer::new();
+    let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
+    let theme = Theme::dark();
+    let presence = PresenceCtx::empty();
+    let permission = PermissionContext::permissive();
+    for (scroll, zoom) in [(0.0, 1.0), (932.25, 0.87), (5000.5, 1.25)] {
+        wp.zoom.set(zoom);
+        wp.scroll_y = scroll;
+        let mut scenes = Vec::new();
+        let mut geometry = Vec::new();
+        for reference in [true, false] {
+            wp.reference_text_rendering = reference;
+            let mut scene = Scene::new();
+            wp.draw_with_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &presence,
+                &permission,
+            );
+            wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            geometry.push(
+                wp.laid
+                    .iter()
+                    .map(|l| (l.id.clone(), l.y_top, l.height, l.page))
+                    .collect::<Vec<_>>(),
+            );
+            scenes.push(scene);
+        }
+        assert_eq!(
+            geometry[0], geometry[1],
+            "clipping must not change pagination or hit geometry"
+        );
+        assert_eq!(wp.notes.len(), 1);
+        assert_eq!(wp.review.comments().len(), 1);
+        assert_eq!(wp.review.changes().len(), 1);
+        let bg = Color::from_rgb8(0x20, 0x22, 0x28);
+        // Vello can vary a few quantized edge bytes even for an identical
+        // scene. Measure that reference-only envelope; all other bytes must
+        // match exactly, with no blanket pixel/AA tolerance.
+        let mut low = renderer.render(&scenes[0], bg);
+        let mut high = low.clone();
+        for _ in 0..63 {
+            for ((low, high), value) in low
+                .iter_mut()
+                .zip(&mut high)
+                .zip(renderer.render(&scenes[0], bg))
+            {
+                *low = (*low).min(value);
+                *high = (*high).max(value);
+            }
+        }
+        let variable = low.iter().zip(&high).filter(|(a, b)| a != b).count();
+        assert!(
+            variable <= 256 && low.iter().zip(&high).all(|(a, b)| b - a <= 1),
+            "reference raster is not stable enough for this oracle: {variable} variable bytes"
+        );
+        for _ in 0..4 {
+            let clipped = renderer.render(&scenes[1], bg);
+            let mismatches = clipped
+                .iter()
+                .zip(low.iter().zip(&high))
+                .filter(|(value, (low, high))| value < low || value > high)
+                .count();
+            if mismatches > 0 {
+                eprintln!(
+                    "outside envelope {:?}",
+                    clipped
+                        .iter()
+                        .zip(low.iter().zip(&high))
+                        .enumerate()
+                        .filter(|(_, (v, (a, b)))| v < a || v > b)
+                        .take(20)
+                        .map(|(i, (v, (a, b)))| (
+                            i / 4 % w as usize,
+                            i / 4 / w as usize,
+                            i % 4,
+                            v,
+                            a,
+                            b
+                        ))
+                        .collect::<Vec<_>>()
+                );
+            }
+            assert_eq!(
+                mismatches, 0,
+                "document raster exceeds reference-only envelope at scroll={scroll}, zoom={zoom}"
+            );
+        }
+        let full_glyphs = scenes[0].encoding().resources.glyphs.len();
+        let clipped_glyphs = scenes[1].encoding().resources.glyphs.len();
+        assert!(
+            clipped_glyphs * 3 < full_glyphs,
+            "offscreen glyphs must be omitted: {clipped_glyphs}/{full_glyphs}"
+        );
+    }
+}
+
 // ---- visual review shots ----------------------------------------------
 // A guarded renderer that writes PNGs of the fixed surfaces for eyeballing.
 // Set `TILO_WP_REVIEW_SHOTS=<dir>` to emit them; a normal `cargo test` run
@@ -6280,11 +7697,23 @@ fn render_review_png(
     dir: &std::path::Path,
     name: &str,
 ) {
+    render_review_png_themed(wp, state, w, h, dir, name, &Theme::dark());
+}
+
+fn render_review_png_themed(
+    wp: &mut WordProcessorWidget,
+    state: &mut ui::State,
+    w: u32,
+    h: u32,
+    dir: &std::path::Path,
+    name: &str,
+    theme: &Theme,
+) {
     use ui::offscreen::OffscreenRenderer;
-    let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
+    tr.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     wp.sync(&mut state.doc, &state.root);
@@ -6338,6 +7767,46 @@ fn render_review_png(
         Color::from_rgb8(0x20, 0x22, 0x28),
         dir.join(format!("{name}.png")),
     );
+}
+
+#[test]
+fn menu_ux_review_shots() {
+    let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") else {
+        return;
+    };
+    let dir = std::path::Path::new(&dir);
+    for (name, theme, width) in [
+        ("dark", Theme::dark(), 1000),
+        ("light", Theme::light(), 1000),
+        ("large", Theme::dark().with_text_scale(2.0), 480),
+    ] {
+        let (mut state, mut wp) = bound();
+        wp.inner.insert_str(&mut state.doc, "Keep my unsaved draft");
+        wp.save_status = DocumentSaveStatus::Modified;
+        wp.request_template(&mut state.doc, crate::Template::Report);
+        render_review_png_themed(
+            &mut wp,
+            &mut state,
+            width,
+            600,
+            dir,
+            &format!("unsaved-{name}"),
+            &theme,
+        );
+        wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Cancel);
+        let point = first_block_start_point(&wp);
+        wp.open_context_menu(&state.doc, point, [num::f32_of_u32(width) - 2.0, 598.0]);
+        wp.context_menu.focus_first_action();
+        render_review_png_themed(
+            &mut wp,
+            &mut state,
+            width,
+            600,
+            dir,
+            &format!("context-edge-{name}"),
+            &theme,
+        );
+    }
 }
 
 #[test]

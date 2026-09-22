@@ -8,7 +8,7 @@
 
 
 [package]
-id       = "dev.tilo.totp"
+id       = "so.tilo.totp"
 name     = "TOTP"
 category = "Utility"
 version  = "0.1.0"

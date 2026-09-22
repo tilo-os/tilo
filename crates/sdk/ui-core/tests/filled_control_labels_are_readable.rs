@@ -79,11 +79,12 @@ fn interacts() -> [(&'static str, ButtonInteract); 4] {
     ]
 }
 
-const STYLES: [ButtonStyle; 4] = [
+const STYLES: [ButtonStyle; 5] = [
     ButtonStyle::Neutral,
     ButtonStyle::Primary,
     ButtonStyle::Danger,
     ButtonStyle::Ghost,
+    ButtonStyle::DangerOutline,
 ];
 
 #[test]

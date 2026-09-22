@@ -8,7 +8,7 @@
 
 
 [package]
-id       = "dev.tilo.logs"
+id       = "so.tilo.logs"
 name     = "Logs"
 category = "System"
 version  = "0.1.0"

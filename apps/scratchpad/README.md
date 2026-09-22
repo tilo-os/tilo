@@ -48,3 +48,23 @@ cargo run --locked -p scratchpad -- --data-dir /tmp/my-scratchpad --shots /tmp/s
 ```
 
 The screenshot uses the same app tree and saved content as the live window.
+
+Native performance fixtures use the normal storage and retained widgets:
+
+```sh
+cargo run -p scratchpad --example seed-native-fixture -- /tmp/new-scratchpad-fixture
+cargo run -p scratchpad -- --data-dir /tmp/new-scratchpad-fixture
+```
+
+The seeder refuses every existing destination, writes a deterministic 1,000-line
+ASCII body through the application's Save operation, and prints one JSON manifest.
+`body_hash`/`body_bytes` describe the baseline; `prefixed_x_hash`/`prefixed_x_bytes`
+describe one `x` prepended to it. Hashes are BLAKE3 hex of the UTF-8 body, not of the
+Automerge serialization. The seed helper does not launch a GUI.
+
+When the shared native input diagnostic requests a snapshot, Scratchpad reports
+`body_hash`, `body_bytes`, `offset_x`, `offset_y`, `editor_focused`, `ready`, and
+`root_rect`, `editor_rect`, `scroll_rect` (logical `[x0,y0,x1,y1]` bounds), plus stable
+app/editor identifiers. It reads the actual document and shared Scrollable offset;
+it does not include the note text or mutate state. This observes input effects,
+not pixels or display completion. Normal input and drawing do not request snapshots.

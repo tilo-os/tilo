@@ -1,0 +1,217 @@
+{
+  "name": "Quick settings root rhythm",
+  "goal": "Open quick settings and read its title, tiles, sliders, cards and power row as one panel on one rhythm: sections s4 apart, siblings s3, the two slider bands s2, nothing touching",
+  "viewport": [
+    1280,
+    800
+  ],
+  "budget": {
+    "clicks": 1,
+    "keys": 0
+  },
+  "steps": [
+    {
+      "op": "input",
+      "action": {
+        "click_named": "semantic:topbar:quick-settings"
+      }
+    },
+    {
+      "op": "checkpoint",
+      "name": "quick-settings",
+      "checks": [
+        {
+          "kind": "visible",
+          "target": "semantic:Quick Settings"
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:Edit controls",
+          "min": [
+            32,
+            32
+          ]
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:Settings",
+          "min": [
+            32,
+            32
+          ]
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:Power",
+          "min": [
+            32,
+            32
+          ]
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:Brightness",
+          "min": [
+            32,
+            32
+          ]
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:Volume",
+          "min": [
+            32,
+            32
+          ]
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:Night Light",
+          "min": [
+            32,
+            32
+          ]
+        },
+        {
+          "kind": "target_size",
+          "target": "semantic:Change power profile",
+          "min": [
+            32,
+            32
+          ]
+        },
+        {
+          "kind": "aligned",
+          "first": "semantic:Settings",
+          "second": "semantic:Privacy",
+          "axis": "y",
+          "tolerance": 0.5
+        },
+        {
+          "kind": "aligned",
+          "first": "semantic:Settings",
+          "second": "semantic:History",
+          "axis": "y",
+          "tolerance": 0.5
+        },
+        {
+          "kind": "aligned",
+          "first": "semantic:Settings",
+          "second": "semantic:Power",
+          "axis": "y",
+          "tolerance": 0.5
+        },
+        {
+          "kind": "gap",
+          "first": "semantic:Settings",
+          "second": "semantic:Privacy",
+          "axis": "x",
+          "min": 10,
+          "max": 15
+        },
+        {
+          "kind": "gap",
+          "first": "semantic:Privacy",
+          "second": "semantic:History",
+          "axis": "x",
+          "min": 10,
+          "max": 15
+        },
+        {
+          "kind": "gap",
+          "first": "semantic:History",
+          "second": "semantic:Power",
+          "axis": "x",
+          "min": 10,
+          "max": 15
+        },
+        {
+          "kind": "gap",
+          "first": "semantic:Edit controls",
+          "second": "semantic:Settings",
+          "axis": "y",
+          "min": 4,
+          "max": 29
+        },
+        {
+          "kind": "no_overlap",
+          "first": "semantic:Edit controls",
+          "second": "semantic:Settings"
+        },
+        {
+          "kind": "no_overlap",
+          "first": "semantic:Edit controls",
+          "second": "semantic:Power"
+        },
+        {
+          "kind": "gap",
+          "first": "semantic:Power",
+          "second": "semantic:Brightness",
+          "axis": "y",
+          "min": 21,
+          "max": 29
+        },
+        {
+          "kind": "aligned",
+          "first": "semantic:Brightness",
+          "second": "semantic:Volume",
+          "axis": "x",
+          "tolerance": 0.5
+        },
+        {
+          "kind": "gap",
+          "first": "semantic:Brightness",
+          "second": "semantic:Volume",
+          "axis": "y",
+          "min": 7,
+          "max": 10
+        },
+        {
+          "kind": "no_overlap",
+          "first": "semantic:Brightness",
+          "second": "semantic:Volume"
+        },
+        {
+          "kind": "gap",
+          "first": "semantic:Volume",
+          "second": "semantic:Night Light",
+          "axis": "y",
+          "min": 21,
+          "max": 29
+        },
+        {
+          "kind": "no_overlap",
+          "first": "semantic:Volume",
+          "second": "semantic:Night Light"
+        },
+        {
+          "kind": "gap",
+          "first": "semantic:Night Light",
+          "second": "semantic:Change power profile",
+          "axis": "y",
+          "min": 14,
+          "max": 20
+        },
+        {
+          "kind": "no_overlap",
+          "first": "semantic:Night Light",
+          "second": "semantic:Change power profile"
+        },
+        {
+          "kind": "aligned",
+          "first": "semantic:Settings",
+          "second": "semantic:Night Light",
+          "axis": "x",
+          "tolerance": 0.5
+        },
+        {
+          "kind": "aligned",
+          "first": "semantic:Night Light",
+          "second": "semantic:Change power profile",
+          "axis": "x",
+          "tolerance": 0.5
+        }
+      ]
+    }
+  ]
+}

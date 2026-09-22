@@ -1,10 +1,10 @@
 //! The payload Collection — a deterministic `path -> blob_hash`
 //! table.
 //!
-//! The encoding is byte-identical to the one in `tilo-pkg::blobs`
-//! so a Collection blob produced by `tilo-pkg pack` can be read
-//! directly by the mount. We don't pull `tilo-pkg` in as a
-//! dependency here because the tilo-pkg `BlobStore` trait is
+//! The encoding is byte-identical to the one in `tilo-app-package::blobs`
+//! so a Collection blob produced by `tilo-app-package pack` can be read
+//! directly by the mount. We don't pull `tilo-app-package` in as a
+//! dependency here because the tilo-app-package `BlobStore` trait is
 //! whole-blob (no `get_range`) and we want this crate's
 //! dependency tree to stay minimal — the mount has to be cheap
 //! enough that `tilo-app-host` can spawn one per running app.

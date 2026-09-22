@@ -12,7 +12,7 @@
 
 
 [package]
-id       = "dev.tilo.camera"
+id       = "so.tilo.camera"
 name     = "Camera"
 category = "Multimedia"
 version  = "0.1.0"

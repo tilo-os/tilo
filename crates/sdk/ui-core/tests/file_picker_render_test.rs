@@ -3,8 +3,10 @@
 //! the icon / breadcrumb / save-field / filter-chip paths can't silently
 //! regress to blank output.
 //!
+//! Renders on the dark and the light preset and asserts the picker's
+//! derived panel edge registers against its own fill in both (HIG §9.5).
 //! Skips when no wgpu adapter is available. Set `QUICK_UI_SCREENSHOT_DIR`
-//! to dump PNGs (`file_picker_open.png`, `file_picker_save.png`).
+//! to dump PNGs (`file_picker_{open,save}_{dark,light}.png`).
 
 #![allow(
     clippy::unwrap_used,
@@ -13,7 +15,9 @@
     clippy::string_slice,
     clippy::panic,
     clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "in a test these are the assertion, not a hazard; pixel probes round f64 rects to u32"
 )]
 
 use crate::support::offscreen::OffscreenRenderer;
@@ -53,14 +57,62 @@ fn temp_dir() -> (tempfile::TempDir, PathBuf) {
     (dir, root)
 }
 
-fn render(picker: &mut FilePicker, w: u32, h: u32, renderer: &mut OffscreenRenderer) -> Vec<u8> {
-    let theme = Theme::dark();
+/// The desktop the picker floats over in each preset: the theme's own
+/// app background, so the frame reads the way the shell composites it.
+fn backdrop(theme: &Theme) -> Color {
+    theme.bg_app
+}
+
+fn render(
+    picker: &mut FilePicker,
+    theme: &Theme,
+    w: u32,
+    h: u32,
+    renderer: &mut OffscreenRenderer,
+) -> Vec<u8> {
     let mut tr = TextRenderer::new();
-    picker.set_rect(Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
+    // Inset from the canvas so the panel's outer edge pixel is sampleable
+    // against the backdrop on every side.
+    picker.set_rect(Rect::new(
+        PICKER_INSET,
+        PICKER_INSET,
+        f64::from(w) - PICKER_INSET,
+        f64::from(h) - PICKER_INSET,
+    ));
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    picker.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-    renderer.render(&scene, Color::from_rgb8(0x0f, 0x17, 0x2a))
+    picker.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    renderer.render(&scene, backdrop(theme))
+}
+
+/// Room around the picker for the edge probes.
+const PICKER_INSET: f64 = 20.0;
+
+fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
+    tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
+}
+
+/// HIG §9.5 "Rest edges": the picker's outermost pixel row is a derived
+/// panel edge that visibly moves against the fill just inside it — the
+/// declared `border_standard` it replaced sat within rounding distance of
+/// `raised` on the dark preset and read as no edge at all.
+fn assert_panel_edge_registers(rgba: &[u8], w: u32, theme_name: &str) {
+    // Sample away from the corner radius and away from the header text:
+    // the left edge, a third of the way down.
+    let y = 140u32;
+    let x_edge = PICKER_INSET as u32;
+    let x_inside = x_edge.saturating_add(6);
+    let edge = OffscreenRenderer::sample(rgba, w, x_edge, y);
+    let inside = OffscreenRenderer::sample(rgba, w, x_inside, y);
+    assert_eq!(edge.3, 0xff, "{theme_name}: edge pixel is opaque");
+    assert_eq!(inside.3, 0xff, "{theme_name}: fill pixel is opaque");
+    let delta = (luminance_of(edge) - luminance_of(inside)).abs();
+    eprintln!("{theme_name}: panel edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
+    assert!(
+        delta >= tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA,
+        "{theme_name}: the picker's panel edge {edge:?} does not register against its fill          {inside:?} (Δlum={delta:.4} < {})",
+        tilo_ui::tokens::colors::HAIRLINE_MIN_DELTA
+    );
 }
 
 fn dump(name: &str, rgba: &[u8], w: u32, h: u32) {
@@ -89,30 +141,37 @@ fn file_picker_open_and_save_render() {
     };
     let (_g, root) = temp_dir();
 
-    // Open mode with file-type filters.
-    let mut open = FilePicker::new("Open a file", &root, vec![root.clone()]).with_filters(vec![
-        FileFilter::new("Images", &["png", "jpg"]),
-        FileFilter::all(),
-    ]);
-    open.set_selection(0);
-    let rgba = render(&mut open, w, h, &mut renderer);
-    let bg = [0x0f, 0x17, 0x2a, 0xff];
-    let non_bg = rgba.chunks_exact(4).filter(|p| p[..4] != bg).count();
-    assert!(
-        non_bg > 2000,
-        "open-mode picker painted too little: {non_bg}"
-    );
-    dump("file_picker_open", &rgba, w, h);
+    for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        let bg8 = backdrop(&theme).to_rgba8();
+        let bg = [bg8.r, bg8.g, bg8.b, 0xff];
 
-    // Save mode with a typed filename.
-    let mut save = FilePicker::new("Save as", &root, vec![root.clone()])
-        .with_mode(FilePickerMode::Save)
-        .with_filename("report.md");
-    let rgba = render(&mut save, w, h, &mut renderer);
-    let non_bg = rgba.chunks_exact(4).filter(|p| p[..4] != bg).count();
-    assert!(
-        non_bg > 2000,
-        "save-mode picker painted too little: {non_bg}"
-    );
-    dump("file_picker_save", &rgba, w, h);
+        // Open mode with file-type filters.
+        let mut open =
+            FilePicker::new("Open a file", &root, vec![root.clone()]).with_filters(vec![
+                FileFilter::new("Images", &["png", "jpg"]),
+                FileFilter::all(),
+            ]);
+        open.set_selection(0);
+        let rgba = render(&mut open, &theme, w, h, &mut renderer);
+        let non_bg = rgba.chunks_exact(4).filter(|p| p[..4] != bg).count();
+        assert!(
+            non_bg > 2000,
+            "{theme_name}: open-mode picker painted too little: {non_bg}"
+        );
+        assert_panel_edge_registers(&rgba, w, theme_name);
+        dump(&format!("file_picker_open_{theme_name}"), &rgba, w, h);
+
+        // Save mode with a typed filename.
+        let mut save = FilePicker::new("Save as", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Save)
+            .with_filename("report.md");
+        let rgba = render(&mut save, &theme, w, h, &mut renderer);
+        let non_bg = rgba.chunks_exact(4).filter(|p| p[..4] != bg).count();
+        assert!(
+            non_bg > 2000,
+            "{theme_name}: save-mode picker painted too little: {non_bg}"
+        );
+        assert_panel_edge_registers(&rgba, w, theme_name);
+        dump(&format!("file_picker_save_{theme_name}"), &rgba, w, h);
+    }
 }

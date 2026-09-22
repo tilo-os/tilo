@@ -10,10 +10,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextStyle};
+use ui::theme::Theme;
 
 use crate::i18n::t;
-use crate::num;
 
 /// Write a recovery copy after this many document-modifying edits.
 pub(crate) const AUTOSAVE_EDIT_THRESHOLD: u32 = 24;
@@ -175,6 +175,7 @@ impl RecoveryBanner {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         palette: RecoveryPalette,
         bar: Rect,
     ) {
@@ -190,46 +191,69 @@ impl RecoveryBanner {
             None,
             &Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1),
         );
+        // Every value is a theme token: `s3` bar inset, `s2` between the two
+        // sibling buttons, a button is its measured label plus `s3` each side
+        // at the bar-control height, `md` corners, the `base` type role
+        // (passed through the renderer-input mapping so it is scaled once);
+        // every line box is centred on the bar's centre line.
+        let sp = &theme.tokens.spacing;
+        let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
+        let font = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.base))
+            .size;
+        // The bar-control height, but never taller than the bar less `s1`
+        // above and below: the banner band itself is a fixed reservation.
+        let s1 = f64::from(sp.s1);
+        let button_h =
+            f64::from(theme.tokens.metrics.bar_control_height).min(bar.height() - 2.0 * s1);
+        let radius = f64::from(theme.tokens.radii.md);
         let cy = f64::midpoint(bar.y0, bar.y1);
+        let banner = t("recovery-banner");
+        let (_, banner_h) = tr.measure(&banner, font, None);
         tr.draw_text(
             scene,
-            &t("recovery-banner"),
-            13.0,
+            &banner,
+            font,
             palette.text,
-            transform * Affine::translate((bar.x0 + 14.0, cy - 8.0)),
+            transform * Affine::translate((bar.x0 + s3, cy - f64::from(banner_h) / 2.0)),
             None,
         );
-        let mut x = bar.x1 - 12.0;
-        for (action, label, width, primary) in [
-            (RecoveryAction::Discard, t("recovery-discard"), 80.0, false),
-            (RecoveryAction::Restore, t("recovery-restore"), 80.0, true),
+        let mut x = bar.x1 - s3;
+        for (action, label, primary) in [
+            (RecoveryAction::Discard, t("recovery-discard"), false),
+            (RecoveryAction::Restore, t("recovery-restore"), true),
         ] {
+            let (label_w, label_h) = tr.measure(&label, font, None);
+            let width = f64::from(label_w) + 2.0 * s3;
             x -= width;
-            let rect = Rect::new(x, cy - 13.0, x + width, cy + 13.0);
-            let (background, foreground) = if primary {
-                (palette.accent, palette.on_accent)
+            let rect = Rect::new(x, cy - button_h / 2.0, x + width, cy + button_h / 2.0);
+            let foreground = if primary {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    palette.accent,
+                    None,
+                    &vello::kurbo::RoundedRect::from_rect(rect, radius),
+                );
+                palette.on_accent
             } else {
-                (palette.chip, palette.text)
+                ui::surface::card(scene, transform, rect, radius, palette.chip);
+                palette.text
             };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                background,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, 6.0),
-            );
-            let tx =
-                rect.x0 + (width - num::f64_of_usize(label.chars().count()) * 7.4).max(6.0) / 2.0;
             tr.draw_text(
                 scene,
                 &label,
-                13.0,
+                font,
                 foreground,
-                transform * Affine::translate((tx, cy - 8.0)),
+                transform
+                    * Affine::translate((
+                        rect.x0 + (width - f64::from(label_w)) / 2.0,
+                        cy - f64::from(label_h) / 2.0,
+                    )),
                 None,
             );
             self.buttons.push((action, rect));
-            x -= 8.0;
+            x -= s2;
         }
     }
 }

@@ -52,3 +52,8 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ContactsApp::new())
 }
+
+#[cfg(test)]
+mod framework_history_tests;
+
+pub mod framework_history;

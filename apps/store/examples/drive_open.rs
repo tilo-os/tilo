@@ -3,14 +3,14 @@
 //! `actions::execute`) without a compositor.
 //!
 //! Used by `verify-open-flow.sh` to prove, against a real
-//! `tilo-install` + a real `.qpkg` served over HTTP, that:
+//! `tilo-install` + a real `.tapp` served over HTTP, that:
 //!   * clicking **Open** on a Tilo card fetches the package on demand
 //!     and installs (caches) it — no separate "Install" step; and
 //!   * clicking **Mark installed** pins it.
 //!
 //! Env:
-//!   `TILO_STORE_ITEM_ID`   reverse-DNS package id (default dev.tilo.hello)
-//!   `TILO_STORE_ITEM_URL`   http(s) URL of the .qpkg (required for `open`)
+//!   `TILO_STORE_ITEM_ID`   reverse-DNS package id (default so.tilo.hello)
+//!   `TILO_STORE_ITEM_URL`   http(s) URL of the .tapp (required for `open`)
 //!   `TILO_STORE_ITEM_NAME`  display name (default derived from id)
 //! Arg 1: `open` | `mark-installed`
 //!
@@ -31,7 +31,7 @@ use store::model::{
 )]
 fn main() {
     let action = std::env::args().nth(1).unwrap_or_else(|| "open".into());
-    let id = std::env::var("TILO_STORE_ITEM_ID").unwrap_or_else(|_| "dev.tilo.hello".into());
+    let id = std::env::var("TILO_STORE_ITEM_ID").unwrap_or_else(|_| "so.tilo.hello".into());
     let name = std::env::var("TILO_STORE_ITEM_NAME").unwrap_or_else(|_| "Hello".into());
     let url = std::env::var("TILO_STORE_ITEM_URL").unwrap_or_default();
 
@@ -53,6 +53,8 @@ fn main() {
         id: id.clone(),
         name,
         description: "driven by verify-open-flow.sh".into(),
+        tagline: String::new(),
+        supported_languages: Vec::new(),
         categories: vec!["System".into()],
         icon_url: None,
         screenshot_urls: Vec::new(),

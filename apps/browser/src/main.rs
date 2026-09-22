@@ -1,3 +1,9 @@
+#![allow(
+    clippy::field_reassign_with_default,
+    clippy::redundant_field_names,
+    clippy::too_many_lines,
+    reason = "migration stack lint debt is scoped to this target"
+)]
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
 // because a fault there can affect the session or every app.
@@ -17,9 +23,9 @@
 //   * `--shots <PATH>` — render the chrome at a default size into a PNG
 //     at `<PATH>` and exit. No window, no network: the embedded test
 //     engine pre-renders a deterministic page so the snapshot includes
-//     a populated web view.
-//   * `--shots-live <PATH> [--url <URL>]` (needs the `wpe` feature) —
-//     boot the WPE WebKit engine headless, load `URL` over the
+//     a populated web view, not just empty chrome.
+//   * `--shots-live <PATH> [--url <URL>]` —
+//     boot the real Chromium engine headless, load `URL` over the
 //     network, wait for the painted page, and render chrome + live page
 //     into a PNG, covering the engine → frame → widget → offscreen-render
 //     pipeline without a window.
@@ -36,19 +42,21 @@
     )
 )]
 
+mod live_probe;
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
 use std::collections::HashMap;
 
-use browser::BrowserWidget;
+use browser::browsing_mode::BrowsingMode;
+use browser::{BrowserTabStrip, BrowserTabs, BrowserWidget};
 use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -56,10 +64,6 @@ use vello::kurbo::{Affine, Point};
 /// Default offscreen viewport for `--shots`. Wide enough to show the
 /// toolbar row + a sizeable page area.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
-
-/// A self-contained WPE acceptance page with no external resources.
-#[cfg(feature = "wpe")]
-const WPE_READINESS_URL: &str = "data:text/html;base64,PCFkb2N0eXBlIGh0bWw+PG1ldGEgY2hhcnNldD0idXRmLTgiPjx0aXRsZT5UaWxvIFdQRSBvZmZsaW5lIHJlYWRpbmVzczwvdGl0bGU+PHN0eWxlPmJvZHl7YmFja2dyb3VuZDojMTgzMjQ1O2NvbG9yOiNmZmY7Zm9udDozMnB4IHNhbnMtc2VyaWY7bWFyZ2luOjQ4cHh9I3JlYWR5e2NvbG9yOiM4NmVmYWN9PC9zdHlsZT48aDEgaWQ9InJlYWR5Ij5USUxPIFdQRSBPRkZMSU5FIFJFQURZPC9oMT48cD5Mb2NhbCBkZXRlcm1pbmlzdGljIHBhZ2U7IG5vIGV4dGVybmFsIHJlc291cmNlcy48L3A+PGNhbnZhcyBpZD0icHJvYmUiIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiI+PC9jYW52YXM+PHNjcmlwdD5jb25zdCBjPWRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCJwcm9iZSIpLHg9Yy5nZXRDb250ZXh0KCIyZCIpO3guZmlsbFN0eWxlPSIjZmYwMDAwIjt4LmZpbGxSZWN0KDAsMCwzMiwzMik7PC9zY3JpcHQ+";
 
 /// # Errors
 ///
@@ -84,11 +88,12 @@ pub fn main() {
     }
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.browser", browser_root)
+        &LaunchSpec::new_with_args("so.tilo.browser", browser_root)
+            .runtime_attachment(|args| !launch_browsing_mode(args).is_private())
             .shot_handler(render_shot)
+            .open_state_with_args(open_browser_state)
             .allowed_live_options(&[
                 "--shots-live",
-                "--wpe-ready",
                 "--shots-suggestions",
                 "--shots-overlay",
                 "--shots-pip-empty",
@@ -97,14 +102,17 @@ pub fn main() {
                 "--shots-loading",
                 "--shots-error",
                 "--shots-library",
+                "--shots-tabs",
                 "--library-section",
                 "--library-filter",
                 "--download-state",
                 "--audit-state",
                 "--url",
                 "--size",
+                "--app-root",
             ])
             .allowed_flags(&["--probe-pip", "--pip-active"])
+            .allowed_live_flags(&["--private"])
             .max_positionals(1)
             .command_handler(command)
             .live_handler(run_live),
@@ -116,14 +124,156 @@ pub fn main() {
     reason = "signature is fixed by LaunchSpec's argument-aware root factory"
 )]
 fn browser_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(Box::new(browser_widget(args)?))
+    Ok(Box::new(browser_workspace(args)?))
 }
 
-fn browser_widget(args: &LaunchArgs) -> Result<BrowserWidget, LaunchError> {
-    let mut widget = BrowserWidget::try_new().map_err(LaunchError::Operation)?;
-    if let Some(uri) = launch_target(args.positionals()) {
-        widget = widget.with_initial_uri(uri);
+static LAUNCH_SESSION: std::sync::OnceLock<
+    std::sync::Mutex<Result<Option<browser::session::SessionStore>, String>>,
+> = std::sync::OnceLock::new();
+
+#[derive(Clone, Debug)]
+struct LaunchPolicy {
+    mode: BrowsingMode,
+    root: Option<std::path::PathBuf>,
+}
+
+static LAUNCH_POLICY: std::sync::OnceLock<Result<LaunchPolicy, String>> =
+    std::sync::OnceLock::new();
+
+fn requested_browsing_mode(
+    explicit_private: bool,
+    bundle_fallback: Option<&std::ffi::OsStr>,
+) -> BrowsingMode {
+    if explicit_private || bundle_fallback.is_some_and(|value| value == "1") {
+        BrowsingMode::Private
+    } else {
+        BrowsingMode::Normal
     }
+}
+
+fn launch_browsing_mode(args: &LaunchArgs) -> BrowsingMode {
+    requested_browsing_mode(
+        args.has("--private"),
+        std::env::var_os("QOS_BROWSER_PRIVATE").as_deref(),
+    )
+}
+
+fn prepare_launch(args: &LaunchArgs) -> Result<&'static LaunchPolicy, String> {
+    LAUNCH_POLICY
+        .get_or_init(|| {
+            let mode = launch_browsing_mode(args);
+            if mode.is_private() {
+                let root = browser::storage::allocate_private_root()?;
+                let root_text = root
+                    .to_str()
+                    .ok_or_else(|| "Private browser root is not valid UTF-8".to_string())?;
+                if let Err(error) = browser::storage::configure(Some(root_text)) {
+                    if browser::storage::is_owned_private_root(&root) {
+                        let _ = std::fs::remove_dir_all(&root);
+                    }
+                    return Err(error);
+                }
+                Ok(LaunchPolicy {
+                    mode,
+                    root: Some(root),
+                })
+            } else {
+                browser::storage::configure(args.value("--app-root"))?;
+                Ok(LaunchPolicy {
+                    mode,
+                    root: browser::storage::explicit_root().map(std::path::Path::to_owned),
+                })
+            }
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+fn prepare_session(args: &LaunchArgs) -> Result<(), String> {
+    let policy = prepare_launch(args)?;
+    if !policy.mode.allows_session_recovery() {
+        return Ok(());
+    }
+    let session = LAUNCH_SESSION.get_or_init(|| {
+        std::sync::Mutex::new((|| {
+            let root = browser::storage::data_dir().ok_or("Cannot locate browser app root")?;
+            browser::session::SessionStore::open(&root, browser::session::SessionMode::Normal)
+        })())
+    });
+    match &*session.lock().map_err(|e| e.to_string())? {
+        Ok(_) => Ok(()),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn browser_workspace(args: &LaunchArgs) -> Result<BrowserTabs, LaunchError> {
+    let policy = prepare_launch(args).map_err(LaunchError::Operation)?;
+    if let Some(root) = policy.root.as_deref()
+        && policy.mode.is_private()
+    {
+        tracing::info!(private_root = %root.display(), "Private browser root allocated");
+    }
+    prepare_session(args).map_err(LaunchError::Operation)?;
+    let tabs = BrowserTabs::new(browser_widget(args, policy.mode));
+    if policy.mode.is_private() {
+        return Ok(tabs);
+    }
+    let store = LAUNCH_SESSION
+        .get()
+        .and_then(|session| {
+            session
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.as_mut().ok().and_then(Option::take))
+        })
+        .ok_or_else(|| LaunchError::Operation("Browser recovery store already attached".into()))?;
+    tabs.with_session(store).map_err(LaunchError::Operation)
+}
+
+fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    let policy = match prepare_launch(args) {
+        Ok(policy) => policy,
+        Err(error) => return (ui::State::new(), ui::persist::Autosave::disabled(error)),
+    };
+    if policy.mode.is_private() {
+        return (
+            ui::State::new(),
+            ui::persist::Autosave::disabled("Private window state is memory-only"),
+        );
+    }
+    if let Err(error) = prepare_session(args) {
+        return (ui::State::new(), ui::persist::Autosave::disabled(error));
+    }
+    if let Some(root) = browser::storage::explicit_root() {
+        let opened = ui::persist::DocStore::open_canonical_at(id, &root.join("document"));
+        return match opened {
+            Ok(mut store) => {
+                let mut doc = store.load_or_new();
+                if let Some(error) = store.refusal() {
+                    return (
+                        ui::State::from_doc(doc),
+                        ui::persist::Autosave::disabled(error.to_string()),
+                    );
+                }
+                let mut autosave =
+                    ui::persist::Autosave::spawn(store, ui::persist::DEFAULT_DEBOUNCE);
+                autosave.seed(&mut doc);
+                (ui::State::from_doc(doc), autosave)
+            }
+            Err(error) => (
+                ui::State::new(),
+                ui::persist::Autosave::disabled(error.to_string()),
+            ),
+        };
+    }
+    ui::persist::open(id)
+}
+
+fn browser_widget(args: &LaunchArgs, mode: BrowsingMode) -> BrowserWidget {
+    let mut widget = launch_target(args.positionals()).map_or_else(
+        || BrowserWidget::new_with_mode(mode),
+        |uri| BrowserWidget::new_with_mode(mode).with_initial_uri(uri),
+    );
     match args.value("--audit-state") {
         Some("error") => widget.debug_show_load_error(),
         Some("history") => widget.debug_show_library("history"),
@@ -134,7 +284,7 @@ fn browser_widget(args: &LaunchArgs) -> Result<BrowserWidget, LaunchError> {
         Some("history-paused") => widget.debug_show_history_paused(),
         _ => {}
     }
-    Ok(widget)
+    widget
 }
 
 #[allow(
@@ -144,7 +294,7 @@ fn browser_widget(args: &LaunchArgs) -> Result<BrowserWidget, LaunchError> {
 fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
-    let widget = browser_widget(args)?;
+    let widget = browser_workspace(args)?;
     let engine = widget.engine_handle();
 
     // Zero-copy GPU compositing: when the WebView engine exports dmabuf
@@ -160,9 +310,14 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
         ));
     }
 
-    let (state, autosave) = ui::persist::open("dev.tilo.browser");
-    let mut app =
-        ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
+    let (state, autosave) = open_browser_state("so.tilo.browser", args);
+    let mode = prepare_launch(args).map_err(LaunchError::Operation)?.mode;
+    let mut app = if mode.is_private() {
+        ui::App::from_scoped_parts_local(wake_scope, state, Box::new(widget))
+    } else {
+        ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
+    }
+    .with_autosave(autosave);
     browser::actions::register(app.action_registry_mut());
     // Wake the (otherwise event-driven) winit loop whenever the engine
     // publishes a frame or a navigation event, so pages animate and
@@ -191,27 +346,53 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             size,
             std::path::Path::new(out),
             args.has("--probe-pip"),
-            args.text_scale,
+            args,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
-    if let Some(out) = args.value("--wpe-ready") {
-        render_wpe_readiness_to_png(
-            std::path::Path::new(out),
-            args.value("--size")
-                .and_then(parse_size)
-                .unwrap_or(DEFAULT_SHOTS_VIEWPORT),
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    if let Some(out) = args.value("--shots-tabs") {
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((800, 620));
+        let descriptors = (1..=32)
+            .map(|id| {
+                ui::widget::TabDescriptor::new(
+                    id,
+                    format!("Fixture tab {id} with a deliberately long title"),
+                )
+            })
+            .collect();
+        let mut tabs = BrowserTabStrip::new(descriptors, 32);
+        tabs.set_pinned(1, true);
+        tabs.set_pinned(2, true);
+        tabs.set_active(32);
+        tabs.set_viewport_width(f64::from(size.0));
+        tabs.set_motion_reduced(true);
+        let favicon = vello::peniko::ImageData {
+            data: vello::peniko::Blob::new(std::sync::Arc::new(vec![
+                20, 110, 230, 255, 255, 190, 20, 255, 255, 80, 80, 255, 30, 190, 100, 255,
+            ])),
+            format: vello::peniko::ImageFormat::Rgba8,
+            alpha_type: vello::peniko::ImageAlphaType::Alpha,
+            width: 2,
+            height: 2,
+        };
+        tabs.set_fixture_visual(1, Some(favicon), false, false, false);
+        tabs.set_fixture_visual(2, None, true, false, false);
+        tabs.set_fixture_visual(30, None, false, true, false);
+        tabs.set_fixture_visual(32, None, false, true, true);
+        render_shot_to_png(Box::new(tabs), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-suggestions") {
-        render_suggestions_shot(std::path::Path::new(out), args.text_scale);
+        render_suggestions_shot(std::path::Path::new(out), args);
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-overlay") {
-        render_overlay_shot(std::path::Path::new(out), args.text_scale)
+        render_overlay_shot(std::path::Path::new(out), args)
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
@@ -223,13 +404,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((1000, 650));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args.text_scale,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-settings") {
@@ -240,13 +416,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((900, 700));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args.text_scale,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-history-paused") {
@@ -257,13 +428,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((900, 700));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args.text_scale,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-loading") {
@@ -274,13 +440,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((900, 620));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args.text_scale,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-library") {
@@ -298,13 +459,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((1000, 700));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args.text_scale,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-error") {
@@ -315,13 +471,8 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             .and_then(parse_size)
             .unwrap_or((900, 620));
         widget.debug_set_viewport_width(size.0);
-        render_shot_to_png(
-            Box::new(widget),
-            size,
-            std::path::Path::new(out),
-            args.text_scale,
-        )
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     Ok(false)
@@ -335,7 +486,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     }
     let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
     widget.debug_set_viewport_width(viewport.0);
-    render_shot_to_png(Box::new(widget), viewport, out, args.text_scale)
+    render_shot_to_png(Box::new(widget), viewport, out, args)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -346,13 +497,13 @@ fn parse_size(value: &str) -> Option<(u32, u32)> {
 
 fn render_overlay_shot(
     out: &std::path::Path,
-    text_scale: Option<f32>,
+    args: &LaunchArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use browser::history::HistoryEntry;
     let mut widget = BrowserWidget::new_headless();
     widget.debug_force_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/tilo/tilo".into(),
+            url: "https://github.com/qos/qos".into(),
             title: "Tilo on code.sandbox.example".into(),
             last_visit: 3,
             visit_count: 12,
@@ -370,17 +521,17 @@ fn render_overlay_shot(
             visit_count: 2,
         },
     ]);
-    render_shot_to_png(Box::new(widget), (1000, 650), out, text_scale)
+    render_shot_to_png(Box::new(widget), (1000, 650), out, args)
 }
 
 /// Render the address-suggestion overlay with sample entries, to inspect
 /// its rows + selection highlight (it paints in the overlay pass, which
 /// the normal shot path doesn't drive).
-fn render_suggestions_shot(out: &std::path::Path, text_scale: Option<f32>) {
+fn render_suggestions_shot(out: &std::path::Path, args: &LaunchArgs) {
     use browser::address_overlay::AddressSuggestions;
     use browser::history::HistoryEntry;
     let (w, h) = (900u32, 360u32);
-    let theme = shot_theme(text_scale);
+    let theme = ui::launch::shot_theme(args);
     let presence = PresenceCtx::empty();
     let mut text_renderer = TextRenderer::new();
     text_renderer.set_text_scale(theme.text_scale);
@@ -388,7 +539,7 @@ fn render_suggestions_shot(out: &std::path::Path, text_scale: Option<f32>) {
     let mut overlay = AddressSuggestions::new();
     overlay.set_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/tilo/tilo".into(),
+            url: "https://github.com/qos/qos".into(),
             title: "Tilo — code.sandbox.example".into(),
             last_visit: 3,
             visit_count: 12,
@@ -426,40 +577,6 @@ fn render_suggestions_shot(out: &std::path::Path, text_scale: Option<f32>) {
     println!("browser: wrote suggestions shot to {}", out.display());
 }
 
-/// `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-/// theme-driven chrome can be proven across palettes; defaults to dark.
-/// `TILO_SHOTS_REDUCE_MOTION=1` drives a deterministic review override; the
-/// live accessibility preferences are honoured too.
-fn shot_theme(text_scale: Option<f32>) -> Theme {
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    // `--text-scale` is a common launch option.  Browser owns its custom
-    // screenshot handlers, so it must thread that value through explicitly
-    // rather than silently capturing normal-sized text for an a11y review.
-    let theme = match text_scale {
-        Some(scale) => theme.with_text_scale(scale),
-        None => theme,
-    };
-    theme.with_reduce_motion(shot_motion_reduced())
-}
-
-fn shot_motion_reduced() -> bool {
-    [
-        "TILO_SHOTS_REDUCE_MOTION",
-        "TILO_A11Y_REDUCE_MOTION",
-        "TILO_REDUCE_MOTION",
-    ]
-    .into_iter()
-    .filter_map(|key| std::env::var(key).ok())
-    .any(|value| {
-        let value = value.trim();
-        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-    })
-}
-
 /// The resource dispatcher forwards a claimed URI as one opaque positional
 /// argument. Browser deliberately accepts only the schemes it declares.
 fn launch_target(args: &[String]) -> Option<String> {
@@ -474,54 +591,35 @@ fn launch_target(args: &[String]) -> Option<String> {
         .cloned()
 }
 
-/// `--shots-live`: real engine, real network. Boot WPE, navigate, wait
+/// `--shots-live`: real engine, real network. Boot Chromium, navigate, wait
 /// for the painted page at the web view's laid-out size, then render
 /// one frame to PNG — the same five-pass cycle as `render_shot_to_png`,
 /// with an engine-pumping wait between layout and draw.
-#[cfg(feature = "wpe")]
 fn render_live_shot_to_png(
     url: &str,
     viewport: (u32, u32),
     out: &std::path::Path,
     probe_pip: bool,
-    text_scale: Option<f32>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    render_wpe_shot_to_png(url, viewport, out, probe_pip, text_scale, true)
-}
-
-/// Render a real WPE page through the BrowserWidget pipeline. The existing
-/// network shot mode disables WebKit's nested sandbox for development
-/// containers; the offline readiness mode passes `false` and keeps it on.
-#[cfg(feature = "wpe")]
-fn render_wpe_shot_to_png(
-    url: &str,
-    viewport: (u32, u32),
-    out: &std::path::Path,
-    probe_pip: bool,
-    text_scale: Option<f32>,
-    disable_webkit_sandbox: bool,
+    args: &LaunchArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
     use ui::webview::{SharedEngine, WebViewCommand};
 
-    if disable_webkit_sandbox {
-        // Dev environments (containers) can't nest WebKit's bubblewrap
-        // sandbox; this remains restricted to the network shot mode.
-        unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
-    } else {
-        // Do not let a caller-provided development override weaken readiness.
-        unsafe { std::env::remove_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS") };
-    }
-
-    let engine: SharedEngine = ui::webview::wpe::WpeEngine::new()
-        .map_err(|e| format!("WPE engine failed to boot: {e}"))?;
-    // headless=true: no filter-loader thread, no auto-navigate — the
-    // shot drives navigation itself.
+    let real_engine: SharedEngine = ui::webview::chromium::ChromiumEngine::new()
+        .map_err(|e| format!("Chromium engine failed to boot: {e}"))?;
+    let probe = live_probe::LiveProbe::new(real_engine);
+    let engine: SharedEngine = probe.clone();
+    // Keep capture chrome/session data isolated while using real maintained
+    // protection and the same WebViewEngine event/render pipeline as the app.
     let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+    browser::blocker::spawn_filter_loader(engine.clone());
+    engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+        browser::blocker::user_scripts(),
+    )));
     engine.send(WebViewCommand::Navigate(url.to_string()));
 
     let (w, h) = viewport;
-    let theme = shot_theme(text_scale);
+    let theme = ui::launch::shot_theme(args);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -575,19 +673,31 @@ fn render_wpe_shot_to_png(
         widget.apply_layout(&taffy, child, Point::ORIGIN);
 
         if pip_probe_started && pip_request.is_none() {
-            pip_request = Widget::take_floating_surface_request(&mut widget);
+            pip_request =
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut widget);
         }
 
-        let frame = engine.frames().lock().unwrap().clone();
+        let page = probe.state();
+        if let Some(error) = &page.error {
+            return Err(format!("{}: {error}", page.uri).into());
+        }
+        let frame = engine
+            .frames()
+            .lock()
+            .map_err(|_| "Capture frame store is unavailable")?
+            .clone();
         if let Some(f) = frame {
-            let painted = f.rgba.chunks_exact(4).any(|px| px[3] != 0);
+            let painted = f
+                .rgba
+                .chunks_exact(4)
+                .any(|px| px.last().is_some_and(|alpha| *alpha != 0));
             // Wait for a painted frame at the requested viewport width
             // (edge-to-edge web view, scale 1.0 → frame width ≈ w), so
             // the layout-driven Resize has taken hold rather than the
             // engine's 1024×768 default. Works for any width, wide or
             // narrow.
             let sized = (f.width as i32 - w as i32).abs() <= 2;
-            if painted && sized {
+            if painted && sized && page.loaded && page.uri.starts_with("http") {
                 let seen = *sized_frame_seen_at.get_or_insert_with(Instant::now);
                 // Settle long enough that a UA-driven reload (the mobile/
                 // desktop switch fires one on the first resize) completes
@@ -610,40 +720,7 @@ fn render_wpe_shot_to_png(
                         &presence,
                         &permission,
                     );
-                    if let Some(parent) = out.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                    let mut renderer = OffscreenRenderer::new(w, h);
-                    renderer.render_png(&scene, vello::peniko::Color::TRANSPARENT, out);
-                    if let Some(request) = pip_request.as_ref() {
-                        let ui::floating_surface::FloatingSource::AppElement {
-                            element_id,
-                            region,
-                            ..
-                        } = &request.source
-                        else {
-                            return Err(
-                                "real browser PiP did not preserve a semantic media element".into(),
-                            );
-                        };
-                        if element_id.trim().is_empty() || region.area() <= 1.0 {
-                            return Err("real browser PiP returned empty semantic geometry".into());
-                        }
-                        let protocol: ui::floating_surface::FloatingSurfaceProtocolRequest =
-                            request.into();
-                        let sidecar =
-                            std::path::PathBuf::from(format!("{}.pip.json", out.display()));
-                        std::fs::write(&sidecar, serde_json::to_vec_pretty(&protocol)?)?;
-                        println!(
-                            "browser: live PiP selected {} at {:.0}×{:.0}; wrote {}",
-                            request.title,
-                            region.width(),
-                            region.height(),
-                            sidecar.display()
-                        );
-                    }
-                    println!("browser: wrote live shot of {url} to {}", out.display());
-                    return Ok(());
+                    return write_live_capture(&scene, viewport, out, pip_request.as_ref(), &page);
                 }
             }
         }
@@ -654,53 +731,6 @@ fn render_wpe_shot_to_png(
     }
 }
 
-#[cfg(feature = "wpe")]
-fn render_wpe_readiness_to_png(
-    out: &std::path::Path,
-    viewport: (u32, u32),
-) -> Result<(), Box<dyn std::error::Error>> {
-    render_wpe_shot_to_png(WPE_READINESS_URL, viewport, out, false, None, false)?;
-    let sidecar = std::path::PathBuf::from(format!("{}.wpe.json", out.display()));
-    let evidence = serde_json::json!({
-        "schema": 1,
-        "engine": "WPE WebKit",
-        "engine_type": "ui::webview::wpe::WpeEngine",
-        "test_engine": false,
-        "webview_backend": "wpebackend-fdo",
-        "navigation": "data-url",
-        "external_resources": false,
-        "webkit_sandbox_disable_requested": false,
-        "painted_frame": true,
-        "viewport": [viewport.0, viewport.1],
-        "screenshot": out.display().to_string(),
-    });
-    std::fs::write(&sidecar, serde_json::to_vec_pretty(&evidence)?)?;
-    println!(
-        "browser: wrote WPE offline readiness evidence to {}",
-        sidecar.display()
-    );
-    Ok(())
-}
-
-#[cfg(not(feature = "wpe"))]
-fn render_live_shot_to_png(
-    _url: &str,
-    _viewport: (u32, u32),
-    _out: &std::path::Path,
-    _probe_pip: bool,
-    _text_scale: Option<f32>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    Err("--shots-live needs the real engine: rebuild with --features wpe".into())
-}
-
-#[cfg(not(feature = "wpe"))]
-fn render_wpe_readiness_to_png(
-    _out: &std::path::Path,
-    _viewport: (u32, u32),
-) -> Result<(), Box<dyn std::error::Error>> {
-    Err("--wpe-ready needs the real engine: rebuild with --features wpe".into())
-}
-
 /// Render one offscreen frame against `widget` at `viewport` and write
 /// the resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
 /// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
@@ -708,10 +738,10 @@ fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
-    text_scale: Option<f32>,
+    args: &LaunchArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = shot_theme(text_scale);
+    let theme = ui::launch::shot_theme(args);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -790,9 +820,78 @@ fn render_shot_to_png(
     Ok(())
 }
 
+fn write_live_capture(
+    scene: &Scene,
+    viewport: (u32, u32),
+    out: &std::path::Path,
+    pip_request: Option<&ui::floating_surface::FloatingSurfaceRequest>,
+    page: &live_probe::PageState,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = viewport;
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(scene, vello::peniko::Color::TRANSPARENT, out);
+    if let Some(request) = pip_request {
+        let ui::floating_surface::FloatingSource::AppElement {
+            element_id, region, ..
+        } = &request.source
+        else {
+            return Err("real browser PiP did not preserve a semantic media element".into());
+        };
+        if element_id.trim().is_empty() || region.area() <= 1.0 {
+            return Err("real browser PiP returned empty semantic geometry".into());
+        }
+        let protocol: ui::floating_surface::FloatingSurfaceProtocolRequest = request.into();
+        let sidecar = std::path::PathBuf::from(format!("{}.pip.json", out.display()));
+        std::fs::write(&sidecar, serde_json::to_vec_pretty(&protocol)?)?;
+        println!(
+            "browser: live PiP selected {} at {:.0}×{:.0}; wrote {}",
+            request.title,
+            region.width(),
+            region.height(),
+            sidecar.display()
+        );
+    }
+    std::fs::write(
+        format!("{}.page.json", out.display()),
+        serde_json::to_vec_pretty(page)?,
+    )?;
+    println!(
+        "browser: wrote live Chromium shot of {} to {}",
+        page.uri,
+        out.display()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod resource_claim_tests {
-    use super::launch_target;
+    use super::{launch_target, requested_browsing_mode};
+    use browser::browsing_mode::BrowsingMode;
+
+    #[test]
+    fn explicit_private_flag_wins_and_environment_one_is_bundle_fallback() {
+        assert_eq!(
+            requested_browsing_mode(true, Some(std::ffi::OsStr::new("0"))),
+            BrowsingMode::Private
+        );
+        assert_eq!(
+            requested_browsing_mode(false, Some(std::ffi::OsStr::new("1"))),
+            BrowsingMode::Private
+        );
+        for fallback in [
+            None,
+            Some(std::ffi::OsStr::new("0")),
+            Some(std::ffi::OsStr::new("true")),
+        ] {
+            assert_eq!(
+                requested_browsing_mode(false, fallback),
+                BrowsingMode::Normal
+            );
+        }
+    }
 
     #[test]
     fn startup_accepts_only_declared_web_schemes_as_one_value() {

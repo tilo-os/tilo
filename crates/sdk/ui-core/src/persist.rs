@@ -7,14 +7,14 @@
 //! This module closes that gap in three lines. Instead of
 //!
 //! ```ignore
-//! ui::App::from_factory(ui::State::new(), my_app::app_root).run();
+//! tilo_ui::App::from_factory(tilo_ui::State::new(), my_app::app_root).run();
 //! ```
 //!
 //! an app writes
 //!
 //! ```ignore
-//! let (state, autosave) = ui::persist::open("dev.tilo.my-app");
-//! ui::App::from_factory(state, my_app::app_root)
+//! let (state, autosave) = tilo_ui::persist::open("so.tilo.my-app");
+//! tilo_ui::App::from_factory(state, my_app::app_root)
 //!     .with_autosave(autosave)
 //!     .run();
 //! ```
@@ -35,7 +35,7 @@
 // StoreError>` in this module large. Shrinking it means editing the
 // `app_state` crate; boxing it here instead means changing the return
 // type of these `pub fn`s, a public-API change that ripples to every
-// crate that calls into `ui::persist` (`shell` included). Neither is a
+// crate that calls into `tilo_ui::persist` (`shell` included). Neither is a
 // same-crate lint fix, so the size is accepted rather than exempted
 // function-by-function.
 #![allow(clippy::result_large_err)]
@@ -220,7 +220,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn open_keeps_autosave_enabled_when_the_state_dir_already_exists() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "dev.tilo.persist-open-twice";
+        let pkg = "so.tilo.persist-open-twice";
 
         // Directory present before the first open, as on every later launch.
         let dir = tmp.path().join(pkg);
@@ -266,7 +266,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn legacy_record_index_is_imported_by_one_room_only() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let package = "dev.tilo.legacy-room-index";
+        let package = "so.tilo.legacy-room-index";
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
             std::env::remove_var("TILO_PACKAGE_ID");
@@ -298,7 +298,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn open_recovers_when_the_state_path_is_a_stale_file() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "dev.tilo.stale-file-open";
+        let pkg = "so.tilo.stale-file-open";
 
         // Old layout's leftover: a file where the new layout wants a directory.
         let path = tmp.path().join(pkg);

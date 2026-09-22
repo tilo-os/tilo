@@ -18,19 +18,22 @@ use vello::kurbo::{Affine, Arc, Cap, Circle, Join, Point, Rect, RoundedRect, Str
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Alpha of a gauge's background track against the border colour.
-const TRACK_ALPHA: u8 = 150;
+/// Alpha of a gauge's unfilled track, derived against the raised surface
+/// a gauge sits on (HIG §9.5): a declared border at any alpha is three
+/// shades off that surface on the dark palette and the track vanishes.
+const TRACK_ALPHA: u8 = 40;
 const BAR_TRACK_H: f64 = 8.0;
 
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
+/// The unfilled track colour on the theme's raised surface.
+fn track_color(theme: &Theme) -> Color {
+    crate::widget::data_table::tier_on(theme.tokens.colors.surfaces.raised, TRACK_ALPHA)
 }
 
 /// Rounds a `0..=1` fraction to a whole percentage for the accessibility
@@ -156,7 +159,10 @@ impl RingGauge {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "ring painting combines scene resources and theme with center/radius/thickness, fraction, color and value/caption text"
+    )]
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,
@@ -177,7 +183,7 @@ impl RingGauge {
         scene.stroke(
             &Stroke::new(thickness),
             transform,
-            with_alpha(theme.tokens.colors.border_standard, TRACK_ALPHA),
+            track_color(theme),
             None,
             &track,
         );
@@ -193,7 +199,7 @@ impl RingGauge {
 
         let tokens = &theme.tokens;
         if !big.is_empty() {
-            let size = tokens.typography.scale.xl;
+            let size = renderer_type_size(text_renderer, tokens.typography.scale.xl);
             let (bw, bh) = text_renderer.measure_weighted(big, size, None, TextWeight::Bold);
             let bx = center.x - f64::from(bw) / 2.0;
             let by = center.y - f64::from(bh) / 2.0 - if small.is_empty() { 0.0 } else { 4.0 };
@@ -207,7 +213,7 @@ impl RingGauge {
                 TextWeight::Bold,
             );
             if !small.is_empty() {
-                let ss = tokens.typography.scale.xs;
+                let ss = renderer_type_size(text_renderer, tokens.typography.scale.xs);
                 let (sw, _) = text_renderer.measure(small, ss, None);
                 let sx = center.x - f64::from(sw) / 2.0;
                 let sy = center.y + f64::from(bh) / 2.0 - 2.0;
@@ -401,7 +407,10 @@ impl BarGauge {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "bar painting combines scene resources and theme with bounds, fraction, color, label and formatted value"
+    )]
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,
@@ -421,7 +430,7 @@ impl BarGauge {
             text_renderer.draw_text_weighted(
                 scene,
                 label,
-                tokens.typography.scale.sm,
+                renderer_type_size(text_renderer, tokens.typography.scale.sm),
                 tokens.colors.text_primary,
                 transform.pre_translate(Vec2::new(rect.x0, rect.y0)),
                 None,
@@ -429,11 +438,15 @@ impl BarGauge {
             );
         }
         if !value.is_empty() {
-            let (vw, _) = text_renderer.measure(value, tokens.typography.scale.sm, None);
+            let (vw, _) = text_renderer.measure(
+                value,
+                renderer_type_size(text_renderer, tokens.typography.scale.sm),
+                None,
+            );
             text_renderer.draw_text(
                 scene,
                 value,
-                tokens.typography.scale.sm,
+                renderer_type_size(text_renderer, tokens.typography.scale.sm),
                 tokens.colors.text_dim,
                 transform.pre_translate(Vec2::new(rect.x1 - f64::from(vw), rect.y0)),
                 None,
@@ -445,7 +458,7 @@ impl BarGauge {
         scene.fill(
             Fill::NonZero,
             transform,
-            with_alpha(tokens.colors.border_standard, TRACK_ALPHA),
+            track_color(theme),
             None,
             &RoundedRect::from_rect(track, radius),
         );

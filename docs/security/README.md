@@ -39,4 +39,4 @@ output. `rollback-boot-check.sh` gets this right and is the model.
 - `docs/superpowers/specs/2026-06-30-tilo-security-architecture-plan.md` — the earlier plan. Its §6.1 first stated the device-key ≠ account-key invariant this design is built on.
 - `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md` — the role/attestation model behind §7's authorship half.
 - `docs/superpowers/specs/2026-06-30-cryptographic-redaction-design.md` — redaction as a cooperative protocol, and why it is not a security mechanism.
-- `docs/app-model/sandbox.md`, `docs/app-model/trust.md` — the `.qpkg` sandbox and package-signing detail.
+- `docs/app-model/sandbox.md`, `docs/app-model/trust.md` — the `.tapp` sandbox and package-signing detail.

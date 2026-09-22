@@ -10,7 +10,7 @@
 
 
 [package]
-id       = "dev.tilo.agent"
+id       = "so.tilo.agent"
 name     = "Agent"
 category = "Utility"
 version  = "0.1.0"

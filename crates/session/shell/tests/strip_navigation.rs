@@ -41,9 +41,11 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
 
-/// Half the display each, so three plus the wheel-disc gutter overflow the
+/// Two-fifths of the display each, so the second group's trailing controls
+/// remain clickable while the group itself still crosses the viewport edge.
+/// Three plus the wheel-disc gutter overflow the
 /// viewport — content that fits cannot demonstrate anything about panning.
-const HALF_DISPLAY_PERMILLE: u16 = 500;
+const GROUP_WIDTH_PERMILLE: u16 = 400;
 
 /// Enough groups that travelling to the far end pushes the near end
 /// entirely off screen; with fewer, the first would still poke in at
@@ -83,7 +85,7 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
                 mk_tab(ids[1], &format!("G{i}-B")),
             ],
             active_tab: ids[0],
-            width: WindowWidth::Fraction(HALF_DISPLAY_PERMILLE),
+            width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
         })
         .collect();
@@ -408,7 +410,22 @@ fn the_plus_chip_does_not_move_the_viewport() {
          press has nothing to reveal and the test proves nothing"
     );
     let plus = h.plus_rect(1);
-    h.click(plus.center());
+    let row = h
+        .host
+        .group_row_rect_for_tests(h.strip)
+        .expect("strip row must be laid out");
+    let click = Point::new(plus.x0 + 1.0, plus.center().y);
+    assert!(
+        row.contains(click),
+        "fixture must leave group 1's + chip clickable ({plus:?} outside {row:?})"
+    );
+    if let Some(sidebar) = h.host.sidebar_rect_for_tests() {
+        assert!(
+            !sidebar.contains(click),
+            "fixture must leave the click clear of sidebar chrome ({click:?} inside {sidebar:?})"
+        );
+    }
+    h.click(click);
     h.tick();
 
     assert!(

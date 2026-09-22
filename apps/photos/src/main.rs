@@ -58,8 +58,9 @@ extern crate runtime_dylib;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.photos", live_root)
-            .open_state_with_args(open_state)
+        &LaunchSpec::new_with_args("so.tilo.photos", live_root)
+            .history(&photos::framework_history::HISTORY)
+            .open_app_global_state_with_args(open_state)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
             .allowed_live_flags(&["--analyze-imports", "--library"])
@@ -177,7 +178,10 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .and_then(parse_size)
         .or(args.viewport)
         .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-    render_scenario(scenario, viewport, args.text_scale, out)
+    // The shared shot policy: `QOS_SHOTS_THEME`, `--text-scale` /
+    // `QOS_SHOTS_TEXT_SCALE` and the reduced-motion preference resolve the
+    // same way here as in every app on the standard launcher.
+    render_scenario(scenario, viewport, ui::launch::shot_theme(args), out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -192,16 +196,10 @@ fn parse_size(s: &str) -> Option<(u32, u32)> {
 fn render_scenario(
     scenario: &str,
     viewport: (u32, u32),
-    text_scale: Option<f32>,
+    theme: Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let base_theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = configured_shot_theme(base_theme, text_scale, shot_motion_reduced());
     photos::strings::install();
 
     // The generated pattern is written beside the output, so a shot run
@@ -311,50 +309,4 @@ fn render_scenario(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("photos: wrote {scenario} shot to {}", out.display());
     Ok(())
-}
-
-/// Mirror the live application's accessibility preference in offscreen shots.
-/// The headless handler builds a theme directly, so it does not pass through
-/// `ui::App`'s startup gate where this setting is normally applied.
-fn shot_motion_reduced() -> bool {
-    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| {
-            let value = value.trim();
-            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-        })
-}
-
-/// Apply the accessibility inputs the launcher parsed before either layout or
-/// text shaping begins. Keeping this pure makes it impossible for the custom
-/// screenshot runner to claim 200% or reduced motion while rendering a
-/// default Theme/TextRenderer pair.
-fn configured_shot_theme(base: Theme, text_scale: Option<f32>, reduce_motion: bool) -> Theme {
-    let theme = base.with_reduce_motion(reduce_motion);
-    match text_scale {
-        Some(scale) => theme.with_text_scale(scale),
-        None => theme,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn custom_shot_theme_carries_real_text_scale_and_reduced_motion() {
-        let theme = configured_shot_theme(Theme::dark(), Some(2.0), true);
-        assert!((theme.text_scale - 2.0).abs() < f32::EPSILON);
-        assert!(theme.reduce_motion);
-
-        let mut renderer = TextRenderer::new();
-        renderer.set_text_scale(theme.text_scale);
-        let (normal, _) = TextRenderer::new().measure("Photograph", 16.0, None);
-        let (scaled, _) = renderer.measure("Photograph", 16.0, None);
-        assert!(
-            scaled > normal * 1.8,
-            "the screenshot renderer must shape genuinely enlarged text"
-        );
-    }
 }

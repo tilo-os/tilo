@@ -793,7 +793,7 @@ mod tests {
         RemoteCaptureRequest {
             version: REMOTE_CAPTURE_PROTOCOL_VERSION,
             request_id: [1; 16],
-            app_id: "dev.tilo.Camera".into(),
+            app_id: "so.tilo.Camera".into(),
             workspace_id: "workspace-a".into(),
             app_label: "Camera".into(),
             profile,
@@ -858,7 +858,7 @@ mod tests {
         };
         let request = request(profile);
         let (session, grant) = grant_for(&request);
-        let owner = app("dev.tilo.Camera", "workspace-a");
+        let owner = app("so.tilo.Camera", "workspace-a");
         let source = DeviceId::new("phone").unwrap();
         let target = DeviceId::new("laptop").unwrap();
         prepare(
@@ -917,7 +917,7 @@ mod tests {
         ));
         assert!(matches!(
             bridge.revoke(
-                &app("dev.tilo.Other", "workspace-a"),
+                &app("so.tilo.Other", "workspace-a"),
                 &source,
                 &target,
                 session,
@@ -950,7 +950,7 @@ mod tests {
             height: 480,
             frames_per_second: 15,
         });
-        let owner = app("dev.tilo.Camera", "workspace-a");
+        let owner = app("so.tilo.Camera", "workspace-a");
         for index in 1..=MAX_REMOTE_CAPTURE_SESSIONS {
             let (session, grant) = grant_for(&request);
             prepare(
@@ -980,11 +980,11 @@ mod tests {
             Err(RemoteCaptureAdapterError::BindingMismatch)
         ));
         assert_eq!(
-            bridge.revoke_app("dev.tilo.Other", "workspace-a", &mut adapter),
+            bridge.revoke_app("so.tilo.Other", "workspace-a", &mut adapter),
             0
         );
         assert_eq!(
-            bridge.revoke_app("dev.tilo.Camera", "workspace-a", &mut adapter),
+            bridge.revoke_app("so.tilo.Camera", "workspace-a", &mut adapter),
             MAX_REMOTE_CAPTURE_SESSIONS
         );
         assert_eq!(bridge.revoke_all(&mut adapter), 0);

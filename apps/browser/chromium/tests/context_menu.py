@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Native link menu targets, white page background and oversized-link safety."""
+import os, http.server, json, queue, struct, subprocess, sys, tempfile, threading, time
+class Page(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = ("<title>"+self.path+"</title><body style='height:9000px'>needle needle needle "+
+                "<script>if(location.pathname=='/one')document.cookie='shared=yes; path=/';"+
+                "setInterval(()=>document.title=location.pathname+'|'+document.cookie+'|'+scrollY+'|'+innerWidth,100)</script>"+
+                "<a target='_blank' href='/popup'>popup</a><a style='position:absolute;top:60px;left:8px' href='/modifier'>modifier</a>"+
+                "<a style='position:absolute;top:100px;left:8px' href='/"+("x"*9000)+"'>oversized</a>").encode()
+        self.send_response(200); self.send_header("Content-Type","text/html"); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self,*a):
+        if os.environ.get("QOS_TABS_DEBUG"): print(a,flush=True)
+server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Page)
+threading.Thread(target=server.serve_forever,daemon=True).start()
+with tempfile.TemporaryDirectory(prefix='qos-tabs-') as profile:
+    p=subprocess.Popen([sys.argv[1],'--profile='+profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None if os.environ.get("QOS_TABS_DEBUG") else subprocess.DEVNULL)
+    events=queue.Queue()
+    def exact(n):
+        data=b''
+        while len(data)<n:
+            part=p.stdout.read(n-len(data))
+            if not part: raise EOFError()
+            data+=part
+        return data
+    def read():
+        try:
+            while True:
+                n,=struct.unpack('<I',exact(4)); assert 0<n<=64*1024*1024
+                data=exact(n)
+                if data[0]==1:
+                    event=json.loads(data[1:])
+                    if os.environ.get('QOS_TABS_DEBUG'): print(round(time.monotonic(),3),event,flush=True)
+                    events.put(event)
+                else: events.put({'event':'frame','tab':struct.unpack_from('<I',data,1)[0] if data[0]==3 else 1,'pixel':list(data[13:17] if data[0]==3 else data[9:13])})
+        except Exception as e: events.put(e)
+    threading.Thread(target=read,daemon=True).start()
+    def send(**d):
+        b=b'\1'+json.dumps(d).encode(); p.stdin.write(struct.pack('<I',len(b))+b); p.stdin.flush()
+    def until(predicate,timeout=60):
+        end=time.monotonic()+timeout
+        while time.monotonic()<end:
+            e=events.get(timeout=max(.01,end-time.monotonic()))
+            if isinstance(e,Exception): raise e
+            if predicate(e): return e
+        raise AssertionError('event timeout')
+    base='http://127.0.0.1:'+str(server.server_port)
+    try:
+        until(lambda e:e['event']=='ready')
+        send(op='navigate',url=base+'/one')
+        until(lambda e:e['event']=='title' and 'shared=yes' in e['title'])
+        send(op='visibility',visible=False)
+        send(op='visibility',visible=True)
+        frame=until(lambda e:e['event']=='frame')
+        assert frame['pixel']==[255,255,255,255], frame
+        send(op='mouse_button',button='right',down=True,x=20,y=65)
+        send(op='mouse_button',button='right',down=False,x=20,y=65)
+        menu=until(lambda e:e['event']=='context_menu',timeout=5)
+        assert {26501,26502}.issubset({item['id'] for item in menu['items']}), menu
+        send(op='context_action',id=menu['id'],command=26501)
+        until(lambda e:e['event']=='open_tab' and e['url']==base+'/modifier')
+        send(op='mouse_button',button='right',down=True,x=20,y=105)
+        send(op='mouse_button',button='right',down=False,x=20,y=105)
+        send(op='zoom',level=1)
+        def still_alive(event):
+            assert event['event'] != 'context_menu', event
+            return event['event']=='zoom'
+        until(still_alive,timeout=5)
+        send(op='shutdown'); assert p.wait(timeout=15)==0
+        print('PASS: native link context target and action')
+    finally:
+        if p.poll() is None: p.kill();p.wait()
+server.shutdown()

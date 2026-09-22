@@ -1,3 +1,8 @@
+#![allow(
+    clippy::large_enum_variant,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! `collab-types` — the cryptographic foundation for Tilo Spaces,
 //! Channels, and role-based access control.
 //!
@@ -106,15 +111,20 @@ pub use files::{
     CONTENT_REVISION_VERSION, ConflictMergeCodecV1, ConflictResolution, ConflictStatus,
     ConflictStrategy, ContentHash, ContentRevisionV1, FILE_BINDING_VERSION,
     FILE_MUTATION_TRANSACTION_SIGNATURE_DOMAIN, FILE_MUTATION_TRANSACTION_VERSION, FileActor,
-    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationOperationV1,
-    FileMutationParticipantRoleV1, FileMutationParticipantV1, FileMutationTransactionError,
-    FileMutationTransactionManifestV1, FileMutationTransactionV1, FileNameV1, FileNodeKind,
-    FilePropertiesV1, FileProvenance, FileRecordError, FileRecordId, FileVersionId, FileVersionV1,
-    HISTORY_CONTROL_VERSION, HISTORY_PREVIEW_XATTR_PREFIX, HistoryControlOperationV1,
-    HistoryControlRequestV1, IndexStatus, MAX_FILE_NAME_BYTES, MAX_HISTORY_CONTROL_BYTES,
-    MAX_HISTORY_PREVIEW_BYTES, MAX_MERGE_PREFLIGHT_BYTES, MAX_TRANSACTION_PARTICIPANTS,
-    MERGE_PREFLIGHT_VERSION, MERGE_PREFLIGHT_XATTR_PREFIX, MergePreflightProjectionV1,
-    PreviewStatus, PreviewVariant, prefer_conflict_resolution,
+    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationOperation, FileMutationParticipant,
+    FileMutationParticipantRole, FileMutationTransaction, FileMutationTransactionError,
+    FileMutationTransactionManifest, FileNameV1, FileNodeKind, FilePropertiesV1, FileProvenance,
+    FileRecordError, FileRecordId, FileVersionId, FileVersionV1, HISTORY_CONTROL_VERSION,
+    HISTORY_PREVIEW_XATTR_PREFIX, HistoryControlOperationV1, HistoryControlRequestV1, IndexStatus,
+    MAX_FILE_NAME_BYTES, MAX_HISTORY_CONTROL_BYTES, MAX_HISTORY_PREVIEW_BYTES,
+    MAX_MERGE_PREFLIGHT_BYTES, MAX_TRANSACTION_PARTICIPANTS, MERGE_PREFLIGHT_VERSION,
+    MERGE_PREFLIGHT_XATTR_PREFIX, MergePreflightProjectionV1, PreviewStatus, PreviewVariant,
+    prefer_conflict_resolution,
+};
+#[allow(deprecated, reason = "stable collab-types source compatibility")]
+pub use files::{
+    FileMutationOperationV1, FileMutationParticipantRoleV1, FileMutationParticipantV1,
+    FileMutationTransactionManifestV1, FileMutationTransactionV1,
 };
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use invite::{

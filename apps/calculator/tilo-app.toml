@@ -5,7 +5,7 @@
 
 
 [package]
-id       = "dev.tilo.calculator"
+id       = "so.tilo.calculator"
 name     = "Calculator"
 category = "Utility"
 version  = "0.1.0"

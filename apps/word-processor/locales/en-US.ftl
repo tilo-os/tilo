@@ -202,7 +202,13 @@ toast-style-deleted = Style deleted
 toast-style-duplicated = Style duplicated
 toast-saved = Document saved
 toast-save-failed = Could not save the document
-toast-open-failed = Could not open the document
+toast-open-failed = Could not open the document. Your current document is unchanged.
+unsaved-title = Save changes?
+unsaved-body = Save this document before replacing it.
+unsaved-save = Save
+unsaved-discard = Discard changes
+unsaved-cancel = Cancel
+unsaved-close = Close
 toast-file-dialog-failed = Could not open the file chooser
 
 ## Outline / navigation pane

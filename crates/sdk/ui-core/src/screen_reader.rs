@@ -206,8 +206,8 @@ mod phrase {
 /// position-in-set and hierarchy level. Empty segments are dropped.
 ///
 /// ```
-/// use ui::a11y::{AccessNode, AccessState, Role};
-/// use ui::screen_reader::describe;
+/// use tilo_ui::a11y::{AccessNode, AccessState, Role};
+/// use tilo_ui::screen_reader::describe;
 ///
 /// let node = AccessNode::new(Role::Checkbox)
 ///     .with_name("Accept")
@@ -1144,17 +1144,10 @@ mod tests {
             _p: &crate::presence::PresenceCtx,
         ) {
         }
-        fn handle_event(
+        fn handle_event_ctx(
             &mut self,
-            _e: &winit::event::WindowEvent,
-            _sf: f64,
-            _m: &winit::event::Modifiers,
-            _s: &mut automerge::AutoCommit,
-            _p: &automerge::ObjId,
-            _h: &mut bool,
-            _ft: &mut Option<taffy::NodeId>,
-            _ni: taffy::NodeId,
-            _t: &TaffyTree<()>,
+            _event: &winit::event::WindowEvent,
+            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn children(&self) -> Vec<&dyn Widget> {

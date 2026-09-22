@@ -1,0 +1,23 @@
+{
+  "ublock": {
+    "repository": "https://github.com/brave/uBlock",
+    "revision": "4dfbb048607ec4fd19c1c252fd255df6cc653720",
+    "archive_sha256": "f40c26fee854a01fe654ff753799feee6c642e264084203ed84ded594509c84e",
+    "license": "GPL-3.0-or-later"
+  },
+  "brave": {
+    "repository": "https://github.com/brave/adblock-resources",
+    "revision": "6da9b247c3368baa8b4f24cd02046e18702a6527",
+    "resources_sha256": "d085eb0754b7a54d9e1a18a0314b1946b066f61a15457de834d98beb53b4e40f",
+    "license": "MPL-2.0"
+  },
+  "bundle_sha256": "09c1ffe57958dc0eb9974e314e53eee3c4ae70e87457b2db232b0440d1864d6c",
+  "resource_count": 214,
+  "skipped": [
+    {
+      "name": "click2load.html",
+      "reason": "URL-parameterized redirect is not supported by adblock-rust resources"
+    }
+  ],
+  "trusted_resource_policy": "requiresTrust maps to permission mask 1; ordinary filter lists cannot invoke these resources"
+}

@@ -6,7 +6,7 @@
 
 
 [package]
-id       = "dev.tilo.backups"
+id       = "so.tilo.backups"
 name     = "Backups"
 category = "System"
 version  = "0.1.0"

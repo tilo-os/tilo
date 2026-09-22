@@ -36,7 +36,7 @@
 // cosmic-text, automerge, taffy and fluent -- so with `-C
 // prefer-dynamic` rustc serves `ui` and libstd from the dylib instead
 // of baking ~18 MB of `.text` into this binary. The thin-app wrapper also
-// size-optimizes, merges, and folds repeated app-local code so the qpkg meets its
+// size-optimizes, merges, and folds repeated app-local code so the tapp meets its
 // 5 MiB wire contract without slowing the shared runtime. Naming the crate here
 // is what keeps rustc from eliminating it as unused. Compiled out in
 // normal (static) builds.
@@ -114,7 +114,7 @@ fn named_actor(prefix: &str) -> Option<String> {
 
 fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.word-processor", live_root)
+        &LaunchSpec::new_with_args("so.tilo.word-processor", live_root)
             .max_positionals(1)
             .allowed_flags(&[
                 "--history",
@@ -160,7 +160,7 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
             state,
             Box::new(wp),
             args.viewport.unwrap_or((1000, 700)),
-            args.text_scale,
+            ui::launch::shot_theme(args),
             out,
         )?;
         return Ok(());
@@ -200,7 +200,7 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         state,
         Box::new(wp),
         args.viewport.unwrap_or((1000, 700)),
-        args.text_scale,
+        ui::launch::shot_theme(args),
         out,
     )?;
     Ok(())
@@ -376,7 +376,7 @@ fn prepare_launch_inputs(
         let room_id = std::env::var("TILO_WORKSPACE_ID")
             .or_else(|_| std::env::var("QUICK_CLUSTER_ID"))
             .unwrap_or_else(|_| "00000000-0000-0000-0000-000000000000".into());
-        let (room, room_autosave) = ui::persist::open_room("dev.tilo.word-processor", &room_id);
+        let (room, room_autosave) = ui::persist::open_room("so.tilo.word-processor", &room_id);
         let records = ui::RecordSet::in_memory().with_home(room_id);
         let mut registry = tilo_actions::ActionRegistry::new();
         // Register the word processor's action decoder so the Ctrl+K palette and
@@ -520,32 +520,10 @@ fn render_shot(
     mut state: State,
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
-    text_scale: Option<f32>,
+    theme: Theme,
     out: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = if let Some(scale) = text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
-    };
-    let reduce_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
-        .iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        });
-    let theme = theme.with_reduce_motion(reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
@@ -565,22 +543,20 @@ fn render_shot(
         },
         &[child],
     )?;
-    {
-        let measure_map = node_map.clone();
-        let trr = &mut tr;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, trr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut tr,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);

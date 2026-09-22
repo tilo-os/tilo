@@ -40,7 +40,13 @@ class InstallerTargetModeTests(unittest.TestCase):
 LOCAL_IMG=fixture
 die() { echo "$*" >&2; exit 1; }
 fixture_preflight() { return 0; }
-fixture_cmdline() { printf 'root=tilo-auto tilo.mode=normal systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec composefs=%s\\n' "$FIXTURE_DIGEST"; }
+fixture_cmdline() {
+  case "$1" in
+    show) printf 'root=tilo-auto rd.luks.options=tpm2-device=auto,fido2-device=auto tilo.mode=normal systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec composefs=%s\\n' "$FIXTURE_DIGEST" ;;
+    boot-digest) printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+    *) return 64 ;;
+  esac
+}
 podman() {
   while [ "$1" != -v ]; do shift; done
   destination="${2%:/target-esp}"

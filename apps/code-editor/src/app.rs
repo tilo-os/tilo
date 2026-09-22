@@ -43,9 +43,11 @@ mod file_workflow;
 mod lsp_workflow;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+use automerge::ReadDoc;
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::style_helpers::length;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{Dimension, LengthPercentageAuto, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -53,7 +55,8 @@ use ui::search::SearchCatalog;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, TabBar, TabDescriptor, Widget,
+    Button, FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, TabBar, TabDescriptor,
+    Widget,
 };
 use uuid::Uuid;
 use vello::Scene;
@@ -88,6 +91,299 @@ const SIDEBAR_BREAKPOINT: f64 = 820.0;
 /// Hamburger toggle geometry, shown in the tab bar when the sidebar is an
 /// overlay (narrow window). Square button hugging the bar's left edge.
 const HAMBURGER_W: f64 = 40.0;
+
+/// The bottom-panel trigger occupies the trailing end of the existing 44px tab
+/// chrome. Keeping this width equal to the overlay hamburger gives both
+/// pointer targets a compact, familiar square without adding another row.
+const PANEL_TOGGLE_W: f32 = 40.0;
+const EDITOR_CHROME_H: f32 = 44.0;
+
+/// Retained toggle wrapper for the bottom dock. [`Button`] owns pointer,
+/// keyboard, focus, painting, and the canonical action emitter; this thin
+/// wrapper adds the disclosure state that a generic momentary button cannot
+/// infer for accessibility.
+struct BottomPanelToggle {
+    button: Button,
+    expanded: bool,
+    dirty: bool,
+}
+
+impl BottomPanelToggle {
+    const ID: &'static str = "code.bottom-panel-toggle";
+
+    fn new(binding: tilo_actions::ActionBinding<()>) -> Self {
+        Self {
+            button: Button::new(Self::ID, "", None)
+                .tooltip("Show bottom panel")
+                .with_size(PANEL_TOGGLE_W, EDITOR_CHROME_H)
+                .ghost()
+                .on_action(binding),
+            expanded: false,
+            dirty: true,
+        }
+    }
+
+    fn set_expanded(&mut self, expanded: bool) {
+        if self.expanded != expanded {
+            self.dirty = true;
+        }
+        self.expanded = expanded;
+        self.button.set_tooltip(Some(if expanded {
+            "Hide bottom panel".to_string()
+        } else {
+            "Show bottom panel".to_string()
+        }));
+    }
+}
+
+impl Widget for BottomPanelToggle {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.button.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // Centred in the chrome bar an `s1` clear of its top and of the
+        // editor below (HIG §7: nothing touches), instead of a full-height
+        // slab whose bottom edge shared pixels with the content.
+        let inset = theme.tokens.spacing.s1;
+        #[allow(
+            clippy::unwrap_used,
+            reason = "inserting one fixed leaf into the app-owned layout tree is infallible unless the taffy arena is already corrupted"
+        )]
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(PANEL_TOGGLE_W),
+                    height: Dimension::length(EDITOR_CHROME_H - 2.0 * inset),
+                },
+                margin: taffy::Rect {
+                    left: LengthPercentageAuto::length(0.0),
+                    right: LengthPercentageAuto::length(0.0),
+                    top: LengthPercentageAuto::length(inset),
+                    bottom: LengthPercentageAuto::length(inset),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.button.apply_layout_external(Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        ));
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.button
+            .draw(scene, transform, text_renderer, theme, presence);
+        let rect = self.button.get_rect();
+        let icon_size = (rect.height() - 14.0).clamp(12.0, 22.0);
+        let icon_rect = Rect::new(
+            rect.center().x - icon_size / 2.0,
+            rect.center().y - icon_size / 2.0,
+            rect.center().x + icon_size / 2.0,
+            rect.center().y + icon_size / 2.0,
+        );
+        let icon = if self.expanded {
+            ui::icons::Icon::ChevronDown
+        } else {
+            ui::icons::Icon::ChevronUp
+        };
+        icon.draw(scene, transform, icon_rect, theme.text_primary);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if self.is_focused()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Named(
+                            winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space
+                        ),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+            && self
+                .button
+                .perform_action(&ui::a11y::Action::Activate, state, path)
+        {
+            *handled = true;
+            return;
+        }
+        self.button.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "BottomPanelToggle"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some(Self::ID)
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.button.get_rect()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.button.cursor_shape(point)
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        <Button as Widget>::tooltip(&self.button)
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.button.is_focusable()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.button.set_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.button.is_focused()
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.button.is_enabled()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        Some(
+            AccessNode::new(Role::ToggleButton)
+                .with_semantic_key(Self::ID)
+                .with_name(if self.expanded {
+                    "Hide bottom panel"
+                } else {
+                    "Show bottom panel"
+                })
+                .with_description("Problems, Search, and Terminal dock")
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    checked: Some(self.expanded),
+                    selected: self.expanded,
+                    expanded: Some(self.expanded),
+                    ..Default::default()
+                }),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.button.perform_action(action, state, path)
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.button.take_control_invocation()
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.button.control_action_bindings()
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        self.button.refresh_control_action_availability(allowed);
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: ui::interaction::InteractionEnvironment,
+    ) {
+        self.button.set_interaction_environment(environment);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.button.needs_redraw()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        self.button.mark_drawn();
+    }
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "the binding is built from the command action on the resource returned by the same catalogue function"
+)]
+fn bottom_panel_toggle_binding(
+    project_name: &str,
+    project_id: &str,
+    next_file_id: &str,
+    next_folder_id: &str,
+    entry_count: usize,
+) -> tilo_actions::ActionBinding<()> {
+    let resource = actions::project_root(&actions::CodeEditorResourceCtx {
+        project_name: project_name.to_string(),
+        project_id: project_id.to_string(),
+        next_file_id: next_file_id.to_string(),
+        next_file_name: format!("untitled-{entry_count}.txt"),
+        next_folder_id: next_folder_id.to_string(),
+        next_folder_name: format!("untitled-folder-{entry_count}"),
+        open_files: Vec::new(),
+        folders: Vec::new(),
+        symbols: Vec::new(),
+        search_results: Vec::new(),
+    });
+    tilo_actions::ActionBinding::unit_for(&resource, "command-toggle-bottom-panel")
+        .expect("Toggle bottom panel is part of the Code command catalogue")
+}
 
 /// Width assumed before the window has been measured (first `build_layout`,
 /// before any `apply_layout`). Wide enough to dock — a fresh desktop window
@@ -143,6 +439,19 @@ fn language_from_label(label: &str) -> Option<Language> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct DiagnosticsRevision {
+    heads: Vec<ChangeHash>,
+    buffer: String,
+    language: Language,
+    scope: lint::Scope,
+}
+
+struct DiagnosticsCache {
+    revision: DiagnosticsRevision,
+    local: Vec<crate::bottom_panel::Diagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchProjectionRevision {
     /// Collaborative text and durable file metadata are authoritative in the
     /// CRDT, so its heads cheaply cover every remote/local document edit.
@@ -190,6 +499,7 @@ pub struct CodeApp {
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
     panel: BottomPanel,
+    panel_toggle: BottomPanelToggle,
     palette: CommandPalette,
 
     /// Framework-owned action dispatch (the Tilo resource + action model). The
@@ -238,6 +548,8 @@ pub struct CodeApp {
     rect: Rect,
     sidebar_node: Option<NodeId>,
     tabs_node: Option<NodeId>,
+    editor_header_node: Option<NodeId>,
+    panel_toggle_node: Option<NodeId>,
     editor_node: Option<NodeId>,
     panel_node: Option<NodeId>,
     content_node: Option<NodeId>,
@@ -283,6 +595,9 @@ pub struct CodeApp {
     /// The buffer text last sent to the LSP server (as `didChange`), so we only
     /// notify on an actual change.
     lsp_sent_text: String,
+    diagnostics_cache: Option<DiagnosticsCache>,
+    #[cfg(test)]
+    diagnostics_buffer_reads: usize,
     /// What the server is currently busy with, if anything. Shown in the status
     /// bar so a multi-minute rust-analyzer index reads as "working", not
     /// "broken".
@@ -580,6 +895,17 @@ impl CodeApp {
         // and then does nothing is worse than no chip.
         tabs.set_show_maximize(false);
 
+        let project_id = Uuid::new_v4().to_string();
+        let next_new_file_id = Uuid::new_v4().to_string();
+        let next_new_folder_id = Uuid::new_v4().to_string();
+        let panel_toggle = BottomPanelToggle::new(bottom_panel_toggle_binding(
+            &session.project.name,
+            &project_id,
+            &next_new_file_id,
+            &next_new_folder_id,
+            session.project.nodes.len(),
+        ));
+
         CodeApp {
             session,
             sidebar,
@@ -590,12 +916,13 @@ impl CodeApp {
             status_bubble: ui::StatusBubble::new(),
             shots_status: false,
             panel: BottomPanel::new(),
+            panel_toggle,
             palette: CommandPalette::new(),
             actions: ui::ActionHost::new(),
             pending_resource_command: None,
-            project_id: Uuid::new_v4().to_string(),
-            next_new_file_id: Uuid::new_v4().to_string(),
-            next_new_folder_id: Uuid::new_v4().to_string(),
+            project_id,
+            next_new_file_id,
+            next_new_folder_id,
             flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
@@ -606,11 +933,13 @@ impl CodeApp {
             scrim_rect: Rect::ZERO,
             hamburger_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
-            panel_visible: true,
+            panel_visible: false,
             theme_index: None,
             rect: Rect::ZERO,
             sidebar_node: None,
             tabs_node: None,
+            editor_header_node: None,
+            panel_toggle_node: None,
             editor_node: None,
             panel_node: None,
             content_node: None,
@@ -625,6 +954,9 @@ impl CodeApp {
             lsp_version: 0,
             lsp_diagnostics: std::collections::HashMap::new(),
             lsp_sent_text: String::new(),
+            diagnostics_cache: None,
+            #[cfg(test)]
+            diagnostics_buffer_reads: 0,
             lsp_status: LspStatus::None,
             lsp_failed: std::collections::HashSet::new(),
             find: FindBar::new(),
@@ -778,11 +1110,12 @@ impl CodeApp {
             c.surfaces.raised
         };
         scene.fill(Fill::NonZero, transform, bg, None, &rect);
-        // Right divider, matching the tab bar's seams.
+        // Right divider, matching the tab bar's seams; derived against the
+        // face it closes so it stays visible on the dark preset.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            c.border_standard,
+            ui::surface::edge_on(bg),
             None,
             &Line::new(
                 Point::new(rect.x1, rect.y0 + 6.0),
@@ -797,7 +1130,7 @@ impl CodeApp {
         let line_color = if self.sidebar_open() {
             c.text_primary
         } else {
-            c.neutral[8]
+            c.text_dim
         };
         let stroke = Stroke::new(1.6);
         for dy in [-5.0, 0.0, 5.0] {
@@ -1168,6 +1501,17 @@ impl CodeApp {
     /// information cannot usefully disagree with a compiler, and when it does
     /// the user is the one who has to work out which to believe.
     fn refresh_diagnostics(&mut self, doc: &AutoCommit) {
+        use automerge::transaction::Transactable;
+        // Heads identify committed CRDT content, including remote/history changes.
+        // Even zero pending operations may hide an open empty transaction.
+        // Obtain the witness on a clone: get_heads must never close the caller's
+        // transaction or change its patch/history cursors. Pending edits bypass
+        // caching; an equal pending-operation count is not a content version.
+        let heads = (doc.pending_ops() == 0).then(|| doc.clone().get_heads());
+        self.refresh_diagnostics_at(doc, heads);
+    }
+
+    fn refresh_diagnostics_at(&mut self, doc: &AutoCommit, heads: Option<Vec<ChangeHash>>) {
         let lsp_for_buffer = self
             .lsp_uri
             .as_ref()
@@ -1181,13 +1525,45 @@ impl CodeApp {
             lint::Scope::Full
         };
 
-        let mut diagnostics = match self.session.active_buffer() {
-            Some(buf) => {
-                let text =
-                    EditorDoc::read_buffer_key(doc, &self.buffer_key(buf.node)).unwrap_or_default();
-                lint::lint(&text, buf.language, scope)
-            }
-            None => Vec::new(),
+        let active = self
+            .session
+            .active_buffer()
+            .map(|buf| (self.buffer_key(buf.node), buf.language));
+        let revision = heads.and_then(|heads| {
+            active
+                .as_ref()
+                .map(|(buffer, language)| DiagnosticsRevision {
+                    heads,
+                    buffer: buffer.clone(),
+                    language: *language,
+                    scope,
+                })
+        });
+        let cached = revision.as_ref().and_then(|revision| {
+            self.diagnostics_cache
+                .as_ref()
+                .filter(|cache| &cache.revision == revision)
+        });
+        let mut diagnostics = if let Some(cache) = cached {
+            cache.local.clone()
+        } else {
+            let local = match active {
+                Some((key, language)) => {
+                    #[cfg(test)]
+                    {
+                        self.diagnostics_buffer_reads += 1;
+                    }
+                    // The editor's optimistic text is not authoritative here.
+                    let text = EditorDoc::read_buffer_key(doc, &key).unwrap_or_default();
+                    lint::lint(&text, language, scope)
+                }
+                None => Vec::new(),
+            };
+            self.diagnostics_cache = revision.map(|revision| DiagnosticsCache {
+                revision,
+                local: local.clone(),
+            });
+            local
         };
         if let Some(lsp) = lsp_for_buffer {
             diagnostics.extend(lsp.iter().map(super::lsp::LspDiagnostic::to_panel));
@@ -1892,7 +2268,11 @@ impl CodeApp {
                 }
             }
             Command::ToggleBottomPanel => {
-                self.panel_visible = !self.panel_visible;
+                if self.panel_visible {
+                    self.close_bottom_panel();
+                } else {
+                    self.panel_visible = true;
+                }
             }
             Command::ToggleSidebar => {
                 self.toggle_sidebar();
@@ -1911,7 +2291,17 @@ impl CodeApp {
                 self.ensure_terminal();
             }
         }
+        self.panel_toggle.set_expanded(self.panel_visible);
         self.dispatch_editor_text_edits(doc);
+    }
+
+    /// Close the retained dock without destroying its selected tab or live
+    /// Terminal. Every close route uses this transition so hidden Terminal
+    /// content cannot retain keyboard ownership.
+    fn close_bottom_panel(&mut self) {
+        self.panel_visible = false;
+        self.terminal_focused = false;
+        self.panel_toggle.set_expanded(false);
     }
 
     /// Drain everything the child widgets emitted this frame. `doc` is threaded
@@ -2445,7 +2835,7 @@ impl CodeApp {
             self.editor.set_diagnostics(&diags);
             self.lsp_diagnostics.insert(uri, diags);
         }
-        self.refresh_diagnostics(doc);
+        self.refresh_diagnostics_at(doc, None);
 
         // Canned completion response fed through the real parser.
         let completion_json = serde_json::json!({
@@ -2526,7 +2916,45 @@ impl CodeApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
+        if let Ok(existing) = taffy.style(tabs_node).cloned() {
+            let _ = taffy.set_style(
+                tabs_node,
+                Style {
+                    size: Size {
+                        width: Dimension::auto(),
+                        height: Dimension::length(EDITOR_CHROME_H),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: Dimension::length(0.0),
+                    ..existing
+                },
+            );
+        }
         self.tabs_node = Some(tabs_node);
+
+        self.panel_toggle.set_expanded(self.panel_visible);
+        let panel_toggle_node = self.panel_toggle.build_layout(taffy, theme, node_map);
+        self.panel_toggle_node = Some(panel_toggle_node);
+        #[allow(
+            clippy::unwrap_used,
+            reason = "the editor header inserts two freshly-created children into the same app-owned taffy arena"
+        )]
+        let editor_header_node = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Row,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(EDITOR_CHROME_H),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+                &[tabs_node, panel_toggle_node],
+            )
+            .unwrap();
+        self.editor_header_node = Some(editor_header_node);
 
         let editor_node = self.editor.build_layout(taffy, theme, node_map);
         if let Ok(existing) = taffy.style(editor_node).cloned() {
@@ -2550,7 +2978,7 @@ impl CodeApp {
         let find_node = self.find.build_layout(taffy, theme, node_map);
         self.find_node = Some(find_node);
 
-        let mut editor_col_children = vec![tabs_node, find_node, editor_node];
+        let mut editor_col_children = vec![editor_header_node, find_node, editor_node];
         if self.panel_visible {
             let panel_node = self.panel.build_layout(taffy, theme, node_map);
             self.panel_node = Some(panel_node);
@@ -2731,6 +3159,7 @@ impl CodeApp {
         modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
     ) -> bool {
         let WindowEvent::KeyboardInput {
             event:
@@ -2776,7 +3205,11 @@ impl CodeApp {
             _ => None,
         };
         if let Some(command) = command {
+            let closes_bottom_panel = command == Command::ToggleBottomPanel && self.panel_visible;
             self.apply_command(command, state);
+            if closes_bottom_panel {
+                *focus_target = self.panel_toggle_node;
+            }
             *handled = true;
             return true;
         }
@@ -2938,7 +3371,20 @@ impl CodeApp {
             *handled = true;
         }
 
-        if let Some(n) = self.tabs_node {
+        if let Some(n) = self.panel_toggle_node {
+            self.panel_toggle.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+        if !*handled && let Some(n) = self.tabs_node {
             self.tabs.handle_event(
                 event,
                 scale_factor,
@@ -3045,6 +3491,43 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
+    fn native_input_snapshot(&self, doc: &AutoCommit, _path: &ObjId) -> Option<serde_json::Value> {
+        fn rect(rect: Rect) -> [f64; 4] {
+            [rect.x0, rect.y0, rect.x1, rect.y1]
+        }
+        // Read authoritative text, never the editor's optimistic render cache.
+        // Only the opt-in native input observer invokes this O(buffer length) read.
+        let buffer_id = self.active_file_node().map(|node| self.buffer_key(node));
+        let body = buffer_id
+            .as_ref()
+            .and_then(|key| EditorDoc::read_buffer_key(doc, key));
+        let editor_rect = self.editor.get_rect();
+        let (offset_x, offset_y) = self.editor.native_scroll_offsets();
+        let (caret_line, caret_column) = self.editor.primary_caret();
+        Some(serde_json::json!({
+            "app": "so.tilo.code-editor",
+            "editor_id": "editor_view",
+            "hash_algorithm": "sha256",
+            "buffer_id": buffer_id,
+            "body_hash": body.as_ref().map(|text| crate::native_fixture::hash(text.as_bytes())),
+            "body_bytes": body.as_ref().map(String::len),
+            "editor_focused": self.editor.is_focused(),
+            "caret_line": caret_line,
+            "caret_column": caret_column,
+            "caret_count": self.editor.caret_count(),
+            "selection_chars": self.editor.selection_len(),
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+            "offset_x_unit": "pixels",
+            "offset_y_unit": "lines",
+            "root_rect": rect(self.rect),
+            "editor_rect": rect(editor_rect),
+            "ready": body.is_some() && self.editor.is_bound()
+                && self.rect.width() > 0.0 && self.rect.height() > 0.0
+                && editor_rect.width() > 0.0 && editor_rect.height() > 0.0,
+        }))
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CODE_EDITOR_OPERATION_TYPE]
     }
@@ -3285,12 +3768,22 @@ impl Widget for CodeApp {
                     content_origin.x + f64::from(col_layout.location.x),
                     content_origin.y + f64::from(col_layout.location.y),
                 );
-                if let Some(n) = self.tabs_node {
-                    self.tabs.apply_layout(taffy, n, col_origin);
-                    // Reserve the bar's left edge for the overlay hamburger so
-                    // the first tab isn't drawn beneath it.
-                    if self.sidebar_layout() == SplitLayout::Overlay {
-                        self.tabs.inset_left(HAMBURGER_W);
+                if let Some(header_node) = self.editor_header_node {
+                    let header_layout = taffy.layout(header_node).unwrap();
+                    let header_origin = Point::new(
+                        col_origin.x + f64::from(header_layout.location.x),
+                        col_origin.y + f64::from(header_layout.location.y),
+                    );
+                    if let Some(n) = self.tabs_node {
+                        self.tabs.apply_layout(taffy, n, header_origin);
+                        // Reserve the bar's left edge for the overlay hamburger so
+                        // the first tab isn't drawn beneath it.
+                        if self.sidebar_layout() == SplitLayout::Overlay {
+                            self.tabs.inset_left(HAMBURGER_W);
+                        }
+                    }
+                    if let Some(n) = self.panel_toggle_node {
+                        self.panel_toggle.apply_layout(taffy, n, header_origin);
                     }
                 }
                 if let Some(n) = self.find_node {
@@ -3350,6 +3843,8 @@ impl Widget for CodeApp {
                 }
                 self.tabs
                     .draw(scene, transform, text_renderer, theme, presence);
+                self.panel_toggle
+                    .draw(scene, transform, text_renderer, theme, presence);
                 self.find
                     .draw(scene, transform, text_renderer, theme, presence);
                 self.editor
@@ -3363,6 +3858,8 @@ impl Widget for CodeApp {
                 // Content spans the full width and is drawn first; the sidebar
                 // slides in over it behind a scrim.
                 self.tabs
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.panel_toggle
                     .draw(scene, transform, text_renderer, theme, presence);
                 self.find
                     .draw(scene, transform, text_renderer, theme, presence);
@@ -3475,7 +3972,7 @@ impl Widget for CodeApp {
             return;
         }
 
-        if self.handle_global_shortcuts(event, *modifiers, state, handled) {
+        if self.handle_global_shortcuts(event, *modifiers, state, handled, focus_target) {
             return;
         }
 
@@ -3499,6 +3996,28 @@ impl Widget for CodeApp {
             focus_target,
             taffy,
         ) {
+            return;
+        }
+
+        // The bottom dock is a retained disclosure. Escape dismisses it after
+        // higher-priority modal/find surfaces have had their own Escape, then
+        // returns keyboard focus to the visible trigger that can reopen it.
+        if self.panel_visible
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Named(winit::keyboard::NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            self.close_bottom_panel();
+            *focus_target = self.panel_toggle_node;
+            *handled = true;
             return;
         }
 
@@ -3628,7 +4147,7 @@ impl Widget for CodeApp {
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.tabs];
+        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.tabs, &self.panel_toggle];
         if self.find.is_visible() {
             out.push(&self.find);
         }
@@ -3640,7 +4159,8 @@ impl Widget for CodeApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.sidebar, &mut self.tabs];
+        let mut out: Vec<&mut (dyn Widget + '_)> =
+            vec![&mut self.sidebar, &mut self.tabs, &mut self.panel_toggle];
         if self.find.is_visible() {
             out.push(&mut self.find);
         }
@@ -3912,6 +4432,7 @@ impl Widget for CodeApp {
     fn needs_redraw(&self) -> bool {
         self.sidebar.needs_redraw()
             || self.tabs.needs_redraw()
+            || self.panel_toggle.needs_redraw()
             || self.editor.needs_redraw()
             || self.panel.needs_redraw()
             || self.find.needs_redraw()
@@ -3956,8 +4477,1559 @@ impl Widget for CodeApp {
     fn mark_drawn(&mut self) {
         self.sidebar.mark_drawn();
         self.tabs.mark_drawn();
+        self.panel_toggle.mark_drawn();
         self.editor.mark_drawn();
         self.panel.mark_drawn();
         self.find.mark_drawn();
     }
 }
+
+#[cfg(test)]
+mod local_layout_tests {
+    use super::*;
+
+    #[test]
+    fn direct_open_is_accepted_then_reports_the_exact_failure() {
+        let mut app = CodeApp::new();
+        let mut doc = AutoCommit::new();
+        let invocation = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::CodeEditorOperation::OpenFile {
+            path: Some("/definitely/missing/qos-code-file".into()),
+        })
+        .unwrap();
+        let started = Widget::start_resource_operation(
+            &mut app,
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::CODE_EDITOR_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(started, ui::widget::ResourceOperationStart::Accepted);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
+        ));
+    }
+
+    #[test]
+    fn resource_operations_reject_wrong_kinds_without_changing_state() {
+        let (mut app, doc) = synced_sample();
+        let active = app.active_file_node();
+        let other = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|node| Some(node.id) != active && matches!(node.kind, NodeKind::File { .. }))
+            .expect("sample has another file")
+            .id;
+        let open = serde_json::to_vec(&crate::actions::CodeEditorOperation::Open {
+            file_id: app.session.project.get(other).unwrap().resource_id.clone(),
+        })
+        .unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::CODE_EDITOR_OPERATION_TYPE,
+                &open,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert_eq!(app.active_file_node(), active);
+
+        let open_file = serde_json::to_vec(&crate::actions::CodeEditorOperation::OpenFile {
+            path: Some("/tmp/wrong-kind.rs".into()),
+        })
+        .unwrap();
+        assert!(
+            Widget::start_resource_operation(
+                &mut app,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                crate::actions::CODE_EDITOR_OPERATION_TYPE,
+                &open_file,
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert!(app.pending_resource_file.is_none());
+        assert!(app.resource_invocation.is_none());
+    }
+
+    #[test]
+    fn new_app_opens_main_rs() {
+        let app = CodeApp::with_sample();
+        let active = app.session.active_buffer().unwrap();
+        assert_eq!(active.name, "main.rs");
+    }
+
+    #[test]
+    fn accessibility_exposes_project_and_active_document_context() {
+        let app = CodeApp::with_sample();
+        let node = Widget::accessibility(&app).expect("Code has a semantic root");
+        assert_eq!(node.role, ui::a11y::Role::Document);
+        assert!(
+            node.name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Code — "))
+        );
+        assert_eq!(node.value.as_deref(), Some("main.rs"));
+        assert!(node.children.iter().any(|child| {
+            child
+                .name
+                .as_deref()
+                .is_some_and(|name| name.contains("open file"))
+        }));
+    }
+
+    fn invoke_search_hit(app: &mut CodeApp, doc: &mut AutoCommit, query: &str, kind: &str) {
+        let hit = app.search_providers()[0]
+            .search(query)
+            .into_iter()
+            .find(|hit| hit.kind == kind)
+            .expect("search hit");
+        let address = hit.action_address().expect("canonical address");
+        let resource = Widget::resource(app, doc, &address.resource)
+            .expect("address resolves through current widget authority");
+        let encoded = tilo_actions::door::encode(&[resource], &address, None)
+            .expect("lazy resource exports the searched action");
+        assert!(
+            Widget::invoke_resource_operation(
+                app,
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+                doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        app.sync(doc, &automerge::ROOT);
+    }
+
+    #[test]
+    fn file_search_uses_the_exported_open_action() {
+        let (mut app, mut doc) = synced_sample();
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|node| node.name == "prime.rs")
+            .unwrap()
+            .id;
+        invoke_search_hit(
+            &mut app,
+            &mut doc,
+            "prime.rs",
+            crate::search_provider::PROJECT_KIND,
+        );
+        assert_eq!(app.active_file_node(), Some(prime));
+    }
+
+    #[test]
+    fn stale_search_address_is_refused_by_current_widget_authority() {
+        let (mut app, mut doc) = synced_sample();
+        let file = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|node| node.name == "prime.rs")
+            .expect("sample file")
+            .clone();
+        let address = crate::actions::open_file_address(&file.resource_id);
+        assert!(Widget::resource(&app, &doc, &address.resource).is_some());
+
+        app.session
+            .project
+            .remove_collaborative_file(&file.resource_id);
+        app.invalidate_search_projection();
+        app.refresh_search_catalog(&mut doc);
+        assert!(Widget::resource(&app, &doc, &address.resource).is_none());
+        assert!(
+            app.search_providers()[0]
+                .search("prime.rs")
+                .into_iter()
+                .all(|hit| hit.action_address() != Some(address.clone()))
+        );
+    }
+
+    #[test]
+    fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
+        let (mut app, mut doc) = synced_sample();
+        let initial = app.search_refresh_stats();
+        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&mut doc, &automerge::ROOT);
+        let idle = app.search_refresh_stats();
+        assert_eq!(idle.rebuilds, initial.rebuilds);
+        assert_eq!(idle.buffer_reads, initial.buffer_reads);
+        assert_eq!(idle.indexed_records, initial.indexed_records);
+        assert!(idle.skipped >= initial.skipped.saturating_add(2));
+
+        let node = app.active_file_node().expect("sample buffer");
+        let key = app.buffer_key(node);
+        let text = EditorDoc::buffer_text_key(&doc, &key).expect("buffer text");
+        EditorDoc::splice(&mut doc, &text, 0, 0, "fn revision_gate_needle() {}\n");
+        app.sync(&mut doc, &automerge::ROOT);
+        let after_document = app.search_refresh_stats();
+        assert_eq!(after_document.rebuilds, idle.rebuilds.saturating_add(1));
+        assert!(
+            app.search_providers()[0]
+                .search("revision_gate_needle")
+                .iter()
+                .any(|hit| hit.kind == crate::search_provider::SYMBOL_KIND)
+        );
+
+        let root = app.session.project.root;
+        let late = app
+            .session
+            .project
+            .add_file(root, "project-revision-needle.rs", "");
+        app.invalidate_search_projection();
+        app.sync(&mut doc, &automerge::ROOT);
+        let after_project = app.search_refresh_stats();
+        assert_eq!(
+            after_project.rebuilds,
+            after_document.rebuilds.saturating_add(1)
+        );
+        assert!(
+            app.search_providers()[0]
+                .search("project-revision-needle")
+                .iter()
+                .any(|hit| {
+                    hit.action_address()
+                        == Some(crate::actions::open_file_address(
+                            &app.session
+                                .project
+                                .get(late)
+                                .expect("late file")
+                                .resource_id,
+                        ))
+                })
+        );
+
+        app.search_hits.push(search::Hit {
+            path: "/virtual/project-revision-needle.rs".into(),
+            rel: "project-revision-needle.rs".into(),
+            line: 1,
+            col: 0,
+            len: 6,
+            preview: "result_revision_needle".into(),
+            preview_offset: 0,
+        });
+        app.invalidate_search_projection();
+        app.sync(&mut doc, &automerge::ROOT);
+        let after_results = app.search_refresh_stats();
+        assert_eq!(
+            after_results.rebuilds,
+            after_project.rebuilds.saturating_add(1)
+        );
+        assert!(
+            app.search_providers()[0]
+                .search("result_revision_needle")
+                .iter()
+                .any(|hit| hit.kind == crate::search_provider::RESULT_KIND)
+        );
+    }
+
+    #[test]
+    fn exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor() {
+        let (mut app, mut doc) = synced_sample();
+        app.search_projection_local_generation = Some(u64::MAX);
+        app.invalidate_search_projection();
+        assert_eq!(app.search_projection_local_generation, None);
+        let before = app.search_refresh_stats().rebuilds;
+        app.refresh_search_catalog(&mut doc);
+        app.refresh_search_catalog(&mut doc);
+        assert_eq!(
+            app.search_refresh_stats().rebuilds,
+            before.saturating_add(2),
+            "an exhausted generation must never make a stale catalogue look current"
+        );
+    }
+
+    #[test]
+    fn large_resource_snapshot_is_bounded_but_late_file_activates_lazily() {
+        let mut app = CodeApp::new();
+        let root = app.session.project.root;
+        let mut late_id = String::new();
+        for index in 0..=crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT {
+            let node = app
+                .session
+                .project
+                .add_file(root, &format!("file-{index}.rs"), "");
+            if index == crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT {
+                late_id = app
+                    .session
+                    .project
+                    .get(node)
+                    .expect("added file")
+                    .resource_id
+                    .clone();
+            }
+        }
+        let mut doc = AutoCommit::new();
+        app.refresh_search_catalog(&mut doc);
+        let snapshot = Widget::resources(&app, &doc);
+        assert!(
+            snapshot[0].children.len() <= crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT,
+            "the eager tree must remain bounded by its resource cap"
+        );
+
+        let address = crate::actions::open_file_address(&late_id);
+        assert!(
+            tilo_actions::door::resolve(&snapshot, &address).is_none(),
+            "the late file must not be eagerly materialized"
+        );
+        let resource = Widget::resource(&app, &doc, &address.resource)
+            .expect("late file is still current widget authority");
+        let encoded = tilo_actions::door::encode(&[resource], &address, None)
+            .expect("the lazy resource retains its open action");
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut app,
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .expect("operation routes through the widget")
+        );
+    }
+
+    #[test]
+    fn symbol_search_resolves_and_reproduces_the_exact_caret() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.active_file_node().unwrap();
+        let text = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
+        let expected_line = text
+            .lines()
+            .position(|line| line.contains("fn parse_limit"))
+            .unwrap();
+        let expected_col = text
+            .lines()
+            .nth(expected_line)
+            .unwrap()
+            .find("parse_limit")
+            .unwrap();
+
+        invoke_search_hit(
+            &mut app,
+            &mut doc,
+            "parse_limit",
+            crate::search_provider::SYMBOL_KIND,
+        );
+        assert_eq!(app.active_file_node(), Some(node));
+        assert_eq!(app.editor.primary_caret(), (expected_line, expected_col));
+    }
+
+    #[test]
+    fn project_result_search_resolves_and_restores_results_context() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.active_file_node().unwrap();
+        app.search_hits = vec![search::Hit {
+            path: "/virtual/ferris-cli/src/main.rs".into(),
+            rel: app.session.project.path_of(node),
+            line: 12,
+            col: 4,
+            len: 6,
+            preview: "canonical_result_needle".into(),
+            preview_offset: 0,
+        }];
+        app.last_search_needle = "canonical_result_needle".into();
+        app.push_search_state();
+        app.invalidate_search_projection();
+        app.refresh_search_catalog(&mut doc);
+
+        invoke_search_hit(
+            &mut app,
+            &mut doc,
+            "canonical_result_needle",
+            crate::search_provider::RESULT_KIND,
+        );
+        assert_eq!(app.active_file_node(), Some(node));
+        assert_eq!(app.editor.primary_caret(), (11, 4));
+        assert!(app.panel_visible);
+        assert_eq!(app.panel.active_tab(), PanelTab::Search);
+    }
+
+    #[test]
+    fn fresh_editor_collapses_the_empty_bottom_panel() {
+        let app = CodeApp::with_sample();
+
+        assert!(
+            !app.panel_visible,
+            "a fresh editor must give its height to code"
+        );
+        assert!(
+            app.children()
+                .iter()
+                .all(|child| child.test_id() != Some("bottom_panel")),
+            "the hidden dock must leave the retained child tree"
+        );
+    }
+
+    #[test]
+    fn explicit_problems_open_survives_an_empty_diagnostics_refresh() {
+        let mut app = CodeApp::new();
+        let mut doc = AutoCommit::new();
+        app.apply_command(Command::GoToProblems, &mut doc);
+
+        app.refresh_diagnostics(&doc);
+
+        assert!(app.panel.problems().is_empty());
+        assert!(
+            app.panel_visible,
+            "an explicit Problems open is authoritative"
+        );
+        assert_eq!(app.panel.active_tab(), PanelTab::Problems);
+    }
+
+    #[test]
+    fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+
+        app.apply_command(Command::GoToProblems, &mut doc);
+        assert!(app.panel_visible);
+        assert_eq!(app.panel.active_tab(), PanelTab::Problems);
+
+        app.apply_command(Command::ToggleBottomPanel, &mut doc);
+        assert!(!app.panel_visible);
+        app.apply_command(Command::ToggleBottomPanel, &mut doc);
+        assert!(app.panel_visible);
+        assert_eq!(app.panel.active_tab(), PanelTab::Problems);
+
+        app.apply_command(Command::GoToTerminal, &mut doc);
+        assert!(app.panel_visible);
+        assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
+        assert!(
+            app.terminal.is_some(),
+            "Terminal command keeps the live terminal opener"
+        );
+        let terminal_before = app
+            .terminal
+            .as_ref()
+            .map(std::ptr::from_ref)
+            .expect("Terminal command creates a retained terminal");
+        let terminal_content_before = app.shots_terminal_grid_text();
+        app.apply_command(Command::ToggleBottomPanel, &mut doc);
+        app.apply_command(Command::ToggleBottomPanel, &mut doc);
+        assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
+        assert!(
+            app.terminal.is_some(),
+            "closing and reopening preserves the terminal session"
+        );
+        assert_eq!(
+            app.terminal.as_ref().map(std::ptr::from_ref),
+            Some(terminal_before),
+            "closing and reopening retains the same live Terminal object"
+        );
+        assert_eq!(
+            app.shots_terminal_grid_text(),
+            terminal_content_before,
+            "closing and reopening does not replace Terminal content"
+        );
+    }
+
+    #[test]
+    fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes() {
+        fn trigger_semantics(snapshot: &ui::headless::InspectionSnapshot) -> &ui::a11y::AccessNode {
+            fn find(node: &ui::headless::InspectionNode) -> Option<&ui::a11y::AccessNode> {
+                if node.test_id.as_deref() == Some("code.bottom-panel-toggle") {
+                    return node.semantics.as_ref();
+                }
+                node.children.iter().find_map(find)
+            }
+
+            find(&snapshot.root).expect("dock trigger semantics")
+        }
+
+        let mut driver = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(CodeApp::with_sample()),
+            (480, 900),
+        );
+        let targets = driver.targets();
+        let tabs = targets.get("tabs").copied().expect("tab bar target");
+        let trigger = targets
+            .get("code.bottom-panel-toggle")
+            .copied()
+            .expect("retained dock trigger");
+        // The trigger stays in the chrome row, centred an `s1` clear of the
+        // row's top and of the editor below it (HIG §7: nothing touches), so
+        // it neither spans the full bar nor shares pixels with the content.
+        let inset = f64::from(ui::theme::Theme::dark().tokens.spacing.s1);
+        assert!(
+            (trigger.y0 - (tabs.y0 + inset)).abs() < 0.01,
+            "trigger stays in the existing chrome row, inset s1: {} vs {}",
+            trigger.y0,
+            tabs.y0
+        );
+        assert!(
+            (trigger.height() - (tabs.height() - 2.0 * inset)).abs() < 0.01,
+            "trigger is the chrome row minus the s1 insets: {} vs {}",
+            trigger.height(),
+            tabs.height()
+        );
+        assert!(
+            tabs.x1 <= trigger.x0,
+            "tab pills and dock trigger must not overlap"
+        );
+        let closed_snapshot = driver.inspection();
+        let closed = trigger_semantics(&closed_snapshot);
+        assert_eq!(closed.name.as_deref(), Some("Show bottom panel"));
+        assert_eq!(closed.state.expanded, Some(false));
+        assert!(!closed.state.selected);
+
+        driver
+            .click_named("code.bottom-panel-toggle")
+            .expect("pointer activates retained trigger");
+        assert!(driver.targets().contains_key("bottom_panel"));
+        let open_snapshot = driver.inspection();
+        let open = trigger_semantics(&open_snapshot);
+        assert_eq!(open.name.as_deref(), Some("Hide bottom panel"));
+        assert_eq!(open.state.expanded, Some(true));
+        assert!(open.state.selected);
+        assert_eq!(
+            driver
+                .focused_access_node()
+                .and_then(|node| node.name)
+                .as_deref(),
+            Some("Hide bottom panel"),
+            "click transfers keyboard focus to the retained trigger"
+        );
+
+        driver.key("Enter");
+        assert!(
+            !driver.targets().contains_key("bottom_panel"),
+            "keyboard activation routes through the same toggle command"
+        );
+
+        driver.set_modifiers(&["ctrl".to_string()]);
+        driver.key("j");
+        driver.set_modifiers(&[]);
+        assert!(
+            driver.targets().contains_key("bottom_panel"),
+            "Ctrl+J remains an equivalent keyboard route"
+        );
+
+        driver.key("Escape");
+        assert!(
+            !driver.targets().contains_key("bottom_panel"),
+            "Escape closes the dock disclosure"
+        );
+        assert_eq!(
+            driver
+                .focused_access_node()
+                .and_then(|node| node.name)
+                .as_deref(),
+            Some("Show bottom panel"),
+            "Escape returns focus to the retained trigger"
+        );
+
+        let trigger_node = driver
+            .a11y_node_named("Show bottom panel")
+            .expect("trigger is exported to assistive technology");
+        driver
+            .perform_a11y_action(trigger_node, &ui::a11y::Action::Activate)
+            .expect("semantic activation uses the retained control");
+        assert!(
+            driver.targets().contains_key("bottom_panel"),
+            "assistive activation reaches the same canonical toggle"
+        );
+
+        let panel_narrow = driver.targets()["bottom_panel"];
+        assert!(
+            panel_narrow.x0 >= 0.0
+                && panel_narrow.y0 >= 0.0
+                && panel_narrow.x1 <= 480.0
+                && panel_narrow.y1 <= 900.0,
+            "open panel stays inside the narrow viewport"
+        );
+        driver.resize((800, 700)).expect("resize open editor");
+        let resized = driver.targets();
+        let panel_standard = resized["bottom_panel"];
+        let tabs_standard = resized["tabs"];
+        let trigger_standard = resized["code.bottom-panel-toggle"];
+        assert!(
+            panel_standard.x0 >= 0.0
+                && panel_standard.y0 >= 0.0
+                && panel_standard.x1 <= 800.0
+                && panel_standard.y1 <= 700.0,
+            "open panel stays inside the resized viewport"
+        );
+        assert_eq!(panel_standard.height(), panel_narrow.height());
+        // Same inset geometry after the resize: in the chrome row, `s1` clear
+        // of its top and of the editor.
+        assert!((trigger_standard.y0 - (tabs_standard.y0 + inset)).abs() < 0.01);
+        assert!((trigger_standard.height() - (tabs_standard.height() - 2.0 * inset)).abs() < 0.01);
+        assert!(tabs_standard.x1 <= trigger_standard.x0);
+        let resized_snapshot = driver.inspection();
+        let resized_trigger = trigger_semantics(&resized_snapshot);
+        assert_eq!(resized_trigger.name.as_deref(), Some("Hide bottom panel"));
+        assert_eq!(resized_trigger.state.expanded, Some(true));
+        assert!(resized_trigger.state.selected);
+
+        driver.resize((480, 900)).expect("resize back while open");
+        let restored = driver.targets();
+        assert!(restored.contains_key("bottom_panel"));
+        assert_eq!(restored["bottom_panel"].height(), panel_narrow.height());
+        assert!(restored["tabs"].x1 <= restored["code.bottom-panel-toggle"].x0);
+    }
+
+    #[test]
+    fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal() {
+        let mut app = CodeApp::with_sample();
+        app.shots_open_terminal();
+        let mut driver = ui::headless::Driver::new(ui::State::new(), Box::new(app), (480, 900));
+
+        let panel = driver.targets()["bottom_panel"];
+        driver.click_at(panel.center().x, panel.y1 - 20.0);
+        driver.set_modifiers(&["ctrl".to_string()]);
+        driver.key("j");
+        driver.set_modifiers(&[]);
+
+        assert!(!driver.targets().contains_key("bottom_panel"));
+        assert_eq!(
+            driver
+                .focused_access_node()
+                .and_then(|node| node.name)
+                .as_deref(),
+            Some("Show bottom panel"),
+            "keyboard close returns focus to the retained disclosure"
+        );
+
+        driver.set_modifiers(&["ctrl".to_string()]);
+        driver.key("j");
+        driver.set_modifiers(&[]);
+        assert!(driver.targets().contains_key("bottom_panel"));
+        assert_eq!(
+            driver
+                .focused_access_node()
+                .and_then(|node| node.name)
+                .as_deref(),
+            Some("Hide bottom panel"),
+            "reopening keeps focus on the disclosure instead of hidden Terminal content"
+        );
+
+        driver.key("Enter");
+        assert!(
+            !driver.targets().contains_key("bottom_panel"),
+            "Enter reaches the focused disclosure after reopening instead of the Terminal"
+        );
+    }
+
+    #[test]
+    fn ide_embeds_the_real_terminal_widget() {
+        // The IDE must embed the real system `TerminalWidget` as its integrated
+        // terminal — not ship a second, weaker emulator. Opening the Terminal
+        // dock tab spawns a live widget whose grid the panel hands its body to.
+        let mut app = CodeApp::with_sample();
+        assert!(
+            app.shots_terminal_grid_text().is_none(),
+            "no terminal exists before the Terminal tab is opened"
+        );
+        app.shots_open_terminal();
+        assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
+        assert!(
+            app.shots_terminal_grid_text().is_some(),
+            "opening the Terminal tab embeds a live TerminalWidget"
+        );
+    }
+
+    #[test]
+    fn ide_terminal_runs_a_command_and_shows_output() {
+        // End-to-end: open the embedded terminal, type a command, pump the
+        // app's `sync` (which drains the terminal's PTY), and prove the shell's
+        // output flowed back into the IDE's integrated terminal grid.
+        let mut app = CodeApp::with_sample();
+        app.shots_open_terminal();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        app.shots_terminal_input("printf 'IDE_TERM_OK\\n'\n");
+        let mut found = false;
+        for _ in 0..300 {
+            app.sync(&mut state.doc, &state.root);
+            if let Some(t) = app.shots_terminal_grid_text()
+                && t.contains("IDE_TERM_OK")
+            {
+                found = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            found,
+            "the IDE's embedded terminal must run the typed command and show its output"
+        );
+    }
+
+    #[test]
+    fn ensure_buffers_seeds_active_text() {
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+        let node = app.session.active_buffer().unwrap().node;
+        let text = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
+        assert!(text.contains("fn main"));
+        assert!(app.editor.is_bound());
+    }
+
+    #[test]
+    fn opening_a_second_file_adds_a_tab() {
+        let mut app = CodeApp::with_sample();
+        // Find prime.rs.
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|n| n.name == "prime.rs")
+            .unwrap()
+            .id;
+        app.open_node(prime);
+        assert_eq!(app.session.open.len(), 2);
+        assert_eq!(app.session.active_buffer().unwrap().name, "prime.rs");
+    }
+
+    /// Every open buffer's node id, cast the same way `reconcile_tabs` casts
+    /// it, so a test can compare against `app.tabs.tabs()` ids without
+    /// duplicating the cast at every call site.
+    fn open_ids(app: &CodeApp) -> Vec<u64> {
+        app.session.open.iter().map(|b| b.node as u64).collect()
+    }
+
+    #[test]
+    fn reconcile_tabs_keys_pills_to_open_buffers_by_node_id() {
+        let mut app = CodeApp::with_sample();
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|n| n.name == "prime.rs")
+            .unwrap()
+            .id;
+        app.open_node(prime); // open_node already reconciles.
+
+        let pill_ids: Vec<u64> = app.tabs.tabs().iter().map(|t| t.id).collect();
+        assert_eq!(
+            pill_ids,
+            open_ids(&app),
+            "the bar's pills must be exactly the session's open buffers, in \
+             the same order, keyed by node id"
+        );
+    }
+
+    #[test]
+    fn reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark() {
+        let (mut app, mut doc) = synced_sample();
+        let id = app.session.active_buffer().unwrap().node as u64;
+        assert!(
+            !app.tabs.is_modified(id),
+            "a freshly-opened buffer is clean"
+        );
+
+        app.editor.insert_for_test(&mut doc, "X");
+        app.dispatch_editor_text_edits(&mut doc);
+        app.ensure_buffers(&mut doc);
+        app.reconcile_tabs();
+        assert!(
+            app.tabs.is_modified(id),
+            "an edited buffer's pill must pick up the unsaved-changes mark"
+        );
+    }
+
+    #[test]
+    fn sync_tab_accents_tints_each_pill_by_its_buffers_language() {
+        // `with_sample` opens main.rs, a Rust file.
+        let mut app = CodeApp::with_sample();
+        let theme = Theme::dark();
+        let id = app.session.active_buffer().unwrap().node as u64;
+
+        app.sync_tab_accents(&theme);
+
+        assert_eq!(
+            app.tabs.accent(id),
+            Some(lang_accent(Language::Rust, &theme)),
+            "a Rust buffer's pill must carry the theme's Rust accent"
+        );
+    }
+
+    #[test]
+    fn closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position() {
+        // The whole point of reconciling by node id rather than position: the
+        // pill the user clicked × on must be the buffer that closes — even
+        // one that is neither at index 0 nor the active tab, which is the
+        // one case "close index 0" or "close whatever's active" would also
+        // get right by accident.
+        let mut app = CodeApp::with_sample();
+        let names = ["prime.rs", "greeter.rs"];
+        let ids: Vec<crate::model::NodeId> = names
+            .iter()
+            .map(|name| {
+                app.session
+                    .project
+                    .nodes
+                    .values()
+                    .find(|n| n.name == *name)
+                    .unwrap()
+                    .id
+            })
+            .collect();
+        for id in ids {
+            app.open_node(id);
+        }
+        // [main.rs, prime.rs, greeter.rs], active = greeter.rs (index 2).
+        assert_eq!(app.session.open.len(), 3);
+        app.session.active = Some(0); // main.rs is active; prime.rs is neither.
+
+        let prime_id = app.session.open[1].node as u64;
+        // Stand-in for the user clicking prime.rs's own × — the widget fades
+        // it and publishes the id via `take_close`, independent of position.
+        app.tabs.start_closing(prime_id);
+
+        let doc = AutoCommit::new();
+        app.drain_child_events(&doc);
+
+        let remaining: Vec<&str> = app.session.open.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(
+            remaining,
+            vec!["main.rs", "greeter.rs"],
+            "closing prime.rs's pill must close prime.rs specifically, not \
+             index 0 or whatever happens to be active"
+        );
+    }
+
+    #[test]
+    fn selecting_a_different_pill_is_read_back_via_active_id() {
+        let mut app = CodeApp::with_sample();
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|n| n.name == "prime.rs")
+            .unwrap()
+            .id;
+        app.open_node(prime); // active is now prime.rs
+        let main_node = app.session.open[0].node;
+        assert_eq!(app.session.active, Some(1));
+
+        // A press on the bar already moved its own `active_id` (see
+        // `TabBar::handle_event`); this stands in for that click landing on
+        // main.rs's pill instead.
+        app.tabs.set_active(main_node as u64);
+        app.bound_node = Some(main_node.wrapping_add(1)); // sentinel, must be cleared
+
+        let doc = AutoCommit::new();
+        app.drain_child_events(&doc);
+
+        assert_eq!(
+            app.session.active,
+            Some(0),
+            "the session must follow the bar's active_id back to main.rs"
+        );
+        assert_eq!(
+            app.bound_node, None,
+            "switching which buffer is selected must force the editor to re-bind"
+        );
+    }
+
+    #[test]
+    fn editing_routes_through_crdt() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        let before = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
+        app.editor.insert_for_test(&mut doc, "X");
+        app.dispatch_editor_text_edits(&mut doc);
+        let after = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
+        assert_eq!(after.chars().count(), before.chars().count() + 1);
+    }
+
+    #[test]
+    fn editor_gesture_and_replace_text_resource_encode_the_same_action() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        let base = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
+        app.editor.move_caret_to(0, 0);
+        app.editor.insert_for_test(&mut doc, "λ");
+        let next = format!("λ{base}");
+        let expected = app
+            .resources(&doc)
+            .iter()
+            .find_map(|resource| {
+                find_resource(resource, &actions::file_resource_id(app.buffer_key(node)))
+            })
+            .and_then(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "replace-text")
+                    .cloned()
+            })
+            .expect("active file publishes Replace text")
+            .build_args([("text".to_string(), tilo_actions::ArgValue::Text(next))])
+            .expect("valid replace text argument");
+        app.dispatch_editor_text_edits(&mut doc);
+        let actual = app
+            .actions
+            .last_dispatched()
+            .expect("gesture dispatched action");
+        assert_eq!(
+            actual, &expected,
+            "gesture and resource action are identical"
+        );
+    }
+
+    #[test]
+    fn toggle_sidebar_command_hides_it() {
+        // Default width hint is wide → docked-open; the command flips it shut.
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        assert!(app.sidebar_open());
+        app.apply_command(Command::ToggleSidebar, &mut doc);
+        assert!(!app.sidebar_open());
+        app.apply_command(Command::ToggleSidebar, &mut doc);
+        assert!(app.sidebar_open());
+    }
+
+    #[test]
+    fn new_file_command_dispatches_the_durable_create_file_action() {
+        // The on-screen "New file" command and the Ctrl+K "New file" spec must
+        // build the byte-identical action — one source of truth. Both carry the
+        // UUID captured at authoring time, never a local project-arena id.
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc); // seed the sample project's open buffers
+
+        let ctx = app.code_resource_ctx();
+        let expected_file_id = ctx.next_file_id.clone();
+        let resources = crate::actions::provide_resources(&ctx, &doc);
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "new-file")
+            .unwrap();
+        let from_spec = match &spec.input {
+            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("new-file is an immediate action"),
+        };
+
+        app.apply_command(Command::NewFile, &mut doc);
+
+        let dispatched = app
+            .actions
+            .last_dispatched()
+            .expect("New File dispatched an action");
+        assert_eq!(
+            dispatched, &from_spec,
+            "the command and the Ctrl+K spec build the identical action"
+        );
+        // The action actually materialised the buffer in the document.
+        assert!(EditorDoc::read_buffer_key(&doc, &expected_file_id).is_some());
+    }
+
+    #[test]
+    fn a_collaborative_file_is_adopted_as_a_tracked_file() {
+        // A peer's durable file record is surfaced by the next sync. The
+        // resource UUID, rather than a coincidental local arena number, is the
+        // thing the projection follows.
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+        let before = app.session.project.nodes.len();
+
+        let orphan = "peer-file-uuid";
+        EditorDoc::create_file(
+            &mut doc,
+            &crate::doc::CollaborativeFile {
+                id: orphan.into(),
+                kind: "file".into(),
+                name: "peer.rs".into(),
+                path: "peer.rs".into(),
+                parent: None,
+                language: "Rust".into(),
+                order: 1,
+                deleted: false,
+                name_revision: 0,
+                structure_revision: 0,
+                language_revision: 0,
+                deletion_revision: 0,
+            },
+            "// created out of band\n",
+        );
+        assert!(app.session.project.node_for_resource(orphan).is_none());
+
+        app.ensure_buffers(&mut doc);
+        assert!(
+            app.session.project.node_for_resource(orphan).is_some(),
+            "the document buffer was adopted as a file"
+        );
+        assert_eq!(app.session.project.nodes.len(), before + 1);
+    }
+
+    #[test]
+    fn layout_is_docked_when_wide_overlay_when_narrow() {
+        let mut app = CodeApp::with_sample();
+        app.set_width_hint(1200.0);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
+        app.set_width_hint(600.0);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
+        // Boundary is inclusive at the breakpoint → docked.
+        app.set_width_hint(SIDEBAR_BREAKPOINT);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
+        app.set_width_hint(SIDEBAR_BREAKPOINT - 1.0);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
+    }
+
+    #[test]
+    fn narrow_window_hides_sidebar_by_default() {
+        let mut app = CodeApp::with_sample();
+        app.set_width_hint(600.0);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
+        // A fresh narrow window opens straight to the editor.
+        assert!(!app.sidebar_open(), "overlay sidebar is closed by default");
+        // The hamburger summons it.
+        app.toggle_sidebar();
+        assert!(app.sidebar_open());
+    }
+
+    #[test]
+    fn wide_window_docks_sidebar_open_by_default() {
+        let mut app = CodeApp::with_sample();
+        app.set_width_hint(1200.0);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
+        assert!(app.sidebar_open(), "docked sidebar opens by default");
+    }
+
+    #[test]
+    fn opening_a_file_in_overlay_dismisses_the_flap() {
+        let mut app = CodeApp::with_sample();
+        app.set_width_hint(600.0);
+        app.toggle_sidebar();
+        assert!(app.sidebar_open(), "summoned open before selecting a file");
+        // Find prime.rs and open it via the tree-event path the sidebar emits.
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|n| n.name == "prime.rs")
+            .unwrap()
+            .id;
+        app.apply_tree_event(TreeEvent::OpenFile(prime));
+        assert_eq!(app.session.active_buffer().unwrap().name, "prime.rs");
+        assert!(
+            !app.sidebar_open(),
+            "opening a file dismisses the overlay flap"
+        );
+    }
+
+    #[test]
+    fn opening_a_file_keeps_docked_sidebar_pinned() {
+        let mut app = CodeApp::with_sample();
+        app.set_width_hint(1200.0);
+        assert!(app.sidebar_open());
+        let prime = app
+            .session
+            .project
+            .nodes
+            .values()
+            .find(|n| n.name == "prime.rs")
+            .unwrap()
+            .id;
+        app.apply_tree_event(TreeEvent::OpenFile(prime));
+        assert!(app.sidebar_open(), "docked sidebar stays open after open");
+    }
+
+    /// Overwrite a buffer's whole text through the CRDT, the way an edit does.
+    fn replace_buffer_text(doc: &mut AutoCommit, key: &str, text: &str) {
+        let Some(obj) = EditorDoc::ensure_buffer_key(doc, key, "") else {
+            return;
+        };
+        let len = doc.text(&obj).map_or(0, |t| t.chars().count());
+        EditorDoc::splice(doc, &obj, 0, len, text);
+    }
+
+    #[test]
+    fn diagnostics_populate_for_buffer_with_todo() {
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+        // Put a marker the linter is guaranteed to report into the open buffer,
+        // so this asserts that the pipeline carries a real finding through to
+        // the panel rather than merely that it does not panic.
+        let node = app.session.active_buffer().expect("a buffer is open").node;
+        replace_buffer_text(
+            &mut doc,
+            &app.buffer_key(node),
+            "// TODO: prove the pipeline\n",
+        );
+        app.refresh_diagnostics(&doc);
+        assert!(
+            app.panel.problem_count() > 0,
+            "the linter's finding reaches the panel"
+        );
+    }
+
+    /// An empty Problems list means two completely different things depending
+    /// on whether anything has looked yet, and the panel has to distinguish
+    /// them: "analysed and clean" is a finding, "not analysed yet" is not.
+    #[test]
+    fn an_unfinished_server_replaces_the_no_problems_claim() {
+        let busy = LspStatus::Busy {
+            server: "rust-analyzer".to_string(),
+            title: "Indexing".to_string(),
+            detail: None,
+            percentage: Some(37),
+        };
+        let note = busy
+            .analysis_note()
+            .expect("a working server explains itself");
+        assert!(
+            note.contains("rust-analyzer"),
+            "it names the server: {note}"
+        );
+        assert!(note.contains("indexing"), "it names the task: {note}");
+        assert!(note.contains("37%"), "it carries the progress: {note}");
+        assert!(
+            note.contains("still"),
+            "it reads as work in progress, not a result: {note}"
+        );
+
+        assert!(
+            LspStatus::Starting {
+                server: "rust-analyzer".to_string()
+            }
+            .analysis_note()
+            .is_some(),
+            "a server that has not answered yet is also not a verdict"
+        );
+
+        // Once something has answered — or there is no server at all and the
+        // local linter is the analysis — an empty list is a real finding again.
+        for settled in [
+            LspStatus::Ready {
+                server: "rust-analyzer".to_string(),
+            },
+            LspStatus::Failed("rust-analyzer exited".to_string()),
+            LspStatus::None,
+        ] {
+            assert_eq!(
+                settled.analysis_note(),
+                None,
+                "{settled:?} must let the panel state its finding"
+            );
+        }
+    }
+
+    /// And the note reaches the panel through the production path, not just the
+    /// helper that formats it.
+    #[test]
+    fn the_panel_learns_the_server_is_still_working() {
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+
+        app.refresh_diagnostics(&doc);
+        assert_eq!(
+            app.panel.analysis(),
+            None,
+            "with no server the linter is the analysis"
+        );
+
+        app.shots_indexing();
+        app.refresh_diagnostics(&doc);
+        let shown = app.panel.analysis().expect("the panel is told");
+        assert!(shown.contains("rust-analyzer"), "got: {shown}");
+
+        app.lsp_status = LspStatus::Ready {
+            server: "rust-analyzer".to_string(),
+        };
+        app.refresh_diagnostics(&doc);
+        assert_eq!(
+            app.panel.analysis(),
+            None,
+            "the note clears once the server has settled"
+        );
+    }
+
+    /// A persisted document handing back a buffer must not let a save skip the
+    /// conflict check.
+    ///
+    /// The document outlives the process. On the next launch it already holds
+    /// text for the node, which used to be read as "this file is loaded" — so
+    /// the file was never stat'ed, the buffer carried no stamp, and
+    /// [`crate::disk::save`] takes a missing stamp as "no check requested" and
+    /// writes unconditionally. Driving the real editor over a real file with a
+    /// document from an earlier run overwrote 203 bytes of it without a word.
+    #[test]
+    fn a_document_from_a_previous_session_still_stats_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("main.rs");
+        std::fs::write(&file, "fn main() { on_disk() }\n").unwrap();
+
+        let mut app = CodeApp::open_path(&file);
+        let node = app.session.active_buffer().expect("a tab is open").node;
+
+        // A document that already carries this buffer, as a restored one does,
+        // holding text that is not what the file says.
+        let mut doc = AutoCommit::new();
+        EditorDoc::ensure_buffer_key(
+            &mut doc,
+            &app.buffer_key(node),
+            "fn main() { from_last_session() }\n",
+        );
+
+        app.ensure_buffers(&mut doc);
+
+        let buf = app
+            .session
+            .open
+            .iter()
+            .find(|b| b.node == node)
+            .expect("still open");
+        assert!(
+            buf.stamp.is_some(),
+            "the file was stat'ed, so a save has something to check against"
+        );
+        assert_eq!(
+            buf.path.as_deref(),
+            Some(crate::disk::canonical(&file).as_path()),
+            "and the buffer knows which file it writes back to"
+        );
+        assert_eq!(
+            buf.saved_text, "fn main() { on_disk() }\n",
+            "what counts as 'unmodified' is the bytes on disk, not the document"
+        );
+        assert!(
+            buf.dirty,
+            "the restored text differs from the file, so it reads as unsaved \
+             edits rather than as agreement"
+        );
+        // The restored text is kept — a previous session's unsaved work, or a
+        // peer's in-flight edits, are not ours to throw away.
+        assert_eq!(
+            EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
+            Some("fn main() { from_last_session() }\n")
+        );
+    }
+
+    /// The structural scan defers to a language server that has published for
+    /// the buffer, and only to one that has.
+    #[test]
+    fn a_published_diagnostic_retires_the_bracket_scan() {
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+        let node = app.session.active_buffer().expect("a buffer is open").node;
+        replace_buffer_text(&mut doc, &app.buffer_key(node), "fn main( {\n");
+
+        app.refresh_diagnostics(&doc);
+        assert!(
+            app.panel
+                .problems()
+                .iter()
+                .any(|d| d.message.contains("Unclosed")),
+            "with nothing better answering, the scan reports the unbalanced bracket"
+        );
+
+        // Now let a server publish for this buffer — even an empty publish is
+        // an answer, and it is the answer that counts.
+        let uri = app
+            .lsp_uri
+            .clone()
+            .unwrap_or_else(|| "file:///probe.rs".to_string());
+        app.lsp_uri = Some(uri.clone());
+        app.lsp_diagnostics.insert(uri, Vec::new());
+        app.refresh_diagnostics(&doc);
+        assert!(
+            !app.panel
+                .problems()
+                .iter()
+                .any(|d| d.message.contains("Unclosed")),
+            "the scanner's guess yields to the compiler's answer: {:?}",
+            app.panel
+                .problems()
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Bring up the sample project and get the editor's line cache in sync with
+    /// the document, so line operations read real line contents.
+    fn synced_sample() -> (CodeApp, AutoCommit) {
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+        app.refresh_search_catalog(&mut doc);
+        app.editor.sync(&mut doc, &automerge::ROOT);
+        (app, doc)
+    }
+
+    fn buffer_lines(app: &CodeApp, doc: &AutoCommit, node: TreeId) -> Vec<String> {
+        EditorDoc::read_buffer_key(doc, &app.buffer_key(node))
+            .unwrap()
+            .split('\n')
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn find_resource<'a>(
+        resource: &'a tilo_actions::Resource,
+        id: &str,
+    ) -> Option<&'a tilo_actions::Resource> {
+        (resource.id.as_str() == id)
+            .then_some(resource)
+            .or_else(|| {
+                resource
+                    .children
+                    .iter()
+                    .find_map(|child| find_resource(child, id))
+            })
+    }
+
+    /// A real file picked from disk loads its bytes into a tab.
+    #[test]
+    fn open_file_from_path_loads_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("greet.rs");
+        std::fs::write(&file, "fn greet() { let x = 1; }\n").unwrap();
+
+        let mut app = CodeApp::open_path(&file);
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+
+        let node = app.session.active_buffer().expect("a tab opened").node;
+        assert_eq!(
+            EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
+            Some("fn greet() { let x = 1; }\n"),
+            "the file's real bytes were read into the buffer"
+        );
+    }
+
+    /// Open a real file, edit it through the CRDT, save, and prove the new bytes
+    /// reached disk.
+    #[test]
+    fn edit_and_save_round_trips_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "first line\n").unwrap();
+
+        let mut app = CodeApp::open_path(&file);
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc); // reads the file + stamps it
+
+        let node = app.session.active_buffer().expect("a tab opened").node;
+        // Edit through the same CRDT splice path the editor uses.
+        let obj = EditorDoc::buffer_text_key(&doc, &app.buffer_key(node)).unwrap();
+        let at = "first line".chars().count();
+        EditorDoc::splice(&mut doc, &obj, at, 0, " EDITED");
+
+        let snapshot = doc.clone();
+        assert!(
+            app.save_buffer(&snapshot, node, false),
+            "the save reported success"
+        );
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            on_disk, "first line EDITED\n",
+            "the edited bytes were written back to the real file"
+        );
+    }
+
+    /// Find populates real matches over the active buffer, hands them to the
+    /// editor's highlight layer, and stepping to a match selects it.
+    #[test]
+    fn find_highlights_and_navigates_matches() {
+        let (mut app, doc) = synced_sample();
+        app.open_find(false, &doc);
+        app.find.set_query("primes");
+        app.refresh_find(&doc);
+
+        assert!(
+            app.find_matches.len() >= 2,
+            "'primes' occurs several times in main.rs, got {}",
+            app.find_matches.len()
+        );
+        // The matches are handed to the editor's highlight layer.
+        assert_eq!(
+            app.editor.find_match_count_for_test(),
+            app.find_matches.len(),
+            "the editor received every match to highlight"
+        );
+
+        // Stepping to the second match navigates the caret onto it and marks it
+        // as the current (filled) highlight.
+        app.focus_match(Some(1));
+        let m = app.find_matches[1];
+        assert_eq!(app.find_current, Some(1), "the second match is now current");
+        assert_eq!(
+            app.editor.primary_caret(),
+            (m.line, m.col),
+            "the caret navigated onto the match"
+        );
+    }
+
+    /// Go-to-line moves the caret to the requested 1-based line and clamps past
+    /// the end of the buffer.
+    #[test]
+    fn go_to_line_moves_the_caret() {
+        let (mut app, _doc) = synced_sample();
+        assert!(app.editor.line_count() > 5);
+
+        app.go_to_line(5);
+        assert_eq!(app.editor.primary_caret(), (4, 0), "1-based line 5 → row 4");
+
+        let last = app.editor.line_count();
+        app.go_to_line(99_999);
+        assert_eq!(
+            app.editor.primary_caret().0,
+            last - 1,
+            "a line past the end clamps to the last row"
+        );
+    }
+
+    #[test]
+    fn duplicate_line_repeats_it_below() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        let before = buffer_lines(&app, &doc, node);
+
+        app.editor.move_caret_to(0, 0);
+        app.editor.duplicate_lines(&mut doc, true);
+        app.dispatch_editor_text_edits(&mut doc);
+
+        let after = buffer_lines(&app, &doc, node);
+        assert_eq!(after.len(), before.len() + 1, "one line added");
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[1], before[0], "the copy sits directly below");
+        assert_eq!(app.editor.primary_caret().0, 1, "caret rode onto the copy");
+    }
+
+    #[test]
+    fn move_line_down_swaps_with_the_next() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        let before = buffer_lines(&app, &doc, node);
+
+        app.editor.move_caret_to(0, 0);
+        app.editor.move_lines(&mut doc, false);
+        app.dispatch_editor_text_edits(&mut doc);
+
+        let after = buffer_lines(&app, &doc, node);
+        assert_eq!(after.len(), before.len(), "no lines gained or lost");
+        assert_eq!(after[0], before[1], "line 1 moved up");
+        assert_eq!(after[1], before[0], "line 0 moved down");
+        assert_eq!(app.editor.primary_caret().0, 1, "caret followed the line");
+    }
+
+    #[test]
+    fn delete_line_removes_it() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        let before = buffer_lines(&app, &doc, node);
+
+        app.editor.move_caret_to(0, 0);
+        app.editor.delete_lines(&mut doc);
+        app.dispatch_editor_text_edits(&mut doc);
+
+        let after = buffer_lines(&app, &doc, node);
+        assert_eq!(after.len(), before.len() - 1, "one line removed");
+        assert_eq!(after[0], before[1], "the following line is now first");
+    }
+
+    #[test]
+    fn toggle_comment_comments_then_uncomments() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        // Replace the buffer with a content-stable single line of Rust.
+        let obj = EditorDoc::buffer_text_key(&doc, &app.buffer_key(node)).unwrap();
+        let len = doc.text(&obj).unwrap().chars().count();
+        EditorDoc::splice(&mut doc, &obj, 0, len, "let x = 1;\n");
+        app.editor.sync(&mut doc, &automerge::ROOT);
+
+        app.editor.move_caret_to(0, 0);
+        app.editor.toggle_line_comment(&mut doc);
+        app.dispatch_editor_text_edits(&mut doc);
+        assert_eq!(
+            EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
+            Some("// let x = 1;\n"),
+            "the line gained a Rust line comment"
+        );
+
+        app.editor.move_caret_to(0, 0);
+        app.editor.toggle_line_comment(&mut doc);
+        app.dispatch_editor_text_edits(&mut doc);
+        assert_eq!(
+            EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
+            Some("let x = 1;\n"),
+            "toggling again removed it"
+        );
+    }
+
+    #[test]
+    fn closing_a_dirty_tab_prompts_before_discarding() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        // Edit the buffer so it has unsaved changes, then let a frame recompute
+        // the dirty flag the way `sync` does.
+        app.editor.insert_for_test(&mut doc, "X");
+        app.dispatch_editor_text_edits(&mut doc);
+        app.ensure_buffers(&mut doc);
+        assert!(
+            app.session.buffer_of(node).unwrap().dirty,
+            "the buffer now has unsaved edits"
+        );
+
+        let before = app.session.open.len();
+        let active = app.session.active.unwrap();
+        app.request_close_tab(active);
+        assert_eq!(
+            app.session.open.len(),
+            before,
+            "a dirty tab is not closed out from under the user"
+        );
+        assert!(app.close_prompt.is_some(), "the save prompt is raised");
+
+        // Discarding closes it and drops the edits.
+        app.resolve_close_prompt(&doc, CloseChoice::Discard);
+        assert_eq!(app.session.open.len(), before - 1, "the tab closed");
+        assert!(app.close_prompt.is_none());
+    }
+
+    #[test]
+    fn closing_a_clean_tab_closes_immediately() {
+        let (mut app, _doc) = synced_sample();
+        let before = app.session.open.len();
+        let active = app.session.active.unwrap();
+        app.request_close_tab(active);
+        assert!(
+            app.close_prompt.is_none(),
+            "a saved tab closes without a prompt"
+        );
+        assert_eq!(app.session.open.len(), before - 1);
+    }
+}
+
+#[cfg(test)]
+#[path = "native_proof_tests.rs"]
+mod native_proof_tests;
+
+#[cfg(test)]
+#[path = "diagnostics_cache_tests.rs"]
+mod diagnostics_cache_tests;

@@ -144,7 +144,7 @@ if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
 else
   bad 'snapshot construction can start before its signing authority is identity-bound'
 fi
-has "$workflow" 'https://tilo.dev/buildtypes/frozen-rpm-index/v1' \
+has "$workflow" 'https://tilo.sh/buildtypes/frozen-rpm-index/v1' \
   'snapshot provenance binds the package-set build type'
 has "$workflow" 'cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenance1' \
   'snapshot publishes signed SLSA provenance'

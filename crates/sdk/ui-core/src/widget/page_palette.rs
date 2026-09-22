@@ -60,6 +60,14 @@ fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
 
 pub struct PageJumpPalette {
     items: Vec<PageEntry>,
+    navigation_items: Vec<PageEntry>,
+    provider: Option<Box<dyn crate::search::SearchProvider>>,
+    search_cursor: Option<crate::search::SearchCursor>,
+    addresses: HashMap<Uuid, tilo_actions::ActionAddress>,
+    subtitles: HashMap<Uuid, String>,
+    pending_address: Option<tilo_actions::ActionAddress>,
+    viewport: Option<Rect>,
+    pointer: Point,
     visible: Vec<usize>,
     cursor: usize,
     query: String,
@@ -86,6 +94,14 @@ impl PageJumpPalette {
     pub fn new() -> Self {
         Self {
             items: Vec::new(),
+            navigation_items: Vec::new(),
+            provider: None,
+            search_cursor: None,
+            addresses: HashMap::new(),
+            subtitles: HashMap::new(),
+            pending_address: None,
+            viewport: None,
+            pointer: Point::ZERO,
             visible: Vec::new(),
             cursor: 0,
             query: String::new(),
@@ -99,8 +115,145 @@ impl PageJumpPalette {
     }
 
     pub fn set_items(&mut self, items: Vec<PageEntry>) {
+        if self.navigation_items == items {
+            return;
+        }
+        self.navigation_items = items.clone();
         self.items = items;
         self.rebuild_visible();
+    }
+
+    /// Reuse the system provider; the palette owns only query/view state.
+    pub fn set_search_provider(&mut self, provider: Box<dyn crate::search::SearchProvider>) {
+        self.provider = Some(provider);
+    }
+
+    pub fn set_viewport(&mut self, viewport: Rect) {
+        self.viewport = Some(viewport);
+    }
+
+    pub fn take_action_selection(&mut self) -> Option<tilo_actions::ActionAddress> {
+        self.pending_address.take()
+    }
+
+    fn load_search_page(&mut self) {
+        let Some(provider) = self.provider.as_ref() else {
+            return;
+        };
+        if self
+            .search_cursor
+            .as_ref()
+            .is_some_and(|cursor| !provider.action_directory_cursor_is_current(cursor))
+        {
+            self.items.clear();
+            self.addresses.clear();
+            self.subtitles.clear();
+            self.search_cursor = None;
+            self.cursor = 0;
+        }
+        let page = provider.search_page(&self.query, self.search_cursor.as_ref(), 512, 64);
+        self.items.retain(|entry| !entry.id.is_nil());
+        for result in page.results {
+            let Some(address) = result.action_address() else {
+                continue;
+            };
+            if self.addresses.values().any(|current| current == &address) {
+                continue;
+            }
+            let id = Uuid::new_v4();
+            let (title, subtitle) = match result.subtitle {
+                Some(note) => (note, Some(result.title)),
+                None => (result.title, None),
+            };
+            if let Some(subtitle) = subtitle {
+                self.subtitles.insert(id, subtitle);
+            }
+            self.addresses.insert(id, address);
+            self.items.push(PageEntry { id, title });
+        }
+        self.search_cursor = page.next;
+        if self.search_cursor.is_some() {
+            self.items.push(PageEntry {
+                id: Uuid::nil(),
+                title: "More results…".into(),
+            });
+        }
+        self.visible = (0..self.items.len()).collect();
+        self.cursor = self.cursor.min(self.visible.len().saturating_sub(1));
+    }
+
+    fn activate_highlighted(&mut self) {
+        let Some(entry) = self.highlighted().cloned() else {
+            return;
+        };
+        if entry.id.is_nil() && self.search_cursor.is_some() {
+            self.load_search_page();
+            return;
+        }
+        if let Some(address) = self.addresses.get(&entry.id) {
+            self.pending_address = Some(address.clone());
+        } else {
+            self.pending = Some(entry);
+        }
+        self.set_visible(false);
+    }
+
+    fn row_height(&self) -> f64 {
+        if self.subtitles.is_empty() {
+            ROW_HEIGHT
+        } else {
+            58.0
+        }
+    }
+
+    fn visible_capacity(&self) -> usize {
+        let Some(viewport) = self.viewport else {
+            return MAX_VISIBLE_ROWS;
+        };
+        let available = viewport.height() - 32.0 - (PADDING * 3.0 + INPUT_HEIGHT) * self.text_scale;
+        (1..=MAX_VISIBLE_ROWS)
+            .rfind(|rows| row_f64(*rows) * self.row_height() * self.text_scale <= available)
+            .unwrap_or(1)
+    }
+
+    /// Pointer handling is modal, including the dismissing click.
+    pub fn handle_pointer(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let rect = self.rect();
+                let top = rect.y0 + (PADDING * 2.0 + INPUT_HEIGHT) * self.text_scale;
+                for slot in 0..self.visible_capacity() {
+                    let y = top + row_f64(slot) * self.row_height() * self.text_scale;
+                    if Rect::new(rect.x0, y, rect.x1, y + self.row_height() * self.text_scale)
+                        .contains(self.pointer)
+                    {
+                        self.cursor = self
+                            .window_start()
+                            .saturating_add(slot)
+                            .min(self.visible.len().saturating_sub(1));
+                        break;
+                    }
+                }
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                if !self.rect().contains(self.pointer) {
+                    self.set_visible(false);
+                } else if self.pointer.y
+                    >= self.rect().y0 + (PADDING * 2.0 + INPUT_HEIGHT) * self.text_scale
+                {
+                    self.activate_highlighted();
+                }
+                true
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => true,
+            _ => false,
+        }
     }
 
     pub fn set_visible(&mut self, visible: bool) {
@@ -141,24 +294,44 @@ impl PageJumpPalette {
     }
 
     pub fn width(&self) -> f64 {
-        WIDTH
+        self.viewport.map_or(WIDTH, |viewport| {
+            WIDTH.min((viewport.width() - 32.0).max(1.0))
+        })
     }
 
     pub fn height(&self) -> f64 {
-        let rows = row_f64(self.visible.len().clamp(1, MAX_VISIBLE_ROWS));
-        (PADDING * 3.0 + INPUT_HEIGHT + ROW_HEIGHT * rows) * self.text_scale
+        let rows = row_f64(self.visible.len().clamp(1, self.visible_capacity()));
+        (PADDING * 3.0 + INPUT_HEIGHT + self.row_height() * rows) * self.text_scale
     }
 
     pub fn rect(&self) -> Rect {
+        let anchor = self.viewport.map_or(self.anchor, |viewport| {
+            Point::new(
+                f64::midpoint(viewport.x0, viewport.x1) - self.width() / 2.0,
+                self.anchor
+                    .y
+                    .min(viewport.y1 - self.height() - 16.0)
+                    .max(viewport.y0 + 16.0),
+            )
+        });
         Rect::new(
-            self.anchor.x,
-            self.anchor.y,
-            self.anchor.x + self.width(),
-            self.anchor.y + self.height(),
+            anchor.x,
+            anchor.y,
+            anchor.x + self.width(),
+            anchor.y + self.height(),
         )
     }
 
     fn rebuild_visible(&mut self) {
+        self.addresses.clear();
+        self.subtitles.clear();
+        self.search_cursor = None;
+        if !self.query.trim().is_empty() && self.provider.is_some() {
+            self.items.clear();
+            self.load_search_page();
+            return;
+        }
+        self.items = self.navigation_items.clone();
         let needle = self.query.to_lowercase();
         self.visible.clear();
         for (i, e) in self.items.iter().enumerate() {
@@ -177,10 +350,18 @@ impl PageJumpPalette {
     fn window_start(&self) -> usize {
         self.cursor
             .saturating_add(1)
-            .saturating_sub(MAX_VISIBLE_ROWS)
+            .saturating_sub(self.visible_capacity())
     }
 
     pub fn handle_key(&mut self, event: &WindowEvent) -> bool {
+        self.handle_key_with_modifiers(event, winit::keyboard::ModifiersState::empty())
+    }
+
+    pub fn handle_key_with_modifiers(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> bool {
         if !self.visible_flag {
             return false;
         }
@@ -198,8 +379,8 @@ impl PageJumpPalette {
                 event,
                 &mut self.query,
                 &mut self.query_selection,
-                false,
-                false,
+                modifiers.shift_key(),
+                modifiers.control_key() || modifiers.super_key(),
             );
             if change == QueryEventChange::Edited {
                 self.cursor = 0;
@@ -222,12 +403,7 @@ impl PageJumpPalette {
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(&idx) = self.visible.get(self.cursor)
-                    && let Some(entry) = self.items.get(idx)
-                {
-                    self.pending = Some(entry.clone());
-                }
-                self.set_visible(false);
+                self.activate_highlighted();
                 true
             }
             Key::Named(NamedKey::Escape) => {
@@ -239,8 +415,8 @@ impl PageJumpPalette {
                     event,
                     &mut self.query,
                     &mut self.query_selection,
-                    false,
-                    false,
+                    modifiers.shift_key(),
+                    modifiers.control_key() || modifiers.super_key(),
                 );
                 if change == QueryEventChange::Edited {
                     self.cursor = 0;
@@ -271,20 +447,24 @@ impl PageJumpPalette {
     /// The palette card's background fill and border.
     fn draw_card_chrome(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
         let scale = f64::from(theme.text_scale);
-        let shape = RoundedRect::from_rect(rect, 12.0 * scale);
+        let radius = 12.0 * scale;
+        let shape = RoundedRect::from_rect(rect, radius);
+        // Panel role (HIG §9.1): panel ground + the derived panel edge as a
+        // crisp inset stroke; a declared `border_standard` was invisible
+        // against `raised` on the dark preset.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0 * scale),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(rect, radius),
         );
     }
 
@@ -328,7 +508,7 @@ impl PageJumpPalette {
             text_renderer,
             &self.query,
             &self.query_selection,
-            "Jump to page…",
+            "Search notes…",
             Rect::new(
                 input_rect.x0 + 12.0 * scale,
                 input_rect.y0,
@@ -338,15 +518,19 @@ impl PageJumpPalette {
             &tokens.typography.style(TextRole::Body),
             tokens.colors.text_primary,
             tokens.colors.text_dim,
-            tokens.colors.accent[5].with_alpha_factor(0.3),
-            tokens.colors.accent[5],
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX].with_alpha_factor(0.3),
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
             true,
         );
         input_rect
     }
 
-    /// Either the "No pages match" placeholder, or the visible-and-windowed
+    /// Either the "No notes match" placeholder, or the visible-and-windowed
     /// slice of result rows with the cursor highlight.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bounded logical row width is a text renderer f32"
+    )]
     fn draw_result_rows(
         &self,
         scene: &mut Scene,
@@ -365,7 +549,7 @@ impl PageJumpPalette {
         // it isn't enlarged twice while the row band scales once.
         let row_size = 14.0;
         if self.visible.is_empty() {
-            let label = "No pages match";
+            let label = "No notes match";
             let y = list_top + (ROW_HEIGHT * scale - f64::from(row_size) * scale) / 2.0;
             text_renderer.draw_text(
                 scene,
@@ -383,7 +567,7 @@ impl PageJumpPalette {
             .iter()
             .enumerate()
             .skip(self.window_start())
-            .take(MAX_VISIBLE_ROWS)
+            .take(self.visible_capacity())
             .enumerate()
         {
             // `visible` only ever holds indices produced by `rebuild_visible`
@@ -393,27 +577,34 @@ impl PageJumpPalette {
             let Some(row) = self.items.get(idx) else {
                 continue;
             };
-            let y0 = list_top + row_f64(slot) * ROW_HEIGHT * scale;
+            let y0 = list_top + row_f64(slot) * self.row_height() * scale;
             let row_rect = Rect::new(
                 rect.x0 + PADDING * scale,
                 y0,
                 rect.x1 - PADDING * scale,
-                y0 + ROW_HEIGHT * scale,
+                y0 + self.row_height() * scale,
             );
             if visible_index == self.cursor {
                 let hl = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[5],
+                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
                     None,
                     &hl,
                 );
             }
-            let ty = row_rect.y0 + (row_rect.height() - f64::from(row_size) * scale) / 2.0;
+            let subtitle = self.subtitles.get(&row.id);
+            let ty = if subtitle.is_some() {
+                row_rect.y0 + 7.0 * scale
+            } else {
+                row_rect.y0 + (row_rect.height() - f64::from(row_size) * scale) / 2.0
+            };
+            let available = (row_rect.width() - 24.0 * scale).max(0.0) as f32;
+            let title = text_renderer.elide_to_width(&row.title, row_size, available);
             text_renderer.draw_text(
                 scene,
-                &row.title,
+                &title,
                 row_size,
                 if visible_index == self.cursor {
                     selected_ink
@@ -423,6 +614,25 @@ impl PageJumpPalette {
                 translated(transform, row_rect.x0 + 12.0 * scale, ty),
                 None,
             );
+            if let Some(subtitle) = subtitle {
+                let subtitle = text_renderer.elide_to_width(subtitle, 12.0, available);
+                text_renderer.draw_text(
+                    scene,
+                    &subtitle,
+                    12.0,
+                    if visible_index == self.cursor {
+                        selected_ink
+                    } else {
+                        tokens.colors.text_dim
+                    },
+                    translated(
+                        transform,
+                        row_rect.x0 + 12.0 * scale,
+                        row_rect.y0 + 31.0 * scale,
+                    ),
+                    None,
+                );
+            }
         }
     }
 
@@ -490,7 +700,7 @@ impl Widget for PageJumpPalette {
         if !self.visible_flag {
             return Some(
                 AccessNode::new(Role::Dialog)
-                    .with_name("Jump to page")
+                    .with_name("Jump to note")
                     .with_state(AccessState {
                         hidden: true,
                         modal: true,
@@ -499,14 +709,18 @@ impl Widget for PageJumpPalette {
             );
         }
         let count = self.visible.len();
-        let children = self
+        let mut children: Vec<AccessNode> = self
             .visible
             .iter()
             .enumerate()
             .filter_map(|(position, &item_index)| {
                 self.items.get(item_index).map(|item| {
                     AccessNode::new(Role::MenuItem)
-                        .with_name(item.title.clone())
+                        .with_action_target(format!("notes.search:{}", item.id))
+                        .with_name(self.subtitles.get(&item.id).map_or_else(
+                            || item.title.clone(),
+                            |subtitle| format!("{} — {subtitle}", item.title),
+                        ))
                         .with_state(AccessState {
                             selected: position == self.cursor,
                             ..Default::default()
@@ -515,9 +729,17 @@ impl Widget for PageJumpPalette {
                 })
             })
             .collect();
+        children.insert(
+            0,
+            AccessNode::new(Role::TextInput)
+                .with_name("Search notes")
+                .with_action_target("notes.search.query")
+                .with_optional_value(Some(self.query.clone()))
+                .with_state(AccessState::new().focusable(true)),
+        );
         Some(
             AccessNode::new(Role::Dialog)
-                .with_name("Jump to page")
+                .with_name("Jump to note")
                 .with_optional_value((!self.query.is_empty()).then(|| self.query.clone()))
                 .with_state(AccessState {
                     modal: true,
@@ -525,6 +747,42 @@ impl Widget for PageJumpPalette {
                 })
                 .with_children(children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !self.visible_flag {
+            return false;
+        }
+        if target == "notes.search.query"
+            && let crate::a11y::Action::SetValue(value) = action
+        {
+            self.query.clone_from(value);
+            self.query_selection = Selection::collapsed(self.query.len());
+            self.query_composition.clear();
+            self.cursor = 0;
+            self.rebuild_visible();
+            return true;
+        }
+        if matches!(action, crate::a11y::Action::Activate)
+            && let Some(id) = target
+                .strip_prefix("notes.search:")
+                .and_then(|id| Uuid::parse_str(id).ok())
+            && let Some(cursor) = self
+                .visible
+                .iter()
+                .position(|index| self.items.get(*index).is_some_and(|entry| entry.id == id))
+        {
+            self.cursor = cursor;
+            self.activate_highlighted();
+            return true;
+        }
+        false
     }
 }
 
@@ -574,7 +832,7 @@ mod tests {
             let colors = &theme.tokens.colors;
             let ratio = crate::a11y::contrast_ratio(
                 colors.on_accent(ON_FILL_MIN_CONTRAST),
-                colors.accent[5],
+                colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
             );
             assert!(
                 ratio >= ON_FILL_MIN_CONTRAST,
@@ -719,7 +977,110 @@ mod tests {
         let node = Widget::accessibility(&p).unwrap();
         assert_eq!(node.role, crate::a11y::Role::Dialog);
         assert_eq!(node.value.as_deref(), Some("r"));
-        assert_eq!(node.children.len(), 1);
-        assert!(node.children[0].state.selected);
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(node.children[0].role, crate::a11y::Role::TextInput);
+        assert!(node.children[1].state.selected);
+    }
+
+    #[test]
+    fn narrow_large_text_palette_keeps_all_visible_rows_inside_viewport() {
+        let mut p = seed_two();
+        p.set_viewport(Rect::new(0.0, 0.0, 390.0, 600.0));
+        p.set_anchor(Point::new(-45.0, 80.0));
+        p.text_scale = 2.0;
+        p.set_items(
+            (1..25)
+                .map(|id| PageEntry {
+                    id: Uuid::from_u128(id),
+                    title: format!("Note {id}"),
+                })
+                .collect(),
+        );
+        p.set_visible(true);
+        for _ in 0..23 {
+            p.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+        }
+        let rect = p.rect();
+        assert!(rect.x0 >= 16.0 && rect.x1 <= 374.0);
+        assert!(rect.y0 >= 16.0 && rect.y1 <= 584.0);
+        assert!(p.cursor >= p.window_start());
+        assert!(p.cursor < p.window_start().saturating_add(p.visible_capacity()));
+    }
+
+    #[test]
+    fn query_command_select_all_replaces_text_without_typing_shortcut() {
+        let mut p = seed_two();
+        p.set_visible(true);
+        p.handle_key(&char_press("welcome"));
+        p.handle_key_with_modifiers(&char_press("a"), winit::keyboard::ModifiersState::CONTROL);
+        p.handle_key(&char_press("road"));
+        assert_eq!(p.query(), "road");
+        assert_eq!(p.highlighted().unwrap().title, "Roadmap");
+    }
+
+    #[test]
+    fn provider_results_continue_in_bounded_pages_and_preserve_action_addresses() {
+        use crate::search::{SearchCatalog, SearchProvider, SearchResult};
+        struct Provider(SearchCatalog);
+        impl SearchProvider for Provider {
+            fn name(&self) -> &'static str {
+                "Notes"
+            }
+            fn search(&self, _: &str) -> Vec<SearchResult> {
+                panic!("palette must use bounded pages");
+            }
+            fn action_directory_cursor_is_current(
+                &self,
+                cursor: &crate::search::SearchCursor,
+            ) -> bool {
+                self.0.cursor_is_current(cursor)
+            }
+            fn search_page(
+                &self,
+                query: &str,
+                cursor: Option<&crate::search::SearchCursor>,
+                budget: usize,
+                limit: usize,
+            ) -> crate::search::SearchPage {
+                assert_eq!((budget, limit), (512, 64));
+                self.0.query_page(query, cursor, budget, limit)
+            }
+        }
+        let catalog = SearchCatalog::new("Notes");
+        for index in 0..70 {
+            let resource = format!("note:{index:03}");
+            let address = tilo_actions::ActionAddress::new(&resource, "open");
+            catalog
+                .upsert(
+                    &resource,
+                    "matching body",
+                    SearchResult::for_action("Notes", format!("Body {index}"), address)
+                        .with_subtitle("Research"),
+                )
+                .unwrap();
+        }
+        let mut p = seed_two();
+        p.set_search_provider(Box::new(Provider(catalog)));
+        p.set_visible(true);
+        p.handle_key(&char_press("matching"));
+        assert_eq!(p.visible_len(), 65);
+        for _ in 0..64 {
+            p.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
+        }
+        assert_eq!(p.highlighted().unwrap().title, "More results…");
+        p.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
+        assert!(p.is_visible());
+        assert_eq!(p.visible_len(), 70);
+        p.handle_key(&key_press(Key::Named(NamedKey::Enter), None));
+        assert_eq!(
+            p.take_action_selection(),
+            Some(tilo_actions::ActionAddress::new("note:064", "open"))
+        );
+        assert!(!p.is_visible());
+        assert_eq!(
+            p.visible_len(),
+            2,
+            "closing returns to the navigation catalogue"
+        );
     }
 }

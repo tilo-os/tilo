@@ -1,14 +1,14 @@
 # Disk Imager — Tilo application manifest.
 #
-# The sandboxed qpkg uses the host file chooser and keeps destructive writing
+# The sandboxed tapp uses the host file chooser and keeps destructive writing
 # behind the application's allow-gate. Without a narrow raw-device portal the
-# qpkg does not expose writing at all. The separately packaged Linux, Windows,
+# tapp does not expose writing at all. The separately packaged Linux, Windows,
 # and macOS host downloads compile in the short-lived privileged writer.
 #
 
 
 [package]
-id       = "dev.tilo.imager"
+id       = "so.tilo.imager"
 name     = "Disk Imager"
 category = "System"
 version  = "0.1.0"

@@ -18,7 +18,6 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop};
 use crate::selection::KeySelection;
@@ -1238,12 +1237,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 self.rect.y0 + top + height,
             );
             if self.selection.is_selected(&row.key) {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    accent.with_alpha_factor(0.3),
-                    None,
-                    &row_rect,
+                crate::widget::data_table::paint_selected_row(
+                    scene, transform, theme, row_rect, 1.0,
                 );
             }
             if self.is_focused && self.focused_key.as_ref() == Some(&row.key) {
@@ -1274,16 +1269,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                crate::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.base, 13),
+                crate::widget::scrollbar::track_color(theme),
                 None,
                 &RoundedRect::from_rect(track, radius),
             );
             if let Some(thumb) = self.vbar.thumb_rect(track, self.scroll_metrics()) {
-                let color = if self.vbar.is_active() {
-                    theme.tokens.colors.text_dim
-                } else {
-                    theme.tokens.colors.border_standard
-                };
+                let color = crate::widget::scrollbar::thumb_color(theme, self.vbar.is_active());
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,

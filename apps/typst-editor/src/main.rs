@@ -60,25 +60,28 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.typst-editor", typst_editor::app_root)
-            .configure_app(|app| app.set_window_title(Some("Typst".into())))
-            .shot_handler(shot_handler)
-            .allowed_options(&["--theme"])
-            .scenarios(&[
-                "preview",
-                "menu",
-                "problems",
-                "scrolled",
-                "errors",
-                "editor-select",
-                "preview-zoom",
-                "preview-pan",
-                "select",
-                "stale",
-                "status",
-            ]),
-    );
+    ui::launch::run_or_exit(&launch_spec());
+}
+
+fn launch_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.typst-editor", typst_editor::app_root)
+        .history(&typst_editor::framework_history::HISTORY)
+        .configure_app(|app| app.set_window_title(Some("Typst".into())))
+        .shot_handler(shot_handler)
+        .allowed_options(&["--theme"])
+        .scenarios(&[
+            "preview",
+            "menu",
+            "problems",
+            "scrolled",
+            "errors",
+            "editor-select",
+            "preview-zoom",
+            "preview-pan",
+            "select",
+            "stale",
+            "status",
+        ])
 }
 
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
@@ -90,17 +93,18 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .scenario
         .as_deref()
         .map_or_else(typst_editor::demo_root, typst_editor::demo_root_scenario);
-    // Keep the app-specific switch for existing scripts, while matching the
-    // standard Tilo screenshot contract.  In particular, review captures must
-    // be able to exercise the actual high-contrast and motion preferences.
-    let theme_name = args
-        .value("--theme")
-        .map(str::to_owned)
-        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok());
-    let theme = match theme_name.as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast(),
-        Some("dark") | None => Theme::dark(),
+    let shared_theme = ui::launch::shot_theme(args);
+    let theme = match args.value("--theme") {
+        Some("light") => Theme::light()
+            .with_text_scale(shared_theme.text_scale)
+            .with_reduce_motion(shared_theme.reduce_motion),
+        Some("dark") => Theme::dark()
+            .with_text_scale(shared_theme.text_scale)
+            .with_reduce_motion(shared_theme.reduce_motion),
+        Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast()
+            .with_text_scale(shared_theme.text_scale)
+            .with_reduce_motion(shared_theme.reduce_motion),
+        None => shared_theme,
         Some(name) => {
             return Err(LaunchError::Scenario(format!(
                 "unknown screenshot theme {name:?}; expected \"dark\", \"light\", or \"high-contrast\""
@@ -162,22 +166,20 @@ fn render_shot_to_png(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -199,4 +201,9 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("typst_editor: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[test]
+fn production_launch_registers_history() {
+    launch_spec().validate_history_declaration().unwrap();
 }

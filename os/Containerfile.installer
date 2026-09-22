@@ -48,6 +48,11 @@ RUN test -x /usr/bin/tilo-installer \
     && /usr/libexec/tilo-uki-cmdline remove rd.udev.log_level \
     && /usr/libexec/tilo-uki-cmdline remove loglevel \
     && /usr/libexec/tilo-uki-cmdline remove vt.global_cursor_default \
+    # Refuse a malformed base before deriving either signed UKI. Both variants
+    # inherit the target-independent root and unlock discovery contract.
+    && live_cmdline="$(/usr/libexec/tilo-uki-cmdline show)" \
+    && test "$(printf '%s\n' "$live_cmdline" | tr '[:space:]' '\n' | grep -E '^root(=|$)')" = root=tilo-auto \
+    && test "$(printf '%s\n' "$live_cmdline" | tr '[:space:]' '\n' | grep -E '^rd[.]luks[.]options(=|$)')" = rd.luks.options=tpm2-device=auto,fido2-device=auto \
     # Live media and installed targets use the same target-independent root
     # discovery contract.  The boot ESP identifies the physical disk and the
     # dedicated Tilo GPT type identifies its root, so no per-machine UUID or
@@ -65,6 +70,9 @@ RUN test -x /usr/bin/tilo-installer \
     # label.  Keep it in the signed target UKI: bootc's composefs Type2 path
     # cannot synthesize per-machine kernel arguments during installation.
     && /usr/libexec/tilo-uki-cmdline append systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec /boot/tilo-target/tilo-target.efi \
+    && target_cmdline="$(/usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi)" \
+    && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^root(=|$)')" = root=tilo-auto \
+    && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^rd[.]luks[.]options(=|$)')" = rd.luks.options=tpm2-device=auto,fido2-device=auto \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw tilo.mode=normal \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw tilo.install \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw root=tilo-auto \

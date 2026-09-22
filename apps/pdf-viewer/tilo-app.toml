@@ -10,7 +10,7 @@
 
 
 [package]
-id       = "dev.tilo.pdf-viewer"
+id       = "so.tilo.pdf-viewer"
 name     = "PDF Viewer"
 category = "Office"
 version  = "0.1.0"

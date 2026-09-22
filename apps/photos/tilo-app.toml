@@ -8,7 +8,7 @@
 
 
 [package]
-id       = "dev.tilo.photos"
+id       = "so.tilo.photos"
 name     = "Photos"
 category = "Graphics"
 version  = "0.1.0"

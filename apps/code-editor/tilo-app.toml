@@ -15,7 +15,7 @@
 
 
 [package]
-id       = "dev.tilo.code-editor"
+id       = "so.tilo.code-editor"
 name     = "Code Editor"
 category = "Development"
 version  = "0.1.0"

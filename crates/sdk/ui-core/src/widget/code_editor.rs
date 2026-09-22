@@ -9,7 +9,7 @@
 //! [`Theme`]), and **soft-tab / indent** handling.
 //!
 //! ```no_run
-//! use ui::widget::code_editor::{CodeEditor, Language};
+//! use tilo_ui::widget::code_editor::{CodeEditor, Language};
 //! let mut editor = CodeEditor::local()
 //!     .with_language(Language::Rust)
 //!     .with_tab_width(4);
@@ -439,6 +439,7 @@ impl Widget for CodeEditor {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.inner.capture_layout_text_scale(theme.text_scale);
         // Registers *this* widget (not the inner input) so the host
         // drives CodeEditor's own passes.
         let node = taffy.leaf_node(Style {
@@ -448,7 +449,6 @@ impl Widget for CodeEditor {
             },
             ..Default::default()
         });
-        let _ = theme;
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -516,7 +516,10 @@ impl Widget for CodeEditor {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the Widget event signature is forwarded intact to the inner text editor with CRDT, focus and layout context"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1692,6 +1695,39 @@ mod tests {
         Widget::draw(ed, &mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     }
 
+    fn lay_out_and_draw(
+        ed: &mut CodeEditor,
+        theme: &Theme,
+        renderer: &mut TextRenderer,
+        width: f32,
+    ) -> f32 {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let node = Widget::build_layout(ed, &mut taffy, theme, &mut node_map);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                |known, available, id, _, _| {
+                    node_map
+                        .get(&id)
+                        .map_or(taffy::Size::ZERO, |&widget| unsafe {
+                            (*widget).measure(known, available, renderer)
+                        })
+                },
+            )
+            .expect("code editor layout computes");
+        let height = taffy.layout(node).expect("code editor layout").size.height;
+        Widget::apply_layout(ed, &taffy, node, Point::ZERO);
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        Widget::draw(ed, &mut scene, Affine::IDENTITY, renderer, theme, &presence);
+        height
+    }
+
     use crate::text_render::TextRenderer;
 
     #[test]
@@ -1928,6 +1964,116 @@ mod tests {
         assert!(
             caret_with > caret_without + 10.0,
             "the gutter shifts the caret right ({caret_with} vs {caret_without})",
+        );
+    }
+
+    #[test]
+    fn scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry() {
+        let text = "first logical line wraps across several visual rows because the editor is narrow\nsecond";
+        let mut normal = CodeEditor::local().with_initial_value(text);
+        normal.set_rect(Rect::new(0.0, 0.0, 190.0, 420.0));
+        draw_once(&mut normal, &Theme::dark());
+        let normal_gutter = normal.gutter_width();
+        let normal_line_height = normal.line_height();
+
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut large = CodeEditor::local().with_initial_value(text);
+        large.set_rect(Rect::new(0.0, 0.0, 190.0, 900.0));
+        draw_once(&mut large, &theme);
+        assert!(
+            large.gutter_width() >= normal_gutter * 1.8,
+            "measured gutter grows with its line-number glyphs ({} vs {})",
+            large.gutter_width(),
+            normal_gutter,
+        );
+        assert!(
+            large.line_height() >= normal_line_height * 1.9,
+            "wrapper reports the shaped 2× row height"
+        );
+
+        let first_end = text.find('\n').expect("hard line break");
+        let wrapped = large.selection_rects(&theme, 0, first_end);
+        assert!(wrapped.len() >= 2, "first logical line wraps visually");
+        assert!(wrapped.iter().all(|rect| {
+            (rect.height() - large.line_height()).abs() < 0.1
+                && rect.x0 >= large.rect().x0 + large.gutter_width()
+        }));
+        let second_start = first_end + 1;
+        let caret = large.caret_rect(&theme, second_start);
+        assert!(caret.x0 >= large.rect().x0 + large.gutter_width());
+        let point = Point::new(caret.x0 + 1.0, caret.y0 + caret.height() / 2.0);
+        assert_eq!(large.byte_at_point(point), second_start);
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut large,
+            &mut doc,
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            },
+            mods(false, false),
+        );
+        assert!(drive(
+            &mut large,
+            &mut doc,
+            &WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            mods(false, false),
+        ));
+        assert_eq!(
+            large.cursor_pos(),
+            second_start,
+            "pointer event places the caret on the logical second line through wrapped rows"
+        );
+    }
+
+    #[test]
+    fn wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal() {
+        let text = "a long source line wraps over several visual rows while the wrapper owns the themed layout lifecycle";
+        let mut editor = CodeEditor::local().with_initial_value(text);
+        let mut renderer = TextRenderer::new();
+        assert_eq!(renderer.text_scale(), 1.0, "stale renderer precondition");
+
+        let large_theme = Theme::dark().with_text_scale(2.0);
+        let large_height = lay_out_and_draw(&mut editor, &large_theme, &mut renderer, 190.0);
+        let large_gutter = editor.gutter_width();
+        let large_font = editor
+            .inner()
+            .shaped_font_size_for_test()
+            .expect("large shaped font");
+        assert!(
+            (f64::from(large_height) - editor.inner().content_height()).abs() < 0.1,
+            "wrapper measure and draw must share the 2x paragraph height"
+        );
+
+        let normal_theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let _ = Widget::build_layout(&mut editor, &mut taffy, &normal_theme, &mut node_map);
+        assert!(
+            Widget::layout_needs_measure(&editor),
+            "the same wrapper becomes measure-dirty when theme scale returns to 1x"
+        );
+        let normal_height = lay_out_and_draw(&mut editor, &normal_theme, &mut renderer, 190.0);
+        let normal_gutter = editor.gutter_width();
+        let normal_font = editor
+            .inner()
+            .shaped_font_size_for_test()
+            .expect("normal shaped font");
+        assert!(
+            (f64::from(normal_height) - editor.inner().content_height()).abs() < 0.1,
+            "wrapper measure and draw must share the restored 1x paragraph height"
+        );
+        assert!(large_height > normal_height * 1.8);
+        assert!(large_gutter >= normal_gutter * 1.8);
+        assert!(large_font >= normal_font * 1.9);
+        assert_eq!(
+            renderer.text_scale(),
+            1.0,
+            "renderer stayed stale throughout"
         );
     }
 }

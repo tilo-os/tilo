@@ -9,7 +9,7 @@
 
 
 [package]
-id       = "dev.tilo.word-processor"
+id       = "so.tilo.word-processor"
 name     = "Word Processor"
 category = "Office"
 version  = "0.1.0"

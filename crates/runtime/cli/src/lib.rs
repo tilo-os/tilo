@@ -1,3 +1,8 @@
+#![allow(
+    clippy::collapsible_if,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! `cli` — SDK for Tilo CLI apps.
 //!
 //! Tilo apps come in two flavours: GUI (talks Wayland, uses the `ui`
@@ -155,9 +160,21 @@ pub fn data_home() -> PathBuf {
 }
 
 /// The XDG data dir fallback for state outside Tilo; public so an app can
-/// point its own storage at the same spot.
+/// point its own storage at the same spot. Renamed built-in packages keep using
+/// an existing `dev.qos.*` directory in place, including its actor and locks.
+/// An existing current directory always takes precedence; nothing is moved.
 pub fn standalone_state_dir(pkg_id: &str) -> PathBuf {
-    data_home().join(pkg_id)
+    let home = data_home();
+    let current = home.join(pkg_id);
+    if matches!(current.try_exists(), Ok(false)) {
+        if let Some(suffix) = pkg_id.strip_prefix("dev.tilo.") {
+            let legacy = home.join(format!("dev.qos.{suffix}"));
+            if legacy.is_dir() {
+                return legacy;
+            }
+        }
+    }
+    current
 }
 
 #[cfg(test)]
@@ -188,10 +205,37 @@ mod tests {
     fn standalone_state_dir_honours_xdg() {
         unsafe { std::env::set_var("XDG_DATA_HOME", "/tmp/xdg") };
         assert_eq!(
-            standalone_state_dir("notes.tilo.dev"),
-            PathBuf::from("/tmp/xdg/notes.tilo.dev")
+            standalone_state_dir("notes.tilo.sh"),
+            PathBuf::from("/tmp/xdg/notes.tilo.sh")
         );
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn renamed_package_reuses_legacy_directory_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_DATA_HOME");
+        unsafe { std::env::set_var("XDG_DATA_HOME", tmp.path()) };
+        let old = tmp.path().join("dev.qos.notes");
+        let current = tmp.path().join("dev.tilo.notes");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("actor"), b"original actor").unwrap();
+        assert_eq!(standalone_state_dir("dev.tilo.notes"), old);
+        assert!(!current.exists());
+        std::fs::create_dir(&current).unwrap();
+        assert_eq!(standalone_state_dir("dev.tilo.notes"), current);
+        assert_eq!(std::fs::read(old.join("actor")).unwrap(), b"original actor");
+        assert_eq!(
+            standalone_state_dir("dev.other.notes"),
+            tmp.path().join("dev.other.notes")
+        );
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+                None => std::env::remove_var("XDG_DATA_HOME"),
+            }
+        }
     }
 
     #[test]

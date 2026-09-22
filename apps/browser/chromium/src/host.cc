@@ -1,0 +1,1091 @@
+#include "host.h"
+#include "protocol.h"
+#include "view_geometry.h"
+#include "key_mapping.h"
+#include "request_filter.h"
+#include "document_scripts.h"
+#include "startup_diagnostics.h"
+#include "capabilities.h"
+#include "site_info.h"
+#include "navigation_history.h"
+#include "fullscreen_state.h"
+#include "credential_document.h"
+#include "credential_consent.h"
+#include "credential_commands.h"
+#if defined(OS_MAC)
+#include "credentials_mac.h"
+#endif
+#include "include/cef_browser.h"
+#include "include/cef_client.h"
+#include "include/cef_command_line.h"
+#include "include/cef_cookie.h"
+#include "include/cef_ssl_info.h"
+#include "include/cef_parser.h"
+#include "include/cef_process_message.h"
+#include "include/cef_request_context.h"
+#include "include/cef_version.h"
+#include "include/base/cef_callback.h"
+#include "include/wrapper/cef_closure_task.h"
+#include "include/wrapper/cef_helpers.h"
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstring>
+#include <cstdlib>
+#include <cstdio>
+#include <deque>
+#include <fcntl.h>
+#include <filesystem>
+#include <iostream>
+#include <mutex>
+#include <map>
+#include <optional>
+#include <set>
+#include <poll.h>
+#include <thread>
+#include <unistd.h>
+#include <signal.h>
+
+namespace {
+constexpr int kOffscreenFrameRate = 60;
+constexpr size_t kMaxMediaFrames = 64;
+// Bounded, opt-in startup geometry evidence; never includes page content.
+void TraceGeometry(const char* stage,int tab,int width=0,int height=0,double scale=0) {
+  static const bool enabled=[] {const char* value=std::getenv("QOS_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
+  static std::atomic<unsigned> count{0};
+  if(enabled && count.fetch_add(1)<128) std::fprintf(stderr,"[chromium-geometry] %s tab=%d %dx%d scale=%g\n",stage,tab,width,height,scale);
+}
+// CEF callbacks only enqueue: a slow UI must never block Chromium's UI thread.
+class Output {
+ public:
+  Output():thread_([this]{ Run(); }) {}
+  ~Output() { Stop(); }
+  void Send(uint8_t kind,std::string data) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto packet=qos::EncodePacket(kind,data);
+    if(kind==2 || kind==3) frame_=std::move(packet);
+    else if(events_.size()<256) events_.push_back(std::move(packet));
+    else failed_=true;
+    cv_.notify_one();
+  }
+  bool Failed() const { return failed_; }
+  void Stop() {
+    stopping_=true; cv_.notify_one();
+    if(thread_.joinable()) thread_.join();
+  }
+ private:
+  void Run() {
+    int flags=fcntl(STDOUT_FILENO,F_GETFL,0); fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK);
+    for(;;) {
+      std::string packet;
+      { std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock,[&]{ return stopping_ || !events_.empty() || !frame_.empty(); });
+        if(!events_.empty()) { packet=std::move(events_.front()); events_.pop_front(); }
+        else if(!frame_.empty()) packet.swap(frame_);
+        else break;
+      }
+      size_t offset=0;
+      auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+      while(offset<packet.size()) {
+        pollfd fd{STDOUT_FILENO,POLLOUT,0}; int r=poll(&fd,1,100);
+        if(r<0 && errno==EINTR) continue;
+        if(r>0 && (fd.revents&POLLOUT)) {
+          ssize_t n=write(STDOUT_FILENO,packet.data()+offset,packet.size()-offset);
+          if(n>0) { offset+=n; continue; }
+          if(n<0 && (errno==EAGAIN || errno==EINTR)) continue;
+          failed_=true; return;
+        }
+        if(r<0 || (r>0 && (fd.revents&(POLLHUP|POLLERR|POLLNVAL))) || (stopping_ && std::chrono::steady_clock::now()>deadline)) { failed_=true; return; }
+      }
+    }
+  }
+  std::atomic<bool> stopping_{false},failed_{false};
+  std::mutex mutex_; std::condition_variable cv_; std::deque<std::string> events_; std::string frame_; std::thread thread_;
+};
+Output* output=nullptr;
+void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
+  if(!fields) fields=CefDictionaryValue::Create();
+  fields->SetString("event",name); auto value=CefValue::Create(); value->SetDictionary(fields);
+  output->Send(1,CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString());
+}
+void StringEvent(const std::string& name,const std::string& key,const CefString& text) {
+  auto d=CefDictionaryValue::Create();d->SetString(key,text);Event(name,d);
+}
+class DevToolsClient final : public CefClient {
+ private: IMPLEMENT_REFCOUNTING(DevToolsClient);
+};
+double Number(CefRefPtr<CefDictionaryValue> d,const char* key) {
+  return d->GetType(key)==VTYPE_DOUBLE ? d->GetDouble(key) : d->GetInt(key);
+}
+class Client;
+class FaviconDownload final : public CefDownloadImageCallback {
+ public:
+  FaviconDownload(int tab,uint64_t generation,std::string page):tab_(tab),generation_(generation),page_(std::move(page)) {}
+  void OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) override;
+ private:
+  int tab_; uint64_t generation_; std::string page_;
+  IMPLEMENT_REFCOUNTING(FaviconDownload);
+};
+std::map<int,CefRefPtr<Client>> clients;
+CefRefPtr<CefRequestContext> shared_context;
+void CreateTab(int id);
+void PublishZoomLevels();
+void PublishFilters();
+void PublishDownloadRuntime();
+void DownloadOwnerIdle(int id);
+void Dispatch(CefRefPtr<CefDictionaryValue> command);
+bool closing=false;
+bool clear_on_exit=false;
+bool private_mode=false;
+std::string downloads_directory;
+std::shared_ptr<qos::CredentialWorker> credential_worker;
+struct CredentialDeliveryState {std::mutex mutex;bool active=false;};
+// A blocked worker retains this plain state through shutdown, without touching
+// destroyed globals or retaining CEF objects after CefShutdown.
+const auto credential_delivery=std::make_shared<CredentialDeliveryState>();
+CefRefPtr<qos::RequestFilter> request_filter;
+CefRefPtr<qos::Downloads> downloads;
+qos::DownloadOwnerReservations download_owners;
+
+class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
+                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler {
+ public:
+  explicit Client(int id):id_(id),credential_document_(private_mode),capabilities_(new qos::Capabilities([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
+  void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
+    if(transfer_owner_ && name!="tab_detached" && name!="closed") return;
+    if(!fields) fields=CefDictionaryValue::Create();fields->SetInt("tab",id_);::Event(name,fields);
+  }
+  void StringEvent(const std::string& name,const std::string& key,const CefString& text) {
+    auto d=CefDictionaryValue::Create();d->SetString(key,text);Event(name,d);
+  }
+  CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
+  void OpenTab(const CefString& url,bool background) {
+    if(url.length()>8192) return;auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetBool("background",background);Event("open_tab",d);
+  }
+  bool OnOpenURLFromTab(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,const CefString& url,WindowOpenDisposition disposition,bool) override {
+    if(disposition==CEF_WOD_NEW_BACKGROUND_TAB || disposition==CEF_WOD_NEW_FOREGROUND_TAB || disposition==CEF_WOD_NEW_WINDOW) { OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true; }return false;
+  }
+  CefRefPtr<CefDialogHandler> GetDialogHandler() override { return this; }
+  bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
+#if defined(OS_MAC)
+    Event("file_dialog");return ShowHostFileDialog(mode,title,extensions,callback);
+#else
+    return false;
+#endif
+  }
+  void PublishZoom() { if(browser_) { auto d=CefDictionaryValue::Create();d->SetDouble("level",browser_->GetHost()->GetZoomLevel());Event("zoom",d); } }
+  CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
+  void OnBeforeContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model) override {
+    if(!params->GetLinkUrl().empty()) { model->AddItem(26501,"Open link in new tab");model->AddItem(26502,"Copy link address"); }
+  }
+  bool RunContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model,CefRefPtr<CefRunContextMenuCallback> callback) override {
+    if(context_callback_) context_callback_->Cancel();
+    if(params->GetLinkUrl().ToString().size()>8192) { callback->Cancel();return true; }
+    context_callback_=callback;context_id_=context_id_%2147483647+1;context_commands_.clear();
+    auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);d->SetInt("x",params->GetXCoord());d->SetInt("y",params->GetYCoord());d->SetString("link",params->GetLinkUrl());
+    auto items=CefListValue::Create();
+    for(size_t i=0;i<model->GetCount() && items->GetSize()<24;++i) {
+      int command=model->GetCommandIdAt(i);if(command<=0 || !model->IsEnabledAt(i) || model->GetTypeAt(i)==MENUITEMTYPE_SUBMENU) continue;
+      if(model->GetLabelAt(i).ToString().size()>4096) continue;
+      auto item=CefDictionaryValue::Create();item->SetInt("id",command);item->SetString("label",model->GetLabelAt(i));items->SetDictionary(items->GetSize(),item);context_commands_.insert(command);
+    }
+    d->SetList("items",items);Event("context_menu",d);return true;
+  }
+  bool OnContextMenuCommand(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,int command,EventFlags) override {
+    if(command==26501) { OpenTab(params->GetLinkUrl(),false);return true; }return false;
+  }
+  void OnContextMenuDismissed(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>) override { context_callback_=nullptr;context_commands_.clear();auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);Event("context_closed",d); }
+  CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
+  void OnFindResult(CefRefPtr<CefBrowser>,int identifier,int count,const CefRect&,int active,bool final_update) override {
+    if(final_update && count>0 && active==0 && select_initial_) {
+      select_initial_=false;
+      CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){if(self->browser_ && self->finding_) self->browser_->GetHost()->Find(self->find_text_,true,false,true);},CefRefPtr<Client>(this)));
+      return;
+    }
+    auto d=CefDictionaryValue::Create();d->SetInt("id",find_id_);d->SetInt("count",count);d->SetInt("active",active);d->SetBool("final",final_update);Event("find_result",d);
+    if(final_update) { finding_=false;if(!pending_find_.empty()) { auto next=pending_find_.front();pending_find_.pop_front();CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,CefRefPtr<CefDictionaryValue> command){self->Command(command);},CefRefPtr<Client>(this),next));} }
+  }
+  CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return downloads; }
+  CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return capabilities_; }
+  CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
+  CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
+  CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
+  CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+  CefRefPtr<CefFrameHandler> GetFrameHandler() override { return this; }
+  void OnFullscreenModeChange(CefRefPtr<CefBrowser>,bool fullscreen) override {
+    if(!fullscreen_.Set(fullscreen)) return;
+    auto d=CefDictionaryValue::Create();d->SetBool("fullscreen",fullscreen);Event("fullscreen",d);
+  }
+  void OnRenderProcessTerminated(CefRefPtr<CefBrowser>,TerminationStatus,int,const CefString&) override {
+    InvalidateCredentials();
+    fullscreen_.ResetForRendererTermination();
+    Event("renderer_terminated");
+  }
+  void OnFrameCreated(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame) override { SendFilters(frame);SendScripts(frame); }
+  void GetViewRect(CefRefPtr<CefBrowser>,CefRect& rect) override { rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height()); }
+  bool GetScreenInfo(CefRefPtr<CefBrowser>,CefScreenInfo& info) override {
+    info.device_scale_factor=geometry_.scale();info.rect=info.available_rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height());return true;
+  }
+  void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
+    browser_=browser;
+    if(id_==1 && qos::StartupDiagnostics::Enabled()){startup_diagnostics_=new qos::StartupDiagnostics(browser);startup_diagnostics_->Attach();}
+    request_filter->Begin(browser->GetIdentifier(),"about:blank");
+    site_clear_=new qos::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
+    document_scripts_=new qos::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
+    document_scripts_->Attach();
+    navigation_history_=new qos::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
+    auto d=CefDictionaryValue::Create();d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    TraceGeometry("ready",id_);
+    browser_->GetHost()->WasHidden(!visible_);
+    if(closing) browser_->GetHost()->CloseBrowser(true);
+  }
+  bool DoClose(CefRefPtr<CefBrowser>) override { return false; }
+  void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
+    if(!browser_ || !browser->IsSame(browser_))return;
+    TraceGeometry("before-close",id_);
+    InvalidateCredentials();
+    request_filter->Remove(browser->GetIdentifier());
+    if(site_clear_)site_clear_->Detach();
+    site_clear_=nullptr;
+    capabilities_->Close();
+    if(navigation_history_)navigation_history_->Detach();
+    navigation_history_=nullptr;
+    if(startup_diagnostics_)startup_diagnostics_->Detach();
+    startup_diagnostics_=nullptr;
+    if(document_scripts_)document_scripts_->Detach();
+    document_scripts_=nullptr;
+    browser_=nullptr;
+    download_owners.Destroy(id_);
+    Event("closed");clients.erase(id_);PublishDownloadRuntime();
+    if(closing && clients.empty())CefQuitMessageLoop();
+  }
+  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool,bool) override {
+    if(frame->IsMain()) { TraceGeometry("before-browse",id_);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
+  }
+  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,WindowOpenDisposition disposition,bool,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
+    OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
+  }
+  void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { ++favicon_generation_;std::optional<std::pair<std::string,std::pair<uint64_t,bool>>> pending;if(pending_main_media_token_){const auto key=frame->GetIdentifier().ToString();auto found=media_frames_.find(key);if(found!=media_frames_.end() && found->second.first==*pending_main_media_token_)pending=std::make_pair(key,std::make_pair(found->second.first,false));}media_frames_.clear();if(pending)media_frames_.insert(*pending);pending_main_media_token_.reset();media_limit_reported_=false;last_media_playing_.reset();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false); } }
+  void OnTitleChange(CefRefPtr<CefBrowser>,const CefString& title) override { StringEvent("title","title",title); }
+  void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,const std::vector<CefString>& urls) override {
+    if(urls.empty() || urls.front().ToString().size()>8192) return;
+    browser->GetHost()->DownloadImage(urls.front(),true,64,false,new FaviconDownload(id_,favicon_generation_,browser->GetMainFrame()->GetURL()));
+  }
+  void PublishFavicon(uint64_t generation,const std::string& page,CefRefPtr<CefImage> image) {
+    if(!browser_ || generation!=favicon_generation_ || browser_->GetMainFrame()->GetURL()!=page || !image || image->IsEmpty()) return;
+    int width=0,height=0;auto png=image->GetAsPNG(1.0f,true,width,height);
+    if(!png || width<=0 || height<=0 || width>64 || height>64 || png->GetSize()>256*1024) return;
+    std::string bytes(png->GetSize(),'\0');png->GetData(bytes.data(),bytes.size(),0);
+    auto d=CefDictionaryValue::Create();d->SetString("page_url",page);d->SetInt("width",width);d->SetInt("height",height);d->SetString("png",CefBase64Encode(bytes.data(),bytes.size()));Event("favicon",d);
+  }
+  void OnLoadingProgressChange(CefRefPtr<CefBrowser>,double progress) override { auto d=CefDictionaryValue::Create();d->SetDouble("progress",progress);Event("progress",d); }
+  void OnLoadingStateChange(CefRefPtr<CefBrowser>,bool,bool back,bool forward) override { auto d=CefDictionaryValue::Create();d->SetBool("back",back);d->SetBool("forward",forward);Event("history",d); }
+  void OnLoadStart(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,TransitionType) override {
+    if(!frame->IsMain()) return;
+    InvalidateCredentials();
+    TraceGeometry("load-start",id_);
+    credential_committed_origin_=qos::Origin(frame->GetURL());
+  }
+  void OnLoadEnd(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,int status) override {
+    if(!frame->IsMain()) return; if(startup_diagnostics_ && qos::Origin(frame->GetURL()).starts_with("https://"))startup_diagnostics_->Loaded();OfferCredentialContext(frame);pending_main_media_token_.reset();PublishZoom();auto d=CefDictionaryValue::Create();d->SetString("url",frame->GetURL());d->SetInt("status",status);Event("loaded",d);SendScripts();
+  }
+  void OnLoadError(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,ErrorCode code,const CefString& text,const CefString& url) override {
+    if(frame->IsMain()) InvalidateCredentials();
+    if(!frame->IsMain() || code==ERR_ABORTED) return; auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetString("message",text);Event("error",d);
+  }
+  void OnPopupShow(CefRefPtr<CefBrowser>,bool show) override { popup_visible_=show;if(!show) { popup_.clear(); EmitFrame(); } }
+  void OnPopupSize(CefRefPtr<CefBrowser>,const CefRect& rect) override { popup_rect_=rect; }
+  void OnPaint(CefRefPtr<CefBrowser> browser,PaintElementType type,const RectList&,const void* buffer,int width,int height) override {
+    if(!visible_) return;
+    auto size=qos::FrameSize(width,height);if(!size) return;
+    if(type==PET_VIEW && !geometry_.PaintMatches(width,height)) {
+      TraceGeometry("paint-stale",id_,width,height,geometry_.scale());
+      if(!stale_paint_recovery_pending_) {
+        stale_paint_recovery_pending_=true;
+        // A paint invalidation can only repaint the renderer's old viewport.
+        // Reassert the latest geometry after this paint callback completes;
+        // rapid scale/layout changes may race an in-flight resize acknowledgement.
+        CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self) {
+          if(!self->browser_ || !self->visible_ || !self->stale_paint_recovery_pending_)return;
+          TraceGeometry("stale-geometry-reassert",self->id_);
+          auto host=self->browser_->GetHost();
+          host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+        },CefRefPtr<Client>(this)));
+      }
+      return;
+    }
+    if(type==PET_VIEW) { stale_paint_recovery_pending_=false;pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height; }
+    else { popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height; }
+    EmitFrame();
+  }
+  void EmitFrame() {
+    if(!visible_ || pixels_.empty()) return;
+    TraceGeometry("frame-published",id_,pixel_width_,pixel_height_,geometry_.scale());
+    std::string body; qos::AppendU32(body,pixel_width_);qos::AppendU32(body,pixel_height_);body+=pixels_;
+    if(popup_visible_ && !popup_.empty()) {
+      int x=static_cast<int>(std::round(popup_rect_.x*geometry_.scale())),y=static_cast<int>(std::round(popup_rect_.y*geometry_.scale()));
+      for(int row=0;row<popup_height_;++row) {
+        int dest_y=y+row;if(dest_y<0 || dest_y>=pixel_height_) continue;
+        int start=std::max(0,-x),end=std::min(popup_width_,pixel_width_-x);
+        if(end>start) std::memcpy(body.data()+8+(size_t(dest_y)*pixel_width_+x+start)*4,popup_.data()+(size_t(row)*popup_width_+start)*4,size_t(end-start)*4);
+      }
+    }
+    if(id_==1) output->Send(2,std::move(body));
+    else {std::string routed;qos::AppendU32(routed,id_);routed+=body;output->Send(3,std::move(routed));}
+  }
+  bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
+    if(source!=PID_RENDERER) return false;
+    if(message->GetName()=="qos.credential_result") {
+      ReceiveCredentialResult(browser,frame,message->GetArgumentList());return true;
+    }
+    if(message->GetName()=="qos.credential_context" || message->GetName()=="qos.credential_context_closed") {
+      if(!browser_ || !browser || !browser->IsSame(browser_) || !frame ||
+         !frame->IsMain() || !frame->IsValid() || transfer_owner_) return true;
+      TraceGeometry("credential-context-received",id_);
+      auto args=message->GetArgumentList();
+      if(args->GetSize()!=3 || args->GetType(0)!=VTYPE_STRING ||
+         args->GetType(1)!=VTYPE_STRING || args->GetType(2)!=VTYPE_STRING ||
+         args->GetString(0).ToString()!=std::to_string(credential_generation_)) return true;
+      const auto context=args->GetString(1).ToString();
+      if(context.empty() || context.size()>128 || args->GetString(2)!=frame->GetURL()) return true;
+      if(message->GetName()=="qos.credential_context_closed") {
+        if(credential_identity_ && credential_identity_->context==context) InvalidateCredentials();
+        return true;
+      }
+      qos::CredentialIdentity identity{browser->GetIdentifier(),frame->GetIdentifier().ToString(),
+          qos::Origin(frame->GetURL()),context,credential_generation_};
+      if(!credential_handshake_.Accept(identity) || !CredentialPageSecure(frame)) return true;
+      if(credential_document_.Commit(identity,true,true,false)) {credential_identity_=identity;TraceGeometry("credential-context-committed",id_);}
+      return true;
+    }
+    if(message->GetName()=="qos.media_context" && frame && browser_) {const auto key=frame->GetIdentifier().ToString();const auto token=static_cast<uint64_t>(message->GetArgumentList()->GetDouble(0));if(frame->IsMain())pending_main_media_token_=token;auto found=media_frames_.find(key);if(found!=media_frames_.end()) found->second={token,false};else if(media_frames_.size()<kMaxMediaFrames) media_frames_.emplace(key,std::make_pair(token,false));if(media_frames_.size()==kMaxMediaFrames && !media_limit_reported_){media_limit_reported_=true;auto d=CefDictionaryValue::Create();d->SetInt("tracked_frames",static_cast<int>(media_frames_.size()));Event("media_frame_limit",d);}return true; }
+    if(message->GetName()=="qos.media_context_closed" && frame && browser_) {auto found=media_frames_.find(frame->GetIdentifier().ToString());if(found!=media_frames_.end() && found->second.first==static_cast<uint64_t>(message->GetArgumentList()->GetDouble(0))){const bool was_playing=found->second.second;media_frames_.erase(found);if(was_playing)PublishMediaState();}return true;}
+    if(message->GetName()=="qos.media_state" && frame && browser_) { auto found=media_frames_.find(frame->GetIdentifier().ToString());const auto token=static_cast<uint64_t>(message->GetArgumentList()->GetDouble(1));if(found!=media_frames_.end() && found->second.first==token) {found->second.second=message->GetArgumentList()->GetBool(0);PublishMediaState();}return true; }
+    if(message->GetName()!="qos.config") return false;
+    SendFilters(frame,message->GetArgumentList()->GetDouble(0));SendScripts(frame);return true;
+  }
+  void PublishMediaState(std::optional<bool> forced=std::nullopt) {
+    if(!browser_) return;bool playing=forced.value_or(std::any_of(media_frames_.begin(),media_frames_.end(),[](const auto& entry){return entry.second.second;}));
+    if(!forced && last_media_playing_==playing) return;last_media_playing_=playing;
+    auto d=CefDictionaryValue::Create();d->SetString("page_url",browser_->GetMainFrame()->GetURL());d->SetInt("document_generation",static_cast<int>(favicon_generation_ & 0x7fffffff));d->SetBool("playing",playing);Event("media_state",d);
+  }
+  void SendFilters(CefRefPtr<CefFrame> frame,double token=0) {
+    if(!frame) return;
+    auto message=CefProcessMessage::Create("qos.filters");auto args=message->GetArgumentList();
+    auto state=request_filter->Snapshot();args->SetString(0,state->rules);args->SetBool(1,state->enabled);
+    auto exceptions=CefListValue::Create();for(const auto& origin:state->exceptions)exceptions->SetString(exceptions->GetSize(),origin);args->SetList(2,exceptions);args->SetString(3,browser_?qos::Origin(browser_->GetMainFrame()->GetURL()):std::string());args->SetString(4,frame->GetURL());args->SetDouble(5,token);
+    frame->SendProcessMessage(PID_RENDERER,message);
+  }
+  void RefreshFilters() {if(!browser_)return;UpdateScriptPolicy();std::vector<CefString> ids;browser_->GetFrameIdentifiers(ids);for(const auto& id:ids)SendFilters(browser_->GetFrameByIdentifier(id));}
+  void SiteResult(int request,const std::string& origin,uint64_t generation,const std::string& action,bool success,const std::string& message) {
+    auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",origin);d->SetDouble("generation",generation);d->SetString("action",action);d->SetBool("success",success);d->SetString("message",message);Event("site_result",d);
+  }
+  void SiteCommand(CefRefPtr<CefDictionaryValue> command) {
+    const auto origin=command->GetString("origin").ToString(),op=command->GetString("op").ToString();const int request=command->GetInt("request_id");
+    auto document=request_filter->Document(browser_->GetIdentifier());const auto actual=qos::Origin(browser_->GetMainFrame()->GetURL());
+    const auto action=op=="site_status"?"status":command->GetString("action").ToString();
+    // Action replies echo their requested document, including stale failures,
+    // so chrome can finish the matching request instead of waiting for timeout.
+    const auto reply_generation=op=="site_action"?static_cast<uint64_t>(Number(command,"generation")):(document?document->generation:0);
+    if(origin.empty() || origin!=actual || !document || document->origin!=actual || (op=="site_action" && Number(command,"generation")!=document->generation)) {
+      SiteResult(request,origin,reply_generation,action,false,"Page changed; reopen site information");return;
+    }
+    if(op=="site_action") {
+      if(action=="reload") {
+        // Command has already waited for document-start registration, then this
+        // method rechecked the original scope. The UI thread cannot navigate
+        // between that check and the ordinary reload command below.
+        SiteResult(request,origin,document->generation,action,true,"Reloading this page");
+        auto reload=CefDictionaryValue::Create();reload->SetString("op","reload");Command(reload);return;
+      }
+      if(action=="clear") {
+        if(site_clear_->Busy())SiteResult(request,origin,document->generation,action,false,"A storage clear is already running");
+        else site_clear_->Clear(request,origin,document->generation);
+        return;
+      }
+      if(action=="revoke") {
+        capabilities_->Close();auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:qos::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_BLOCK);
+        SiteResult(request,origin,document->generation,action,true,"Permissions blocked. Reload to end existing media sessions.");
+      } else if(action=="enable" || action=="disable") {
+        auto origins=request_filter->Snapshot()->exceptions;if(action=="disable")origins.insert(origin);else origins.erase(origin);
+        if(origins.size()>1024) {SiteResult(request,origin,document->generation,action,false,"Site exception limit reached");return;}
+        request_filter->Exceptions(origins);PublishFilters();SiteResult(request,origin,document->generation,action,true,"Protection preference changed");
+      }
+      return;
+    }
+    auto state=request_filter->Snapshot();auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",actual);d->SetDouble("generation",document->generation);d->SetDouble("blocked",std::min<uint64_t>(document->blocked.load(),9007199254740991ULL));d->SetBool("global_enabled",state->enabled);d->SetBool("excepted",state->exceptions.count(actual));d->SetBool("effective",state->enabled && !state->exceptions.count(actual));
+    auto entry=browser_->GetHost()->GetVisibleNavigationEntry();auto ssl=entry && qos::Origin(entry->GetURL())==actual?entry->GetSSLStatus():nullptr;
+    const bool secure=ssl && ssl->IsSecureConnection() && !CefIsCertStatusError(ssl->GetCertStatus());
+    d->SetString("security",actual.starts_with("http:")?"insecure":secure?"secure":"unverified");d->SetInt("certificate_status",ssl?ssl->GetCertStatus():0);d->SetInt("tls_version",ssl?ssl->GetSSLVersion():0);d->SetInt("content_status",ssl?ssl->GetContentStatus():0);
+    std::string subject,issuer;double expires=0;
+    if(ssl)if(auto certificate=ssl->GetX509Certificate()){subject=certificate->GetSubject()->GetDisplayName();issuer=certificate->GetIssuer()->GetDisplayName();expires=certificate->GetValidExpiry().val;}
+    d->SetString("subject",subject.substr(0,512));d->SetString("issuer",issuer.substr(0,512));d->SetDouble("expires",expires);d->SetDictionary("permissions",qos::PermissionStatus(browser_->GetHost()->GetRequestContext(),actual));Event("site_status",d);
+  }
+  void SendScripts(CefRefPtr<CefFrame> frame=nullptr) {
+    if(!frame) { if(!browser_) return;frame=browser_->GetMainFrame(); }
+    auto message=CefProcessMessage::Create("qos.scripts");auto args=message->GetArgumentList();
+    args->SetString(0,ScriptSource());
+    frame->SendProcessMessage(PID_RENDERER,message);
+  }
+  std::string ScriptSource() {
+    auto scripts=scripts_;auto policy=request_filter->Snapshot();if(!blocking_scripts_.empty())scripts.push_back(qos::BlockingScriptSource(blocking_scripts_,policy->enabled,policy->exceptions));return qos::ScriptSource(scripts);
+  }
+  void UpdateScriptPolicy() {if(document_scripts_){document_scripts_->Configure(ScriptSource());SendScripts();}}
+  void FlushNavigation() {
+    TraceGeometry("navigation-flush",id_);
+    if(!document_scripts_ || document_scripts_->Busy()) return;
+    auto pending=std::move(pending_navigation_);pending_navigation_.clear();
+    for(auto& command:pending) Command(command);
+  }
+  bool DeferNavigation(CefRefPtr<CefDictionaryValue> command) {
+    if(!document_scripts_->Busy())return false;
+    if(pending_navigation_.size()>=256) {StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();return true;}
+    TraceGeometry("navigation-queued",id_);pending_navigation_.push_back(command->Copy(false));return true;
+  }
+  void Command(CefRefPtr<CefDictionaryValue> d) {
+    CEF_REQUIRE_UI_THREAD();
+    std::string op=d->GetString("op");
+    if(op=="shutdown") { CloseHost();return; }
+    if(!browser_ || closing) return;
+    if(transfer_owner_) {if(d->GetString("op")=="close_tab" && !downloads->Detach(id_)) CloseNative();return;}
+    if(op=="site_status" || op=="site_action") {
+      // Preserve the full scoped command across registration, rather than
+      // queueing a generic reload that could act on a later document.
+      if(op=="site_action" && d->GetString("action")=="reload" && DeferNavigation(d))return;
+      SiteCommand(d);return;
+    }
+    if(op=="site_exceptions") {std::set<std::string> origins;auto list=d->GetList("origins");for(size_t i=0;i<list->GetSize();++i)origins.insert(list->GetString(i));request_filter->Exceptions(origins);PublishFilters();return;}
+    if(op=="audio_muted") { browser_->GetHost()->SetAudioMuted(d->GetBool("muted"));auto state=CefDictionaryValue::Create();state->SetBool("muted",browser_->GetHost()->IsAudioMuted());Event("audio_muted",state);return; }
+    if((op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") && DeferNavigation(d))return;
+    auto host=browser_->GetHost();auto frame=browser_->GetMainFrame();
+    if(op=="visibility") {
+      const bool was_visible=visible_;
+      visible_=d->GetBool("visible");
+      credential_document_.SetVisible(visible_);
+      if(!visible_) CancelCredentialRequests();
+      host->WasHidden(!visible_);host->SetFocus(visible_);
+      if(!visible_ && context_callback_) context_callback_->Cancel();
+      if(visible_) {
+        host->Invalidate(PET_VIEW);
+        // A background load may have completed without an eligible handshake.
+        if(!was_visible && !credential_identity_) OfferCredentialContext(browser_->GetMainFrame());
+      } else {pixels_.clear();popup_.clear();}
+    }
+    else if(op=="context_action") {
+      if(context_callback_ && d->GetInt("id")==context_id_) {
+        int command=d->GetInt("command");auto callback=context_callback_;context_callback_=nullptr;
+        if(command && context_commands_.count(command)) callback->Continue(command,EVENTFLAG_NONE);else callback->Cancel();
+      }
+    }
+    else if(op=="credential_action") {CredentialCommand(d);}
+    else if(op=="try_close_tab") {DetachVisible();}
+    else if(op=="close_tab") {CloseNative();}
+    else if(op=="navigate") {TraceGeometry("navigate-load-url",id_);frame->LoadURL(d->GetString("url"));}
+    else if(op=="navigation_history") navigation_history_->Request(d->GetInt("request_id"),d->GetString("direction") == "forward");
+    else if(op=="history_entry") navigation_history_->Navigate(d->GetInt("request_id"),d->GetInt("id"));
+    else if(op=="back") browser_->GoBack();
+    else if(op=="forward") browser_->GoForward();
+    else if(op=="reload") browser_->Reload();
+    else if(op=="stop") browser_->StopLoad();
+    else if(op=="exit_fullscreen") host->ExitFullscreen(true);
+    else if(op=="find") {
+      if(finding_) { if(pending_find_.size()<64) pending_find_.push_back(d->Copy(false)); }
+      else { finding_=true;find_id_=d->GetInt("id");find_text_=d->GetString("text");select_initial_=!d->GetBool("next");host->Find(d->GetString("text"),d->GetBool("forward"),false,d->GetBool("next")); }
+    }
+    else if(op=="stop_find") { pending_find_.clear();finding_=false;host->StopFinding(true); }
+    else if(op=="zoom") {
+      host->SetZoomLevel(Number(d,"level"));
+      // Chromium zoom belongs to the origin in the shared request context.
+      // Publish every affected endpoint's actual level after propagation.
+      CefPostTask(TID_UI,base::BindOnce(&PublishZoomLevels));
+      CefPostDelayedTask(TID_UI,base::BindOnce(&PublishZoomLevels),100);
+    }
+    else if(op=="focus") host->SetFocus(d->GetBool("focused"));
+    else if(op=="resize") {
+      int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
+      if(!std::isfinite(scale)||scale<0.25||scale>8||!qos::FrameSize(w,h)) { CloseHost(); return; }
+      // IPC sizes and pointer coordinates are physical pixels; CEF uses DIP.
+      const auto effect=geometry_.ResizePhysical(w,h,scale);
+      TraceGeometry("resize-applied",id_,w,h,scale);
+      stale_paint_recovery_pending_=false;
+      if(effect==qos::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
+      popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+    } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
+      CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
+      if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
+      else if(op=="scroll") host->SendMouseWheelEvent(event,static_cast<int>(Number(d,"dx")/geometry_.scale()),static_cast<int>(Number(d,"dy")/geometry_.scale()));
+      else { std::string button=d->GetString("button");auto type=button=="right"?MBT_RIGHT:button=="middle"?MBT_MIDDLE:MBT_LEFT;bool down=d->GetBool("down");
+        int flag=type==MBT_RIGHT?EVENTFLAG_RIGHT_MOUSE_BUTTON:type==MBT_MIDDLE?EVENTFLAG_MIDDLE_MOUSE_BUTTON:EVENTFLAG_LEFT_MOUSE_BUTTON;
+        if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_|key_modifiers_;host->SendMouseClickEvent(event,type,!down,1); }
+    } else if(op=="modifiers") key_modifiers_=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
+    else if(op=="key") Key(d);
+    else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
+    else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"));
+    else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
+    else if(op=="devtools") { CefWindowInfo window;
+      host->ShowDevTools(window,new DevToolsClient,CefBrowserSettings(),CefPoint());
+    } else if(op=="clear_data") {
+      host->GetRequestContext()->GetCookieManager(nullptr)->DeleteCookies("","",nullptr);
+      host->GetRequestContext()->ClearHttpCache(nullptr);host->GetRequestContext()->ClearHttpAuthCredentials(nullptr);
+    } else if(op=="filter_rules") {
+      const auto rules=d->GetString("rules").ToString();
+      const bool enabled=d->GetType("enabled")==VTYPE_NULL ? request_filter->Snapshot()->enabled : d->GetBool("enabled");
+      if(!request_filter->Configure(rules,enabled)) { StringEvent("error","message","Native request filter compilation failed; previous rules retained");return; }
+      PublishFilters();
+    }
+    else { StringEvent("error","message","Unknown command: "+op);CloseHost(); }
+  }
+  void Key(CefRefPtr<CefDictionaryValue> d) {
+    CefKeyEvent e;e.type=d->GetBool("down")?KEYEVENT_RAWKEYDOWN:KEYEVENT_KEYUP;
+    e.modifiers=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
+    key_modifiers_=e.modifiers;
+    std::string key=d->GetString("key");
+#if defined(OS_MAC)
+    // Offscreen CEF has no Cocoa Edit menu to translate Command shortcuts.
+    // Execute against the focused frame, preserving native clipboard semantics.
+    if(d->GetBool("meta") && !d->GetBool("ctrl") && !d->GetBool("alt") && key.size()==1) {
+      char letter=static_cast<char>(std::tolower(static_cast<unsigned char>(key[0])));
+      if(letter=='a'||letter=='c'||letter=='x'||letter=='v'||letter=='z') {
+        if(d->GetBool("down")) { auto frame=browser_->GetFocusedFrame();if(frame) {
+          if(letter=='a') frame->SelectAll();else if(letter=='c') frame->Copy();else if(letter=='x') frame->Cut();else if(letter=='v') frame->Paste();else if(d->GetBool("shift")) frame->Redo();else frame->Undo();
+        }}
+        return;
+      }
+    }
+#endif
+    const auto mapping=qos::MapKey(key);
+    e.windows_key_code=mapping.windows;
+    e.character=mapping.character;
+    e.unmodified_character=mapping.character;
+#if defined(OS_MAC)
+    e.native_key_code=mapping.mac;
+    e.character=mapping.mac_character;
+    e.unmodified_character=mapping.mac_character;
+#elif defined(OS_LINUX)
+    e.native_key_code=mapping.x11;
+#endif
+    CefString text(key);auto utf16=text.ToString16();
+    if(utf16.size()==1) e.character=e.unmodified_character=utf16[0];
+    browser_->GetHost()->SendKeyEvent(e);
+    if(d->GetBool("down") && (utf16.size()==1 || key=="Enter") && !d->GetBool("ctrl")&&!d->GetBool("meta")) { e.type=KEYEVENT_CHAR;browser_->GetHost()->SendKeyEvent(e); }
+  }
+  CefRefPtr<CefBrowser> browser_;
+  bool detached() const {return transfer_owner_;}
+  bool accepts_downloads() const {return browser_ && !transfer_owner_ && !native_closing_;}
+  void CloseNative() {if(!browser_ || native_closing_)return;InvalidateCredentials();native_closing_=true;browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
+  void DetachVisible() {
+    if(transfer_owner_ || native_closing_)return;const bool retained=downloads->Detach(id_);if(!retained){CloseNative();return;}
+    // Every busy visible owner reserved this slot at admission, so detaching
+    // cannot displace accepted work even while earlier owners await destruction.
+    if(!download_owners.Detach(id_)){Event("close_blocked");return;}
+    InvalidateCredentials();
+    transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
+    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();pixels_.clear();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
+  }
+ private:
+  struct CredentialPending {
+    int request=0;
+    qos::CredentialOperation operation;
+    qos::CredentialIdentity identity;
+    std::string action, form, account;
+  };
+  struct CredentialStorePending {
+    CredentialPending pending;
+    std::shared_ptr<qos::CredentialCancellation> cancellation;
+    bool timed_out=false;
+  };
+  static std::string CredentialStatusMessage(qos::CredentialStatus status) {
+    switch(status) {
+      case qos::CredentialStatus::Ok:return "Done";
+      case qos::CredentialStatus::Cancelled:return "Cancelled";
+      case qos::CredentialStatus::NotFound:return "Saved account no longer exists";
+      case qos::CredentialStatus::Denied:return "Keychain access was denied or is locked";
+      case qos::CredentialStatus::Capacity:return "This site has reached the 64-account capacity; new accounts cannot be saved";
+      case qos::CredentialStatus::Exists:return "This account is already saved; choose Update";
+      case qos::CredentialStatus::Invalid:return "Credential request or stored entry is invalid";
+      case qos::CredentialStatus::Unavailable:return "Keychain is unavailable";
+    }
+    return "Keychain is unavailable";
+  }
+  void StartCredentialStore(int request,const std::string& action,qos::CredentialRequest operation,const std::string& form={}) {
+    if(!credential_worker || private_mode || !credential_identity_ || !CredentialPageSecure(browser_->GetMainFrame())) {
+      CredentialEvent(request,action,false,"Credential storage is unavailable");return;
+    }
+    const auto kind=operation.operation;const auto account=operation.account;
+    auto id=credential_document_.Begin(kind,*credential_identity_,qos::CredentialDocument::Clock::now());
+    if(!id || credential_store_pending_.size()>=16){
+      if(id)credential_document_.Take(*id,kind,*credential_identity_,qos::CredentialDocument::Clock::now());
+      CredentialEvent(request,action,false,"Too many pending Keychain requests");return;
+    }
+    operation.origin=credential_identity_->origin;
+    const int tab=id_,browser_id=browser_->GetIdentifier();
+    auto cancellation=credential_worker->Submit(std::move(operation),[tab,browser_id,id=*id,delivery=credential_delivery](qos::CredentialResult result,bool cancelled){
+      auto outcome=std::make_shared<qos::CredentialResult>(std::move(result));
+      std::lock_guard lock(delivery->mutex);
+      if(!delivery->active)return;
+      // Only plain IDs and native result data cross threads. No Client/CEF
+      // object is retained by a blocked OS call after its browser closes.
+      CefPostTask(TID_UI,base::BindOnce([](int tab,int browser_id,uint64_t id,
+          std::shared_ptr<qos::CredentialResult> result,bool cancelled){
+        auto client=clients.find(tab);
+        if(client==clients.end() || !client->second->browser_ ||
+           client->second->browser_->GetIdentifier()!=browser_id)return;
+        client->second->FinishCredentialStore(id,std::move(*result),cancelled);
+      },tab,browser_id,id,std::move(outcome),cancelled));
+    });
+    if(!cancellation) {
+      credential_document_.Take(*id,kind,*credential_identity_,qos::CredentialDocument::Clock::now());
+      CredentialEvent(request,action,false,"Keychain queue is full or unavailable");return;
+    }
+    credential_store_pending_.emplace(*id,CredentialStorePending{
+      {request,kind,*credential_identity_,action,form,account},cancellation,false});
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,uint64_t id){
+      auto found=self->credential_store_pending_.find(id);if(found==self->credential_store_pending_.end())return;
+      found->second.timed_out=true;found->second.cancellation->Cancel();
+      const auto& pending=found->second.pending;
+      self->credential_document_.Take(id,pending.operation,pending.identity,qos::CredentialDocument::Clock::now());
+      self->CredentialEvent(pending.request,pending.action,false,"Keychain timed out; an operation already started may still finish. Refresh saved accounts before retrying.");
+    },CefRefPtr<Client>(this),*id),30000);
+  }
+  void FinishCredentialStore(uint64_t id,qos::CredentialResult result,bool cancelled) {
+    auto found=credential_store_pending_.find(id);if(found==credential_store_pending_.end())return;
+    auto state=std::move(found->second);credential_store_pending_.erase(found);
+    const auto& pending=state.pending;
+    if(!credential_identity_ || *credential_identity_!=pending.identity ||
+       !CredentialPageSecure(browser_->GetMainFrame()))return;
+    if(state.timed_out) {
+      auto fields=CefDictionaryValue::Create();fields->SetBool("late",true);
+      CredentialEvent(pending.request,pending.action,pending.action!="fill" && result.status==qos::CredentialStatus::Ok,
+                      pending.action=="fill"?"Delayed read discarded; nothing was filled":"Delayed Keychain result: "+CredentialStatusMessage(result.status)+". Refresh saved accounts.",fields);
+      return;
+    }
+    if(!credential_document_.Take(id,pending.operation,*credential_identity_,qos::CredentialDocument::Clock::now()) || cancelled) {
+      CredentialEvent(pending.request,pending.action,false,"Request no longer active; refresh saved accounts to see the final state");return;
+    }
+    if(result.status==qos::CredentialStatus::Ok && pending.action=="fill") {
+      if(result.accounts.size()!=1 || result.accounts.front().id!=pending.account ||
+         result.accounts.front().username.size()>1024 || result.secret.View().empty() || result.secret.View().size()>4096) {
+        CredentialEvent(pending.request,pending.action,false,"Stored credential is invalid");return;
+      }
+      auto payload=CefDictionaryValue::Create();payload->SetString("action","fill");payload->SetString("form",pending.form);
+      payload->SetString("username",result.accounts.front().username);
+      std::string secret(result.secret.View());payload->SetString("password",secret);
+      volatile char* bytes=secret.data();for(size_t i=0;i<secret.size();++i)bytes[i]=0;
+      SendCredentialForm(pending.request,"fill",qos::CredentialOperation::Fill,payload);return;
+    }
+    auto fields=CefDictionaryValue::Create();bool success=result.status==qos::CredentialStatus::Ok;
+    if(success && pending.action=="list") {
+      auto accounts=CefListValue::Create();
+      if(result.accounts.size()>64)success=false;
+      if(success)for(const auto& account:result.accounts) {
+        if(account.id.empty() || account.id.size()>128 || account.username.size()>1024){success=false;break;}
+        auto item=CefDictionaryValue::Create();item->SetString("id",account.id);item->SetString("username",account.username);
+        accounts->SetDictionary(accounts->GetSize(),item);
+      }
+      if(success)fields->SetList("accounts",accounts);
+    }
+    CredentialEvent(pending.request,pending.action,success,success?"Done":CredentialStatusMessage(result.status),fields);
+  }
+  void CancelCredentialStoreRequests() {
+    for(const auto& [id,state]:credential_store_pending_) {
+      state.cancellation->Cancel();
+      credential_document_.Take(id,state.pending.operation,state.pending.identity,qos::CredentialDocument::Clock::now());
+    }
+    credential_store_pending_.clear();
+  }
+  void CancelCredentialRequests() {
+    CancelCredentialStoreRequests();credential_consent_.Clear();
+    for(const auto& [id,pending]:credential_pending_)
+      credential_document_.Take(id,pending.operation,pending.identity,qos::CredentialDocument::Clock::now());
+    credential_pending_.clear();credential_confirming_.clear();
+  }
+  void CredentialEvent(int request,const std::string& action,bool success,const std::string& message,
+                       CefRefPtr<CefDictionaryValue> fields=nullptr) {
+    if(!fields)fields=CefDictionaryValue::Create();
+    fields->SetInt("request_id",request);fields->SetString("action",action);fields->SetBool("success",success);
+    fields->SetString("message",message);fields->SetString("origin",credential_identity_?credential_identity_->origin:std::string());
+    fields->SetString("document",credential_identity_?std::to_string(credential_identity_->generation):std::string());
+    Event("credential_result",fields);
+  }
+  void CredentialCommand(CefRefPtr<CefDictionaryValue> command) {
+    const auto action=command->GetString("action").ToString();const int request=command->GetInt("request_id");
+    if(action=="cancel") {
+      CancelCredentialRequests();CredentialEvent(request,action,true,"Pending requests cancelled. Operations already started may still finish; refresh saved accounts.");return;
+    }
+    auto frame=browser_?browser_->GetMainFrame():nullptr;
+    if(!credential_identity_ || !CredentialPageSecure(frame) ||
+       command->GetString("origin").ToString()!=credential_identity_->origin ||
+       (action!="status" && command->GetString("document").ToString()!=std::to_string(credential_identity_->generation))) {
+      CredentialEvent(request,action,false,private_mode?"Unavailable in private windows":"Page changed or secure form access is unavailable");return;
+    }
+    if(action=="status"){CredentialEvent(request,action,true,"Ready");return;}
+    if(action=="list" || action=="delete") {
+      qos::CredentialRequest operation;operation.operation=action=="list"?qos::CredentialOperation::List:qos::CredentialOperation::Delete;
+      if(action=="delete")operation.account=command->GetString("account").ToString();
+      StartCredentialStore(request,action,std::move(operation));return;
+    }
+    if(action=="save" || action=="update") {
+      auto captured=credential_consent_.Take(command->GetString("capture").ToString(),*credential_identity_,qos::CredentialDocument::Clock::now());
+      if(!captured){CredentialEvent(request,action,false,"Capture expired or page changed; capture the login again");return;}
+      auto payload=CefDictionaryValue::Create();payload->SetString("action","validate");payload->SetString("form",captured->form);
+      SendCredentialForm(request,action,action=="save"?qos::CredentialOperation::Save:qos::CredentialOperation::Update,
+                         payload,std::move(captured),command->GetString("account").ToString());return;
+    }
+    if(action=="fill") {
+      qos::CredentialRequest operation;operation.operation=qos::CredentialOperation::Fill;
+      operation.account=command->GetString("account").ToString();
+      StartCredentialStore(request,action,std::move(operation),command->GetString("form").ToString());return;
+    }
+    const auto operation=action=="capture"?qos::CredentialOperation::Capture:qos::CredentialOperation::List;
+    auto payload=CefDictionaryValue::Create();payload->SetString("action",action);
+    if(action=="capture" || action=="fill_address")payload->SetString("form",command->GetString("form"));
+    if(action=="fill_address")payload->SetDictionary("profile",command->GetDictionary("profile")->Copy(false));
+    SendCredentialForm(request,action,operation,payload);
+  }
+  void SendCredentialForm(int request,const std::string& action,qos::CredentialOperation operation,
+                          CefRefPtr<CefDictionaryValue> payload,
+                          std::optional<qos::CapturedCredential> captured=std::nullopt,const std::string& account={}) {
+    if(!credential_identity_ || !browser_ || !CredentialPageSecure(browser_->GetMainFrame())) {
+      CredentialEvent(request,action,false,"Page changed; request cancelled");return;
+    }
+    auto id=credential_document_.Begin(operation,*credential_identity_,qos::CredentialDocument::Clock::now());
+    if(!id){CredentialEvent(request,action,false,"Too many pending requests");return;}
+    credential_pending_.emplace(*id,CredentialPending{request,operation,*credential_identity_,action,payload->GetString("form").ToString(),account});
+    if(captured)credential_confirming_.emplace(*id,std::move(*captured));
+    auto message=CefProcessMessage::Create("qos.credential_action");auto args=message->GetArgumentList();
+    args->SetString(0,std::to_string(credential_identity_->generation));args->SetString(1,credential_identity_->context);
+    args->SetString(2,std::to_string(*id));args->SetDictionary(3,payload);
+    browser_->GetMainFrame()->SendProcessMessage(PID_RENDERER,message);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,uint64_t id){
+      auto found=self->credential_pending_.find(id);if(found==self->credential_pending_.end())return;
+      const auto pending=found->second;self->credential_pending_.erase(found);self->credential_confirming_.erase(id);
+      self->credential_document_.Take(id,pending.operation,pending.identity,qos::CredentialDocument::Clock::now());
+      self->CredentialEvent(pending.request,pending.action,false,"Request timed out; try again");
+    },CefRefPtr<Client>(this),*id),30000);
+  }
+  void ReceiveCredentialResult(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefListValue> args) {
+    if(!browser_ || !browser || !browser->IsSame(browser_) || !credential_identity_ ||
+       !frame || !frame->IsMain() || frame->GetIdentifier().ToString()!=credential_identity_->frame ||
+       !CredentialPageSecure(frame) || args->GetSize()!=4 ||
+       args->GetType(0)!=VTYPE_STRING || args->GetType(1)!=VTYPE_STRING ||
+       args->GetType(2)!=VTYPE_STRING || args->GetType(3)!=VTYPE_DICTIONARY ||
+       args->GetString(0).ToString()!=std::to_string(credential_identity_->generation) ||
+       args->GetString(1).ToString()!=credential_identity_->context ||
+       !qos::ValidCredentialCounter(args->GetString(2).ToString()))return;
+    const auto id=std::stoull(args->GetString(2).ToString());
+    auto found=credential_pending_.find(id);if(found==credential_pending_.end())return;
+    const auto pending=found->second;credential_pending_.erase(found);
+    if(!credential_document_.Take(id,pending.operation,*credential_identity_,qos::CredentialDocument::Clock::now())) {
+      credential_confirming_.erase(id);CredentialEvent(pending.request,pending.action,false,"Request expired; try again");return;
+    }
+    auto value=args->GetDictionary(3);auto fields=CefDictionaryValue::Create();
+    bool success=value->GetType("success")==VTYPE_BOOL && value->GetBool("success");
+    if(pending.action=="save" || pending.action=="update") {
+      auto captured=credential_confirming_.extract(id);
+      if(!success || captured.empty()){CredentialEvent(pending.request,pending.action,false,"Original form changed; capture the login again");return;}
+      qos::CredentialRequest operation;operation.operation=pending.operation;
+      operation.username=std::move(captured.mapped().username);operation.secret=std::move(captured.mapped().secret);
+#if defined(OS_MAC)
+      operation.account=pending.action=="save"?qos::CredentialAccountId(operation.username):pending.account;
+#else
+      operation.account=pending.account;
+#endif
+      StartCredentialStore(pending.request,pending.action,std::move(operation));return;
+    }
+    if(pending.action=="fill" || pending.action=="fill_address") {
+      CredentialEvent(pending.request,pending.action,success,success?"Filled":"Form changed or is unsupported");return;
+    }
+    if(success && pending.action=="capture") {
+      success=value->GetType("username")==VTYPE_STRING && value->GetString("username").length()<=1024 &&
+              value->GetType("password")==VTYPE_STRING && value->GetString("password").length()<=4096;
+      if(success) {
+        auto password=value->GetString("password").ToString();
+        qos::CredentialSecret secret(password);
+        volatile char* data=password.data();for(size_t i=0;i<password.size();++i)data[i]=0;
+        const auto username=value->GetString("username").ToString();
+        success=credential_consent_.Offer(std::to_string(id),*credential_identity_,pending.form,username,std::move(secret),qos::CredentialDocument::Clock::now());
+        if(success) {
+          fields->SetString("capture",std::to_string(id));fields->SetString("username",username);
+          CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){
+            self->credential_consent_.Expire(qos::CredentialDocument::Clock::now());
+          },CefRefPtr<Client>(this)),30000);
+        }
+      }
+    } else if(success) {
+      auto forms=value->GetList("forms");success=forms && forms->GetSize()<=32;
+      auto safe=CefListValue::Create();
+      if(success)for(size_t index=0;index<forms->GetSize();++index) {
+        auto form=forms->GetDictionary(index);
+        if(!form || form->GetType("id")!=VTYPE_STRING || !qos::ValidCredentialCounter(form->GetString("id").ToString())){success=false;break;}
+        auto entry=CefDictionaryValue::Create();entry->SetString("id",form->GetString("id"));
+        if(pending.action=="discover") {
+          if(form->GetType("username")!=VTYPE_STRING || form->GetString("username").ToString().size()>1024 ||
+             form->GetType("kind")!=VTYPE_STRING || (form->GetString("kind")!="current-password" && form->GetString("kind")!="new-password")){success=false;break;}
+          entry->SetString("username",form->GetString("username"));entry->SetString("kind",form->GetString("kind"));
+        }
+        safe->SetDictionary(safe->GetSize(),entry);
+      }
+      if(success)fields->SetList("forms",safe);
+    }
+    CredentialEvent(pending.request,pending.action,success,success?(pending.action=="capture"?"Choose Save or Update to store this login":"Ready"):"Form changed or is unsupported",fields);
+  }
+  void InvalidateCredentials() {
+    CancelCredentialStoreRequests();credential_document_.Invalidate();credential_handshake_.Invalidate();
+    credential_consent_.Clear();credential_pending_.clear();credential_confirming_.clear();
+    credential_identity_.reset();credential_committed_origin_.clear();
+    if(credential_generation_<9007199254740991ULL) ++credential_generation_;
+    else credential_generation_exhausted_=true;
+  }
+  bool CredentialPageSecure(CefRefPtr<CefFrame> frame) const {
+    if(private_mode || !visible_ || transfer_owner_ || native_closing_ || !browser_ || !frame || !frame->IsValid() ||
+       !frame->IsMain() || credential_generation_exhausted_) return false;
+    if(credential_identity_ && (credential_identity_->browser_id!=browser_->GetIdentifier() ||
+       credential_identity_->frame!=frame->GetIdentifier().ToString()))return false;
+    const auto origin=qos::Origin(frame->GetURL());
+    if(!origin.starts_with("https://") || origin!=credential_committed_origin_) return false;
+    auto entry=browser_->GetHost()->GetVisibleNavigationEntry();
+    if(!entry || qos::Origin(entry->GetURL())!=origin) return false;
+    auto ssl=entry->GetSSLStatus();
+    return ssl && ssl->IsSecureConnection() && !CefIsCertStatusError(ssl->GetCertStatus()) &&
+           ssl->GetContentStatus()==0;
+  }
+  void OfferCredentialContext(CefRefPtr<CefFrame> frame) {
+    if(!CredentialPageSecure(frame)) {TraceGeometry("credential-offer-ineligible",id_);return;}
+    TraceGeometry("credential-offer",id_);
+    credential_handshake_.Offer({browser_->GetIdentifier(),frame->GetIdentifier().ToString(),
+                                qos::Origin(frame->GetURL()),{},credential_generation_});
+    auto message=CefProcessMessage::Create("qos.credential_probe");
+    message->GetArgumentList()->SetString(0,std::to_string(credential_generation_));
+    message->GetArgumentList()->SetString(1,frame->GetURL());
+    frame->SendProcessMessage(PID_RENDERER,message);
+  }
+  int id_;bool visible_=true,transfer_owner_=false,native_closing_=false;int key_modifiers_=0;uint64_t favicon_generation_=0;
+  std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
+  std::optional<uint64_t> pending_main_media_token_;
+  std::optional<bool> last_media_playing_;bool media_limit_reported_=false;
+  qos::FullscreenState fullscreen_;
+  qos::CredentialDocument credential_document_;
+  qos::CredentialHandshake credential_handshake_;
+  qos::CredentialConsent credential_consent_;
+  std::map<uint64_t,CredentialPending> credential_pending_;
+  std::map<uint64_t,qos::CapturedCredential> credential_confirming_;
+  std::map<uint64_t,CredentialStorePending> credential_store_pending_;
+  std::optional<qos::CredentialIdentity> credential_identity_;
+  uint64_t credential_generation_=0;
+  bool credential_generation_exhausted_=false;
+  std::string credential_committed_origin_;
+  CefRefPtr<qos::NavigationHistory> navigation_history_;
+  CefRefPtr<qos::Capabilities> capabilities_;
+  CefRefPtr<qos::StartupDiagnostics> startup_diagnostics_;
+  CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
+  CefRefPtr<qos::SiteClear> site_clear_;
+  int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
+  CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
+  bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
+  qos::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
+  IMPLEMENT_REFCOUNTING(Client);
+};
+void FaviconDownload::OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) {
+  auto found=clients.find(tab_);if(found!=clients.end()) found->second->PublishFavicon(generation_,page_,image);
+}
+void PublishFilters() {for(auto& entry:clients)entry.second->RefreshFilters();}
+void PublishZoomLevels() { for(auto& entry:clients) entry.second->PublishZoom(); }
+size_t DetachedOwners() {return std::count_if(clients.begin(),clients.end(),[](const auto& entry){return entry.second->detached();});}
+size_t VisibleOwners() {return std::count_if(clients.begin(),clients.end(),[](const auto& entry){return !entry.second->detached();});}
+void PublishDownloadRuntime() {
+  if(!downloads)return;auto d=CefDictionaryValue::Create();d->SetInt("admitted",static_cast<int>(downloads->Admitted()));d->SetInt("detached",static_cast<int>(DetachedOwners()));d->SetBool("accepting",downloads->Accepting());d->SetString("error","");Event("download_runtime",d);
+}
+void DownloadOwnerIdle(int id) {
+  auto found=clients.find(id);
+  const bool detached=found!=clients.end() && found->second->detached();
+  const bool busy=downloads && downloads->OwnerBusy(id);
+  if(found!=clients.end() && qos::ShouldCloseDetached(detached,busy))found->second->CloseNative();
+  PublishDownloadRuntime();
+}
+void CreateTab(int id) {
+  if(closing || id<=0 || clients.count(id) || VisibleOwners()>=32 || clients.size()>=64) {auto d=CefDictionaryValue::Create();d->SetInt("tab",id);Event("closed",d);return;}
+  auto client=CefRefPtr<Client>(new Client(id));clients.emplace(id,client);
+  CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=kOffscreenFrameRate;settings.background_color=CefColorSetARGB(255,255,255,255);
+  TraceGeometry("create-begin",id);
+  if(!CefBrowserHost::CreateBrowserSync(window,client,"about:blank",settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
+  TraceGeometry("create-return",id);
+}
+void Dispatch(CefRefPtr<CefDictionaryValue> d) {
+  const auto op=d->GetString("op");int id=d->HasKey("tab")?d->GetInt("tab"):1;
+  if(op=="shutdown") {CloseHost();return;}
+  if(op=="create_tab") {CreateTab(id);return;}
+  if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));return; }
+  if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
+  if(op=="download_cancel_all") {downloads->CancelAll();return;}
+  if(op=="download_retry") {auto found=clients.find(id);if(found!=clients.end() && found->second->accepts_downloads())downloads->Retry(d->GetInt("id"),found->second->browser_);return;}
+  if(op=="resize") TraceGeometry("resize-dispatch",id,d->GetInt("width"),d->GetInt("height"),Number(d,"scale_factor"));
+  auto found=clients.find(id);if(found!=clients.end()) found->second->Command(d);
+}
+class App final : public CefApp,public CefBrowserProcessHandler {
+ public:
+  CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
+  void OnBeforeCommandLineProcessing(const CefString& process_type,CefRefPtr<CefCommandLine> command_line) override {
+    // The Rust application owns browser onboarding; Chromium's first-run UI
+    // cannot be completed in an offscreen embedding and can stall Linux init.
+    if(process_type.empty()) command_line->AppendSwitch("no-first-run");
+  }
+  void OnContextInitialized() override {
+    request_filter=new qos::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); });
+    if(private_mode) {
+      CefRequestContextSettings settings;
+      // Empty cache_path is CEF's incognito request context. The separate
+      // root_cache_path below still gives CEF an owned installation-data root.
+      shared_context=CefRequestContext::CreateContext(settings,request_filter);
+    } else {
+      shared_context=CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),request_filter);
+    }
+    downloads=new qos::Downloads(
+      downloads_directory,
+      [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);},
+      [](CefRefPtr<CefBrowser> browser){for(const auto& entry:clients)if(entry.second->browser_ && browser && entry.second->browser_->IsSame(browser))return entry.first;return 0;},
+      [](int id){auto found=clients.find(id);return found!=clients.end() && found->second->accepts_downloads();},
+      [](int id){auto found=clients.find(id);return found!=clients.end() && found->second->accepts_downloads() && download_owners.CanAdmit(id);},
+      [](int id,bool busy){download_owners.SetBusy(id,busy);PublishDownloadRuntime();},
+      [](int id){DownloadOwnerIdle(id);},
+      []{PublishDownloadRuntime();});
+    CreateTab(1);PublishDownloadRuntime();if(clients.empty()) CefQuitMessageLoop();
+  }
+ private: IMPLEMENT_REFCOUNTING(App);
+};
+bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
+  if(d->HasKey("tab") && (d->GetType("tab")!=VTYPE_INT || d->GetInt("tab")<=0)) return false;
+  auto op=d->GetString("op").ToString();
+  auto type=[&](const char* key,cef_value_type_t expected){return d->GetType(key)==expected;};
+  auto number=[&](const char* key){auto t=d->GetType(key);return t==VTYPE_INT || (t==VTYPE_DOUBLE && std::isfinite(d->GetDouble(key)));};
+  auto no_payload=[&]{CefDictionaryValue::KeyList keys;d->GetKeys(keys);return std::all_of(keys.begin(),keys.end(),[](const CefString& key){return key=="op" || key=="tab";});};
+  if(op=="create_tab" || op=="close_tab" || op=="try_close_tab") return d->HasKey("tab");
+  if(op=="visibility") return type("visible",VTYPE_BOOL);
+  if(op=="audio_muted") return type("muted",VTYPE_BOOL);
+  if(op=="navigation_history" || op=="history_entry") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && (op=="navigation_history" ? (!d->HasKey("direction") || (type("direction",VTYPE_STRING) && (d->GetString("direction")=="back" || d->GetString("direction")=="forward"))) : (type("id",VTYPE_INT) && d->GetInt("id")>0));
+  if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
+  if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
+  if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
+  if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
+  if(op=="stop_find") return true;
+  if(op=="exit_fullscreen") return no_payload();
+  if(op=="zoom") return number("level") && Number(d,"level")>=-5 && Number(d,"level")<=9;
+  if(op=="download_cancel" || op=="download_retry") return type("id",VTYPE_INT) && d->GetInt("id")>0;
+  if(op=="modifiers") return type("ctrl",VTYPE_BOOL) && type("shift",VTYPE_BOOL) && type("alt",VTYPE_BOOL) && type("meta",VTYPE_BOOL);
+  if(op=="focus") return type("focused",VTYPE_BOOL);
+  if(op=="resize") return type("width",VTYPE_INT) && type("height",VTYPE_INT) && number("scale_factor");
+  if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
+    if(!number("x") || !number("y") || std::abs(Number(d,"x"))>1000000 || std::abs(Number(d,"y"))>1000000) return false;
+    if(op=="scroll") return number("dx") && number("dy") && std::abs(Number(d,"dx"))<=1000000 && std::abs(Number(d,"dy"))<=1000000;
+    if(op=="mouse_button") { auto b=d->GetString("button");return type("down",VTYPE_BOOL) && (b=="left" || b=="middle" || b=="right"); }
+    return true;
+  }
+  if(op=="key") return type("key",VTYPE_STRING) && type("down",VTYPE_BOOL);
+  if(op=="scripts" || op=="blocking_scripts") {
+    if(!type("scripts",VTYPE_LIST)) return false;
+    auto list=d->GetList("scripts");for(size_t i=0;i<list->GetSize();++i) if(list->GetType(i)!=VTYPE_STRING) return false;
+    return true;
+  }
+  if(op=="site_exceptions") {if(!type("origins",VTYPE_LIST))return false;auto list=d->GetList("origins");if(list->GetSize()>1024)return false;for(size_t i=0;i<list->GetSize();++i){if(list->GetType(i)!=VTYPE_STRING)return false;const auto origin=list->GetString(i).ToString();if(origin.empty() || qos::Origin(origin)!=origin)return false;}return true;}
+  if(op=="credential_action") {
+    if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING) ||
+       !type("origin",VTYPE_STRING) || d->GetString("origin").ToString().size()>8192 ||
+       !type("document",VTYPE_STRING))return false;
+    const auto action=d->GetString("action").ToString();
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);std::vector<std::string> fields;
+    for(const auto& key:keys)fields.push_back(key.ToString());
+    if(!qos::CredentialFieldsValid(action,fields))return false;
+    if(action!="status" && action!="cancel" && !qos::ValidCredentialCounter(d->GetString("document").ToString()))return false;
+    if(d->HasKey("account") && (!type("account",VTYPE_STRING) || d->GetString("account").empty() || d->GetString("account").ToString().size()>128))return false;
+    for(const auto* key:{"capture","form"})if(d->HasKey(key) && (!type(key,VTYPE_STRING) || !qos::ValidCredentialCounter(d->GetString(key).ToString())))return false;
+    if(action=="fill_address") {
+      if(!type("profile",VTYPE_DICTIONARY))return false;
+      auto profile=d->GetDictionary("profile");CefDictionaryValue::KeyList names;profile->GetKeys(names);
+      if(names.empty() || names.size()>8)return false;
+      for(const auto& name:names) {
+        const auto key=name.ToString();
+        if((key!="full_name" && key!="given_name" && key!="family_name" && key!="street" && key!="city" && key!="region" && key!="postal_code" && key!="country") ||
+           profile->GetType(name)!=VTYPE_STRING || profile->GetString(name).ToString().size()>1024)return false;
+      }
+    }
+    return true;
+  }
+  if(op=="site_status" || op=="site_action") {
+    if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("origin",VTYPE_STRING) || d->GetString("origin").length()>8192)return false;
+    if(op=="site_status")return true;
+    const auto action=d->GetString("action");return number("generation") && qos::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="enable" || action=="disable" || action=="reload");
+  }
+  if(op=="filter_rules") return type("rules",VTYPE_STRING) && (type("enabled",VTYPE_BOOL) || type("enabled",VTYPE_NULL));
+  return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="download_cancel_all" || op=="shutdown";
+}
+void ReadCommands(std::atomic<bool>& stop) {
+  std::string buffer;char chunk[65536];
+  while(!stop && !output->Failed()) {
+    pollfd fd{STDIN_FILENO,POLLIN,0};int r=poll(&fd,1,100);
+    if(r<0 && errno==EINTR) continue;if(r<0) break;if(!r) continue;
+    ssize_t n=read(STDIN_FILENO,chunk,sizeof(chunk));if(n<=0) break;buffer.append(chunk,n);
+    bool bad=false;
+    while(buffer.size()>=4) {
+      auto size=qos::U32(buffer.data());if(!size || size>qos::kMaxPacket) {bad=true;break;}
+      if(buffer.size()<size_t(size)+4) break;
+      if(buffer[4]!=1) {bad=true;break;}
+      auto parsed=CefParseJSON(buffer.substr(5,size-1),JSON_PARSER_RFC);
+      if(!parsed || parsed->GetType()!=VTYPE_DICTIONARY || parsed->GetDictionary()->GetType("op")!=VTYPE_STRING) {bad=true;break;}
+      auto d=parsed->GetDictionary();if(!ValidCommand(d)) {bad=true;break;}
+      if(d->GetString("op")=="resize") TraceGeometry("resize-received",d->HasKey("tab")?d->GetInt("tab"):1,d->GetInt("width"),d->GetInt("height"),Number(d,"scale_factor"));
+      CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<CefDictionaryValue> command){Dispatch(command);},d));
+      buffer.erase(0,size+4);
+    }
+    if(bad) { std::cerr<<"Malformed browser IPC packet\n";break; }
+  }
+  if(!stop) CefPostTask(TID_UI,base::BindOnce(&CloseHost));
+}
+}
+CefRefPtr<CefApp> MakeHostApp() { return new App; }
+void CloseHost() {
+  TraceGeometry("close-host",0);
+  closing=true;
+  if(downloads) downloads->Close();
+  if(clients.empty()) {CefQuitMessageLoop();return;}
+  const auto live=clients;for(const auto& [id,client]:live) if(client->browser_) {client->browser_->GetHost()->CloseDevTools();client->browser_->GetHost()->CloseBrowser(true);}
+}
+int RunHost(int argc,char** argv) {
+  signal(SIGPIPE,SIG_IGN);
+  std::string profile;
+  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true; }
+  if(profile.empty() || profile[0]!='/') {std::cerr<<"--profile requires an absolute directory\n";return 2;}
+  std::filesystem::create_directories(profile);
+  profile=std::filesystem::canonical(profile).string();
+  if(downloads_directory.empty()) downloads_directory=profile+"/downloads";
+  Output writer;output=&writer;
+  CefSettings settings;settings.windowless_rendering_enabled=true;settings.log_severity=LOGSEVERITY_WARNING;
+  CefString(&settings.root_cache_path)=profile;
+  if(!private_mode) CefString(&settings.cache_path)=profile+"/default";
+  CefString(&settings.log_file)=profile+"/cef.log";
+#if defined(OS_MAC)
+  const auto executable=std::filesystem::canonical(argv[0]);
+  const auto contents=executable.parent_path().parent_path();
+  // CEF defaults to the outermost app. Our runtime can be nested inside the
+  // Rust Browser.app, whose Frameworks directory does not contain CEF directly.
+  // Resolve from this executable so standalone and packaged layouts agree.
+  CefString(&settings.main_bundle_path)=contents.parent_path().string();
+  CefString(&settings.framework_dir_path)=(contents/"Frameworks/Chromium Embedded Framework.framework").string();
+  CefString(&settings.browser_subprocess_path)=(contents/"Frameworks/Browser Engine Helper.app/Contents/MacOS/Browser Engine Helper").string();
+#endif
+  if(!CefInitialize(CefMainArgs(argc,argv),settings,MakeHostApp(),nullptr)) return CefGetExitCode();
+#if defined(OS_MAC)
+  if(!private_mode) {
+    auto store=qos::MakeMacCredentialStore(qos::CredentialServiceForProfile(profile));
+    if(store)credential_worker=std::make_shared<qos::CredentialWorker>(false,std::move(store));
+  }
+#endif
+  {std::lock_guard lock(credential_delivery->mutex);credential_delivery->active=true;}
+  std::atomic<bool> stop{false};std::thread reader([&]{ReadCommands(stop);});
+  CefRunMessageLoop();TraceGeometry("message-loop-return",0);stop=true;reader.join();TraceGeometry("reader-joined",0);
+  {std::lock_guard lock(credential_delivery->mutex);credential_delivery->active=false;}
+  if(credential_worker)credential_worker->Stop();credential_worker.reset();clients.clear();shared_context=nullptr;request_filter=nullptr;TraceGeometry("cef-shutdown-begin",0);CefShutdown();TraceGeometry("cef-shutdown-end",0);writer.Stop();output=nullptr;
+  if(clear_on_exit) { std::error_code ec;std::filesystem::remove_all(profile+"/default",ec);if(ec) {std::cerr<<"Could not clear Chromium profile: "<<ec.message()<<"\n";return 1;} }
+  return writer.Failed()?1:0;
+}

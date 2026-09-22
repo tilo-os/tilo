@@ -645,6 +645,26 @@ fn saver_loop(
     }
 }
 
+/// Exclusive notebook-directory custody, held until every writer has stopped.
+/// Older binaries and external editors do not participate: migration still
+/// requires an explicit assertion that those writers have been stopped.
+/// # Errors
+/// Refuses a directory with an existing cooperating writer or unusable lock.
+pub fn lock_workspace(root: &Path) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(".notes-writer.lock"))
+        .map_err(|e| e.to_string())?;
+    file.try_lock().map_err(|e| {
+        format!("notebook is already open; stop all legacy Notes writers before migration: {e}")
+    })?;
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

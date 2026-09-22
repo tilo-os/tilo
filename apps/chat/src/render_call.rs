@@ -13,16 +13,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
-use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace};
 
 use crate::app::{ChatApp, Hit};
 use crate::emoji;
+use crate::geometry::line_top;
 use crate::model::{self, Presence, VoiceMember};
 use crate::paint::{
-    PaintContext, fill_circle, fill_rect, fill_round, hline, label, stroke_circle, stroke_round,
-    text,
+    PaintContext, fill_circle, fill_rect, fill_round, label, stroke_circle, stroke_round, text,
 };
 use crate::render_chat::draw_avatar;
 
@@ -38,18 +38,6 @@ struct Participant {
     muted: bool,
     audio_only: bool,
     sharing: bool,
-}
-
-#[derive(Clone, Copy)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "typed snapshot of four independent visual control states passed together to the leaf painter"
-)]
-struct ControlVisual {
-    on: bool,
-    danger: bool,
-    hovered: bool,
-    enabled: bool,
 }
 
 fn huddle_lower_chrome_for_reveal(reveal: f32) -> f64 {
@@ -68,9 +56,156 @@ pub(crate) enum CallStage {
 /// One expanded-overlay control button, as laid out by
 /// [`ChatApp::overlay_controls_layout`]:
 /// `(label, active, danger, enabled, hit, rect)`.
-type OverlayButton = (&'static str, bool, bool, bool, Hit, Rect);
+type OverlayButton = (String, bool, bool, bool, Hit, Rect);
+
+/// Label size of an expanded-overlay control button (renderer-relative).
+const CALL_CTL_TEXT: f32 = 13.0;
+/// Authored 1× height of a control button.
+const CALL_CTL_MIN_H: f64 = 32.0;
+/// Title / subtitle sizes of the expanded overlay's header.
+const CALL_TITLE_TEXT: f32 = 20.0;
+const CALL_SUBTITLE_TEXT: f32 = 12.0;
+/// Gap between the controls bar's bottom edge and the window's bottom edge.
+const CALL_BAR_BOTTOM_INSET: f64 = 18.0;
+/// Catalogue keys of every label the controls bar can show, both halves of
+/// each toggle pair included, so the measurement covers a label before the
+/// toggle that reveals it.
+const CALL_CONTROL_KEYS: [&str; 7] = [
+    "chat-call-mute",
+    "chat-call-unmute",
+    "chat-call-deafen",
+    "chat-call-undeafen",
+    "chat-call-audio-only",
+    "chat-call-collapse",
+    "chat-call-leave",
+];
+
+/// Measured sizes the expanded call overlay is laid out with.
+///
+/// The overlay's geometry (`overlay_controls_layout`, `overlay_content_region`)
+/// is read from `&self` contexts that have no renderer — `build_layout` sizes
+/// the host `VideoPlayer` tile from it and the pointer path hit-tests against
+/// it — so the measurement happens once per paint, in the `&mut self` pass
+/// that precedes drawing, and is cached here. Before the first paint the
+/// authored 1× rules stand in (`Default`), which is also what the geometry
+/// tests exercise.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CallOverlayMetrics {
+    /// `(label, width)` for every control the bar may show, the width being
+    /// the label's measured advance plus a pad each side.
+    pub button_w: Vec<(String, f64)>,
+    /// Height of a control button: its measured line box plus a pad each
+    /// side, never shorter than the 1× button.
+    pub button_h: f64,
+    /// Gap between buttons and between wrapped rows (`s2`).
+    pub gap: f64,
+    /// Inner padding of the controls bar (`s3`).
+    pub inner_pad: f64,
+    /// Side inset the wrapped rows must fit inside (`s6`).
+    pub side_pad: f64,
+    /// Measured line boxes of the header's title and subtitle.
+    pub title_h: f64,
+    pub subtitle_h: f64,
+    /// Top inset of the title (`s6`) and the gaps under the title (`s1`) and
+    /// under the subtitle (`s2`).
+    pub header_pad_top: f64,
+    pub header_gap: f64,
+    pub header_pad_bottom: f64,
+}
+
+impl Default for CallOverlayMetrics {
+    fn default() -> Self {
+        Self {
+            button_w: Vec::new(),
+            button_h: CALL_CTL_MIN_H,
+            gap: 8.0,
+            inner_pad: 12.0,
+            side_pad: 24.0,
+            // 1× line boxes of a 20 px and a 12 px line (size × 1.25).
+            title_h: 25.0,
+            subtitle_h: 15.0,
+            header_pad_top: 24.0,
+            header_gap: 4.0,
+            header_pad_bottom: 8.0,
+        }
+    }
+}
+
+impl CallOverlayMetrics {
+    /// Width of the control labelled `label`: its measured width when this
+    /// frame measured it, else the fixed-length estimate the 1× layout used
+    /// (so the geometry tests, which never paint, still resolve).
+    fn button_width(&self, label: &str) -> f64 {
+        self.button_w
+            .iter()
+            .find(|(l, _)| l.as_str() == label)
+            .map_or_else(|| overlay_button_width(label), |(_, w)| *w)
+    }
+
+    /// Height of the title + subtitle block above the tile band.
+    pub(crate) fn header_h(&self) -> f64 {
+        self.header_pad_top
+            + self.title_h
+            + self.header_gap
+            + self.subtitle_h
+            + self.header_pad_bottom
+    }
+}
 
 impl ChatApp {
+    /// Measure the expanded overlay's controls and header with the styles
+    /// they paint with. Called from the `&mut self` paint pass right before
+    /// the overlay is drawn, so this frame's layout and hit rects use this
+    /// frame's text scale.
+    pub(crate) fn measure_call_overlay(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        // The labels and line boxes only change with the text scale or the
+        // catalogue; skip the seven lookups and measures otherwise.
+        let key = (
+            tr.text_scale().to_bits(),
+            theme.text_scale.to_bits(),
+            ui::i18n::I18nManager::revision(),
+        );
+        if self.call_overlay_metrics_key == Some(key) {
+            return;
+        }
+        self.call_overlay_metrics_key = Some(key);
+        let sp = &theme.tokens.spacing;
+        let (_, lh) = tr.measure("Ag", CALL_CTL_TEXT, None);
+        let button_h = (f64::from(lh) + 2.0 * f64::from(sp.s2)).max(CALL_CTL_MIN_H);
+        // Every label the bar can show — both halves of each toggle pair —
+        // is measured, so a Mute → Unmute flip between paints resolves to a
+        // measured width and the hit rects never fall back to the estimate.
+        let button_w = CALL_CONTROL_KEYS
+            .iter()
+            .map(|key| {
+                let label = crate::i18n::t(key);
+                let (w, _) = tr.measure(&label, CALL_CTL_TEXT, None);
+                (label, f64::from(w) + 2.0 * f64::from(sp.s3))
+            })
+            .collect();
+        let (_, title_h) = tr.measure_weighted("Ag", CALL_TITLE_TEXT, None, TextWeight::Bold);
+        let (_, subtitle_h) = tr.measure("Ag", CALL_SUBTITLE_TEXT, None);
+        let measured = CallOverlayMetrics {
+            button_w,
+            button_h,
+            gap: f64::from(sp.s2),
+            inner_pad: f64::from(sp.s3),
+            side_pad: f64::from(sp.s6),
+            title_h: f64::from(title_h),
+            subtitle_h: f64::from(subtitle_h),
+            header_pad_top: f64::from(sp.s6),
+            header_gap: f64::from(sp.s1),
+            header_pad_bottom: f64::from(sp.s2),
+        };
+        if self.call_overlay_metrics != measured {
+            self.call_overlay_metrics = measured;
+            // `build_layout` has no renderer, so the host tile's surface node
+            // was sized from the previous metrics; a relayout on the next
+            // frame places it on the geometry this frame paints.
+            self.request_relayout();
+        }
+    }
+
     /// The call roster, host-first, from the shared voice membership. Falls
     /// back to "just me" if the channel has no recorded members yet.
     fn call_participants(&self) -> Vec<Participant> {
@@ -153,9 +288,19 @@ impl ChatApp {
         let (initials, cidx) = self
             .user(&self.me.id)
             .map_or_else(|| ("Y".into(), 0), |u| (u.initials.clone(), u.color_idx));
-        let r = (rect.height() * 0.20).clamp(22.0, 52.0);
+        // The disc's bounds follow the text scale: the shared avatar sizes
+        // its monogram through the renderer (which applies that scale), so a
+        // 1× clamp would leave 200% initials spilling past the disc.
+        let ts = f64::from(theme.text_scale).max(1.0);
+        let r = (rect.height() * 0.20).clamp(22.0 * ts, 52.0 * ts);
         let cx = rect.center().x;
-        let cy = rect.center().y - r * 0.35;
+        // Disc + caption are one block centred in the band above the name
+        // plate (the same rule the member tiles follow), so the caption never
+        // runs into the plate.
+        let s = "Camera off";
+        let (sw, sh) = tr.measure(s, 12.0, None);
+        let s2 = f64::from(theme.tokens.spacing.s2);
+        let (cy, caption_y) = avatar_caption_block(rect, r, f64::from(sh), plate_height(theme), s2);
         draw_avatar(
             PaintContext::new(scene, tf, tr, theme),
             Point::new(cx, cy),
@@ -164,8 +309,6 @@ impl ChatApp {
             cidx,
             None,
         );
-        let s = "Camera off";
-        let (sw, _) = tr.measure(s, 12.0, None);
         label(
             scene,
             tr,
@@ -174,7 +317,7 @@ impl ChatApp {
             12.0,
             c.text_dim,
             cx - f64::from(sw) / 2.0,
-            cy + r + 8.0,
+            caption_y,
         );
     }
 
@@ -205,24 +348,26 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let panel = self.huddle_panel();
-        // One shared organic silhouette for the shadow, body and border. The
-        // 8px transparent native-window gutter encloses the 6px shadow shape
-        // exactly, so desktop adoption never clips a corner or widens it into
-        // a second rectangular decoration.
-        let shadow = ui::surface::soft_outline(panel.inflate(6.0, 6.0));
-        scene.fill(
-            Fill::NonZero,
+        // The shadow is the panel's own shape and comes from the elevation
+        // ladder (HIG §9.3): `e1` dies out about 6 px past the outline, inside
+        // the 8 px transparent native-window gutter, so desktop adoption never
+        // clips it. The solid 6 px silhouette it replaces read as a thick grey
+        // ring on the light preset. Body and border share one organic
+        // silhouette so their corner radii cannot drift apart.
+        ui::surface::shadow(
+            scene,
             tf,
-            Color::from_rgba8(0, 0, 0, 70),
-            None,
-            &shadow,
+            panel,
+            f64::from(theme.tokens.radii.xl),
+            &theme.tokens.elevation.e1,
         );
+        // A floating Panel: the derived panel border (HIG §9.5).
         let body = ui::surface::soft_outline(panel);
         scene.fill(Fill::NonZero, tf, c.neutral[1], None, &body);
         scene.stroke(
             &Stroke::new(1.0),
             tf,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            ui::chrome::panel_border(theme),
             None,
             &body,
         );
@@ -467,7 +612,8 @@ impl ChatApp {
     ) {
         let cy = panel.y1 - 34.0;
         let pad = 12.0;
-        let gap = 6.0;
+        // Sibling controls sit an `s2` apart, like the expanded bar's.
+        let gap = f64::from(theme.tokens.spacing.s2);
         let muted = self.call.muted;
         let deaf = self.call.deafened;
         let mut ctrls: Vec<(&str, &str, bool, bool, Hit)> = vec![
@@ -499,15 +645,16 @@ impl ChatApp {
             let r = Rect::new(x, cy, x + cw, cy + 28.0);
             let hovered = self.call_control_is_hovered(&hit);
             Self::ctl(
-                PaintContext::new(scene, tf, tr, theme),
+                scene,
+                tf,
+                tr,
+                theme,
                 r,
                 if use_text { txt } else { icon },
-                ControlVisual {
-                    on,
-                    danger,
-                    hovered,
-                    enabled: true,
-                },
+                on,
+                danger,
+                hovered,
+                true,
             );
             ChatApp::push_hit(hits, r, hit);
             x = r.x1 + gap;
@@ -529,23 +676,24 @@ impl ChatApp {
         fill_rect(scene, tf, self.rect, c.surfaces.base);
         fill_rect(scene, tf, self.rect, c.surfaces.overlay);
 
-        let scale = f64::from(self.layout_text_scale);
-        // title + participant count. This is a full focused surface at large
-        // text, so all of its vertical reservations scale with its type rather
-        // than letting the title paint into the tile grid.
+        // title + participant count, stacked from the measured line boxes so
+        // the subtitle sits under the title at every text scale.
+        let m = &self.call_overlay_metrics;
+        let title_y = self.rect.y0 + m.header_pad_top;
+        let subtitle_y = title_y + m.title_h + m.header_gap;
         let title = self
             .channel(&self.call.channel)
             .map_or_else(|| "Call".into(), |c| c.name.clone());
-        let (tw, _) = tr.measure(&title, 20.0, None);
+        let (tw, _) = tr.measure_weighted(&title, CALL_TITLE_TEXT, None, TextWeight::Bold);
         text(
             scene,
             tr,
             tf,
             &title,
-            20.0,
+            CALL_TITLE_TEXT,
             c.text_primary,
             self.rect.center().x - f64::from(tw) / 2.0,
-            self.rect.y0 + 20.0 * scale,
+            title_y,
             TextWeight::Bold,
             None,
         );
@@ -565,16 +713,16 @@ impl ChatApp {
             }
             None => format!("{} in the call", parts.len()),
         };
-        let (sw, _) = tr.measure(&sub, 12.0, None);
+        let (sw, _) = tr.measure(&sub, CALL_SUBTITLE_TEXT, None);
         label(
             scene,
             tr,
             tf,
             &sub,
-            12.0,
+            CALL_SUBTITLE_TEXT,
             c.text_dim,
             self.rect.center().x - f64::from(sw) / 2.0,
-            self.rect.y0 + 50.0 * scale,
+            subtitle_y,
         );
 
         // The host active-speaker treatment is shared by both layouts: a bright
@@ -798,27 +946,20 @@ impl ChatApp {
         // when the window is too narrow to hold them all in one line, so it
         // never runs off either edge.
         let (bar, buttons) = self.overlay_controls_layout();
+        // A floating Panel: the derived panel border, crisp on the outermost
+        // pixel row (HIG §9.5).
         fill_round(scene, tf, bar, 16.0, c.neutral[1]);
-        stroke_round(
-            scene,
+        scene.stroke(
+            &Stroke::new(1.0),
             tf,
-            bar,
-            16.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(bar, 16.0),
         );
         for (label_txt, on, danger, enabled, hit, r) in buttons {
             let hovered = self.call_control_is_hovered(&hit);
             Self::ctl(
-                PaintContext::new(scene, tf, tr, theme),
-                r,
-                label_txt,
-                ControlVisual {
-                    on,
-                    danger,
-                    hovered,
-                    enabled,
-                },
+                scene, tf, tr, theme, r, &label_txt, on, danger, hovered, enabled,
             );
             if enabled {
                 ChatApp::push_hit(hits, r, hit);
@@ -834,11 +975,11 @@ impl ChatApp {
     /// geometry on a single frame.
     pub(crate) fn overlay_content_region(&self) -> Rect {
         let r = self.rect;
-        let scale = f64::from(self.layout_text_scale);
-        let inset = ((r.width() * 0.05).clamp(16.0, 40.0) * scale.min(1.3)).min(r.width() * 0.12);
-        // below the scaled title and subtitle; the two lanes must never paint
-        // under the participant tiles in a 2× text session.
-        let top = r.y0 + 72.0 * scale;
+        let inset = (r.width() * 0.05).clamp(16.0, 40.0);
+        // Below the measured title + subtitle header (the 1× rule before the
+        // first paint), so a scaled header pushes the tiles down instead of
+        // painting over the top row.
+        let top = r.y0 + self.call_overlay_metrics.header_h();
         let (bar, _) = self.overlay_controls_layout();
         let bottom = (bar.y0 - 14.0).max(top + 1.0);
         Rect::new(r.x0 + inset, top, r.x1 - inset, bottom)
@@ -909,62 +1050,72 @@ impl ChatApp {
         }
     }
 
-    /// Lay out the expanded-overlay control buttons, wrapping onto extra rows
-    /// to fit the current window width. Returns the bar background rect and
-    /// each button's `(label, active, danger, enabled, hit, rect)`. Shared by the
-    /// background pass (which bounds the tile region above the bar), the
-    /// foreground pass (which draws it), and the layout pass (which sizes the
-    /// tile band) — so all three agree without a `TextRenderer`. Button widths
-    /// are derived from the fixed label lengths rather than measured, which
-    /// keeps the whole call layout resolvable on a single headless frame.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one deterministic layout pass must keep wrapped call controls, their hit targets and the returned bar bounds identical"
-    )]
-    pub(crate) fn overlay_controls_layout(&self) -> (Rect, Vec<OverlayButton>) {
-        let specs: [(&'static str, bool, bool, bool, Hit); 5] = [
+    /// The expanded overlay's controls in bar order:
+    /// `(label, active, danger, enabled, hit)`. One source for the layout
+    /// (which sizes buttons from these labels) and the pre-paint measurement
+    /// (which measures exactly these labels), so a toggled label — Mute →
+    /// Unmute — is measured the frame it appears.
+    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 5] {
+        let t = crate::i18n::t;
+        [
             (
-                if self.call.muted { "Unmute" } else { "Mute" },
+                t(if self.call.muted {
+                    "chat-call-unmute"
+                } else {
+                    "chat-call-mute"
+                }),
                 self.call.muted,
                 false,
                 self.call_allows(crate::call::CallAction::Speak),
                 Hit::CallMute,
             ),
             (
-                if self.call.deafened {
-                    "Undeafen"
+                t(if self.call.deafened {
+                    "chat-call-undeafen"
                 } else {
-                    "Deafen"
-                },
+                    "chat-call-deafen"
+                }),
                 self.call.deafened,
                 false,
                 self.call_allows(crate::call::CallAction::Speak),
                 Hit::CallDeafen,
             ),
             (
-                "Audio only",
+                t("chat-call-audio-only"),
                 self.call.audio_only,
                 false,
                 self.call_allows(crate::call::CallAction::Camera),
                 Hit::CallAudioOnly,
             ),
-            ("Collapse", false, false, true, Hit::CallExpand),
-            ("Leave", false, true, true, Hit::CallLeave),
-        ];
-        let scale = f64::from(self.layout_text_scale);
-        let gap = 8.0 * scale.min(1.35);
-        let row_gap = 8.0 * scale.min(1.35);
-        // Controls are actual 44px targets at 1× and grow with enlarged text;
-        // the greedy wrap below turns a narrow high-text call into coherent
-        // rows instead of overlapping labels or a horizontal strip.
-        let bh = 44.0 * scale.min(1.5);
-        let side_pad = 24.0 * scale.min(1.25);
-        let inner_pad = 12.0 * scale.min(1.35);
+            (t("chat-call-collapse"), false, false, true, Hit::CallExpand),
+            (t("chat-call-leave"), false, true, true, Hit::CallLeave),
+        ]
+    }
+
+    /// Lay out the expanded-overlay control buttons, wrapping onto extra rows
+    /// to fit the current window width. Returns the bar background rect and
+    /// each button's `(label, active, danger, enabled, hit, rect)`. Shared by the
+    /// background pass (which bounds the tile region above the bar), the
+    /// foreground pass (which draws it), and the layout pass (which sizes the
+    /// tile band) — so all three agree without a `TextRenderer`: the button
+    /// widths and height come from [`CallOverlayMetrics`], measured by the
+    /// paint pass that precedes them (the 1× rules before the first paint),
+    /// which keeps the whole call layout resolvable on a single headless frame
+    /// while the labels still fit their buttons at every text scale.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one deterministic layout pass must keep wrapped call controls, their hit targets and the returned bar bounds identical"
+    )]
+    pub(crate) fn overlay_controls_layout(&self) -> (Rect, Vec<OverlayButton>) {
+        let specs = self.overlay_control_specs();
+        let m = &self.call_overlay_metrics;
+        let gap = m.gap;
+        let row_gap = m.gap;
+        let bh = m.button_h;
+        let side_pad = m.side_pad;
+        let inner_pad = m.inner_pad;
         let max_row_w = (self.rect.width() - 2.0 * side_pad).max(120.0);
-        let widths: Vec<f64> = specs
-            .iter()
-            .map(|s| overlay_button_width(s.0) * scale)
-            .collect();
+        let widths: Vec<f64> = specs.iter().map(|s| m.button_width(&s.0)).collect();
 
         // Greedy pack into rows that each fit `max_row_w`. `rows` always holds
         // at least one (possibly empty) row, so `last`/`last_mut` never miss —
@@ -999,7 +1150,7 @@ impl ChatApp {
             .fold(0.0_f64, f64::max);
 
         let cx = self.rect.center().x;
-        let bar_bottom = self.rect.y1 - 18.0;
+        let bar_bottom = self.rect.y1 - CALL_BAR_BOTTOM_INSET;
         let bar_top = bar_bottom - bar_h;
         let bar = Rect::new(
             cx - widest / 2.0 - inner_pad,
@@ -1020,7 +1171,7 @@ impl ChatApp {
                 };
                 let r = Rect::new(x, ry, x + w, ry + bh);
                 let (label_txt, on, danger, enabled, hit) = spec;
-                out.push((*label_txt, *on, *danger, *enabled, hit.clone(), r));
+                out.push((label_txt.clone(), *on, *danger, *enabled, hit.clone(), r));
                 x += w + gap;
             }
             ry += bh + row_gap;
@@ -1070,9 +1221,22 @@ impl ChatApp {
             return;
         }
         if let Some(u) = u {
-            let radius = (rect.height() * 0.22).clamp(16.0, 46.0);
+            // Disc bounds follow the text scale (see `draw_host_camera_off`).
+            let ts = f64::from(theme.text_scale).max(1.0);
+            let radius = (rect.height() * 0.22).clamp(16.0 * ts, 46.0 * ts);
             let cx = rect.center().x;
-            let cy = rect.center().y - radius * 0.3;
+            // Honest state under the avatar — the same treatment the host tile
+            // gets. There is no remote camera capture in this environment, so
+            // the tile never fabricates a picture: an audio-only peer reads
+            // "Camera off"; a camera-enabled peer whose frame doesn't reach
+            // this peer reads "No video". It never claims to show video it
+            // doesn't have. Disc + caption are one block centred in the band
+            // above the name plate, so the caption never touches the plate.
+            let s = member_tile_caption(p);
+            let (sw, sh) = tr.measure(s, 11.5, None);
+            let s2 = f64::from(theme.tokens.spacing.s2);
+            let (cy, caption_y) =
+                avatar_caption_block(rect, radius, f64::from(sh), plate_height(theme), s2);
             draw_avatar(
                 PaintContext::new(scene, tf, tr, theme),
                 Point::new(cx, cy),
@@ -1081,14 +1245,6 @@ impl ChatApp {
                 u.color_idx,
                 None,
             );
-            // Honest state under the avatar — the same treatment the host tile
-            // gets. There is no remote camera capture in this environment, so
-            // the tile never fabricates a picture: an audio-only peer reads
-            // "Camera off"; a camera-enabled peer whose frame doesn't reach
-            // this peer reads "No video". It never claims to show video it
-            // doesn't have.
-            let s = member_tile_caption(p);
-            let (sw, _) = tr.measure(s, 11.5, None);
             label(
                 scene,
                 tr,
@@ -1097,7 +1253,7 @@ impl ChatApp {
                 11.5,
                 c.text_dim,
                 cx - f64::from(sw) / 2.0,
-                cy + radius + 8.0,
+                caption_y,
             );
         }
         if p.talking {
@@ -1150,21 +1306,51 @@ impl ChatApp {
         muted: bool,
     ) {
         let c = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
         let mic = if muted { "🔇" } else { "🎤" };
         let label_txt = format!("{mic}  {name}");
-        let (lw, _) = tr.measure(&label_txt, 12.0, None);
+        // The plate is its measured label plus a pad each side (never shorter
+        // than the 1× plate), inset `s2` from the tile's corner, so a scaled
+        // name stays inside its plate instead of running past it. Its height
+        // is `plate_height`, the same rule the avatar block reserves for it.
+        let (lw, lh) = tr.measure(&label_txt, 12.0, None);
+        let pad_x = f64::from(sp.s2) + 2.0;
+        let plate_h = plate_height(theme);
+        debug_assert!(plate_h >= f64::from(lh), "plate reserve holds its label");
+        let inset = f64::from(sp.s2);
         let plate = Rect::new(
-            tile.x0 + 8.0,
-            tile.y1 - 30.0,
-            tile.x0 + 8.0 + f64::from(lw) + 20.0,
-            tile.y1 - 8.0,
+            tile.x0 + inset,
+            tile.y1 - inset - plate_h,
+            tile.x0 + inset + f64::from(lw) + 2.0 * pad_x,
+            tile.y1 - inset,
         );
-        fill_round(scene, tf, plate, 8.0, Color::from_rgba8(0, 0, 0, 150));
-        let col = if muted {
+        // The plate is a 59 % black scrim over the tile; its ink is measured
+        // against what that scrim composites to (over the light preset's
+        // pale tile it is a mid grey, where danger red fell to ~2:1), and
+        // pushed until it clears text contrast (`legible_on`).
+        let scrim = Color::from_rgba8(0, 0, 0, 150);
+        fill_round(scene, tf, plate, 8.0, scrim);
+        // The scrim's own colour at full alpha, composited over the tile by
+        // the scrim's alpha: the ground the label actually lands on.
+        let scrim_ink = Color::new([
+            scrim.components[0],
+            scrim.components[1],
+            scrim.components[2],
+            1.0,
+        ]);
+        let plate_ground =
+            crate::paint::blend_toward(c.neutral[2], scrim_ink, f64::from(scrim.components[3]));
+        let tone = if muted {
             c.semantic.danger
         } else {
-            Color::WHITE
+            c.text_primary
         };
+        let col = crate::paint::legible_on(
+            tone,
+            plate_ground,
+            ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+            c.text_primary,
+        );
         label(
             scene,
             tr,
@@ -1172,68 +1358,46 @@ impl ChatApp {
             &label_txt,
             12.0,
             col,
-            plate.x0 + 10.0,
-            plate.center().y - 8.0,
+            plate.x0 + pad_x,
+            line_top(plate.center().y, f64::from(lh)),
         );
     }
 
     /// A pill control button. `on` = active/highlighted, `danger` = red.
-    fn ctl(paint: PaintContext<'_>, rect: Rect, label_txt: &str, visual: ControlVisual) {
-        let PaintContext {
-            scene,
-            transform: tf,
-            text: tr,
-            theme,
-        } = paint;
-        let ControlVisual {
-            on,
-            danger,
-            hovered,
-            enabled,
-        } = visual;
-        let c = &theme.tokens.colors;
-        let (bg, fg) = if !enabled {
-            (
-                c.lift(0.72).with_alpha_factor(0.45),
-                c.text_dim.with_alpha_factor(0.45),
-            )
-        } else if danger && hovered {
-            (c.semantic.danger, Color::WHITE)
-        } else if danger {
-            (c.semantic.danger.with_alpha_factor(0.16), c.semantic.danger)
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::fn_params_excessive_bools,
+        reason = "the four flags are independent visual states of one control; wrapping them would only move the boolean fields into a one-use parameter struct"
+    )]
+    fn ctl(
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        label_txt: &str,
+        on: bool,
+        danger: bool,
+        hovered: bool,
+        enabled: bool,
+    ) {
+        // The shared button face (HIG §8): Neutral at rest, the accent
+        // Primary while "on", DangerOutline for the destructive control and
+        // the toolkit's disabled face when it cannot be used — one painter
+        // for fill, rest edge, ink and the label centred on its measured
+        // line, instead of a local copy of each state.
+        let mut face = ButtonFace::new(rect, label_txt)
+            .text_size(CALL_CTL_TEXT)
+            .weight(TextWeight::Regular)
+            .radius(9.0)
+            .hovered(hovered)
+            .disabled(!enabled);
+        if danger {
+            face = face.danger_outline();
         } else if on {
-            (c.accent[5], Color::WHITE)
-        } else if hovered {
-            (c.lift(1.0), c.text_primary)
-        } else {
-            (c.lift(0.72), c.text_primary)
-        };
-        fill_round(scene, tf, rect, 9.0, bg);
-        if hovered {
-            stroke_round(
-                scene,
-                tf,
-                rect,
-                9.0,
-                if danger {
-                    c.semantic.danger
-                } else {
-                    ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51)
-                },
-                1.0,
-            );
+            face = face.primary();
         }
-        let (lw, lh) = tr.measure(label_txt, 13.0, None);
-        label(
-            scene,
-            tr,
-            tf,
-            label_txt,
-            13.0,
-            fg,
-            rect.center().x - f64::from(lw) / 2.0,
-            rect.center().y - f64::from(lh) / 2.0,
-        );
+        Button::paint(scene, tf, tr, theme, &face);
     }
 
     fn call_control_is_hovered(&self, hit: &Hit) -> bool {
@@ -1272,21 +1436,19 @@ impl ChatApp {
             (self.rect.y1 - h - 8.0).max(self.rect.y0 + 8.0),
         );
         let panel = Rect::new(x0, y0, x0 + w, y0 + h);
-        fill_round(
-            scene,
-            tf,
-            panel.inflate(5.0, 5.0),
-            18.0,
-            Color::from_rgba8(0, 0, 0, 70),
-        );
+        // The shadow is the panel's own shape, from the elevation ladder (HIG
+        // §9.3); the solid 5 px silhouette it replaces was a grey ring on the
+        // light preset.
+        ui::surface::shadow(scene, tf, panel, 14.0, &theme.tokens.elevation.e2);
+        // A floating Panel: the derived panel border, crisp on the outermost
+        // pixel row (HIG §9.5).
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        stroke_round(
-            scene,
+        scene.stroke(
+            &Stroke::new(1.0),
             tf,
-            panel,
-            14.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(panel, 14.0),
         );
 
         let title = if self.emoji_target.is_some() {
@@ -1444,21 +1606,19 @@ impl ChatApp {
             (self.rect.y1 - total - 8.0).max(self.rect.y0 + 8.0),
         );
         let panel = Rect::new(x0, y0, x0 + w, y0 + total);
-        fill_round(
-            scene,
-            tf,
-            panel.inflate(5.0, 5.0),
-            18.0,
-            Color::from_rgba8(0, 0, 0, 70),
-        );
+        // The shadow is the panel's own shape, from the elevation ladder (HIG
+        // §9.3); the solid 5 px silhouette it replaces was a grey ring on the
+        // light preset.
+        ui::surface::shadow(scene, tf, panel, 14.0, &theme.tokens.elevation.e2);
+        // A floating Panel: the derived panel border, crisp on the outermost
+        // pixel row (HIG §9.5).
         fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        stroke_round(
-            scene,
+        scene.stroke(
+            &Stroke::new(1.0),
             tf,
-            panel,
-            14.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(panel, 14.0),
         );
         label(
             scene,
@@ -1500,13 +1660,14 @@ impl ChatApp {
             );
             y += bh - 22.0 - 14.0 + 8.0;
             if i + 1 < row_count {
-                hline(
+                ui::surface::separator(
                     scene,
                     tf,
-                    panel.x0 + 12.0,
-                    panel.x1 - 12.0,
+                    panel.x0,
+                    panel.x1,
                     y,
-                    c.border_standard,
+                    f64::from(theme.tokens.spacing.s3),
+                    c.neutral[1],
                 );
             }
             y += 6.0;
@@ -1521,6 +1682,38 @@ impl ChatApp {
 /// reads "Camera off"; a camera-enabled peer whose frame doesn't reach us
 /// reads "No video". Both are literally true, and both mirror the host tile's
 /// honest placeholder — the tile shows an avatar, never a fabricated picture.
+/// Height of a tile's bottom-left name plate: the 12 px label's line box
+/// (`text_metrics::line_height_px`, exactly what `measure` reports for one
+/// line) plus `s1` above and below, never shorter than the 1× plate. One
+/// rule for the plate painter and for the avatar block that must clear it.
+fn plate_height(theme: &Theme) -> f64 {
+    (ui::text_metrics::line_height_px(12.0, theme.text_scale)
+        + 2.0 * f64::from(theme.tokens.spacing.s1))
+    .max(22.0)
+}
+
+/// Where a tile's avatar disc and its caption land: `(disc_cy, caption_y)`.
+/// The disc (radius `radius`) and the `caption_h`-tall caption are one
+/// block, `gap` apart, centred in the band between the tile's top inset and
+/// the name plate's reserve (`plate_h` plus its `gap` inset plus `gap` of
+/// air above it). The caption used to hang a fixed 8 px under a disc pinned
+/// near the tile's centre, which on a filmstrip tile put its baseline on
+/// the plate's top edge (HIG §7: nothing touches). When the band is too
+/// short for the block, the block reads from the band's top.
+fn avatar_caption_block(
+    tile: Rect,
+    radius: f64,
+    caption_h: f64,
+    plate_h: f64,
+    gap: f64,
+) -> (f64, f64) {
+    let band_top = tile.y0 + gap;
+    let band_bottom = tile.y1 - gap - plate_h - gap;
+    let block_h = 2.0 * radius + gap + caption_h;
+    let top = (band_top + (band_bottom - band_top - block_h) / 2.0).max(band_top);
+    (top + radius, top + 2.0 * radius + gap)
+}
+
 fn member_tile_caption(p: &Participant) -> &'static str {
     if p.audio_only {
         "Camera off"
@@ -1626,10 +1819,47 @@ fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Participant, filmstrip_rects, grid_rects, huddle_lower_chrome_for_reveal,
-        member_tile_caption,
+        CALL_CTL_MIN_H, CallOverlayMetrics, Participant, avatar_caption_block, filmstrip_rects,
+        grid_rects, huddle_lower_chrome_for_reveal, member_tile_caption, overlay_button_width,
     };
     use vello::kurbo::Rect;
+
+    #[test]
+    fn overlay_metrics_fall_back_to_the_authored_rules_before_the_first_paint() {
+        let m = CallOverlayMetrics::default();
+        // The 1× header: `s6` + a 20 px line + `s1` + a 12 px line + `s2`.
+        assert!((m.header_h() - 76.0).abs() < 1e-6);
+        assert_eq!(m.button_h, CALL_CTL_MIN_H);
+        // An unmeasured label keeps the fixed-length estimate the 1× layout
+        // used, so the geometry tests (which never paint) still resolve.
+        assert_eq!(m.button_width("Mute"), overlay_button_width("Mute"));
+    }
+
+    #[test]
+    fn measured_button_widths_replace_the_estimate_label_by_label() {
+        let m = CallOverlayMetrics {
+            button_w: vec![("Mute".to_string(), 71.0), ("Leave".to_string(), 80.5)],
+            ..CallOverlayMetrics::default()
+        };
+        assert_eq!(m.button_width("Mute"), 71.0);
+        assert_eq!(m.button_width("Leave"), 80.5);
+        // A label that toggled since the measurement (Mute → Unmute) falls
+        // back rather than borrowing another label's width.
+        assert_eq!(m.button_width("Unmute"), overlay_button_width("Unmute"));
+    }
+
+    #[test]
+    fn a_scaled_header_pushes_the_tile_band_down_by_its_extra_lines() {
+        // Title and subtitle boxes doubled (25 → 50, 15 → 30): the band the
+        // tiles start under grows by exactly the 40 px the lines gained.
+        let m = CallOverlayMetrics {
+            title_h: 50.0,
+            subtitle_h: 30.0,
+            ..CallOverlayMetrics::default()
+        };
+        let grew = m.header_h() - CallOverlayMetrics::default().header_h();
+        assert!((grew - 40.0).abs() < 1e-9, "grew {grew}");
+    }
 
     #[test]
     fn participant_reveal_morphs_the_complete_lower_chrome_monotonically() {
@@ -1643,6 +1873,37 @@ mod tests {
     /// The presentation-stage filmstrip must lay every participant in a single
     /// centred row that stays inside its region, at any headcount — the
     /// invariant the screen-share stage leans on so the strip never spills.
+    #[test]
+    fn avatar_caption_block_clears_the_name_plate_by_the_token_gap() {
+        // A 1× filmstrip tile: 232×152, the disc radius the member tile
+        // derives from that height, a 14.4 px caption and a 23 px plate. The
+        // caption's bottom stays a full `s2` above the plate's reserve.
+        let tile = Rect::new(0.0, 0.0, 232.0, 152.0);
+        let (radius, caption_h, plate_h, gap) = (33.44, 14.4, 23.0, 8.0);
+        let (cy, caption_y) = avatar_caption_block(tile, radius, caption_h, plate_h, gap);
+        let plate_top = tile.y1 - gap - plate_h;
+        assert!(
+            caption_y + caption_h <= plate_top - gap + 1e-9,
+            "caption bottom {} vs plate top {plate_top}",
+            caption_y + caption_h
+        );
+        assert!(cy - radius >= tile.y0 + gap, "disc inside the band");
+        // Centred: equal air above the disc and below the caption, inside the band.
+        let above = (cy - radius) - (tile.y0 + gap);
+        let below = (plate_top - gap) - (caption_y + caption_h);
+        assert!((above - below).abs() < 1e-9, "above {above} below {below}");
+    }
+
+    #[test]
+    fn a_short_tile_reads_the_block_from_the_band_top() {
+        // Too short for the block: it starts at the band's top instead of
+        // poking above the tile.
+        let tile = Rect::new(0.0, 0.0, 200.0, 80.0);
+        let (cy, caption_y) = avatar_caption_block(tile, 33.44, 14.4, 23.0, 8.0);
+        assert!((cy - 33.44 - 8.0).abs() < 1e-9);
+        assert!(caption_y > cy);
+    }
+
     #[test]
     fn filmstrip_is_a_single_centred_row_inside_its_region() {
         for &(w, h) in &[(1200.0_f64, 180.0_f64), (700.0, 150.0), (500.0, 120.0)] {

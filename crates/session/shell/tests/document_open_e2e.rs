@@ -248,11 +248,11 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
 
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
-    install(&apps, "dev.tilo.word-processor", "Word Processor", &["odt"]);
+    install(&apps, "so.tilo.word-processor", "Word Processor", &["odt"]);
     // A decoy claiming nothing and sorting first by display name: without a
     // second package, "resolve the owner" and "take whatever's installed"
     // look the same.
-    install(&apps, "dev.tilo.calculator", "Calculator", &[]);
+    install(&apps, "so.tilo.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
     std::fs::create_dir_all(&runtime).unwrap();
     let log = install_recording_launcher(&runtime);
@@ -343,7 +343,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
     let cmd = &commands[0];
     assert!(
-        cmd.contains("--app-id dev.tilo.word-processor"),
+        cmd.contains("--app-id so.tilo.word-processor"),
         "the document had to open in the package that declares .odt: {cmd}"
     );
     assert!(
@@ -358,7 +358,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         let st = chrome.borrow();
         let tree = st.tree();
         let ws = tree.active_workspace().expect("an active workspace");
-        let want = Subject::app("dev.tilo.word-processor");
+        let want = Subject::app("so.tilo.word-processor");
         let scopes: Vec<&Scope> = ws
             .capabilities
             .iter()
@@ -393,10 +393,10 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
-    install(&apps, "dev.tilo.word-processor", "Word Processor", &["odt"]);
+    install(&apps, "so.tilo.word-processor", "Word Processor", &["odt"]);
     // The decoy is what makes "the app that owns .odt" a different claim
     // from "whatever is installed".
-    install(&apps, "dev.tilo.calculator", "Calculator", &[]);
+    install(&apps, "so.tilo.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
     std::fs::create_dir_all(&runtime).unwrap();
     let log = install_recording_launcher(&runtime);
@@ -452,7 +452,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     let commands = launched_commands(&log, 1);
     assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
     assert!(
-        commands[0].contains("--app-id dev.tilo.word-processor")
+        commands[0].contains("--app-id so.tilo.word-processor")
             && commands[0].contains(&format!("--open {}", doc_path.display())),
         "the drop had to open the document in its own app: {}",
         commands[0]

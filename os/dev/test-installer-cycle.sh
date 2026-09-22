@@ -158,6 +158,7 @@ trap cleanup EXIT
 prepare_alongside_target() {
   local raw="$cycle_dir/prepared-target.raw" esp="$cycle_dir/esp.img"
   local windows="$cycle_dir/windows.img" linux="$cycle_dir/linux.img"
+  local fixture_builder="$dev_dir/build-foreign-boot-fixture.sh"
   local linux_loader esp_size windows_offset linux_offset
   for tool in qemu-img sfdisk mkfs.vfat mkfs.ntfs mkfs.ext4 mattrib mcopy mdir mmd mtype ntfscp debugfs; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required for alongside cycle"
@@ -189,9 +190,9 @@ EOF
   printf '%s\n' "$linux_offset" > "$cycle_dir/linux.offset-mib"
   truncate -s "$esp_size" "$esp"; mkfs.vfat -n SHARED-EFI "$esp" >/dev/null
   mmd -i "$esp" ::/EFI ::/EFI/Microsoft ::/EFI/Microsoft/Boot ::/EFI/Fedora
-  printf 'windows-loader-sentinel\n' > "$cycle_dir/bootmgfw.efi"
   case "$TILO_VM_ARCH" in x86_64) linux_loader=shimx64.efi;; aarch64) linux_loader=shimaa64.efi;; esac
-  printf 'linux-loader-sentinel\n' > "$cycle_dir/$linux_loader"
+  "$fixture_builder" "$TILO_VM_ARCH" windows "$cycle_dir/bootmgfw.efi"
+  "$fixture_builder" "$TILO_VM_ARCH" linux "$cycle_dir/$linux_loader"
   mcopy -i "$esp" "$cycle_dir/bootmgfw.efi" ::/EFI/Microsoft/Boot/bootmgfw.efi
   mcopy -i "$esp" "$cycle_dir/$linux_loader" "::/EFI/Fedora/$linux_loader"
   sha256sum "$cycle_dir/bootmgfw.efi" | awk '{print $1}' > "$cycle_dir/windows-loader.before.sha256"
@@ -295,14 +296,14 @@ PY
       || MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/tilo-linux-fedora.conf >/dev/null 2>&1; then
       die "guided Tilo EFI partition contains an invalid cross-ESP chainloader shortcut"
     fi
-    printf 'boot_entries=firmware-preserved;dedicated_tilo_esp_start_mib=1537;dedicated_tilo_root_start_mib=3585\n' \
+    printf 'boot_entries=foreign-esp-preserved;runtime_firmware_selection=not-fixtured;dedicated_tilo_esp_start_mib=1537;dedicated_tilo_root_start_mib=3585\n' \
       > "$out/alongside-boot-behavior.txt"
   fi
   printf 'mode=%s\nwindows_partition_sha256=%s\nlinux_partition_sha256=%s\nwindows_loader_sha256=%s\nlinux_loader_sha256=%s\n' \
     "$install_mode" "$(cat "$cycle_dir/windows.before.sha256")" "$(cat "$cycle_dir/linux.before.sha256")" \
     "$(cat "$cycle_dir/windows-loader.before.sha256")" "$(cat "$cycle_dir/linux-loader.before.sha256")" \
     > "$out/alongside-preservation.txt"
-  printf 'fixture=synthetic-foreign-filesystems\nreal_windows_boot_verified=false\n' \
+  printf 'fixture=synthetic-foreign-filesystems-with-controlled-efi-applications\nreal_windows_boot_verified=false\nreal_linux_distribution_boot_verified=false\n' \
     >> "$out/alongside-preservation.txt"
   rm -f -- "$raw"
 }
@@ -358,6 +359,92 @@ wait_private_screen() {
 }
 
 die() { printf 'installer cycle: %s\n' "$*" >&2; exit 1; }
+
+# Prepared-alongside reuses the foreign ESP, so the production helper creates
+# same-filesystem systemd-boot entries for both controlled EFI applications.
+# Open the real boot UI and try its displayed numeric shortcuts until both
+# byte-preserved applications have painted their distinct marker. This remains
+# a keyboard/framebuffer black-box proof: it does not edit the installed disk,
+# inject a guest command, or infer execution from an entry file alone.
+prove_prepared_foreign_boot_entries() {
+  local index image marker current_menu menu_seen=0 windows_index="" linux_index=""
+  [ "$install_mode" = prepared-alongside ] || return 0
+  if [ "$software_tpm" -eq 1 ]; then
+    printf '%s\n' \
+      'fixture=controlled-unsigned-efi-applications' \
+      'selection_verified=false' \
+      'reason=unsigned-test-fixture-is-not-authorized-by-release-secure-boot-policy' \
+      'real_windows_boot_verified=false' \
+      'real_linux_distribution_boot_verified=false' \
+      > "$out/foreign-boot-selection.txt"
+    return 0
+  fi
+
+  phase=foreign-loader-proof
+  for index in $(seq 1 9); do
+    current_menu=0
+    "$vm" boot-target --2d --no-tpm
+    # The monitor is available before firmware handoff. Repeating Space makes
+    # the systemd-boot menu deterministic even when loader.conf has timeout 0.
+    for _ in $(seq 1 80); do
+      "$vm" keys spc
+      sleep 0.05
+    done
+    for _ in $(seq 1 20); do
+      image="$(shot_ocr foreign-menu-observe 2>/dev/null || true)"
+      if grep -Fqi 'Windows' "$out/foreign-menu-observe.txt" 2>/dev/null \
+          && grep -Fqi 'Linux' "$out/foreign-menu-observe.txt" 2>/dev/null; then
+        cp -f "$image" "$out/foreign-boot-menu-$index.png"
+        cp -f "$out/foreign-menu-observe.txt" "$out/foreign-boot-menu-$index.txt"
+        current_menu=1
+        menu_seen=1
+        break
+      fi
+      "$vm" status | grep -q '^running' || break
+      "$vm" keys spc
+      sleep 1
+    done
+    if [ "$current_menu" -eq 0 ]; then
+      "$vm" stop >/dev/null 2>&1 || true
+      continue
+    fi
+
+    # systemd-boot displays and accepts 1..9 for its first nine menu rows.
+    "$vm" keys "$index"
+    sleep 0.5
+    "$vm" keys ret
+    marker=""
+    for _ in $(seq 1 20); do
+      image="$(shot_ocr foreign-marker-observe 2>/dev/null || true)"
+      if grep -Eqi 'TILO[[:space:]]+FOREIGN[[:space:]]+WINDOWS[[:space:]]+BOOT[[:space:]]+PASS' \
+          "$out/foreign-marker-observe.txt" 2>/dev/null; then
+        marker=windows
+      elif grep -Eqi 'TILO[[:space:]]+FOREIGN[[:space:]]+LINUX[[:space:]]+BOOT[[:space:]]+PASS' \
+          "$out/foreign-marker-observe.txt" 2>/dev/null; then
+        marker=linux
+      fi
+      [ -z "$marker" ] || break
+      "$vm" status | grep -q '^running' || break
+      sleep 1
+    done
+    if [ -n "$marker" ]; then
+      cp -f "$image" "$out/foreign-$marker-boot-marker.png"
+      cp -f "$out/foreign-marker-observe.txt" "$out/foreign-$marker-boot-marker.txt"
+      copy_evidence "foreign-$marker"
+      if [ "$marker" = windows ]; then windows_index="$index"; else linux_index="$index"; fi
+    fi
+    "$vm" stop >/dev/null 2>&1 || true
+    [ -z "$windows_index" ] || [ -z "$linux_index" ] || break
+  done
+
+  [ "$menu_seen" -eq 1 ] || die "could not open the installed systemd-boot menu"
+  [ -n "$windows_index" ] || die "Windows fixture entry never executed from the installed boot menu"
+  [ -n "$linux_index" ] || die "Linux fixture entry never executed from the installed boot menu"
+  printf 'fixture=controlled-unsigned-efi-applications\nselection_verified=true\nmenu=installed-systemd-boot\nwindows_numeric_entry=%s\nlinux_numeric_entry=%s\nwindows_marker=TILO FOREIGN WINDOWS BOOT PASS\nlinux_marker=TILO FOREIGN LINUX BOOT PASS\nsecure_boot_verified=false\nreal_windows_boot_verified=false\nreal_linux_distribution_boot_verified=false\n' \
+    "$windows_index" "$linux_index" > "$out/foreign-boot-selection.txt"
+  printf 'controlled_foreign_efi_menu_boot_evidence=foreign-boot-selection.txt\n' \
+    >> "$out/alongside-preservation.txt"
+}
 
 # Start from genuinely blank disk, TPM and UEFI variable-store state.
 "$vm" init-cycle
@@ -642,5 +729,9 @@ wait_screen 20-reboot-login 'cycle.?tilo' 120 2 \
   || die "password authentication did not reopen the completed account"
 
 copy_evidence target
-[ "$install_mode" = erase ] || { "$vm" stop; verify_alongside_target; }
+[ "$install_mode" = erase ] || {
+  "$vm" stop
+  verify_alongside_target
+  prove_prepared_foreign_boot_entries
+}
 printf 'PASS\n' > "$out/verdict.txt"
