@@ -1131,6 +1131,7 @@ impl ShellDriver {
             "palette_records" => self.scene_palette_records(),
             "palette_no_results" => self.scene_palette_no_results(),
             "palette_typed" => self.scene_palette_typed(),
+            "topbar-edit" => self.scene_topbar_edit(),
             "quick-settings" => self.scene_quick_settings(),
             "qs-edit" => self.scene_qs_edit(false),
             "qs-edit-drag" => self.scene_qs_edit(true),
@@ -1263,6 +1264,19 @@ impl ShellDriver {
         self.fb
             .host_mut()
             .refresh_search_results_for_shots(&mut self.state, &root);
+    }
+
+    /// Open the production top-bar widget editor through its actual Ctrl+click
+    /// gesture. Keeping this as a named still makes the otherwise hidden
+    /// customization surface part of normal compact/wide visual review.
+    fn scene_topbar_edit(&mut self) {
+        // The centre-band hit rect is populated by draw, just as it is before
+        // the first real pointer event in the compositor frame loop.
+        let _ = self.paint();
+        let (width, _) = self.viewport();
+        self.set_modifiers(ModifiersState::CONTROL);
+        self.click_at(Point::new(width / 2.0, 24.0));
+        self.set_modifiers(ModifiersState::empty());
     }
 
     fn scene_quick_settings(&mut self) {
@@ -2151,6 +2165,7 @@ impl ShellDriver {
         "palette_app_query",
         "palette_records",
         "palette_no_results",
+        "topbar-edit",
         "quick-settings",
         "qs-edit",
         "qs-edit-drag",
