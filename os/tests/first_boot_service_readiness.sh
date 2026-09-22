@@ -42,12 +42,15 @@ fi
 
 if exactly_once "$growfs_unit" 'ReadWritePaths=/sysroot' \
    && exactly_once "$growfs_unit" 'PrivateNetwork=yes' \
+   && exactly_once "$growfs_unit" 'PrivateMounts=yes' \
+   && exactly_once "$growfs_unit" 'MountFlags=slave' \
+   && exactly_once "$growfs_unit" 'ExecStartPre=/usr/bin/mount -o remount,rw /sysroot' \
    && exactly_once "$growfs_unit" 'RestrictNamespaces=yes' \
    && exactly_once "$growfs_unit" 'CapabilityBoundingSet=CAP_SYS_ADMIN' \
    && exactly_once "$growfs_unit" 'AmbientCapabilities='; then
-  ok 'background root growth retains only its sysroot write and resize capability'
+  ok 'background root growth remounts sysroot only in its slave namespace before resizing'
 else
-  bad 'background root growth has a broader privileged service boundary than required'
+  bad 'background root growth can expose a sysroot remount or lacks resize access'
 fi
 
 # The session must be able to use the machine identity without being able to
