@@ -9701,15 +9701,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oid"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c19903c598813dba001b53beeae59bb77ad4892c5c1b9b3500ce4293a0d06c2"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10496,81 +10487,6 @@ dependencies = [
  "vello",
  "vello_encoding",
  "winit",
-]
-
-[[package]]
-name = "picky"
-version = "7.0.0-rc.26"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07ad9686b270be4eb3f3c23027d202ad488a25c2bec6d6be20c2164b28d2c86c"
-dependencies = [
- "base64 0.22.1",
- "byteorder",
- "crypto-bigint 0.7.5",
- "crypto-common 0.2.2",
- "digest 0.11.3",
- "ed25519-dalek 3.0.0",
- "hex",
- "inout 0.2.2",
- "md-5 0.11.0",
- "p256 0.14.0",
- "p384 0.14.0",
- "p521",
- "picky-asn1",
- "picky-asn1-der",
- "picky-asn1-x509",
- "pkcs1",
- "rand 0.10.1",
- "rand_core 0.10.0",
- "rsa",
- "serde",
- "sha1 0.11.0",
- "sha2 0.11.0",
- "sha3 0.12.0",
- "thiserror 2.0.18",
- "time",
- "x25519-dalek 3.0.0",
- "zeroize",
-]
-
-[[package]]
-name = "picky-asn1"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ff038f9360b934342fb3c0a1d6e82c438a2624b51c3c6e3e6d7cf252b6f3ee3"
-dependencies = [
- "oid",
- "serde",
- "serde_bytes",
- "time",
- "zeroize",
-]
-
-[[package]]
-name = "picky-asn1-der"
-version = "0.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d413165e4bf7f808b9a27cbaba657657a2921f0965db833f488c4d4be96dcd2e"
-dependencies = [
- "picky-asn1",
- "serde",
- "serde_bytes",
-]
-
-[[package]]
-name = "picky-asn1-x509"
-version = "0.15.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "859d4117bd1b1dc5646359ee7243c50c5000c0920ea2d1fb120335a2f4c684b8"
-dependencies = [
- "base64 0.22.1",
- "crypto-bigint 0.7.5",
- "oid",
- "picky-asn1",
- "picky-asn1-der",
- "serde",
- "widestring",
- "zeroize",
 ]
 
 [[package]]
@@ -14883,10 +14799,6 @@ dependencies = [
  "libc",
  "object 0.39.1",
  "p256 0.13.2",
- "picky",
- "picky-asn1",
- "picky-asn1-der",
- "picky-asn1-x509",
  "rand 0.10.1",
  "rand 0.8.8",
  "rcgen",
@@ -18681,7 +18593,6 @@ checksum = "e7e8131a03190127fb2263afc72b322ecadae46b6ff8c6f399ff5d02f5559af6"
 dependencies = [
  "curve25519-dalek 5.0.0",
  "rand_core 0.10.0",
- "zeroize",
 ]
 
 [[package]]
