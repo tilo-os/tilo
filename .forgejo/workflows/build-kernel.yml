@@ -123,9 +123,11 @@ jobs:
           - arch: x86_64
             platform: linux/amd64
             runner: runner-disk-100g
+            kernel_build_jobs: 2
           - arch: aarch64
             platform: linux/arm64
             runner: runner-disk-100g-arm64
+            kernel_build_jobs: 4
     runs-on: ${{ matrix.runner }}
     enable-openid-connect: true
     # Finish before the existing three-hour runner/server deadline, leaving
@@ -207,6 +209,9 @@ jobs:
 
       # Push only on tags/dispatch so main-branch commits verify without
       # touching the registry.
+      - name: Start kernel build timing
+        run: echo "KERNEL_BUILD_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Build the tilo-kernel image (push only on tags/dispatch)
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
@@ -228,7 +233,7 @@ jobs:
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
-            KERNEL_BUILD_JOBS=2
+            KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}
           cache-from: type=registry,ref=code.sandbox.example/qos/qos-kernel-buildcache:${{ matrix.arch }}
           # The kernel builder's intermediate source tree is tens of GiB.
           # Export only final-stage dependencies: mode=max duplicated that
@@ -236,6 +241,24 @@ jobs:
           # compile.
           cache-to: type=registry,ref=code.sandbox.example/qos/qos-kernel-buildcache:${{ matrix.arch }},mode=min
           provenance: false
+
+      - name: Report kernel build resource metrics
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          cpu_max=unavailable
+          if [ -r /sys/fs/cgroup/cpu.max ]; then
+            cpu_max=$(tr ' ' '/' < /sys/fs/cgroup/cpu.max)
+          fi
+          elapsed_seconds=$(( $(date +%s) - KERNEL_BUILD_STARTED_AT ))
+          {
+            echo "## Kernel build resources (${{ matrix.arch }})"
+            echo ""
+            echo "- configured jobs: ${{ matrix.kernel_build_jobs }}"
+            echo "- visible CPUs: $(nproc)"
+            echo "- cgroup cpu.max: $cpu_max"
+            echo "- elapsed seconds: $elapsed_seconds"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install native kernel acceptance tools
         run: |
