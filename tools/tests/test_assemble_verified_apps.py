@@ -21,18 +21,18 @@ class AssemblyTests(unittest.TestCase):
             root = Path(d)
             built, baseline = root / 'built', root / 'baseline'
             for tree in (built, baseline):
-                (tree / 'qpkg').mkdir(parents=True)
+                (tree / 'tapp').mkdir(parents=True)
                 (tree / 'runtime/tilo-runtime/1').mkdir(parents=True)
                 (tree / 'runtime/tilo-runtime/1/bundle.toml').write_text('root_hash="same"')
-            (built / 'qpkg/a-1-x86_64.qpkg').write_bytes(b'new-a')
-            (baseline / 'qpkg/a-1-x86_64.qpkg').write_bytes(b'old-a')
-            (baseline / 'qpkg/b-1-x86_64.qpkg').write_bytes(b'old-b')
-            (baseline / 'qpkg/obsolete-1-x86_64.qpkg').write_bytes(b'old')
+            (built / 'tapp/a-1-x86_64.tapp').write_bytes(b'new-a')
+            (baseline / 'tapp/a-1-x86_64.tapp').write_bytes(b'old-a')
+            (baseline / 'tapp/b-1-x86_64.tapp').write_bytes(b'old-b')
+            (baseline / 'tapp/obsolete-1-x86_64.tapp').write_bytes(b'old')
             plan = {'catalog': [{'name': 'a', 'version': '1'}, {'name': 'b', 'version': '1'}]}
             reused = assembly.merge(plan, built, baseline, root / 'merged', 'x86_64', ['a'])
-            self.assertEqual(reused, ['b-1-x86_64.qpkg'])
-            self.assertEqual({p.name for p in (root / 'merged').iterdir()}, {'a-1-x86_64.qpkg', 'b-1-x86_64.qpkg'})
-            self.assertEqual((root / 'merged/a-1-x86_64.qpkg').read_bytes(), b'new-a')
+            self.assertEqual(reused, ['b-1-x86_64.tapp'])
+            self.assertEqual({p.name for p in (root / 'merged').iterdir()}, {'a-1-x86_64.tapp', 'b-1-x86_64.tapp'})
+            self.assertEqual((root / 'merged/a-1-x86_64.tapp').read_bytes(), b'new-a')
             # Baseline b has the exact required version, but b was selected:
             # silently reusing its old signed bytes would lose a source change.
             with self.assertRaisesRegex(ValueError, 'selected app missing.*b'):
@@ -55,7 +55,7 @@ class AssemblyTests(unittest.TestCase):
             for i, kind in enumerate(('traversal', 'link', 'duplicate', 'expansion')):
                 archive = root / f'{i}.tar.gz'
                 with tarfile.open(archive, 'w:gz') as tar:
-                    member = tarfile.TarInfo('../escape' if kind == 'traversal' else 'qpkg/a')
+                    member = tarfile.TarInfo('../escape' if kind == 'traversal' else 'tapp/a')
                     if kind == 'link':
                         member.type = tarfile.SYMTYPE
                         member.linkname = '/outside'
@@ -76,16 +76,16 @@ class AssemblyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             tree = root / 'tree'
-            (tree / 'qpkg').mkdir(parents=True)
+            (tree / 'tapp').mkdir(parents=True)
             (tree / 'runtime').mkdir()
-            (tree / 'qpkg/app-1-x86_64.qpkg').write_bytes(b'package')
+            (tree / 'tapp/app-1-x86_64.tapp').write_bytes(b'package')
             (tree / 'runtime/bundle').write_bytes(b'runtime')
             (tree / 'index.json').write_text('{}')
             files = sorted(p for p in tree.rglob('*') if p.is_file())
             (tree / 'SHA256SUMS').write_text(''.join(assembly.channel.sha(p) + '  ' + p.relative_to(tree).as_posix() + '\n' for p in files))
             archive = root / 'tilo-apps-x86_64.tar.gz'
             with tarfile.open(archive, 'w:gz') as tar:
-                for name in ('qpkg', 'runtime', 'index.json', 'SHA256SUMS'):
+                for name in ('tapp', 'runtime', 'index.json', 'SHA256SUMS'):
                     tar.add(tree / name, arcname=name)
             receipt = fixture.receipt
             receipt['collection'].update(sha256=assembly.channel.sha(archive), bytes=archive.stat().st_size)
@@ -115,7 +115,7 @@ class AssemblyTests(unittest.TestCase):
                 return assembly.baseline_tree(api, proof, expected or assembly.canonical_hash(proof), 'a' * 40,
                     'builder', 'default', 'x86_64', '9' * 64, work, fixture.policy)
             result = fetch(API(), root / 'work')
-            self.assertEqual((result / 'qpkg/app-1-x86_64.qpkg').read_bytes(), b'package')
+            self.assertEqual((result / 'tapp/app-1-x86_64.tapp').read_bytes(), b'package')
             self.assertEqual(calls, ['/actions/runs/101', '/actions/runs/101/artifacts?page=1&limit=50', '/actions/artifacts/202/zip'])
             with self.assertRaisesRegex(ValueError, 'proof digest'):
                 fetch(API(), root / 'bad-proof', '0' * 64)

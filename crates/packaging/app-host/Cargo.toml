@@ -24,7 +24,7 @@ path = "src/lib.rs"
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 bounded-command = { path = "../../system/bounded-command" }
-pkg = { path = "../pkg" }
+tilo-app-package = { path = "../tilo-app-package" }
 app-registry = { path = "../app-registry" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 

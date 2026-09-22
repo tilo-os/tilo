@@ -115,13 +115,13 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         theme,
     )
     .render_png(out);
-    println!("dev.tilo.camera: wrote shot to {}", out.display());
+    println!("so.tilo.camera: wrote shot to {}", out.display());
     Ok(())
 }
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.camera", camera::app_root)
+        &LaunchSpec::new("so.tilo.camera", camera::app_root)
             .shot_handler(render_shot)
             .allowed_flags(&["--scan-first", "--disk", "--crop", "--timer-running"])
             .allowed_options(&[

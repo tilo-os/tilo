@@ -164,7 +164,7 @@ mod tests {
         let broker = SystemResourceBroker::for_uid_with_audio_proxy(99_999, unavailable_proxy);
         let caps = CapabilityPlan::empty();
         let result = broker.materialize(ResourceRequest {
-            app_id: "dev.tilo.windows.test",
+            app_id: "so.tilo.windows.test",
             workspace_id: "workspace",
             capabilities: &caps,
         });

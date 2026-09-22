@@ -93,7 +93,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
 /// Locate the product sandbox executable. A test unable to observe it fails.
 fn bwrap_path() -> PathBuf {
     let p = PathBuf::from("/usr/bin/bwrap");
-    assert!(p.exists(), "bwrap is required to verify qpkg launching");
+    assert!(p.exists(), "bwrap is required to verify tapp launching");
     p
 }
 
@@ -470,7 +470,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     assert!(bundle_dir.join("lib/libruntime_dylib.so").exists());
 
     let m = MinimalManifest {
-        package_id: "dev.tilo.thin".to_string(),
+        package_id: "so.tilo.thin".to_string(),
         name: None,
         category: None,
         icon: None,

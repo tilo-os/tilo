@@ -48,7 +48,7 @@ use thiserror::Error;
 /// Wire/schema version for manifests and desired state.
 pub const SCHEMA_VERSION: u16 = 1;
 // Frozen signing bytes retain their historical prefix across product renames.
-const SIGNING_DOMAIN: &str = "qos.system-extension.manifest.v1";
+const SIGNING_DOMAIN: &str = "tilo.system-extension.manifest.v1";
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Hardware-neutral extension family. The kind is UX/policy metadata; it is
@@ -685,7 +685,7 @@ mod tests {
             kind: ExtensionKind::LocalModelRuntime,
             version: "1.2.3".into(),
             artifact: PinnedArtifact {
-                source: "oci://registry.tilo.example/models/runtime".into(),
+                source: "oci://registry.example.test/models/runtime".into(),
                 sha256: hex::encode(Sha256::digest(bytes)),
                 size_bytes: u64::try_from(bytes.len()).unwrap(),
             },

@@ -52,7 +52,7 @@ const DEFAULT_LAUNCHER_PATH: &str = "/usr/bin/tilo-launcher";
 /// Wire form of the sidecar TOML.
 #[derive(Debug, Deserialize)]
 struct Sidecar {
-    /// Reverse-DNS package id (`dev.tilo.notes-cli`).
+    /// Reverse-DNS package id (`so.tilo.notes-cli`).
     package_id: String,
     /// Command name as declared in the manifest's [cli].commands.
     /// Duplicated here (argv[0] also carries it) so renaming the shim
@@ -172,11 +172,11 @@ mod tests {
     #[test]
     fn sidecar_deserialises() {
         let text = r#"
-package_id = "dev.tilo.notes-cli"
+package_id = "so.tilo.notes-cli"
 command    = "notes"
 "#;
         let s: Sidecar = toml::from_str(text).expect("decode");
-        assert_eq!(s.package_id, "dev.tilo.notes-cli");
+        assert_eq!(s.package_id, "so.tilo.notes-cli");
         assert_eq!(s.command, "notes");
         assert!(s.launcher.is_none());
     }
@@ -184,7 +184,7 @@ command    = "notes"
     #[test]
     fn sidecar_launcher_override_deserialises() {
         let text = r#"
-package_id = "dev.tilo.notes-cli"
+package_id = "so.tilo.notes-cli"
 command    = "notes"
 launcher   = "/tmp/target/debug/tilo-launcher"
 "#;
@@ -198,7 +198,7 @@ launcher   = "/tmp/target/debug/tilo-launcher"
     #[test]
     fn user_installed_shim_defaults_to_rpm_launcher_path() {
         let text = r#"
-package_id = "dev.tilo.notes-cli"
+package_id = "so.tilo.notes-cli"
 command    = "notes"
 "#;
         let sidecar: Sidecar = toml::from_str(text).expect("decode");
