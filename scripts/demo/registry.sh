@@ -7,18 +7,18 @@
 #   scripts/demo/registry.sh reset   # forget the installed word processor so the beat repeats
 #
 # What `up` does, all in userspace, nothing on the host:
-#   1. builds tilo-pkg, tilo-install, tilo-launcher, tilo-catalogue and the word processor;
-#   2. mints a publisher identity (once) with `tilo-pkg keygen`;
+#   1. builds tilo-app-package, tilo-install, tilo-launcher, app and the word processor;
+#   2. mints a publisher identity (once) with `tilo-app-package keygen`;
 #   3. installs the signed runtime bundle the manifest pins, from the host
 #      root, once — the launcher refuses to start an app without it;
-#   4. packs apps/word-processor into a .qpkg and signs a registry entry
-#      for it with `tilo-pkg entry`;
+#   4. packs apps/word-processor into a .tapp and signs a registry entry
+#      for it with `tilo-app-package entry`;
 #   5. points the Store's registries.toml (which the shell's palette also
 #      reads) at http://127.0.0.1:$PORT, keeping a backup;
 #   6. makes sure the word processor is NOT installed, so the palette's
 #      "Open Word Processor" row is the catalogue's, not the registry's;
 #   7. serves the directory with python's http.server: GET /entries is the
-#      signed catalogue, GET /word-processor.qpkg is the package.
+#      signed catalogue, GET /word-processor.tapp is the package.
 #
 # Then start the shell from the same tree (it finds tilo-install and
 # tilo-launcher beside its own binary):
@@ -61,16 +61,16 @@ REGISTRIES="$STORE_CFG/registries.toml"
 BACKUP="$REGISTRIES.pre-demo"
 IDENTITY="$OUT/publisher-identity.json"
 RUNTIME_VERSION="$(sed -n 's/^runtime *= *"tilo-runtime\/\(.*\)"/\1/p' "$REPO/apps/word-processor/tilo-app.toml")"
-PKG_ID="dev.tilo.word-processor"
+PKG_ID="so.tilo.word-processor"
 PIDFILE="$OUT/http.pid"
 
 say() { printf '\033[1m[demo-registry]\033[0m %s\n' "$*"; }
 die() { echo "FATAL: $*" >&2; exit 1; }
 
 build() {
-    say "building tilo-pkg, tilo-install, tilo-launcher, tilo-catalogue, word-processor"
-    (cd "$REPO" && cargo build $CARGO_PROFILE_FLAG -p pkg-cli -p install -p launcher -p app-catalogue -p word-processor)
-    for b in tilo-pkg tilo-install tilo-launcher tilo-catalogue word-processor; do
+    say "building tilo-app-package, tilo-install, tilo-launcher, app, word-processor"
+    (cd "$REPO" && cargo build $CARGO_PROFILE_FLAG -p tilo-app-package-cli -p install -p launcher -p app-cli -p word-processor)
+    for b in tilo-app-package tilo-install tilo-launcher app word-processor; do
         [ -x "$BIN/$b" ] || die "$BIN/$b missing after build"
     done
 }
@@ -79,7 +79,7 @@ identity() {
     mkdir -p "$OUT"
     if [ ! -f "$IDENTITY" ]; then
         say "minting publisher identity at $IDENTITY"
-        "$BIN/tilo-pkg" keygen --out "$IDENTITY" >/dev/null
+        "$BIN/tilo-app-package" keygen --out "$IDENTITY" >/dev/null
     fi
 }
 
@@ -98,16 +98,16 @@ pack() {
     local payload="$OUT/payload/word-processor"
     rm -rf "$payload"; mkdir -p "$payload/bin"
     cp "$BIN/word-processor" "$payload/bin/word-processor"
-    "$BIN/tilo-pkg" pack \
+    "$BIN/tilo-app-package" pack \
         --manifest "$REPO/apps/word-processor/tilo-app.toml" \
         --payload "$payload" \
         --identity "$IDENTITY" \
-        --output "$OUT/word-processor.qpkg"
+        --output "$OUT/word-processor.tapp"
     say "signing the registry entry"
-    "$BIN/tilo-pkg" entry \
-        --url "$BASE_URL/word-processor.qpkg" \
+    "$BIN/tilo-app-package" entry \
+        --url "$BASE_URL/word-processor.tapp" \
         --identity "$IDENTITY" \
-        "$OUT/word-processor.qpkg" > "$OUT/entry.json"
+        "$OUT/word-processor.tapp" > "$OUT/entry.json"
     # `/entries` is a bare array — one of the two shapes every client accepts.
     python3 - "$OUT/entry.json" "$OUT/entries" <<'PY'
 import json, sys
@@ -144,7 +144,7 @@ forget_app() {
 serve() {
     say "serving $OUT on $BASE_URL (Ctrl-C to stop)"
     say "  GET $BASE_URL/entries"
-    say "  GET $BASE_URL/word-processor.qpkg"
+    say "  GET $BASE_URL/word-processor.tapp"
     cd "$OUT"
     if [ "${TILO_DEMO_REGISTRY_BACKGROUND:-0}" = "1" ]; then
         python3 -m http.server "$PORT" --bind 127.0.0.1 >"$OUT/http.log" 2>&1 &

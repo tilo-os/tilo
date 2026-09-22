@@ -59,7 +59,7 @@ pub const SWITCH_KEYS_KEY: &str = "a11y.switch_keys";
 pub const SWITCH_SCAN_KEY: &str = "a11y.switch_scan";
 pub const READER_RATE_KEY: &str = "a11y.reader_rate";
 pub const READER_VOICE_KEY: &str = "a11y.reader_voice";
-const OSK_PACKAGE_ID: &str = "dev.tilo.osk";
+const OSK_PACKAGE_ID: &str = "so.tilo.osk";
 const OSK_PACKAGE_KIND: &str = "service";
 
 pub(crate) fn osk_service_available() -> bool {
@@ -278,7 +278,7 @@ impl AccessibilityPane {
         } else {
             value_row(
                 "On-screen keyboard",
-                "Not installed — add the signed dev.tilo.osk system package",
+                "Not installed — add the signed so.tilo.osk system package",
             )
         };
         card(

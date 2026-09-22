@@ -12,8 +12,6 @@
 
 #[path = "click_link_navigates.rs"]
 mod click_link_navigates;
-#[path = "cmd_k_palette.rs"]
-mod cmd_k_palette;
 #[path = "e2e_smoke.rs"]
 mod e2e_smoke;
 #[path = "interaction_event_path.rs"]

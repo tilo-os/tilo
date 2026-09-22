@@ -147,7 +147,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.tube", live_root)
+        &LaunchSpec::new("so.tilo.tube", live_root)
             .shot_root(shot_root)
             // `--narrow` is a complete responsive-shot preset, not merely a
             // request to open the rail.  Keeping the render canvas narrow as
@@ -352,7 +352,10 @@ fn run_probe_engine(id: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(not(all(feature = "live", feature = "media")))]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the disabled-feature probe keeps the same fallible signature as the live implementation"
+)]
 fn run_probe_engine(_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "probe-engine: needs `--features \"live media\"` (real resolve + media-engine decode)."
@@ -477,7 +480,10 @@ fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(not(feature = "live"))]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the disabled-feature probe keeps the same fallible signature as the live implementation"
+)]
 fn run_probe_trending() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "probe-trending: built WITHOUT the `live` feature — rebuild with \
@@ -798,7 +804,10 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
 }
 
 #[cfg(not(all(feature = "live", feature = "media")))]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the disabled-feature shot path keeps the same fallible signature as the live implementation"
+)]
 fn run_live_shots(_dir: &str, _query: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("live-shots: needs `--features \"live media\"` (real data + real decode + images).");
     Ok(())
@@ -899,7 +908,10 @@ fn run_probe_ytdlp(query: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(not(feature = "live"))]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the disabled-feature probe keeps the same fallible signature as the live implementation"
+)]
 fn run_probe_ytdlp(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("probe-ytdlp: built WITHOUT `live` — rebuild with `--features live`.");
     Ok(())
@@ -1153,7 +1165,10 @@ fn run_probe_avatars(query: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(not(feature = "live"))]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the disabled-feature probe keeps the same fallible signature as the live implementation"
+)]
 fn run_probe_avatars(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("probe-avatars: built WITHOUT `live` — rebuild with `--features live`.");
     Ok(())
@@ -1266,7 +1281,10 @@ fn run_probe(query: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Non-live builds have no real backend compiled in.
 #[cfg(not(feature = "live"))]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the disabled-feature probe keeps the same fallible signature as the live implementation"
+)]
 fn run_probe(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "probe: this binary was built WITHOUT the `live` feature, so no real \
@@ -1640,7 +1658,13 @@ fn route_from_spec(spec: &str) -> tube::model::Route {
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
-#[cfg_attr(not(all(feature = "live", feature = "media")), allow(dead_code))]
+#[cfg_attr(
+    not(all(feature = "live", feature = "media")),
+    allow(
+        dead_code,
+        reason = "offscreen rendering is used only when both live data and media decoding are enabled"
+    )
+)]
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
@@ -1728,7 +1752,13 @@ fn render_shot_to_png(
 /// `refactor(tube): use the shared media engine exclusively` removed the
 /// definition and left the call site above, which left `tube`'s binary not
 /// compiling.
-#[cfg_attr(not(all(feature = "live", feature = "media")), allow(dead_code))]
+#[cfg_attr(
+    not(all(feature = "live", feature = "media")),
+    allow(
+        dead_code,
+        reason = "frame checksums are used only by the live media shot path"
+    )
+)]
 fn checksum(rgba: &[u8]) -> u64 {
     let mut h: u64 = 1_469_598_103_934_665_603; // FNV-1a offset basis
     for &b in rgba.iter().step_by(97) {

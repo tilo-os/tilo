@@ -497,7 +497,7 @@ fn render_overlay_shot(
     let mut widget = BrowserWidget::new_headless();
     widget.debug_force_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/tilo/tilo".into(),
+            url: "https://github.com/qos/qos".into(),
             title: "Tilo on code.sandbox.example".into(),
             last_visit: 3,
             visit_count: 12,
@@ -533,7 +533,7 @@ fn render_suggestions_shot(out: &std::path::Path, args: &LaunchArgs) {
     let mut overlay = AddressSuggestions::new();
     overlay.set_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/tilo/tilo".into(),
+            url: "https://github.com/qos/qos".into(),
             title: "Tilo — code.sandbox.example".into(),
             last_visit: 3,
             visit_count: 12,
@@ -667,7 +667,8 @@ fn render_live_shot_to_png(
         widget.apply_layout(&taffy, child, Point::ORIGIN);
 
         if pip_probe_started && pip_request.is_none() {
-            pip_request = Widget::take_floating_surface_request(&mut widget);
+            pip_request =
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut widget);
         }
 
         let page = probe.state();

@@ -238,6 +238,8 @@ mod tests {
             id: "org.example.Editor".into(),
             name: "Editor".into(),
             description: "Write without distractions.".into(),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec!["Development".into(), "Productivity".into()],
             icon_url: None,
             screenshot_urls: Vec::new(),

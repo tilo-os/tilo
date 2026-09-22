@@ -29,7 +29,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{VideoPlayer, Widget};
+use ui::widget::{FullscreenProvider, VideoPlayer, Widget};
 
 /// A shared, persistent [`VideoPlayer`]. Cloned cheaply into each rebuilt tree.
 pub type SharedPlayer = Rc<RefCell<VideoPlayer>>;
@@ -61,7 +61,24 @@ impl PlayerHost {
     }
 }
 
+impl FullscreenProvider for PlayerHost {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        FullscreenProvider::fullscreen_intent(&*self.player.borrow())
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        FullscreenProvider::on_fullscreen_changed(&mut *self.player.borrow_mut(), active);
+    }
+}
+
 impl Widget for PlayerHost {
+    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
+        Some(self)
+    }
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // Pumps the engine (pulls the freshest decoded frame + playhead).
         self.player.borrow_mut().sync(state, path);
@@ -186,13 +203,5 @@ impl Widget for PlayerHost {
         // changes its own intrinsic size), so a playing video repaints without
         // forcing a relayout every frame.
         false
-    }
-
-    fn fullscreen_intent(&self) -> Option<bool> {
-        self.player.borrow().fullscreen_intent()
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        self.player.borrow_mut().on_fullscreen_changed(active);
     }
 }

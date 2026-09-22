@@ -44,7 +44,10 @@ use ui::presence::PresenceCtx;
 use ui::state::State;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{AppKind, TabBar, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
+use ui::widget::{
+    AppKind, FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, Widget, WindowGroup,
+    WindowWidth,
+};
 
 use crate::support::offscreen::OffscreenRenderer;
 use crate::support::snapshot::SnapshotAssertion;
@@ -109,7 +112,10 @@ struct Harness {
     taffy: TaffyTree<()>,
     // Kept alive so the raw `*mut dyn Widget` pointers `build_layout` stashed
     // stay valid; read indirectly via the measure closures during re-layout.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "the raw widget pointers must stay owned for later measure closures even though the field is not read directly"
+    )]
     node_map: HashMap<NodeId, *mut dyn Widget>,
     root_node: NodeId,
     theme: Theme,
@@ -225,7 +231,10 @@ impl Harness {
 
     /// Unused on `tilo-shell` — the sidebar wheel swallows clicks at the
     /// topbar hit regions — kept for when that regression is fixed.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "kept as a reusable interaction seam for the documented sidebar hit-routing regression"
+    )]
     fn click(&mut self, x: f64, y: f64) {
         self.pump(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
@@ -676,7 +685,7 @@ fn press_and_drag_to(ctx: &mut DragCtx<'_>, from: Point, to: Point) {
 /// renderer is available. Split out of [`e2e_tab_drag_reorder`] to keep
 /// that test short — its three capture points are otherwise identical.
 fn render_frame_to(
-    group: &mut dyn Widget,
+    group: &mut WindowGroup,
     tr: &mut TextRenderer,
     theme: &Theme,
     presence: &PresenceCtx,
@@ -686,6 +695,16 @@ fn render_frame_to(
     if let Some(r) = renderer_opt.as_mut() {
         let mut s = Scene::new();
         group.draw(&mut s, Affine::IDENTITY, tr, theme, presence);
+        if group.drag_in_flight() {
+            FloatingSurfaceProvider::draw_floating_surfaces(
+                group,
+                &mut s,
+                Affine::IDENTITY,
+                tr,
+                theme,
+                presence,
+            );
+        }
         r.render_png(&s, Color::from_rgb8(0x02, 0x06, 0x14), path);
     }
 }
@@ -1036,6 +1055,29 @@ fn e2e_open_quick_settings() {
     } else {
         eprintln!("offscreen: no wgpu adapter — e2e_open_quick_settings asserted state only");
     }
+}
+
+/// The visual status pill is intentionally inset, but the screen corner is
+/// the fastest acquisition target. A hurried click at the literal top-right
+/// pixel must therefore reach the same production root path as the pill.
+#[test]
+fn e2e_top_right_corner_opens_quick_settings() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tree = WorkspaceTree::bootstrap_demo();
+    let mut h = Harness::new(&tree);
+    assert!(!h.chrome.borrow().overlays.quick_settings);
+
+    // Populate the retained top-bar geometry before the pointer event, exactly
+    // as the compositor does on its first frame.
+    h.draw_to(None, Path::new(""));
+    h.click(f64::from(W_U32 - 1), 1.0);
+
+    assert!(
+        h.chrome.borrow().overlays.quick_settings,
+        "the literal top-right screen corner must acquire Quick Settings even though the visible pill is inset"
+    );
 }
 
 // Test 4: maximized tile renders the floating-controls chrome

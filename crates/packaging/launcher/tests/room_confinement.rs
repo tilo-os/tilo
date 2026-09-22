@@ -29,7 +29,7 @@ use launcher::appdir;
 use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
 use launcher::run::{RunError, RunOptions, run_with_captured};
 
-const PACKAGE: &str = "dev.tilo.roomtest";
+const PACKAGE: &str = "so.tilo.roomtest";
 
 /// Build the fixture with `rustc` directly, outside the workspace, so
 /// a single-shot build doesn't dirty the workspace target dir.
@@ -419,15 +419,15 @@ fn one_app_cannot_read_another_apps_directory() {
     let victim = data
         .path
         .join("tilo-rooms/room-a")
-        .join("dev.tilo.totp")
+        .join("so.tilo.totp")
         .join("seeds.bin");
     std::fs::create_dir_all(victim.parent().unwrap()).unwrap();
     std::fs::write(&victim, b"totp-seed").unwrap();
 
     for attempt in [
         victim.display().to_string(),
-        "/run/tilo/app/../dev.tilo.totp/seeds.bin".to_string(),
-        "/run/tilo/../tilo/app/../dev.tilo.totp/seeds.bin".to_string(),
+        "/run/tilo/app/../so.tilo.totp/seeds.bin".to_string(),
+        "/run/tilo/../tilo/app/../so.tilo.totp/seeds.bin".to_string(),
     ] {
         let line = run_in_room(payload.path(), Some("room-a"), &["read", &attempt]);
         assert!(
@@ -450,7 +450,7 @@ fn a_manifest_that_names_a_path_is_refused_at_launch() {
     let payload = tempfile::tempdir().unwrap();
     build_fixture(payload.path());
 
-    let victim = data.path.join("dev.tilo.totp");
+    let victim = data.path.join("so.tilo.totp");
     for (field, entry) in [
         ("write", "~"),
         ("write", "/"),

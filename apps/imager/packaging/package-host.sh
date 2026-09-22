@@ -10,8 +10,8 @@ require_native_packages="${TILO_REQUIRE_NATIVE_PACKAGES:-0}"
 version="${TILO_VERSION:-0.1.0}"
 version="${version#imager-v}"
 version="${version#v}"
-release_repository="${TILO_RELEASE_REPOSITORY:-qos/releases}"
-release_server="${GITHUB_SERVER_URL:-https://code.sandbox.example}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo-os/releases}"
+release_server="${TILO_RELEASE_SERVER:-https://github.com}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 [[ "$release_server" =~ ^https://[^/]+$ ]] \
@@ -211,6 +211,11 @@ case "$host" in
       printf 'Apple notarization credentials are required for a release build\n' >&2
       exit 1
     fi
+    if [ -n "${TILO_NOTARY_KEYCHAIN_PROFILE:-}" ] \
+       || { [ -n "${TILO_APPLE_ID:-}" ] && [ -n "${TILO_APPLE_TEAM_ID:-}" ] \
+            && [ -n "${TILO_APPLE_APP_PASSWORD:-}" ]; }; then
+      xcrun stapler validate "$app"
+    fi
     write_digest "$out/$artifact_base.zip"
     if command -v hdiutil >/dev/null 2>&1; then
       dmg_root="$(mktemp -d)"
@@ -265,7 +270,7 @@ case "$host" in
     cp apps/imager/packaging/linux/tilo-imager "$appdir/usr/bin/tilo-imager"
     cp apps/imager/packaging/linux/tilo-imager.desktop \
       "$appdir/usr/share/applications/org.tilo.Imager.desktop"
-    sed "s|https://code.sandbox.example/qos/releases|$release_page|g" \
+    sed "s|https://github.com/tilo-os/releases|$release_page|g" \
       apps/imager/packaging/linux/org.tilo.Imager.metainfo.xml \
       >"$appdir/usr/share/metainfo/org.tilo.Imager.appdata.xml"
     cp apps/imager/packaging/linux/AppRun "$appdir/AppRun"

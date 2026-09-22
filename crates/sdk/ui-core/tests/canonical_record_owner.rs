@@ -16,7 +16,7 @@ fn directory(
 ) -> std::path::PathBuf {
     app_state::DocStore::room_record_dir_at(
         state_root,
-        "dev.tilo.test",
+        "so.tilo.test",
         room,
         &want.id.storage_key(),
     )
@@ -40,7 +40,7 @@ fn body(store: &RecordStore, want: &RecordCheckout) -> String {
 fn corrupt_is_not_a_new_record() {
     let tmp = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(tmp.path().join("state"));
-    let store = owners.open("dev.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
     let want = target();
     let path = directory(&tmp.path().join("state"), "room-a", &want).join(app_state::DOCUMENT_FILE);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -61,9 +61,9 @@ fn corrupt_is_not_a_new_record() {
 fn one_owner_shares_changes_and_history_but_rooms_do_not_alias() {
     let tmp = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(tmp.path().join("state"));
-    let a = owners.open("dev.tilo.test", "room-a").unwrap();
-    let b = owners.open("dev.tilo.test", "room-a").unwrap();
-    let other = owners.open("dev.tilo.test", "room-b").unwrap();
+    let a = owners.open("so.tilo.test", "room-a").unwrap();
+    let b = owners.open("so.tilo.test", "room-a").unwrap();
+    let other = owners.open("so.tilo.test", "room-b").unwrap();
     let want = target();
     assert!(matches!(
         a.try_open_record(&want),
@@ -95,7 +95,7 @@ fn one_owner_shares_changes_and_history_but_rooms_do_not_alias() {
     a.try_flush().unwrap();
     assert_eq!(b.save_status(&want.id).unwrap(), RecordSaveStatus::Saved);
     drop((token, second, a, b, other));
-    let reopened = owners.open("dev.tilo.test", "room-a").unwrap();
+    let reopened = owners.open("so.tilo.test", "room-a").unwrap();
     assert!(matches!(
         reopened.try_open_record(&want),
         Ok(RecordOpenOutcome::Loaded)
@@ -108,7 +108,7 @@ fn reservation_is_private_retryable_and_exactly_once() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
     let mut owners = RecordOwners::new(root.clone());
-    let store = owners.open("dev.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
     let want = target();
     let mut reservation = store.reserve_record(&want).unwrap();
     assert_eq!(reservation.checkout().id, want.id);
@@ -169,7 +169,7 @@ fn identity_and_schema_refusal_preserves_complete_and_recovered_bytes() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
     let mut owners = RecordOwners::new(root.clone());
-    let store = owners.open("dev.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
     for case in ["record", "room", "kind", "home", "schema"] {
         for torn in [false, true] {
             let want = target();
@@ -235,7 +235,7 @@ fn status_polling_preserves_pending_typing_and_memory_only() {
     );
     let tmp = tempfile::tempdir().unwrap();
     let mut owners = RecordOwners::new(tmp.path().join("state"));
-    let store = owners.open("dev.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
     store
         .reserve_record(&want)
         .unwrap()
@@ -275,7 +275,7 @@ fn failed_flush_retries_complete_latest_document_without_new_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
     let mut owners = RecordOwners::new(root.clone());
-    let store = owners.open("dev.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
     let want = target();
     store
         .reserve_record(&want)
@@ -306,7 +306,7 @@ fn failed_flush_retries_complete_latest_document_without_new_edit() {
     );
     assert_eq!(store.durability_error(&want.id), None);
     drop(store);
-    let store = owners.open("dev.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
     store.try_open_record(&want).unwrap();
     assert_eq!(body(&store, &want), "latest");
     assert_eq!(
@@ -322,7 +322,7 @@ fn validated_prefix_repair_preserves_home_and_survives_edit_flush_reopen() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
     let mut owners = RecordOwners::new(root.clone());
-    let store = owners.open("dev.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
     let want = target();
     let mut doc = AutoCommit::new();
     record::init_scoped(
@@ -356,7 +356,7 @@ fn validated_prefix_repair_preserves_home_and_survives_edit_flush_reopen() {
     });
     store.try_flush().unwrap();
     drop(store);
-    let store = owners.open("dev.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
     store.try_open_record(&want).unwrap();
     assert_eq!(body(&store, &want), "after-recovery");
 }
@@ -366,7 +366,7 @@ fn new_schema_validation_failure_keeps_unpublished_reservation_for_retry() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("state");
     let mut owners = RecordOwners::new(root.clone());
-    let store = owners.open("dev.tilo.test", "room-a").unwrap();
+    let store = owners.open("so.tilo.test", "room-a").unwrap();
     let want = target();
     let mut token = store.reserve_record(&want).unwrap();
     assert!(matches!(

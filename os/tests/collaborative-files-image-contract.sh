@@ -145,16 +145,16 @@ require_text /usr/lib/tmpfiles.d/tilo.conf "C  /var/lib/tilo/fs-capabilities.jso
 # Files must be installed through the same registry/payload route the launcher
 # consumes.  A loose /usr/bin copy alone does not make it launchable as an app.
 registry=/usr/share/tilo-apps/registry.toml
-payload=/usr/share/tilo-apps/payloads/dev.tilo.file-explorer
+payload=/usr/share/tilo-apps/payloads/so.tilo.file-explorer
 require_file "$registry"
 require_file "$payload/manifest.toml"
 require_exec "$payload/bin/file-explorer"
-require_text "$registry" 'id = "dev.tilo.file-explorer"'
-require_text "$registry" 'payload_root = "/usr/share/tilo-apps/payloads/dev.tilo.file-explorer"'
-require_text "$registry" 'manifest_path = "/usr/share/tilo-apps/payloads/dev.tilo.file-explorer/manifest.toml"'
+require_text "$registry" 'id = "so.tilo.file-explorer"'
+require_text "$registry" 'payload_root = "/usr/share/tilo-apps/payloads/so.tilo.file-explorer"'
+require_text "$registry" 'manifest_path = "/usr/share/tilo-apps/payloads/so.tilo.file-explorer/manifest.toml"'
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
-require_toml_string "$payload/manifest.toml" package.id "dev.tilo.file-explorer"
+require_toml_string "$payload/manifest.toml" package.id "so.tilo.file-explorer"
 require_toml_string "$payload/manifest.toml" sandbox.services.tilo-fs "optional@1"
 require_toml_string "$payload/manifest.toml" package.runtime "tilo-runtime/2026.07"
 # These are deliberately allowed to be distinct signed build artifacts.  The
@@ -181,7 +181,7 @@ if [ "$root" = / ]; then
     || die "shipped Files headless frame failed"
   /usr/bin/tilo-launcher --help >/dev/null || die "shipped launcher CLI failed"
   TILO_APPS_DATA_DIR=/usr/share/tilo-apps \
-    /usr/bin/tilo-install verify dev.tilo.file-explorer >/dev/null \
+    /usr/bin/tilo-install verify so.tilo.file-explorer >/dev/null \
     || die "installed Files payload failed its recorded integrity check"
   /usr/bin/tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
     --require-publisher "$(cat /usr/share/tilo/runtime-bundle-publisher.hex)" >/dev/null \
