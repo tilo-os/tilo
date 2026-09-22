@@ -30,6 +30,13 @@ class Layout(unittest.TestCase):
     def test_exact_arm_layout(self):
         self.assertEqual(disk.partitions(self.table, '/dev/loop7'), ['/dev/loop7p1', '/dev/loop7p2'])
 
+    def test_exact_install_media_layout(self):
+        table = copy.deepcopy(self.table)
+        table['partitiontable']['partitions'][0].update(name='esp', size=4194304)
+        table['partitiontable']['partitions'][1].update(name='Tilo root', start=4196352)
+        self.assertEqual(disk.media_partitions(table, '/dev/loop7'),
+                         ['/dev/loop7p1', '/dev/loop7p2'])
+
     def test_reject_other_devices_types_overlap_and_extra_partition(self):
         for field, value in [('node', '/dev/nvme0n1p2'), ('type', 'wrong'), ('start', 2048)]:
             document = copy.deepcopy(self.table)
@@ -55,7 +62,10 @@ class Layout(unittest.TestCase):
                 if argv[:2] == ['/usr/sbin/blockdev', '--getro']:
                     return b'1\n'
                 if argv[:2] == ['/usr/sbin/sfdisk', '--json']:
-                    return json.dumps(self.table).encode()
+                    table = copy.deepcopy(self.table)
+                    table['partitiontable']['partitions'][0].update(name='esp', size=4194304)
+                    table['partitiontable']['partitions'][1].update(name='Tilo root', start=4196352)
+                    return json.dumps(table).encode()
                 if argv[0] == '/usr/bin/mount':
                     destination = Path(argv[-1])
                     if argv[2] == 'vfat':
