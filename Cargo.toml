@@ -118,6 +118,9 @@ members = [
     "crates/dev/headless-schema",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
+    "crates/dev/tilo-dev",
+    "crates/dev/tilo-dev-protocol",
+    "crates/dev/tilo-devd",
     "crates/dev/ui-builder",
     "crates/dev/ui-graph",
 
