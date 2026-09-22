@@ -67,11 +67,36 @@ pub mod settings;
 mod ssh_transport;
 mod transport;
 
-pub use app::GitClientApp;
+pub use app::{GitClientApp, Screen};
 
 /// Build and return the app's root widget tree. This is the single
 /// integration point used by both the live event loop and the `--shots`
 /// offscreen renderer.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(GitClientApp::new())
+}
+
+/// Every `--scenario` name the screenshot renderer can stage. Declared to
+/// `LaunchSpec::scenarios` so an unknown name is an error listing these.
+pub const SCENARIOS: &[&str] = &[
+    "changes", "split", "history", "branches", "commit", "discard", "empty",
+];
+
+/// Build the `--shots` root staged for `scenario` over the bundled sample
+/// (or the honest empty state for `empty`). `None` is the default Changes
+/// screen, the same frame `--shots` rendered before scenarios existed.
+pub fn app_root_shot(scenario: Option<&str>) -> Box<dyn Widget> {
+    if scenario == Some("empty") {
+        return Box::new(GitClientApp::open_empty());
+    }
+    let mut app = GitClientApp::new();
+    match scenario {
+        Some("split") => app.shot_split_diff(),
+        Some("history") => app.shot_screen(Screen::History),
+        Some("branches") => app.shot_screen(Screen::Panels),
+        Some("commit") => app.shot_commit_message("Flush the blur pass before presenting"),
+        Some("discard") => app.shot_arm_discard(),
+        _ => {}
+    }
+    Box::new(app)
 }

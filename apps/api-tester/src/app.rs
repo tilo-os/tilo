@@ -47,7 +47,8 @@ use ui::format::bytes as format_bytes;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -59,8 +60,8 @@ use crate::actions::{self, API_TESTER_ACTION_TYPE, ApiTesterAction};
 use crate::doc::ApiDoc;
 use crate::http::{self, Outgoing};
 use crate::model::{
-    Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, KeyValue, Request,
-    RequestTab, ResponseData, ResponseView, human_duration,
+    Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, Request, RequestTab,
+    ResponseData, ResponseView, human_duration,
 };
 use crate::navrow::{NavKind, NavRow, ROW_H};
 use crate::palette::{short_path, status_color, token_color};
@@ -73,15 +74,13 @@ const METHOD_W: f64 = 104.0;
 const HAMBURGER_W: f64 = 36.0;
 const SEND_W: f64 = 96.0;
 const URLBAR_H: f64 = 56.0;
-/// Height of the two-line URL builder at the base text scale.
-#[cfg(test)]
-const COMPACT_URLBAR_H: f64 = 88.0;
 /// On a phone, method/send stay on the first row and the URL gets a full
 /// second row. Keeping all four controls in one row leaves only a clipped
 /// sliver of the endpoint — especially unhelpful when it starts with a
 /// `{{variable}}` reference.
 const COMPACT_URLBAR_BREAKPOINT: f64 = 480.0;
 const TAB_STRIP_H: f64 = 40.0;
+const COMPACT_URLBAR_H: f64 = 100.0;
 const PAD: f64 = 16.0;
 const JSON_LINE_H: f64 = 20.0;
 const RESPONSE_STATUS_H: f64 = 44.0;
@@ -112,6 +111,7 @@ fn response_status_height(width: f64) -> f64 {
     }
 }
 
+#[cfg(test)]
 fn response_status_line_center(row: Rect) -> f64 {
     if row.height() > RESPONSE_STATUS_H {
         // Compact response chrome reserves the lower part of the region for
@@ -140,6 +140,10 @@ enum SendOutcome {
 #[derive(Clone, Debug)]
 enum Cmd {
     ToggleRail,
+    ToggleManagement(usize),
+    ResizeRequest(f64),
+    ResetRequest,
+    ScrollNav(i32),
     SetTab(usize),
     SetView(usize),
     ToggleCollection(usize),
@@ -197,7 +201,7 @@ type Sink = Rc<RefCell<Vec<Cmd>>>;
 
 /// Structural signature of the child set. When it changes, the app reports
 /// `take_structure_dirty` so the host rebuilds the taffy tree + focus order.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag describes an independent retained-child category"
@@ -209,6 +213,10 @@ struct ChildSig {
     hamburger: bool,
     sidebar: bool,
     nav_rows: usize,
+    nav_start: usize,
+    management: Option<usize>,
+    form: Option<FormMode>,
+    sidebar_items: Vec<SidebarItem>,
 }
 
 /// Computed geometry for one frame — every chrome region and every control
@@ -230,15 +238,16 @@ struct Layout {
     save: Rect,
     request_actions: Rect,
     env: Rect,
-    environment_actions: Rect,
     form_name: Rect,
     form_key: Rect,
     form_value: Rect,
     form_actions: [Rect; 2],
-    manage: Vec<Rect>,
+    sidebar_items: Vec<(SidebarItem, Rect)>,
+    nav_viewport: Rect,
+    divider: Rect,
     body: Rect,
     resp_view: Rect,
-    nav: Vec<Rect>,
+
     // chrome sub-regions used by draw + hit-tests
     urlbar: Rect,
     tab_strip: Rect,
@@ -246,13 +255,44 @@ struct Layout {
     response: Rect,
     resp_status: Rect,
     resp_body: Rect,
-    collection_manage_label: Point,
     form_heading: Point,
     collections_label: Point,
-    history_label: Point,
     body_region: Rect,
     fold_carets: Vec<(Rect, usize)>,
 }
+
+/// Shaped cells and relative row geometry are retained together: automatic
+/// height and paint consume exactly the same wrapped content and column widths.
+struct KvRowLayout {
+    rect: Rect,
+    key_rect: Rect,
+    value_rect: Rect,
+    key: RichTextLayout,
+    value: RichTextLayout,
+    enabled: bool,
+    placeholder: bool,
+    indicator: bool,
+    /// Side of the enable checkbox: the 16px design size scaled with the
+    /// text, bounded by the row so it never outgrows the text it toggles.
+    indicator_size: f64,
+}
+
+impl KvRowLayout {
+    fn checkbox(&self) -> Rect {
+        let half = self.indicator_size / 2.0;
+        Rect::new(
+            PAD,
+            self.rect.center().y - half,
+            PAD + self.indicator_size,
+            self.rect.center().y + half,
+        )
+    }
+}
+
+/// Design size of the KV row's enable checkbox at 1× text.
+const KV_INDICATOR_SIZE: f64 = 16.0;
+/// Gap between the enable checkbox and the key column.
+const KV_INDICATOR_GAP: f64 = 14.0;
 
 /// Root widget: the whole API tester.
 #[allow(
@@ -278,6 +318,34 @@ pub struct ApiTesterApp {
     collapsed: std::collections::HashSet<usize>,
     body_scroll: f64,
     selected: Option<(usize, usize)>,
+    management: Option<usize>,
+    nav_start: usize,
+    request_height_override: Option<f64>,
+    request_drag: Option<(f64, f64)>,
+    row_height: f64,
+    kv_rows: Vec<KvRowLayout>,
+    kv_height: Option<f64>,
+    variable_color: [u8; 3],
+    control_height: f64,
+    /// Gap between stacked rail controls (environment picker, buttons, the
+    /// action disclosures and their rows): one `s2` step for one relationship
+    /// (HIG §7b), read from the theme where the rail used to mix 8 and 4 px.
+    rail_row_gap: f64,
+    /// Gap between the rows inside an expanded action group (`s1`): rows
+    /// that read as one group under their disclosure sit closer than the
+    /// stacked top-level controls do (HIG §7b), so an open group of five
+    /// still fits a short window.
+    rail_group_gap: f64,
+    /// Rail top inset (`s6`, the page gutter) and the measured line boxes of
+    /// the two rail captions ("ENV" at 9 px, "COLLECTIONS" at 10 px), so each
+    /// caption sits one `s1` above what it labels instead of in a fixed band.
+    rail_inset: f64,
+    env_caption_h: f64,
+    caption_h: f64,
+    text_sm: f32,
+    text_scale: f64,
+    disclosures: Vec<NavRow>,
+    divider: NavRow,
     /// Local scroll offset for the workspace rail. Essential when large text
     /// turns a previously short control list into more than one viewport.
     sidebar_scroll: f64,
@@ -307,6 +375,10 @@ pub struct ApiTesterApp {
     form: Option<FormMode>,
     manage_buttons: Vec<Button>,
     nav_rows: Vec<NavRow>,
+    // Host maps may still inspect old focus between an event and build_layout.
+    // Moving a Vec retains its backing allocation until that safe rebuild.
+    retired_nav_rows: Vec<Vec<NavRow>>,
+    nav_rows_replaced: bool,
     /// Parallel to `nav_rows`: what each row draws + does (rebuilt together).
     nav_meta: Vec<NavMeta>,
 
@@ -346,6 +418,15 @@ pub struct ApiTesterApp {
     /// Set when the child set changed; drained by `take_structure_dirty`.
     last_sig: ChildSig,
     persisted_once: bool,
+}
+
+/// Ordered identities used by layout, paint, event routing and focus traversal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SidebarItem {
+    Environment,
+    Manage(usize),
+    Disclosure(usize),
+    Nav(usize),
 }
 
 /// The data + command for one sidebar row, rebuilt from the model whenever the
@@ -491,6 +572,54 @@ impl ApiTesterApp {
             collapsed: std::collections::HashSet::new(),
             body_scroll: 0.0,
             selected: if demo { Some((0, 0)) } else { None },
+            management: None,
+            nav_start: 0,
+            request_height_override: None,
+            request_drag: None,
+            row_height: ROW_H,
+            kv_rows: Vec::new(),
+            kv_height: None,
+            variable_color: [0, 0, 0],
+            control_height: 34.0,
+            rail_row_gap: f64::from(ui::tokens::spacing::Spacing::BASE.s2),
+            rail_group_gap: f64::from(ui::tokens::spacing::Spacing::BASE.s1),
+            rail_inset: f64::from(ui::tokens::spacing::Spacing::BASE.s6),
+            env_caption_h: 12.0,
+            caption_h: 13.0,
+            text_sm: 13.0,
+            text_scale: 1.0,
+            disclosures: [
+                "Collection actions",
+                "Request actions",
+                "Environment actions",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                let sink = widgets.sink.clone();
+                NavRow::new(
+                    [
+                        "api.collection-actions",
+                        "api.request-actions",
+                        "api.environment-actions",
+                    ][i],
+                    NavKind::Disclosure { expanded: false },
+                    *label,
+                    *label,
+                )
+                .on_activate(move || sink.borrow_mut().push(Cmd::ToggleManagement(i)))
+            })
+            .collect(),
+            divider: {
+                let sink = widgets.sink.clone();
+                NavRow::new(
+                    "api.request-divider",
+                    NavKind::Divider,
+                    "",
+                    "Request area divider",
+                )
+                .on_adjust(move |delta| sink.borrow_mut().push(Cmd::ResizeRequest(delta)))
+            },
             sidebar_scroll: 0.0,
             method_dropdown: widgets.method_dropdown,
             rail_button: widgets.rail_button,
@@ -524,6 +653,8 @@ impl ApiTesterApp {
             form: None,
             manage_buttons: widgets.manage_buttons,
             nav_rows: Vec::new(),
+            retired_nav_rows: Vec::new(),
+            nav_rows_replaced: false,
             nav_meta: Vec::new(),
             sink: widgets.sink,
             actions: ui::ActionHost::new(),
@@ -746,6 +877,25 @@ impl ApiTesterApp {
                 Cmd::OpenForm(FormMode::NewEnvironment),
             ),
         ];
+        let management = management.into_iter().chain([
+            (
+                "api.increase-request-area",
+                "Increase request area",
+                Cmd::ResizeRequest(24.0),
+            ),
+            (
+                "api.decrease-request-area",
+                "Decrease request area",
+                Cmd::ResizeRequest(-24.0),
+            ),
+            (
+                "api.reset-request-area",
+                "Reset request area",
+                Cmd::ResetRequest,
+            ),
+            ("api.previous-saved", "↑ Earlier", Cmd::ScrollNav(-1)),
+            ("api.next-saved", "↓ More", Cmd::ScrollNav(1)),
+        ]);
         let manage_buttons = management
             .into_iter()
             .map(|(id, label, command)| {
@@ -1048,6 +1198,15 @@ impl ApiTesterApp {
             hamburger: self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay,
             sidebar: self.sidebar_visible(),
             nav_rows: self.nav_rows.len(),
+            nav_start: self.nav_start,
+            management: self.management,
+            form: self.form,
+            sidebar_items: self
+                .layout
+                .sidebar_items
+                .iter()
+                .map(|(item, _)| *item)
+                .collect(),
         }
     }
 
@@ -1059,8 +1218,11 @@ impl ApiTesterApp {
     /// from the model, then rebuild the `NavRow` widgets to match, each wired
     /// to push its command onto the sink.
     fn rebuild_nav(&mut self) {
+        self.layout
+            .sidebar_items
+            .retain(|(item, _)| !matches!(item, SidebarItem::Nav(_)));
         self.nav_meta = self.compute_nav_meta();
-        self.nav_rows = self
+        let rows = self
             .nav_meta
             .iter()
             .enumerate()
@@ -1076,6 +1238,12 @@ impl ApiTesterApp {
                 .on_activate(move || sink.borrow_mut().push(cmd.clone()))
             })
             .collect();
+        let previous = std::mem::replace(&mut self.nav_rows, rows);
+        if !previous.is_empty() {
+            self.retired_nav_rows.push(previous);
+        }
+        // A same-count replacement still invalidates the host's raw pointers.
+        self.nav_rows_replaced = true;
     }
 
     /// The ordered sidebar rows derived from the model. Kept separate from
@@ -1154,6 +1322,7 @@ impl ApiTesterApp {
         if self.body_field_visible() {
             v.push(&self.body_input);
         }
+        v.push(&self.divider);
         if self.response.is_some() {
             v.push(&self.response_view_toggle);
         } else if self.error.is_some() {
@@ -1174,15 +1343,14 @@ impl ApiTesterApp {
                 }
                 v.push(&self.form_cancel);
                 v.push(&self.form_submit);
-            } else {
-                v.push(&self.env_dropdown);
-                v.push(&self.environment_actions);
-                for button in &self.manage_buttons {
-                    v.push(button);
-                }
             }
-            for r in &self.nav_rows {
-                v.push(r);
+            for (item, _) in &self.layout.sidebar_items {
+                v.push(match *item {
+                    SidebarItem::Environment => &self.env_dropdown,
+                    SidebarItem::Manage(i) => &self.manage_buttons[i],
+                    SidebarItem::Disclosure(i) => &self.disclosures[i],
+                    SidebarItem::Nav(i) => &self.nav_rows[i],
+                });
             }
         }
         v
@@ -1211,6 +1379,7 @@ impl ApiTesterApp {
         if body {
             v.push(&mut self.body_input);
         }
+        v.push(&mut self.divider);
         if resp {
             v.push(&mut self.response_view_toggle);
         } else if self.error.is_some() {
@@ -1231,15 +1400,24 @@ impl ApiTesterApp {
                 }
                 v.push(&mut self.form_cancel);
                 v.push(&mut self.form_submit);
-            } else {
-                v.push(&mut self.env_dropdown);
-                v.push(&mut self.environment_actions);
-                for button in &mut self.manage_buttons {
-                    v.push(button);
-                }
             }
-            for r in &mut self.nav_rows {
-                v.push(r);
+            // Gather unique references first, then consume by explicit identity.
+            // Filtering never changes the association between a rect and action.
+            let mut items: HashMap<SidebarItem, &mut dyn Widget> = HashMap::new();
+            items.insert(SidebarItem::Environment, &mut self.env_dropdown);
+            for (i, button) in self.manage_buttons.iter_mut().enumerate() {
+                items.insert(SidebarItem::Manage(i), button);
+            }
+            for (i, row) in self.disclosures.iter_mut().enumerate() {
+                items.insert(SidebarItem::Disclosure(i), row);
+            }
+            for (i, row) in self.nav_rows.iter_mut().enumerate() {
+                items.insert(SidebarItem::Nav(i), row);
+            }
+            for (item, _) in &self.layout.sidebar_items {
+                if let Some(widget) = items.remove(item) {
+                    v.push(widget);
+                }
             }
         }
         v
@@ -1249,6 +1427,29 @@ impl ApiTesterApp {
     /// order `children_mut_ref` / `build_layout` use.
     fn position_children(&mut self) {
         let l = self.layout.clone();
+        self.divider.apply_layout_external(l.divider);
+        // Hidden rows and closed actions must have no stale hit rectangles.
+        self.env_dropdown.apply_layout_external(Rect::ZERO);
+        for (i, button) in self.manage_buttons.iter_mut().enumerate() {
+            if !l
+                .sidebar_items
+                .iter()
+                .any(|(item, _)| *item == SidebarItem::Manage(i))
+            {
+                button.apply_layout_external(Rect::ZERO);
+            }
+        }
+        for row in self.nav_rows.iter_mut().chain(self.disclosures.iter_mut()) {
+            row.apply_layout_external(Rect::ZERO);
+        }
+        for (item, rect) in &l.sidebar_items {
+            match *item {
+                SidebarItem::Environment => self.env_dropdown.apply_layout_external(*rect),
+                SidebarItem::Manage(i) => self.manage_buttons[i].apply_layout_external(*rect),
+                SidebarItem::Disclosure(i) => self.disclosures[i].apply_layout_external(*rect),
+                SidebarItem::Nav(i) => self.nav_rows[i].apply_layout_external(*rect),
+            }
+        }
         if self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay {
             self.rail_button.apply_layout_external(l.hamburger);
             if self.sidebar_visible() {
@@ -1287,16 +1488,47 @@ impl ApiTesterApp {
                 }
                 self.form_cancel.apply_layout_external(l.form_actions[0]);
                 self.form_submit.apply_layout_external(l.form_actions[1]);
-            } else {
-                self.env_dropdown.apply_layout_external(l.env);
-                self.environment_actions
-                    .apply_layout_external(l.environment_actions);
-                for (button, rect) in self.manage_buttons.iter_mut().zip(&l.manage) {
-                    button.apply_layout_external(*rect);
-                }
             }
-            for (row, rect) in self.nav_rows.iter_mut().zip(l.nav.iter()) {
-                row.apply_layout_external(*rect);
+        }
+    }
+
+    fn response_chrome_height(&self, width: f64) -> f64 {
+        response_status_height(width / self.text_scale)
+            + (self.control_height - 34.0).max(0.0)
+                * if width < COMPACT_RESPONSE_BREAKPOINT * self.text_scale {
+                    2.0
+                } else {
+                    1.0
+                }
+    }
+
+    /// Left edge of the KV key column: the row gutter, the text-scaled enable
+    /// checkbox and a gap. Measurement, the `KEY` heading and the rows all
+    /// read this one value, so a 200% checkbox never overprints its key.
+    fn kv_key_x(&self) -> f64 {
+        PAD + KV_INDICATOR_SIZE * self.text_scale + KV_INDICATOR_GAP
+    }
+
+    fn automatic_request_height(&self) -> f64 {
+        // The provisional pre-measure pass only needs a nonzero editor.
+        // Settled layout and paint both consume the retained shaped rows.
+        let table_height = self.kv_height.unwrap_or(self.row_height + 42.0);
+        match self.active_tab {
+            RequestTab::Params => table_height,
+            RequestTab::Headers => table_height,
+            RequestTab::Body => match self.request.body_mode {
+                BodyMode::Form => self.row_height + 16.0 + table_height,
+                BodyMode::None => 24.0 + self.row_height * 2.0,
+                BodyMode::Json | BodyMode::Raw => 36.0 + self.row_height * 6.0,
+            },
+            RequestTab::Auth => {
+                36.0 + 20.0 * self.text_scale
+                    + self.row_height
+                    + match self.request.auth {
+                        Auth::None => self.row_height,
+                        Auth::Bearer { .. } => self.control_height + 16.0 * self.text_scale + 12.0,
+                        _ => (self.control_height + 36.0 * self.text_scale) * 2.0,
+                    }
             }
         }
     }
@@ -1326,33 +1558,43 @@ impl ApiTesterApp {
 
         // --- URL bar row ---
         let area = l.main;
-        let control_h = 36.0 * self.layout_text_scale.min(1.5);
-        let compact_urlbar =
-            split == SplitLayout::Overlay && area.width() < COMPACT_URLBAR_BREAKPOINT;
+        let compact_urlbar = split == SplitLayout::Overlay
+            && area.width() < COMPACT_URLBAR_BREAKPOINT * self.text_scale;
+        let control_h = self.control_height.max(36.0);
+        let row_h = URLBAR_H + control_h - 36.0;
         let urlbar_h = if compact_urlbar {
-            control_h * 2.0 + 16.0
+            COMPACT_URLBAR_H + 2.0 * (control_h - 36.0)
         } else {
-            URLBAR_H.max(control_h + 20.0)
+            row_h
         };
         l.urlbar = Rect::new(area.x0, area.y0, area.x1, area.y0 + urlbar_h);
-        let cy0 = if compact_urlbar {
-            l.urlbar.y0 + 8.0
-        } else {
-            l.urlbar.y0 + (urlbar_h - control_h) / 2.0
-        };
+        let cy0 = l.urlbar.y0 + 10.0;
         let mut row_x0 = area.x0 + PAD;
         if split == SplitLayout::Overlay {
-            l.hamburger = Rect::new(row_x0, cy0, row_x0 + control_h, cy0 + control_h);
+            // Square toggle: as wide as the row's controls are tall, so it
+            // does not become a narrow slab beside a taller picker at 200%.
+            let side = HAMBURGER_W.max(control_h);
+            l.hamburger = Rect::new(row_x0, cy0, row_x0 + side, cy0 + control_h);
             row_x0 = l.hamburger.x1 + 8.0;
         }
-        l.method = Rect::new(row_x0, cy0, row_x0 + METHOD_W, cy0 + control_h);
-        l.send = Rect::new(area.x1 - PAD - SEND_W, cy0, area.x1 - PAD, cy0 + control_h);
+        l.method = Rect::new(
+            row_x0,
+            cy0,
+            row_x0 + METHOD_W.max(72.0 * self.text_scale),
+            cy0 + control_h,
+        );
+        l.send = Rect::new(
+            area.x1 - PAD - SEND_W.max(64.0 * self.text_scale),
+            cy0,
+            area.x1 - PAD,
+            cy0 + control_h,
+        );
         l.url = if compact_urlbar {
             Rect::new(
                 area.x0 + PAD,
-                cy0 + control_h + 8.0,
+                l.urlbar.y0 + row_h,
                 area.x1 - PAD,
-                cy0 + control_h * 2.0 + 8.0,
+                l.urlbar.y0 + row_h + control_h,
             )
         } else {
             Rect::new(l.method.x1 + 8.0, cy0, l.send.x0 - 8.0, cy0 + control_h)
@@ -1367,7 +1609,8 @@ impl ApiTesterApp {
         };
         let tab_y0 = l.urlbar.y1 + 8.0;
         l.tab_strip = Rect::new(area.x0, tab_y0, area.x1, tab_y0 + tab_strip_h);
-        let tabs_w = (96.0 * RequestTab::ALL.len() as f64).min(area.width() - PAD * 2.0);
+        let tabs_w =
+            (96.0 * self.text_scale * RequestTab::ALL.len() as f64).min(area.width() - PAD * 2.0);
         let tabs_y1 = if compact_request_actions {
             l.tab_strip.y0 + TAB_STRIP_H.max(control_h + 8.0) - 4.0
         } else {
@@ -1397,18 +1640,31 @@ impl ApiTesterApp {
         };
 
         // --- Editor / response split ---
-        let editor_h = ((area.height() - urlbar_h - 8.0 - tab_strip_h) * 0.42).max(150.0);
+        let available = (area.y1 - l.tab_strip.y1 - 10.0).max(0.0);
+        let response_min = self.response_chrome_height(area.width()) + self.row_height * 2.0;
+        let maximum = (available - response_min).max(0.0);
+        let minimum = (self.row_height + 36.0).min(maximum);
+        let editor_h = self
+            .request_height_override
+            .unwrap_or_else(|| self.automatic_request_height())
+            .clamp(minimum, maximum);
         l.editor = Rect::new(area.x0, l.tab_strip.y1, area.x1, l.tab_strip.y1 + editor_h);
-        l.response = Rect::new(area.x0, l.editor.y1, area.x1, area.y1);
+        l.divider = Rect::new(area.x0, l.editor.y1, area.x1, l.editor.y1 + 10.0);
+        l.response = Rect::new(area.x0, l.divider.y1, area.x1, area.y1);
 
         // Body field (Body tab, JSON/Raw).
         if self.body_field_visible() {
             let e = l.editor;
-            l.body = Rect::new(e.x0 + PAD, e.y0 + 52.0, e.x1 - PAD, e.y1 - 12.0);
+            l.body = Rect::new(
+                e.x0 + PAD,
+                (e.y0 + 24.0 + self.row_height).min(e.y1),
+                e.x1 - PAD,
+                (e.y1 - 12.0).max((e.y0 + 24.0 + self.row_height).min(e.y1)),
+            );
         }
 
         // Response chrome + view switch.
-        let status_h = response_status_height(l.response.width());
+        let status_h = self.response_chrome_height(l.response.width());
         l.resp_status = Rect::new(
             l.response.x0,
             l.response.y0,
@@ -1423,24 +1679,24 @@ impl ApiTesterApp {
         );
         l.body_region = l.resp_body;
         if self.response.is_some() {
-            if status_h == COMPACT_RESPONSE_STATUS_H {
+            if l.response.width() < COMPACT_RESPONSE_BREAKPOINT * self.text_scale {
                 // Keep the switcher a full-width, easy-to-hit control below
                 // the status line. Equal segments remain legible at large
                 // text sizes and the response body starts below both rows.
                 l.resp_view = Rect::new(
                     l.response.x0 + PAD,
-                    l.resp_status.y1 - 30.0,
+                    l.resp_status.y1 - (self.control_height - 10.0) - 6.0,
                     l.response.x1 - PAD,
                     l.resp_status.y1 - 6.0,
                 );
             } else {
-                let view_w = 210.0;
+                let view_w = 210.0 * self.text_scale;
                 let cy = l.resp_status.center().y;
                 l.resp_view = Rect::new(
                     l.response.x1 - PAD - view_w,
-                    cy - 12.0,
+                    cy - (self.control_height - 10.0) / 2.0,
                     l.response.x1 - PAD,
-                    cy + 12.0,
+                    cy + (self.control_height - 10.0) / 2.0,
                 );
             }
         }
@@ -1448,11 +1704,15 @@ impl ApiTesterApp {
         // --- Sidebar rows ---
         if self.rail.reveal() > 0.001 && l.sidebar.width() > 1.0 {
             let s = l.sidebar;
-            let scale = self.layout_text_scale;
+            let rail_gap = self.rail_row_gap;
+            let group_gap = self.rail_group_gap;
             // No app-name wordmark (the OS titlebar shows "API Tester"); the ENV
             // picker leads the sidebar. Keep room above it for the ENV caption.
-            let mut y = s.y0 + (PAD + 48.0) * scale - self.sidebar_scroll;
+            // The rail opens with its `s6` gutter, grown only when the ENV
+            // caption plus its `s1` gap to the picker needs more.
+            let mut y = s.y0 + self.rail_inset.max(self.env_caption_h + 2.0 * group_gap);
             let control_x = s.x0 + PAD;
+            let scale = f64::from(self.text_scale.max(1.0));
             let close_w = 88.0 * scale;
             let close_h = 36.0 * scale;
             l.rail_close = Rect::new(
@@ -1462,82 +1722,130 @@ impl ApiTesterApp {
                 s.y0 + PAD + close_h,
             );
             let control_w = s.width() - PAD * 2.0;
-            let action_rows = |count: usize, at: f64| {
-                (0..count).map(move |index| {
-                    let y0 = at + index as f64 * 38.0 * scale;
-                    Rect::new(control_x, y0, control_x + control_w, y0 + 34.0 * scale)
-                })
-            };
             if let Some(form) = self.form {
                 l.form_heading = Point::new(control_x, y);
-                y += 20.0 * scale;
+                y += (20.0 * self.text_scale).max(20.0);
                 if form.needs_name() {
-                    l.form_name = Rect::new(control_x, y, s.x1 - PAD, y + 32.0 * scale);
-                    y += 42.0 * scale;
+                    l.form_name = Rect::new(control_x, y, s.x1 - PAD, y + self.control_height);
+                    y += self.control_height + 10.0;
                 }
                 if form.needs_variable_fields() {
-                    l.form_key = Rect::new(control_x, y, s.x1 - PAD, y + 32.0 * scale);
-                    y += 40.0 * scale;
+                    l.form_key = Rect::new(control_x, y, s.x1 - PAD, y + self.control_height);
+                    y += self.control_height + 8.0;
                     if form.needs_value() {
-                        l.form_value = Rect::new(control_x, y, s.x1 - PAD, y + 32.0 * scale);
-                        y += 42.0 * scale;
+                        l.form_value = Rect::new(control_x, y, s.x1 - PAD, y + self.control_height);
+                        y += self.control_height + 10.0;
                     }
                 }
                 let half = (control_w - 8.0) / 2.0;
                 l.form_actions = [
-                    Rect::new(control_x, y, control_x + half, y + 36.0 * scale),
-                    Rect::new(control_x + half + 8.0, y, s.x1 - PAD, y + 36.0 * scale),
+                    Rect::new(control_x, y, control_x + half, y + self.control_height),
+                    Rect::new(
+                        control_x + half + 8.0,
+                        y,
+                        s.x1 - PAD,
+                        y + self.control_height,
+                    ),
                 ];
-                y += 52.0 * scale;
+                y += self.control_height + 16.0;
             } else {
-                l.env = Rect::new(s.x0 + PAD, y, s.x1 - PAD, y + 40.0 * scale);
-                y += 48.0 * scale;
-                l.environment_actions = Rect::new(s.x0 + PAD, y, s.x1 - PAD, y + 34.0 * scale);
-                y += 48.0 * scale;
-                l.collection_manage_label = Point::new(control_x, y);
-                y += 18.0 * scale;
-                l.manage.extend(action_rows(2, y));
-                y += 2.0 * 38.0 * scale + 16.0 * scale;
+                l.env = Rect::new(control_x, y, s.x1 - PAD, y + self.control_height);
+                l.sidebar_items.push((SidebarItem::Environment, l.env));
+                y = l.env.y1 + rail_gap;
             }
-            l.collections_label = Point::new(s.x0 + PAD, y);
-            y += 24.0 * scale;
-            // Rows follow the same order as `compute_nav_meta`.
-            let history_start = self
-                .nav_meta
-                .iter()
-                .position(|m| matches!(m.kind, NavKind::History { .. }));
-            for (i, _m) in self.nav_meta.iter().enumerate() {
-                if Some(i) == history_start {
-                    y += 12.0 * scale;
-                    if y + 24.0 * scale <= s.y1 - PAD {
-                        l.history_label = Point::new(s.x0 + PAD, y);
+            let h = self.control_height;
+            let row = self.row_height;
+            let footer_actions: &[usize] = match self.management {
+                Some(0) => &[2],
+                Some(1) => &[3, 4, 10, 11, 12],
+                Some(2) => &[5, 6, 7, 8, 9],
+                _ => &[],
+            };
+            let footer_h = if self.form.is_none() {
+                4.0 * (h + rail_gap) + footer_actions.len() as f64 * (h + group_gap) + rail_gap
+            } else {
+                0.0
+            };
+            let mut add = |item, at: f64, height: f64| {
+                let rect = Rect::new(control_x, at, s.x1 - PAD, at + height);
+                if rect.y0 >= s.y0 && rect.y1 <= s.y1 - 4.0 {
+                    l.sidebar_items.push((item, rect));
+                }
+            };
+            if self.form.is_none() {
+                add(SidebarItem::Manage(0), y, h);
+                y += h + rail_gap;
+            }
+            // The "COLLECTIONS" caption only labels a list that has room for
+            // at least one row above the footer; a height-starved rail (an
+            // open action group in a short window) hands that band to the
+            // footer instead of reserving it for nothing (HIG §7a: empty
+            // docks do not reserve area).
+            let label_h = self.caption_h + group_gap;
+            let footer_top = s.y1 - PAD - footer_h;
+            if footer_top - y >= label_h + row {
+                l.collections_label = Point::new(control_x, y);
+                y += label_h;
+            }
+            let bottom = footer_top.max(y);
+            let paging = (self.nav_meta.len() as f64 * row) > bottom - y;
+            let nav_bottom = if paging {
+                (bottom - h - 4.0).max(y)
+            } else {
+                bottom
+            };
+            l.nav_viewport = Rect::new(s.x0, y, s.x1, nav_bottom);
+            let capacity = ((nav_bottom - y) / row).floor().max(0.0) as usize;
+            self.nav_start = self
+                .nav_start
+                .min(self.nav_meta.len().saturating_sub(capacity.max(1)));
+            for i in self.nav_start..(self.nav_start + capacity).min(self.nav_meta.len()) {
+                add(SidebarItem::Nav(i), y, row);
+                y += row;
+            }
+            if paging && bottom - l.nav_viewport.y0 >= h {
+                // Both directions stay available to keyboard users, including
+                // when a disclosure temporarily reduces the list viewport.
+                let half = (s.width() - PAD * 2.0 - rail_gap) / 2.0;
+                l.sidebar_items.push((
+                    SidebarItem::Manage(13),
+                    Rect::new(control_x, bottom - h, control_x + half, bottom),
+                ));
+                l.sidebar_items.push((
+                    SidebarItem::Manage(14),
+                    Rect::new(control_x + half + rail_gap, bottom - h, s.x1 - PAD, bottom),
+                ));
+            }
+            if self.form.is_none() {
+                y = if paging {
+                    bottom + rail_gap
+                } else {
+                    y + rail_gap
+                };
+                l.sidebar_items.push((
+                    SidebarItem::Manage(1),
+                    Rect::new(control_x, y, s.x1 - PAD, y + h),
+                ));
+                y += h + rail_gap;
+                for group in 0..3 {
+                    l.sidebar_items.push((
+                        SidebarItem::Disclosure(group),
+                        Rect::new(control_x, y, s.x1 - PAD, y + h),
+                    ));
+                    y += h + rail_gap;
+                    if self.management == Some(group) {
+                        for &i in footer_actions {
+                            l.sidebar_items.push((
+                                SidebarItem::Manage(i),
+                                Rect::new(control_x, y, s.x1 - PAD, y + h),
+                            ));
+                            y += h + group_gap;
+                        }
+                        // The next top-level control sits a full step below
+                        // the group, not a group step.
+                        y += rail_gap - group_gap;
                     }
-                    y += 24.0 * scale;
                 }
-                // Rows need both scaled type height and breathing room; a
-                // bare `ROW_H * scale` still lets a large collection label
-                // visually touch the following request row.
-                let nav_h = (ROW_H + 10.0) * scale;
-                if y + nav_h > s.y1 - PAD {
-                    // Off the bottom — keep its real virtual position instead
-                    // of collapsing it to an empty sentinel.  Besides making
-                    // section order testable, this gives focus-follow scrolling
-                    // the geometry it needs to bring a keyboard-selected row
-                    // back into view on the next frame.
-                    l.nav.push(Rect::new(s.x0 + 8.0, y, s.x1 - 8.0, y + nav_h));
-                    // Still reserve its full scaled cadence: later sections
-                    // must never leap above hidden siblings.
-                    y += nav_h;
-                    continue;
-                }
-                l.nav.push(Rect::new(s.x0 + 8.0, y, s.x1 - 8.0, y + nav_h));
-                y += nav_h;
-            }
-            if history_start.is_none() {
-                // No history yet — still place the HISTORY label under the
-                // collections for parity with the original chrome.
-                y += 12.0 * scale;
-                l.history_label = Point::new(s.x0 + PAD, y);
             }
         }
 
@@ -1624,29 +1932,15 @@ impl ApiTesterApp {
         let c = &theme.tokens.colors;
         let area = l.sidebar;
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &area);
-        // A visible local rail scrollbar makes overflow discoverable at 200%
-        // text scale (and communicates the same wheel gesture on any size).
-        let track = Rect::new(area.x1 - 6.0, area.y0 + 8.0, area.x1 - 3.0, area.y1 - 8.0);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.border_standard.with_alpha_factor(0.45),
-            None,
-            &track,
-        );
-        let thumb_h = (area.height() * 0.22).max(44.0);
-        let travel = (area.height() - 16.0 - thumb_h).max(0.0);
-        let thumb_y = area.y0 + 8.0 + travel * (self.sidebar_scroll / 1200.0);
-        let thumb = Rect::new(area.x1 - 7.0, thumb_y, area.x1 - 2.0, thumb_y + thumb_h);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.text_dim.with_alpha_factor(0.8),
-            None,
-            &thumb,
-        );
+        // The rail's edge is derived against the rail itself (HIG §9.5).
         let div = Rect::new(area.x1 - 1.0, area.y0, area.x1, area.y1);
-        scene.fill(Fill::NonZero, t, c.border_standard, None, &div);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            ui::surface::edge_on(c.surfaces.raised),
+            None,
+            &div,
+        );
 
         // ENV label above the picker.
         if self.form.is_none() {
@@ -1655,7 +1949,10 @@ impl ApiTesterApp {
                 "ENV",
                 9.0,
                 c.text_dim,
-                t * Affine::translate((l.env.x0, l.env.y0 - 14.0 * self.layout_text_scale)),
+                t * Affine::translate((
+                    l.env.x0,
+                    l.env.y0 - (self.env_caption_h + self.rail_group_gap),
+                )),
                 None,
                 TextWeight::Bold,
             );
@@ -1664,8 +1961,6 @@ impl ApiTesterApp {
             self.rail_close.draw(scene, t, tr, theme, presence);
         }
         Self::draw_section_label(scene, t, tr, theme, l.collections_label, "COLLECTIONS");
-        Self::draw_section_label(scene, t, tr, theme, l.history_label, "HISTORY");
-        Self::draw_section_label(scene, t, tr, theme, l.collection_manage_label, "WORKSPACE");
         if let Some(form) = self.form {
             Self::draw_section_label(scene, t, tr, theme, l.form_heading, form.heading());
         }
@@ -1684,15 +1979,18 @@ impl ApiTesterApp {
             }
             self.form_cancel.draw(scene, t, tr, theme, presence);
             self.form_submit.draw(scene, t, tr, theme, presence);
-        } else {
-            self.env_dropdown.draw(scene, t, tr, theme, presence);
-            self.environment_actions.draw(scene, t, tr, theme, presence);
-            for button in &mut self.manage_buttons {
-                button.draw(scene, t, tr, theme, presence);
-            }
         }
-        for row in &mut self.nav_rows {
-            row.draw(scene, t, tr, theme, presence);
+        for (item, _) in &l.sidebar_items {
+            match *item {
+                SidebarItem::Environment => self.env_dropdown.draw(scene, t, tr, theme, presence),
+                SidebarItem::Manage(i) => {
+                    self.manage_buttons[i].draw(scene, t, tr, theme, presence)
+                }
+                SidebarItem::Disclosure(i) => {
+                    self.disclosures[i].draw(scene, t, tr, theme, presence)
+                }
+                SidebarItem::Nav(i) => self.nav_rows[i].draw(scene, t, tr, theme, presence),
+            }
         }
     }
 
@@ -1733,7 +2031,13 @@ impl ApiTesterApp {
         // URL bar background + divider.
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &l.urlbar);
         let bar_div = Rect::new(area.x0, l.urlbar.y1 - 1.0, area.x1, l.urlbar.y1);
-        scene.fill(Fill::NonZero, t, c.border_standard, None, &bar_div);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            ui::surface::edge_on(c.surfaces.raised),
+            None,
+            &bar_div,
+        );
 
         if self.rail.layout() == SplitLayout::Overlay {
             self.rail_button.draw(scene, t, tr, theme, presence);
@@ -1744,23 +2048,20 @@ impl ApiTesterApp {
         self.method_dropdown.draw(scene, t, tr, theme, presence);
 
         // URL field box + the plain TextInput inside it.
-        let url_shape = RoundedRect::from_rect(l.url, f64::from(theme.tokens.radii.md));
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &url_shape);
-        scene.stroke(
-            &Stroke::new(if self.url_input.is_focused() {
-                2.0
-            } else {
-                1.0
-            }),
-            t,
-            if self.url_input.is_focused() {
-                theme.border_focus
-            } else {
-                c.border_standard
-            },
-            None,
-            &url_shape,
-        );
+        // Rest: a base-toned field with its derived edge; focus: the ring.
+        if self.url_input.is_focused() {
+            let url_shape = RoundedRect::from_rect(l.url, f64::from(theme.tokens.radii.md));
+            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &url_shape);
+            scene.stroke(&Stroke::new(2.0), t, theme.border_focus, None, &url_shape);
+        } else {
+            ui::surface::card(
+                scene,
+                t,
+                l.url,
+                f64::from(theme.tokens.radii.md),
+                c.surfaces.base,
+            );
+        }
         self.url_input.draw(scene, t, tr, theme, presence);
 
         // Send button draws itself.
@@ -1818,18 +2119,22 @@ impl ApiTesterApp {
                 c.semantic.warning,
             )
         };
-        let (hw, _) = tr.measure(&hint, theme.tokens.typography.scale.sm, None);
+        let size = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+            .size;
+        let (hw, hh) = tr.measure(&hint, size, None);
         if !tab_strip_has_room_for_hint(l, f64::from(hw)) {
             return;
         }
+        // Centre on the measured line height, not a font-size guess.
         tr.draw_text(
             scene,
             &hint,
-            theme.tokens.typography.scale.sm,
+            size,
             hint_col,
             t * Affine::translate((
                 l.main.x1 - PAD - f64::from(hw),
-                l.tab_strip.center().y - 7.0,
+                l.tab_strip.center().y - f64::from(hh) / 2.0,
             )),
             None,
         );
@@ -1847,260 +2152,246 @@ impl ApiTesterApp {
         let c = &theme.tokens.colors;
         let area = l.editor;
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &area);
+        self.divider.draw(scene, t, tr, theme, presence);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &area,
+        );
         match self.active_tab {
             RequestTab::Params => {
-                let rows = self.request.params.clone();
-                Self::draw_kv_table(scene, t, tr, theme, area, &rows, "No query parameters");
+                self.draw_kv_table(scene, t, tr, theme, area);
             }
             RequestTab::Headers => {
-                let rows = self.request.headers.clone();
-                Self::draw_kv_table(scene, t, tr, theme, area, &rows, "No headers");
+                self.draw_kv_table(scene, t, tr, theme, area);
             }
             RequestTab::Auth => self.draw_auth(scene, t, tr, theme, area),
             RequestTab::Body => self.draw_body(scene, t, tr, theme, presence, l),
         }
+        scene.pop_layer();
     }
 
-    #[allow(clippy::too_many_arguments)]
+    fn measure_kv_table(&mut self, tr: &mut TextRenderer, width: f64) {
+        let (rows, empty_msg) = match self.active_tab {
+            RequestTab::Params => (&self.request.params, "No query parameters"),
+            RequestTab::Headers => (&self.request.headers, "No headers"),
+            RequestTab::Body if self.request.body_mode == BodyMode::Form => {
+                (&self.request.form, "No form fields")
+            }
+            _ => {
+                self.kv_rows.clear();
+                self.kv_height = None;
+                return;
+            }
+        };
+        let mut cells: Vec<_> = rows
+            .iter()
+            .filter(|row| !row.is_blank())
+            .map(|row| {
+                (
+                    row.key.as_str(),
+                    row.value.as_str(),
+                    row.enabled,
+                    false,
+                    true,
+                )
+            })
+            .collect();
+        if cells.is_empty() {
+            cells.push((empty_msg, "", true, false, false));
+        } else {
+            cells.push(("New key", "New value", false, true, true));
+        }
+        // RichTextLayout accepts resolved metrics directly; draw_rich paints
+        // the same shaped glyphs without another scale or wrapping pass.
+        let style = TextStyle::new(self.text_sm);
+        let key_x = self.kv_key_x();
+        let value_x = width * 0.5;
+        let key_width = (value_x - key_x - 12.0).max(1.0) as f32;
+        let value_width = (width - PAD - value_x).max(1.0) as f32;
+        let header_height =
+            f64::from(tr.measure_weighted("KEY", 10.0, None, TextWeight::Bold).1).ceil();
+        let mut y = 12.0 + header_height + 9.0;
+        self.kv_rows.clear();
+        for (key, value, enabled, placeholder, indicator) in cells {
+            let key = RichTextLayout::shape_styled(
+                &mut tr.font_system,
+                &[RichSpan::new(key)],
+                &style,
+                Some(if indicator {
+                    key_width
+                } else {
+                    (width - PAD * 2.0).max(1.0) as f32
+                }),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let spans = Self::value_spans(value, self.variable_color);
+            let value = RichTextLayout::shape_styled(
+                &mut tr.font_system,
+                &spans,
+                &style,
+                Some(value_width),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let key_h = f64::from(key.height());
+            let value_h = f64::from(value.height());
+            let height = (key_h.max(value_h).ceil() + 12.0).max(ROW_H);
+            let rect = Rect::new(PAD, y, width - PAD, y + height);
+            let kx = if indicator { key_x } else { PAD };
+            let indicator_size = (KV_INDICATOR_SIZE * self.text_scale).min(height - 4.0);
+            self.kv_rows.push(KvRowLayout {
+                rect,
+                key_rect: Rect::new(
+                    kx,
+                    rect.center().y - key_h / 2.0,
+                    if indicator {
+                        key_x + f64::from(key_width)
+                    } else {
+                        width - PAD
+                    },
+                    rect.center().y + key_h / 2.0,
+                ),
+                value_rect: Rect::new(
+                    value_x,
+                    rect.center().y - value_h / 2.0,
+                    value_x + f64::from(value_width),
+                    rect.center().y + value_h / 2.0,
+                ),
+                key,
+                value,
+                enabled,
+                placeholder,
+                indicator,
+                indicator_size,
+            });
+            y += height;
+        }
+        self.kv_height = Some(y + 8.0);
+    }
+
+    fn value_spans(value: &str, accent: [u8; 3]) -> Vec<RichSpan> {
+        let mut spans = Vec::new();
+        let mut rest = value;
+        while let Some(open) = rest.find("{{") {
+            let Some(close) = rest[open + 2..].find("}}") else {
+                break;
+            };
+            spans.push(RichSpan::new(&rest[..open]));
+            let end = open + 2 + close + 2;
+            spans.push(
+                RichSpan::new(&rest[open..end])
+                    .bold(true)
+                    .color(Some(accent)),
+            );
+            rest = &rest[end..];
+        }
+        spans.push(RichSpan::new(rest));
+        spans
+    }
+
     fn draw_kv_table(
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         area: Rect,
-        rows: &[KeyValue],
-        empty_msg: &str,
     ) {
         let c = &theme.tokens.colors;
-        let x0 = area.x0 + PAD;
-        let y = Self::draw_kv_table_header(scene, t, tr, theme, area);
-
-        if rows.iter().all(super::model::KeyValue::is_blank) {
-            tr.draw_text(
+        let t = t * Affine::translate((area.x0, area.y0));
+        for (label, x) in [("KEY", self.kv_key_x()), ("VALUE", area.width() * 0.5)] {
+            tr.draw_text_weighted(
                 scene,
-                empty_msg,
-                theme.tokens.typography.scale.sm,
+                label,
+                10.0,
                 c.text_dim,
-                t * Affine::translate((x0, y + 8.0)),
+                t * Affine::translate((x, 12.0)),
                 None,
+                TextWeight::Bold,
             );
-            return;
         }
-
-        let y = Self::draw_kv_rows(scene, t, tr, theme, area, rows, y);
-        Self::draw_kv_new_row_placeholder(scene, t, tr, theme, area, y);
-    }
-
-    /// The KEY / VALUE column headers. Returns the y of the first data row.
-    fn draw_kv_table_header(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        let x0 = area.x0 + PAD;
-        let y = area.y0 + 12.0;
-        let key_x = x0 + 30.0;
-        let val_x = area.x0 + area.width() * 0.5;
-        tr.draw_text_weighted(
-            scene,
-            "KEY",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((key_x, y)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            "VALUE",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((val_x, y)),
-            None,
-            TextWeight::Bold,
-        );
-        y + 22.0
-    }
-
-    /// One row per key/value pair, stopping once `area` runs out of room.
-    /// Returns the y below the last drawn row.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_kv_rows(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        rows: &[KeyValue],
-        mut y: f64,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        let x0 = area.x0 + PAD;
-        let key_x = x0 + 30.0;
-        let val_x = area.x0 + area.width() * 0.5;
-        for row in rows {
-            if y + ROW_H > area.y1 {
+        for row in &self.kv_rows {
+            if row.rect.y1 > area.height() {
                 break;
             }
-            let cb = Rect::new(x0, y + 4.0, x0 + 16.0, y + 20.0);
-            Checkbox::paint(
-                scene,
-                t,
-                theme,
-                &CheckboxFace::new(cb, row.enabled).transparent_unchecked(),
-            );
-            let row_col = if row.enabled {
-                c.text_primary
+            self.draw_kv_row(scene, t, tr, theme, row);
+        }
+    }
+
+    fn draw_kv_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: &KvRowLayout,
+    ) {
+        let c = &theme.tokens.colors;
+        // Clip ink overhang too; text geometry already fits these bounds.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &row.rect,
+        );
+        if row.indicator {
+            if row.placeholder {
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    t,
+                    ui::surface::edge_on(c.surfaces.base),
+                    None,
+                    &RoundedRect::from_rect(row.checkbox(), 4.0),
+                );
             } else {
-                c.text_dim
-            };
-            tr.draw_text(
-                scene,
-                &row.key,
-                theme.tokens.typography.scale.sm,
-                row_col,
-                t * Affine::translate((key_x, y + 7.0)),
-                Some((val_x - key_x - 12.0) as f32),
-            );
-            Self::draw_value_with_vars(
-                scene,
+                Checkbox::paint(
+                    scene,
+                    t,
+                    theme,
+                    &CheckboxFace::new(row.checkbox(), row.enabled).transparent_unchecked(),
+                );
+            }
+        }
+        let color = if row.placeholder {
+            c.text_dim.with_alpha_factor(0.6)
+        } else if row.enabled {
+            c.text_primary
+        } else {
+            c.text_dim
+        };
+        for (layout, rect) in [(&row.key, row.key_rect), (&row.value, row.value_rect)] {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
                 t,
-                tr,
-                theme,
-                &row.value,
-                val_x,
-                y + 7.0,
-                area.x1 - PAD - val_x,
-                row.enabled,
+                &rect,
             );
-            let sep = Rect::new(x0, y + ROW_H - 1.0, area.x1 - PAD, y + ROW_H);
+            tr.draw_rich(
+                scene,
+                layout,
+                t * Affine::translate((rect.x0, rect.y0)),
+                color,
+            );
+            scene.pop_layer();
+        }
+        if !row.placeholder && row.indicator {
             scene.fill(
                 Fill::NonZero,
                 t,
-                c.border_standard.with_alpha_factor(0.4),
+                ui::surface::edge_on(c.surfaces.base),
                 None,
-                &sep,
+                &Rect::new(row.rect.x0, row.rect.y1 - 1.0, row.rect.x1, row.rect.y1),
             );
-            y += ROW_H;
         }
-        y
-    }
-
-    /// The trailing "New key" / "New value" placeholder row, when there is
-    /// still room for one below `y`.
-    fn draw_kv_new_row_placeholder(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        y: f64,
-    ) {
-        if y + ROW_H > area.y1 {
-            return;
-        }
-        let c = &theme.tokens.colors;
-        let x0 = area.x0 + PAD;
-        let key_x = x0 + 30.0;
-        let val_x = area.x0 + area.width() * 0.5;
-        let cb = Rect::new(x0, y + 4.0, x0 + 16.0, y + 20.0);
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            c.border_standard.with_alpha_factor(0.5),
-            None,
-            &RoundedRect::from_rect(cb, 4.0),
-        );
-        tr.draw_text(
-            scene,
-            "New key",
-            theme.tokens.typography.scale.sm,
-            c.text_dim.with_alpha_factor(0.6),
-            t * Affine::translate((key_x, y + 7.0)),
-            None,
-        );
-        tr.draw_text(
-            scene,
-            "New value",
-            theme.tokens.typography.scale.sm,
-            c.text_dim.with_alpha_factor(0.6),
-            t * Affine::translate((val_x, y + 7.0)),
-            None,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn draw_value_with_vars(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        value: &str,
-        start_x: f64,
-        y: f64,
-        max_w: f64,
-        enabled: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let base_col = if enabled { c.text_primary } else { c.text_dim };
-        let size = theme.tokens.typography.scale.sm;
-        let mut cx = start_x;
-        let mut rest = value;
-        let limit = start_x + max_w;
-        while !rest.is_empty() && cx < limit {
-            if let Some(open) = rest.find("{{") {
-                // `open` and `close` are byte offsets of an ASCII pattern
-                // match, always on a UTF-8 boundary — `.get()` still avoids
-                // asserting that rather than indexing blindly.
-                if open > 0 {
-                    let Some(plain) = rest.get(..open) else {
-                        break;
-                    };
-                    tr.draw_text(
-                        scene,
-                        plain,
-                        size,
-                        base_col,
-                        t * Affine::translate((cx, y)),
-                        None,
-                    );
-                    let (w, _) = tr.measure(plain, size, None);
-                    cx += f64::from(w);
-                }
-                if let Some(after_open) = rest.get(open..)
-                    && let Some(close) = after_open.find("}}")
-                {
-                    let Some(var) = rest.get(open..open + close + 2) else {
-                        break;
-                    };
-                    tr.draw_text_weighted(
-                        scene,
-                        var,
-                        size,
-                        theme.accent_primary,
-                        t * Affine::translate((cx, y)),
-                        None,
-                        TextWeight::Semibold,
-                    );
-                    let (w, _) = tr.measure(var, size, None);
-                    cx += f64::from(w);
-                    rest = rest.get(open + close + 2..).unwrap_or_default();
-                    continue;
-                }
-            }
-            tr.draw_text(
-                scene,
-                rest,
-                size,
-                base_col,
-                t * Affine::translate((cx, y)),
-                Some((limit - cx) as f32),
-            );
-            break;
-        }
+        scene.pop_layer();
     }
 
     fn draw_auth(
@@ -2123,34 +2414,49 @@ impl ApiTesterApp {
             None,
             TextWeight::Bold,
         );
-        y += 20.0;
+        y += 20.0 * self.text_scale;
 
         // Mode chips (display of the active scheme; the scheme is fixed per
         // loaded request in this app, so these are read-only chrome).
         let mut cx = x0;
         for label in Auth::LABELS {
             let active = self.request.auth.label() == label;
-            let (lw, _) = tr.measure(label, theme.tokens.typography.scale.sm, None);
-            let chip = Rect::new(cx, y, cx + f64::from(lw) + 24.0, y + 30.0);
-            let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.full));
+            let (lw, _) = tr.measure(
+                label,
+                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                    .size,
+                None,
+            );
+            let chip = Rect::new(cx, y, cx + f64::from(lw) + 24.0, y + self.row_height);
             if active {
+                let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.full));
                 scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
             } else {
-                scene.fill(Fill::NonZero, t, c.lift(0.35), None, &shape);
-                scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+                ui::surface::card(
+                    scene,
+                    t,
+                    chip,
+                    f64::from(theme.tokens.radii.full),
+                    c.lift(0.35),
+                );
             }
             tr.draw_text_weighted(
                 scene,
                 label,
-                theme.tokens.typography.scale.sm,
-                if active { Color::WHITE } else { c.text_dim },
+                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                    .size,
+                if active {
+                    c.on_surface(theme.accent_primary).ink
+                } else {
+                    c.text_dim
+                },
                 t * Affine::translate((cx + 12.0, y + 8.0)),
                 None,
                 TextWeight::Semibold,
             );
             cx = chip.x1 + 8.0;
         }
-        y += 50.0;
+        y += self.row_height + 20.0;
 
         let draw_field = |scene: &mut Scene,
                           tr: &mut TextRenderer,
@@ -2167,10 +2473,19 @@ impl ApiTesterApp {
                 None,
                 TextWeight::Bold,
             );
-            let field = Rect::new(x0, y + 16.0, area.x1 - PAD, y + 50.0);
-            let shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
-            scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+            let field = Rect::new(
+                x0,
+                y + 16.0 * self.text_scale,
+                area.x1 - PAD,
+                y + 16.0 * self.text_scale + self.control_height,
+            );
+            ui::surface::card(
+                scene,
+                t,
+                field,
+                f64::from(theme.tokens.radii.md),
+                c.surfaces.raised,
+            );
             let shown = if secret && !value.is_empty() {
                 "\u{2022}".repeat(value.chars().count().min(24))
             } else {
@@ -2179,7 +2494,8 @@ impl ApiTesterApp {
             tr.draw_text(
                 scene,
                 &shown,
-                theme.tokens.typography.scale.sm,
+                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                    .size,
                 c.text_primary,
                 t * Affine::translate((field.x0 + 12.0, field.center().y - 7.0)),
                 Some((field.width() - 24.0) as f32),
@@ -2191,7 +2507,8 @@ impl ApiTesterApp {
                 tr.draw_text(
                     scene,
                     "This request does not use authentication.",
-                    theme.tokens.typography.scale.sm,
+                    tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                        .size,
                     c.text_dim,
                     t * Affine::translate((x0, y)),
                     None,
@@ -2200,11 +2517,25 @@ impl ApiTesterApp {
             Auth::Bearer { token } => draw_field(scene, tr, y, "TOKEN", token, true),
             Auth::Basic { username, password } => {
                 draw_field(scene, tr, y, "USERNAME", username, false);
-                draw_field(scene, tr, y + 70.0, "PASSWORD", password, true);
+                draw_field(
+                    scene,
+                    tr,
+                    y + self.control_height + 36.0 * self.text_scale,
+                    "PASSWORD",
+                    password,
+                    true,
+                );
             }
             Auth::ApiKey { header, value } => {
                 draw_field(scene, tr, y, "HEADER NAME", header, false);
-                draw_field(scene, tr, y + 70.0, "VALUE", value, true);
+                draw_field(
+                    scene,
+                    tr,
+                    y + self.control_height + 36.0 * self.text_scale,
+                    "VALUE",
+                    value,
+                    true,
+                );
             }
         }
     }
@@ -2228,8 +2559,13 @@ impl ApiTesterApp {
         for mode in BodyMode::ALL {
             let active = self.request.body_mode == mode;
             let label = mode.label();
-            let (lw, _) = tr.measure(label, theme.tokens.typography.scale.sm, None);
-            let chip = Rect::new(cx, y, cx + f64::from(lw) + 20.0, y + 28.0);
+            let (lw, _) = tr.measure(
+                label,
+                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                    .size,
+                None,
+            );
+            let chip = Rect::new(cx, y, cx + f64::from(lw) + 20.0, y + self.row_height);
             let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
             if active {
                 scene.fill(
@@ -2241,12 +2577,19 @@ impl ApiTesterApp {
                 );
                 scene.stroke(&Stroke::new(1.0), t, theme.accent_primary, None, &shape);
             } else {
-                scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+                ui::surface::card(
+                    scene,
+                    t,
+                    chip,
+                    f64::from(theme.tokens.radii.md),
+                    c.lift(0.35),
+                );
             }
             tr.draw_text_weighted(
                 scene,
                 label,
-                theme.tokens.typography.scale.sm,
+                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                    .size,
                 if active { c.text_primary } else { c.text_dim },
                 t * Affine::translate((cx + 10.0, y + 6.0)),
                 None,
@@ -2258,49 +2601,39 @@ impl ApiTesterApp {
             );
             cx = chip.x1 + 8.0;
         }
-        y += 40.0;
+        y += self.row_height + 12.0;
 
         match self.request.body_mode {
             BodyMode::None => {
                 tr.draw_text(
                     scene,
                     "This request does not have a body.",
-                    theme.tokens.typography.scale.sm,
+                    tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                        .size,
                     c.text_dim,
                     t * Affine::translate((x0, y)),
                     None,
                 );
             }
             BodyMode::Form => {
-                let rows = self.request.form.clone();
                 let sub = Rect::new(area.x0, y - 8.0, area.x1, area.y1);
-                Self::draw_kv_table(scene, t, tr, theme, sub, &rows, "No form fields");
+                self.draw_kv_table(scene, t, tr, theme, sub);
             }
             BodyMode::Json | BodyMode::Raw => {
                 let field = l.body;
-                let shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    theme.tokens.colors.neutral[1],
-                    None,
-                    &shape,
-                );
-                scene.stroke(
-                    &Stroke::new(if self.body_input.is_focused() {
-                        2.0
-                    } else {
-                        1.0
-                    }),
-                    t,
-                    if self.body_input.is_focused() {
-                        theme.border_focus
-                    } else {
-                        c.border_standard
-                    },
-                    None,
-                    &shape,
-                );
+                if self.body_input.is_focused() {
+                    let shape = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md));
+                    scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
+                    scene.stroke(&Stroke::new(2.0), t, theme.border_focus, None, &shape);
+                } else {
+                    ui::surface::card(
+                        scene,
+                        t,
+                        field,
+                        f64::from(theme.tokens.radii.md),
+                        c.surfaces.raised,
+                    );
+                }
                 self.body_input.draw(scene, t, tr, theme, presence);
             }
         }
@@ -2319,17 +2652,34 @@ impl ApiTesterApp {
         let area = l.response;
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &area);
         let top_div = Rect::new(area.x0, area.y0, area.x1, area.y0 + 1.0);
-        scene.fill(Fill::NonZero, t, c.border_standard, None, &top_div);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            ui::surface::edge_on(c.surfaces.raised),
+            None,
+            &top_div,
+        );
 
         let row = l.resp_status;
         let x0 = area.x0 + PAD;
-        let cy = response_status_line_center(row);
+        let cy = row.y0 + (self.control_height + 10.0) / 2.0;
 
         if let Some(resp) = self.response.clone() {
             let scol = status_color(theme, resp.status_class());
             let pill_label = format!("{} {}", resp.status, resp.status_text);
-            let (pw, _) = tr.measure(&pill_label, theme.tokens.typography.scale.sm, None);
-            let pill = Rect::new(x0, cy - 12.0, x0 + f64::from(pw) + 24.0, cy + 12.0);
+            let (pw, ph) = tr.measure_weighted(
+                &pill_label,
+                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                    .size,
+                None,
+                TextWeight::Bold,
+            );
+            let pill = Rect::new(
+                x0,
+                cy - self.control_height / 2.0,
+                x0 + f64::from(pw) + 24.0,
+                cy + self.control_height / 2.0,
+            );
             let pill_shape = RoundedRect::from_rect(pill, f64::from(theme.tokens.radii.full));
             scene.fill(
                 Fill::NonZero,
@@ -2341,9 +2691,10 @@ impl ApiTesterApp {
             tr.draw_text_weighted(
                 scene,
                 &pill_label,
-                theme.tokens.typography.scale.sm,
+                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                    .size,
                 scol,
-                t * Affine::translate((pill.x0 + 12.0, cy - 7.0)),
+                t * Affine::translate((pill.x0 + 12.0, cy - f64::from(ph) / 2.0)),
                 None,
                 TextWeight::Bold,
             );
@@ -2355,9 +2706,10 @@ impl ApiTesterApp {
             tr.draw_text(
                 scene,
                 &meta,
-                theme.tokens.typography.scale.sm,
+                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                    .size,
                 c.text_dim,
-                t * Affine::translate((pill.x1 + 16.0, cy - 7.0)),
+                t * Affine::translate((pill.x1 + 16.0, cy - f64::from(ph) / 2.0)),
                 None,
             );
 
@@ -2366,15 +2718,15 @@ impl ApiTesterApp {
                 .draw(scene, t, tr, theme, presence);
 
             let body_area = l.resp_body;
+            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &body_area);
+            let body_div = Rect::new(area.x0, body_area.y0, area.x1, body_area.y0 + 1.0);
             scene.fill(
                 Fill::NonZero,
                 t,
-                theme.tokens.colors.neutral[1],
+                ui::surface::edge_on(c.surfaces.raised),
                 None,
-                &body_area,
+                &body_div,
             );
-            let body_div = Rect::new(area.x0, body_area.y0, area.x1, body_area.y0 + 1.0);
-            scene.fill(Fill::NonZero, t, c.border_standard, None, &body_div);
 
             match self.response_view {
                 ResponseView::Pretty => {
@@ -2391,33 +2743,22 @@ impl ApiTesterApp {
             }
         } else if let Some(err) = &self.error {
             let body_area = l.resp_body;
-            scene.fill(
-                Fill::NonZero,
-                t,
-                theme.tokens.colors.neutral[1],
-                None,
-                &body_area,
-            );
+            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &body_area);
             self.response_error.draw(scene, t, tr, theme, presence);
             // Preserve the transport's actual detail below the shared recovery
             // treatment; the CTA remains visible and keyboard-accessible.
             tr.draw_text(
                 scene,
                 err,
-                theme.tokens.typography.scale.sm,
+                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                    .size,
                 c.text_dim,
                 t * Affine::translate((body_area.x0 + PAD, body_area.y1 - 48.0)),
                 Some((body_area.width() - PAD * 2.0) as f32),
             );
         } else {
             let body_area = l.resp_body;
-            scene.fill(
-                Fill::NonZero,
-                t,
-                theme.tokens.colors.neutral[1],
-                None,
-                &body_area,
-            );
+            scene.fill(Fill::NonZero, t, c.surfaces.base, None, &body_area);
             self.response_empty.draw(scene, t, tr, theme, presence);
         }
     }
@@ -2434,7 +2775,11 @@ impl ApiTesterApp {
         let c = &theme.tokens.colors;
         let pretty = vars::pretty_json(&resp.body).unwrap_or_else(|| resp.body.clone());
         let lines = vars::tokenize_json(&pretty);
-        let size = theme.tokens.typography.scale.sm;
+        let size = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+            .size;
+        // Measure the line at the size the lines are drawn with.
+        let line_h = (f64::from(tr.measure("Ag", size, None).1) + 4.0).max(JSON_LINE_H);
         let gutter_w = 44.0;
         let text_x0 = area.x0 + gutter_w + 8.0;
         self.layout.fold_carets.clear();
@@ -2458,7 +2803,7 @@ impl ApiTesterApp {
                 hidden_until = None;
             }
             line_no += 1;
-            if screen_y + JSON_LINE_H >= area.y0 && screen_y <= area.y1 {
+            if screen_y + line_h >= area.y0 && screen_y <= area.y1 {
                 let ln = line_no.to_string();
                 let (lnw, _) = tr.measure(&ln, 11.0, None);
                 tr.draw_text(
@@ -2475,14 +2820,13 @@ impl ApiTesterApp {
 
                 let collapsed = self.collapsed.contains(&idx);
                 if line.opens_block && line.close_line.is_some() {
-                    let caret_pt =
-                        Point::new(area.x0 + gutter_w - 2.0, screen_y + JSON_LINE_H / 2.0);
+                    let caret_pt = Point::new(area.x0 + gutter_w - 2.0, screen_y + line_h / 2.0);
                     draw_fold_caret(scene, t, caret_pt, c.text_dim, !collapsed);
                     let caret_rect = Rect::new(
                         area.x0 + gutter_w - 10.0,
                         screen_y,
                         area.x0 + gutter_w + 6.0,
-                        screen_y + JSON_LINE_H,
+                        screen_y + line_h,
                     );
                     self.layout.fold_carets.push((caret_rect, idx));
                 }
@@ -2521,7 +2865,7 @@ impl ApiTesterApp {
             {
                 hidden_until = Some(close);
             }
-            screen_y += JSON_LINE_H;
+            screen_y += line_h;
         }
         scene.pop_layer();
     }
@@ -2543,10 +2887,14 @@ impl ApiTesterApp {
             t,
             &area,
         );
-        let size = theme.tokens.typography.scale.sm;
+        let size = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+            .size;
+        // Measure the line at the size the lines are drawn with.
+        let line_h = (f64::from(tr.measure("Ag", size, None).1) + 4.0).max(JSON_LINE_H);
         let mut y = area.y0 + 8.0 - self.body_scroll;
         for line in body.lines() {
-            if y + JSON_LINE_H >= area.y0 && y <= area.y1 {
+            if y + line_h >= area.y0 && y <= area.y1 {
                 tr.draw_text_styled(
                     scene,
                     line,
@@ -2559,7 +2907,7 @@ impl ApiTesterApp {
                     true,
                 );
             }
-            y += JSON_LINE_H;
+            y += line_h;
         }
         scene.pop_layer();
     }
@@ -2575,47 +2923,57 @@ impl ApiTesterApp {
         let c = &theme.tokens.colors;
         let x0 = area.x0 + PAD;
         let mut y = area.y0 + 12.0;
+        let caption = "RESPONSE HEADERS";
+        let (_, caption_h) = tr.measure_weighted(caption, 10.0, None, TextWeight::Bold);
         tr.draw_text_weighted(
             scene,
-            "RESPONSE HEADERS",
+            caption,
             10.0,
             c.text_dim,
             t * Affine::translate((x0, y)),
             None,
             TextWeight::Bold,
         );
-        y += 24.0;
+        y += f64::from(caption_h) + 9.0;
+        // Rows advance by the measured line height of the size they paint
+        // with, so a scaled header list never overprints its neighbours.
+        let size = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+            .size;
+        let line_h = f64::from(tr.measure("Ag", size, None).1);
+        let row_h = (line_h + 10.0).max(28.0);
         let key_w = (area.width() * 0.32).min(280.0);
         for h in &resp.headers {
-            if y + 26.0 > area.y1 {
+            if y + row_h > area.y1 {
                 break;
             }
+            let ty = y + (row_h - 1.0 - line_h) / 2.0;
             tr.draw_text_weighted(
                 scene,
                 &h.key,
-                theme.tokens.typography.scale.sm,
+                size,
                 c.semantic.info,
-                t * Affine::translate((x0, y)),
+                t * Affine::translate((x0, ty)),
                 Some((key_w - 12.0) as f32),
                 TextWeight::Semibold,
             );
             tr.draw_text(
                 scene,
                 &h.value,
-                theme.tokens.typography.scale.sm,
+                size,
                 c.text_primary,
-                t * Affine::translate((x0 + key_w, y)),
+                t * Affine::translate((x0 + key_w, ty)),
                 Some((area.width() - PAD * 2.0 - key_w) as f32),
             );
-            let sep = Rect::new(x0, y + 22.0, area.x1 - PAD, y + 23.0);
+            let sep = Rect::new(x0, y + row_h - 1.0, area.x1 - PAD, y + row_h);
             scene.fill(
                 Fill::NonZero,
                 t,
-                c.border_standard.with_alpha_factor(0.4),
+                ui::surface::edge_on(c.surfaces.base),
                 None,
                 &sep,
             );
-            y += 28.0;
+            y += row_h;
         }
     }
 
@@ -2637,6 +2995,31 @@ impl ApiTesterApp {
         for cmd in cmds {
             match cmd {
                 Cmd::ToggleRail => self.rail.toggle(),
+                Cmd::ToggleManagement(group) => {
+                    self.management = if self.management == Some(group) {
+                        None
+                    } else {
+                        Some(group)
+                    };
+                    for (i, row) in self.disclosures.iter_mut().enumerate() {
+                        row.set_expanded(self.management == Some(i));
+                    }
+                }
+                Cmd::ResizeRequest(delta) => {
+                    self.request_height_override =
+                        Some((self.layout.editor.height() + delta).max(0.0));
+                }
+                Cmd::ResetRequest => self.request_height_override = None,
+                Cmd::ScrollNav(direction) => {
+                    let page = (self.layout.nav_viewport.height() / self.row_height)
+                        .floor()
+                        .max(1.0) as usize;
+                    self.nav_start = if direction < 0 {
+                        self.nav_start.saturating_sub(page)
+                    } else {
+                        (self.nav_start + page).min(self.nav_rows.len().saturating_sub(1))
+                    };
+                }
                 Cmd::SetTab(i) => {
                     if let Some(&tab) = RequestTab::ALL.get(i) {
                         self.active_tab = tab;
@@ -2982,6 +3365,39 @@ impl Widget for ApiTesterApp {
             self.rebuild_nav();
             self.refresh_search();
         }
+
+        let collection_name = self
+            .current_collection_id()
+            .and_then(|id| self.collections.iter().find(|c| c.id == id))
+            .map_or("No collection", |c| c.name.as_str());
+        let request_name = self
+            .selected
+            .and_then(|(ci, ri)| self.collections.get(ci)?.requests.get(ri))
+            .map_or("Unsaved request", |r| r.name.as_str());
+        let environment_name = self
+            .environments
+            .iter()
+            .find(|e| Some(e.id) == self.active_env)
+            .map_or(NO_ENV, |e| e.name.as_str());
+        self.disclosures[0].set_accessible_name(format!("Collection actions: {collection_name}"));
+        self.disclosures[1].set_accessible_name(format!("Request actions: {request_name}"));
+        self.disclosures[2].set_accessible_name(format!("Environment actions: {environment_name}"));
+        for (index, label, target) in [
+            (2, "Rename collection", collection_name),
+            (3, "Rename request", request_name),
+            (4, "Delete request", request_name),
+            (6, "Rename environment", environment_name),
+            (7, "Delete environment", environment_name),
+            (8, "Add variable", environment_name),
+            (9, "Delete variable", environment_name),
+        ] {
+            // Button exposes an owning name builder; move it through that
+            // builder to preserve its stable action emitter and callback.
+            let button =
+                std::mem::replace(&mut self.manage_buttons[index], Button::new("", "", None));
+            self.manage_buttons[index] = button.with_accessible_name(&format!("{label}: {target}"));
+        }
+
         self.send_button.set_enabled(!self.sending);
         self.request_tabs.set_selected(self.tab_index());
         self.response_view_toggle.set_selected(
@@ -2998,12 +3414,24 @@ impl Widget for ApiTesterApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Both App::rebuild_structure/init_layout and FrameHarness::try_relayout
+        // clear bindings and node_map before calling root.build_layout. Only
+        // here can replaced rows be dropped: focus capture and event undo
+        // inspection have finished reading the preceding admitted tree.
+        self.retired_nav_rows.clear();
+        self.nav_rows_replaced = false;
         // Build a child taffy node per live control, in the SAME order
         // `children`/`children_mut`/`position_children` use, so the host's
         // focus walk (which zips `children()` against `taffy.children()`)
         // lines up. The children are hand-positioned in `apply_layout`, so
         // their taffy geometry is unused — the nodes exist only so each
         // control is registered in `node_map` (a11y + focus + hit-testing).
+        self.text_sm = theme.tokens.typography.scale.sm;
+        self.rail_row_gap = f64::from(theme.tokens.spacing.s2);
+        self.rail_group_gap = f64::from(theme.tokens.spacing.s1);
+        self.rail_inset = f64::from(theme.tokens.spacing.s6);
+        let accent = theme.accent_primary.to_rgba8();
+        self.variable_color = [accent.r, accent.g, accent.b];
         let mut child_nodes: Vec<NodeId> = Vec::new();
         {
             let mut kids = self.children_mut_ref();
@@ -3032,6 +3460,45 @@ impl Widget for ApiTesterApp {
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.last_sig = self.child_sig();
         node
+    }
+
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        tr: &mut TextRenderer,
+    ) -> bool {
+        let style = tr.renderer_input_style(&TextStyle::new(self.text_sm));
+        let (_, line) = tr.measure_style("Ag", None, &style);
+        let (_, label) = tr.measure("Environment actions", 14.0, None);
+        let row = f64::from(line).ceil() + 12.0;
+        let control = f64::from(label).ceil() + 14.0;
+        let (_, env_caption) = tr.measure_weighted("ENV", 9.0, None, TextWeight::Bold);
+        let (_, caption) = tr.measure_weighted("COLLECTIONS", 10.0, None, TextWeight::Bold);
+        self.env_caption_h = f64::from(env_caption).ceil();
+        self.caption_h = f64::from(caption).ceil();
+        let changed = self.row_height != row.max(ROW_H) || self.control_height != control.max(34.0);
+        self.row_height = row.max(ROW_H);
+        self.control_height = control.max(34.0);
+        self.text_scale = f64::from(tr.text_scale());
+        let (width, _) = tr.measure("Environment actions", 14.0, None);
+        let rail_width = SIDEBAR_W.max(f64::from(width) + 68.0);
+        self.rail.set_docked_width(rail_width);
+        self.rail.set_overlay_width(rail_width);
+        self.rail
+            .set_breakpoint(RAIL_BREAKPOINT.max(rail_width + 520.0));
+        let before = self.kv_height;
+        let rect = taffy.layout(node).map_or(self.rect, |layout| {
+            Rect::new(
+                0.0,
+                0.0,
+                f64::from(layout.size.width),
+                f64::from(layout.size.height),
+            )
+        });
+        let width = self.rail.resolve(rect).width();
+        self.measure_kv_table(tr, width);
+        changed || before != self.kv_height
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -3098,6 +3565,130 @@ impl Widget for ApiTesterApp {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
 
+        let child_nodes = taffy.children(node_id).unwrap_or_default();
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    state: ElementState::Pressed,
+                    ..
+                },
+                ..
+            }
+        ) {
+            let target = if let Some(group) = self.management.take() {
+                self.disclosures[group].set_expanded(false);
+                Some(
+                    [
+                        "api.collection-actions",
+                        "api.request-actions",
+                        "api.environment-actions",
+                    ][group],
+                )
+            } else if self.rail.is_overlay() && self.rail.is_open() {
+                self.rail.snap(false);
+                Some("api.workspace-menu")
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                if let Some(index) = self
+                    .children_ref()
+                    .iter()
+                    .position(|child| child.test_id() == Some(target))
+                {
+                    *focus_target = child_nodes.get(index).copied();
+                }
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+        }
+        let blocked_by_rail = self.rail.is_overlay()
+            && self.sidebar_visible()
+            && self.layout.sidebar.contains(self.last_cursor);
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.layout.divider.contains(self.last_cursor) && !blocked_by_rail => {
+                self.request_drag = Some((self.last_cursor.y, self.layout.editor.height()));
+                if let Some(index) = self
+                    .children_ref()
+                    .iter()
+                    .position(|child| child.test_id() == Some("api.request-divider"))
+                {
+                    *focus_target = child_nodes.get(index).copied();
+                }
+                *handled = true;
+            }
+            WindowEvent::CursorMoved { .. } if self.request_drag.is_some() => {
+                if let Some((start, height)) = self.request_drag {
+                    self.request_height_override =
+                        Some((height + self.last_cursor.y - start).max(0.0));
+                }
+                *handled = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.request_drag.is_some() => {
+                self.request_drag = None;
+                *handled = true;
+            }
+            WindowEvent::MouseWheel { delta, .. }
+                if self.layout.nav_viewport.contains(self.last_cursor) =>
+            {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+                    MouseScrollDelta::PixelDelta(p) => p.y,
+                };
+                if dy < 0.0 {
+                    self.nav_start =
+                        (self.nav_start + 1).min(self.nav_rows.len().saturating_sub(1));
+                } else if dy > 0.0 {
+                    self.nav_start = self.nav_start.saturating_sub(1);
+                }
+                *handled = true;
+            }
+            _ => {}
+        }
+        if *handled {
+            self.dirty = true;
+            return;
+        }
+
+        let pointer_event = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+        );
+        let overlay_sidebar = self.rail.is_overlay() && self.sidebar_visible() && pointer_event;
+        if overlay_sidebar
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+            )
+            && !self.layout.sidebar.contains(self.last_cursor)
+        {
+            self.rail.snap(false);
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        let sidebar_count = self.layout.sidebar_items.len()
+            + self.form.map_or(0, |form| {
+                2 + usize::from(form.needs_name())
+                    + usize::from(form.needs_variable_fields())
+                    + usize::from(form.needs_value())
+            });
         // Route the event through the child widgets (pointer-capture aware),
         // exactly like a `Column`.
         let child_nodes = taffy.children(node_id).unwrap_or_default();
@@ -3120,7 +3711,16 @@ impl Widget for ApiTesterApp {
                     );
                 }
             } else {
-                for (k, &cn) in kids.iter_mut().zip(child_nodes.iter()) {
+                let sidebar_start = kids.len().saturating_sub(sidebar_count);
+                let cursor_move = matches!(event, WindowEvent::CursorMoved { .. });
+                let mut any_handled = false;
+                for (index, (k, &cn)) in kids.iter_mut().zip(child_nodes.iter()).enumerate() {
+                    if overlay_sidebar && index < sidebar_start {
+                        continue;
+                    }
+                    if cursor_move {
+                        *handled = false;
+                    }
                     k.handle_event(
                         event,
                         scale_factor,
@@ -3132,10 +3732,12 @@ impl Widget for ApiTesterApp {
                         cn,
                         taffy,
                     );
-                    if *handled {
+                    any_handled |= *handled;
+                    if *handled && !cursor_move {
                         break;
                     }
                 }
+                *handled |= any_handled;
             }
         }
 
@@ -3195,6 +3797,17 @@ impl Widget for ApiTesterApp {
             }
             _ => {}
         }
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.request_drag.is_some()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.layout
+            .divider
+            .contains(point)
+            .then_some(winit::window::CursorIcon::RowResize)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -3324,6 +3937,15 @@ impl Widget for ApiTesterApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        // This container also owns retained controls with native view/effect
+        // actions. Preserve their canonical dispatch before admitting Send.
+        for child in self.children_mut_ref() {
+            if let Some(started) =
+                child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
+            {
+                return Ok(Some(started));
+            }
+        }
         if kind != tilo_actions::OperationKind::Effect
             || type_id != crate::actions::API_TESTER_OPERATION_TYPE
         {
@@ -3346,6 +3968,13 @@ impl Widget for ApiTesterApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        for child in self.children_mut_ref() {
+            if let Some(update) =
+                child.poll_resource_operation(invocation, _cancellation_requested, _doc, _path)
+            {
+                return Some(update);
+            }
+        }
         self.poll_worker();
         if self
             .resource_send_result
@@ -3370,7 +3999,8 @@ impl Widget for ApiTesterApp {
         let sig = self.child_sig();
         let self_changed = sig != self.last_sig;
         self.last_sig = sig;
-        child_changed || self_changed
+        let rows_replaced = std::mem::take(&mut self.nav_rows_replaced);
+        child_changed || self_changed || rows_replaced
     }
 
     fn needs_redraw(&self) -> bool {
@@ -3427,6 +4057,63 @@ impl ApiTesterApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rail's stacked controls share one rhythm step (HIG §7b): the
+    /// named gap is the `s2` token, and every stacked pair in the computed
+    /// layout is separated by exactly that step.
+    #[test]
+    fn rail_controls_share_one_token_gap() {
+        let mut app = ApiTesterApp::new();
+        let rail_gap = app.rail_row_gap;
+        assert!((rail_gap - f64::from(ui::tokens::spacing::Spacing::BASE.s2)).abs() < 0.01);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.snap_rail(true);
+        let l = app.compute_layout();
+        let mut stacked: Vec<Rect> = l.sidebar_items.iter().map(|(_, r)| *r).collect();
+        stacked.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        let controls: Vec<Rect> = stacked
+            .into_iter()
+            .filter(|r| (r.height() - app.control_height).abs() < 0.01)
+            .collect();
+        assert!(controls.len() >= 4, "the rail lays out its controls");
+        for pair in controls.windows(2) {
+            let gap = pair[1].y0 - pair[0].y1;
+            // Consecutive stacked controls: one step; a larger gap is the
+            // collections section between the groups, never a smaller one.
+            assert!(
+                (gap - rail_gap).abs() < 0.01 || gap > rail_gap,
+                "stacked rail controls keep the s2 step, got {gap}"
+            );
+            assert!(gap >= 4.0, "rail controls never touch: gap {gap}");
+        }
+        // An open action group: its rows sit one `s1` apart and the group
+        // still ends a full `s2` above whatever follows.
+        let group_gap = app.rail_group_gap;
+        assert!((group_gap - f64::from(ui::tokens::spacing::Spacing::BASE.s1)).abs() < 0.01);
+        app.management = Some(1);
+        let l = app.compute_layout();
+        let rows: Vec<Rect> = l
+            .sidebar_items
+            .iter()
+            .filter_map(|(item, r)| match item {
+                SidebarItem::Manage(3 | 4 | 10 | 11 | 12) => Some(*r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rows.len(),
+            5,
+            "the environment group lays out its five rows"
+        );
+        for pair in rows.windows(2) {
+            let gap = pair[1].y0 - pair[0].y1;
+            assert!(
+                (gap - group_gap).abs() < 0.01,
+                "group rows keep the s1 step, got {gap}"
+            );
+        }
+    }
+    use crate::model::KeyValue;
 
     fn app() -> ApiTesterApp {
         ApiTesterApp::new_demo()
@@ -3639,21 +4326,49 @@ mod tests {
             .iter()
             .position(|meta| matches!(meta.kind, NavKind::History { .. }))
             .expect("the demo exposes request history");
-        let children = &layout.nav[users + 1..users + 5];
-        assert_eq!(children.len(), 4, "all four Users API requests are present");
-        assert!(
-            layout.nav[users].y1 <= children[0].y0,
-            "the collection header clears its first request"
-        );
-        for pair in children.windows(2) {
+        let _ = layout;
+        let mut visited = std::collections::BTreeSet::new();
+        for first in users..=history {
+            a.nav_start = first;
+            let page = a.compute_layout();
+            let visible: Vec<_> = page
+                .sidebar_items
+                .iter()
+                .filter_map(|(item, rect)| {
+                    if let SidebarItem::Nav(index) = item {
+                        Some((*index, *rect))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             assert!(
-                pair[0].y1 <= pair[1].y0,
-                "scaled request rows retain their own vertical cadence"
+                !visible.is_empty(),
+                "a narrow large-text rail keeps a usable list viewport"
+            );
+            for (index, rect) in &visible {
+                assert!(
+                    rect.y0 >= page.nav_viewport.y0 && rect.y1 <= page.nav_viewport.y1,
+                    "each reachable row stays inside the list viewport"
+                );
+                visited.insert(*index);
+            }
+            for pair in visible.windows(2) {
+                assert!(
+                    pair[0].1.y1 <= pair[1].1.y0,
+                    "scaled request rows retain their own vertical cadence"
+                );
+            }
+        }
+        for index in users..users + 5 {
+            assert!(
+                visited.contains(&index),
+                "the collection and all four requests remain reachable"
             );
         }
         assert!(
-            children.last().expect("four children").y1 <= layout.nav[history].y0,
-            "History starts after every Users API child, including off-screen rows"
+            visited.contains(&history),
+            "History remains reachable after the collection"
         );
     }
 
@@ -3943,6 +4658,480 @@ mod tests {
                 .is_none(),
             "terminal delivery is at most once"
         );
+    }
+    #[test]
+    fn composition_auto_height_tracks_rows_and_auth_fields_without_changing_manual_preference() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        let mut tr = TextRenderer::new();
+        a.measure_kv_table(&mut tr, 936.0);
+        let params = a.compute_layout();
+        a.request.params.push(KeyValue::new("extra", "value"));
+        a.measure_kv_table(&mut tr, 936.0);
+        assert_eq!(
+            a.compute_layout().editor.height(),
+            params.editor.height() + a.row_height
+        );
+        a.request.params.push(KeyValue::new("", ""));
+        a.measure_kv_table(&mut tr, 936.0);
+        assert_eq!(
+            a.compute_layout().editor.height(),
+            params.editor.height() + a.row_height
+        );
+        a.active_tab = RequestTab::Auth;
+        a.request.auth = Auth::None;
+        let none = a.compute_layout().editor.height();
+        a.request.auth = Auth::Basic {
+            username: "user".into(),
+            password: "secret".into(),
+        };
+        assert!(a.compute_layout().editor.height() > none);
+        a.request_height_override = Some(410.0);
+        a.rect = Rect::new(0.0, 0.0, 800.0, 480.0);
+        let small = a.compute_layout();
+        assert!(small.editor.height() < 410.0);
+        assert!(small.resp_body.height() >= a.row_height * 2.0);
+        assert_eq!(a.request_height_override, Some(410.0));
+        a.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        assert_eq!(a.compute_layout().editor.height(), 410.0);
+    }
+
+    #[test]
+    fn composition_view_commands_never_change_document_heads_or_leave_hidden_rects() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        a.seed_workspace(&mut doc, &root);
+        let heads = doc.get_heads();
+        a.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        a.layout = a.compute_layout();
+        a.sink
+            .borrow_mut()
+            .extend([Cmd::ToggleManagement(1), Cmd::ResizeRequest(24.0)]);
+        a.drain_commands(&mut doc, &root);
+        a.layout = a.compute_layout();
+        a.position_children();
+        assert!(a.manage_buttons[3].get_rect().area() > 0.0);
+        let sig = a.child_sig();
+        a.sink
+            .borrow_mut()
+            .extend([Cmd::ToggleManagement(1), Cmd::ResetRequest]);
+        a.drain_commands(&mut doc, &root);
+        a.layout = a.compute_layout();
+        a.position_children();
+        assert!(sig != a.child_sig());
+        assert_eq!(a.manage_buttons[3].get_rect(), Rect::ZERO);
+        assert!(
+            !a.children_ref()
+                .iter()
+                .any(|child| child.test_id() == Some("api.rename-request"))
+        );
+        assert_eq!(doc.get_heads(), heads);
+    }
+    #[test]
+    fn composition_long_kv_glyphs_fit_allocated_rows() {
+        for (width, scale) in [(480.0, 1.0), (800.0, 2.0)] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let rows = vec![KeyValue::new(
+                "a long query header or form field key that must wrap inside its own column",
+                "a long value with {{environment_variable}} and more text after the variable",
+            )];
+            let mut app = app();
+            app.text_sm = theme.tokens.typography.scale.sm;
+            app.request.params = rows;
+            app.measure_kv_table(&mut tr, width);
+            let row = &app.kv_rows[0];
+            let mut scene = Scene::new();
+            app.draw_kv_row(&mut scene, Affine::IDENTITY, &mut tr, &theme, row);
+            let end = row.rect.y1;
+            assert_eq!(row.checkbox().center().y, row.rect.center().y);
+            assert_eq!(row.key_rect.center().y, row.rect.center().y);
+            assert_eq!(row.value_rect.center().y, row.rect.center().y);
+            assert!(row.rect.height() > ROW_H);
+            assert_eq!(app.automatic_request_height(), app.kv_height.unwrap());
+            for run in &scene.encoding().resources.glyph_runs {
+                for glyph in &scene.encoding().resources.glyphs[run.glyphs.clone()] {
+                    let baseline = f64::from(run.transform.translation[1] + glyph.y);
+                    assert!(
+                        baseline < end,
+                        "{scale}x row ends at {end}, glyph baseline {baseline} escapes"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The overlay hamburger is as wide as the row's controls are tall at
+    /// every text scale (a 36px slab beside a 52px picker read as a broken
+    /// button), and the KV enable box scales with the text it toggles.
+    #[test]
+    fn overlay_hamburger_is_square_and_kv_indicator_scales_with_text() {
+        for scale in [1.0f32, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let mut a = app();
+            a.text_scale = f64::from(scale);
+            a.text_sm = theme.tokens.typography.scale.sm;
+            a.control_height = 34.0 * f64::from(scale);
+            a.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+            a.rail.resolve(a.rect);
+            assert_eq!(
+                a.rail.layout(),
+                SplitLayout::Overlay,
+                "480px collapses the rail"
+            );
+            let l = a.compute_layout();
+            assert!(
+                (l.hamburger.width() - l.hamburger.height()).abs() < 0.01,
+                "{scale}x hamburger {:?} is not square",
+                l.hamburger
+            );
+            assert!(l.hamburger.height() >= a.control_height - 0.01);
+            assert!(
+                l.method.x0 >= l.hamburger.x1,
+                "{scale}x the method picker starts after the hamburger"
+            );
+
+            a.measure_kv_table(&mut tr, 448.0);
+            let row = &a.kv_rows[0];
+            let expected = (KV_INDICATOR_SIZE * f64::from(scale)).min(row.rect.height() - 4.0);
+            assert!((row.checkbox().width() - expected).abs() < 0.01);
+            assert!((row.checkbox().height() - expected).abs() < 0.01);
+            assert!(row.checkbox().y0 >= row.rect.y0 && row.checkbox().y1 <= row.rect.y1);
+            assert!(
+                row.checkbox().x1 + KV_INDICATOR_GAP <= row.key_rect.x0 + 0.01,
+                "{scale}x checkbox {:?} runs into the key column at {}",
+                row.checkbox(),
+                row.key_rect.x0
+            );
+        }
+    }
+
+    #[test]
+    fn composition_same_count_nav_replacement_keeps_old_focus_alive_until_rebuild() {
+        let mut app = app();
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        app.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        assert!(app.retired_nav_rows.is_empty());
+        app.nav_rows[1].set_focus(true);
+        let original = std::ptr::from_ref(&app.nav_rows[1]);
+        let original_name = app.nav_rows[1].accessibility().unwrap().name;
+        let count = app.nav_rows.len();
+        app.load_request(0, 1);
+        assert_eq!(app.nav_rows.len(), count);
+        assert!(
+            app.take_structure_dirty(),
+            "same-count replacement invalidates topology"
+        );
+        assert_eq!(std::ptr::from_ref(&app.retired_nav_rows[0][1]), original);
+        assert_eq!(
+            app.retired_nav_rows[0][1].accessibility().unwrap().name,
+            original_name
+        );
+        assert!(app.retired_nav_rows[0][1].is_focused());
+        app.collections[0].requests[0].name = "renamed without changing row count".into();
+        app.rebuild_nav();
+        assert!(app.take_structure_dirty());
+        assert_eq!(app.retired_nav_rows.len(), 2);
+        // Match both real hosts: discard old maps before admitting a new tree.
+        nodes.clear();
+        tree = TaffyTree::new();
+        app.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        assert!(app.retired_nav_rows.is_empty());
+        assert!(!app.nav_rows_replaced);
+        assert!(
+            app.nav_rows[1]
+                .accessibility()
+                .unwrap()
+                .name
+                .unwrap()
+                .contains("renamed")
+        );
+    }
+
+    fn long_content_app(tab: RequestTab) -> ApiTesterApp {
+        let mut app = ApiTesterApp::new_demo();
+        let rows = vec![
+            KeyValue::new(
+                "X-Client-Requested-Response-Format-For-International-Customer-Service",
+                "prefix {{environment_variable}} with a longer suffix",
+            ),
+            KeyValue {
+                key: "disabled optional request metadata field".into(),
+                value: "more descriptive content".into(),
+                enabled: false,
+                ..KeyValue::new("", "")
+            },
+        ];
+        app.request.params = rows.clone();
+        app.request.headers = rows.clone();
+        app.request.form = rows;
+        app.request.body_mode = BodyMode::Form;
+        app.active_tab = tab;
+        app.collections.truncate(1);
+        app.collections[0].name =
+            "Long named collection for the international customer service".into();
+        app.collections[0].requests.truncate(2);
+        app.collections[0].requests[0].name =
+            "List international customers with Unicode café and detailed response metadata".into();
+        app.collections[0].requests[1].name =
+            "Create international customer record with a long descriptive request name".into();
+        app.history.truncate(1);
+        app.history[0].url =
+            "https://example.com/very/long/customer/history/path/with/many/segments/and/details"
+                .into();
+        app.rebuild_nav();
+        app
+    }
+
+    #[test]
+    fn composition_long_tables_share_wrapped_height_and_centered_indicators() {
+        for (width, scale) in [(480.0, 1.0), (800.0, 2.0)] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            for tab in [RequestTab::Params, RequestTab::Headers, RequestTab::Body] {
+                let mut app = long_content_app(tab);
+                app.text_sm = theme.tokens.typography.scale.sm;
+                app.text_scale = f64::from(scale);
+                app.row_height = (f64::from(
+                    tr.measure_style(
+                        "Ag",
+                        None,
+                        &tr.renderer_input_style(&TextStyle::new(app.text_sm)),
+                    )
+                    .1,
+                )
+                .ceil()
+                    + 12.0)
+                    .max(ROW_H);
+                app.rect = Rect::new(0.0, 0.0, width, 1200.0);
+                app.measure_kv_table(&mut tr, width);
+                assert_eq!(app.kv_rows.len(), 3);
+                for row in &app.kv_rows {
+                    assert_eq!(row.checkbox().center().y, row.key_rect.center().y);
+                    assert_eq!(row.checkbox().center().y, row.value_rect.center().y);
+                    assert!(row.rect.contains_rect(row.key_rect));
+                    assert!(row.rect.contains_rect(row.value_rect));
+                    assert!(row.key_rect.x1 < row.value_rect.x0);
+                    assert!((row.key_rect.height() - f64::from(row.key.height())).abs() < 0.01);
+                    let mut scene = Scene::new();
+                    app.draw_kv_row(&mut scene, Affine::IDENTITY, &mut tr, &theme, row);
+                    for run in &scene.encoding().resources.glyph_runs {
+                        for glyph in &scene.encoding().resources.glyphs[run.glyphs.clone()] {
+                            let x = f64::from(run.transform.translation[0] + glyph.x);
+                            let y = f64::from(run.transform.translation[1] + glyph.y);
+                            assert!(
+                                x >= row.rect.x0
+                                    && x < row.rect.x1
+                                    && y >= row.rect.y0
+                                    && y < row.rect.y1
+                            );
+                        }
+                    }
+                }
+                for pair in app.kv_rows.windows(2) {
+                    assert!(pair[0].rect.y1 <= pair[1].rect.y0);
+                }
+                let offset = if tab == RequestTab::Body {
+                    app.row_height + 16.0
+                } else {
+                    0.0
+                };
+                assert_eq!(
+                    app.automatic_request_height(),
+                    app.kv_height.unwrap() + offset
+                );
+                assert_eq!(
+                    app.compute_layout().editor.height(),
+                    app.automatic_request_height()
+                );
+                let narrow = app.kv_height.unwrap();
+                app.measure_kv_table(&mut tr, width * 2.0);
+                assert!(narrow > app.kv_height.unwrap());
+                app.request_height_override = Some(140.0);
+                app.measure_kv_table(&mut tr, width);
+                assert_eq!(app.compute_layout().editor.height(), 140.0);
+                assert_eq!(app.request_height_override, Some(140.0));
+            }
+        }
+    }
+
+    #[test]
+    fn composition_long_displayed_navigation_activates_the_named_item() {
+        use ui::headless::Driver;
+        for (width, height, scale) in [(480, 900, 1.0), (800, 900, 2.0)] {
+            let mut app = long_content_app(RequestTab::Params);
+            app.snap_rail(true);
+            let selected_name = format!(
+                "{} {}",
+                app.collections[0].requests[1].method.as_str(),
+                app.collections[0].requests[1].name
+            );
+            let history_name = app.nav_meta.last().unwrap().a11y_name.clone();
+            let mut d = Driver::new_with_theme(
+                ui::State::new(),
+                Box::new(app),
+                (width, height),
+                Theme::dark().with_text_scale(scale),
+            );
+            d.click_named("api.nav.2").unwrap();
+            assert!(d.focus_access_nodes().iter().any(|node| node.name.as_deref() == Some(&selected_name) && node.state.selected));
+            let targets = d.targets();
+            assert!(targets["api.nav.2"].y1 <= targets["api.nav.3"].y0);
+            assert!(
+                d.focus_access_nodes()
+                    .iter()
+                    .any(|node| node.name.as_deref() == Some(&history_name))
+            );
+            // Mount the actual generated history row on its own so its
+            // callback can be observed without the unrelated draft-sync gap.
+            let mut history_app = long_content_app(RequestTab::Params);
+            let sink = history_app.sink.clone();
+            let row = history_app.nav_rows.pop().unwrap();
+            let mut history_driver = Driver::new_with_theme(
+                ui::State::new(),
+                Box::new(row),
+                (width, height),
+                Theme::dark().with_text_scale(scale),
+            );
+            history_driver.click_named("api.nav.3").unwrap();
+            assert!(matches!(
+                sink.borrow_mut().pop(),
+                Some(Cmd::ReplayHistory(0))
+            ));
+            history_driver.key("Enter");
+            assert!(matches!(
+                sink.borrow_mut().pop(),
+                Some(Cmd::ReplayHistory(0))
+            ));
+        }
+    }
+
+    #[test]
+    #[ignore = "task 11 fix 1 long-content captures; set API_TESTER_CAPTURE_DIR"]
+    fn composition_fix1_capture_routes() {
+        use ui::headless::Driver;
+        let directory = std::path::PathBuf::from(std::env::var("API_TESTER_CAPTURE_DIR").unwrap());
+        std::fs::create_dir_all(&directory).unwrap();
+        for (width, height, scale) in [(480, 900, 1.0), (800, 900, 2.0)] {
+            for (route, tab, long, rail) in [
+                ("params-response", RequestTab::Params, false, false),
+                ("headers", RequestTab::Headers, false, false),
+                ("long-params", RequestTab::Params, true, false),
+                ("long-headers", RequestTab::Headers, true, false),
+                ("long-form", RequestTab::Body, true, false),
+                ("long-navigation", RequestTab::Params, true, true),
+            ] {
+                let mut app = if long {
+                    long_content_app(tab)
+                } else {
+                    ApiTesterApp::new_demo()
+                };
+                app.active_tab = tab;
+                app.request_tabs.set_selected(
+                    RequestTab::ALL
+                        .iter()
+                        .position(|value| *value == tab)
+                        .unwrap(),
+                );
+                if rail {
+                    app.snap_rail(true);
+                }
+                let d = Driver::new_with_theme(
+                    ui::State::new(),
+                    Box::new(app),
+                    (width, height),
+                    Theme::dark().with_text_scale(scale),
+                );
+                let stem = format!("{route}-{width}x{height}-{scale}x");
+                d.render_window_png(&directory.join(format!("{stem}.png")));
+                let targets: std::collections::BTreeMap<_, _> = d
+                    .targets()
+                    .into_iter()
+                    .map(|(id, r)| (id, vec![r.x0, r.y0, r.x1, r.y1]))
+                    .collect();
+                std::fs::write(
+                    directory.join(format!("{stem}.json")),
+                    serde_json::to_string_pretty(&targets).unwrap(),
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "task 11 named route captures; set API_TESTER_CAPTURE_DIR"]
+    fn composition_capture_routes() {
+        use ui::headless::Driver;
+        let directory = std::path::PathBuf::from(std::env::var("API_TESTER_CAPTURE_DIR").unwrap());
+        std::fs::create_dir_all(&directory).unwrap();
+        for (width, height, scale) in [
+            (1200, 800, 1.0),
+            (800, 700, 1.0),
+            (480, 900, 1.0),
+            (800, 480, 1.0),
+            (800, 900, 2.0),
+        ] {
+            for route in ["params-response", "body", "management"] {
+                let mut app = ApiTesterApp::new_demo();
+                if route != "params-response" {
+                    // Fixture staged before the initial document sync. Loading
+                    // another saved request into an already bound draft has a
+                    // separate pre-existing synchronization defect; these
+                    // captures do not claim to verify that transition.
+                    app.load_request(0, 2);
+                    app.active_tab = RequestTab::Body;
+                }
+                if route == "management" {
+                    app.snap_rail(true);
+                }
+                let mut d = Driver::new_with_theme(
+                    ui::State::new(),
+                    Box::new(app),
+                    (width, height),
+                    Theme::dark().with_text_scale(scale),
+                );
+                if route != "params-response" {
+                    assert!(d.focus_access_nodes().iter().any(|node| {
+                        node.name.as_deref() == Some("Request body")
+                            && node
+                                .value
+                                .as_deref()
+                                .is_some_and(|body| body.contains("Grace Hopper"))
+                    }));
+                }
+                if route == "management" {
+                    d.click_named("api.environment-actions").unwrap();
+                    for id in [
+                        "api.new-environment",
+                        "api.rename-environment",
+                        "api.delete-environment",
+                        "api.new-variable",
+                        "api.delete-variable",
+                    ] {
+                        let rect = d.targets()[id];
+                        assert!(rect.x0 >= 0.0 && rect.y0 >= 0.0 && rect.y1 <= f64::from(height));
+                    }
+                }
+                let stem = format!("{route}-{width}x{height}-{scale}x");
+                d.render_window_png(&directory.join(format!("{stem}.png")));
+                let targets: std::collections::BTreeMap<_, _> = d
+                    .targets()
+                    .into_iter()
+                    .map(|(id, r)| (id, vec![r.x0, r.y0, r.x1, r.y1]))
+                    .collect();
+                std::fs::write(
+                    directory.join(format!("{stem}.json")),
+                    serde_json::to_string_pretty(&targets).unwrap(),
+                )
+                .unwrap();
+            }
+        }
     }
 
     #[test]
