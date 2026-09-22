@@ -80,7 +80,7 @@ pub fn main() {
     }
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.browser", browser_root)
+        &LaunchSpec::new_with_args("so.tilo.browser", browser_root)
             .shot_handler(render_shot)
             .allowed_live_options(&[
                 "--shots-live",
@@ -154,7 +154,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
         ));
     }
 
-    let (state, autosave) = ui::persist::open("dev.tilo.browser");
+    let (state, autosave) = ui::persist::open("so.tilo.browser");
     let mut app =
         ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
     browser::actions::register(app.action_registry_mut());
@@ -336,7 +336,7 @@ fn render_overlay_shot(
     let mut widget = BrowserWidget::new_headless();
     widget.debug_force_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/tilo/tilo".into(),
+            url: "https://github.com/qos/qos".into(),
             title: "Tilo on code.sandbox.example".into(),
             last_visit: 3,
             visit_count: 12,
@@ -372,7 +372,7 @@ fn render_suggestions_shot(out: &std::path::Path, text_scale: Option<f32>) {
     let mut overlay = AddressSuggestions::new();
     overlay.set_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/tilo/tilo".into(),
+            url: "https://github.com/qos/qos".into(),
             title: "Tilo — code.sandbox.example".into(),
             last_visit: 3,
             visit_count: 12,
@@ -539,7 +539,8 @@ fn render_live_shot_to_png(
         widget.apply_layout(&taffy, child, Point::ORIGIN);
 
         if pip_probe_started && pip_request.is_none() {
-            pip_request = Widget::take_floating_surface_request(&mut widget);
+            pip_request =
+                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut widget);
         }
 
         let frame = engine.frames().lock().unwrap().clone();

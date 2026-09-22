@@ -143,7 +143,7 @@ pub struct HostLaunch {
 impl HostLaunch {
     /// Always `false`, and a method rather than a constant so a caller asking "is this app
     /// confined?" gets an answer from the type that knows, not a comment. Nothing in this crate
-    /// can return `true` here — a confined launch is a `.qpkg` going through `tilo-launcher run`.
+    /// can return `true` here — a confined launch is a `.tapp` going through `tilo-launcher run`.
     pub fn is_confined(&self) -> bool {
         false
     }

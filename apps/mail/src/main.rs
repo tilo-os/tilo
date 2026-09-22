@@ -51,7 +51,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.mail", mail::app_root)
+        &LaunchSpec::new("so.tilo.mail", mail::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "wide",

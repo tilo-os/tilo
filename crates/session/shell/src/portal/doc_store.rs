@@ -206,7 +206,7 @@ mod tests {
     use std::path::Component;
 
     fn caller() -> PortalCaller {
-        PortalCaller::new(WorkspaceId(7), "dev.tilo.notes")
+        PortalCaller::new(WorkspaceId(7), "so.tilo.notes")
     }
 
     #[test]

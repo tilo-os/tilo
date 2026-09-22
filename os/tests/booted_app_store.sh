@@ -107,7 +107,7 @@ $(on "tilo-runtime-bundle verify /usr/lib/tilo-runtime/$RUNTIME_VERSION 2>&1" | 
 fi
 
 # --- 4. the package manager is usable on the running system ------------------
-for t in tilo-install tilo-pkg; do
+for t in tilo-install tilo-app-package; do
   if on "command -v $t" >/dev/null 2>&1; then
     ok "$t is on PATH"
   else
@@ -124,6 +124,24 @@ else
 $(on 'tilo-install list 2>&1' | head -5 | sed 's/^/      /')"
 fi
 
+# The ergonomic commands are part of the image contract, not development-only
+# binaries. Exercise both aliases and the super-command before asking the
+# sandbox runtime to broker them.
+for t in app store tilo system; do
+  if on "command -v $t" >/dev/null 2>&1 && on "$t --help" >/dev/null 2>&1; then
+    ok "$t is installed and its command help works"
+  else
+    bad "$t is missing or unusable on the booted image"
+  fi
+done
+if on 'tilo app --help' >/dev/null 2>&1 \
+   && on 'tilo store --help' >/dev/null 2>&1 \
+   && on 'tilo system --help' >/dev/null 2>&1; then
+  ok "the tilo super-command discovers both providers"
+else
+  bad "tilo cannot discover its app/store/system provider commands"
+fi
+
 # --- 5. the confined shell runtime the Terminal requires is serving ----------
 # apps/terminal declares ush = "required@1"; without this socket the launcher
 # refuses to start it at all.
@@ -137,6 +155,17 @@ if on 'test -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo/services/ush.sock"';
 else
   bad "no ush socket at \$XDG_RUNTIME_DIR/tilo/services/ush.sock; tilo-ush.service says:
 $(on 'systemctl --user status tilo-ush.service 2>&1' | head -8 | sed 's/^/      /')"
+fi
+
+# `app` and `system` inside Terminal are ush-owned shims, not the host binaries
+# accidentally visible through the sandbox. This read-only discovery pass
+# proves the guest created all four shims and can parse their supported surface;
+# the broker request/response and signed update mutation are covered by native
+# Rust integration tests so this boot check never changes the subject machine.
+if on "/usr/libexec/tilo-ush run -c 'app --help >/dev/null && store --help >/dev/null && tilo --help >/dev/null && system --help >/dev/null'"; then
+  ok "the sandboxed Terminal exposes discoverable app and system commands"
+else
+  bad "the sandboxed Terminal cannot discover its brokered management commands"
 fi
 
 # --- 6. the collaborative filesystem is mounted ------------------------------

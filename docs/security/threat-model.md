@@ -41,7 +41,7 @@ that preserves secrecy by irrecoverably losing a user's data has failed.
 
 - A thief has a powered-off device, can remove or snapshot storage, modify the
   ESP, replace firmware, and make unlimited offline guesses.
-- A malicious qpkg app has attacker-chosen native code and inputs. It may exploit
+- A malicious tapp app has attacker-chosen native code and inputs. It may exploit
   its own dependencies and probe every syscall, path, socket and inherited fd.
 - A compromised legacy desktop app runs under the compatibility Linux account.
 - A hostile collaborator has a valid identity and whatever old material they
@@ -69,7 +69,7 @@ firmware + owner db key
   -> signed UKI (stub, kernel, initramfs, cmdline, root digest, generation)
     -> kernel / LSM / composefs / system services
       -> Tilo brokers and compositor
-        -> Landlock + namespaces + seccomp qpkg process
+        -> Landlock + namespaces + seccomp tapp process
 
 person root -> device certificate -> transport key -> signed collaboration op
 
@@ -92,8 +92,8 @@ or locally cached role is not evidence by itself.
 | Release key theft | CI accepts only a non-exportable KMS/HSM URI; no file or environment private key. Candidate is digest addressed and signed after boot verification. | KMS policy, workload identity, quorum, audit alerts and disaster recovery are deployment obligations, not proven by this repository. |
 | Compromised action/dependency | OS-release actions and OS/base/RPM/kernel inputs are immutable digest/commit pinned; SLSA records inputs. | A malicious pinned input is still malicious. Dependency review and builder diversity remain necessary. |
 | Non-reproducible/backdoored release | A second no-cache OS build must have the same OCI manifest before publication. If installation adds the deterministic UKI reseal layer, the gate independently applies it and compares the final publishable manifests too. SBOM and SLSA attestations bind that digest. | Both invocations currently share one runner/operator/toolchain. This detects nondeterminism, not a trusting-trust compiler or runner compromise. Independent builders are required for a stronger claim. |
-| Malicious qpkg reads host files | Every qpkg launch path requires fully enforced Landlock V5, including device-ioctl control. The shim closes every ambient descriptor except explicitly connected brokers. Seccomp denies namespace creation plus kernel administration, fault injection and process-introspection surfaces; core dumps are disabled and descriptor counts bounded. | ABI 6 socket/signal scoping awaits a Tilo kernel that reports the applicable Landlock errata without making enforcement status ambiguous. Landlock and seccomp are not a complete sandbox; kernel bugs, permitted-path parser exploits, permitted device ioctls and covert channels need continuing review. |
-| Malicious qpkg gets network access | Network is absent unless explicitly granted by package/runtime policy and enforced by the namespace/broker boundary. | Broker bugs and confused-deputy paths are in scope for fuzzing and integration tests. |
+| Malicious tapp reads host files | Every tapp launch path requires fully enforced Landlock V5, including device-ioctl control. The shim closes every ambient descriptor except explicitly connected brokers. Seccomp denies namespace creation plus kernel administration, fault injection and process-introspection surfaces; core dumps are disabled and descriptor counts bounded. | ABI 6 socket/signal scoping awaits a Tilo kernel that reports the applicable Landlock errata without making enforcement status ambiguous. Landlock and seccomp are not a complete sandbox; kernel bugs, permitted-path parser exploits, permitted device ioctls and covert channels need continuing review. |
+| Malicious tapp gets network access | Network is absent unless explicitly granted by package/runtime policy and enforced by the namespace/broker boundary. | Broker bugs and confused-deputy paths are in scope for fuzzing and integration tests. |
 | Package/manifest parser exploit | Signed root and semantic manifest validators have coverage-guided fuzz targets with bounded hostile input; daily CI preserves regressions. | Fuzzing proves neither completeness nor memory safety in native dependencies. Corpus quality and sanitizer coverage must be monitored. |
 | Stolen invite link | Ordinary Tilo invite UI requires a pasted person identity key and signs that key, role, name, room and expiry. Redemption requires a certified device for that person. Pending state stores only a BLAKE3 digest at mode 0600. | Compatibility APIs can still mint bearer invites for the Tilo Desktop/legacy tier. Treat those links as credentials and never present that path as hardened Tilo. |
 | Invite replay or restart race | Admission is single-use and atomically consumed from a durable ledger; invalid/duplicate ledger data fails closed. Administrators can revoke by digest. | Authority-offline admission is not complete: a host cannot safely invent durable governance without a verifiable admission proof. |

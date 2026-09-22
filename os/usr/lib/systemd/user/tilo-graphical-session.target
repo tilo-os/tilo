@@ -6,7 +6,7 @@ Documentation=man:systemd.special(7)
 # runs graphical-session-pre services (identity) before graphical-session.
 Requires=graphical-session-pre.target graphical-session.target
 After=graphical-session-pre.target
-# qOS apps in the layered desktop package use the same per-user services as
+# Tilo apps in the layered desktop package use the same per-user services as
 # the OS image. The app host and model daemons are socket-activated; eagerly
 # pulling their services here defeats that design and can put model storage and
 # network readiness on the login path. Only the confined shell runtime must be

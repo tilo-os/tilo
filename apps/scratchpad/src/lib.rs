@@ -26,7 +26,7 @@ use vello::{
 };
 use winit::event::{Modifiers, WindowEvent};
 
-const SAVE: &str = "dev.tilo.scratchpad.save";
+const SAVE: &str = "so.tilo.scratchpad.save";
 
 fn body(doc: &AutoCommit) -> String {
     doc.get(ROOT, "body")

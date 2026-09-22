@@ -143,7 +143,7 @@ AGENT = _tool("tilo-agent")
 # no honest way to answer "does this document say that" — see `_strings`.
 DOC_TEXT = _tool("tilo-doc-text")
 
-APP = "dev.tilo.word-processor"
+APP = "so.tilo.word-processor"
 APPLICATIONS = "applications"
 
 # A flat draft: no markup at all, a title line, two section labels, prose

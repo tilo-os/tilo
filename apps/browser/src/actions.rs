@@ -94,7 +94,7 @@ fn bookmark_key(url: &str) -> String {
 
 /// Context attached to durable Browser actions in workspace history.
 pub fn history_context(action: &BrowserAction) -> ActionContext {
-    let mut context = ActionContext::for_action("dev.tilo.browser", "Browser", action);
+    let mut context = ActionContext::for_action("so.tilo.browser", "Browser", action);
     let (label, id, kind, resource_label) = match action {
         BrowserAction::AddBookmark { url, title, .. } => (
             "Add bookmark",

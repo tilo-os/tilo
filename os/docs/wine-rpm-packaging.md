@@ -9,7 +9,7 @@ The signed Fedora `wine-11.0-3.fc44.src.rpm` defaults `new_wow64` on for
 Fedora 43 and later. Its x86-64 build uses `--enable-archs=i386,x86_64` and
 `/usr/lib64/wine-wow64`. The spec's `--without new_wow64` branch instead
 builds the traditional layout and creates reciprocal 32/64 Unix and PE
-directory links. qOS uses that existing option; it does not patch upstream
+directory links. Tilo uses that existing option; it does not patch upstream
 source or add substitute loader links after building.
 
 Wine 11's [loader.c](https://raw.githubusercontent.com/wine-mirror/wine/wine-11.0/dlls/ntdll/unix/loader.c)
@@ -78,7 +78,7 @@ bundle mounted read-only. Mock's supported `--hermetic-build` creates the
 target root from that bundle and performs the normal build. Source, target,
 macros, concurrency, runtime image, tool hashes and installed tool packages
 must match resolution. Both phases retain the traditional Wine option and
-the qOS release suffix. No feature, dependency, debug package or scriptlet is
+the Tilo release suffix. No feature, dependency, debug package or scriptlet is
 removed to make the build pass.
 
 The artifact records `mock-hermetic` provenance separately from the older
@@ -117,7 +117,7 @@ them. Publish each complete prepared root by OCI digest.
 
 Inside each disposable root, provide Python, RPM build tools, DNF5 builddep,
 Fedora RPM macros, gcc/g++, and the compiler/development environment for its
-target. Mount `/qos` containing `wine-source.json`, `wine_rpm_contract.py`,
+target. Mount `/tilo` containing `wine-source.json`, `wine_rpm_contract.py`,
 and `prepare-wine-buildroot.sh`. Mount `/wine-source` containing the exact
 source RPM and the Fedora 44 key as `fedora-44.asc`. Both byte identities
 are pinned. Set `WINE_TARGET`, then run the preparation script. It checks
@@ -142,7 +142,7 @@ build RUN has network disabled. The consumer compares the installed package
 and compiler inventory with the frozen buildroot contract, checks the source
 again, then invokes normal `rpmbuild -ba --without new_wow64` on the unchanged
 extracted spec. Its existing `Release: 3%{?dist}` receives the pinned
-`dist=.fc44.qos_traditional1` macro, yielding `3.fc44.qos_traditional1` for
+`dist=.fc44.tilo_traditional1` macro, yielding `3.fc44.tilo_traditional1` for
 every subpackage and its exact-version internal dependencies. The source
 timestamp comes from the same pin. A matching rebuilt source RPM accompanies
 the binaries; the original Fedora-signed source remains separate provenance.
@@ -156,7 +156,7 @@ links; new-WoW64 paths fail validation. The actual loader bytes must also have
 the correct ELF class/machine. These checks do not prove full runtime
 dependency closure, successful execution or scriptlet success.
 
-The qOS release suffix distinguishes both outputs from Fedora's new-mode
+The Tilo release suffix distinguishes both outputs from Fedora's new-mode
 NEVRAs. The complete guest transaction must still select this pinned provider
 explicitly, including all matching exact-version dependencies. Publication
 and signing policy is still needed for these locally rebuilt RPMs; no signature
