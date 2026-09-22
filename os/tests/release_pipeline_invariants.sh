@@ -65,7 +65,9 @@ fi
 
 if grep -Fq 'memory=9g' "$workflows/build-kernel.yml" \
   && grep -Fq 'memory-swap=9g' "$workflows/build-kernel.yml" \
-  && grep -Fq 'KERNEL_BUILD_JOBS=2' "$workflows/build-kernel.yml"; then
+  && grep -Fq '            kernel_build_jobs: 2' "$workflows/build-kernel.yml" \
+  && grep -Fq '            kernel_build_jobs: 4' "$workflows/build-kernel.yml" \
+  && grep -Fq 'KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}' "$workflows/build-kernel.yml"; then
   ok 'native kernel BuildKit and compiler parallelism have explicit resource bounds'
 else
   bad 'native kernel compilation can bypass its guest memory budget or use unbounded CPU parallelism'
@@ -100,8 +102,8 @@ else
 fi
 
 kernel_workflow="$workflows/build-kernel.yml"
-if grep -Fq 'apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio "$apt_qemu"' "$kernel_workflow" \
-   && grep -Fq 'dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm "$fedora_qemu"' "$kernel_workflow" \
+if grep -Fq 'apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip kmod python3 rpm rpm2cpio zstd "$apt_qemu"' "$kernel_workflow" \
+   && grep -Fq 'dnf install -y gcc glibc-devel binutils cpio gzip kmod python3 rpm zstd "$fedora_qemu"' "$kernel_workflow" \
    && grep -Fq 'export PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"' "$repo/os/kernel/tests/test-rpm.sh" \
    && grep -Fq 'command -v modinfo >/dev/null' "$repo/os/kernel/tests/test-rpm.sh" \
    && grep -Fq 'modinfo -F name' "$repo/os/kernel/tests/test-rpm.sh"; then

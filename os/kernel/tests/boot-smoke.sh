@@ -2,6 +2,7 @@
 # Native, diskless kernel boot and module-signature acceptance test.
 # This does not establish UEFI, installer, or physical-board acceptance.
 set -euo pipefail
+command -v zstd >/dev/null
 stage=$(realpath "${1:?usage: boot-smoke.sh STAGE.tar.gz KERNEL_RELEASE OUTPUT_DIRECTORY}")
 release=${2:?kernel release required}
 out=${3:?new output directory required}
@@ -59,6 +60,8 @@ with tarfile.open(stage) as archive:
             ["zstd", "-q", "-d", "-c"], input=data,
             stdout=subprocess.PIPE, check=True,
         ).stdout
+    if not 0 < len(data) <= 64 * 1024 * 1024:
+        raise ValueError("dummy module has an implausible decompressed size")
     (out / "rootfs/signed.ko").write_bytes(data)
 data = (out / "rootfs/signed.ko").read_bytes()
 trailer = b"~Module signature appended~\n"
