@@ -347,12 +347,10 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
                 && sample.2.abs_diff(0xA0) <= 4
         })
         .count();
-    let foreign_debug = fb.host_mut().foreign_surface_debug(surface_id);
     assert!(
         client_pixels >= 5,
         "the client's pixels must fill the tab; only {client_pixels}/9 interior samples matched \
-         (centre rgba{px:?} at ({cx}, {cy}), samples {samples:?}, rect {rect:?}, \
-         foreign debug {foreign_debug:?})"
+         (centre rgba{px:?} at ({cx}, {cy}), samples {samples:?}, rect {rect:?})"
     );
 
     // A point well outside the tile keeps the shell's own chrome.
