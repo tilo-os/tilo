@@ -1,0 +1,1 @@
+{"manifest_version":3,"name":"qOS MV3 capability fixture","version":"1.0","permissions":["storage"],"host_permissions":["http://127.0.0.1/*"],"background":{"service_worker":"worker.js"},"content_scripts":[{"matches":["http://127.0.0.1/*"],"js":["content.js"]}],"action":{"default_popup":"popup.html"}}
