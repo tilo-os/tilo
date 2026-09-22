@@ -65,7 +65,8 @@ fi
 
 if grep -Fq 'memory=9g' "$workflows/build-kernel.yml" \
   && grep -Fq 'memory-swap=9g' "$workflows/build-kernel.yml" \
-  && test "$(grep -Fc '            kernel_build_jobs: 4' "$workflows/build-kernel.yml")" -eq 2 \
+  && grep -Fq '            kernel_build_jobs: 6' "$workflows/build-kernel.yml" \
+  && grep -Fq '            kernel_build_jobs: 4' "$workflows/build-kernel.yml" \
   && grep -Fq 'KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}' "$workflows/build-kernel.yml"; then
   ok 'native kernel BuildKit and compiler parallelism have explicit resource bounds'
 else
