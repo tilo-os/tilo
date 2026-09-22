@@ -35,13 +35,13 @@ const MAKE_SPACE_ANIM_MS: u32 = 420;
 /// each outer edge. The target follows the window size, but stays useful on a
 /// compact window and does not consume an absurd amount of an ultrawide one.
 const TAB_GROUP_EDGE_FRAC: f64 = 0.25;
-const TAB_GROUP_EDGE_MIN_PX: f64 = 48.0;
-const TAB_GROUP_EDGE_MAX_PX: f64 = 144.0;
+const TAB_GROUP_EDGE_MIN_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64;
+const TAB_GROUP_EDGE_MAX_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64 * 3.0;
 const TAB_GROUP_EDGE_MAX_FRAC: f64 = 0.32;
 /// Keep a resolved target through a few pixels of boundary jitter. Release
 /// commits the retained preview verbatim, so the window cannot land somewhere
 /// other than the place the indicator showed.
-const TAB_DROP_HYSTERESIS_PX: f64 = 8.0;
+const TAB_DROP_HYSTERESIS_PX: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
 fn tab_group_edge_width(group_width: f64) -> f64 {
     (group_width * TAB_GROUP_EDGE_FRAC)

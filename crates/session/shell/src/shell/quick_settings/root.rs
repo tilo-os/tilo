@@ -119,7 +119,7 @@ impl QuickSettingsRoot {
     const SLIDER_FOCUS_START: usize = Self::ACTION_COUNT + 1;
     const CONTROL_FOCUS_START: usize = Self::SLIDER_FOCUS_START + 2;
     #[cfg(test)]
-    const EDIT_ACTION_WIDTH: f64 = 76.0;
+    const EDIT_ACTION_WIDTH: f64 = 76.0; // Text affordance width, not a spacing step.
     const EDIT_HELP_COPY: &'static str = "Drag rows to reorder · Ctrl + Up/Down";
 
     /// Single-line height of a chrome type role at the user's text scale.

@@ -1029,8 +1029,8 @@ impl TopBarChrome {
     pub const DOT_ACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.6;
     pub const DOT_INACTIVE_RADIUS: f64 = Self::DOT_BASE_SIZE * 1.0;
 
-    const DOT_COLUMN_MARGIN: f64 = 1.0;
-    const DOT_SLOT_HALF_W: f64 = 10.0;
+    const DOT_COLUMN_MARGIN: f64 = 1.0; // Optical dot geometry, not layout spacing.
+    const DOT_SLOT_HALF_W: f64 = 10.0; // Optical dot geometry, not layout spacing.
 
     /// Restore the accepted vertical carousel indicator from `7d58e7146`.
     /// The unequal active/inactive diameters are included in the layout so
