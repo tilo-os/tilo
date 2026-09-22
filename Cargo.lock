@@ -528,7 +528,7 @@ dependencies = [
  "clap",
  "fuser",
  "libc",
- "lru 0.18.3",
+ "moka",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
