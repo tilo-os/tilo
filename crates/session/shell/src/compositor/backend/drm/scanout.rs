@@ -32,7 +32,7 @@ use super::outputs::DrmOutputKey;
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
 const CURSOR_DIM: u32 = 64;
 
-/// Whether a connected DRM connector is a display sink. DisplayPort Alt Mode
+/// Whether a connected DRM connector is a display sink. `DisplayPort` Alt Mode
 /// over USB-C is reported by KMS as [`connector::Interface::DisplayPort`],
 /// while USB display adapters may use [`connector::Interface::USB`]; both are
 /// ordinary scanout targets. Only DRM writeback is an internal capture sink.
