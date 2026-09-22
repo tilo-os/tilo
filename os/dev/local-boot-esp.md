@@ -55,6 +55,34 @@ Writes to the OS disk go to QEMU's disposable snapshot. Replacing a candidate
 therefore copies only the UKI-sized payload and a small ESP, while the installed
 root disk and its PARTUUID remain unchanged.
 
+## Exercise the live installer with an isolated target
+
+The same launcher can attach a newly-created sparse raw disk as the installer
+target. It keeps the source disk in QEMU's transient snapshot and gives only
+the target disk the stable serial the installer accepts:
+
+```powershell
+.\tools\launch-arm64-boot-esp.ps1 `
+  -BaseDisk C:\tilo-build\tilo-install-native-test.raw `
+  -EspDisk '\\wsl.localhost\FedoraLinux-42\home\benn1x\tilo-vm\media\debug-esp.raw' `
+  -InstallTargetDisk C:\tilo-build\tilo-installer-target.raw `
+  -CreateInstallTarget -InstallTargetGiB 64 `
+  -StateDirectory "$env:LOCALAPPDATA\Tilo\qemu-arm64-installer" `
+  -QmpPort 4451
+```
+
+The launcher creates an absent target only when `-CreateInstallTarget` is
+explicitly present and refuses to silently reuse it. To deliberately discard a
+previous disposable target, add `-ResetInstallTarget -CreateInstallTarget`.
+`-CheckOnly` performs no target creation or reset.
+
+A blank target is useful for the erase-install lane. Guided-alongside validation
+must instead attach a separately prepared synthetic GPT target with retained
+foreign partitions and one reviewed free extent. The launcher deliberately does
+not manufacture or resize a Windows-like layout: that fixture is part of the
+guided-alongside acceptance input, so a local VM test cannot be mistaken for a
+review of this laptop's Windows disk.
+
 ## Limits
 
 - This proves the candidate through early userspace against the retained root.
