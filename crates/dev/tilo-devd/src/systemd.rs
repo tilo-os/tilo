@@ -10,14 +10,14 @@ use std::process::Command;
 
 use tilo_dev_protocol::ControlResult;
 
-use crate::apply::Apply;
+use crate::apply::{Apply, SessionProcess};
 use crate::error::DaemonError;
 use crate::fsutil::{symlink, walk, write_atomic};
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SYSEXT_DIR: &str = "/var/lib/extensions";
 const VKMS_CONFIGFS: &str = "/sys/kernel/config/vkms";
-/// The dev image installs `tilo-control` next to the compositor.
+/// Not in production images; the dev image installs it.
 const TILO_CONTROL: &str = "/usr/bin/tilo-control";
 
 pub struct SystemdApply {
@@ -263,6 +263,9 @@ impl Apply for SystemdApply {
         user: &str,
         args: &[String],
     ) -> Result<ControlResult, DaemonError> {
+        if !Path::new(TILO_CONTROL).exists() {
+            return Err(DaemonError::ControlMissing(TILO_CONTROL.into()));
+        }
         let socket = runtime_dir(slot).join("control.sock");
         let output = Command::new("runuser")
             .args(["-u", user, "--", "env"])
@@ -278,6 +281,51 @@ impl Apply for SystemdApply {
             exit_code: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
+    fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
+        let unit = crate::apply::session_unit(slot);
+        let output = Command::new("systemctl")
+            .args(["show", "--property=MainPID", "--value", &unit])
+            .output()
+            .ok()?;
+        let main: u32 = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .ok()
+            .filter(|p| *p > 0)?;
+        // Type=simple returns once forked; wait for the switch to the slot user.
+        for _ in 0..20 {
+            if proc_field(main, "Uid:")
+                .is_some_and(|uid| uid.split_whitespace().next() != Some("0"))
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // Prefer the compositor itself, tilo-session's child.
+        let children =
+            fs::read_to_string(format!("/proc/{main}/task/{main}/children")).unwrap_or_default();
+        let pid = children
+            .split_whitespace()
+            .filter_map(|c| c.parse::<u32>().ok())
+            .find(|c| {
+                fs::read_to_string(format!("/proc/{c}/comm"))
+                    .is_ok_and(|comm| comm.trim() == "shell")
+            })
+            .unwrap_or(main);
+        let hex = |field: &str| {
+            proc_field(pid, field).and_then(|v| u64::from_str_radix(v.trim(), 16).ok())
+        };
+        let context = fs::read_to_string(format!("/proc/{pid}/attr/current"))
+            .ok()
+            .map(|c| c.trim_end_matches(['\0', '\n']).to_owned())
+            .filter(|c| !c.is_empty());
+        Some(SessionProcess {
+            cap_amb: hex("CapAmb:")?,
+            cap_eff: hex("CapEff:")?,
+            context,
         })
     }
 
@@ -325,6 +373,15 @@ fn file_contexts() -> Option<PathBuf> {
         .join(policy)
         .join("contexts/files/file_contexts");
     path.is_file().then_some(path)
+}
+
+/// One `Field:` line of `/proc/<pid>/status`, without the field name.
+fn proc_field(pid: u32, field: &str) -> Option<String> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(field))
+        .map(|v| v.trim().to_owned())
 }
 
 /// Connectors per card. Fixed at creation: vkms refuses topology changes

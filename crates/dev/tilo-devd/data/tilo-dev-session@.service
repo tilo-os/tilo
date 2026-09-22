@@ -16,6 +16,17 @@ Wants=systemd-logind.service
 Type=simple
 User=tds-%i
 PAMName=greetd
+# Match a greetd session, which runs with no ambient capabilities: greetd's
+# worker calls setuid() after pam_open_session, and that uid switch clears
+# the ambient set pam_systemd grants. A PAMName= unit re-raises it after its
+# own uid switch, so drop the one capability pam_systemd adds (it also makes
+# bwrap refuse to start apps directly from the compositor). tilo-devd checks
+# CapAmb and CapEff of the running session against zero.
+CapabilityBoundingSet=~CAP_WAKE_ALARM
+# A greetd session runs in a user domain; tilo-devd checks the session's
+# SELinux domain (default unconfined_t, `tilo-devd rpc --expect-domain`).
+# Provisional until the real greetd domain is confirmed on a booted image:
+#SELinuxContext=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
 Environment=TILO_DEV_BACKEND=headless
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_SESSION_CLASS=user
