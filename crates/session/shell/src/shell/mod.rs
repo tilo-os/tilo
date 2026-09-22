@@ -35,6 +35,8 @@ pub mod continuity_policy;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
+#[cfg(target_os = "linux")]
+pub(crate) mod desktop_continuation;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
@@ -116,7 +118,6 @@ pub mod workspace_settings;
 mod workspace_settings_overlay;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
-#[cfg(any(test, debug_assertions))]
 use ui::widget::context_menu::MenuItem;
 #[cfg(any(test, debug_assertions))]
 use ui::widget::toast::ToastStack;
@@ -656,22 +657,145 @@ impl Shell {
         self.open_default_tile_context_menu(position);
     }
 
-    /// Populate `ctx_menu` with the default tile action list and open it
-    /// at `position`. Extracted so the production right-click path (wired
-    /// alongside the compositor's pointer-event layer in a later task) and
-    /// the test-only simulator share the same item-construction code.
+    /// Populate `ctx_menu` with the tab action list and open it at
+    /// `position`. The items come from [`tab_context_menu_items`], the one
+    /// list the production host (`ShellOverlayHost`) builds its menu from,
+    /// so this fixture can never offer an action the desktop does not.
     #[cfg(any(test, debug_assertions))]
     fn open_default_tile_context_menu(&mut self, position: [f32; 2]) {
         // Rebuild from scratch so repeated right-clicks don't accumulate
-        // items from earlier menus (e.g. if a follow-up task adds a
-        // context-specific path that seeds different entries).
-        self.ctx_menu = ContextMenu::new();
-        self.ctx_menu.push(MenuItem::action("Close Tab", || {}));
-        self.ctx_menu.push(MenuItem::separator());
-        self.ctx_menu.push(MenuItem::action("Split Right", || {}));
-        self.ctx_menu
-            .push(MenuItem::action("Move to New Group", || {}));
+        // items from earlier menus.
+        let (menu, _actions) = build_tab_context_menu(2);
+        self.ctx_menu = menu;
         self.ctx_menu.open_at(position);
+    }
+}
+
+/// One action a tab's right-click menu offers. The production
+/// [`overlay_host::ShellOverlayHost`] and the fixture [`Shell`] both build
+/// their menu from [`tab_context_menu_items`], so the two cannot drift, and
+/// every action here is reachable by pointer, keyboard (arrows + Enter in
+/// the open menu) and by its [`Self::semantic_key`] through accessibility,
+/// scripts and the bench — a menu row is not a capability on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabMenuAction {
+    /// Close this tab through the same durable lifecycle the `✕` and the
+    /// keyboard chord use (`ShellOverlayHost::close_tab_in_group`).
+    CloseTab,
+    /// Detach the tab into a new window group immediately to the right of
+    /// its current group — the drag-out gesture, without the drag.
+    SplitRight,
+    /// Detach the tab into a new window group at the end of the strip.
+    MoveToNewGroup,
+}
+
+impl TabMenuAction {
+    /// User-facing label. English literals, following every other
+    /// accessibility name in `shell/src/shell` — the shell installs no
+    /// fluent catalogue (see `compositor/macos.rs`, which only
+    /// initialises `I18nManager`), so there is no key to look up yet.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CloseTab => "Close Tab",
+            Self::SplitRight => "Split Right",
+            Self::MoveToNewGroup => "Move to New Group",
+        }
+    }
+
+    /// Stable semantic address of the menu row (`tabmenu:<slug>`): the
+    /// `semantic:` target a script or the bench names, and the
+    /// `perform_semantic_action` target an assistive technology activates.
+    pub fn semantic_key(self) -> &'static str {
+        match self {
+            Self::CloseTab => "tabmenu:close",
+            Self::SplitRight => "tabmenu:split-right",
+            Self::MoveToNewGroup => "tabmenu:new-group",
+        }
+    }
+
+    /// The action a semantic target names, if it is one of ours.
+    pub fn from_semantic_key(key: &str) -> Option<Self> {
+        [Self::CloseTab, Self::SplitRight, Self::MoveToNewGroup]
+            .into_iter()
+            .find(|action| action.semantic_key() == key)
+    }
+}
+
+/// The tab menu's rows in order; `None` is a separator. A group with a
+/// single tab is not offered the two split actions — detaching its only
+/// tab would dissolve the group and re-create it one slot over, a no-op
+/// that reads as a glitch.
+pub fn tab_context_menu_items(tab_count: usize) -> Vec<Option<TabMenuAction>> {
+    let mut items = vec![Some(TabMenuAction::CloseTab)];
+    if tab_count >= 2 {
+        items.push(None);
+        items.push(Some(TabMenuAction::SplitRight));
+        items.push(Some(TabMenuAction::MoveToNewGroup));
+    }
+    items
+}
+
+/// A closed [`ContextMenu`] holding [`tab_context_menu_items`] for a group
+/// of `tab_count` tabs, plus the index-aligned action list the host reads a
+/// selection back through (`ContextMenu::take_selection` yields the row
+/// index; the `Arc<dyn Fn()>` callbacks are deliberately inert because the
+/// host has to mutate itself and the persisted tree).
+pub fn build_tab_context_menu(tab_count: usize) -> (ContextMenu, Vec<Option<TabMenuAction>>) {
+    let items = tab_context_menu_items(tab_count);
+    let mut menu = ContextMenu::new();
+    for item in &items {
+        match item {
+            Some(action) => menu.push(MenuItem::action(action.label(), || {})),
+            None => menu.push(MenuItem::separator()),
+        }
+    }
+    (menu, items)
+}
+
+#[cfg(test)]
+mod tab_menu_item_tests {
+    use super::*;
+
+    #[test]
+    fn a_single_tab_group_is_offered_only_close() {
+        let items = tab_context_menu_items(1);
+        assert_eq!(items, vec![Some(TabMenuAction::CloseTab)]);
+        let (menu, _) = build_tab_context_menu(1);
+        assert_eq!(menu.items().len(), 1);
+    }
+
+    #[test]
+    fn a_multi_tab_group_gets_close_then_the_split_pair_after_a_separator() {
+        let items = tab_context_menu_items(3);
+        assert_eq!(
+            items,
+            vec![
+                Some(TabMenuAction::CloseTab),
+                None,
+                Some(TabMenuAction::SplitRight),
+                Some(TabMenuAction::MoveToNewGroup),
+            ]
+        );
+        let (menu, actions) = build_tab_context_menu(3);
+        assert_eq!(menu.items().len(), actions.len(), "one menu row per item");
+        let labels: Vec<_> = menu.items().iter().filter_map(|i| i.label()).collect();
+        assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
+    }
+
+    #[test]
+    fn semantic_keys_round_trip_and_are_unique() {
+        for action in [
+            TabMenuAction::CloseTab,
+            TabMenuAction::SplitRight,
+            TabMenuAction::MoveToNewGroup,
+        ] {
+            assert_eq!(
+                TabMenuAction::from_semantic_key(action.semantic_key()),
+                Some(action)
+            );
+            assert!(action.semantic_key().starts_with("tabmenu:"));
+        }
+        assert_eq!(TabMenuAction::from_semantic_key("tabmenu:nope"), None);
     }
 }
 
@@ -1108,30 +1232,31 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
                 || path.display().to_string(),
                 |name| name.to_string_lossy().into_owned(),
             );
-            let tab = window_actions::open_hosted(
+            window_actions::open_hosted_after_setup(
                 &mut chrome.borrow_mut(),
                 app.kind,
                 title,
                 window_actions::Destination::Here,
-            );
-            {
-                let state = chrome.borrow_mut();
-                let mut tree = state.tree_mut();
-                tree.native_document_tabs.insert(
-                    tab,
-                    state::NativeDocumentReference {
-                        provider_id: app.package_id.to_string(),
-                        path: path.clone(),
-                    },
-                );
-                tree.flush_to_disk();
-            }
-            chrome.borrow().hosted_inputs.bind_document(
-                tab,
-                hosted_inputs::HostedDocument {
-                    provider_id: app.package_id,
-                    path,
-                    text,
+                |state, tab| {
+                    {
+                        let mut tree = state.tree_mut();
+                        tree.native_document_tabs.insert(
+                            tab,
+                            state::NativeDocumentReference {
+                                provider_id: app.package_id.to_string(),
+                                path: path.clone(),
+                            },
+                        );
+                        tree.flush_to_disk();
+                    }
+                    state.hosted_inputs.bind_document(
+                        tab,
+                        hosted_inputs::HostedDocument {
+                            provider_id: app.package_id,
+                            path,
+                            text,
+                        },
+                    );
                 },
             );
             return Ok(());
@@ -1268,7 +1393,16 @@ pub(crate) fn build_workspace_root_with_scene_parts(
             let groups: Vec<UiGroup> = strip
                 .window_groups
                 .iter()
-                .map(|g| to_ui_window_group_with_inputs(g, records, &chrome.borrow().hosted_inputs))
+                .map(|g| {
+                    let state = chrome.borrow();
+                    let mut group =
+                        to_ui_window_group_with_inputs(g, records, &state.hosted_inputs);
+                    tab_documents::apply_creation_failures(
+                        &mut group,
+                        &state.record_creation_errors(tree),
+                    );
+                    group
+                })
                 .collect();
             let mut strip_row: Box<GroupRow> = Box::new(
                 GroupRow::new(groups)

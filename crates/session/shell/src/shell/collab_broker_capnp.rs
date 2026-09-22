@@ -1,7 +1,10 @@
 // `Promise::from_future(async move {..})` refines capnp-rpc's declared
 // `Promise<.., capnp::Error>` return type — the intended pattern, but it
 // trips `refining_impl_trait`.
-#![allow(refining_impl_trait)]
+#![allow(
+    refining_impl_trait,
+    reason = "Capnp server implementations return concrete Promise values from from_future to implement the generated async RPC contract."
+)]
 
 //! Native Cap'n Proto server for the Tilo collaboration broker.
 //!
@@ -1025,7 +1028,7 @@ impl ActionDirectoryRequestQueue {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "the broker request preserves every typed resolution field at the queue boundary"
+        reason = "Directory resolution identifies the actor, workspace cluster, peer, revision, resource, and action independently."
     )]
     /// # Errors
     ///
@@ -1072,7 +1075,7 @@ impl ActionDirectoryRequestQueue {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "the broker request preserves every typed invocation field at the queue boundary"
+        reason = "Directory invocation carries actor and exact directory target fields plus the action argument and confirmation."
     )]
     /// # Errors
     ///
@@ -2990,7 +2993,7 @@ impl CapnpBrokerState {
     #[allow(
         clippy::too_many_arguments,
         clippy::future_not_send,
-        reason = "the LocalSet-bound action admission keeps all verified actor and directory inputs explicit"
+        reason = "Admission carries actor, exact directory target, argument, and confirmation through Rc-backed capabilities on the broker LocalSet."
     )]
     async fn start_action_directory_for_actor(
         &self,
@@ -3083,7 +3086,7 @@ impl CapnpBrokerState {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "the token binds the directory action to the full verified invocation context"
+        reason = "Confirmation grants bind peer/resource/action/argument and actor identity to the action contract and supplied approval."
     )]
     #[allow(
         clippy::needless_pass_by_value,
@@ -9515,7 +9518,7 @@ async fn drive_connection(
     clippy::similar_names,
     reason = "sk/pk and owner/editor pairings are the conventional, intentional names for a keypair and a two-role fixture"
 )]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -9745,7 +9748,7 @@ mod tests {
     #[test]
     #[allow(
         clippy::too_many_lines,
-        reason = "the integration test keeps the complete two-peer offer and cutover lifecycle together"
+        reason = "The two-peer production fixture follows offer, acceptance, media readiness, source stop, and target-live cutover end to end."
     )]
     fn production_realtime_bridge_delivers_two_peer_offer_and_cutover() {
         use crate::shell::realtime_session::{
@@ -10239,7 +10242,7 @@ mod tests {
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum DirectoryResolveMode {
+    pub(crate) enum DirectoryResolveMode {
         Found,
         Stale,
         NotFound,
@@ -10248,16 +10251,19 @@ mod tests {
     /// A real `Cap'n Proto` directory endpoint retained by the `LocalSet` test
     /// below. It answers only bounded inert rows, but is deliberately a
     /// capability client rather than a mock of the shell bridge.
-    struct TestActionDirectory {
+    pub(crate) struct TestActionDirectory {
         revision: String,
-        resolve_mode: DirectoryResolveMode,
+        pub(crate) resolve_mode: DirectoryResolveMode,
+        result: tilo_actions::ResultSpec,
         confirmation_required: bool,
         query_count: usize,
+        resolve_count: usize,
     }
 
     impl TestActionDirectory {
         fn contract_json(&self) -> String {
             let mut contract = tilo_actions::ActionContract::view();
+            contract.result = self.result.clone();
             if self.confirmation_required {
                 contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
             }
@@ -10327,7 +10333,8 @@ mod tests {
             _params: action_directory::ResolveParams,
             mut results: action_directory::ResolveResults,
         ) -> Promise<(), capnp::Error> {
-            let state = self.state.borrow();
+            let mut state = self.state.borrow_mut();
+            state.resolve_count = state.resolve_count.saturating_add(1);
             let mut out = results.get().init_resolution();
             match state.resolve_mode {
                 DirectoryResolveMode::Found => {
@@ -10340,12 +10347,12 @@ mod tests {
         }
     }
 
-    struct LocalDirectoryFixture {
+    pub(crate) struct LocalDirectoryFixture {
         state: Arc<CapnpBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
         directory: action_directory::Client,
         directory_state: Rc<RefCell<TestActionDirectory>>,
-        broker: crate::shell::collab_broker::AppActionBroker,
+        pub(crate) broker: crate::shell::collab_broker::AppActionBroker,
         chrome: crate::shell::chrome_state::Chrome,
         cluster_id: String,
         route: CrdtRoute,
@@ -10353,19 +10360,104 @@ mod tests {
         invocation_rx: tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
     }
 
+    impl LocalDirectoryFixture {
+        pub(crate) fn set_confirmation_required(&self, required: bool) {
+            self.directory_state.borrow_mut().confirmation_required = required;
+        }
+
+        pub(crate) fn set_result_spec(&self, result: tilo_actions::ResultSpec) {
+            self.directory_state.borrow_mut().result = result;
+        }
+
+        /// Exercise the production peer-bound update RPC, including result-contract validation.
+        pub(crate) async fn complete_invocation(
+            &self,
+            id: u64,
+            update: &tilo_actions::InvocationUpdate,
+        ) -> Result<(), capnp::Error> {
+            let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                state: Arc::clone(&self.state),
+                directories: Rc::clone(&self.directories),
+                channel_id: self.route.channel_key(),
+                peer_id: self.peer_id,
+                verified_identity: AdmittedJoinIdentity {
+                    verified: VerifiedJoinIdentity {
+                        user_public_key: [0; 32],
+                        device_public_key: [0; 32],
+                    },
+                    principal_id: "fixture-application".into(),
+                    display_handle: None,
+                    role: CapRole::Editor,
+                    agent_id: None,
+                },
+            });
+            let mut request = client.update_invocation_request();
+            request.get().set_id(id);
+            request
+                .get()
+                .set_update_json(&serde_json::to_string(update).expect("canonical update"));
+            request.send().promise.await?;
+            Ok(())
+        }
+
+        pub(crate) fn set_resolve_mode(&self, mode: DirectoryResolveMode) {
+            self.directory_state.borrow_mut().resolve_mode = mode;
+        }
+
+        pub(crate) fn take_invocation_actor(&mut self) -> Option<String> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| invocation.actor)
+        }
+
+        pub(crate) fn take_invocation_argument(&mut self) -> Option<Option<String>> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| invocation.argument)
+        }
+
+        pub(crate) fn resolve_count(&self) -> usize {
+            self.directory_state.borrow().resolve_count
+        }
+    }
+
     fn local_directory_fixture() -> LocalDirectoryFixture {
-        const PEER_ID: u64 = 71;
         let mut tree = WorkspaceTree::default();
         let mut workspace = crate::shell::state::Workspace::test_default(
             crate::shell::state::WorkspaceId(71),
             "Directory test room",
         );
-        let cluster_id = workspace.room.to_string();
         workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
-        let membership = tree.shared();
-        let route = CrdtRoute::record("so.tilo.atlas", cluster_id.clone(), "atlas");
+        local_directory_fixture_with_membership(tree.shared())
+    }
+
+    pub(crate) fn local_directory_fixture_with_membership(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+    ) -> LocalDirectoryFixture {
+        local_directory_fixture_with_peer(membership, Some(71))
+    }
+
+    pub(crate) fn local_directory_fixture_with_first_allocated_peer(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+    ) -> LocalDirectoryFixture {
+        local_directory_fixture_with_peer(membership, None)
+    }
+
+    fn local_directory_fixture_with_peer(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+        peer_id: Option<u64>,
+    ) -> LocalDirectoryFixture {
+        let cluster_id = membership
+            .read()
+            .active_workspace()
+            .expect("directory fixture requires an active workspace")
+            .room
+            .to_string();
+        let route = CrdtRoute::record("dev.tilo.atlas", cluster_id.clone(), "atlas");
         let fanout = Arc::new(FanoutState::new());
         let (state, bridge_rx) = CapnpBrokerState::new(
             &fanout,
@@ -10374,19 +10466,22 @@ mod tests {
             Some(Arc::clone(&membership)),
             None,
         );
+        let peer_id = peer_id.unwrap_or_else(|| state.next_peer_id());
         let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
         let directory_state = Rc::new(RefCell::new(TestActionDirectory {
             revision: "directory-r1".into(),
             resolve_mode: DirectoryResolveMode::Found,
+            result: tilo_actions::ResultSpec::None,
             confirmation_required: false,
             query_count: 0,
+            resolve_count: 0,
         }));
         let directory: action_directory::Client =
             capnp_rpc::new_client(TestActionDirectoryServer {
                 state: Rc::clone(&directory_state),
             });
         directories.directories.borrow_mut().insert(
-            PEER_ID,
+            peer_id,
             RegisteredActionDirectory {
                 app_id: route.app_id.clone(),
                 route: route.clone(),
@@ -10398,9 +10493,9 @@ mod tests {
             .lock()
             .expect("directory roots")
             .insert(
-                PEER_ID,
+                peer_id,
                 ActionDirectoryRoot {
-                    peer_id: PEER_ID,
+                    peer_id,
                     app_id: route.app_id.clone(),
                     cluster_id: cluster_id.clone(),
                     record_id: route.record_id.clone(),
@@ -10412,7 +10507,7 @@ mod tests {
             .invocation_subscribers
             .lock()
             .expect("invocation subscribers")
-            .insert(PEER_ID, invocation_tx);
+            .insert(peer_id, invocation_tx);
         LocalDirectoryFixture {
             broker: crate::shell::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(
                 &state,
@@ -10424,7 +10519,7 @@ mod tests {
             directory_state,
             cluster_id,
             route,
-            peer_id: PEER_ID,
+            peer_id,
             invocation_rx,
         }
     }
@@ -10433,7 +10528,7 @@ mod tests {
         clippy::future_not_send,
         reason = "the directory bridge is deliberately driven on the LocalSet because its Cap'n Proto state contains Rc values"
     )]
-    async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
+    pub(crate) async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
         fixture
             .state
             .drain_action_directory_bridge(&fixture.directories);

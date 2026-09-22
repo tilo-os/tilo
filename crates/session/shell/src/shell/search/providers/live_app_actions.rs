@@ -37,6 +37,24 @@ const MAX_RETAINED_DIRECTORY_PAGES: usize = 64;
 /// forever. Retrying after this deadline remains bounded by the bridge queue.
 const DIRECTORY_PAGE_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
+#[cfg(test)]
+thread_local! {
+    static TEST_DIRECTORY_START_TIMEOUT: Cell<Option<Duration>> = const { Cell::new(None) };
+}
+
+fn directory_start_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(timeout) = TEST_DIRECTORY_START_TIMEOUT.with(Cell::get) {
+        return timeout;
+    }
+    DIRECTORY_PAGE_REPLY_TIMEOUT
+}
+
+#[cfg(test)]
+pub(crate) fn set_directory_start_timeout_for_test(timeout: Option<Duration>) {
+    TEST_DIRECTORY_START_TIMEOUT.with(|slot| slot.set(timeout));
+}
+
 /// One remote directory page is addressed by its certified route, actor,
 /// query, and opaque remote continuation. Keeping the continuation in the
 /// key lets a bounded palette walk a long directory without replacing an
@@ -918,6 +936,7 @@ impl LiveAppActionsProvider {
             let invoke_actor = actor.clone();
             return SearchResult {
                 kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: PROVIDER_ID.into(),
                 id: job_cancel_id(id),
                 title: format!("Cancel action job {id}"),
@@ -947,6 +966,7 @@ impl LiveAppActionsProvider {
         let status_broker = self.broker.clone();
         SearchResult {
             kind: ResourceKind::Custom("action-job".into()),
+            operation_kind: tilo_actions::OperationKind::View,
             provider_id: PROVIDER_ID.into(),
             id: job_status_id(id),
             title: format!("Action job {id}"),
@@ -1303,8 +1323,15 @@ impl LiveAppActionsProvider {
         let cache_key = (peer_id, actor.clone(), needle.to_string(), cursor.to_vec());
         let typed =
             !descriptor.params_json.trim().is_empty() && descriptor.params_json.trim() != "[]";
+        let operation_kind = match descriptor.operation_kind.as_str() {
+            "view" => tilo_actions::OperationKind::View,
+            "document" => tilo_actions::OperationKind::Document,
+            "effect" => tilo_actions::OperationKind::Effect,
+            _ => return None,
+        };
         Some(SearchResult {
             kind: ResourceKind::Action,
+            operation_kind,
             provider_id: PROVIDER_ID.into(),
             id: format!(
                 "directory{ID_SEPARATOR}{peer_id}{ID_SEPARATOR}{revision}{ID_SEPARATOR}{resource}{ID_SEPARATOR}{action}"
@@ -1357,7 +1384,7 @@ impl LiveAppActionsProvider {
                     receiver,
                     Rc::clone(&invalidations),
                     cache_key.clone(),
-                    deadline_after(DIRECTORY_PAGE_REPLY_TIMEOUT),
+                    deadline_after(directory_start_timeout()),
                 );
                 Ok(InvocationDisposition::Pending(ticket))
             })),
@@ -1410,6 +1437,7 @@ impl LiveAppActionsProvider {
         };
         let title = row.resource_label.clone();
         Some(SearchResult {
+            operation_kind: tilo_actions::OperationKind::View,
             kind: ResourceKind::Custom(if row.resource_kind.is_empty() {
                 "Resources".into()
             } else {
@@ -1611,6 +1639,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let status_broker = self.broker.clone();
                 results.push(SearchResult {
                     kind: ResourceKind::Custom("action-job".into()),
+                    operation_kind: tilo_actions::OperationKind::View,
                     provider_id: PROVIDER_ID.into(),
                     id: job_status_id(id),
                     title: format!("Action job {id}"),
@@ -1638,6 +1667,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     let invoke_actor = actor.clone();
                     results.push(SearchResult {
                         kind: ResourceKind::Action,
+                        operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: PROVIDER_ID.into(),
                         id: job_cancel_id(id),
                         title: format!("Cancel action job {id}"),
@@ -1722,6 +1752,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let invoke_unavailable_reason = unavailable_reason.clone();
                 results.push(SearchResult {
                     kind: ResourceKind::Action,
+                    operation_kind: action.operation_kind,
                     provider_id: PROVIDER_ID.to_string(),
                     id: Self::result_id(&surface, action),
                     title: action.action_label.clone(),
@@ -1961,6 +1992,65 @@ impl SearchProvider for LiveAppActionsProvider {
             }
         }
         results
+    }
+
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        let mut fields = id.split(ID_SEPARATOR);
+        if fields.next() != Some("directory") {
+            return self
+                .query_page(ctx, None, SearchBudget::PALETTE)
+                .results
+                .into_iter()
+                .find(|result| result.id == id);
+        }
+        let peer_id = fields.next()?.parse::<u64>().ok()?;
+        let revision = fields.next()?;
+        let resource = fields.next()?;
+        let action = fields.next()?;
+        if fields.next().is_some() {
+            return None;
+        }
+
+        self.apply_directory_invalidations();
+        self.poll_directory_pages();
+        let root = self
+            .broker
+            .action_directory_roots()
+            .into_iter()
+            .find(|root| root.peer_id == peer_id)?;
+        if !matches!(
+            ctx.chrome.search_scope,
+            crate::shell::chrome_state::SearchScope::All
+        ) && ctx
+            .chrome
+            .tree()
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string())
+            != Some(root.cluster_id.clone())
+        {
+            return None;
+        }
+        let actor = ctx
+            .chrome
+            .tree()
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == root.cluster_id)
+            .map(|workspace| ctx.chrome.local_user_for_room(&workspace.room))?;
+        let cached = self.directory_pages.borrow().iter().find_map(
+            |((cached_peer, cached_actor, needle, cursor), page)| {
+                if *cached_peer != peer_id || cached_actor != &actor || page.revision != revision {
+                    return None;
+                }
+                page.rows.iter().find_map(|row| {
+                    let descriptor = row.descriptor.as_ref()?;
+                    (descriptor.resource == resource && descriptor.action == action)
+                        .then(|| (descriptor.clone(), needle.clone(), cursor.clone()))
+                })
+            },
+        )?;
+        self.directory_action_result(&root, revision, &cached.0, &cached.1, &actor, &cached.2)
+            .filter(|result| result.id == id)
     }
 
     fn refresh_search_index(&self, ctx: &SearchContext<'_>) {
@@ -2869,6 +2959,7 @@ mod tests {
         let room = chrome.tree().workspaces[0].room.to_string();
         let result = |cluster: &str| SearchResult {
             kind: ResourceKind::Action,
+            operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
             id: [
                 "so.tilo.files",

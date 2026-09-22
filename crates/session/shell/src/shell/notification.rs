@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -381,9 +381,15 @@ const TOAST_WIDTH: f64 = 360.0;
 const TOAST_HEIGHT: f64 = 64.0;
 const TOAST_GAP: f64 = 8.0;
 const EDGE_INSET: f64 = 24.0;
+/// Horizontal text inset of the locked card and the DND pill. Deliberately
+/// the shared toast card's own `CARD_PAD_X` (`ui::widget::toast`, 14) so a
+/// pill heading a column of cards starts its text on the cards' line; it
+/// is off the 4 px grid for the same reason the card is.
 const CARD_PADDING_X: f64 = 14.0;
 const DOT_RADIUS: f64 = 5.0;
 const DOT_GAP: f64 = 12.0;
+/// Selector height (HIG §9.6) for the Do-Not-Disturb status pill.
+const SELECTOR_HEIGHT: f64 = 28.0;
 
 /// Max notifications in the active stack; older entries drop from the
 /// front (same FIFO as `ui::widget::toast::ToastStack`).
@@ -533,22 +539,18 @@ impl NotificationStack {
     ) -> Rect {
         let title_size = ctx.theme.tokens.typography.scale.sm;
         let card_rect = Rect::new(x0, y, x0 + width, y + TOAST_HEIGHT);
-        let shape = RoundedRect::from_rect(card_rect, radius);
-        ctx.scene.fill(
-            Fill::NonZero,
-            ctx.transform,
-            ctx.theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        ctx.scene.stroke(
-            &Stroke::new(1.0),
-            ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
+        // The locked card is a Panel-role floater like the toasts it stands
+        // in for (HIG §9.5): the same `panel_ground` + `panel_border` the
+        // toolkit toast paints, so one column is one material. The declared
+        // border it replaced was three shades off `raised` on dark and
+        // vanished.
+        ui::surface::panel(ctx.scene, ctx.transform, card_rect, radius, ctx.theme);
         let label = lock_suppressed_label(count);
+        // Centre on the measured line, not the font size (HIG §7a).
+        let max_width = f64_to_f32_lossy(width - CARD_PADDING_X * 2.0);
+        let (_, label_h) = ctx
+            .text_renderer
+            .measure(&label, title_size, Some(max_width));
         ctx.text_renderer.draw_text(
             ctx.scene,
             &label,
@@ -557,11 +559,11 @@ impl NotificationStack {
             ctx.transform.pre_translate(
                 (
                     card_rect.x0 + CARD_PADDING_X,
-                    card_rect.y0 + (TOAST_HEIGHT - f64::from(title_size)) / 2.0,
+                    card_rect.y0 + (TOAST_HEIGHT - f64::from(label_h)) / 2.0,
                 )
                     .into(),
             ),
-            Some(f64_to_f32_lossy(width - CARD_PADDING_X * 2.0)),
+            Some(max_width),
         );
         card_rect
     }
@@ -569,6 +571,13 @@ impl NotificationStack {
     /// Do-Not-Disturb status pill: muted, no hit-rect — reads as a
     /// status chip, not a dismissible toast. Returns the pill's rect.
     /// Split out of [`Widget::draw`].
+    ///
+    /// Not [`ui::widget::Chip::draw_at`]: that painter is a Selector meant
+    /// to sit inside a Panel, so its quiet fill is a veneer
+    /// (`surface_white_5`) that here would let the wallpaper and whatever
+    /// window is under the stack show through a status line. The pill is
+    /// the same material as the toast cards it heads — the shared card's
+    /// raised surface and hairline — so the stack reads as one column.
     fn draw_dnd_pill(
         ctx: &mut PaintCtx,
         x0: f64,
@@ -578,23 +587,25 @@ impl NotificationStack {
         history_count: usize,
     ) -> Rect {
         let body_size = ctx.theme.tokens.typography.scale.xs;
-        let pill_h = 30.0;
+        let label = if history_count > 0 {
+            format!("Do Not Disturb · {history_count} held")
+        } else {
+            "Do Not Disturb".to_string()
+        };
+        let text_x = x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
+        let max_width = f64_to_f32_lossy(width - (text_x - x0) - CARD_PADDING_X);
+        // Centre on the measured line, not the font size (HIG §7a).
+        let (_, label_h) = ctx
+            .text_renderer
+            .measure(&label, body_size, Some(max_width));
+        // A status pill is a Selector-height surface (HIG §9.6: 28), not an
+        // off-grid 30 — and it grows with its measured label plus `s2` so
+        // 200 % type has a pill around it rather than a band through it.
+        let pill_h =
+            SELECTOR_HEIGHT.max(f64::from(label_h) + f64::from(ctx.theme.tokens.spacing.s2));
         let pill_rect = Rect::new(x0, y, x0 + width, y + pill_h);
-        let shape = RoundedRect::from_rect(pill_rect, radius);
-        ctx.scene.fill(
-            Fill::NonZero,
-            ctx.transform,
-            ctx.theme.tokens.colors.surfaces.base,
-            None,
-            &shape,
-        );
-        ctx.scene.stroke(
-            &Stroke::new(1.0),
-            ctx.transform,
-            ctx.theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
+        // Panel role, like the toasts it holds back (HIG §9.5).
+        ui::surface::panel(ctx.scene, ctx.transform, pill_rect, radius, ctx.theme);
         // A `Point` rather than two `dot_c{x,y}` locals — same value,
         // but doesn't read as two near-identical bindings in one scope.
         let dot_center = Point::new(
@@ -608,23 +619,14 @@ impl NotificationStack {
             None,
             &Circle::new(dot_center, DOT_RADIUS),
         );
-        let label = if history_count > 0 {
-            format!("Do Not Disturb · {history_count} held")
-        } else {
-            "Do Not Disturb".to_string()
-        };
-        let text_x = pill_rect.x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
         ctx.text_renderer.draw_text(
             ctx.scene,
             &label,
             body_size,
             ctx.theme.tokens.colors.text_dim,
-            ctx.transform.pre_translate(
-                (text_x, pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0).into(),
-            ),
-            Some(f64_to_f32_lossy(
-                width - (text_x - pill_rect.x0) - CARD_PADDING_X,
-            )),
+            ctx.transform
+                .pre_translate((text_x, pill_rect.y0 + (pill_h - f64::from(label_h)) / 2.0).into()),
+            Some(max_width),
         );
         pill_rect
     }
@@ -634,7 +636,7 @@ impl NotificationStack {
     /// `stack_min_y`/`stack_max_y`. Split out of [`Widget::draw`].
     #[allow(
         clippy::too_many_arguments,
-        reason = "toast rendering keeps paint context, snapshot, geometry and accumulated bounds explicit"
+        reason = "Toast painting combines render context, notification snapshot and time, stack position/width, and accumulated stack bounds."
     )]
     fn draw_toast_cards(
         &mut self,
@@ -744,6 +746,13 @@ impl Widget for NotificationStack {
         if self.viewport.area() == 0.0 {
             return;
         }
+        // Theme type tokens already carry the user's text scale, and the
+        // stack (and the shared toast card it paints) lays out with those
+        // resolved sizes; the renderer must not scale them again (HIG §7a)
+        // — reset for this pass, as the shell's immediate-mode chrome
+        // passes do, and restored at every exit below.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
 
         let now = Instant::now();
         let (mut snapshot, locked, dnd, history_count): (Vec<Notification>, bool, bool, usize) = {
@@ -761,12 +770,14 @@ impl Widget for NotificationStack {
         // Nothing to paint unless DND is on and unlocked (show its status pill).
         if snapshot.is_empty() && (!dnd || locked) {
             self.rect = Rect::ZERO;
+            text_renderer.set_text_scale(renderer_scale);
             return;
         }
 
         let width = self.toast_width();
         if width <= 0.0 {
             self.rect = Rect::ZERO;
+            text_renderer.set_text_scale(renderer_scale);
             return;
         }
         let radius = f64::from(theme.tokens.radii.md);
@@ -783,6 +794,7 @@ impl Widget for NotificationStack {
         // no dismiss hit-rects.
         if locked {
             self.rect = Self::draw_locked_card(&mut ctx, x0_rest, y, width, radius, snapshot.len());
+            ctx.text_renderer.set_text_scale(renderer_scale);
             return;
         }
 
@@ -799,6 +811,7 @@ impl Widget for NotificationStack {
         }
 
         self.draw_toast_cards(&mut ctx, &snapshot, now, x0_rest, width, y, &mut bounds);
+        ctx.text_renderer.set_text_scale(renderer_scale);
 
         self.rect = if bounds.min_y.is_finite() {
             Rect::new(x0_rest, bounds.min_y, x0_rest + width, bounds.max_y)
@@ -963,6 +976,109 @@ mod tests {
         assert_eq!(ch.notifications()[0].title, "Hello");
         assert_eq!(ch.notifications()[0].body, "World");
         assert_eq!(ch.notifications()[0].severity, NotificationSeverity::Info);
+    }
+
+    /// Review fixtures: the ux-bench cannot raise a notification on macOS,
+    /// so the stack is photographed from its paint path — a live column
+    /// with an error toast, the Do-Not-Disturb pill over held items, and the
+    /// locked-session card — at 1× and 200 % text, dark and light.
+    #[test]
+    fn notification_stack_review_fixtures_are_written() {
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/ui-review/s2-r2/notifications");
+        let (w, h) = (640_u32, 400_u32);
+        let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+        let mut renderer = crate::shell::osd::review_offscreen::OffscreenRenderer::new(w, h);
+        let variants = [
+            ("dark-1x", Theme::dark(), 1.0_f32),
+            ("dark-2x", Theme::dark().with_text_scale(2.0), 2.0),
+            ("light-1x", Theme::light(), 1.0),
+        ];
+        for (name, mut theme, scale) in variants {
+            // A still cannot show the entry slide; photograph the rest state.
+            theme.reduce_motion = true;
+            for state in ["live", "dnd", "locked"] {
+                let chrome = new_chrome();
+                {
+                    let mut ch = chrome.borrow_mut();
+                    match state {
+                        "dnd" => {
+                            ch.set_dnd(true);
+                            ch.push_notification("Held", "while quiet");
+                            ch.push_notification("Also held", "for later");
+                        }
+                        "locked" => {
+                            ch.push_notification("Private", "never shown while locked");
+                            ch.push_notification("Second", "count only");
+                            ch.set_session_locked(true);
+                        }
+                        _ => {
+                            ch.push_notification("Saved", "Report.pdf is in Documents");
+                            ch.push_notification_full(
+                                Notification::new("Backup failed", "The drive is not connected")
+                                    .with_severity(NotificationSeverity::Error),
+                            );
+                        }
+                    }
+                }
+                let mut stack = NotificationStack::new(chrome);
+                stack.set_viewport(viewport);
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                let mut scene = Scene::new();
+                Widget::draw(
+                    &mut stack,
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &PresenceCtx::default(),
+                );
+                assert_eq!(
+                    tr.text_scale(),
+                    scale,
+                    "the pass restores the renderer's scale"
+                );
+                let ground = theme.tokens.colors.surfaces.base;
+                let path = out.join(format!("{name}-{state}.png"));
+                renderer.render_png(&scene, ground, &path);
+                assert!(
+                    path.is_file(),
+                    "notification fixture missing: {}",
+                    path.display()
+                );
+                // The rendered pixels, not just the file: the first surface
+                // in the column (pill, locked card or toast card) is the
+                // Panel ground at its plain bottom-right interior — the
+                // toolkit toast and the two shell cards share one material.
+                let first = Widget::get_rect(&stack);
+                let first_h = if state == "live" {
+                    TOAST_HEIGHT
+                } else {
+                    first.height()
+                };
+                let probe = Point::new(first.x1 - 12.0, first.y0 + first_h - 8.0);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "probe points are inside a positive viewport"
+                )]
+                let (r, g, b, _) = crate::shell::osd::review_offscreen::OffscreenRenderer::sample(
+                    &renderer.render_resilient(&scene, ground),
+                    w,
+                    probe.x as u32,
+                    probe.y as u32,
+                );
+                let e = ui::chrome::panel_ground(&theme).to_rgba8();
+                assert!(
+                    r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
+                    "{name}-{state}: surface interior ({r},{g},{b}) is the panel ground ({},{},{})",
+                    e.r,
+                    e.g,
+                    e.b
+                );
+            }
+        }
     }
 
     #[test]

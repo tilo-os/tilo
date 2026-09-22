@@ -771,6 +771,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn personal_fabric_motion_reaches_seat_but_yields_to_kill_switch() {
         use crate::compositor::state::State;
         use crate::shell::device_fabric::FabricInputEvent;

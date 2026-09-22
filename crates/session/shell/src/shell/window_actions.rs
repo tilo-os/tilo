@@ -83,11 +83,25 @@ pub fn open_hosted(
     title: impl Into<String>,
     dest: Destination,
 ) -> TabId {
+    open_hosted_after_setup(st, kind, title, dest, |_, _| {})
+}
+
+/// File openers finalize their reference and startup payload before the
+/// creation owner captures its exact scratch-record ticket.
+pub(crate) fn open_hosted_after_setup(
+    st: &mut ChromeState,
+    kind: AppKind,
+    title: impl Into<String>,
+    dest: Destination,
+    setup: impl FnOnce(&mut ChromeState, TabId),
+) -> TabId {
     let placement = placement_for(st, dest);
     let id = {
         let mut tree = st.tree_mut();
         tab_binding::open_hosted_app(&mut tree, kind, title, placement)
     };
+    setup(st, id);
+    st.create_new_tab_record(id);
     st.bump();
     id
 }
@@ -171,8 +185,192 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
         let mut tree = st.tree_mut();
         tab_binding::open_hosted_app(&mut tree, kind, title, placement)
     };
+    st.create_new_tab_record(id);
     st.bump();
     Ok(id)
+}
+
+/// Why a tab could not be closed or split. One type for the chord, the
+/// tab's right-click menu and the `tab.*` actions, so every door refuses
+/// with the same words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabActionError {
+    /// No tab is focused — nothing to act on.
+    NoActiveTab,
+    /// The tab is not in the tree (already closed, or a stale id).
+    UnknownTab,
+    /// A group's only tab cannot be split off: the group would dissolve
+    /// and be re-created one slot over.
+    OnlyTab,
+    /// The replicated document refused the mutation; nothing changed.
+    DocumentRefused,
+}
+
+impl TabActionError {
+    pub fn user_message(self) -> &'static str {
+        match self {
+            TabActionError::NoActiveTab => "There is no tab to act on.",
+            TabActionError::UnknownTab => "That tab is no longer open.",
+            TabActionError::OnlyTab => {
+                "This is the window's only tab; there is nothing to split it from."
+            }
+            TabActionError::DocumentRefused => {
+                "The workspace document did not accept the change, so nothing was moved."
+            }
+        }
+    }
+}
+
+/// Where a split-off tab's new group lands in its strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitPlacement {
+    /// Immediately to the right of the tab's current group.
+    Right,
+    /// At the end of the strip.
+    StripEnd,
+}
+
+/// The focused group's active tab, the way [`duplicate_active_tab`]
+/// resolves it (active strip → active group → active tab, each falling
+/// back to the first).
+pub fn active_tab_id(st: &ChromeState) -> Option<TabId> {
+    let tree = st.tree();
+    let ws = tree.active_workspace()?;
+    let strip = tree
+        .active_strip
+        .get(&ws.id)
+        .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
+        .or_else(|| ws.strips.first())?;
+    let group = tree
+        .active_group
+        .get(&strip.id)
+        .and_then(|g| strip.window_groups.iter().find(|w| w.id == *g))
+        .or_else(|| strip.window_groups.first())?;
+    group
+        .tabs
+        .iter()
+        .find(|t| t.id == group.active_tab)
+        .or_else(|| group.tabs.first())
+        .map(|t| t.id)
+}
+
+/// Close `tab_id`: the replicated tree and document first, the atomic
+/// local state, then the exact foreign surface, in that order — so a
+/// crash, an unrelated revision or a slow client all observe absence. The
+/// `✕`, the keyboard chord, the tab menu's "Close Tab" and the `tab.close`
+/// action converge here; a pointer close has already begun its widget
+/// animation when this runs, the others let the resync take the tab out.
+///
+/// # Errors
+///
+/// [`TabActionError::UnknownTab`] when the tab is not in the tree or the
+/// document refuses the deletion (nothing changed either way).
+pub fn close_tab(st: &mut ChromeState, tab_id: TabId) -> Result<(), TabActionError> {
+    let surface = {
+        let tree = st.tree();
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .find(|tab| tab.id == tab_id)
+            .and_then(|tab| match &tab.tile {
+                TileContent::Foreign { surface_id, .. } => Some(*surface_id),
+                _ => None,
+            })
+    };
+    let removed = {
+        let mut tree = st.tree_mut();
+        tab_binding::remove_tab(&mut tree, tab_id)
+    };
+    if !removed {
+        return Err(TabActionError::UnknownTab);
+    }
+    #[cfg(target_os = "macos")]
+    st.hosted_inputs.prune_documents(&mut st.tree_mut());
+    // Close is durable before the client is asked to exit.
+    st.tree().flush_to_disk();
+    if let Some(surface_id) = surface {
+        st.request_surface_close(surface_id);
+    }
+    st.bump();
+    Ok(())
+}
+
+/// [`close_tab`] on the focused group's active tab — the `tab.close`
+/// action's form.
+///
+/// # Errors
+///
+/// [`TabActionError::NoActiveTab`] when nothing is focused, otherwise as
+/// [`close_tab`].
+pub fn close_active_tab(st: &mut ChromeState) -> Result<(), TabActionError> {
+    let tab = active_tab_id(st).ok_or(TabActionError::NoActiveTab)?;
+    close_tab(st, tab)
+}
+
+/// Split `tab_id` into a new single-tab group in its own strip, tree first
+/// ([`crate::shell::state::WorkspaceTree::split_tab_into_new_group`]): the
+/// cache and the replicated document move together and the chrome
+/// revision bumps, so the next resync builds the widget side — or, when the
+/// caller already holds the live tab host, adopts the group it moved under
+/// the same id. The tab menu's "Split Right" / "Move to New Group" and the
+/// `tab.split-right` / `tab.move-to-new-group` actions converge here.
+///
+/// # Errors
+///
+/// [`TabActionError::UnknownTab`] when the tab is in no strip;
+/// [`TabActionError::OnlyTab`] when its group has no other tab;
+/// [`TabActionError::DocumentRefused`] when the document refuses (nothing
+/// changed).
+pub fn split_tab(
+    st: &mut ChromeState,
+    tab_id: TabId,
+    placement: SplitPlacement,
+) -> Result<GroupId, TabActionError> {
+    let (strip_id, insert_at, only_tab) = {
+        let tree = st.tree();
+        let located = tree.workspaces.iter().find_map(|ws| {
+            ws.strips.iter().find_map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .enumerate()
+                    .find(|(_, group)| group.tabs.iter().any(|tab| tab.id == tab_id))
+                    .map(|(group_idx, group)| {
+                        let insert_at = match placement {
+                            SplitPlacement::Right => group_idx.saturating_add(1),
+                            SplitPlacement::StripEnd => strip.window_groups.len(),
+                        };
+                        (strip.id, insert_at, group.tabs.len() < 2)
+                    })
+            })
+        });
+        located.ok_or(TabActionError::UnknownTab)?
+    };
+    if only_tab {
+        return Err(TabActionError::OnlyTab);
+    }
+    let new_group = st
+        .tree_mut()
+        .split_tab_into_new_group(strip_id, tab_id, insert_at)
+        .ok_or(TabActionError::DocumentRefused)?;
+    st.bump();
+    Ok(new_group)
+}
+
+/// [`split_tab`] on the focused group's active tab — the actions' form.
+///
+/// # Errors
+///
+/// [`TabActionError::NoActiveTab`] when nothing is focused, otherwise as
+/// [`split_tab`].
+pub fn split_active_tab(
+    st: &mut ChromeState,
+    placement: SplitPlacement,
+) -> Result<GroupId, TabActionError> {
+    let tab = active_tab_id(st).ok_or(TabActionError::NoActiveTab)?;
+    split_tab(st, tab, placement)
 }
 
 #[cfg(test)]
@@ -183,6 +381,28 @@ mod tests {
 
     fn chrome_with_default_tree() -> crate::shell::chrome_state::Chrome {
         ChromeState::new(WorkspaceTree::bootstrap_demo())
+    }
+
+    #[test]
+    fn history_new_hosted_tabs_have_records_before_tree_rebuild() {
+        let chrome = chrome_with_default_tree();
+        let mut st = chrome.borrow_mut();
+        let first = open_hosted(
+            &mut st,
+            AppKind::Other("Notes".into()),
+            "Notes",
+            Destination::Beside,
+        );
+        let second = duplicate_active_tab(&mut st).unwrap();
+        for id in [first, second] {
+            assert!(
+                st.records()
+                    .read(&ui::RecordId::for_tab(id), |_| ())
+                    .is_some(),
+                "the creating action must establish its new record before presentation"
+            );
+        }
+        assert_ne!(first, second);
     }
 
     /// The group the user is looking at, and the number of tabs in it.

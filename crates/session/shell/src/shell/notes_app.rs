@@ -300,13 +300,10 @@ impl CompleteContentProvider for NotesApp {
 }
 
 impl Widget for NotesApp {
-    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
-        Some(self)
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&HISTORY)
     }
 
-    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
-        Some(self)
-    }
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.body.sync(state, root);
         self.clamp_cursor();
@@ -1285,6 +1282,206 @@ mod tests {
         if let Some(p) = pasted {
             app.insert_str(&mut doc, &tile, &p);
             assert!(app.body.text.ends_with("world"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod framework_history_tests {
+    use super::*;
+    use automerge::{ObjType, ROOT, transaction::Transactable};
+    #[test]
+    fn real_shell_note_tile_history_keeps_its_saved_body_custody() {
+        let temp = tempfile::tempdir().unwrap();
+        let records = ui::record::RecordOwners::new(temp.path().to_path_buf())
+            .open(crate::shell::SHELL_RECORDS_PACKAGE, "local")
+            .unwrap();
+        let checkout = crate::shell::tab_documents::scratch_tab_record(999);
+        records
+            .reserve_record(&checkout)
+            .unwrap()
+            .initialize(|doc| {
+                let body = doc.put_object(ROOT, BODY_KEY, ObjType::Text).unwrap();
+                doc.splice_text(body, 0, 0, "Saved shell note").unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let shell_tile = crate::shell::state::TileContent::AppPlaceholder {
+            kind: crate::shell::state::AppKind::Other("Notes".into()),
+            label: "Notes".into(),
+        };
+        let mut tile = ui::widget::TileHost::new(crate::shell::to_ui_tile(&shell_tile));
+        tile.bind_record(records.clone(), checkout.clone());
+        tile.bind_record(records.clone(), checkout.clone());
+        let mut surfaces = 0;
+        tile.visit_framework_history(&mut |_, _| surfaces += 1);
+        assert_eq!(surfaces, 1);
+        let original = records
+            .read(&checkout.id, |doc| doc.base_heads()[0])
+            .unwrap();
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
+            "en-US",
+        );
+        let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+            ui::State::new(),
+            Box::new(tile),
+            (900, 650),
+            Theme::dark(),
+            TextRenderer::with_font_catalog(&catalog).unwrap(),
+            ui::permissions::UserId("shell-fixture".into()),
+        );
+        assert!(driver.targets().contains_key("history-open"));
+        records
+            .with_owned_action(
+                &checkout.id,
+                999,
+                crate::shell::SHELL_RECORDS_PACKAGE,
+                ui::permissions::UserId("shell-fixture".into()),
+                tilo_actions::ActionContext::default(),
+                |doc, _| {
+                    let (_, body) = automerge::ReadDoc::get(doc, ROOT, BODY_KEY)
+                        .unwrap()
+                        .unwrap();
+                    doc.splice_text(body, 0, 16, "Latest shell note").unwrap();
+                },
+            )
+            .unwrap();
+        driver.relayout();
+        driver.click_named("history-open").unwrap();
+        assert!(driver.targets().contains_key("activity_timeline"));
+        let entry = ui::history_source::entry_id_from_hash(&original.to_string());
+        driver
+            .perform_semantic_named(
+                "activity_timeline",
+                Some(&format!(
+                    "timeline-entry:{}",
+                    ui::widget::history_group::hex16(&entry)
+                )),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        assert!(format!("{:?}", driver.a11y_nodes()).contains("Saved shell note"));
+        driver.click_named("history-restore").unwrap();
+        driver.key("Enter");
+        assert_eq!(
+            records
+                .read(&checkout.id, |doc| crate::shell::crdt_text::read_body(
+                    doc, &ROOT, BODY_KEY
+                ))
+                .unwrap()
+                .as_deref(),
+            Some("Saved shell note")
+        );
+    }
+}
+
+static HISTORY: ui::history_mode::HistoryDefinition = ui::history_mode::HistoryDefinition {
+    app_id: crate::shell::SHELL_RECORDS_PACKAGE,
+    scopes: &[ui::history_mode::HistoryScopeDefinition {
+        key: "note",
+        title: "Note",
+        presentation: ui::history_mode::HistoryPresentation::Domain {
+            create: note_preview,
+        },
+        content_schema: Some(&NOTE_SCHEMA),
+    }],
+};
+static NOTE_SCHEMA: ui::history_mode::restore::HistoryRestoreSchema =
+    ui::history_mode::restore::HistoryRestoreSchema {
+        id: "shell.note",
+        version: 1,
+        roots: &[ui::history_mode::restore::HistoryRestoreRoot {
+            key: BODY_KEY,
+            required: true,
+            expected_type: ui::history_mode::restore::RestoreValueType::Object(
+                automerge::ObjType::Text,
+            ),
+        }],
+        selectors: &[],
+        preserved_roots: &[],
+        preserved: &[],
+        validate: validate_note,
+        validate_result: validate_note,
+    };
+fn validate_note(doc: &AutoCommit) -> Result<(), String> {
+    use automerge::ReadDoc;
+    let values = doc
+        .get_all(automerge::ROOT, BODY_KEY)
+        .map_err(|e| e.to_string())?;
+    if !matches!(
+        values.as_slice(),
+        [(automerge::Value::Object(automerge::ObjType::Text), _)]
+    ) {
+        return Err("historical note body is absent or has an unsupported type".into());
+    }
+    Ok(())
+}
+fn note_preview(
+    input: ui::history_mode::PreviewInput,
+) -> Result<Box<dyn ui::history_mode::HistoryPreview>, String> {
+    let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|e| e.to_string())?;
+    validate_note(&doc)?;
+    let body = crate::shell::crdt_text::read_body(&doc, &automerge::ROOT, BODY_KEY)
+        .ok_or("historical note body unavailable")?;
+    Ok(Box::new(NotePreview {
+        app: NotesApp::with_seed(body),
+        view: input.initial_view,
+    }))
+}
+// An isolated normal Notes renderer receives no event/sync/resource callbacks.
+struct NotePreview {
+    app: NotesApp,
+    view: ui::history_mode::PreviewView,
+}
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "finite floating-point preview scroll geometry is local presentation"
+)]
+impl ui::history_mode::HistoryPreview for NotePreview {
+    fn layout(&mut self, bounds: Rect, _: &mut TextRenderer, _: &Theme) -> Result<(), String> {
+        self.app.rect = bounds;
+        Ok(())
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &self.app.rect,
+        );
+        self.app.draw(
+            scene,
+            transform * Affine::translate((0.0, self.view.scroll.1)),
+            text,
+            theme,
+            &PresenceCtx::empty(),
+        );
+        scene.pop_layer();
+    }
+    fn navigate(&mut self, command: ui::history_mode::PreviewNavigation) -> bool {
+        if let ui::history_mode::PreviewNavigation::Scroll { dy, .. } = command
+            && dy.is_finite()
+        {
+            self.view.scroll.1 = (self.view.scroll.1 + dy).min(0.0);
+            return true;
+        }
+        false
+    }
+    fn view(&self) -> ui::history_mode::PreviewView {
+        self.view.clone()
+    }
+    fn accessibility(&self) -> ui::history_mode::PreviewAccessibility {
+        ui::history_mode::PreviewAccessibility {
+            description: self.app.body.text.clone(),
+            pages: vec![],
         }
     }
 }
