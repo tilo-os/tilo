@@ -3,9 +3,10 @@
 
 The manifest is the single record of which Tilo-built file lands where in the
 OS image. This tool is how that record is applied: the production Containerfile
-runs it to arrange the image's binaries, and the same invocation with
-`--dest <layer>/` assembles a development sysext layer, so the two cannot place
-files differently.
+runs it to arrange the image's binaries, os/Containerfile.dev runs it with
+`--dev` to install the dev image's rebuilt and dev-only components, and the
+same invocation with `--dest <layer>/` assembles a development sysext layer, so
+none of them can place files differently.
 
 Only the Python 3.11+ standard library is used, so it runs in the bare Fedora
 bootc base as well as on a developer host.
@@ -33,6 +34,9 @@ PROFILES = ("release", "thin-app")
 # The Containerfile copies `direct` files itself, straight from the builder
 # stage, because the build writes them at their final path.
 DIRECT_LAYER = "direct"
+# Layers named `dev-*` belong to the dev image (os/Containerfile.dev) only. The
+# production image never carries them, and `--all` never selects them.
+DEV_LAYER_PREFIX = "dev-"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9+-]*$")
 LAYER_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 SCENARIO_RE = re.compile(r"^os/dev/[A-Za-z0-9._-]+$")
@@ -46,6 +50,11 @@ examples:
 
   # Everything the image ships, as JSON, for tooling
   install-components.py --dry-run --all --format json
+
+  # What os/Containerfile.dev rebuilds: its cargo arguments, then its files
+  # (components with `dev_features`, built with them, and dev-only components)
+  install-components.py --dev --dry-run --format cargo
+  install-components.py --dev --from /out --dest /image
 
   # Assemble a development sysext layer for the shell and launcher from a
   # local release build
@@ -81,6 +90,14 @@ class FileEntry:
     def describe_source(self) -> str:
         return f"@link:{self.link}" if self.link is not None else str(self.source)
 
+    @property
+    def dev_only(self) -> bool:
+        return is_dev_layer(self.layer)
+
+
+def is_dev_layer(layer: str) -> bool:
+    return layer.startswith(DEV_LAYER_PREFIX)
+
 
 @dataclass(frozen=True)
 class Component:
@@ -97,6 +114,18 @@ class Component:
     app_manifests: str | None
     optional: bool
     files: tuple[FileEntry, ...] = field(default_factory=tuple)
+    # Cargo features the dev image (and dev layers) enable on top of `features`.
+    dev_features: tuple[str, ...] = ()
+
+    @property
+    def dev_only(self) -> bool:
+        """Every file sits in a `dev-*` layer: the production image omits it."""
+        return bool(self.files) and all(entry.dev_only for entry in self.files)
+
+    @property
+    def in_dev_image(self) -> bool:
+        """os/Containerfile.dev rebuilds and installs this component."""
+        return self.dev_only or bool(self.dev_features)
 
 
 @dataclass(frozen=True)
@@ -114,6 +143,12 @@ class Manifest:
 
     def files(self) -> list[FileEntry]:
         return [entry for component in self.components for entry in component.files]
+
+    def production_components(self) -> tuple[Component, ...]:
+        return tuple(c for c in self.components if not c.dev_only)
+
+    def dev_image_components(self) -> tuple[Component, ...]:
+        return tuple(c for c in self.components if c.in_dev_image)
 
     def layers(self) -> list[str]:
         seen: list[str] = []
@@ -191,8 +226,8 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
     components: list[Component] = []
     names: set[str] = set()
     destinations: dict[str, str] = {}
-    allowed = {"name", "kind", "scope", "scenario", "profile", "packages", "bins", "features", "units",
-               "user_units", "app_manifests", "optional", "layer", "files"}
+    allowed = {"name", "kind", "scope", "scenario", "profile", "packages", "bins", "features",
+               "dev_features", "units", "user_units", "app_manifests", "optional", "layer", "files"}
     for raw in raw_components:
         name = raw.get("name")
         if not isinstance(name, str) or not NAME_RE.match(name):
@@ -242,6 +277,15 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
             # Boot components whose install is not manifest-driven yet may omit files.
             raise ManifestError(f"{where}: `files` must list at least one {{ from, to, mode }} entry")
         files = tuple(_parse_file(f, name, layer, optional, i) for i, f in enumerate(raw_files))
+        dev_layers = {entry.layer for entry in files if entry.dev_only}
+        if dev_layers and len(dev_layers) != len({entry.layer for entry in files}):
+            raise ManifestError(f"{where}: mixes dev-only layers ({', '.join(sorted(dev_layers))}) with "
+                                "production layers; a component is either in the production image or "
+                                "dev-only, so put every file in a `dev-*` layer or none")
+        dev_features = _strings(raw.get("dev_features"), where, "dev_features")
+        if (dev_features or dev_layers) and (kind != "userspace" or profile != "release"):
+            raise ManifestError(f"{where}: `dev_features` and `dev-*` layers are for kind = \"userspace\" "
+                                "components with the release profile, which the dev image rebuilds")
         for entry in files:
             if entry.to in destinations:
                 raise ManifestError(f"{where}: {entry.to} is already installed by component {destinations[entry.to]!r}")
@@ -251,7 +295,7 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
             bins=_strings(raw.get("bins"), where, "bins"),
             features=_strings(raw.get("features"), where, "features"),
             units=units, user_units=user_units, app_manifests=app_manifests,
-            optional=optional, files=files,
+            optional=optional, files=files, dev_features=dev_features,
         ))
     return Manifest(path=path, components=tuple(components), external_units=external_units)
 
@@ -265,11 +309,20 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> Manifest:
     return parse_manifest(document, path)
 
 
+def select_components(manifest: Manifest, names: list[str], everything: bool,
+                      dev: bool = False) -> tuple[Component, ...]:
+    if bool(names) + everything + dev != 1:
+        raise ManifestError("name components to install, or pass --all or --dev (exactly one of these)")
+    if everything:
+        return manifest.production_components()
+    if dev:
+        return manifest.dev_image_components()
+    return tuple(manifest.component(n) for n in names)
+
+
 def select(manifest: Manifest, names: list[str], everything: bool, layers: list[str],
-           by_layer: bool) -> list[FileEntry]:
-    if everything == bool(names):
-        raise ManifestError("name components to install, or pass --all (not both)")
-    components = manifest.components if everything else tuple(manifest.component(n) for n in names)
+           by_layer: bool, dev: bool = False) -> list[FileEntry]:
+    components = select_components(manifest, names, everything, dev)
     known_layers = manifest.layers()
     for layer in layers:
         if layer not in known_layers:
@@ -378,6 +431,34 @@ def plan_rows(entries: list[FileEntry]) -> list[dict]:
     } for e in entries]
 
 
+def cargo_plan(components: tuple[Component, ...], dev: bool) -> tuple[list[str], list[str], list[str]]:
+    """(packages, bins, features) that build these components; `dev` adds `dev_features`."""
+    packages: list[str] = []
+    bins: list[str] = []
+    features: list[str] = []
+    for component in components:
+        if component.profile != "release":
+            raise ManifestError(f"component {component.name!r} uses profile {component.profile!r}; only "
+                                "release components build from a plain cargo argument list")
+        for values, into in ((component.packages, packages), (component.bins, bins),
+                             (component.features, features),
+                             (component.dev_features if dev else (), features)):
+            into.extend(v for v in values if v not in into)
+    return packages, bins, features
+
+
+def print_cargo(components: tuple[Component, ...], dev: bool, fmt: str) -> None:
+    packages, bins, features = cargo_plan(components, dev)
+    if fmt == "bins":
+        for name in bins:
+            print(name)
+        return
+    words = [w for p in packages for w in ("-p", p)] + [w for b in bins for w in ("--bin", b)]
+    if features:
+        words += ["--features", ",".join(features)]
+    print(" ".join(words))
+
+
 def print_plan(entries: list[FileEntry], fmt: str) -> None:
     if fmt == "json":
         json.dump(plan_rows(entries), sys.stdout, indent=2)
@@ -400,6 +481,7 @@ def print_components(manifest: Manifest, fmt: str) -> None:
         "profile": c.profile, "packages": list(c.packages),
         "bins": list(c.bins), "features": list(c.features), "units": list(c.units),
         "user_units": list(c.user_units), "optional": c.optional,
+        "dev_features": list(c.dev_features), "dev_only": c.dev_only,
     } for c in manifest.components]
     if fmt == "json":
         json.dump(rows, sys.stdout, indent=2)
@@ -412,7 +494,8 @@ def print_components(manifest: Manifest, fmt: str) -> None:
             units = [*row["units"], *(f"--user:{u}" for u in row["user_units"])]
             action = "restart: " + (" ".join(units) or "-")
         packages = " ".join(row["packages"]) or "-"
-        print(f"{row['name']:<16} {row['kind']:<9} {row['scope']:<8} {packages:<36} {action}")
+        flavour = "  (dev image only)" if row["dev_only"] else ""
+        print(f"{row['name']:<16} {row['kind']:<9} {row['scope']:<8} {packages:<36} {action}{flavour}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -420,7 +503,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Install Tilo build outputs into a root tree as declared by os/components.toml.",
         epilog=EXAMPLES, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("components", nargs="*", metavar="COMPONENT", help="components to install")
-    parser.add_argument("--all", action="store_true", help="install every component")
+    parser.add_argument("--all", action="store_true",
+                        help="every production image component (never the dev-only ones)")
+    parser.add_argument("--dev", action="store_true",
+                        help="what the dev image rebuilds: components with `dev_features` (built with "
+                        "them) and dev-only components (files in `dev-*` layers)")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST,
                         help="component manifest (default: %(default)s)")
     parser.add_argument("--from", dest="from_dirs", type=Path, action="append", default=[],
@@ -437,8 +524,9 @@ def main(argv: list[str] | None = None) -> int:
                         "which the Containerfile copies itself")
     parser.add_argument("--dry-run", action="store_true", help="print the install plan; touch nothing")
     parser.add_argument("--list", action="store_true", help="list components, scopes and units")
-    parser.add_argument("--format", choices=("text", "json", "contract"), default="text",
-                        help="output format for --dry-run and --list")
+    parser.add_argument("--format", choices=("text", "json", "contract", "cargo", "bins"), default="text",
+                        help="output format for --dry-run and --list; `cargo` prints the cargo build "
+                        "arguments of the selection, `bins` its binaries one per line")
     parser.add_argument("--quiet", action="store_true", help="print only errors")
     args = parser.parse_args(argv)
 
@@ -447,7 +535,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.list:
             print_components(manifest, args.format)
             return 0
-        entries = select(manifest, args.components, args.all, args.layers, args.by_layer)
+        if args.format in ("cargo", "bins"):
+            if not args.dry_run:
+                parser.error(f"--format {args.format} needs --dry-run")
+            print_cargo(select_components(manifest, args.components, args.all, args.dev),
+                        args.dev, args.format)
+            return 0
+        entries = select(manifest, args.components, args.all, args.layers, args.by_layer, args.dev)
         if args.dry_run:
             print_plan(entries, args.format)
             return 0
