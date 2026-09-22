@@ -7,7 +7,6 @@
 //! the bundled sample data instead.
 
 use std::fmt::Write as _;
-use std::sync::Once;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -25,26 +24,6 @@ const USER_AGENT: &str = "Tilo-Maps/0.1 (https://example.test; native maps app)"
 /// points OSRM/MOTIS emit along straight segments, so the render thread projects
 /// far fewer points per frame. See [`crate::geo::simplify_polyline`].
 const GEOMETRY_SIMPLIFY_M: f64 = 3.0;
-
-/// Install the process-wide rustls [`CryptoProvider`] exactly once, before any
-/// HTTPS fetch runs.
-///
-/// reqwest consults `CryptoProvider::get_default()` when it builds a TLS client.
-/// Installing the workspace-standard `ring` provider up front makes that lookup
-/// succeed, so tile / geocoding / routing requests actually complete instead of
-/// silently returning nothing (the "imagery unavailable" symptom).
-///
-/// Idempotent and safe to call from any thread or entry point (the live binary,
-/// the tile worker, tests). `install_default` only errors if a provider is
-/// already installed, which we ignore.
-///
-/// [`CryptoProvider`]: rustls::crypto::CryptoProvider
-pub fn ensure_crypto_provider() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
-}
 
 /// A completed background request handed back to the app.
 pub enum NetMsg {
@@ -103,8 +82,7 @@ pub struct TransitQuery {
 }
 
 fn client() -> Result<reqwest::blocking::Client, String> {
-    ensure_crypto_provider();
-    reqwest::blocking::Client::builder()
+    tilo_net::http::blocking_client()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(12))
         .build()

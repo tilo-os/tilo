@@ -17,7 +17,8 @@ path = "src/main.rs"
 [dependencies]
 agent-provider-config = { path = "../provider-config" }
 accounts = { path = "../../system/accounts" }
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

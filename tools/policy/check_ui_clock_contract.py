@@ -11,7 +11,8 @@ the calls (``Instant::now``/``SystemTime::now``) from the crate's own
   ``std::time::UNIX_EPOCH`` in production sources outside ``src/time.rs``;
   test modules and test files are exempt;
 * Clippy reads only the nearest ``clippy.toml``, so every key of the root file
-  must be repeated in the crate's file with the same value.
+  must be repeated in the crate's file with the same value; a list (such as
+  ``disallowed-methods``) may extend the root's list but must keep every entry.
 """
 
 from __future__ import annotations
@@ -89,6 +90,15 @@ def audit_sources(root: Path) -> list[Violation]:
     return violations
 
 
+def extends(crate_value: object, root_value: object) -> bool:
+    """A crate list may add entries to a root list but must keep all of them."""
+    return (
+        isinstance(crate_value, list)
+        and isinstance(root_value, list)
+        and all(entry in crate_value for entry in root_value)
+    )
+
+
 def audit_clippy_config(root: Path) -> list[Violation]:
     crate_config_path = root / CRATE / "clippy.toml"
     root_config = tomllib.loads((root / "clippy.toml").read_text(encoding="utf-8"))
@@ -99,7 +109,7 @@ def audit_clippy_config(root: Path) -> list[Violation]:
     for key, value in root_config.items():
         if key not in crate_config:
             reason = f"does not repeat root clippy.toml key {key!r}"
-        elif crate_config[key] != value:
+        elif crate_config[key] != value and not extends(crate_config[key], value):
             reason = f"sets {key!r} differently from the root clippy.toml"
         else:
             continue

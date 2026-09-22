@@ -222,7 +222,7 @@ impl LiveAccountTester {
             .get("username")
             .and_then(|value| value.as_str())
             .ok_or_else(|| "account has no username".to_string())?;
-        let client = reqwest::blocking::Client::builder()
+        let client = tilo_net::http::blocking_client()
             .connect_timeout(Self::NETWORK_TIMEOUT)
             .timeout(Self::NETWORK_TIMEOUT)
             // Never replay Basic credentials to a redirect target. Discovery

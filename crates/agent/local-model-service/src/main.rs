@@ -306,9 +306,9 @@ struct ReqwestTransport {
 impl ReqwestTransport {
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
-            client: reqwest::blocking::Client::builder()
+            client: tilo_net::http::blocking_client()
                 .redirect(reqwest::redirect::Policy::none())
-                .use_rustls_tls()
+                .tls_backend_rustls()
                 .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(30 * 60))
                 .build()

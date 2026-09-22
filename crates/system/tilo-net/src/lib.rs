@@ -54,6 +54,36 @@ pub fn client_config() -> Result<ClientConfig, rustls::Error> {
     client_config_with_roots(system_roots())
 }
 
+/// HTTP clients on Tilo's TLS defaults.
+///
+/// reqwest is built without a bundled crypto provider and verifies through
+/// `rustls-platform-verifier`, which on Linux reads the same system bundle as
+/// [`system_roots`]. Its builders panic unless a process default provider is
+/// installed, so every client starts from these functions.
+#[cfg(feature = "http")]
+pub mod http {
+    /// An async client builder with the crypto provider installed.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "this is the sanctioned constructor; it installs the provider first"
+    )]
+    pub fn client() -> reqwest::ClientBuilder {
+        crate::install_crypto_provider();
+        reqwest::Client::builder()
+    }
+
+    /// A blocking client builder with the crypto provider installed.
+    #[cfg(feature = "blocking")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "this is the sanctioned constructor; it installs the provider first"
+    )]
+    pub fn blocking_client() -> reqwest::blocking::ClientBuilder {
+        crate::install_crypto_provider();
+        reqwest::blocking::Client::builder()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

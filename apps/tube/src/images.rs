@@ -17,15 +17,15 @@ use vello::peniko::ImageData as PenikoImage;
 /// background threads, so it may block on I/O. A browser-ish User-Agent avoids
 /// the occasional 403 the image CDNs return to unknown clients.
 pub fn image_fetcher() -> Fetcher {
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .user_agent("Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
         .timeout(Duration::from_secs(10))
         .build()
-        // Only a static user-agent + timeout are set (no proxy/TLS config
-        // that could fail to parse), so this realistically never falls back
-        // to the unconfigured default — but a fetcher must not panic.
-        .unwrap_or_else(|_| reqwest::blocking::Client::new());
+        // A client that cannot be built leaves every image on its fallback;
+        // a fetcher must not panic.
+        .ok();
     Arc::new(move |url: &str| {
+        let client = client.as_ref()?;
         // Promote protocol-relative CDN URLs (`//yt3.ggpht.com/…`) to https so
         // the request has a scheme — some sources hand these back and reqwest
         // rejects them otherwise, silently blanking the image.

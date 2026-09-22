@@ -208,7 +208,7 @@ pub const BROWSER_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36
 pub fn resolve_rangeable(video_id: &str) -> Option<ResolvedVideo> {
     // Bounded so slow/down instances can't stall the resolve: a short
     // per-request timeout + an overall deadline.
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(Duration::from_millis(2500))
         .user_agent(BROWSER_UA)
         .build()
@@ -352,7 +352,7 @@ mod tests {
             stream.url
         );
         assert!(stream.has_audio, "a muxed format carries audio");
-        let Ok(client) = reqwest::blocking::Client::builder()
+        let Ok(client) = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(20))
             .user_agent(BROWSER_UA)
             .build()

@@ -37,7 +37,8 @@ anyhow.workspace = true
 # Live fetch (Invidious / SponsorBlock / DeArrow), driven by a background
 # worker and excluded from the shots path.
 # rustls-tls because the distrobox image has no openssl/native-tls.
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking", "json", "query"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 bounded-command = { path = "../../crates/system/bounded-command" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 blake3.workspace = true

@@ -335,13 +335,14 @@ impl HttpsGuestBridge {
         let (certificate, _) = self.enrolled_certificate()?;
         let certificate = Certificate::from_der(&certificate)
             .map_err(|error| AgentError::Transport(format!("stored guest certificate: {error}")))?;
-        Client::builder()
-            .use_rustls_tls()
-            .add_root_certificate(certificate)
-            // The enrolled guest certificate is self-signed for its Tilo DNS
-            // name while the host-only bridge has a fixed numeric endpoint.
-            // Chain validation still occurs against the exact persisted DER.
-            .danger_accept_invalid_hostnames(true)
+        tilo_net::http::blocking_client()
+            .tls_backend_rustls()
+            // Trust only the enrolled DER, never the system bundle. The
+            // certificate is self-signed for its Tilo DNS name while the
+            // host-only bridge has a fixed numeric endpoint, so hostname
+            // checks are off; chain validation against that DER still applies.
+            .tls_certs_only([certificate])
+            .tls_danger_accept_invalid_hostnames(true)
             .connect_timeout(BRIDGE_TIMEOUT)
             .timeout(timeout)
             .build()
@@ -349,13 +350,13 @@ impl HttpsGuestBridge {
     }
 
     fn bootstrap_client() -> Result<Client, AgentError> {
-        Client::builder()
-            .use_rustls_tls()
+        tilo_net::http::blocking_client()
+            .tls_backend_rustls()
             // Only the first response is allowed to use this client. Its body
             // is verified with the root-only bootstrap HMAC before its DER is
             // persisted as the Rustls trust anchor.
-            .danger_accept_invalid_certs(true)
-            .danger_accept_invalid_hostnames(true)
+            .tls_danger_accept_invalid_certs(true)
+            .tls_danger_accept_invalid_hostnames(true)
             .connect_timeout(BRIDGE_TIMEOUT)
             .timeout(BRIDGE_TIMEOUT)
             .build()

@@ -49,9 +49,8 @@ taffy.workspace = true
 thiserror.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
-reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
-# Explicitly install the workspace-standard ring provider at startup.
-rustls.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 
 [dev-dependencies]
 tempfile.workspace = true
