@@ -70,59 +70,41 @@ pub struct SourceIdentity {
 }
 
 impl SourceIdentity {
-    /// Capture the identity of the open file, without resolving its path again.
-    pub fn from_file(file: &std::fs::File) -> Option<Self> {
+    /// Capture identity from the held source file, never by reopening its path.
+    /// Windows preserves the serialized volume serial / 64-bit file index pair;
+    /// native query failures are errors, not an absent identity.
+    pub fn from_file(file: &std::fs::File) -> std::io::Result<Option<Self>> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            let metadata = file.metadata().ok()?;
-            Some(Self {
+            let metadata = file.metadata()?;
+            Ok(Some(Self {
                 volume: metadata.dev(),
                 file: metadata.ino(),
-            })
+            }))
         }
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+            };
 
-            // BY_HANDLE_FILE_INFORMATION from the Windows SDK's fileapi.h.
-            // FILETIME consists of two DWORDs, with DWORD alignment.
-            #[repr(C)]
-            #[derive(Default)]
-            struct FileInformation {
-                attributes: u32,
-                creation_time: [u32; 2],
-                access_time: [u32; 2],
-                write_time: [u32; 2],
-                volume_serial: u32,
-                size_high: u32,
-                size_low: u32,
-                links: u32,
-                index_high: u32,
-                index_low: u32,
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            // SAFETY: `file` keeps its handle alive for this call, and `info`
+            // is a valid, writable output structure with the native layout.
+            if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+                return Err(std::io::Error::last_os_error());
             }
-            #[link(name = "kernel32")]
-            unsafe extern "system" {
-                fn GetFileInformationByHandle(
-                    handle: *mut std::ffi::c_void,
-                    information: *mut FileInformation,
-                ) -> i32;
-            }
-            let mut information = FileInformation::default();
-            // SAFETY: file owns a live handle throughout the call, and the
-            // output points to a writable SDK-compatible structure.
-            if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
-                return None;
-            }
-            Some(Self {
-                volume: u64::from(information.volume_serial),
-                file: (u64::from(information.index_high) << 32) | u64::from(information.index_low),
-            })
+            Ok(Some(Self {
+                volume: u64::from(info.dwVolumeSerialNumber),
+                file: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            }))
         }
         #[cfg(not(any(unix, target_os = "windows")))]
         {
             let _ = file;
-            None
+            Ok(None)
         }
     }
 }
@@ -370,7 +352,7 @@ impl TargetDrive {
         {
             // The raw character device avoids the buffered `/dev/diskN` path
             // and is the interface Apple documents for imaging removable media.
-            return format!("/dev/r{}", self.name);
+            format!("/dev/r{}", self.name)
         }
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
@@ -1219,24 +1201,62 @@ mod tests {
         let renamed = directory.path().join("renamed.img");
         std::fs::write(&original, b"same bytes").unwrap();
         let file = std::fs::File::open(&original).unwrap();
-        let identity = SourceIdentity::from_file(&file).expect("native file identity");
+        let identity = SourceIdentity::from_file(&file)
+            .expect("read native file identity")
+            .expect("native file identity");
         assert_eq!(
-            SourceIdentity::from_file(&file.try_clone().unwrap()),
+            SourceIdentity::from_file(&file.try_clone().unwrap())
+                .expect("read cloned file identity"),
             Some(identity)
         );
         std::fs::rename(&original, &renamed).unwrap();
         std::fs::write(&original, b"same bytes").unwrap();
-        assert_eq!(SourceIdentity::from_file(&file), Some(identity));
         assert_eq!(
-            SourceIdentity::from_file(&std::fs::File::open(&renamed).unwrap()),
+            SourceIdentity::from_file(&file).expect("read file identity"),
+            Some(identity)
+        );
+        assert_eq!(
+            SourceIdentity::from_file(&std::fs::File::open(&renamed).unwrap())
+                .expect("read renamed file identity"),
             Some(identity)
         );
         let replacement = SourceIdentity::from_file(&std::fs::File::open(&original).unwrap())
+            .expect("read replacement file identity")
             .expect("replacement file identity");
         assert_ne!(replacement, identity);
     }
 
     use super::*;
+
+    #[cfg(any(unix, target_os = "windows"))]
+    #[test]
+    fn held_source_identity_survives_rename_and_distinguishes_same_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let selected = root.path().join("selected.img");
+        let renamed = root.path().join("renamed.img");
+        std::fs::write(&selected, b"same image bytes").unwrap();
+        let held = std::fs::File::open(&selected).unwrap();
+        let identity = SourceIdentity::from_file(&held)
+            .unwrap()
+            .expect("platform exposes file identity");
+
+        std::fs::rename(&selected, &renamed).unwrap();
+        std::fs::write(&selected, b"same image bytes").unwrap();
+        let replacement = std::fs::File::open(&selected).unwrap();
+        assert_eq!(
+            held.metadata().unwrap().len(),
+            replacement.metadata().unwrap().len()
+        );
+        assert_eq!(SourceIdentity::from_file(&held).unwrap(), Some(identity));
+        assert_eq!(
+            SourceIdentity::from_file(&std::fs::File::open(&renamed).unwrap()).unwrap(),
+            Some(identity)
+        );
+        assert_ne!(
+            SourceIdentity::from_file(&replacement).unwrap(),
+            Some(identity)
+        );
+    }
 
     #[test]
     fn sample_has_usb_and_nvme_targets() {
