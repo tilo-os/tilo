@@ -38,6 +38,13 @@ pub struct QuickSettingsVpnPane {
     keyboard_focus: Option<usize>,
 }
 
+struct VpnRowPaint<'a> {
+    index: usize,
+    rect: Rect,
+    profile: &'a os_actions::VpnConnectionInfo,
+    hovered: bool,
+}
+
 impl QuickSettingsVpnPane {
     const BACK_FOCUS: usize = 0;
     const PROFILE_FOCUS_START: usize = 1;
@@ -112,9 +119,11 @@ impl QuickSettingsVpnPane {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut children = vec![
-            AccessNode::new(Role::Button)
-                .with_name("Back")
-                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button).with_name("Back").with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.keyboard_focus == Some(Self::BACK_FOCUS)),
+            ),
         ];
         children.extend(profiles.iter().enumerate().map(|(index, profile)| {
             AccessNode::new(Role::Switch)
@@ -125,7 +134,15 @@ impl QuickSettingsVpnPane {
                     "VPN disconnected"
                 })
                 .with_position(index.saturating_add(1), profiles.len())
-                .with_state(AccessState::new().focusable(true).checked(profile.active))
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(
+                            self.keyboard_focus
+                                == Some(Self::PROFILE_FOCUS_START.saturating_add(index)),
+                        )
+                        .checked(profile.active),
+                )
         }));
         AccessNode::new(Role::Dialog)
             .with_name("VPN")
@@ -146,8 +163,13 @@ impl QuickSettingsVpnPane {
     ) {
         let count = Self::PROFILE_FOCUS_START.saturating_add(profiles.len());
         self.keyboard_focus = Some(match (self.keyboard_focus, backwards) {
-            (Some(index), true) => index.checked_sub(1).unwrap_or(count.saturating_sub(1)),
-            (Some(index), false) => index.saturating_add(1) % count,
+            (Some(index), true) => index
+                .checked_sub(1)
+                .unwrap_or_else(|| count.saturating_sub(1)),
+            (Some(index), false) => index
+                .saturating_add(1)
+                .checked_rem(count)
+                .unwrap_or_default(),
             (None, true) => count.saturating_sub(1),
             (None, false) => 0,
         });
@@ -268,7 +290,6 @@ impl QuickSettingsVpnPane {
         profiles: &[os_actions::VpnConnectionInfo],
     ) {
         self.list.layout(panel, profiles.len());
-        let colors = &theme.tokens.colors;
         self.list
             .draw_header(scene, transform, text, theme, panel, cursor, "VPN");
         if self.keyboard_focus == Some(Self::BACK_FOCUS) {
@@ -300,88 +321,112 @@ impl QuickSettingsVpnPane {
             let Some(profile) = profiles.get(index) else {
                 continue;
             };
-            let hovered = cursor.is_some_and(|point| row.contains(point));
-            // A discovery row is not a selected tab. Wi-Fi and Bluetooth
-            // stay quiet and reserve blue for an actual live state; VPN is
-            // a control row, so its enabled state belongs to the trailing
-            // switch while the text reads "Connected". Keeping the surface
-            // neutral avoids saying the same thing three different ways.
-            let fill = if hovered {
-                colors.neutral[3].with_alpha_factor(0.72)
-            } else {
-                colors.neutral[2].with_alpha_factor(0.42)
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &RoundedRect::from_rect(*row, 12.0),
-            );
-            if self.keyboard_focus == Some(Self::PROFILE_FOCUS_START.saturating_add(index)) {
-                Button::paint(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    &ButtonFace::new(*row, "")
-                        .ghost()
-                        .focused(true)
-                        .accessible_name(&profile.name),
-                );
-            }
-            ui::icons::draw_icon(
+            self.draw_profile_row(
                 scene,
                 transform,
-                Rect::new(row.x0 + 12.0, row.y0 + 16.0, row.x0 + 32.0, row.y0 + 36.0),
-                ui::icons::Icon::Shield,
-                colors.text_dim,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            let toggle = Rect::new(
-                row.x1 - 56.0,
-                row.center().y - 12.0,
-                row.x1 - 12.0,
-                row.center().y + 12.0,
-            );
-            Toggle::paint(
-                scene,
-                transform,
+                text,
                 theme,
-                &ToggleFace::new(toggle, profile.active).hovered(hovered),
-            );
-            let text_width = (toggle.x0 - 12.0 - (row.x0 + 44.0)).max(1.0);
-            let name = text.elide_to_width(
-                &profile.name,
-                theme.tokens.typography.scale.sm,
-                f64_to_f32_lossy(text_width),
-            );
-            text.draw_text_weighted(
-                scene,
-                &name,
-                theme.tokens.typography.scale.sm,
-                colors.text_primary,
-                transform.pre_translate((row.x0 + 44.0, row.y0 + 9.0).into()),
-                None,
-                TextWeight::Medium,
-            );
-            text.draw_text(
-                scene,
-                if profile.active {
-                    "Connected"
-                } else {
-                    "Disconnected"
+                &VpnRowPaint {
+                    index,
+                    rect: *row,
+                    profile,
+                    hovered: cursor.is_some_and(|point| row.contains(point)),
                 },
-                theme.tokens.typography.scale.xs,
-                if profile.active {
-                    colors.accent[5]
-                } else {
-                    colors.text_dim
-                },
-                transform.pre_translate((row.x0 + 44.0, row.y0 + 29.0).into()),
-                Some(f64_to_f32_lossy(text_width)),
             );
         }
+    }
+
+    fn draw_profile_row(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        row: &VpnRowPaint<'_>,
+    ) {
+        let colors = &theme.tokens.colors;
+        // A discovery row is not a selected tab. Keep the surface neutral and
+        // reserve live-state emphasis for the trailing switch and status copy.
+        let fill = if row.hovered {
+            colors.neutral[3].with_alpha_factor(0.72)
+        } else {
+            colors.neutral[2].with_alpha_factor(0.42)
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            fill,
+            None,
+            &RoundedRect::from_rect(row.rect, 12.0),
+        );
+        if self.keyboard_focus == Some(Self::PROFILE_FOCUS_START.saturating_add(row.index)) {
+            Button::paint(
+                scene,
+                transform,
+                text,
+                theme,
+                &ButtonFace::new(row.rect, "")
+                    .ghost()
+                    .focused(true)
+                    .accessible_name(&row.profile.name),
+            );
+        }
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                row.rect.x0 + 12.0,
+                row.rect.y0 + 16.0,
+                row.rect.x0 + 32.0,
+                row.rect.y0 + 36.0,
+            ),
+            ui::icons::Icon::Shield,
+            colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        let toggle = Rect::new(
+            row.rect.x1 - 56.0,
+            row.rect.center().y - 12.0,
+            row.rect.x1 - 12.0,
+            row.rect.center().y + 12.0,
+        );
+        Toggle::paint(
+            scene,
+            transform,
+            theme,
+            &ToggleFace::new(toggle, row.profile.active).hovered(row.hovered),
+        );
+        let text_width = (toggle.x0 - 12.0 - (row.rect.x0 + 44.0)).max(1.0);
+        let name = text.elide_to_width(
+            &row.profile.name,
+            theme.tokens.typography.scale.sm,
+            f64_to_f32_lossy(text_width),
+        );
+        text.draw_text_weighted(
+            scene,
+            &name,
+            theme.tokens.typography.scale.sm,
+            colors.text_primary,
+            transform.pre_translate((row.rect.x0 + 44.0, row.rect.y0 + 9.0).into()),
+            None,
+            TextWeight::Medium,
+        );
+        text.draw_text(
+            scene,
+            if row.profile.active {
+                "Connected"
+            } else {
+                "Disconnected"
+            },
+            theme.tokens.typography.scale.xs,
+            if row.profile.active {
+                colors.accent[5]
+            } else {
+                colors.text_dim
+            },
+            transform.pre_translate((row.rect.x0 + 44.0, row.rect.y0 + 29.0).into()),
+            Some(f64_to_f32_lossy(text_width)),
+        );
     }
 }
 

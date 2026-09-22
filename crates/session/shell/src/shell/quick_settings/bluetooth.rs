@@ -100,9 +100,11 @@ impl QuickSettingsBluetoothPane {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let mut children = vec![
-            AccessNode::new(Role::Button)
-                .with_name("Back")
-                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button).with_name("Back").with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.keyboard_focus == Some(Self::BACK_FOCUS)),
+            ),
         ];
         children.extend(devices.iter().enumerate().map(|(index, device)| {
             AccessNode::new(Role::Button)
@@ -113,7 +115,9 @@ impl QuickSettingsBluetoothPane {
                     "Paired; activate to connect"
                 })
                 .with_position(index.saturating_add(1), devices.len())
-                .with_state(AccessState::new().focusable(true))
+                .with_state(AccessState::new().focusable(true).focused(
+                    self.keyboard_focus == Some(Self::DEVICE_FOCUS_START.saturating_add(index)),
+                ))
         }));
         AccessNode::new(Role::Dialog)
             .with_name("Bluetooth")
@@ -129,8 +133,13 @@ impl QuickSettingsBluetoothPane {
     pub fn focus_next(&mut self, panel: Rect, devices: &[BtDevice], backwards: bool) {
         let count = Self::DEVICE_FOCUS_START.saturating_add(devices.len());
         self.keyboard_focus = Some(match (self.keyboard_focus, backwards) {
-            (Some(index), true) => index.checked_sub(1).unwrap_or(count.saturating_sub(1)),
-            (Some(index), false) => index.saturating_add(1) % count,
+            (Some(index), true) => index
+                .checked_sub(1)
+                .unwrap_or_else(|| count.saturating_sub(1)),
+            (Some(index), false) => index
+                .saturating_add(1)
+                .checked_rem(count)
+                .unwrap_or_default(),
             (None, true) => count.saturating_sub(1),
             (None, false) => 0,
         });

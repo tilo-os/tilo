@@ -694,7 +694,7 @@ fn expand_maximizes_beneath_the_top_bar() {
         "the radial workspace switcher must be collapsed to zero area while a \
          window is expanded; got {sidebar:?}",
     );
-    let topbar_height = laid_out_topbar_height(chrome.clone());
+    let topbar_height = laid_out_topbar_height(chrome);
     assert!(
         topbar_height > 10.0,
         "maximize must preserve the OS-owned top bar; got height {topbar_height}",

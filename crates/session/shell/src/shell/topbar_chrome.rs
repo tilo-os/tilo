@@ -965,31 +965,30 @@ impl TopBarChrome {
         };
         let column_h = ink + gap * small_count_to_f64(gaps);
         let mut edge = band.center().y - column_h / 2.0;
-        let mut centers = [0.0; 3];
-        let mut radii = [0.0; 3];
+        let mut geometry = Vec::with_capacity(visible_count);
         for i in 0..visible_count {
             let radius = radius_of(i);
-            radii[i] = radius;
-            centers[i] = edge + radius;
+            geometry.push((edge + radius, radius));
             edge += radius * 2.0 + gap;
         }
-        let boundary = |a: usize, b: usize| (centers[a] + radii[a] + centers[b] - radii[b]) / 2.0;
+        let boundary = |a: (f64, f64), b: (f64, f64)| (a.0 + a.1 + b.0 - b.1) / 2.0;
         let x = Self::dot_column_x(band);
         let mut dots = [CenterDot {
             center: Point::ZERO,
             radius: 0.0,
             slot: Rect::ZERO,
         }; 3];
-        for i in 0..visible_count {
-            let y0 = if i == 0 { bar.y0 } else { boundary(i - 1, i) };
-            let y1 = if i + 1 == visible_count {
-                bar.y1
-            } else {
-                boundary(i, i + 1)
-            };
-            dots[i] = CenterDot {
-                center: Point::new(x, centers[i]),
-                radius: radii[i],
+        for (index, (dot, &(center, radius))) in dots.iter_mut().zip(geometry.iter()).enumerate() {
+            let y0 = index
+                .checked_sub(1)
+                .and_then(|previous| geometry.get(previous))
+                .map_or(bar.y0, |&previous| boundary(previous, (center, radius)));
+            let y1 = geometry
+                .get(index.saturating_add(1))
+                .map_or(bar.y1, |&next| boundary((center, radius), next));
+            *dot = CenterDot {
+                center: Point::new(x, center),
+                radius,
                 slot: Rect::new(x - Self::DOT_SLOT_HALF_W, y0, x + Self::DOT_SLOT_HALF_W, y1),
             };
         }
@@ -1099,11 +1098,18 @@ impl TopBarChrome {
             return;
         };
         let next = if forward {
-            (current + 1) % widgets.len()
+            widgets
+                .get(current.saturating_add(1))
+                .or_else(|| widgets.first())
         } else {
-            current.checked_sub(1).unwrap_or(widgets.len() - 1)
+            current
+                .checked_sub(1)
+                .and_then(|index| widgets.get(index))
+                .or_else(|| widgets.last())
         };
-        self.center_widget = widgets[next].into();
+        if let Some(next) = next.copied() {
+            self.center_widget = next.into();
+        }
     }
 
     fn collaborators_visible(&self) -> bool {
@@ -1347,8 +1353,9 @@ impl TopBarChrome {
             }
             Self::CONTROL_MEDIA => self.media_indicator_rect,
             target if Self::editor_widget(target).is_some() => Self::editor_widget(target)
-                .map(|(widget, present)| self.widget_editor_action_rect(widget, present))
-                .unwrap_or(Rect::ZERO),
+                .map_or(Rect::ZERO, |(widget, present)| {
+                    self.widget_editor_action_rect(widget, present)
+                }),
             _ => Rect::ZERO,
         }
     }
@@ -1902,14 +1909,20 @@ impl TopBarChrome {
             .unwrap_or(0);
         let dots = Self::center_dot_layout(band, self.rect, active_dot, widgets.len());
         self.center_dot_rects = [Rect::ZERO; 3];
-        for (i, dot) in dots.iter().take(widgets.len()).enumerate() {
+        for (i, (rect, dot)) in self
+            .center_dot_rects
+            .iter_mut()
+            .zip(dots.iter())
+            .take(widgets.len())
+            .enumerate()
+        {
             let active = active_dot == i;
             let color = if active {
                 colors.accent[5]
             } else {
                 colors.neutral[7]
             };
-            self.center_dot_rects[i] = dot.slot;
+            *rect = dot.slot;
             let c = vello::kurbo::Circle::new(dot.center, dot.radius);
             scene.fill(Fill::NonZero, transform, color, None, &c);
         }
@@ -1968,6 +1981,97 @@ impl TopBarChrome {
                 .map_or(Rect::ZERO, |index| self.widget_editor_remove_rect(index))
         } else {
             self.widget_editor_add_rect(widget)
+        }
+    }
+
+    fn draw_widget_editor_rows(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        metrics: &ListMetrics,
+    ) {
+        for (index, widget) in self.widget_config.widgets.iter().copied().enumerate() {
+            if self.widget_edit_drag.from_index() == Some(index) {
+                continue;
+            }
+            let mut row = self.widget_editor_row(index);
+            row = row.with_origin((
+                row.x0,
+                row.y0 + self.widget_edit_drag.item_shift(index, metrics),
+            ));
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(row, 10.0),
+            );
+            let label = match widget {
+                TopBarWidget::Clock => "Clock",
+                TopBarWidget::SystemMonitor => "System monitor",
+                TopBarWidget::Calendar => "Calendar",
+            };
+            text.draw_text(
+                scene,
+                "⠿",
+                theme.tokens.typography.scale.base,
+                theme.tokens.colors.text_dim,
+                at(transform, (row.x0 + 12.0, row.y0 + 11.0)),
+                None,
+            );
+            text.draw_text(
+                scene,
+                label,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                at(transform, (row.x0 + 40.0, row.y0 + 12.0)),
+                None,
+            );
+            if self.widget_config.widgets.len() > 1 {
+                let remove = self.widget_editor_remove_rect(index);
+                ui::widget::Button::paint(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    &ui::widget::ButtonFace::new(remove, "Remove")
+                        .danger()
+                        .hovered(self.last_cursor.is_some_and(|point| remove.contains(point)))
+                        .text_size(theme.tokens.typography.scale.xs),
+                );
+            }
+        }
+    }
+
+    fn draw_widget_editor_add_buttons(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        for widget in TopBarWidget::ALL {
+            if self.widget_config.widgets.contains(&widget) {
+                continue;
+            }
+            let label = match widget {
+                TopBarWidget::Clock => "+ Clock",
+                TopBarWidget::SystemMonitor => "+ Monitor",
+                TopBarWidget::Calendar => "+ Calendar",
+            };
+            let add = self.widget_editor_add_rect(widget);
+            ui::widget::Button::paint(
+                scene,
+                transform,
+                text,
+                theme,
+                &ui::widget::ButtonFace::new(add, label)
+                    .ghost()
+                    .hovered(self.last_cursor.is_some_and(|point| add.contains(point)))
+                    .text_size(theme.tokens.typography.scale.xs),
+            );
         }
     }
 
@@ -2032,64 +2136,7 @@ impl TopBarChrome {
         let metrics =
             ListMetrics::uniform(panel.y0 + 62.0, 42.0, 8.0, self.widget_config.widgets.len());
         self.widget_edit_drag.sync_insertion(&metrics);
-        for (index, widget) in self
-            .widget_config
-            .widgets
-            .clone()
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            if self.widget_edit_drag.from_index() == Some(index) {
-                continue;
-            }
-            let mut row = self.widget_editor_row(index);
-            row = row.with_origin((
-                row.x0,
-                row.y0 + self.widget_edit_drag.item_shift(index, &metrics),
-            ));
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &RoundedRect::from_rect(row, 10.0),
-            );
-            let label = match widget {
-                TopBarWidget::Clock => "Clock",
-                TopBarWidget::SystemMonitor => "System monitor",
-                TopBarWidget::Calendar => "Calendar",
-            };
-            text.draw_text(
-                scene,
-                "⠿",
-                theme.tokens.typography.scale.base,
-                theme.tokens.colors.text_dim,
-                at(transform, (row.x0 + 12.0, row.y0 + 11.0)),
-                None,
-            );
-            text.draw_text(
-                scene,
-                label,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_primary,
-                at(transform, (row.x0 + 40.0, row.y0 + 12.0)),
-                None,
-            );
-            if self.widget_config.widgets.len() > 1 {
-                let remove = self.widget_editor_remove_rect(index);
-                ui::widget::Button::paint(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    &ui::widget::ButtonFace::new(remove, "Remove")
-                        .danger()
-                        .hovered(self.last_cursor.is_some_and(|point| remove.contains(point)))
-                        .text_size(theme.tokens.typography.scale.xs),
-                );
-            }
-        }
+        self.draw_widget_editor_rows(scene, transform, text, theme, &metrics);
         if let Some(ghost) =
             self.widget_edit_drag
                 .ghost_rect(panel.x0 + 14.0, panel.x1 - 14.0, &metrics)
@@ -2106,27 +2153,7 @@ impl TopBarChrome {
             );
         }
         if available > 0 {
-            for widget in TopBarWidget::ALL {
-                if self.widget_config.widgets.contains(&widget) {
-                    continue;
-                }
-                let label = match widget {
-                    TopBarWidget::Clock => "+ Clock",
-                    TopBarWidget::SystemMonitor => "+ Monitor",
-                    TopBarWidget::Calendar => "+ Calendar",
-                };
-                let add = self.widget_editor_add_rect(widget);
-                ui::widget::Button::paint(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    &ui::widget::ButtonFace::new(add, label)
-                        .ghost()
-                        .hovered(self.last_cursor.is_some_and(|point| add.contains(point)))
-                        .text_size(theme.tokens.typography.scale.xs),
-                );
-            }
+            self.draw_widget_editor_add_buttons(scene, transform, text, theme);
         }
     }
 
@@ -3050,7 +3077,7 @@ impl TopBarChrome {
             label,
             label_size,
             colors.text_dim,
-            transform * Affine::translate((label_x, center_y - f64::from(label_h) / 2.0)),
+            at(transform, (label_x, center_y - f64::from(label_h) / 2.0)),
             None,
             TextWeight::Medium,
         );
@@ -3905,6 +3932,213 @@ impl TopBarChrome {
                 ]),
         )
     }
+
+    fn handle_widget_or_clock_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) -> bool {
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+            && key.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+            && self.widget_editing
+        {
+            self.widget_editing = false;
+            self.cache_fp = CacheFingerprint::default();
+            *handled = true;
+            return true;
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().overlays.clock)
+        {
+            *handled = self.handle_clock_keyboard(&key.logical_key, modifiers);
+            return true;
+        }
+        if let WindowEvent::Touch(touch) = event
+            && self
+                .chrome
+                .as_ref()
+                .is_some_and(|chrome| chrome.borrow().overlays.clock)
+        {
+            *handled = self.handle_clock_touch(touch, scale_factor);
+            return true;
+        }
+        false
+    }
+
+    fn handle_center_pointer_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        handled: &mut bool,
+    ) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor = Some(point);
+            if self.widget_edit_drag.is_pending() {
+                *handled = self.widget_edit_drag.pointer_moved(
+                    point,
+                    &ListMetrics::uniform(
+                        self.widget_editor_rect.y0 + 62.0,
+                        42.0,
+                        8.0,
+                        self.widget_config.widgets.len(),
+                    ),
+                );
+                self.cache_fp = CacheFingerprint::default();
+                return true;
+            }
+            if self.clock_touch_id.is_none() && self.move_clock_drag_to(point) {
+                *handled = true;
+            }
+            return true;
+        }
+        let WindowEvent::MouseWheel { delta, .. } = event else {
+            return false;
+        };
+        let Some(point) = self.last_cursor else {
+            return true;
+        };
+        if !self.center_rect.contains(point) {
+            return true;
+        }
+        let dy = match delta {
+            winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+            winit::event::MouseScrollDelta::PixelDelta(position) => position.y / 40.0,
+        };
+        self.center_scroll_accum += dy;
+        for _ in 0..16 {
+            if self.center_scroll_accum < 1.0 {
+                break;
+            }
+            self.cycle_center_widget(true);
+            self.center_scroll_accum -= 1.0;
+        }
+        for _ in 0..16 {
+            if self.center_scroll_accum > -1.0 {
+                break;
+            }
+            self.cycle_center_widget(false);
+            self.center_scroll_accum += 1.0;
+        }
+        *handled = true;
+        true
+    }
+
+    fn handle_left_release(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+        if !matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) {
+            return false;
+        }
+        if let Some((from, to)) = self.widget_edit_drag.commit()
+            && from < self.widget_config.widgets.len()
+            && to < self.widget_config.widgets.len()
+        {
+            let widget = self.widget_config.widgets.remove(from);
+            self.widget_config.widgets.insert(to, widget);
+            let _ = self.widget_config.save();
+            self.cache_fp = CacheFingerprint::default();
+            *handled = true;
+        }
+        self.widget_edit_pressed = None;
+        if self.clock_touch_id.is_none() && self.clock_drag_offset.take().is_some() {
+            *handled = true;
+        }
+        true
+    }
+
+    fn handle_widget_editor_press(&mut self, point: Point, handled: &mut bool) -> bool {
+        if !self.widget_editing || !self.widget_editor_rect.contains(point) {
+            return false;
+        }
+        for index in 0..self.widget_config.widgets.len() {
+            let row = self.widget_editor_row(index);
+            if !row.contains(point) {
+                continue;
+            }
+            let Some(widget) = self.widget_config.widgets.get(index).copied() else {
+                continue;
+            };
+            if self.widget_config.widgets.len() > 1
+                && self.widget_editor_remove_rect(index).contains(point)
+            {
+                let _ = self.activate_editor_control(Self::editor_control(widget, true));
+            } else {
+                self.widget_edit_drag
+                    .begin(widget, index, point.y - row.y0, point);
+                self.widget_edit_pressed = Some(index);
+            }
+            self.cache_fp = CacheFingerprint::default();
+            *handled = true;
+            return true;
+        }
+        for widget in TopBarWidget::ALL {
+            if !self.widget_config.widgets.contains(&widget)
+                && self.widget_editor_add_rect(widget).contains(point)
+            {
+                let _ = self.activate_editor_control(Self::editor_control(widget, false));
+                *handled = true;
+                return true;
+            }
+        }
+        *handled = true;
+        true
+    }
+
+    fn handle_left_press(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) {
+        if !matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) || self.clock_touch_id.is_some()
+        {
+            return;
+        }
+        let Some(point) = self.last_cursor else {
+            self.handle_left_click(handled);
+            return;
+        };
+        if self.handle_widget_editor_press(point, handled) {
+            return;
+        }
+        if self.widget_editing {
+            self.widget_editing = false;
+            self.cache_fp = CacheFingerprint::default();
+            *handled = true;
+            return;
+        }
+        if self.center_rect.contains(point) && modifiers.state().control_key() {
+            self.widget_editing = true;
+            self.cache_fp = CacheFingerprint::default();
+            *handled = true;
+            return;
+        }
+        if self.activate_clock_control_at(point) || self.begin_clock_drag_at(point) {
+            *handled = true;
+            return;
+        }
+        self.handle_left_click(handled);
+    }
 }
 
 impl Widget for TopBarChrome {
@@ -4108,87 +4342,9 @@ impl Widget for TopBarChrome {
         node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        if let WindowEvent::KeyboardInput { event: key, .. } = event
-            && key.state == winit::event::ElementState::Pressed
-            && key.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
-            && self.widget_editing
+        if self.handle_widget_or_clock_event(event, scale_factor, *modifiers, handled)
+            || self.handle_center_pointer_event(event, scale_factor, handled)
         {
-            self.widget_editing = false;
-            self.cache_fp = CacheFingerprint::default();
-            *handled = true;
-            return;
-        }
-        if let WindowEvent::KeyboardInput { event: key, .. } = event
-            && key.state == winit::event::ElementState::Pressed
-            && self
-                .chrome
-                .as_ref()
-                .is_some_and(|c| c.borrow().overlays.clock)
-        {
-            *handled = self.handle_clock_keyboard(&key.logical_key, *modifiers);
-            return;
-        }
-        if let WindowEvent::Touch(touch) = event
-            && self
-                .chrome
-                .as_ref()
-                .is_some_and(|chrome| chrome.borrow().overlays.clock)
-        {
-            *handled = self.handle_clock_touch(touch, scale_factor);
-            return;
-        }
-        // Cached so `MouseInput` (no position) can hit-test against
-        // the last draw's geometry.
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
-            self.last_cursor = Some(point);
-            if self.widget_edit_drag.is_pending() {
-                *handled = self.widget_edit_drag.pointer_moved(
-                    point,
-                    &ListMetrics::uniform(
-                        self.widget_editor_rect.y0 + 62.0,
-                        42.0,
-                        8.0,
-                        self.widget_config.widgets.len(),
-                    ),
-                );
-                self.cache_fp = CacheFingerprint::default();
-                return;
-            }
-            if self.clock_touch_id.is_none() && self.move_clock_drag_to(point) {
-                *handled = true;
-            }
-            return;
-        }
-        if let WindowEvent::MouseWheel { delta, .. } = event {
-            let Some(p) = self.last_cursor else { return };
-            if !self.center_rect.contains(p) {
-                return;
-            }
-            let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
-            };
-            self.center_scroll_accum += dy;
-            // Bounded rather than `while` on a float comparison: a
-            // single scroll event can only carry so much delta, and a
-            // fixed cap means a pathological float value can never spin
-            // this forever.
-            for _ in 0..16 {
-                if self.center_scroll_accum < 1.0 {
-                    break;
-                }
-                self.cycle_center_widget(true);
-                self.center_scroll_accum -= 1.0;
-            }
-            for _ in 0..16 {
-                if self.center_scroll_accum > -1.0 {
-                    break;
-                }
-                self.cycle_center_widget(false);
-                self.center_scroll_accum += 1.0;
-            }
-            *handled = true;
             return;
         }
         self.handle_keyboard(event, handled);
@@ -4210,97 +4366,10 @@ impl Widget for TopBarChrome {
             *focus_target = Some(node_id);
             return;
         }
-        if let WindowEvent::MouseInput {
-            state: winit::event::ElementState::Released,
-            button: winit::event::MouseButton::Left,
-            ..
-        } = event
-        {
-            if let Some((from, to)) = self.widget_edit_drag.commit()
-                && from < self.widget_config.widgets.len()
-                && to < self.widget_config.widgets.len()
-            {
-                let widget = self.widget_config.widgets.remove(from);
-                self.widget_config.widgets.insert(to, widget);
-                let _ = self.widget_config.save();
-                self.cache_fp = CacheFingerprint::default();
-                *handled = true;
-            }
-            self.widget_edit_pressed = None;
-            if self.clock_touch_id.is_none() && self.clock_drag_offset.take().is_some() {
-                *handled = true;
-            }
+        if self.handle_left_release(event, handled) {
             return;
         }
-        let WindowEvent::MouseInput {
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-            ..
-        } = event
-        else {
-            return;
-        };
-        if self.clock_touch_id.is_some() {
-            return;
-        }
-        if let Some(point) = self.last_cursor {
-            if self.widget_editing && self.widget_editor_rect.contains(point) {
-                for index in 0..self.widget_config.widgets.len() {
-                    let row = self.widget_editor_row(index);
-                    if !row.contains(point) {
-                        continue;
-                    }
-                    let widget = self.widget_config.widgets[index];
-                    if self.widget_config.widgets.len() > 1
-                        && self.widget_editor_remove_rect(index).contains(point)
-                    {
-                        let _ = self.activate_editor_control(Self::editor_control(widget, true));
-                    } else {
-                        let id = widget;
-                        self.widget_edit_drag
-                            .begin(id, index, point.y - row.y0, point);
-                        self.widget_edit_pressed = Some(index);
-                    }
-                    self.cache_fp = CacheFingerprint::default();
-                    *handled = true;
-                    return;
-                }
-                for widget in TopBarWidget::ALL {
-                    if self.widget_config.widgets.contains(&widget) {
-                        continue;
-                    }
-                    let add = self.widget_editor_add_rect(widget);
-                    if add.contains(point) {
-                        let _ = self.activate_editor_control(Self::editor_control(widget, false));
-                        *handled = true;
-                        return;
-                    }
-                }
-                *handled = true;
-                return;
-            }
-            if self.widget_editing {
-                self.widget_editing = false;
-                self.cache_fp = CacheFingerprint::default();
-                *handled = true;
-                return;
-            }
-            if self.center_rect.contains(point) && modifiers.state().control_key() {
-                self.widget_editing = !self.widget_editing;
-                self.cache_fp = CacheFingerprint::default();
-                *handled = true;
-                return;
-            }
-            if self.activate_clock_control_at(point) {
-                *handled = true;
-                return;
-            }
-            if self.begin_clock_drag_at(point) {
-                *handled = true;
-                return;
-            }
-        }
-        self.handle_left_click(handled);
+        self.handle_left_press(event, *modifiers, handled);
         if *handled {
             *focus_target = Some(node_id);
         }
