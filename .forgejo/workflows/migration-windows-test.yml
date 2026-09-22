@@ -43,6 +43,8 @@ jobs:
       - name: Test native copy journal and worker
         shell: powershell
         run: |
+          cargo test -p tilo-folder-service --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc" migration_durability::windows_tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p tilo-folder-service --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc" migration_journal::tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p tilo-folder-service --lib --locked --target "$env:TILO_WINDOWS_ARCH-pc-windows-msvc" migration_native::tests

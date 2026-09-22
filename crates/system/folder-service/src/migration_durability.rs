@@ -19,6 +19,7 @@ pub(super) fn supported() -> io::Result<()> {
     }
 }
 
+#[cfg(not(windows))]
 pub(super) fn identity(file: &File) -> io::Result<Identity> {
     use cap_fs_ext::MetadataExt;
     let metadata = cap_primitives::fs::Metadata::from_file(file)?;
@@ -26,6 +27,49 @@ pub(super) fn identity(file: &File) -> io::Result<Identity> {
         volume: volume(file)?,
         inode: metadata.ino(),
     })
+}
+
+// Windows supplies a 128-bit file ID. Keep every byte along with the volume
+// serial; truncating it to the journal's legacy u64 inode would alias ReFS IDs.
+// The journal's `volume` field carries this tagged opaque pair on Windows.
+#[cfg(any(test, windows))]
+fn windows_identity_from_parts(serial: u64, file_id: [u8; 16]) -> io::Result<Identity> {
+    if serial == 0 || file_id.iter().all(|byte| *byte == 0) {
+        return Err(io::Error::other(
+            "Windows volume or file identity unavailable; reselect folders",
+        ));
+    }
+    let mut volume = Vec::with_capacity(25);
+    volume.push(4);
+    volume.extend_from_slice(&serial.to_le_bytes());
+    volume.extend_from_slice(&file_id);
+    Ok(Identity { volume, inode: 0 })
+}
+
+#[cfg(windows)]
+pub(super) fn identity(file: &File) -> io::Result<Identity> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+    };
+
+    let mut info = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
+    // SAFETY: the handle is live; Windows writes exactly the supplied native
+    // structure on success and this function keeps the file open throughout.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            info.as_mut_ptr().cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the successful native call initialized the full FILE_ID_INFO.
+    let info = unsafe { info.assume_init() };
+    windows_identity_from_parts(info.VolumeSerialNumber, info.FileId.Identifier)
 }
 
 #[cfg(target_os = "macos")]
@@ -161,7 +205,7 @@ fn btrfs_volume(file: &File) -> io::Result<Vec<u8>> {
     Ok(identity)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn volume(_file: &File) -> io::Result<Vec<u8>> {
     supported()?;
     unreachable!()
@@ -192,6 +236,55 @@ pub(super) fn readable_directory(file: &File) -> io::Result<File> {
     let mut options = cap_primitives::fs::OpenOptions::new();
     options.read(true).maybe_dir(true);
     cap_primitives::fs::open(file, std::path::Path::new("."), &options)
+}
+
+#[cfg(test)]
+mod identity_wire_tests {
+    use super::*;
+
+    #[test]
+    fn windows_identity_binds_the_entire_file_id_and_volume_serial() {
+        let mut file_id = [0_u8; 16];
+        file_id[0] = 1;
+        let original = windows_identity_from_parts(7, file_id).unwrap();
+        assert_eq!(original, windows_identity_from_parts(7, file_id).unwrap());
+        assert_ne!(original, windows_identity_from_parts(8, file_id).unwrap());
+        file_id[15] = 1;
+        assert_ne!(original, windows_identity_from_parts(7, file_id).unwrap());
+    }
+
+    #[test]
+    fn windows_identity_refuses_missing_native_components() {
+        assert!(windows_identity_from_parts(0, [1; 16]).is_err());
+        assert!(windows_identity_from_parts(7, [0; 16]).is_err());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+    fn open_directory(path: &std::path::Path) -> File {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .unwrap()
+    }
+
+    #[test]
+    fn native_windows_directory_identity_survives_reopen_and_distinguishes_siblings() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let initial = identity(&open_directory(&first)).unwrap();
+        assert_eq!(initial, identity(&open_directory(&first)).unwrap());
+        assert_ne!(initial, identity(&open_directory(&second)).unwrap());
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
