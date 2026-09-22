@@ -6808,7 +6808,7 @@ fn draw_brief_card(
     scene.stroke(
         &Stroke::new(2.0),
         transform,
-        theme.tokens.colors.border_standard,
+        ui::surface::edge_on(theme.tokens.colors.surfaces.raised),
         None,
         &Line::new((rail_x, rect.y0), (rail_x, rect.y1 + 8.0)),
     );
