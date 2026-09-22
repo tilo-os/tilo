@@ -59,6 +59,15 @@ mkdir -p "$work_root"
 work="$(mktemp -d "$work_root/secureboot-vm.XXXXXX")"
 printf 'secureboot-vm-work=%s\n' "$work"
 
+expect_log() {
+  local marker="$1" log="$2"
+  if ! grep -F "$marker" "$log"; then
+    printf 'missing expected marker %s in %s\n' "$marker" "$log" >&2
+    cat "$log" >&2
+    return 1
+  fi
+}
+
 for required in "$kernel" "$gen_cpio" "$crypto" "$firmware_code" "$firmware_vars"; do
   test -f "$required" || { echo "missing Secure Boot VM input: $required" >&2; exit 1; }
 done
@@ -118,9 +127,9 @@ timeout 40s "$qemu" "${machine[@]}" -m 1024 \
   > "$work/enroll.log" 2>&1 || status=$?
 status=${status:-0}
 case "$status" in 0|124) ;; *) cat "$work/enroll.log"; exit "$status" ;; esac
-grep -F 'TILO_SECURE_BOOT_ENROLL_PASS' "$work/enroll.log"
-grep -F 'TILO_SECURE_BOOT_SETUP_MODE=1' "$work/enroll.log"
-grep -F 'TILO_SECURE_BOOT_SECURE_BOOT=0' "$work/enroll.log"
+expect_log 'TILO_SECURE_BOOT_ENROLL_PASS' "$work/enroll.log"
+expect_log 'TILO_SECURE_BOOT_SETUP_MODE=1' "$work/enroll.log"
+expect_log 'TILO_SECURE_BOOT_SECURE_BOOT=0' "$work/enroll.log"
 
 make_esp() {
   local image="$1" executable="$2"
@@ -144,11 +153,11 @@ boot_efi() {
     > "$log" 2>&1 || test "$?" -eq 124
 }
 boot_efi "$work/vars.unsigned.fd" "$work/unsigned.img" "$work/unsigned.log"
-grep -F 'Access Denied -- rejected probably by Secure Boot' "$work/unsigned.log"
+expect_log 'Access Denied -- rejected probably by Secure Boot' "$work/unsigned.log"
 if grep -Fq 'TILO_SECURE_BOOT_SIGNED_EFI_PASS' "$work/unsigned.log"; then
   echo 'unsigned EFI application executed under enrolled Secure Boot' >&2
   exit 1
 fi
 boot_efi "$work/vars.signed.fd" "$work/signed.img" "$work/signed.log"
-grep -F 'TILO_SECURE_BOOT_SIGNED_EFI_PASS' "$work/signed.log"
+expect_log 'TILO_SECURE_BOOT_SIGNED_EFI_PASS' "$work/signed.log"
 printf 'secureboot-vm-probe=PASS\n'
