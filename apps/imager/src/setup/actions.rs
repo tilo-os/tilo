@@ -23,6 +23,8 @@ pub enum SetupOperation {
     SetFolderMode { folder: String, mode: String },
     ClearFolderMode { folder: String },
     RemoveFolder { folder: String },
+    SelectSuggestion { suggestion: String },
+    ChooseFolder,
     ToggleHelp,
     Next,
     Back,
@@ -38,12 +40,21 @@ pub struct FolderProjection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct SuggestionProjection {
+    pub identity: String,
+    pub name: String,
+    pub available: bool,
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SelectionProjection {
     pub experience: Option<&'static str>,
     pub common_mode: &'static str,
     pub folder_count: usize,
     pub active_folder_count: usize,
     pub folders: Vec<FolderProjection>,
+    pub suggestions: Vec<SuggestionProjection>,
     pub help_open: bool,
     pub imports_open: bool,
 }
@@ -64,6 +75,7 @@ pub struct AvailabilityProjection {
     pub folder_edits: bool,
     pub help: bool,
     pub open_imports: bool,
+    pub choose_folder: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -224,9 +236,17 @@ fn folder_resource(
                 folder: identity.clone(),
             },
         ),
-        edits_available,
-        "folder_choices_not_open",
-        "Folder choices are not open on the current setup page",
+        edits_available && folder.overridden,
+        if edits_available {
+            "folder_mode_inherited"
+        } else {
+            "folder_choices_not_open"
+        },
+        if edits_available {
+            "This folder already follows the common choice"
+        } else {
+            "Folder choices are not open on the current setup page"
+        },
     );
     let remove = with_availability(
         immediate(
@@ -261,6 +281,50 @@ fn folder_resource(
     .with_action(set_mode)
     .with_action(clear_mode)
     .with_action(remove)
+}
+
+fn suggestion_resource(suggestion: &SuggestionProjection, choices_open: bool) -> Resource {
+    let available = choices_open && suggestion.available;
+    let select = with_availability(
+        immediate(
+            "select",
+            "Add suggested folder",
+            SetupOperation::SelectSuggestion {
+                suggestion: suggestion.identity.clone(),
+            },
+        ),
+        available,
+        if choices_open {
+            "suggestion_unavailable"
+        } else {
+            "folder_choices_not_open"
+        },
+        if choices_open {
+            suggestion
+                .unavailable_reason
+                .as_deref()
+                .unwrap_or("This suggested folder is unavailable")
+        } else {
+            "Folder choices are not open on the current setup page"
+        },
+    );
+    Resource::new(
+        format!("{SETUP_RESOURCE_ID}.suggestion.{}", suggestion.identity),
+        "imager.setup.suggestion",
+        format!("Suggested {} folder", suggestion.name),
+    )
+    .with_presentation(ResourcePresentation {
+        detail: Some(
+            if suggestion.available {
+                "Available"
+            } else {
+                "Unavailable"
+            }
+            .into(),
+        ),
+        badge: Some("Suggestion".into()),
+    })
+    .with_action(select)
 }
 
 /// Build the path-free, live resource projection for the setup root.
@@ -299,6 +363,16 @@ pub fn resource(state: &SetupProjection) -> Resource {
         state.availability.desktop || state.availability.full_os,
         "no_setup_experience",
         "No setup experience is available on this computer",
+    );
+    let choose_folder = with_availability(
+        immediate(
+            "choose-folder",
+            "Choose a folder",
+            SetupOperation::ChooseFolder,
+        ),
+        state.availability.choose_folder,
+        "folder_picker_unavailable",
+        "The folder picker is not available on this setup page",
     );
 
     let mode_choices = [
@@ -387,6 +461,17 @@ pub fn resource(state: &SetupProjection) -> Resource {
         badge: Some("Selection".into()),
     })
     .with_children(folder_resources);
+    let suggestions =
+        Resource::new(
+            "imager.setup.suggestions",
+            "imager.setup.suggestions",
+            "Suggested folders",
+        )
+        .with_children(
+            state.selection.suggestions.iter().map(|suggestion| {
+                suggestion_resource(suggestion, state.availability.choose_folder)
+            }),
+        );
     let review = Resource::new(
         "imager.setup.review",
         "imager.setup.review",
@@ -451,15 +536,17 @@ pub fn resource(state: &SetupProjection) -> Resource {
         })
         .with_action(choose_experience)
         .with_action(common_mode)
+        .with_action(choose_folder)
         .with_action(help)
         .with_action(next)
         .with_action(back)
-        .with_action(immediate(
-            "open-imports",
-            "Open folder imports",
-            SetupOperation::OpenImports,
+        .with_action(with_availability(
+            immediate("open-imports", "Open folder imports", SetupOperation::OpenImports),
+            state.availability.open_imports,
+            "imports_not_on_page",
+            "Folder imports are available on the experience and review pages",
         ))
-        .with_children([selection, review, availability])
+        .with_children([selection, suggestions, review, availability])
 }
 
 const fn yes_no(value: bool) -> &'static str {
