@@ -156,12 +156,9 @@ openh264.workspace = true
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
 # An app that wants real decode enables `media/decode` in its own manifest.
 media = { path = "../../media/core" }
-# System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
-# Wayland uses `wl_data_device`; X11 uses the selection protocol —
-# `arboard` wraps both. The "wayland-data-control" feature lets us
-# talk to the data-control compositor extension when available
-# (kanshi / GNOME / KDE), falling back to the seat-driven protocol
-# otherwise.
+# Clipboard for non-Wayland platforms (X11, Windows, macOS). Wayland goes
+# through `smithay-clipboard` below; `arboard`'s Wayland path needs the
+# data-control manager protocol Tilo withholds from sandboxed apps.
 arboard = { workspace = true, features = ["image-data"], optional = true }
 # The `Link` widget hands its URL to the OS's registered handler (xdg-open /
 # the desktop portal on Linux) when activated. Same crate + pin the file
