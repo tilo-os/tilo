@@ -31,23 +31,23 @@ pub fn select_speaker() -> (Box<dyn Speaker>, &'static str) {
     #[cfg(unix)]
     match crate::speechd::SpeechDispatcherSpeaker::new() {
         Ok(s) => {
-            log::info!("tilo-tts: using speech-dispatcher backend");
+            tracing::info!("tilo-tts: using speech-dispatcher backend");
             return (Box::new(s), "speech-dispatcher");
         }
-        Err(e) => log::debug!("tilo-tts: speech-dispatcher unavailable: {e}"),
+        Err(e) => tracing::debug!("tilo-tts: speech-dispatcher unavailable: {e}"),
     }
 
     // 2. espeak-ng subprocess.
     match crate::espeak::EspeakSpeaker::new() {
         Ok(s) => {
-            log::info!("tilo-tts: using espeak-ng subprocess backend");
+            tracing::info!("tilo-tts: using espeak-ng subprocess backend");
             return (Box::new(s), "espeak-ng");
         }
-        Err(e) => log::debug!("tilo-tts: espeak-ng unavailable: {e}"),
+        Err(e) => tracing::debug!("tilo-tts: espeak-ng unavailable: {e}"),
     }
 
     // 3. null.
-    log::warn!("tilo-tts: no TTS backend available; falling back to NullSpeaker (silent)");
+    tracing::warn!("tilo-tts: no TTS backend available; falling back to NullSpeaker (silent)");
     (Box::new(NullSpeaker::new()), "null")
 }
 
