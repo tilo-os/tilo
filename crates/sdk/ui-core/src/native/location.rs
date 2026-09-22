@@ -80,8 +80,7 @@ fn run_location_blocking() -> LocationOutcome {
 /// `LocationUpdated` signal — all under a timeout.
 #[cfg(all(feature = "portal", unix))]
 async fn location_future() -> LocationOutcome {
-    use ashpd::WindowIdentifier;
-    use ashpd::desktop::location::{Accuracy, LocationProxy};
+    use ashpd::desktop::location::{Accuracy, CreateSessionOptions, LocationProxy, StartOptions};
     use futures_util::StreamExt;
 
     let proxy = match LocationProxy::new().await {
@@ -91,7 +90,7 @@ async fn location_future() -> LocationOutcome {
         }
     };
     let session = match proxy
-        .create_session(None, None, Some(Accuracy::Exact))
+        .create_session(CreateSessionOptions::default().set_accuracy(Accuracy::Exact))
         .await
     {
         Ok(s) => s,
@@ -107,9 +106,8 @@ async fn location_future() -> LocationOutcome {
 
     // `start` opens the permission prompt; the fix arrives asynchronously via
     // the `LocationUpdated` signal, so the two must be driven together.
-    let identifier = WindowIdentifier::default();
     let acquired = tokio::time::timeout(FIX_TIMEOUT, async {
-        let start = proxy.start(&session, &identifier);
+        let start = proxy.start(&session, None, StartOptions::default());
         let updated = stream.next();
         futures_util::join!(start, updated)
     })

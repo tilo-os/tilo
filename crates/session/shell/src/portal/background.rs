@@ -616,7 +616,7 @@ impl BackgroundBackend {
 
     #[zbus(signal)]
     async fn running_applications_changed(
-        ctxt: &zbus::object_server::SignalContext<'_>,
+        ctxt: &zbus::object_server::SignalEmitter<'_>,
     ) -> zbus::Result<()>;
 }
 
@@ -633,7 +633,7 @@ pub fn spawn_running_monitor(connection: zbus::Connection, backend: BackgroundBa
                     if !backend.sync_running_apps() {
                         continue;
                     }
-                    let Ok(context) = zbus::object_server::SignalContext::new(
+                    let Ok(context) = zbus::object_server::SignalEmitter::new(
                         &task_connection,
                         super::OBJECT_PATH,
                     ) else {
