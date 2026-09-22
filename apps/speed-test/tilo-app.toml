@@ -1,5 +1,5 @@
 [package]
-id = "dev.tilo.speed-test"
+id = "so.tilo.speed-test"
 name = "Speed Test"
 category = "System"
 version = "0.1.0"

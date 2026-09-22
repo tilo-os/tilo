@@ -577,7 +577,7 @@ mod tests {
 
     #[test]
     fn classify_url() {
-        assert_eq!(classify("https://tilo.example/app"), CodeKind::Url);
+        assert_eq!(classify("https://example.test/app"), CodeKind::Url);
         assert_eq!(classify("HTTP://X"), CodeKind::Url);
     }
 

@@ -144,7 +144,7 @@ if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
 else
   bad 'snapshot construction can start before its signing authority is identity-bound'
 fi
-has "$workflow" 'https://tilo.dev/buildtypes/frozen-rpm-index/v1' \
+has "$workflow" 'https://tilo.sh/buildtypes/frozen-rpm-index/v1' \
   'snapshot provenance binds the package-set build type'
 has "$workflow" 'cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenance1' \
   'snapshot publishes signed SLSA provenance'
@@ -201,7 +201,7 @@ has "$image_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS
   'production CI rejects a stale frozen package manifest before building'
 has "$image_workflow" '^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$' \
   'production CI accepts only the real digest-pinned RPM registry path'
-has "$relay_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"' \
+has "$relay_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
   'relay CI rejects a stale frozen package manifest before building'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \
   'local production builds reject a stale frozen package manifest'

@@ -2556,7 +2556,7 @@ mod tests {
         // The compositor recognises the keyboard by this exact app-id to keep
         // it out of the tile layout and own its visibility. If this drifts, the
         // keyboard would be treated as an ordinary window — so pin the value.
-        assert_eq!(crate::KEYBOARD_APP_ID, "dev.tilo.osk");
+        assert_eq!(crate::KEYBOARD_APP_ID, "so.tilo.osk");
     }
 
     #[test]

@@ -80,9 +80,9 @@ repository with:
 
 ```bash
 sudo install -d -m 0755 /etc/apt/keyrings
-sudo curl -fsSL https://code.sandbox.example/api/packages/tilo/debian/repository.key \
+sudo curl -fsSL https://code.sandbox.example/api/packages/qos/debian/repository.key \
   -o /etc/apt/keyrings/forgejo-tilo.asc
-echo "deb [signed-by=/etc/apt/keyrings/forgejo-tilo.asc] https://code.sandbox.example/api/packages/tilo/debian noble main" \
+echo "deb [signed-by=/etc/apt/keyrings/forgejo-tilo.asc] https://code.sandbox.example/api/packages/qos/debian noble main" \
   | sudo tee /etc/apt/sources.list.d/tilo.list
 sudo apt update
 sudo apt install tilo-session
@@ -93,7 +93,7 @@ bootstrap the RPM release key and maintained repo definition from the exact
 `desktop-vX.Y.Z` release they are installing. Forgejo's generated RPM repo
 file does not advertise a Tilo key or enable package verification; the release
 workflow publishes a repo definition with those settings already present:
-`https://code.sandbox.example/api/packages/tilo/rpm/fedora/44.repo` is the upstream
+`https://code.sandbox.example/api/packages/qos/rpm/fedora/44.repo` is the upstream
 Forgejo-generated endpoint, retained for diagnostics and private-server
 fallbacks only.
 
@@ -102,10 +102,10 @@ TILO_DESKTOP_VERSION=0.1.7
 sudo install -d -m 0755 /etc/pki/rpm-gpg
 sudo curl --fail --location \
   --output /etc/pki/rpm-gpg/tilo-rpm-signing-key.asc \
-  "https://code.sandbox.example/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
+  "https://code.sandbox.example/qos/qos/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
 sudo curl --fail --location \
   --output /etc/yum.repos.d/tilo.repo \
-  "https://code.sandbox.example/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
+  "https://code.sandbox.example/qos/qos/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
 ```
 
 `gpgcheck=1` makes DNF/rpm-ostree verify every Tilo RPM. Forgejo's native RPM
@@ -180,10 +180,10 @@ printf 'machine code.sandbox.example login %s password %s\n' \
 TILO_DESKTOP_VERSION=0.1.7
 curl --fail --location --netrc-file "$TILO_NETRC" \
   --output "$TILO_REPO" \
-  "https://code.sandbox.example/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
+  "https://code.sandbox.example/qos/qos/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
 curl --fail --location --netrc-file "$TILO_NETRC" \
   --output "$TILO_KEY" \
-  "https://code.sandbox.example/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
+  "https://code.sandbox.example/qos/qos/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
 sudo install -o root -g root -m 0600 "$TILO_REPO" /etc/yum.repos.d/tilo.repo
 sudo install -o root -g root -m 0644 "$TILO_KEY" \
   /etc/pki/rpm-gpg/tilo-rpm-signing-key.asc
@@ -220,13 +220,13 @@ For Arch or Arch Linux ARM, add this repository to `/etc/pacman.conf`:
 ```ini
 [tilo.stable.code.sandbox.example]
 SigLevel = Required
-Server = https://code.sandbox.example/api/packages/tilo/arch/stable/$arch
+Server = https://code.sandbox.example/api/packages/qos/arch/stable/$arch
 ```
 
 Import and locally trust the registry key once, then install normally:
 
 ```bash
-curl -fsSL https://code.sandbox.example/api/packages/tilo/arch/repository.key -o tilo-forgejo.gpg
+curl -fsSL https://code.sandbox.example/api/packages/qos/arch/repository.key -o tilo-forgejo.gpg
 sudo pacman-key --add tilo-forgejo.gpg
 sudo pacman-key --lsign-key 'tilo@noreply.code.sandbox.example'
 sudo pacman -Sy tilo-session
@@ -241,7 +241,7 @@ The flake exposes both a package and a module:
 
 ```nix
 {
-  inputs.tilo.url = "git+https://code.sandbox.example/qos/tilo";
+  inputs.tilo.url = "git+https://code.sandbox.example/qos/qos";
   outputs = { nixpkgs, tilo, ... }: {
     nixosConfigurations.my-machine = nixpkgs.lib.nixosSystem {
       modules = [

@@ -1,7 +1,7 @@
 //! Library surface of `tilo-install`.
 //!
 //! Everything the CLI in `main.rs` does that is pure logic lives
-//! here so it is unit-testable without spawning a `.qpkg`
+//! here so it is unit-testable without spawning a `.tapp`
 //! install. The registry serde types stay in `main.rs` because they
 //! are the shape of the CLI's on-disk contract, not something re-used
 //! elsewhere.

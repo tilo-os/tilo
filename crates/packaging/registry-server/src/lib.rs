@@ -47,8 +47,8 @@ pub mod storage;
 
 pub use allowlist::{AllowlistError, PublisherAllowlist, PublisherRow};
 pub use bundle_review::{
-    BundleReviewError, InspectedVersion, InspectionPolicy, fetch_entry_bytes, inspect_bytes,
-    inspect_entry,
+    BundleReviewError, InspectedVersion, InspectionPolicy, fetch_entry_bytes, fetch_version_bytes,
+    inspect_bytes, inspect_entry,
 };
 pub use moderation::{ModerationError, ModerationService};
 pub use moderation_api::{ModerationApiError, ModerationApiService};

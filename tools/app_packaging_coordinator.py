@@ -18,7 +18,7 @@ import uuid
 
 from app_packaging_contract import canonical, receipt_key
 
-REPO = 'qos/ci-workflow-pilot-20260918-9245-repeat'
+REPO = 'tilo/ci-workflow-pilot-20260918-9245-repeat'
 WORKFLOW = 'packaging-coordinator-probe.yml'
 FIXTURE = Path(__file__).resolve().parents[1] / 'experiments/ci-forgejo' / WORKFLOW
 TERMINAL = {'success', 'failure', 'cancelled', 'skipped'}

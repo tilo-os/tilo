@@ -46,7 +46,7 @@ Resolution is the only network-enabled phase:
 ```sh
 podman build \
   --build-arg WINDOWS_GUEST_BUILDROOT_REF="$WINDOWS_GUEST_BUILDROOT_REF" \
-  -f os/Containerfile.windows-guest-rpms -t localhost/qos-windows-guest-rpms .
+  -f os/Containerfile.windows-guest-rpms -t localhost/tilo-windows-guest-rpms .
 ```
 
 Record and authenticate the resulting immutable snapshot digest before using
@@ -65,7 +65,7 @@ podman build --platform=linux/amd64 --network=none \
   --build-arg WINDOWS_GUEST_BUILDROOT_REF="$WINDOWS_GUEST_BUILDROOT_REF" \
   --build-arg WINDOWS_GUEST_RPMS_REF="$WINDOWS_GUEST_RPMS_REF" \
   --build-context github-assets=os/external-assets/cache \
-  -f os/Containerfile.windows-guest -t localhost/qos-windows-guest .
+  -f os/Containerfile.windows-guest -t localhost/tilo-windows-guest .
 ```
 
 OCI inputs and checksum-verified external assets must be available before the offline build. The contract checks reject
@@ -130,9 +130,9 @@ The separately pinned upstream `dxvk-2.7.1.tar.gz` supplies both PE architecture
 from one release. Its exact-commit license is independently pinned in
 `github-assets.tsv`. `install-windows-guest-dxvk.py` verifies both hashes,
 rejects unexpected/duplicate/linked archive members, checks all ten DLL headers,
-and imports them under `/usr/share/qos/dxvk/{x32,x64}`. It records source URLs,
+and imports them under `/usr/share/tilo/dxvk/{x32,x64}`. It records source URLs,
 hashes and DLL metadata and preserves the license under
-`/usr/share/licenses/qos-dxvk`. It never writes Wine's builtin paths or changes
+`/usr/share/licenses/tilo-dxvk`. It never writes Wine's builtin paths or changes
 alternatives: upstream native DLLs lack Fedora's Wine-builtin marker. Runtime
 prefix installation and native DLL overrides must be implemented and tested
 before this provider is enabled. Artifact presence alone does not activate DXVK.
