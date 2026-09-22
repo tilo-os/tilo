@@ -1668,7 +1668,23 @@ impl Widget for GroupRow {
             .groups
             .iter()
             .any(|group| group.new_tab_hit(self.last_cursor));
-        if new_tab_owned {
+        let cursor = self.last_cursor;
+        let direct_new_tab = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && self
+            .groups
+            .iter_mut()
+            .find(|group| group.new_tab_hit(cursor))
+            .is_some_and(|group| group.request_new_tab_if_hit(cursor));
+        if direct_new_tab {
+            *handled = true;
+        }
+        if new_tab_owned && !direct_new_tab {
             self.dispatch_to_groups(
                 event,
                 scale_factor,

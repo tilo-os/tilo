@@ -3432,7 +3432,9 @@ fn files_tab_is_active(compositor: &Compositor) -> bool {
 /// full output width). Split out of the drag-and-drop tests below to keep
 /// each one short.
 fn narrow_demo_group_for_files(compositor: &Compositor) {
-    const NARROW_BY: f64 = 1100.0;
+    // Leave enough of Files visible to cross its drag threshold before the
+    // resize seam, while still exposing a substantial client target beside it.
+    const NARROW_BY: f64 = 900.0;
     let seam = compositor.named_center("group_resize_handle[0]");
     compositor.pointer_move(seam.0, seam.1);
     compositor.pointer_button(true);

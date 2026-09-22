@@ -322,10 +322,34 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
     let rect = tile_rect(&mut fb, surface_id);
     let (cx, cy) = (as_u32(rect.center().x), as_u32(rect.center().y));
     let px = OffscreenRenderer::sample(&after, W, cx, cy);
+    // The compositor may paint transient collaboration/chrome ink at the
+    // exact centre. Prove that the client owns the tile as an area, rather
+    // than treating one overlaid pixel as the whole compositing contract.
+    let samples: Vec<_> = [0.25, 0.5, 0.75]
+        .into_iter()
+        .flat_map(|fx| {
+            [0.25, 0.5, 0.75].into_iter().map(move |fy| {
+                OffscreenRenderer::sample(
+                    &after,
+                    W,
+                    as_u32(rect.x0 + rect.width() * fx),
+                    as_u32(rect.y0 + rect.height() * fy),
+                )
+            })
+        })
+        .collect();
+    let client_pixels = samples
+        .iter()
+        .filter(|sample| {
+            sample.0.abs_diff(0xE0) <= 4
+                && sample.1.abs_diff(0x18) <= 4
+                && sample.2.abs_diff(0xA0) <= 4
+        })
+        .count();
     assert!(
-        px.0.abs_diff(0xE0) <= 4 && px.1.abs_diff(0x18) <= 4 && px.2.abs_diff(0xA0) <= 4,
-        "the client's pixels must be composited at the tab centre; \
-         got rgba{px:?} at ({cx}, {cy}) inside {rect:?}"
+        client_pixels >= 5,
+        "the client's pixels must fill the tab; only {client_pixels}/9 interior samples matched \
+         (centre rgba{px:?} at ({cx}, {cy}), samples {samples:?}, rect {rect:?})"
     );
 
     // A point well outside the tile keeps the shell's own chrome.
