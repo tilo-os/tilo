@@ -2041,7 +2041,7 @@ mod tests {
         let mut laptop = snapshot("laptop", 1, 0, caps);
         laptop.media.push(MediaSession {
             id: "movie-1".into(),
-            app_id: "dev.tilo.video".into(),
+            app_id: "so.tilo.video".into(),
             title: "Film".into(),
             content_id: "record:film".into(),
             position_ms: 42_000,
@@ -2522,7 +2522,7 @@ mod tests {
             issued_unix_ms: 10_000,
             action: PersonalFabricAction::ResumeMedia {
                 session_id: "player:one".into(),
-                app_id: "dev.tilo.music".into(),
+                app_id: "so.tilo.music".into(),
                 workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                 title: "Track".into(),
                 locator: MediaSourceLocator::Workspace {
@@ -2855,7 +2855,7 @@ mod tests {
                 PersonalFabricAction::RealtimeOffer {
                     offer: crate::shell::realtime_session::RealtimeFabricOffer {
                         session_id: realtime_id,
-                        app_id: "dev.tilo.chat".into(),
+                        app_id: "so.tilo.chat".into(),
                         workspace_id: "room".into(),
                         provider: "chat".into(),
                         room_id: "call".into(),
@@ -2901,7 +2901,7 @@ mod tests {
             (
                 PersonalFabricAction::GamepadForwardRequest {
                     forwarding_id: [3; 16],
-                    app_id: "dev.tilo.game".into(),
+                    app_id: "so.tilo.game".into(),
                     workspace_id: "workspace".into(),
                     session_id: "session".into(),
                     label: "Controller".into(),
@@ -2998,7 +2998,7 @@ mod tests {
                 broker: [1; 16],
                 nonce: [2; 16],
             },
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             workspace_id: "room".into(),
             provider: "chat".into(),
             room_id: "call-7".into(),
@@ -3053,7 +3053,7 @@ mod tests {
                 epoch: [1; 16],
                 token: [2; 16],
             },
-            app_id: "dev.tilo.mail".into(),
+            app_id: "so.tilo.mail".into(),
             app_name: "Mail".into(),
             title: "New message".into(),
             body: "Preview".into(),
@@ -3210,7 +3210,7 @@ mod tests {
                 issued_unix_ms: 10_000,
                 action: PersonalFabricAction::ResumeMedia {
                     session_id: "player:one".into(),
-                    app_id: "dev.tilo.music".into(),
+                    app_id: "so.tilo.music".into(),
                     workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                     title: "Track".into(),
                     locator,

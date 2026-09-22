@@ -178,7 +178,7 @@ impl SlashMenu {
             MenuRow {
                 label: "Table",
                 keywords: &["table", "grid", "columns", "gfm"],
-                kind: BlockKind::Table { visual: false },
+                kind: BlockKind::Table { visual: true },
             },
             MenuRow {
                 label: "TeX formula",

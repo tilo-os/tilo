@@ -2359,7 +2359,7 @@ mod tests {
             targets: vec![ui::widget::CaptureTarget {
                 id: format!("group:{target_group}:tab:{target_tab}"),
                 title: "Notes".into(),
-                app_id: "dev.tilo.notes".into(),
+                app_id: "so.tilo.notes".into(),
                 visible_rect: Rect::ZERO,
                 // Deliberately stale: the live draw must win over picker-time
                 // geometry after strip motion.
@@ -2415,7 +2415,7 @@ mod tests {
             targets: vec![ui::widget::CaptureTarget {
                 id: "group:999999:tab:999999".into(),
                 title: "Gone".into(),
-                app_id: "dev.tilo.gone".into(),
+                app_id: "so.tilo.gone".into(),
                 visible_rect: Rect::ZERO,
                 virtual_rect: Rect::new(1_000.0, 100.0, 1_800.0, 700.0),
                 complete_rect: None,
@@ -2459,7 +2459,7 @@ mod tests {
             targets: vec![ui::widget::CaptureTarget {
                 id: "notes".into(),
                 title: "Notes".into(),
-                app_id: "dev.tilo.notes".into(),
+                app_id: "so.tilo.notes".into(),
                 visible_rect: Rect::ZERO,
                 virtual_rect,
                 complete_rect: Some(Rect::new(-1_300.0, 120.0, 10.0, 1_308.0)),
@@ -2475,17 +2475,17 @@ mod tests {
     fn semantic_region_update_preserves_element_identity() {
         let updated = updated_local_tracking_source(
             Some(FloatingSource::AppElement {
-                app_id: "dev.tilo.browser".into(),
+                app_id: "so.tilo.browser".into(),
                 element_id: "media:7".into(),
                 region: Rect::new(10.0, 20.0, 410.0, 245.0),
             }),
-            "dev.tilo.browser".into(),
+            "so.tilo.browser".into(),
             Rect::new(24.0, 36.0, 624.0, 374.0),
         );
         assert_eq!(
             updated,
             FloatingSource::AppElement {
-                app_id: "dev.tilo.browser".into(),
+                app_id: "so.tilo.browser".into(),
                 element_id: "media:7".into(),
                 region: Rect::new(24.0, 36.0, 624.0, 374.0),
             }

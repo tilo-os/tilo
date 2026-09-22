@@ -3,7 +3,7 @@
  "https://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <vendor>Tilo</vendor>
-  <vendor_url>https://tilo.dev</vendor_url>
+  <vendor_url>https://tilo.so</vendor_url>
 
   <action id="org.tilo.windows.import-iso">
     <description>Prepare the managed Windows appliance</description>

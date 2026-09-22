@@ -171,7 +171,7 @@ class InstallTests(fixtures.PublicBundleTests):
         for value in ('https://dev.example/tilo-development/os:test',
                       'user:password@dev.example/tilo-development/os:test',
                       'code.sandbox.example/tilo-development/os:test',
-                      'dev.example/qos/tilo:test',
+                      'dev.example/qos/qos:test',
                       'dev.example:0/tilo-development/os:test',
                       'dev.example:05000/tilo-development/os:test',
                       'dev.example/tilo-development/os:test?query',

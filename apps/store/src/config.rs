@@ -3,7 +3,7 @@
 //! Two files, and only one of them is defined here:
 //!
 //!   * `registries.toml` — the list of Tilo registries the user pulls
-//!     entries from. **Owned by [`app_catalogue::config`]**, not by
+//!     entries from. **Owned by [`app_cli::config`]**, not by
 //!     this app. The desktop's search box reads the same file to decide
 //!     what software the machine could open, so a second definition of
 //!     its shape would eventually mean the store and the palette
@@ -28,7 +28,7 @@ use crate::model::SourceFilter;
 // The registry list, its file format and the two directories it lives
 // under, re-exported so existing `store::config::…` paths keep working
 // and there is still exactly one definition of each.
-pub use app_catalogue::config::{
+pub use app_cli::config::{
     DEFAULT_REGISTRY_BASE_URL, RegistriesFile, RegistryConfig, cache_dir, config_dir,
     load_registries, placeholder_owner_pubkey, registries_path,
 };
@@ -128,7 +128,7 @@ mod tests {
         let _g = scoped_dir(&td);
         assert_eq!(
             registries_path(),
-            app_catalogue::config::registries_path(),
+            app_cli::config::registries_path(),
             "one registry list, two readers"
         );
         assert_eq!(config_dir().as_deref(), Some(td.path()));

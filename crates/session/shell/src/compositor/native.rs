@@ -1859,6 +1859,15 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
             NamedKeyTag::F1 => NamedKey::F1,
             NamedKeyTag::F4 => NamedKey::F4,
             NamedKeyTag::PrintScreen => NamedKey::PrintScreen,
+            NamedKeyTag::AudioVolumeUp => NamedKey::AudioVolumeUp,
+            NamedKeyTag::AudioVolumeDown => NamedKey::AudioVolumeDown,
+            NamedKeyTag::AudioVolumeMute => NamedKey::AudioVolumeMute,
+            NamedKeyTag::MicrophoneVolumeMute => NamedKey::MicrophoneVolumeMute,
+            NamedKeyTag::BrightnessUp => NamedKey::BrightnessUp,
+            NamedKeyTag::BrightnessDown => NamedKey::BrightnessDown,
+            NamedKeyTag::MediaPlayPause => NamedKey::MediaPlayPause,
+            NamedKeyTag::MediaTrackNext => NamedKey::MediaTrackNext,
+            NamedKeyTag::MediaTrackPrevious => NamedKey::MediaTrackPrevious,
             NamedKeyTag::Space => NamedKey::Space,
             NamedKeyTag::Shift => NamedKey::Shift,
             NamedKeyTag::Control => NamedKey::Control,
@@ -1866,6 +1875,39 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
             NamedKeyTag::Super => NamedKey::Super,
         }),
         KeyTag::Char(c) => Key::Character(SmolStr::new(c.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod injected_key_mapping_tests {
+    use super::keytag_into_winit_key;
+    use crate::compositor::test_control::{KeyTag, NamedKeyTag};
+    use winit::keyboard::{Key, NamedKey};
+
+    #[test]
+    fn injected_media_keys_map_to_the_production_logical_keys() {
+        for (tag, expected) in [
+            (NamedKeyTag::AudioVolumeUp, NamedKey::AudioVolumeUp),
+            (NamedKeyTag::AudioVolumeDown, NamedKey::AudioVolumeDown),
+            (NamedKeyTag::AudioVolumeMute, NamedKey::AudioVolumeMute),
+            (
+                NamedKeyTag::MicrophoneVolumeMute,
+                NamedKey::MicrophoneVolumeMute,
+            ),
+            (NamedKeyTag::BrightnessUp, NamedKey::BrightnessUp),
+            (NamedKeyTag::BrightnessDown, NamedKey::BrightnessDown),
+            (NamedKeyTag::MediaPlayPause, NamedKey::MediaPlayPause),
+            (NamedKeyTag::MediaTrackNext, NamedKey::MediaTrackNext),
+            (
+                NamedKeyTag::MediaTrackPrevious,
+                NamedKey::MediaTrackPrevious,
+            ),
+        ] {
+            assert_eq!(
+                keytag_into_winit_key(KeyTag::Named(tag)),
+                Key::Named(expected)
+            );
+        }
     }
 }
 
@@ -1987,6 +2029,9 @@ fn dispatch_synth_event(
 ) {
     if to_client(state, fb, event, ctx.modifiers) {
         return;
+    }
+    if let Some(st) = state.as_deref_mut() {
+        client_input::finish_chrome_drag_into_shell(st, fb, event);
     }
     fb.dispatch_event(
         event,
@@ -2326,11 +2371,14 @@ fn execute_planned_action(
             // test surface. A snapshot must show a drag's carried item too, drawn by
             // the live present loop on top of the scene.
             let drag = state.as_ref().and_then(|s| {
-                (s.selection.dnd_active || s.selection.chrome_drag.is_some()).then(|| {
+                (s.selection.dnd_active
+                    || s.selection.chrome_drag.is_some()
+                    || file_explorer::external_drag::unclaimed().is_some())
+                .then(|| {
                     let (cx, cy) = s.client_input.cursor();
                     (
                         vello::kurbo::Point::new(cx, cy),
-                        s.selection.dnd_label.get(),
+                        s.selection.dnd_label.snapshot(),
                     )
                 })
             });
@@ -2420,7 +2468,10 @@ static SNAPSHOT_RENDERERS_BUILT: std::sync::atomic::AtomicUsize =
 fn write_snapshot_png(
     fb: &mut FrameBuilder,
     path: &std::path::Path,
-    drag: Option<(vello::kurbo::Point, Option<String>)>,
+    drag: Option<(
+        vello::kurbo::Point,
+        crate::compositor::drag_feedback::DragVisual,
+    )>,
 ) {
     use std::io::Write;
     let (w, h) = fb.viewport();
@@ -2447,15 +2498,9 @@ fn write_snapshot_png(
     // open panel. This is capture-only; live rendering retains its animation.
     fb.host_mut().force_palette_settled();
     let mut scene = fb.paint_settled();
-    if let Some((cursor, label)) = drag {
+    if let Some((cursor, visual)) = drag {
         let theme = fb.theme().clone();
-        drag_feedback::draw(
-            &mut scene,
-            cursor,
-            label.as_deref(),
-            &theme,
-            fb.text_renderer_mut(),
-        );
+        drag_feedback::draw(&mut scene, cursor, &visual, &theme, fb.text_renderer_mut());
     }
     let scene = scene;
     // The renderer is kept between snapshots, rebuilt only on viewport resize.
@@ -3671,6 +3716,7 @@ fn active_physical_gamepad_binding(
         .find(|group| group.id == group_id)?;
     let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
     let app_id = match &tab.tile {
+        TileContent::WorkspaceActivity => return None,
         TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => kind.app_id(),
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
@@ -5798,7 +5844,7 @@ pub fn run() {
                             frame_builder.host().qs_actions(),
                             frame_builder.host().status_bridge(),
                         ) {
-                            frame_builder.with_chrome(|st| st.show_osd(osd));
+                            frame_builder.with_chrome(|st| publish_media_osd(st, osd));
                             session_changed = true;
                         }
                     } else if peer_sync.as_ref().is_some_and(|network| {
@@ -5837,6 +5883,11 @@ pub fn run() {
                                 &test_control_ctx.modifiers,
                             );
                         if !to_client {
+                            session_changed |= client_input::finish_chrome_drag_into_shell(
+                                &mut state,
+                                &mut frame_builder,
+                                wev,
+                            );
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
                             session_changed |= frame_builder.dispatch_event(
                                 wev,
@@ -5986,6 +6037,8 @@ pub fn run() {
 
         state.expire_host_launch_activations();
         crate::shell::launcher::expire_pending_placements();
+        session_changed |=
+            crate::compositor::selection::pump_pending_shell_drop(&mut state, &mut frame_builder);
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
 
         // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
@@ -6398,7 +6451,7 @@ pub fn run() {
             backend.outputs(),
         );
         // A file dragged out of the hosted file manager over a client's window becomes a real Wayland drag — see `pump_chrome_drag`.
-        client_input::pump_chrome_drag(&mut state, &frame_builder);
+        client_input::pump_chrome_drag(&mut state, &mut frame_builder);
 
         // Hand the remote-input firewall this frame's screen: foreign tile
         // positions, keyboard holder, chrome-drawn-over, locked — refreshed before remote events drain.
@@ -7088,14 +7141,17 @@ pub fn run() {
                 }
                 // On top of everything, since a drag is over whatever it's over — drawn
                 // here (not by either app) because once the pointer leaves the source window, neither end can paint the carried item.
-                if state.selection.dnd_active || state.selection.chrome_drag.is_some() {
-                    let label = state.selection.dnd_label.get();
+                if state.selection.dnd_active
+                    || state.selection.chrome_drag.is_some()
+                    || file_explorer::external_drag::unclaimed().is_some()
+                {
+                    let visual = state.selection.dnd_label.snapshot();
                     let (cx, cy) = state.client_input.cursor();
                     let theme = frame_builder.theme().clone();
                     drag_feedback::draw(
                         &mut frame_paint.scene,
                         vello::kurbo::Point::new(cx, cy),
-                        label.as_deref(),
+                        &visual,
                         &theme,
                         frame_builder.text_renderer_mut(),
                     );
@@ -7548,6 +7604,51 @@ pub fn run() {
     // Releases the D-Bus bus name and tears down the notification object
     // server before returning to the session wrapper.
     drop(notif_handle);
+}
+
+/// Publish a successful machine-level change to every shell surface that
+/// mirrors it before raising the transient readout. Quick Settings may be
+/// open while a hardware key is pressed, so waiting for its next device read
+/// would leave the visible slider behind the value in the OSD.
+fn publish_media_osd(
+    chrome: &mut crate::shell::chrome_state::ChromeState,
+    osd: crate::shell::osd::Osd,
+) {
+    sync_quick_settings_from_osd(&mut chrome.quick_settings, osd);
+    chrome.show_osd(osd);
+}
+
+fn sync_quick_settings_from_osd(
+    quick_settings: &mut crate::shell::chrome_state::QuickSettingsState,
+    osd: crate::shell::osd::Osd,
+) {
+    match osd.kind {
+        crate::shell::osd::OsdKind::Volume { .. } => {
+            quick_settings.volume = osd.level;
+        }
+        crate::shell::osd::OsdKind::Brightness => {
+            quick_settings.brightness = osd.level;
+        }
+        crate::shell::osd::OsdKind::MicMute { .. } | crate::shell::osd::OsdKind::Transport(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod media_osd_publication_tests {
+    use super::sync_quick_settings_from_osd;
+    use crate::shell::chrome_state::QuickSettingsState;
+    use crate::shell::osd::Osd;
+
+    #[test]
+    fn successful_level_osds_update_the_open_quick_settings_sliders() {
+        let mut quick_settings = QuickSettingsState::default();
+
+        sync_quick_settings_from_osd(&mut quick_settings, Osd::volume(0.73, false));
+        assert!((quick_settings.volume - 0.73).abs() < f32::EPSILON);
+
+        sync_quick_settings_from_osd(&mut quick_settings, Osd::brightness(0.28));
+        assert!((quick_settings.brightness - 0.28).abs() < f32::EPSILON);
+    }
 }
 
 /// Session-owned ambient-light loop. Settings only records policy; the
@@ -8053,7 +8154,7 @@ mod tests {
             &services,
             false,
             launcher::services::ServiceLaunchContext {
-                app_id: "dev.tilo.socket-contract-test",
+                app_id: "so.tilo.socket-contract-test",
                 workspace_id: Some("socket-contract-workspace"),
             },
         )
@@ -9123,7 +9224,7 @@ mod tests {
             Some(crate::shell::chrome_state::SearchResourceScope {
                 peer_id: 0x42,
                 cluster_id: "room:design".into(),
-                app_id: "dev.tilo.reader".into(),
+                app_id: "so.tilo.reader".into(),
                 resource: "book:architecture/chapter:7".into(),
                 label: "Rendering and state".into(),
             });
@@ -9136,7 +9237,7 @@ mod tests {
         let scope = &state.chrome_state_json()["search_resource_scope"];
         assert_eq!(scope["peer_id"], 0x42);
         assert_eq!(scope["cluster_id"], "room:design");
-        assert_eq!(scope["app_id"], "dev.tilo.reader");
+        assert_eq!(scope["app_id"], "so.tilo.reader");
         assert_eq!(scope["resource"], "book:architecture/chapter:7");
         assert_eq!(scope["label"], "Rendering and state");
     }
@@ -9571,10 +9672,20 @@ fn apply_shell_gesture(
     action: crate::compositor::backend::drm::gestures::GestureAction,
 ) {
     use crate::compositor::backend::drm::gestures::GestureAction;
-    if let GestureAction::StepAlongStrip(dir) = action {
-        // Goes through the host, not the chrome: the widget side owns the active tab, undone by the next writeback otherwise.
-        frame_builder.host_mut().step_focus_along_strip(dir);
-        return;
+    match action {
+        GestureAction::StripPanUpdate { travel, began } => {
+            frame_builder
+                .host_mut()
+                .update_active_strip_pan(travel, began);
+            return;
+        }
+        GestureAction::StripPanEnd { .. } => {
+            frame_builder
+                .host_mut()
+                .end_active_strip_pan(Instant::now());
+            return;
+        }
+        _ => {}
     }
     frame_builder.with_chrome(|st| match action {
         GestureAction::SwitchWorkspace(dir) => {
@@ -9582,7 +9693,7 @@ fn apply_shell_gesture(
         }
         // Handled (and returned on) above; a panic here would take down the
         // whole session for a gesture that already did its job.
-        GestureAction::StepAlongStrip(_) => {}
+        GestureAction::StripPanUpdate { .. } | GestureAction::StripPanEnd { .. } => {}
         GestureAction::ShowOverview => {
             if !st.overlays.overview {
                 st.overlays.overview = true;
@@ -10022,21 +10133,21 @@ mod external_floating_security_tests {
     fn authenticated_app_region_is_translated_and_clipped_to_its_surface() {
         let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
         let source = FloatingSource::AppRegion {
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             region: Rect::new(720.0, 20.0, 880.0, 220.0),
         };
-        let translated = translate_external_source(source, "dev.tilo.chat", app).unwrap();
+        let translated = translate_external_source(source, "so.tilo.chat", app).unwrap();
         let FloatingSource::AppRegion { region, .. } = translated else {
             panic!("app region must remain an app region");
         };
         assert_eq!(region, Rect::new(1020.0, 100.0, 1100.0, 300.0));
 
         let semantic = FloatingSource::AppElement {
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             element_id: "call:shared-screen".into(),
             region: Rect::new(40.0, 30.0, 440.0, 280.0),
         };
-        let translated = translate_external_source(semantic, "dev.tilo.chat", app).unwrap();
+        let translated = translate_external_source(semantic, "so.tilo.chat", app).unwrap();
         let FloatingSource::AppElement {
             app_id,
             element_id,
@@ -10045,7 +10156,7 @@ mod external_floating_security_tests {
         else {
             panic!("semantic app element must retain its identity");
         };
-        assert_eq!(app_id, "dev.tilo.chat");
+        assert_eq!(app_id, "so.tilo.chat");
         assert_eq!(element_id, "call:shared-screen");
         assert_eq!(region, Rect::new(340.0, 110.0, 740.0, 360.0));
     }
@@ -10066,10 +10177,10 @@ mod external_floating_security_tests {
         assert!(
             translate_external_source(
                 FloatingSource::AppRegion {
-                    app_id: "dev.tilo.mail".into(),
+                    app_id: "so.tilo.mail".into(),
                     region: Rect::new(0.0, 0.0, 200.0, 120.0),
                 },
-                "dev.tilo.chat",
+                "so.tilo.chat",
                 app,
             )
             .is_err()
@@ -10077,7 +10188,7 @@ mod external_floating_security_tests {
         assert!(
             translate_external_source(
                 FloatingSource::Surface { surface_id: 42 },
-                "dev.tilo.chat",
+                "so.tilo.chat",
                 app,
             )
             .is_err()
@@ -10087,21 +10198,21 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_native_surface_accepts_local_source_but_not_spoofed_identity() {
         let source = FloatingSource::AppRegion {
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             region: Rect::new(420.0, 80.0, 780.0, 300.0),
         };
-        assert!(validate_app_owned_source(&source, "dev.tilo.chat").is_ok());
+        assert!(validate_app_owned_source(&source, "so.tilo.chat").is_ok());
         assert_eq!(
             app_owned_source_region(
                 &source,
-                "dev.tilo.chat",
+                "so.tilo.chat",
                 vello::kurbo::Size::new(1_000.0, 700.0)
             ),
             Some(Rect::new(420.0, 80.0, 780.0, 300.0))
         );
-        assert!(validate_app_owned_source(&source, "dev.tilo.maps").is_err());
+        assert!(validate_app_owned_source(&source, "so.tilo.maps").is_err());
         assert!(
-            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "dev.tilo.chat")
+            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "so.tilo.chat")
                 .is_err()
         );
     }
@@ -10109,7 +10220,7 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_transfer_keeps_visible_soft_chrome_at_the_parent_edge() {
         let source = FloatingSource::AppElement {
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             element_id: "active-call".into(),
             // A live drag has already carried most of the content beyond the
             // primary window. Its final visible strip is still a valid source
@@ -10120,7 +10231,7 @@ mod external_floating_security_tests {
         let visible = app_owned_transfer_region(
             &source,
             Some(presentation),
-            "dev.tilo.chat",
+            "so.tilo.chat",
             vello::kurbo::Size::new(1_200.0, 700.0),
         )
         .expect("the visible decorated edge becomes the warm-up proxy");
@@ -10130,7 +10241,7 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_transfer_prefers_decoration_over_content_only_source() {
         let source = FloatingSource::AppRegion {
-            app_id: "dev.tilo.maps".into(),
+            app_id: "so.tilo.maps".into(),
             region: Rect::new(720.0, 120.0, 1_080.0, 276.0),
         };
         let window = Rect::new(712.0, 112.0, 1_088.0, 284.0);
@@ -10138,7 +10249,7 @@ mod external_floating_security_tests {
             app_owned_transfer_region(
                 &source,
                 Some(window),
-                "dev.tilo.maps",
+                "so.tilo.maps",
                 vello::kurbo::Size::new(1_280.0, 720.0),
             ),
             Some(window),
