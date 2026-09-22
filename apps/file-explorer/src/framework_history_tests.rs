@@ -190,7 +190,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     assert_eq!(driver.state_mut().doc.get_heads(), original_heads);
     driver.click_named("history-restore").unwrap();
     confirm(&mut driver, "backend restore");
-    wait(&mut driver, "history-files-retry");
+    wait(&mut driver, "Refresh review");
     let submitted = transport.submitted.lock().unwrap().clone();
     assert_eq!(submitted.len(), 1);
     assert_eq!(
@@ -474,7 +474,7 @@ fn round1_production_targets_recover_pending_and_applied_session_after_a_b_a() {
         &mut driver,
         "production initial restore after repeated open",
     );
-    wait(&mut driver, "history-files-retry");
+    wait(&mut driver, "Refresh review");
     driver.key("Escape");
     let original: CheckedHistoryRequestV1 = serde_json::from_slice(
         &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
