@@ -49,6 +49,8 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     if seed.stat().st_size > 1024:
         raise ValueError("first-boot seed exceeds the production 1024-byte limit")
     output = args.output.resolve()
+    if output == Path("/") or Path("/dev") == output or Path("/dev") in output.parents:
+        raise ValueError("output must be a directory on a regular filesystem, outside /dev")
     if output.exists():
         raise ValueError(f"output must not already exist: {output}")
     if not output.parent.is_dir():
@@ -102,23 +104,27 @@ def run(args: argparse.Namespace) -> int:
         raise FileExistsError(f"receipt already exists: {args.receipt.resolve()}")
     inputs = validate(args)
     argv = command(args, inputs)
+    preflight_seconds = round(time.monotonic() - started, 3)
     receipt: dict[str, Any] = {
         "schema": SCHEMA,
         "created_at": started_at,
         "kind": "dry-run" if args.dry_run else "installed-disk",
         "inputs": inputs,
         "command": argv,
+        "timings": {"preflight_seconds": preflight_seconds},
     }
     if args.dry_run:
-        receipt["duration_seconds"] = round(time.monotonic() - started, 3)
+        receipt["timings"]["total_seconds"] = round(time.monotonic() - started, 3)
         receipt["status"] = "preflight-passed"
         if args.receipt:
             write_receipt(args.receipt.resolve(), receipt)
         print(json.dumps(receipt, indent=2, sort_keys=True))
         return 0
 
+    install_started = time.monotonic()
     process = subprocess.run(argv, check=False)
-    receipt["duration_seconds"] = round(time.monotonic() - started, 3)
+    receipt["timings"]["install_seconds"] = round(time.monotonic() - install_started, 3)
+    receipt["timings"]["total_seconds"] = round(time.monotonic() - started, 3)
     receipt["exit_code"] = process.returncode
     receipt["status"] = "complete" if process.returncode == 0 else "failed"
     disk = Path(inputs["output_directory"]) / "disk.raw"
