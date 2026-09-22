@@ -4,15 +4,22 @@ Boots a Tilo ARM64 raw disk with native Windows QEMU and WHPX.
 
 .DESCRIPTION
 Uses the MSYS2 CLANGARM64 QEMU package and a persistent writable UEFI variable
-store. By default, the disk is discovered at $HOME/tilo-vm/media/disk.raw in
-the selected WSL distribution. Set TILO_ARM64_DISK or pass -DiskPath to use a
-different artifact. Run with -CheckOnly to validate the host without booting.
+store. The source disk uses QEMU's transient snapshot mode so the guest can
+write during boot without modifying the installer artifact. By default, the
+disk is discovered at $HOME/tilo-vm/media/disk.raw in the selected WSL
+distribution. Set TILO_ARM64_DISK or pass -DiskPath to use a different
+artifact. Supplying -InstallTargetDisk attaches a separate writable disk with
+the stable `tilo-install-target` serial. Run with -CheckOnly to validate the
+host without booting.
 
 .EXAMPLE
 .\tools\launch-arm64-disk.ps1 -CheckOnly
 
 .EXAMPLE
 .\tools\launch-arm64-disk.ps1 -ResetVars
+
+.EXAMPLE
+.\tools\launch-arm64-disk.ps1 -InstallTargetDisk C:\VMs\tilo-target.raw -CreateInstallTarget
 #>
 [CmdletBinding()]
 param(
@@ -27,11 +34,24 @@ param(
     [ValidateRange(1, 65535)]
     [int]$QmpPort = 4444,
     [switch]$ResetVars,
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [string]$InstallTargetDisk,
+    [ValidateRange(34, 4096)]
+    [int]$InstallTargetGiB = 64,
+    [switch]$CreateInstallTarget,
+    [switch]$ResetInstallTarget
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+function Test-QemuUsesPath([string]$Path) {
+    $normalized = [System.IO.Path]::GetFullPath($Path)
+    $escaped = [regex]::Escape($normalized)
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name='qemu-system-aarch64.exe'" |
+        Where-Object { $_.CommandLine -match $escaped })
+    return $processes
+}
 
 if (-not $DiskPath) {
     if ($env:TILO_ARM64_DISK) {
@@ -47,6 +67,7 @@ if (-not $DiskPath) {
 }
 
 $qemuExe = Join-Path $QemuRoot 'bin\qemu-system-aarch64.exe'
+$qemuImg = Join-Path $QemuRoot 'bin\qemu-img.exe'
 $firmwareCode = Join-Path $QemuRoot 'share\qemu\edk2-aarch64-code.fd'
 $firmwareVarsTemplate = Join-Path $QemuRoot 'share\qemu\edk2-arm-vars.fd'
 $stateDir = [System.IO.Path]::GetFullPath($StateDirectory)
@@ -56,6 +77,39 @@ $serialLog = Join-Path $stateDir 'serial.log'
 foreach ($requiredFile in @($qemuExe, $firmwareCode, $firmwareVarsTemplate)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Required file is missing: $requiredFile"
+    }
+}
+
+$DiskPath = [System.IO.Path]::GetFullPath($DiskPath)
+$targetIsRequested = -not [string]::IsNullOrWhiteSpace($InstallTargetDisk)
+if ($ResetInstallTarget -and -not $targetIsRequested) {
+    throw '-ResetInstallTarget requires -InstallTargetDisk.'
+}
+if ($CreateInstallTarget -and -not $targetIsRequested) {
+    throw '-CreateInstallTarget requires -InstallTargetDisk.'
+}
+if ($targetIsRequested) {
+    $InstallTargetDisk = [System.IO.Path]::GetFullPath($InstallTargetDisk)
+    if ($InstallTargetDisk -ieq $DiskPath) {
+        throw "Installer target must differ from the protected source disk: $DiskPath"
+    }
+    $targetUsers = @(Test-QemuUsesPath $InstallTargetDisk)
+    if ($targetUsers.Count -ne 0) {
+        throw "Installer target is in use by QEMU PID(s): $($targetUsers.ProcessId -join ', ')."
+    }
+    $targetNeedsCreation = $ResetInstallTarget -or -not (Test-Path -LiteralPath $InstallTargetDisk -PathType Leaf)
+    if ($targetNeedsCreation) {
+        if (-not $CreateInstallTarget) {
+            throw "Installer target is absent or reset was requested. Pass -CreateInstallTarget to create a fresh ${InstallTargetGiB}GiB sparse raw disk: $InstallTargetDisk"
+        }
+        if (-not (Test-Path -LiteralPath $qemuImg -PathType Leaf)) {
+            throw "qemu-img is required to create the installer target: $qemuImg"
+        }
+    } else {
+        $targetLength = (Get-Item -LiteralPath $InstallTargetDisk).Length
+        if ($targetLength -lt (34GB)) {
+            throw "Installer target is too small ($targetLength bytes); it must be at least 34 GiB."
+        }
     }
 }
 
@@ -138,7 +192,16 @@ if ($CheckOnly) {
     Write-Host "Firmware:    $firmwareCode"
     Write-Host "Vars source: $firmwareVarsTemplate"
     Write-Host "Vars copy:   $firmwareVars [ready]"
-    Write-Host "Disk:        $DiskPath [$diskStatus]"
+    Write-Host "Disk:        $DiskPath [$diskStatus; transient snapshot]"
+    if ($targetIsRequested) {
+        if ($targetNeedsCreation) {
+            Write-Host "Target:      $InstallTargetDisk (will create fresh ${InstallTargetGiB}GiB sparse raw disk, serial=tilo-install-target)"
+        } else {
+            Write-Host "Target:      $InstallTargetDisk ($targetLength bytes, serial=tilo-install-target)"
+        }
+    } else {
+        Write-Host 'Target:      none'
+    }
     Write-Host "Serial log:  $serialLog [writable]"
     Write-Host "QMP:         tcp:127.0.0.1:$QmpPort [available]"
     return
@@ -151,6 +214,24 @@ if (-not $diskHasGpt) {
     throw "Raw disk has no GPT header and is not an assembled boot target; QEMU was not started: $DiskPath"
 }
 
+if ($targetIsRequested -and $targetNeedsCreation) {
+    if (Test-Path -LiteralPath $InstallTargetDisk -PathType Leaf) {
+        Remove-Item -LiteralPath $InstallTargetDisk -Force
+    }
+    $targetParent = Split-Path -Parent $InstallTargetDisk
+    if ($targetParent) { New-Item -ItemType Directory -Path $targetParent -Force | Out-Null }
+    & $qemuImg create -f raw $InstallTargetDisk "${InstallTargetGiB}G"
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $InstallTargetDisk -PathType Leaf)) {
+        throw "Could not create installer target: $InstallTargetDisk"
+    }
+    $targetLength = (Get-Item -LiteralPath $InstallTargetDisk).Length
+    if ($targetLength -lt (34GB)) {
+        throw "New installer target is too small ($targetLength bytes); it must be at least 34 GiB."
+    }
+}
+
+$diskBefore = Get-Item -LiteralPath $DiskPath
+
 $qemuArgs = @(
     '-name', 'tilo-arm64-local'
     '-machine', 'virt,gic-version=3,highmem=on'
@@ -160,7 +241,7 @@ $qemuArgs = @(
     '-m', "$MemoryMiB"
     '-drive', "if=pflash,format=raw,readonly=on,file=$firmwareCode"
     '-drive', "if=pflash,format=raw,file=$firmwareVars"
-    '-drive', "if=none,id=osdisk,format=raw,file=$DiskPath,cache=writeback,aio=threads"
+    '-drive', "if=none,id=osdisk,format=raw,file=$DiskPath,snapshot=on,cache=writeback,aio=threads"
     '-device', 'virtio-blk-pci,drive=osdisk,bootindex=1'
     '-device', 'virtio-gpu-pci'
     '-display', 'gtk,show-cursor=on'
@@ -176,11 +257,26 @@ $qemuArgs = @(
     '-boot', 'menu=on'
 )
 
+if ($targetIsRequested) {
+    $qemuArgs += @(
+        '-drive', "if=none,id=installtarget,format=raw,file=$InstallTargetDisk,cache=writeback,aio=threads"
+        '-device', 'virtio-blk-pci,drive=installtarget,serial=tilo-install-target'
+    )
+}
+
 Write-Host "Starting $qemuVersion with WHPX"
-Write-Host "Disk:       $DiskPath"
+Write-Host "Disk:       $DiskPath (transient snapshot)"
+if ($targetIsRequested) {
+    Write-Host "Target:     $InstallTargetDisk (serial=tilo-install-target)"
+}
 Write-Host "Serial log: $serialLog"
 Write-Host "QMP:        tcp:127.0.0.1:$QmpPort"
 & $qemuExe @qemuArgs
 if ($LASTEXITCODE -ne 0) {
     throw "QEMU exited with status $LASTEXITCODE. See $serialLog"
+}
+
+$diskAfter = Get-Item -LiteralPath $DiskPath
+if ($diskAfter.Length -ne $diskBefore.Length -or $diskAfter.LastWriteTimeUtc -ne $diskBefore.LastWriteTimeUtc) {
+    throw 'Source disk metadata changed despite transient snapshot mode.'
 }
