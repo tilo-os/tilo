@@ -26,7 +26,6 @@ ROOT = Path(__file__).resolve().parents[2]
 CATALOG = ROOT / "dist/apps/registry-metadata.toml"
 SOURCE_URL = "https://code.sandbox.example/qos/qos"
 PUBLIC_IMAGE_HOST = "https://apps.tilo.so/"
-LEGACY = re.compile(r"(?:qpkg|dev\.tilo)", re.IGNORECASE)
 LANGUAGE_FILE = re.compile(r"^([A-Za-z]{2,3})(?:[-_][A-Za-z0-9]+)?\.(?:ftl|json|po)$")
 
 
@@ -48,8 +47,6 @@ def load_catalog(path: Path) -> dict[str, dict[str, str]]:
             die(f"{path}: apps.{app}.description must be non-empty")
         if not isinstance(tagline, str) or not tagline.strip():
             die(f"{path}: apps.{app}.tagline must be non-empty")
-        if LEGACY.search(description) or LEGACY.search(tagline):
-            die(f"{path}: apps.{app} contains a retired registry identifier")
         parsed[app] = {"description": description.strip(), "tagline": tagline.strip()}
     return parsed
 

@@ -504,7 +504,7 @@ mod native_process_tests {
         let temp = tempfile::tempdir().unwrap();
         let author = UserId("person-a".into());
         let first = NativeProcessHost::open_with(
-            &definition("dev.tilo.one"),
+            &definition("so.tilo.one"),
             environment(temp.path()),
             author.clone(),
         )
@@ -520,20 +520,20 @@ mod native_process_tests {
         drop(first);
 
         let reopened = NativeProcessHost::open_with(
-            &definition("dev.tilo.one"),
+            &definition("so.tilo.one"),
             environment(temp.path()),
             author.clone(),
         )
         .unwrap();
         let other = NativeProcessHost::open_with(
-            &definition("dev.tilo.two"),
+            &definition("so.tilo.two"),
             environment(temp.path()),
             author,
         )
         .unwrap();
         assert_eq!(reopened.host.device_id, device);
         assert_eq!(other.host.device_id, device);
-        assert_eq!(reopened.instance_id(), stable_instance_id("dev.tilo.one"));
+        assert_eq!(reopened.instance_id(), stable_instance_id("so.tilo.one"));
         assert_ne!(reopened.instance_id(), other.instance_id());
     }
 
@@ -554,7 +554,7 @@ mod native_process_tests {
             (None, crate::permissions::Role::Viewer),
         ] {
             let resolved = make(mode)
-                .resolve("dev.tilo.notes", &UserId("person-a".into()))
+                .resolve("so.tilo.notes", &UserId("person-a".into()))
                 .unwrap();
             assert!(resolved.workspace_scoped);
             assert_eq!(resolved.workspace_id, room);
@@ -568,19 +568,19 @@ mod native_process_tests {
         let temp = tempfile::tempdir().unwrap();
         let author = UserId("person-a".into());
         let mut mismatched = environment(temp.path());
-        mismatched.package_id = Some("dev.tilo.other".into());
+        mismatched.package_id = Some("so.tilo.other".into());
         assert!(matches!(
-            mismatched.resolve("dev.tilo.notes", &author),
+            mismatched.resolve("so.tilo.notes", &author),
             Err(LaunchError::BindingMismatch)
         ));
         let relative = NativeProcessEnvironment {
             xdg_data_home: Some(PathBuf::from("relative")),
             ..NativeProcessEnvironment::default()
         };
-        assert!(relative.resolve("dev.tilo.notes", &author).is_err());
+        assert!(relative.resolve("so.tilo.notes", &author).is_err());
         assert!(
             NativeProcessEnvironment::default()
-                .resolve("dev.tilo.notes", &author)
+                .resolve("so.tilo.notes", &author)
                 .is_err()
         );
         for invalid in [
@@ -597,12 +597,12 @@ mod native_process_tests {
                 ..environment(temp.path())
             },
         ] {
-            assert!(invalid.resolve("dev.tilo.notes", &author).is_err());
+            assert!(invalid.resolve("so.tilo.notes", &author).is_err());
         }
         std::fs::write(temp.path().join(DEVICE_ID_FILE), b"damaged\n").unwrap();
         assert!(
             environment(temp.path())
-                .resolve("dev.tilo.notes", &author)
+                .resolve("so.tilo.notes", &author)
                 .is_err()
         );
         assert_eq!(
