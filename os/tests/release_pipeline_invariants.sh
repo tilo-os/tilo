@@ -68,10 +68,10 @@ if grep -Fq 'memory=9g' "$workflows/build-kernel.yml" \
   && grep -Fq 'memory-swap=9g' "$workflows/build-kernel.yml" \
   && grep -Fq '            kernel_build_jobs: 6' "$workflows/build-kernel.yml" \
   && grep -Fq '            kernel_build_jobs: 4' "$workflows/build-kernel.yml" \
-  && grep -Fq 'KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}' "$workflows/build-kernel.yml"; then
-  ok 'native kernel BuildKit and compiler parallelism have explicit resource bounds'
+  && test "$(grep -Fc 'KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}' "$workflows/build-kernel.yml")" -eq 2; then
+  ok 'native kernel and Secure Boot probe share explicit resource bounds and cache keys'
 else
-  bad 'native kernel compilation can bypass its guest memory budget or use unbounded CPU parallelism'
+  bad 'native kernel builds can bypass resource bounds or diverge on their compilation cache key'
 fi
 
 if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
