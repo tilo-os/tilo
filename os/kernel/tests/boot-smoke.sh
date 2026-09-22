@@ -27,19 +27,39 @@ test -n "$interpreter"
 mkdir -p "$out/rootfs$(dirname "$interpreter")"
 cp -L "$interpreter" "$out/rootfs$interpreter"
 python3 - "$stage" "$release" "$out" <<'PY'
-import hashlib, json, struct, sys, tarfile
+import hashlib, json, struct, subprocess, sys, tarfile
 from pathlib import Path
 stage, release, output = sys.argv[1:]
 out = Path(output)
 with tarfile.open(stage) as archive:
     prefix = f"./lib/modules/{release}/"
     # Read only named regular files; never extract archive paths or symlinks.
-    for source, target in (("vmlinuz", "Image"),
-                           ("kernel/drivers/net/dummy.ko", "rootfs/signed.ko")):
-        member = archive.getmember(prefix + source)
-        if not member.isfile():
-            raise ValueError(f"not a regular file: {member.name}")
-        (out / target).write_bytes(archive.extractfile(member).read())
+    kernel = archive.getmember(prefix + "vmlinuz")
+    if not kernel.isfile():
+        raise ValueError(f"not a regular file: {kernel.name}")
+    (out / "Image").write_bytes(archive.extractfile(kernel).read())
+
+    module = None
+    for source in ("kernel/drivers/net/dummy.ko.zst",
+                   "kernel/drivers/net/dummy.ko"):
+        try:
+            candidate = archive.getmember(prefix + source)
+        except KeyError:
+            continue
+        if module is not None:
+            raise ValueError("multiple packaged dummy modules")
+        module = candidate
+    if module is None:
+        raise ValueError("packaged dummy module not found")
+    if not module.isfile():
+        raise ValueError(f"not a regular file: {module.name}")
+    data = archive.extractfile(module).read()
+    if module.name.endswith(".zst"):
+        data = subprocess.run(
+            ["zstd", "-q", "-d", "-c"], input=data,
+            stdout=subprocess.PIPE, check=True,
+        ).stdout
+    (out / "rootfs/signed.ko").write_bytes(data)
 data = (out / "rootfs/signed.ko").read_bytes()
 trailer = b"~Module signature appended~\n"
 if not data.endswith(trailer):
