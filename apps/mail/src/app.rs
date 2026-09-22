@@ -38,8 +38,6 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::ImageStore;
-use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::portal::{
@@ -49,12 +47,19 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{EmptyState, NavPane, NavShell, TextInput, Toggle, ToggleFace, Widget};
+use ui::widget::{
+    Button, ButtonFace, EmptyState, NavPane, NavShell, SegmentedFace, TextInput, Toggle,
+    ToggleFace, ToggleGroup, Widget,
+};
+use ui::{ColorCompat, ImageStore};
 
 use crate::account::{Account, AccountStore};
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::doc::MailDoc;
-use crate::draw::{elide, fill_rect, fill_round, stroke_round};
+use ui::surface::pill;
+
+use crate::draw::fill_rect;
+use crate::draw::{elide, fill_round, stroke_round};
 use crate::engine::{EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind};
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
@@ -88,13 +93,6 @@ const CONTEXT_MENU_HEADER_H: f64 = 42.0;
 const CONTEXT_MENU_ROW_H: f64 = 36.0;
 const CONTEXT_MENU_PAD: f64 = 6.0;
 
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
-
 struct EventContext<'a> {
     scale_factor: f64,
     modifiers: winit::event::Modifiers,
@@ -117,7 +115,7 @@ struct ContextMenu {
 
 /// A hit region in one of the app-owned overlays (setup sheet / context menu /
 /// first-run onboarding).
-#[derive(Clone)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OverlayHit {
     SetupField(usize),
     ToggleImapTls,
@@ -289,6 +287,10 @@ pub struct MailApp {
     /// this Arc-backed handle; typing never rebuilds the loaded-mail index.
     mail_search_provider: crate::search_provider::MailSearchProvider,
     nav: NavShell,
+    /// The theme the host last handed to `build_layout` / `draw`. The nav
+    /// shell resolves its breakpoint and pane widths from the theme (F1,
+    /// round two), so it is laid out against this — never a stock theme.
+    shell_theme: Theme,
     /// Retained first-run surface so the primary action uses the shared
     /// pointer, focus, keyboard and accessibility contract.
     first_run: EmptyState,
@@ -309,6 +311,18 @@ pub struct MailApp {
     // account-setup sheet (Settings owns this in production; offered in-app too)
     setup_open: bool,
     setup_inputs: Vec<TextInput>,
+    /// Sizes the account sheet is laid out with, measured on paint with the
+    /// styles the sheet paints with (the authored 1× rules until then), so
+    /// a larger text scale grows labels, fields and buttons instead of
+    /// painting them over each other.
+    setup_metrics: SetupMetrics,
+    /// `(renderer scale, theme scale, catalogue revision, OAuth label)` the
+    /// metrics were measured for; unchanged means the measurement is skipped.
+    setup_metrics_key: Option<(u32, u32, u64, String)>,
+    /// Scroll offset of the sheet's row band when the window is too short
+    /// for every row, and the largest offset that still shows the last row.
+    setup_scroll: f64,
+    setup_scroll_max: f64,
     setup_imap_tls: bool,
     setup_smtp_tls: bool,
     setup_editing: Option<usize>,
@@ -453,6 +467,7 @@ impl MailApp {
             shared,
             mail_search_provider,
             nav,
+            shell_theme: Theme::dark(),
             first_run: EmptyState::new("Welcome to Mail")
                 .with_icon(Icon::Mail)
                 .with_message("Add your email account to start reading and sending mail.")
@@ -466,6 +481,10 @@ impl MailApp {
             bulk_purge_confirmation: None,
             setup_open: false,
             setup_inputs: build_setup_inputs(&cfg),
+            setup_metrics: SetupMetrics::default(),
+            setup_metrics_key: None,
+            setup_scroll: 0.0,
+            setup_scroll_max: 0.0,
             setup_imap_tls: cfg.imap_tls,
             setup_smtp_tls: cfg.smtp_tls,
             setup_editing: None,
@@ -741,8 +760,31 @@ impl MailApp {
 
     // ---- nav layout -------------------------------------------------------
 
+    /// Adopt the host theme when its scales change; the layout below reads
+    /// `shell_theme`, so the shell and the panes judge narrow/wide the way
+    /// the host does at every text scale.
+    fn remember_shell_theme(&mut self, theme: &Theme) {
+        if self.shell_theme.text_scale.to_bits() != theme.text_scale.to_bits()
+            || self.shell_theme.ui_scale.to_bits() != theme.ui_scale.to_bits()
+        {
+            self.shell_theme = theme.clone();
+            self.dirty = true;
+        }
+    }
+
+    /// Publish the shell's collapse chip (if it shows one) so pane headers
+    /// centre on and clear the chip the shell actually laid out.
+    fn publish_shell_chip(&self) {
+        let chip = self.nav.collapse_button_rect();
+        self.shared.borrow_mut().shell_chip =
+            (chip.width() > 0.0 && chip.height() > 0.0).then_some(chip);
+    }
+
     fn publish_shell_flags(&self) {
-        let narrow = self.rect.width() < BREAKPOINT;
+        // The shell's breakpoint is the authored value resolved under the
+        // theme it was last built with; compare against that, not the
+        // constant, so the panes and the shell agree at every text scale.
+        let narrow = self.rect.width() < self.nav.breakpoint();
         let detail = self.nav.is_detail_shown();
         let sidebar_open = self.nav.is_sidebar_open();
         let mut st = self.shared.borrow_mut();
@@ -762,10 +804,11 @@ impl MailApp {
             .set_breakpoint(BREAKPOINT * f64::from(self.layout_theme.text_scale));
         self.publish_shell_flags();
         let (w, h) = (self.rect.width() as f32, self.rect.height() as f32);
-        let theme = self.layout_theme.clone();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = self.nav.build_layout(&mut taffy, &theme, &mut map);
+        let child = self
+            .nav
+            .build_layout(&mut taffy, &self.shell_theme, &mut map);
         let Ok(root) = taffy.new_with_children(
             Style {
                 size: TSize {
@@ -781,8 +824,10 @@ impl MailApp {
             // pass rather than panic if the taffy internals ever surprise us.
             return;
         };
+        // The throwaway renderer measures at the theme's scale, as the host's
+        // does, so the shell's measured bands match what will be painted.
         let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
+        tr.set_text_scale(self.shell_theme.text_scale);
         let measure_map = map.clone();
         let _ = taffy.compute_layout_with_measure(
             root,
@@ -810,6 +855,7 @@ impl MailApp {
             self.nav
                 .apply_layout(&taffy, child, Point::new(self.rect.x0, self.rect.y0));
         }
+        self.publish_shell_chip();
         // Compose + overlays sit within the whole app rect.
         self.compose.layout(self.rect);
         self.rebuild_overlay_hits();
@@ -1448,6 +1494,25 @@ impl MailApp {
         for (i, inp) in self.setup_inputs.iter_mut().enumerate() {
             inp.set_focus(which == Some(i));
         }
+        // Keyboard focus reaches every row: when the row band scrolls, bring
+        // the focused field into it (its rect is where the last layout put it,
+        // offset by the current scroll).
+        if self.setup_scroll_max > 0.0
+            && let Some(rect) = which
+                .and_then(|i| self.setup_input(i))
+                .map(TextInput::get_rect)
+        {
+            let p = self.overlay_panel_rect();
+            let band_top = p.y0 + self.setup_metrics.fields_top();
+            let band_bottom = p.y1 - self.setup_metrics.footer_band_h();
+            if rect.y0 < band_top {
+                self.setup_scroll -= band_top - rect.y0;
+            } else if rect.y1 > band_bottom {
+                self.setup_scroll += rect.y1 - band_bottom;
+            }
+            self.setup_scroll = self.setup_scroll.clamp(0.0, self.setup_scroll_max);
+            self.rebuild_overlay_hits();
+        }
         self.dirty = true;
     }
 
@@ -1472,6 +1537,28 @@ impl MailApp {
         }
     }
 
+    /// The OAuth sign-in button's label for the selected provider. One source
+    /// for the button painter and the measurement that sizes the button.
+    fn oauth_button_label(&self) -> String {
+        let prov = self.setup_provider.map_or_else(
+            || crate::i18n::t("mail-setup-oauth-provider-fallback"),
+            |p| super::oauth::OAuthProvider::label(p).to_string(),
+        );
+        crate::i18n::t_args(
+            "mail-setup-oauth-sign-in",
+            &[("provider", ui::i18n::ArgValue::from(prov))],
+        )
+    }
+
+    /// Record a setup-sheet hit for `rect` only when the whole rect lies in
+    /// the scrolling row `band`; a row scrolled past the band's edge is not
+    /// clickable (and is not painted), so it can never overlap the footer.
+    fn push_setup_hit(hits: &mut Vec<(Rect, OverlayHit)>, band: Rect, rect: Rect, hit: OverlayHit) {
+        if rect.y0 >= band.y0 - 0.5 && rect.y1 <= band.y1 + 0.5 {
+            hits.push((rect, hit));
+        }
+    }
+
     /// Lay field `i` out into `rect`, a silent no-op if the index is out of
     /// range.
     fn layout_setup_input(&mut self, i: usize, rect: Rect) {
@@ -1483,15 +1570,21 @@ impl MailApp {
     /// Lay out the IMAP and SMTP server rows (host | port | TLS toggle) of
     /// the setup sheet, starting at `y`, and register their hit regions.
     /// Part of [`Self::rebuild_overlay_hits`].
-    fn layout_server_rows(&mut self, fx: f64, rx: f64, mut y: f64, field_h: f64) {
-        let port_w = 60.0;
-        let tls_w = 58.0;
+    fn layout_server_rows(&mut self, fx: f64, rx: f64, mut y: f64, field_h: f64, band: Rect) {
+        // The port field holds up to five digits and follows the text
+        // scale; the TLS control is the toggle pill plus its measured label.
+        let (scale, tls_w) = (self.setup_metrics.scale, self.setup_metrics.tls_w);
+        let port_w = SETUP_PORT_W * scale;
         let host_w = (rx - fx) - 12.0 - port_w - 12.0 - tls_w;
 
         let imap_host = Rect::new(fx, y, fx + host_w, y + field_h);
         self.layout_setup_input(4, imap_host);
-        self.overlay_hits
-            .push((imap_host, OverlayHit::SetupField(4)));
+        Self::push_setup_hit(
+            &mut self.overlay_hits,
+            band,
+            imap_host,
+            OverlayHit::SetupField(4),
+        );
         let port_imap = Rect::new(
             imap_host.x1 + 12.0,
             y,
@@ -1499,17 +1592,29 @@ impl MailApp {
             y + field_h,
         );
         self.layout_setup_input(5, port_imap);
-        self.overlay_hits
-            .push((port_imap, OverlayHit::SetupField(5)));
+        Self::push_setup_hit(
+            &mut self.overlay_hits,
+            band,
+            port_imap,
+            OverlayHit::SetupField(5),
+        );
         let imap_tls = Rect::new(port_imap.x1 + 12.0, y, rx, y + field_h);
-        self.overlay_hits
-            .push((imap_tls, OverlayHit::ToggleImapTls));
-        y += field_h + 12.0;
+        Self::push_setup_hit(
+            &mut self.overlay_hits,
+            band,
+            imap_tls,
+            OverlayHit::ToggleImapTls,
+        );
+        y += field_h + SETUP_ROW_GAP;
 
         let smtp_host = Rect::new(fx, y, fx + host_w, y + field_h);
         self.layout_setup_input(6, smtp_host);
-        self.overlay_hits
-            .push((smtp_host, OverlayHit::SetupField(6)));
+        Self::push_setup_hit(
+            &mut self.overlay_hits,
+            band,
+            smtp_host,
+            OverlayHit::SetupField(6),
+        );
         let port_smtp = Rect::new(
             smtp_host.x1 + 12.0,
             y,
@@ -1517,11 +1622,19 @@ impl MailApp {
             y + field_h,
         );
         self.layout_setup_input(7, port_smtp);
-        self.overlay_hits
-            .push((port_smtp, OverlayHit::SetupField(7)));
+        Self::push_setup_hit(
+            &mut self.overlay_hits,
+            band,
+            port_smtp,
+            OverlayHit::SetupField(7),
+        );
         let smtp_tls = Rect::new(port_smtp.x1 + 12.0, y, rx, y + field_h);
-        self.overlay_hits
-            .push((smtp_tls, OverlayHit::ToggleSmtpTls));
+        Self::push_setup_hit(
+            &mut self.overlay_hits,
+            band,
+            smtp_tls,
+            OverlayHit::ToggleSmtpTls,
+        );
     }
 
     fn read_setup_config(&self) -> AccountConfig {
@@ -2007,8 +2120,13 @@ impl MailApp {
     fn overlay_panel_rect(&self) -> Rect {
         let r = self.rect;
         let w = 660.0_f64.min(r.width() - 48.0);
-        // The first-run welcome is shorter than the taller account form.
-        let target_h: f64 = if self.setup_open { 500.0 } else { 440.0 };
+        // The account form is as tall as its measured rows need (500 px at
+        // 1×); the first-run welcome is shorter.
+        let target_h: f64 = if self.setup_open {
+            self.setup_metrics.panel_h()
+        } else {
+            440.0
+        };
         let h = target_h.min(r.height() - 48.0);
         let cx = f64::midpoint(r.x0, r.x1);
         let y0 = r.y0 + (r.height() - h) / 2.0;
@@ -2018,60 +2136,94 @@ impl MailApp {
     fn rebuild_overlay_hits(&mut self) {
         self.overlay_hits.clear();
         if self.setup_open {
+            // Every band is its measured text plus token pads (the authored
+            // 1× band before the first paint), so 200% text grows the sheet
+            // instead of stacking labels, fields and buttons over each other.
+            let m = self.setup_metrics.clone();
             let p = self.overlay_panel_rect();
-            let pad = 26.0;
-            let lx = p.x0 + pad;
-            let rx = p.x1 - pad;
-            let field_h = 34.0;
-            let label_w = 120.0;
-            let fx = lx + label_w; // field left edge
-            let mut y = p.y0 + 76.0;
+            let lx = p.x0 + SETUP_PAD;
+            let rx = p.x1 - SETUP_PAD;
+            let field_h = m.field_h;
+            let fx = lx + m.label_col_w; // field left edge
+
+            // The rows live in the band between the subtitle and the footer.
+            // When the window is too short for the sheet's natural height the
+            // band scrolls (`setup_scroll`, wheel and focus driven) and a row
+            // outside it gets no hit rect, so a field can never share pixels
+            // with Save / Cancel — the footer resolves last in the hit list,
+            // and an overlap there would fire the wrong control.
+            let rows_top = p.y0 + m.fields_top();
+            let rows_bottom = p.y1 - m.footer_band_h();
+            let visible_h = (rows_bottom - rows_top).max(0.0);
+            self.setup_scroll_max = (m.rows_h() - visible_h).max(0.0);
+            self.setup_scroll = self.setup_scroll.clamp(0.0, self.setup_scroll_max);
+            let band = Rect::new(p.x0, rows_top, p.x1, rows_bottom);
+            let mut y = rows_top - self.setup_scroll;
 
             // Identity fields: Display name (0), Email (1), Username (2).
             for i in [0usize, 1, 2] {
                 let fr = Rect::new(fx, y, rx, y + field_h);
                 self.layout_setup_input(i, fr);
-                self.overlay_hits.push((fr, OverlayHit::SetupField(i)));
-                y += field_h + 12.0;
+                Self::push_setup_hit(&mut self.overlay_hits, band, fr, OverlayHit::SetupField(i));
+                y += field_h + SETUP_ROW_GAP;
             }
 
-            // Sign-in method pills.
-            let pill_w = 104.0;
+            // Sign-in method pills, each sized from the wider label.
+            let pill_w = m.pill_w;
+            // The two pills of one segmented control sit an `s2` apart.
+            let pill_gap = SETUP_PILL_GAP;
             let pw_pill = Rect::new(fx, y, fx + pill_w, y + field_h);
-            let oauth_pill =
-                Rect::new(fx + pill_w + 10.0, y, fx + pill_w * 2.0 + 10.0, y + field_h);
-            self.overlay_hits.push((pw_pill, OverlayHit::AuthPassword));
-            self.overlay_hits.push((oauth_pill, OverlayHit::AuthOAuth));
-            y += field_h + 12.0;
+            let oauth_pill = Rect::new(
+                fx + pill_w + pill_gap,
+                y,
+                fx + pill_w * 2.0 + pill_gap,
+                y + field_h,
+            );
+            Self::push_setup_hit(
+                &mut self.overlay_hits,
+                band,
+                pw_pill,
+                OverlayHit::AuthPassword,
+            );
+            Self::push_setup_hit(
+                &mut self.overlay_hits,
+                band,
+                oauth_pill,
+                OverlayHit::AuthOAuth,
+            );
+            y += field_h + SETUP_ROW_GAP;
 
             // Password field (3) OR the OAuth sign-in button.
             if self.setup_auth == crate::model::AuthMethod::Password {
                 let fr = Rect::new(fx, y, rx, y + field_h);
                 self.layout_setup_input(3, fr);
-                self.overlay_hits.push((fr, OverlayHit::SetupField(3)));
+                Self::push_setup_hit(&mut self.overlay_hits, band, fr, OverlayHit::SetupField(3));
             } else {
-                let btn = Rect::new(fx, y, fx + 240.0, y + field_h + 4.0);
-                self.overlay_hits.push((btn, OverlayHit::OAuthSignIn));
+                let btn = Rect::new(fx, y, fx + m.oauth_w, y + field_h + 4.0);
+                Self::push_setup_hit(&mut self.overlay_hits, band, btn, OverlayHit::OAuthSignIn);
             }
-            y += field_h + 20.0;
+            y += field_h + m.section_gap();
 
             // Server rows: host | port | TLS.
-            self.layout_server_rows(fx, rx, y, field_h);
+            self.layout_server_rows(fx, rx, y, field_h, band);
 
-            let by = p.y1 - 54.0;
+            // Footer: Save (and Remove, when editing) from the left, Cancel
+            // at the right, every button sized from its measured label.
+            let by = p.y1 - SETUP_FOOTER_PAD - m.btn_h;
             self.overlay_hits.push((
-                Rect::new(lx, by, lx + 168.0, by + 38.0),
+                Rect::new(lx, by, lx + m.save_w, by + m.btn_h),
                 OverlayHit::SetupSave,
             ));
             self.overlay_hits.push((
-                Rect::new(rx - 92.0, by, rx, by + 38.0),
+                Rect::new(rx - m.cancel_w, by, rx, by + m.btn_h),
                 OverlayHit::CancelSetup,
             ));
             // A destructive "Remove" affordance, only when editing an existing
             // account (never on the add flow).
             if self.setup_editing.is_some() {
+                let x0 = lx + m.save_w + SETUP_ROW_GAP;
                 self.overlay_hits.push((
-                    Rect::new(lx + 180.0, by, lx + 300.0, by + 38.0),
+                    Rect::new(x0, by, x0 + m.remove_w, by + m.btn_h),
                     OverlayHit::RemoveAccount,
                 ));
             }
@@ -2603,21 +2755,9 @@ impl MailApp {
         scene.fill(
             Fill::NonZero,
             t,
-            Color::from_rgba8(0, 0, 0, 80),
+            ui::chrome::panel_border(theme),
             None,
-            &RoundedRect::from_rect(
-                Rect::new(mr.x0 + 1.0, mr.y0 + 3.0, mr.x1 + 1.0, mr.y1 + 4.0),
-                10.0,
-            ),
-        );
-        fill_round(scene, t, mr, 10.0, c.surfaces.raised);
-        stroke_round(
-            scene,
-            t,
-            mr,
-            10.0,
-            1.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+            &ui::surface::edge_outline(mr, 10.0),
         );
         let (read, starred) = self
             .shared
@@ -2893,28 +3033,46 @@ impl MailApp {
         if !self.setup_open {
             return;
         }
+        // Measure with this frame's text scale and rebuild the sheet's rects
+        // from those sizes before painting, so what is painted (and hit-tested
+        // until the next layout) is the measured geometry even on a single
+        // headless frame.
+        // The labels and line boxes change only with the renderer's scale,
+        // the catalogue, or the provider (which picks the OAuth label); the
+        // dozen lookups and measures are skipped otherwise.
+        let oauth_label = self.oauth_button_label();
+        let key = (
+            tr.text_scale().to_bits(),
+            theme.text_scale.to_bits(),
+            ui::i18n::I18nManager::revision(),
+            oauth_label.clone(),
+        );
+        if self.setup_metrics_key.as_ref() != Some(&key) {
+            self.setup_metrics_key = Some(key);
+            let measured = SetupMetrics::measure(tr, theme, &oauth_label);
+            if self.setup_metrics != measured {
+                self.setup_metrics = measured;
+                self.rebuild_overlay_hits();
+            }
+        }
         let c = &theme.tokens.colors;
         fill_rect(scene, t, self.rect, c.surfaces.overlay);
         let p = self.overlay_panel_rect();
-        // Soft drop shadow so the sheet floats above the dimmed mailbox.
-        scene.fill(
-            Fill::NonZero,
+        // The sheet floats above the dimmed mailbox on the Panel tier of the
+        // elevation ladder (HIG §9.1 / §9.3): the shadow is the sheet's own
+        // shape, blurred, not a solid rect nudged down (a grey bar on light).
+        ui::surface::shadow(scene, t, p, 16.0, &theme.tokens.elevation.e4);
+        // The sheet is a floating Panel: derived panel border, crisp on the
+        // outermost pixel row (HIG §9.5).
+        pill(scene, t, p, c.surfaces.raised, None, Some(16.0));
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
             t,
-            Color::from_rgba8(0, 0, 0, 90),
+            ui::chrome::panel_border(theme),
             None,
-            &RoundedRect::from_rect(Rect::new(p.x0, p.y0 + 6.0, p.x1, p.y1 + 10.0), 16.0),
+            &ui::surface::edge_outline(p, 16.0),
         );
-        fill_round(scene, t, p, 16.0, c.surfaces.raised);
-        stroke_round(
-            scene,
-            t,
-            p,
-            16.0,
-            1.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-        );
-        let pad = 26.0;
-        let lx = p.x0 + pad;
+        let lx = p.x0 + SETUP_PAD;
         let last_mouse = self.shared.borrow().last_mouse;
         // Editing reads as scoped to a specific account (its address as the
         // subtitle); adding is its own clearly-separate flow.
@@ -2929,54 +3087,56 @@ impl MailApp {
             })
         });
         let (heading, subtitle) = match &editing_email {
-            Some(email) => ("Account settings", email.clone()),
+            Some(email) => (crate::i18n::t("mail-setup-heading-edit"), email.clone()),
             None => (
-                "Add account",
-                "Enter your email — server details fill in automatically.".to_string(),
+                crate::i18n::t("mail-setup-heading-add"),
+                crate::i18n::t("mail-setup-subtitle-add"),
             ),
         };
+        // Heading and subtitle stack from their measured line boxes — the
+        // same rule `SetupMetrics::fields_top` placed the first field with.
+        let heading_y = p.y0 + SETUP_HEADING_TOP;
         tr.draw_text_weighted(
             scene,
-            heading,
-            17.0,
+            &heading,
+            SETUP_HEADING_SIZE,
             c.text_primary,
-            t * Affine::translate((lx, p.y0 + 20.0)),
+            t * Affine::translate((lx, heading_y)),
             None,
             TextWeight::Bold,
         );
         tr.draw_text(
             scene,
             &subtitle,
-            11.5,
+            SETUP_SUBTITLE_SIZE,
             c.text_dim,
-            t * Affine::translate((lx, p.y0 + 44.0)),
+            t * Affine::translate((
+                lx,
+                heading_y + self.setup_metrics.heading_h + self.setup_metrics.s1,
+            )),
             None,
         );
 
-        let smtp_row_bottom = self.draw_setup_fields(
-            &mut PaintContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            presence,
-            p,
-            lx,
+        // The rows paint inside their band: a row scrolled past its edge is
+        // clipped, exactly as its hit rect was dropped.
+        let band = Rect::new(
+            p.x0,
+            p.y0 + self.setup_metrics.fields_top(),
+            p.x1,
+            p.y1 - self.setup_metrics.footer_band_h(),
         );
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &band,
+        );
+        self.draw_setup_fields(scene, t, tr, theme, presence, lx);
         self.draw_setup_auth_method(scene, t, tr, theme, lx, last_mouse);
         self.draw_setup_tls_toggles(scene, t, tr, theme);
-        self.draw_setup_footer(
-            &mut PaintContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            lx,
-            last_mouse,
-            smtp_row_bottom,
-        );
+        scene.pop_layer();
+        self.draw_setup_footer(scene, t, tr, theme, lx, last_mouse, p);
     }
 
     /// The identity + server fields (left-column labels, the "Port" caption,
@@ -2985,26 +3145,16 @@ impl MailApp {
     /// autoconfig hint sits just below.
     fn draw_setup_fields(
         &mut self,
-        ctx: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         presence: &PresenceCtx,
-        p: Rect,
         lx: f64,
-    ) -> f64 {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
+    ) {
         let c = &theme.tokens.colors;
-        let labels = [
-            "Display name",
-            "Email",
-            "Username",
-            "Password",
-            "IMAP host",
-            "",
-            "SMTP host",
-            "",
-        ];
+        let m = &self.setup_metrics;
+        let labels = &m.labels;
         let cfg_errs: std::collections::HashSet<&str> = self
             .read_setup_config()
             .validate()
@@ -3022,38 +3172,40 @@ impl MailApp {
         // Field labels (left column). The single border + focus ring is drawn
         // by each TextInput itself — no second app-drawn border stacks on top.
         let mut shown: Vec<usize> = Vec::new();
-        let mut smtp_row_bottom = p.y0;
         for (rect, hit) in &self.overlay_hits {
             let OverlayHit::SetupField(i) = hit else {
                 continue;
             };
             let i = *i;
             shown.push(i);
-            if i == 6 {
-                smtp_row_bottom = rect.y1;
-            }
             if let Some(label) = labels.get(i).filter(|l| !l.is_empty()) {
                 let col = if err_for(i) {
                     c.semantic.danger
                 } else {
                     c.text_dim
                 };
+                // Centred on the field's measured line box, not on a fixed
+                // offset from the field's top.
                 tr.draw_text(
                     scene,
                     label,
-                    12.5,
+                    SETUP_LABEL_SIZE,
                     col,
-                    t * Affine::translate((lx, rect.y0 + 9.0)),
+                    t * Affine::translate((lx, rect.center().y - m.label_h / 2.0)),
                     None,
                 );
             }
             if i == 5 {
+                // The "Port" caption's measured box ends one `s1` above its field.
                 tr.draw_text(
                     scene,
-                    "Port",
-                    11.0,
+                    &crate::i18n::t("mail-setup-label-port"),
+                    SETUP_CAPTION_SIZE,
                     c.text_dim,
-                    t * Affine::translate((rect.x0, rect.y0 - 15.0)),
+                    t * Affine::translate((
+                        rect.x0,
+                        rect.y0 - m.caption_h - f64::from(theme.tokens.spacing.s1),
+                    )),
                     None,
                 );
             }
@@ -3063,7 +3215,6 @@ impl MailApp {
                 inp.draw(scene, t, tr, theme, presence);
             }
         }
-        smtp_row_bottom
     }
 
     /// The sign-in method pills (Password / OAuth) and, in place of the
@@ -3093,64 +3244,47 @@ impl MailApp {
         last_mouse: Point,
     ) {
         let c = &theme.tokens.colors;
-        // Sign-in method pills + label.
-        for (rect, hit) in &self.overlay_hits {
-            let (label, active) = match hit {
-                OverlayHit::AuthPassword => (
-                    "Password",
-                    self.setup_auth == crate::model::AuthMethod::Password,
-                ),
-                OverlayHit::AuthOAuth => {
-                    ("OAuth", self.setup_auth == crate::model::AuthMethod::OAuth)
-                }
-                _ => continue,
-            };
-            if matches!(hit, OverlayHit::AuthPassword) {
-                tr.draw_text(
-                    scene,
-                    "Sign-in",
-                    12.5,
-                    c.text_dim,
-                    t * Affine::translate((lx, rect.y0 + 9.0)),
-                    None,
-                );
-            }
-            let hov = rect.contains(last_mouse);
-            let bg = if active {
-                c.accent[5].with_alpha_factor(0.22)
-            } else if hov {
-                c.lift(0.72)
-            } else {
-                c.lift(0.35)
-            };
-            fill_round(scene, t, *rect, 8.0, bg);
-            stroke_round(
-                scene,
-                t,
-                *rect,
-                8.0,
-                1.0,
-                if active {
-                    c.accent[5]
-                } else {
-                    ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
-                },
-            );
-            let col = if active { c.text_primary } else { c.neutral[7] };
-            let (w, _) = tr.measure_weighted(label, 12.5, None, TextWeight::Medium);
-            tr.draw_text_weighted(
-                scene,
-                label,
-                12.5,
-                col,
-                t * Affine::translate((
-                    f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
-                    rect.y0 + 9.0,
-                )),
-                None,
-                TextWeight::Medium,
-            );
-        }
+        let m = &self.setup_metrics;
+        // The two sign-in pills are one segmented control painted by the
+        // shared `SegmentedFace` (selected fill, hover, labels centred on
+        // their measured line boxes), over the rects the hit list owns.
+        let find = |hit: OverlayHit| {
+            self.overlay_hits
+                .iter()
+                .find(|(_, h)| *h == hit)
+                .map(|(r, _)| *r)
+        };
+        let (Some(pw), Some(oauth)) = (find(OverlayHit::AuthPassword), find(OverlayHit::AuthOAuth))
+        else {
+            return;
+        };
+        let sign_in = crate::i18n::t("mail-setup-label-sign-in");
+        tr.draw_text(
+            scene,
+            &sign_in,
+            SETUP_LABEL_SIZE,
+            c.text_dim,
+            t * Affine::translate((lx, pw.center().y - m.label_h / 2.0)),
+            None,
+        );
+        let segments = [pw, oauth];
+        let labels = [
+            crate::i18n::t("mail-setup-auth-password"),
+            crate::i18n::t("mail-setup-auth-oauth"),
+        ];
+        let label_refs = [labels[0].as_str(), labels[1].as_str()];
+        let selected = usize::from(self.setup_auth == crate::model::AuthMethod::OAuth);
+        let hovered = segments.iter().position(|r| r.contains(last_mouse));
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&segments, &label_refs, selected)
+                .pill()
+                .hovered(hovered)
+                .text_size(SETUP_PILL_SIZE),
+        );
     }
 
     /// The OAuth sign-in button shown in place of the password field, with
@@ -3165,31 +3299,27 @@ impl MailApp {
         last_mouse: Point,
     ) {
         let c = &theme.tokens.colors;
-        // OAuth sign-in button (shown in place of the password field).
+        let m = &self.setup_metrics;
+        // OAuth sign-in button (shown in place of the password field): the
+        // shared primary button face over the rect the hit list owns. The
+        // label interpolates the provider, so it is resolved here and handed
+        // over as text — a key alone could not carry the argument.
         for (rect, hit) in &self.overlay_hits {
             if !matches!(hit, OverlayHit::OAuthSignIn) {
                 continue;
             }
-            let prov = self
-                .setup_provider
-                .map_or("your provider", super::oauth::OAuthProvider::label);
-            let hov = rect.contains(last_mouse);
-            fill_round(
+            let label = self.oauth_button_label();
+            Button::paint(
                 scene,
                 t,
-                *rect,
-                9.0,
-                if hov { c.accent[4] } else { c.accent[5] },
-            );
-            let label = format!("Sign in with {prov}");
-            tr.draw_text_weighted(
-                scene,
-                &label,
-                13.0,
-                Color::WHITE,
-                t * Affine::translate((rect.x0 + 16.0, rect.y0 + 11.0)),
-                None,
-                TextWeight::Semibold,
+                tr,
+                theme,
+                &ButtonFace::new(*rect, &label)
+                    .primary()
+                    .radius(9.0)
+                    .text_size(SETUP_BUTTON_SIZE)
+                    .weight(TextWeight::Semibold)
+                    .hovered(rect.contains(last_mouse)),
             );
             // Deployment details never belong in an account form. If this
             // installation has no OAuth client, explain the usable alternative
@@ -3199,16 +3329,19 @@ impl MailApp {
                 .and_then(super::oauth::OAuthProvider::client_id)
                 .is_some();
             let note = if has_client {
-                "Opens your browser to authorize (OAuth2 + PKCE).".to_string()
+                crate::i18n::t("mail-setup-oauth-note-available")
             } else {
-                "Not available in this installation · Password sign-in is available.".to_string()
+                crate::i18n::t("mail-setup-oauth-note-unavailable")
             };
             tr.draw_text(
                 scene,
                 &note,
-                10.5,
+                SETUP_NOTE_SIZE,
                 c.text_dim,
-                t * Affine::translate((rect.x1 + 12.0, rect.y0 + 12.0)),
+                t * Affine::translate((
+                    rect.x1 + f64::from(theme.tokens.spacing.s3),
+                    rect.center().y - m.note_h / 2.0,
+                )),
                 None,
             );
         }
@@ -3223,14 +3356,27 @@ impl MailApp {
         theme: &Theme,
     ) {
         let c = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
+        let m = &self.setup_metrics;
         let last_mouse = self.shared.borrow().last_mouse;
+        let label = crate::i18n::t("mail-setup-tls");
         for (rect, hit) in &self.overlay_hits {
-            let (on, label) = match hit {
-                OverlayHit::ToggleImapTls => (self.setup_imap_tls, "TLS"),
-                OverlayHit::ToggleSmtpTls => (self.setup_smtp_tls, "TLS"),
+            let on = match hit {
+                OverlayHit::ToggleImapTls => self.setup_imap_tls,
+                OverlayHit::ToggleSmtpTls => self.setup_smtp_tls,
                 _ => continue,
             };
-            let pill = Rect::new(rect.x0, rect.y0 + 6.0, rect.x0 + 40.0, rect.y0 + 28.0);
+            // The toggle pill scales with the text and sits on the row's
+            // centre line; its label centres on the same line from its
+            // measured box.
+            let cy = rect.center().y;
+            let (pill_w, pill_h) = (SETUP_TLS_PILL_W * m.scale, SETUP_TLS_PILL_H * m.scale);
+            let pill = Rect::new(
+                rect.x0,
+                cy - pill_h / 2.0,
+                rect.x0 + pill_w,
+                cy + pill_h / 2.0,
+            );
             Toggle::paint(
                 scene,
                 t,
@@ -3239,10 +3385,10 @@ impl MailApp {
             );
             tr.draw_text(
                 scene,
-                label,
+                &label,
                 12.0,
                 c.neutral[8],
-                t * Affine::translate((pill.x1 + 8.0, rect.y0 + 10.0)),
+                t * Affine::translate((pill.x1 + f64::from(sp.s2), cy - m.tls_h / 2.0)),
                 None,
             );
         }
@@ -3252,16 +3398,15 @@ impl MailApp {
     /// buttons at the bottom of the sheet. Part of [`Self::draw_setup`].
     fn draw_setup_footer(
         &self,
-        ctx: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         lx: f64,
         last_mouse: Point,
-        smtp_row_bottom: f64,
+        p: Rect,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let t = ctx.transform;
-        self.draw_setup_autoconfig_hint(scene, t, tr, theme, lx, smtp_row_bottom);
+        self.draw_setup_autoconfig_hint(scene, t, tr, theme, lx, p);
         self.draw_setup_footer_buttons(scene, t, tr, theme, last_mouse);
     }
 
@@ -3274,38 +3419,37 @@ impl MailApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         lx: f64,
-        smtp_row_bottom: f64,
+        p: Rect,
     ) {
         let c = &theme.tokens.colors;
-        let hint_y = smtp_row_bottom + 18.0;
+        let m = &self.setup_metrics;
+        // Icon and text share one centre line. The hint is the top of the
+        // footer band (`s6` above the buttons), so it stays put while the row
+        // band above it scrolls; the icon is the small icon token, text-scaled.
+        let icon = f64::from(theme.tokens.metrics.icon_sm) * m.scale;
+        let footer_top = p.y1 - SETUP_FOOTER_PAD - m.btn_h;
+        let hint_cy = footer_top - m.s6 - m.hint_h / 2.0;
+        let icon_rect = Rect::new(lx, hint_cy - icon / 2.0, lx + icon, hint_cy + icon / 2.0);
+        let text_x = icon_rect.x1 + f64::from(theme.tokens.spacing.s2);
+        let text_y = hint_cy - m.hint_h / 2.0;
         if let Some(msg) = &self.setup_error {
-            Icon::Ban.draw(
-                scene,
-                t,
-                Rect::new(lx, hint_y - 1.0, lx + 15.0, hint_y + 14.0),
-                c.semantic.danger,
-            );
+            Icon::Ban.draw(scene, t, icon_rect, c.semantic.danger);
             tr.draw_text(
                 scene,
                 msg,
-                11.5,
+                SETUP_HINT_SIZE,
                 c.semantic.danger,
-                t * Affine::translate((lx + 22.0, hint_y + 1.0)),
+                t * Affine::translate((text_x, text_y)),
                 None,
             );
         } else {
-            Icon::Check.draw(
-                scene,
-                t,
-                Rect::new(lx, hint_y - 1.0, lx + 15.0, hint_y + 14.0),
-                c.semantic.success,
-            );
+            Icon::Check.draw(scene, t, icon_rect, c.semantic.success);
             tr.draw_text(
                 scene,
-                "Credentials are verified before the account is saved.",
-                11.5,
+                &crate::i18n::t("mail-setup-hint-verified"),
+                SETUP_HINT_SIZE,
                 c.text_dim,
-                t * Affine::translate((lx + 22.0, hint_y + 1.0)),
+                t * Affine::translate((text_x, text_y)),
                 None,
             );
         }
@@ -3321,98 +3465,33 @@ impl MailApp {
         theme: &Theme,
         last_mouse: Point,
     ) {
-        let c = &theme.tokens.colors;
-        // Save / Cancel.
+        // Save / Remove / Cancel: the shared button faces (primary, danger,
+        // neutral) over the rects the hit list owns — one look, one measured
+        // label centring, at every text scale.
         for (rect, hit) in &self.overlay_hits {
-            match hit {
-                OverlayHit::SetupSave => {
-                    let hov = rect.contains(last_mouse);
-                    fill_round(
-                        scene,
-                        t,
-                        *rect,
-                        9.0,
-                        if hov { c.accent[4] } else { c.accent[5] },
-                    );
-                    let label = if self.setup_validation.is_some() {
-                        "Verifying…"
-                    } else if self.setup_discovery.is_some() {
-                        "Finding provider…"
-                    } else {
-                        "Save & verify"
-                    };
-                    let (w, _) = tr.measure_weighted(label, 13.5, None, TextWeight::Semibold);
-                    tr.draw_text_weighted(
-                        scene,
-                        label,
-                        13.5,
-                        Color::WHITE,
-                        t * Affine::translate((
-                            f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
-                            rect.y0 + 11.0,
-                        )),
-                        None,
-                        TextWeight::Semibold,
-                    );
+            let key = match hit {
+                OverlayHit::SetupSave if self.setup_validation.is_some() => "mail-setup-verifying",
+                OverlayHit::SetupSave if self.setup_discovery.is_some() => {
+                    "mail-setup-finding-provider"
                 }
-                OverlayHit::CancelSetup => {
-                    let hov = rect.contains(last_mouse);
-                    fill_round(
-                        scene,
-                        t,
-                        *rect,
-                        9.0,
-                        if hov { c.lift(0.72) } else { c.lift(0.35) },
-                    );
-                    let (w, _) = tr.measure("Cancel", 13.0, None);
-                    tr.draw_text(
-                        scene,
-                        "Cancel",
-                        13.0,
-                        c.neutral[8],
-                        t * Affine::translate((
-                            f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
-                            rect.y0 + 11.0,
-                        )),
-                        None,
-                    );
-                }
-                OverlayHit::RemoveAccount => {
-                    let hov = rect.contains(last_mouse);
-                    fill_round(
-                        scene,
-                        t,
-                        *rect,
-                        9.0,
-                        if hov {
-                            c.semantic.danger.with_alpha_factor(0.22)
-                        } else {
-                            c.lift(0.35)
-                        },
-                    );
-                    stroke_round(
-                        scene,
-                        t,
-                        *rect,
-                        9.0,
-                        1.0,
-                        c.semantic.danger.with_alpha_factor(0.5),
-                    );
-                    let (w, _) = tr.measure("Remove", 13.0, None);
-                    tr.draw_text(
-                        scene,
-                        "Remove",
-                        13.0,
-                        c.semantic.danger,
-                        t * Affine::translate((
-                            f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
-                            rect.y0 + 11.0,
-                        )),
-                        None,
-                    );
-                }
-                _ => {}
-            }
+                OverlayHit::SetupSave => "mail-setup-save",
+                OverlayHit::CancelSetup => "mail-setup-cancel",
+                OverlayHit::RemoveAccount => "mail-setup-remove",
+                _ => continue,
+            };
+            // The face resolves the key itself; a resolved string would be
+            // translated a second time (and pseudo-expanded twice).
+            let face = ButtonFace::new(*rect, key)
+                .radius(9.0)
+                .text_size(SETUP_BUTTON_SIZE)
+                .weight(TextWeight::Semibold)
+                .hovered(rect.contains(last_mouse));
+            let face = match hit {
+                OverlayHit::SetupSave => face.primary(),
+                OverlayHit::RemoveAccount => face.danger(),
+                _ => face,
+            };
+            Button::paint(scene, t, tr, theme, &face);
         }
     }
 
@@ -3472,6 +3551,239 @@ impl MailApp {
             AccountsPersist::Sandbox(dir) => Some(dir.path().to_path_buf()),
             AccountsPersist::Disabled => None,
         }
+    }
+}
+
+/// Catalogue keys of the account sheet's field labels, indexed like
+/// [`build_setup_inputs`] (the two port fields carry a "Port" caption above
+/// them instead of a left-column label).
+const SETUP_LABEL_KEYS: [&str; 8] = [
+    "mail-setup-label-display-name",
+    "mail-setup-label-email",
+    "mail-setup-label-username",
+    "mail-setup-label-password",
+    "mail-setup-label-imap-host",
+    "",
+    "mail-setup-label-smtp-host",
+    "",
+];
+
+/// Renderer-relative text sizes of the account sheet, shared by measurement
+/// and paint.
+const SETUP_HEADING_SIZE: f32 = 17.0;
+const SETUP_SUBTITLE_SIZE: f32 = 11.5;
+const SETUP_LABEL_SIZE: f32 = 12.5;
+const SETUP_CAPTION_SIZE: f32 = 11.0;
+const SETUP_PILL_SIZE: f32 = 12.5;
+const SETUP_BUTTON_SIZE: f32 = 13.0;
+const SETUP_NOTE_SIZE: f32 = 10.5;
+const SETUP_HINT_SIZE: f32 = 11.5;
+/// Authored 1× sizes the measured rules never go below.
+const SETUP_FIELD_MIN_H: f64 = 34.0;
+const SETUP_LABEL_COL_MIN_W: f64 = 120.0;
+const SETUP_PILL_MIN_W: f64 = 104.0;
+const SETUP_OAUTH_MIN_W: f64 = 240.0;
+const SETUP_BUTTON_MIN_H: f64 = 38.0;
+const SETUP_PORT_W: f64 = 60.0;
+const SETUP_TLS_PILL_W: f64 = 40.0;
+const SETUP_TLS_PILL_H: f64 = 22.0;
+const SETUP_PAD: f64 = 26.0;
+/// Top inset of the heading, and the gaps between field rows, under the
+/// sign-in row, under the SMTP row and around the hint.
+const SETUP_HEADING_TOP: f64 = 20.0;
+const SETUP_ROW_GAP: f64 = 12.0;
+/// Gap between the two sign-in pills (`s2`; the hit list is rebuilt without
+/// a theme, so the base step is spelled out).
+const SETUP_PILL_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s2 as f64;
+const SETUP_SECTION_GAP: f64 = 20.0;
+const SETUP_HINT_GAP: f64 = 18.0;
+const SETUP_FOOTER_PAD: f64 = 16.0;
+
+/// Sizes the account sheet is laid out with. Measured on paint with the
+/// styles the sheet paints with; `Default` is the authored 1× rule set used
+/// before the first paint and by the geometry tests (which never paint).
+#[derive(Clone, Debug, PartialEq)]
+struct SetupMetrics {
+    scale: f64,
+    /// The theme's spacing steps the bands are padded with. The hit list is
+    /// rebuilt without a theme, so it reads the steps the last paint measured
+    /// against (the base tokens before the first paint) — under a custom
+    /// theme or a UI scale the reserved bands and the painted ones agree.
+    s1: f64,
+    s4: f64,
+    s6: f64,
+    /// The field labels, resolved once per measurement (indexed like
+    /// [`SETUP_LABEL_KEYS`]; empty for the port fields).
+    labels: Vec<String>,
+    heading_h: f64,
+    subtitle_h: f64,
+    label_h: f64,
+    /// Width of the left label column: the widest label plus `s3`.
+    label_col_w: f64,
+    caption_h: f64,
+    /// A field's height: the shared input's line box plus `s2` each side.
+    field_h: f64,
+    /// Sign-in pill width: the wider label plus `s4` each side.
+    pill_w: f64,
+    /// OAuth sign-in button width: its label plus `s4` each side.
+    oauth_w: f64,
+    note_h: f64,
+    hint_h: f64,
+    /// Footer button height and the three button widths (label + `s6` each
+    /// side).
+    btn_h: f64,
+    save_w: f64,
+    cancel_w: f64,
+    remove_w: f64,
+    /// Width of the TLS control: the toggle pill, `s2`, and its label.
+    tls_w: f64,
+    tls_h: f64,
+}
+
+impl Default for SetupMetrics {
+    fn default() -> Self {
+        // 1× line boxes (size × 1.25), base tokens and the authored 1× widths.
+        Self {
+            scale: 1.0,
+            s1: 4.0,
+            s4: 16.0,
+            s6: 24.0,
+            labels: Self::resolve_labels(),
+            heading_h: 21.25,
+            subtitle_h: 14.375,
+            label_h: 15.625,
+            label_col_w: SETUP_LABEL_COL_MIN_W,
+            caption_h: 13.75,
+            field_h: SETUP_FIELD_MIN_H,
+            pill_w: SETUP_PILL_MIN_W,
+            oauth_w: SETUP_OAUTH_MIN_W,
+            note_h: 13.125,
+            hint_h: 14.375,
+            btn_h: SETUP_BUTTON_MIN_H,
+            save_w: 168.0,
+            cancel_w: 92.0,
+            remove_w: 120.0,
+            tls_w: 58.0,
+            tls_h: 15.0,
+        }
+    }
+}
+
+impl SetupMetrics {
+    /// The field labels from the catalogue, indexed like [`SETUP_LABEL_KEYS`].
+    fn resolve_labels() -> Vec<String> {
+        SETUP_LABEL_KEYS
+            .iter()
+            .map(|k| {
+                if k.is_empty() {
+                    String::new()
+                } else {
+                    crate::i18n::t(k)
+                }
+            })
+            .collect()
+    }
+
+    /// Measure every band with the style it paints with. `oauth_label` is
+    /// the current "Sign in with …" label.
+    fn measure(tr: &mut TextRenderer, theme: &Theme, oauth_label: &str) -> Self {
+        let sp = &theme.tokens.spacing;
+        let scale = f64::from(theme.text_scale).max(1.0);
+        let labels = Self::resolve_labels();
+        let line = |tr: &mut TextRenderer, size: f32, weight: TextWeight| {
+            f64::from(tr.measure_weighted("Ag", size, None, weight).1)
+        };
+        let width = |tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight| {
+            f64::from(tr.measure_weighted(text, size, None, weight).0)
+        };
+        let sign_in = crate::i18n::t("mail-setup-label-sign-in");
+        let widest_label = labels
+            .iter()
+            .chain(std::iter::once(&sign_in))
+            .filter(|l| !l.is_empty())
+            .map(|l| width(tr, l, SETUP_LABEL_SIZE, TextWeight::Regular))
+            .fold(0.0_f64, f64::max);
+        let pill_label = [
+            crate::i18n::t("mail-setup-auth-password"),
+            crate::i18n::t("mail-setup-auth-oauth"),
+        ]
+        .iter()
+        .map(|l| width(tr, l, SETUP_PILL_SIZE, TextWeight::Semibold))
+        .fold(0.0_f64, f64::max);
+        let (_, input_line) = tr.measure("Ag", 14.0, None);
+        let btn_w = |tr: &mut TextRenderer, key: &str| {
+            width(
+                tr,
+                &crate::i18n::t(key),
+                SETUP_BUTTON_SIZE,
+                TextWeight::Semibold,
+            ) + 2.0 * f64::from(sp.s6)
+        };
+        let (tls_w, tls_h) = tr.measure(&crate::i18n::t("mail-setup-tls"), 12.0, None);
+        Self {
+            scale,
+            s1: f64::from(sp.s1),
+            s4: f64::from(sp.s4),
+            s6: f64::from(sp.s6),
+            labels,
+            heading_h: line(tr, SETUP_HEADING_SIZE, TextWeight::Bold),
+            subtitle_h: line(tr, SETUP_SUBTITLE_SIZE, TextWeight::Regular),
+            label_h: line(tr, SETUP_LABEL_SIZE, TextWeight::Regular),
+            label_col_w: (widest_label + f64::from(sp.s3)).max(SETUP_LABEL_COL_MIN_W),
+            caption_h: line(tr, SETUP_CAPTION_SIZE, TextWeight::Regular),
+            field_h: (f64::from(input_line) + 2.0 * f64::from(sp.s2)).max(SETUP_FIELD_MIN_H),
+            pill_w: (pill_label + 2.0 * f64::from(sp.s4)).max(SETUP_PILL_MIN_W),
+            oauth_w: (width(tr, oauth_label, SETUP_BUTTON_SIZE, TextWeight::Semibold)
+                + 2.0 * f64::from(sp.s4))
+            .max(SETUP_OAUTH_MIN_W),
+            note_h: line(tr, SETUP_NOTE_SIZE, TextWeight::Regular),
+            hint_h: line(tr, SETUP_HINT_SIZE, TextWeight::Regular),
+            btn_h: (line(tr, SETUP_BUTTON_SIZE, TextWeight::Semibold) + 2.0 * f64::from(sp.s2))
+                .max(SETUP_BUTTON_MIN_H),
+            save_w: btn_w(tr, "mail-setup-save")
+                .max(btn_w(tr, "mail-setup-verifying"))
+                .max(btn_w(tr, "mail-setup-finding-provider"))
+                .max(168.0),
+            cancel_w: btn_w(tr, "mail-setup-cancel").max(92.0),
+            remove_w: btn_w(tr, "mail-setup-remove").max(120.0),
+            tls_w: SETUP_TLS_PILL_W * scale + f64::from(sp.s2) + f64::from(tls_w),
+            tls_h: f64::from(tls_h),
+        }
+    }
+
+    /// Top of the first field row inside the sheet: heading, `s1`, subtitle
+    /// and the `s4` under them.
+    fn fields_top(&self) -> f64 {
+        SETUP_HEADING_TOP + self.heading_h + self.s1 + self.subtitle_h + self.s4
+    }
+
+    /// Gap between the password row and the server rows: the authored 20 px,
+    /// or the "Port" caption's measured box plus the `s1` it sits above its
+    /// field when that is taller (17.75 at 1×, so the authored gap holds;
+    /// 31.5 at 200 %), so the caption never paints under the password field.
+    fn section_gap(&self) -> f64 {
+        SETUP_SECTION_GAP.max(self.caption_h + self.s1)
+    }
+
+    /// Height of every field row the sheet stacks (password sign-in, the
+    /// taller of the two flows).
+    fn rows_h(&self) -> f64 {
+        let row = self.field_h + SETUP_ROW_GAP;
+        3.0 * row // identity fields
+            + row // sign-in pills
+            + self.field_h + self.section_gap() // password / OAuth
+            + row + self.field_h // IMAP + SMTP rows
+    }
+
+    /// Height of the band under the rows: the hint, `s6`, the footer
+    /// buttons and the bottom pad.
+    fn footer_band_h(&self) -> f64 {
+        SETUP_HINT_GAP + self.hint_h + self.s6 + self.btn_h + SETUP_FOOTER_PAD
+    }
+
+    /// The sheet's natural height — every row plus the hint and footer.
+    fn panel_h(&self) -> f64 {
+        self.fields_top() + self.rows_h() + self.footer_band_h()
     }
 }
 
@@ -4778,6 +5090,7 @@ impl Widget for MailApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.remember_shell_theme(theme);
         // `apply_layout` has no theme parameter, yet Mail has an inner
         // NavShell layout pass after its outer rect is known. Preserve the
         // host theme so both layout trees and their text measurement agree.
@@ -4860,6 +5173,7 @@ impl Widget for MailApp {
         presence: &PresenceCtx,
         permissions: &PermissionContext,
     ) {
+        self.remember_shell_theme(theme);
         let c = &theme.tokens.colors;
         fill_rect(scene, t, self.rect, c.surfaces.base);
         // The navigation shell (sidebar + list + reader) draws itself, its
@@ -5571,6 +5885,23 @@ impl MailApp {
     }
 
     fn handle_setup_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) {
+        // Wheel: scroll the row band when the window is too short for every
+        // row (the footer stays pinned; rows scroll past it are unclickable).
+        if let WindowEvent::MouseWheel { delta, .. } = event {
+            if self.setup_scroll_max > 0.0 {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, lines) => f64::from(*lines) * 40.0,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => {
+                        p.y / ctx.scale_factor.max(0.01)
+                    }
+                };
+                self.setup_scroll = (self.setup_scroll - dy).clamp(0.0, self.setup_scroll_max);
+                self.rebuild_overlay_hits();
+            }
+            *ctx.handled = true;
+            return;
+        }
+
         // Keyboard: Tab/Shift+Tab move between fields, Enter advances (or
         // submits on the last field); everything else routes to the focused
         // field.
@@ -7690,6 +8021,147 @@ mod tests {
     }
 
     // ---- add-account: single-border layout, Tab, autoconfig, OAuth --------
+
+    #[test]
+    fn setup_sheet_one_x_metrics_reproduce_the_authored_sheet() {
+        // The pre-paint rule set keeps the sheet at its authored 1× size: a
+        // 34 px field, a 120 px label column, the 500 px card (504 with the
+        // heading and hint measured instead of eyeballed).
+        let m = SetupMetrics::default();
+        assert_eq!(m.field_h, SETUP_FIELD_MIN_H);
+        assert_eq!(m.label_col_w, SETUP_LABEL_COL_MIN_W);
+        assert_eq!(m.btn_h, SETUP_BUTTON_MIN_H);
+        assert!((m.fields_top() - 75.625).abs() < 1e-9, "{}", m.fields_top());
+        assert!((m.panel_h() - 504.0).abs() < 1e-9, "{}", m.panel_h());
+    }
+
+    #[test]
+    fn setup_sheet_scaled_metrics_keep_labels_fields_and_buttons_apart() {
+        // 200% text: labels widen the label column, fields grow, the sheet
+        // grows with them, and the footer buttons hold their labels.
+        let (mut app, _doc) = app();
+        app.layout_for_test(1100.0, 900.0);
+        app.open_setup_edit(None);
+        app.setup_metrics = scaled_setup_metrics();
+        app.rebuild_overlay_hits();
+        let rect_of = |hit: OverlayHit| {
+            app.overlay_hits
+                .iter()
+                .find(|(_, h)| *h == hit)
+                .map(|(r, _)| *r)
+                .expect("hit present")
+        };
+        let panel = app.overlay_panel_rect();
+        let name = rect_of(OverlayHit::SetupField(0));
+        let email = rect_of(OverlayHit::SetupField(1));
+        let save = rect_of(OverlayHit::SetupSave);
+        let cancel = rect_of(OverlayHit::CancelSetup);
+        assert_eq!(name.height(), 51.0);
+        assert!(email.y0 >= name.y1, "rows stack without overlap");
+        assert_eq!(
+            name.x0,
+            panel.x0 + SETUP_PAD + 190.0,
+            "field column clears the labels"
+        );
+        assert_eq!(save.width(), 220.0);
+        assert_eq!(cancel.width(), 120.0);
+        assert!(save.x1 <= cancel.x0, "Save and Cancel never overlap");
+        assert!(save.y1 <= panel.y1, "footer stays inside the sheet");
+        assert!(panel.height() > 504.0, "the sheet grew with its rows");
+    }
+
+    /// 200% metrics: every line box doubled, columns and buttons widened.
+    fn scaled_setup_metrics() -> SetupMetrics {
+        SetupMetrics {
+            scale: 2.0,
+            heading_h: 42.5,
+            subtitle_h: 28.75,
+            label_h: 31.25,
+            label_col_w: 190.0,
+            caption_h: 27.5,
+            field_h: 51.0,
+            pill_w: 150.0,
+            oauth_w: 320.0,
+            note_h: 26.25,
+            hint_h: 28.75,
+            btn_h: 50.0,
+            save_w: 220.0,
+            cancel_w: 120.0,
+            remove_w: 150.0,
+            tls_w: 140.0,
+            tls_h: 30.0,
+            ..SetupMetrics::default()
+        }
+    }
+
+    #[test]
+    fn setup_sheet_in_a_short_window_at_200_percent_never_overlaps_its_footer() {
+        // 200% text in a 720 px window: the sheet cannot hold every row, so
+        // the row band scrolls. No row hit may share pixels with Save /
+        // Cancel (the footer resolves last, so an overlap would fire the wrong
+        // control), every visible row lies inside the band, and scrolling
+        // brings the last row into reach.
+        let (mut app, _doc) = app();
+        app.layout_for_test(1100.0, 720.0);
+        app.open_setup_edit(None);
+        app.setup_metrics = scaled_setup_metrics();
+        app.rebuild_overlay_hits();
+        assert!(
+            app.setup_scroll_max > 0.0,
+            "the rows do not fit; the band must scroll"
+        );
+        let footer_top = app
+            .overlay_hits
+            .iter()
+            .filter(|(_, h)| matches!(h, OverlayHit::SetupSave | OverlayHit::CancelSetup))
+            .map(|(r, _)| r.y0)
+            .fold(f64::MAX, f64::min);
+        let assert_disjoint = |app: &MailApp| {
+            let hits: Vec<(Rect, OverlayHit)> = app.overlay_hits.clone();
+            for (i, (a, ha)) in hits.iter().enumerate() {
+                for (b, hb) in hits.iter().skip(i + 1) {
+                    let overlap = a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+                    assert!(!overlap, "{ha:?} {a:?} overlaps {hb:?} {b:?}");
+                }
+            }
+            for (r, h) in &hits {
+                if !matches!(h, OverlayHit::SetupSave | OverlayHit::CancelSetup) {
+                    assert!(
+                        r.y1 <= footer_top + 0.5,
+                        "{h:?} {r:?} reaches into the footer"
+                    );
+                }
+            }
+        };
+        assert_disjoint(&app);
+        // The SMTP row is below the fold until the band scrolls to its end.
+        assert!(
+            !app.overlay_hits
+                .iter()
+                .any(|(_, h)| matches!(h, OverlayHit::SetupField(6))),
+            "the SMTP row is not reachable before scrolling"
+        );
+        app.setup_scroll = app.setup_scroll_max;
+        app.rebuild_overlay_hits();
+        assert_disjoint(&app);
+        assert!(
+            app.overlay_hits
+                .iter()
+                .any(|(_, h)| matches!(h, OverlayHit::SetupField(6))),
+            "scrolling to the end reaches the SMTP row"
+        );
+        // Keyboard focus on the last field scrolls it into the band.
+        app.setup_scroll = 0.0;
+        app.rebuild_overlay_hits();
+        app.focus_setup(Some(7));
+        assert!(
+            app.overlay_hits
+                .iter()
+                .any(|(_, h)| matches!(h, OverlayHit::SetupField(7))),
+            "focusing the SMTP port brings its row into the band"
+        );
+        assert_disjoint(&app);
+    }
 
     #[test]
     fn setup_fields_use_single_border_no_wrapper() {
