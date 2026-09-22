@@ -339,6 +339,16 @@ impl SetupApp {
                 overridden: folder.mode_overridden,
             })
             .collect::<Vec<_>>();
+        let suggestions = self
+            .known_folders
+            .iter()
+            .map(|known| super::actions::SuggestionProjection {
+                identity: known.kind.label().to_ascii_lowercase(),
+                name: known.kind.label().to_string(),
+                available: known.path.is_some(),
+                unavailable_reason: known.unavailable_reason.clone(),
+            })
+            .collect();
         let folder_count = folders.len();
         let active_folder_count = controller
             .folders()
@@ -352,7 +362,7 @@ impl SetupApp {
             SetupPage::Folders => self.folder_selection_settled(),
             SetupPage::Review => false,
         };
-        let on_folder_choices = matches!(page, SetupPage::Folders | SetupPage::Review);
+        let on_folder_choices = page == SetupPage::Folders;
         super::actions::SetupProjection {
             page: super::actions::page_key(page),
             selection: super::actions::SelectionProjection {
@@ -361,6 +371,7 @@ impl SetupApp {
                 folder_count,
                 active_folder_count,
                 folders,
+                suggestions,
                 help_open: self.show_help,
                 imports_open: self.import_requested || self.import_app.is_some(),
             },
@@ -368,15 +379,18 @@ impl SetupApp {
                 ready: page == SetupPage::Review,
             },
             availability: super::actions::AvailabilityProjection {
-                desktop: self.capabilities.platform.supports(Experience::Desktop),
-                full_os: self.capabilities.platform.supports(Experience::FullOs),
-                connected: self.capabilities.connected_folders,
+                desktop: page == SetupPage::Experience
+                    && self.capabilities.platform.supports(Experience::Desktop),
+                full_os: page == SetupPage::Experience
+                    && self.capabilities.platform.supports(Experience::FullOs),
+                connected: on_folder_choices && self.capabilities.connected_folders,
                 next,
                 back: page != SetupPage::Experience,
                 folder_policies: on_folder_choices,
                 folder_edits: on_folder_choices && folder_count > 0,
                 help: page == SetupPage::Folders,
-                open_imports: true,
+                open_imports: matches!(page, SetupPage::Experience | SetupPage::Review),
+                choose_folder: on_folder_choices && self.folder_selection_settled(),
             },
         }
     }
@@ -385,8 +399,14 @@ impl SetupApp {
         &mut self,
         operation: super::actions::SetupOperation,
     ) -> Result<(), String> {
+        if self.import_app.is_some() {
+            return Err("Guided setup is closed while folder imports are open.".into());
+        }
         let command = match operation {
             super::actions::SetupOperation::ChooseExperience { experience } => {
+                if self.controller().page() != SetupPage::Experience {
+                    return Err("Experience choices are available on the first setup page.".into());
+                }
                 let experience = super::actions::parse_experience(&experience)?;
                 if !self.capabilities.platform.supports(experience) {
                     return Err(experience_unavailable_reason(
@@ -397,10 +417,7 @@ impl SetupApp {
                 SetupCommand::ChooseExperience(experience)
             }
             super::actions::SetupOperation::SetCommonMode { mode } => {
-                if !matches!(
-                    self.controller().page(),
-                    SetupPage::Folders | SetupPage::Review
-                ) {
+                if !matches!(self.controller().page(), SetupPage::Folders) {
                     return Err("Folder choices are not open on the current setup page.".into());
                 }
                 let mode = super::actions::parse_mode(&mode)?;
@@ -414,10 +431,7 @@ impl SetupApp {
                     .controller()
                     .folder_index(&folder)
                     .ok_or_else(|| "folder selection is no longer available".to_string())?;
-                if !matches!(
-                    self.controller().page(),
-                    SetupPage::Folders | SetupPage::Review
-                ) {
+                if !matches!(self.controller().page(), SetupPage::Folders) {
                     return Err("Folder choices are not open on the current setup page.".into());
                 }
                 let mode = super::actions::parse_mode(&mode)?;
@@ -431,11 +445,11 @@ impl SetupApp {
                     .controller()
                     .folder_index(&folder)
                     .ok_or_else(|| "folder selection is no longer available".to_string())?;
-                if !matches!(
-                    self.controller().page(),
-                    SetupPage::Folders | SetupPage::Review
-                ) {
+                if !matches!(self.controller().page(), SetupPage::Folders) {
                     return Err("Folder choices are not open on the current setup page.".into());
+                }
+                if !self.controller().folders()[index].mode_overridden {
+                    return Err("This folder already follows the common choice.".into());
                 }
                 SetupCommand::ClearFolderMode(index)
             }
@@ -444,13 +458,35 @@ impl SetupApp {
                     .controller()
                     .folder_index(&folder)
                     .ok_or_else(|| "folder selection is no longer available".to_string())?;
-                if !matches!(
-                    self.controller().page(),
-                    SetupPage::Folders | SetupPage::Review
-                ) {
+                if !matches!(self.controller().page(), SetupPage::Folders) {
                     return Err("Folder choices are not open on the current setup page.".into());
                 }
                 SetupCommand::RemoveFolder(index)
+            }
+            super::actions::SetupOperation::SelectSuggestion { suggestion } => {
+                if self.controller().page() != SetupPage::Folders
+                    || !self.folder_selection_settled()
+                {
+                    return Err("Folder choices are not open or a scan is still running.".into());
+                }
+                let index = self
+                    .known_folders
+                    .iter()
+                    .position(|known| {
+                        known.kind.label().eq_ignore_ascii_case(&suggestion) && known.path.is_some()
+                    })
+                    .ok_or_else(|| {
+                        "That suggested folder is unavailable on this computer.".to_string()
+                    })?;
+                SetupCommand::AddSuggested(index)
+            }
+            super::actions::SetupOperation::ChooseFolder => {
+                if self.controller().page() != SetupPage::Folders
+                    || !self.folder_selection_settled()
+                {
+                    return Err("The folder picker is not available right now.".into());
+                }
+                SetupCommand::AddFolder
             }
             super::actions::SetupOperation::ToggleHelp => {
                 if self.controller().page() != SetupPage::Folders {
@@ -472,7 +508,14 @@ impl SetupApp {
                 }
                 SetupCommand::Back
             }
-            super::actions::SetupOperation::OpenImports => SetupCommand::OpenImports,
+            super::actions::SetupOperation::OpenImports => {
+                if self.controller().page() == SetupPage::Folders {
+                    return Err(
+                        "Folder imports are available on the experience and review pages.".into(),
+                    );
+                }
+                SetupCommand::OpenImports
+            }
         };
         self.apply_command(command);
         if self.status_is_error {
@@ -1120,7 +1163,7 @@ impl SetupApp {
                 if enabled { "Add" } else { "Unavailable" },
                 SetupCommand::AddSuggested(index),
             )
-            .with_enabled(enabled);
+            .with_enabled(enabled && self.folder_selection_settled());
         Card::titled(
             known.kind.label(),
             Box::new(
@@ -1287,11 +1330,10 @@ impl SetupApp {
         for (index, known) in self.known_folders.iter().enumerate() {
             suggested = suggested.push(Box::new(self.known_folder_card(index, known)));
         }
-        suggested = suggested.push(Box::new(self.button(
-            "setup.add-folder",
-            "Add folder…",
-            SetupCommand::AddFolder,
-        )));
+        suggested = suggested.push(Box::new(
+            self.button("setup.add-folder", "Add folder…", SetupCommand::AddFolder)
+                .with_enabled(self.folder_selection_settled()),
+        ));
         let mut body = page(header).push(Box::new(modes)).push(Box::new(suggested));
 
         let controller = self.controller();
@@ -1947,6 +1989,9 @@ impl Widget for SetupApp {
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if let Some(import_app) = &self.import_app {
+            return import_app.resources(_doc);
+        }
         vec![super::actions::resource(&self.setup_projection())]
     }
 
@@ -3486,7 +3531,16 @@ mod tests {
         assert_eq!(review["review"]["ready"], true);
         assert_eq!(review["selection"]["folder_count"], 1);
         assert_eq!(review["selection"]["active_folder_count"], 0);
-
+        assert!(
+            invoke_setup_raw(
+                &mut app,
+                super::super::actions::SetupOperation::SetCommonMode {
+                    mode: "copy".into()
+                }
+            )
+            .is_err()
+        );
+        invoke_setup(&mut app, "back", serde_json::Map::new()).unwrap();
         let edited = invoke_setup(
             &mut app,
             "set-common-mode",
@@ -3538,6 +3592,129 @@ mod tests {
         assert!(error.contains("not available"), "{error}");
         assert_eq!(app.controller().default_mode(), FolderMode::Copy);
         assert_eq!(app.controller().page(), SetupPage::Folders);
+    }
+
+    #[test]
+    fn setup_actions_follow_visible_pages_and_import_takeover() {
+        let mut app = supported_fixture();
+        let doc = AutoCommit::new();
+        assert!(
+            setup_action(&app, "choose-experience", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            setup_action(&app, "open-imports", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        assert!(
+            !setup_action(&app, "choose-experience", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            !setup_action(&app, "open-imports", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            setup_action(&app, "choose-folder", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            invoke_setup_raw(
+                &mut app,
+                super::super::actions::SetupOperation::ChooseExperience {
+                    experience: "desktop".into()
+                }
+            )
+            .is_err()
+        );
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        assert!(
+            !setup_action(&app, "set-common-mode", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            !setup_action(&app, "choose-folder", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            setup_action(&app, "open-imports", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
+        assert!(
+            Widget::resources(&app, &doc)
+                .iter()
+                .all(|resource| resource.kind != "imager.setup")
+        );
+        assert!(invoke_setup_raw(&mut app, super::super::actions::SetupOperation::Next).is_err());
+    }
+
+    #[test]
+    fn suggested_folder_action_uses_live_choice_and_rechecks_availability() {
+        let mut app = supported_fixture();
+        app.worker_launcher = accepted_without_completion_worker;
+        invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        app.known_folders = vec![KnownFolder {
+            kind: KnownFolderKind::Documents,
+            path: Some(PathBuf::from(TEST_SOURCE_ROOT).join("Documents")),
+            unavailable_reason: None,
+        }];
+        let doc = AutoCommit::new();
+        let root = setup_resource(&app, &doc);
+        let suggestion = child_resource(&root, "imager.setup.suggestions")
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.setup.suggestion")
+            .unwrap();
+        assert!(
+            suggestion
+                .actions
+                .iter()
+                .find(|action| action.id == "select")
+                .unwrap()
+                .contract
+                .availability
+                .is_available()
+        );
+        let encoded = suggestion
+            .actions
+            .iter()
+            .find(|action| action.id == "select")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &encoded).unwrap();
+        assert_eq!(app.pending_scans, 1);
+        assert!(invoke_encoded_setup(&mut app, &encoded).is_err());
     }
 
     #[test]
@@ -3614,7 +3791,7 @@ mod tests {
             resource.presentation.as_ref().unwrap().badge.as_deref(),
             Some("Experience")
         );
-        assert_eq!(resource.actions.len(), 6);
+        assert_eq!(resource.actions.len(), 7);
         let detail = resource
             .presentation
             .as_ref()
@@ -3654,40 +3831,20 @@ mod tests {
         let folders = invoke_setup(&mut app, "toggle-help", serde_json::Map::new()).unwrap();
         assert_eq!(folders["selection"]["help_open"], true);
         assert_eq!(folders["page"], "folders");
-        let opened = invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
-        assert_eq!(opened["selection"]["imports_open"], true);
-        assert_eq!(app.children()[0].name(), "ImportApp");
-        let updated = Widget::resources(&app, &doc).pop().unwrap();
-        assert_eq!(
-            updated.id.as_str(),
-            super::super::actions::SETUP_RESOURCE_ID
-        );
-        assert_eq!(
-            updated.presentation.as_ref().unwrap().badge.as_deref(),
-            Some("Folders")
-        );
         assert!(
-            updated
-                .actions
-                .iter()
-                .find(|action| action.id == "toggle-help")
-                .unwrap()
+            !setup_action(&app, "open-imports", &doc)
                 .contract
                 .availability
                 .is_available()
         );
-        let selection = child_resource(&updated, "imager.setup.selection");
-        let selection_detail = selection
-            .presentation
-            .as_ref()
-            .unwrap()
-            .detail
-            .as_deref()
-            .unwrap();
-        assert!(selection_detail.contains("help open"), "{selection_detail}");
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        let opened = invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
+        assert_eq!(opened["selection"]["imports_open"], true);
+        assert_eq!(app.children()[0].name(), "ImportApp");
         assert!(
-            selection_detail.contains("imports open"),
-            "{selection_detail}"
+            Widget::resources(&app, &doc)
+                .iter()
+                .all(|resource| resource.kind != "imager.setup")
         );
     }
 
