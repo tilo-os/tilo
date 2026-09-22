@@ -23,6 +23,9 @@ use crate::layers::LayerStore;
 use crate::locks::{Guard, Locks};
 use crate::slots::{self, Generation, SlotRecord, SlotStore};
 
+/// The domain of a greetd session unless the image says otherwise.
+pub const DEFAULT_DOMAIN: &str = "unconfined_t";
+
 /// Layers and uploads younger than this survive gc: they may belong to a
 /// swap that is still in flight on another connection.
 const GC_MIN_AGE: Duration = Duration::from_secs(3600);
@@ -38,6 +41,7 @@ pub struct Daemon {
     base: BaseInfo,
     client_protocol: Option<u32>,
     root: PathBuf,
+    expected_domain: String,
 }
 
 fn to_value<T: Serialize>(value: &T) -> Result<serde_json::Value, DaemonError> {
@@ -121,7 +125,47 @@ impl Daemon {
             base,
             client_protocol: None,
             root: root.to_owned(),
+            expected_domain: DEFAULT_DOMAIN.into(),
         }
+    }
+
+    /// The `SELinux` domain a greetd session runs in on this image.
+    #[must_use]
+    pub fn with_expected_domain(mut self, domain: impl Into<String>) -> Self {
+        self.expected_domain = domain.into();
+        self
+    }
+
+    fn parity(&mut self, slot: &str) -> Option<String> {
+        let process = self.apply.session_process(slot)?;
+        apply::parity_problem(&process, &self.expected_domain)
+    }
+
+    /// After starting sessions: refuse to report success for one that is
+    /// not equivalent to a production greetd session.
+    fn verify_parity<'a>(
+        &mut self,
+        slots: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), DaemonError> {
+        for slot in slots {
+            if let Some(detail) = self.parity(slot) {
+                return Err(DaemonError::SessionParity {
+                    slot: slot.to_owned(),
+                    detail,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn user_slots(&self) -> Result<Vec<String>, DaemonError> {
+        Ok(self
+            .slots
+            .list()?
+            .into_iter()
+            .filter(|r| r.user().is_some())
+            .map(|r| r.name)
+            .collect())
     }
 
     /// Handle one request.
@@ -365,6 +409,16 @@ impl Daemon {
                             record.name, record.name
                         ),
                     });
+                } else if let Some(detail) = self.parity(&record.name) {
+                    let error = DaemonError::SessionParity {
+                        slot: record.name.clone(),
+                        detail,
+                    };
+                    issues.push(Issue {
+                        slot: record.name.clone(),
+                        problem: error.to_string(),
+                        hint: error.hint(),
+                    });
                 }
             }
         }
@@ -377,6 +431,11 @@ impl Daemon {
             self.apply.unit_state(&session_unit(&record.name))
         } else {
             "n/a".into()
+        };
+        let parity = if session == "active" {
+            self.parity(&record.name)
+        } else {
+            None
         };
         Ok(SlotInfo {
             name: record.name.clone(),
@@ -396,6 +455,7 @@ impl Daemon {
             } else {
                 record.seat.clone()
             },
+            parity,
         })
     }
 
@@ -428,6 +488,7 @@ impl Daemon {
                 SessionChange::Ensure,
             )?;
             self.slots.save(&record)?;
+            self.verify_parity([name])?;
             actions
         } else {
             Vec::new()
@@ -466,6 +527,10 @@ impl Daemon {
         self.slots.clear_pending(name)?;
         if record.kind == SlotKind::Vm {
             actions.extend(self.restart_all_sessions()?);
+            let slots = self.user_slots()?;
+            self.verify_parity(slots.iter().map(String::as_str))?;
+        } else {
+            self.verify_parity([name])?;
         }
         Ok(ApplyResult {
             slot: record.name,
@@ -583,8 +648,14 @@ impl Daemon {
             SessionChange::Keep,
         )?;
         self.slots.set_current(record, to.number)?;
-        if policy == Policy::VmRefresh {
-            actions.extend(self.restart_all_sessions()?);
+        match policy {
+            Policy::VmRefresh => {
+                actions.extend(self.restart_all_sessions()?);
+                let slots = self.user_slots()?;
+                self.verify_parity(slots.iter().map(String::as_str))?;
+            }
+            Policy::SessionRestart => self.verify_parity([record.name.as_str()])?,
+            Policy::NoRestart => {}
         }
         Ok(ApplyResult {
             slot: record.name.clone(),
@@ -651,6 +722,7 @@ impl Daemon {
             SessionChange::Restart,
         )?;
         self.slots.save(record)?;
+        self.verify_parity([record.name.as_str()])?;
         Ok(actions)
     }
 
