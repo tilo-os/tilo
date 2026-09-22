@@ -134,7 +134,7 @@ unicode-segmentation = "1.12"
 unicode-linebreak = "0.1.5"
 # ICU dictionary/LSTM segmentation for scripts whose word boundaries cannot
 # be inferred from whitespace (Thai, Lao, Khmer, Myanmar, CJK).
-icu_segmenter = "1.5"
+icu_segmenter = "2.3"
 # TeX/Liang hyphenation patterns with language-specific minima. The same
 # implementation is already used by the workspace's Typst document engine;
 # making it direct lets UI paragraphs opt in without runtime dictionary I/O.

@@ -6468,10 +6468,27 @@ dependencies = [
  "icu_collections 1.5.0",
  "icu_locid",
  "icu_provider 1.5.0",
- "icu_segmenter_data",
+ "icu_segmenter_data 1.5.1",
  "serde",
  "utf8_iter",
  "zerovec 0.10.4",
+]
+
+[[package]]
+name = "icu_segmenter"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82d07aafccd67af15d02512a6adf5896fbc5ed00f2e99b471d2efa14016db3db"
+dependencies = [
+ "core_maths",
+ "icu_collections 2.3.0",
+ "icu_locale_fallback",
+ "icu_provider 2.3.1",
+ "icu_segmenter_data 2.3.0",
+ "potential_utf",
+ "smallvec",
+ "utf8_iter",
+ "zerovec 0.11.8",
 ]
 
 [[package]]
@@ -6479,6 +6496,12 @@ name = "icu_segmenter_data"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1e52775179941363cc594e49ce99284d13d6948928d8e72c755f55e98caa1eb"
+
+[[package]]
+name = "icu_segmenter_data"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae293c039020f9ec10710af98d29ce6aa2051486638b49c9a6409f3b4a9e98ad"
 
 [[package]]
 name = "icu_time"
@@ -14888,7 +14911,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "hypher",
- "icu_segmenter",
+ "icu_segmenter 2.3.0",
  "image",
  "libc",
  "media",
@@ -15781,7 +15804,7 @@ dependencies = [
  "icu_provider 1.5.0",
  "icu_provider_adapters",
  "icu_provider_blob",
- "icu_segmenter",
+ "icu_segmenter 1.5.0",
  "kurbo 0.12.0",
  "memchr",
  "rustc-hash 2.1.1",
