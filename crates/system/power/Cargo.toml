@@ -40,7 +40,7 @@ settings-store = { path = "../../../crates/system/settings-store", optional = tr
 atomic-file = { path = "../../../crates/system/atomic-file", optional = true }
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
-zbus = { version = "4", default-features = false, features = ["tokio"], optional = true }
+zbus = { workspace = true, features = ["tokio"], optional = true }
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "time", "sync"], optional = true }
 futures-util = { version = "0.3", optional = true }
 

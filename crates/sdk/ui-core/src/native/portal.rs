@@ -250,7 +250,12 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
     };
 
     match response {
-        Ok(files) => Ok(files.uris().to_vec()),
+        Ok(files) => files
+            .uris()
+            .iter()
+            .map(|uri| url::Url::parse(uri.as_str()))
+            .collect::<Result<_, _>>()
+            .map_err(|e| PortalFailure::Failed(format!("portal returned a malformed URI: {e}"))),
         Err(ashpd::Error::Response(_)) => Err(PortalFailure::Cancelled),
         Err(e) => Err(PortalFailure::Failed(e.to_string())),
     }

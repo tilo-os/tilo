@@ -44,7 +44,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::OwnedFd;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
@@ -644,7 +644,7 @@ impl RemoteDesktopBackend {
     )]
     async fn create_session(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
         _handle: ObjectPath<'_>,
@@ -704,7 +704,7 @@ impl RemoteDesktopBackend {
     /// `SelectDevices` — request pointer/keyboard access; surfaces the consent prompt and records the granted devices on the session.
     async fn select_devices(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
@@ -849,7 +849,7 @@ impl RemoteDesktopBackend {
     )]
     async fn start(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,

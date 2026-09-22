@@ -4643,7 +4643,7 @@ fn start_portal_backend(
     };
 
     let serve_result = runtime.block_on(async {
-        let conn = zbus::ConnectionBuilder::session()?.build().await?;
+        let conn = zbus::connection::Builder::session()?.build().await?;
         crate::portal::serve_with_inhibit_and_clipboard(
             conn,
             ctx,
@@ -5434,7 +5434,7 @@ pub fn run() {
             let bridge = notif_bridge.clone();
             let res: Result<crate::notifications::ServerHandle, zbus::Error> =
                 rt.block_on(async move {
-                    let conn = zbus::ConnectionBuilder::session()?.build().await?;
+                    let conn = zbus::connection::Builder::session()?.build().await?;
                     let service = crate::notifications::NotificationService::with_connection(
                         bridge.clone(),
                         // v1: a fresh CallerMap. Per-workspace attribution comes once the bridge

@@ -35,7 +35,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 use zbus::zvariant::{OwnedValue, Value};
@@ -458,7 +458,7 @@ impl ScreenCastBackend {
     )]
     async fn create_session(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
         _handle: ObjectPath<'_>,
@@ -514,7 +514,7 @@ impl ScreenCastBackend {
     /// (no prompt) — how a persisted share re-attaches without re-asking.
     async fn select_sources(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         session_handle: ObjectPath<'_>,
@@ -627,7 +627,7 @@ impl ScreenCastBackend {
     )]
     async fn start(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,

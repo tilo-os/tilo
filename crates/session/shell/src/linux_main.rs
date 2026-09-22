@@ -544,7 +544,7 @@ fn run_portal_server_only() -> std::process::ExitCode {
             portal::CallerMap::new(),
         );
 
-        let connection = match zbus::ConnectionBuilder::session() {
+        let connection = match zbus::connection::Builder::session() {
             Ok(builder) => match builder.build().await {
                 Ok(c) => c,
                 Err(e) => {

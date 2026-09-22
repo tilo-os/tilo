@@ -32,7 +32,7 @@ tilo-crypto = { path = "../tilo-crypto" }
 tilo-bluez = { path = "../tilo-bluez" }
 tilo-power-mgmt = { path = "../power" }
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "time"] }
-zbus = { version = "4", default-features = false, features = ["tokio"] }
+zbus = { workspace = true, features = ["tokio"] }
 
 [dev-dependencies]
 # Fixture sysfs trees for testing the backlight reader/writer against

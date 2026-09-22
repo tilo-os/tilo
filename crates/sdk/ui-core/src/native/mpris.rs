@@ -79,7 +79,7 @@ mod imp {
 
     use tokio::sync::mpsc::UnboundedSender;
     use zbus::interface;
-    use zbus::object_server::SignalContext;
+    use zbus::object_server::SignalEmitter;
     use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
     use super::{MprisCommand, MprisConfig, OBJECT_PATH, PlayerSnapshot};
@@ -231,7 +231,7 @@ mod imp {
 
         /// Emitted after a seek not caused by normal playback.
         #[zbus(signal)]
-        async fn seeked(ctxt: &SignalContext<'_>, position: i64) -> zbus::Result<()>;
+        async fn seeked(ctxt: &SignalEmitter<'_>, position: i64) -> zbus::Result<()>;
 
         #[zbus(property)]
         fn playback_status(&self) -> String {

@@ -35,7 +35,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 
 #[cfg(any(test, target_os = "linux"))]
 use std::path::Path;
@@ -1222,7 +1222,7 @@ impl NotificationService {
     /// `NotificationClosed(id, reason)` — emitted when a toast goes away.
     #[zbus(signal)]
     async fn notification_closed(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         id: u32,
         reason: u32,
     ) -> zbus::Result<()>;
@@ -1230,7 +1230,7 @@ impl NotificationService {
     /// `ActionInvoked(id, action_key)` — emitted when the user activates an action on a toast.
     #[zbus(signal)]
     async fn action_invoked(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         id: u32,
         action_key: String,
     ) -> zbus::Result<()>;
@@ -1280,7 +1280,7 @@ pub fn spawn_signal_emitter(
     bridge: NotificationBridge,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let ctxt = match SignalContext::new(&connection, OBJECT_PATH) {
+        let ctxt = match SignalEmitter::new(&connection, OBJECT_PATH) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("notifications: signal context build failed: {e}");
